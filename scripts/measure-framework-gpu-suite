@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Interleave GPUI and Slint GPU workloads, retaining raw timing and load evidence."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import random
+import signal
+import subprocess
+import time
+
+
+root = Path(__file__).resolve().parent.parent
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--gpui', required=True, type=Path)
+parser.add_argument('--slint', required=True, type=Path)
+parser.add_argument('--output', required=True, type=Path)
+parser.add_argument('--repeats', type=int, default=3)
+parser.add_argument('--warmup', type=float, default=8)
+parser.add_argument('--seconds', type=float, default=20)
+parser.add_argument('--scene', action='append', choices=['scroll', 'grid1024', 'grid4096'])
+parser.add_argument('--candidate', action='append', choices=['gpui', 'slint'])
+parser.add_argument('--without-timestamps', action='store_true')
+parser.add_argument('--gpui-animation', choices=['frame', 'timer'], default='frame')
+parser.add_argument('--dry-run', action='store_true')
+args = parser.parse_args()
+if args.repeats <= 0 or args.warmup < 0 or args.seconds <= 0:
+    parser.error('Use positive repeats and measurement duration, with nonnegative warmup.')
+binaries = {candidate: getattr(args, candidate).resolve() for candidate in ('gpui', 'slint')}
+scenes = {'scroll': ('gpu-scroll', 80), 'grid1024': ('gpu-grid', 1024), 'grid4096': ('gpu-grid', 4096)}
+cases = []
+generator = random.Random(20261002)
+for repeat in range(1, args.repeats + 1):
+    # Each scene has a matched pair; alternate its first renderer on each repeat.
+    order = args.scene or list(scenes)
+    order = list(order)
+    generator.shuffle(order)
+    for scene in order:
+        candidates = args.candidate or (['gpui', 'slint'] if repeat % 2 else ['slint', 'gpui'])
+        for candidate in candidates:
+            cases.append({'candidate': candidate, 'scene': scene, 'repeat': repeat,
+                'scenario': scenes[scene][0], 'items': scenes[scene][1],
+                'binary': str(binaries[candidate])})
+if args.dry_run:
+    print(json.dumps(cases, indent=2))
+    raise SystemExit(0)
+if any(not binary.is_file() for binary in binaries.values()):
+    raise SystemExit('Both release executables must exist.')
+args.output = args.output.resolve()
+args.output.mkdir(parents=True, exist_ok=True)
+status = {'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
+    'source_dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root)),
+    'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
+    'binary_sha256': {candidate: hashlib.sha256(binary.read_bytes()).hexdigest()
+        for candidate, binary in binaries.items()},
+    'timestamp_instrumentation': not args.without_timestamps,
+    'gpui_animation_driver': args.gpui_animation,
+    'cases': [], 'limits': ['Shared GPU with the user desktop; other clients are observed, never stopped.',
+        'Private headless 60Hz output; physical display presentation and maximum FPS are not measured.']}
+path = args.output / 'suite.json'
+active = None
+
+
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+for signum in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(signum, interrupted)
+
+
+def builders():
+    found = []
+    for directory in Path('/proc').iterdir():
+        if directory.name.isdecimal():
+            try:
+                if (directory / 'comm').read_text().strip() in ('cargo', 'rustc'):
+                    found.append(int(directory.name))
+            except OSError:
+                pass
+    return found
+
+
+try:
+    for index, case in enumerate(cases, 1):
+        if builders():
+            raise SystemExit('Finish compiler work before measuring: ' + str(builders()))
+        if hashlib.sha256(binaries[case['candidate']].read_bytes()).hexdigest() != status['binary_sha256'][case['candidate']]:
+            raise SystemExit('A benchmark binary changed during the suite.')
+        prefix = args.output / f"{case['candidate']}-{case['scene']}-r{case['repeat']}"
+        entry = dict(case, report=prefix.with_suffix('.json').name,
+            started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            host_load_at_start=list(os.getloadavg()), compiler_pids_at_start=[])
+        status['cases'].append(entry)
+        path.write_text(json.dumps(status, indent=2) + '\n')
+        environment = dict(os.environ, TALK_FRAMEWORK_SCENARIO=case['scenario'],
+            TALK_GPU_ITEMS=str(case['items']),
+            TALK_GPU_ANIMATION=args.gpui_animation,
+            TALK_FRAMEWORK_ASSETS=str(root / 'experiments/frameworks/common/assets'),
+            TALK_FRAMEWORK_SURFACE_LOG=str(prefix.with_suffix('.surface.ndjson')),
+            VK_DRIVER_FILES='/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.x86_64.json',
+            VK_ICD_FILENAMES='/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.x86_64.json')
+        for key in ('TALK_GPU_FRAME_LOG', 'TALK_FRAMEWORK_FRAME_LOG', 'TALK_FRAMEWORK_DIAGNOSTICS'):
+            environment.pop(key, None)
+        print(f"[{index}/{len(cases)}] {case['candidate']} {case['scene']} repeat {case['repeat']}", flush=True)
+        command = [str(root / 'scripts/run-framework-isolated'),
+            '--compositor-log', str(prefix.with_suffix('.weston.log')), '--',
+            str(root / 'scripts/measure-framework-gpu'), '--candidate', case['candidate'],
+            '--output', str(prefix.with_suffix('.json')), '--warmup', str(args.warmup),
+            '--seconds', str(args.seconds)]
+        if args.without_timestamps:
+            command.append('--without-timestamps')
+        command += ['--', case['binary']]
+        with prefix.with_suffix('.runner.log').open('w') as log:
+            active = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                result = active.wait(timeout=args.warmup + args.seconds + 40)
+            except subprocess.TimeoutExpired:
+                active.terminate()
+                result = active.wait(timeout=12)
+                entry['timed_out'] = True
+        active = None
+        entry.update(status='passed' if result == 0 else 'failed', return_code=result)
+        if result == 0:
+            subprocess.run([str(root / 'scripts/summarize-framework-updates'),
+                str(prefix.with_suffix('.json')), str(prefix.with_suffix('.surface.ndjson'))],
+                stdout=subprocess.DEVNULL, check=True, timeout=10)
+        path.write_text(json.dumps(status, indent=2) + '\n')
+        if result:
+            raise SystemExit('Benchmark failed; inspect ' + str(prefix.with_suffix('.runner.log')))
+finally:
+    if active is not None and active.poll() is None:
+        active.terminate()
+        try:
+            active.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            active.kill()
+            active.wait(timeout=3)
+print(path, flush=True)

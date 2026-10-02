@@ -160,6 +160,7 @@ def run(args):
                 'actual_view': 'chat' if args.candidate in ('slint', 'iced') and os.environ.get('TALK_FRAMEWORK_SCENARIO') == 'input' else os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
                 'fixture': 'talk-chat-fixture-v1', 'build_mode': 'release',
                 'command': command, 'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
+                'post_window_grace_seconds': args.post_window_grace,
                 'started_monotonic_ns': int(started * 1_000_000_000),
                 'interval_seconds': args.interval, 'summary': summarize(samples),
                 'membership': list(identities.values()),
@@ -193,6 +194,11 @@ def run(args):
                     else:
                         report['screenshot_error'] = shot.stderr.strip() or 'No screenshot captured'
                 args.output.write_text(json.dumps(report, indent=2))
+            # Extra GPU-probe time is outside the recorded sampling window. It
+            # lets delayed query readbacks and buffered logs complete before
+            # SIGTERM; original frame timestamps still decide eligibility.
+            if args.post_window_grace:
+                time.sleep(args.post_window_grace)
             print(json.dumps({'candidate': args.candidate, 'configuration': args.configuration, 'summary': report['summary']}, indent=2))
         finally:
             for signum in (signal.SIGTERM, signal.SIGINT):
@@ -231,8 +237,10 @@ if __name__ == '__main__':
     parser.add_argument('--screenshot', help='Path to Weston screenshooter; capture after sampling')
     parser.add_argument('--screenshot-vflip', action='store_true', help='Correct an inverted compositor capture, after measurement')
     parser.add_argument('--nvidia-memory', action='store_true', help='Collect vendor-reported GPU framebuffer memory for owned processes')
+    parser.add_argument('--post-window-grace', type=float, default=0,
+        help='Unmeasured time for asynchronous timing/log completion before termination')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     arguments = parser.parse_args()
-    if arguments.warmup < 0 or arguments.seconds <= 0 or arguments.interval <= 0:
+    if arguments.warmup < 0 or arguments.seconds <= 0 or arguments.interval <= 0 or arguments.post_window_grace < 0:
         parser.error('Durations must be positive, with optional zero warmup.')
     run(arguments)

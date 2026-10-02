@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Recompute the GPU comparison from raw, owned-frame evidence."""
+import argparse
+import json
+import math
+from pathlib import Path
+import statistics
+
+
+def distribution(values):
+    values = sorted(values)
+    if not values:
+        return None
+
+    def quantile(fraction):
+        position = (len(values) - 1) * fraction
+        left = math.floor(position)
+        right = math.ceil(position)
+        return values[left] + (values[right] - values[left]) * (position - left)
+
+    return {'count': len(values), 'mean': statistics.mean(values),
+        'median': statistics.median(values), 'p95': quantile(.95),
+        'p99': quantile(.99), 'peak': values[-1]}
+
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('directory', type=Path)
+args = parser.parse_args()
+root = args.directory.resolve()
+suite = json.loads((root / 'suite.json').read_text())
+runs = []
+for case in suite['cases']:
+    if case['status'] != 'passed':
+        raise SystemExit('Cannot summarize an unsuccessful suite.')
+    report_path = root / case['report']
+    report = json.loads(report_path.read_text())
+    start = report['started_monotonic_ns'] + int(report['warmup_seconds'] * 1e9)
+    end = start + int(report['measurement_seconds'] * 1e9)
+    owned = {process['pid'] for process in report['membership']}
+    metadata, frames, skipped, malformed = [], [], [], []
+    if report['gpu_workload']['timestamp_instrumentation']:
+        frame_path = root / report['gpu_workload']['gpu_frame_log']
+        for line_number, line in enumerate(frame_path.read_text().splitlines(), 1):
+            try:
+                sample = json.loads(line)
+            except json.JSONDecodeError:
+                malformed.append(line_number)
+                continue
+            if sample.get('kind') != 'gpu_frame':
+                metadata.append(sample)
+                continue
+            timestamp = sample.get('cpu_monotonic_ns')
+            if not isinstance(timestamp, int):
+                raise SystemExit(f'Frame lacks original monotonic clock: {frame_path}:{line_number}')
+            if not start <= timestamp < end:
+                continue
+            if isinstance(sample.get('gpu_elapsed_ns'), (int, float)) and sample['gpu_elapsed_ns'] >= 0:
+                frames.append(sample)
+            else:
+                skipped.append(sample)
+        identities = [frame['frame_id'] for frame in frames]
+        if len(identities) != len(set(identities)):
+            raise SystemExit('Duplicate frame IDs: ' + str(frame_path))
+        frames.sort(key=lambda frame: frame['cpu_monotonic_ns'])
+        if not frames:
+            raise SystemExit('No warmup-filtered GPU timestamps: ' + str(frame_path))
+    pmon = {'owned': [], 'background': [], 'unsupported_owned_rows': 0}
+    for line in (root / report['gpu_workload']['nvidia_process_log']).read_text().splitlines():
+        sample = json.loads(line)
+        if not start <= sample['monotonic_ns'] < end:
+            continue
+        fields = sample['line'].split()
+        if len(fields) < 12 or not fields[0].isdigit() or not fields[1].isdigit():
+            continue
+        pid = int(fields[1])
+        if fields[3].isdigit():
+            pmon['owned' if pid in owned else 'background'].append(
+                {'monotonic_ns': sample['monotonic_ns'], 'pid': pid, 'sm_percent': int(fields[3])})
+        elif pid in owned:
+            pmon['unsupported_owned_rows'] += 1
+    # Other rows are GPU clients, including the isolated compositor. Do not
+    # subtract their activity from the measured app or call this an idle GPU.
+    by_tick = {}
+    for sample in pmon['background']:
+        # pmon emits each process consecutively in a single snapshot. Group by
+        # the source's nominal second; this is context, not a precision counter.
+        tick = sample['monotonic_ns'] // 1_000_000_000
+        by_tick[tick] = by_tick.get(tick, 0) + sample['sm_percent']
+    surfaces = report.get('wayland_updates', {}).get('surfaces', [])
+    main_surfaces = [surface for surface in surfaces if surface['surface_id'] == surface['main_surface_id']
+        and surface['max_current_width'] >= 1000 and surface['max_current_height'] >= 700]
+    if len(main_surfaces) != 1:
+        raise SystemExit('Expected one owned main window: ' + str(report_path))
+    surface = main_surfaces[0]
+    gpu_ms = [frame['gpu_elapsed_ns'] / 1e6 for frame in frames]
+    cpu_ms = [frame['cpu_render_ns'] / 1e6 for frame in frames if isinstance(frame.get('cpu_render_ns'), (int, float))]
+    gaps = [(right['cpu_monotonic_ns'] - left['cpu_monotonic_ns']) / 1e6
+        for left, right in zip(frames, frames[1:])]
+    device_samples = [json.loads(line) for line in (root / report['gpu_workload']['nvidia_device_log']).read_text().splitlines()]
+    device_samples = [sample for sample in device_samples if start <= sample['monotonic_ns'] < end]
+    device = {}
+    for key in ('clocks.sm', 'clocks.mem', 'temperature.gpu', 'power.draw', 'utilization.gpu'):
+        values = []
+        for sample in device_samples:
+            try:
+                values.append(float(sample[key]))
+            except (KeyError, ValueError):
+                pass
+        device[key] = distribution(values)
+    coverage = None
+    if frames:
+        identifiers = [frame['frame_id'] for frame in frames]
+        span = max(identifiers) - min(identifiers) + 1
+        interior_fraction = len(frames) / span
+        submissions = surface['buffer_or_damage_submissions']
+        # Two boundary frames can straddle a timestamp window and its later
+        # surface commit. More loss requires inspection, never silent ranking.
+        allowed_difference = max(2, math.ceil(submissions * .01))
+        coverage = {'frame_id_span': span, 'complete_fraction_of_frame_id_span': interior_fraction,
+            'owned_surface_submissions': submissions,
+            'samples_minus_submissions': len(frames) - submissions,
+            'allowed_boundary_or_loss_difference': allowed_difference,
+            'valid': interior_fraction >= .99 and not skipped
+                and abs(len(frames) - submissions) <= allowed_difference and not malformed}
+    run = {'candidate': case['candidate'], 'scene': case['scene'], 'repeat': case['repeat'],
+        'animation_driver': report['gpu_workload']['animation_driver'],
+        'timestamp_instrumentation': report['gpu_workload']['timestamp_instrumentation'],
+        'report': case['report'], 'measurement_seconds': report['measurement_seconds'],
+        'gpu_draw_ms': distribution(gpu_ms), 'cpu_instrumented_scope_ms': distribution(cpu_ms),
+        'gpu_sample_start_gap_ms': distribution(gaps), 'timestamp_metadata': metadata,
+        'complete_timestamp_samples': len(frames), 'skipped_timestamp_samples': len(skipped),
+        'malformed_log_lines': malformed,
+        'timestamp_coverage': coverage,
+        'gpu_sample_frames_per_second': len(frames) / report['measurement_seconds'] if frames else None,
+        'timed_gpu_span_ms_per_second': sum(gpu_ms) / report['measurement_seconds'] if frames else None,
+        'gpu_samples_over_16_67ms': sum(value > 1000 / 60 for value in gpu_ms),
+        'owned_sm_percent': distribution([sample['sm_percent'] for sample in pmon['owned']]),
+        'background_clients_sum_sm_percent': distribution(list(by_tick.values())),
+        'unsupported_owned_pmon_rows': pmon['unsupported_owned_rows'],
+        'whole_device': device,
+        'main_surface': surface, 'resources': report['summary'],
+        'cpu_accounting_warnings': report['cpu_accounting_warnings']}
+    runs.append(run)
+groups = []
+for candidate, scene, driver in sorted({(run['candidate'], run['scene'], run['animation_driver']) for run in runs}):
+    selected = [run for run in runs if (run['candidate'], run['scene'], run['animation_driver']) == (candidate, scene, driver)]
+    group = {'candidate': candidate, 'scene': scene, 'animation_driver': driver, 'repeats': len(selected),
+        'gpu_frames': sum(run['complete_timestamp_samples'] for run in selected)}
+
+    def repeats(name, values):
+        if values:
+            group[name] = {'median': statistics.median(values), 'min': min(values), 'max': max(values)}
+
+    for metric in ('median', 'p95', 'p99', 'mean', 'peak'):
+        repeats('gpu_ms_' + metric, [run['gpu_draw_ms'][metric] for run in selected if run['gpu_draw_ms']])
+    for metric in ('gpu_sample_frames_per_second', 'timed_gpu_span_ms_per_second'):
+        repeats(metric, [run[metric] for run in selected if run[metric] is not None])
+    for metric in ('pss_mib', 'cpu_percent_one_core', 'nvidia_framebuffer_mib'):
+        repeats(metric, [run['resources'][metric]['mean'] for run in selected])
+    repeats('main_surface_submissions_per_second', [run['main_surface']['submissions_per_second'] for run in selected])
+    repeats('main_surface_submission_gap_ms_peak', [run['main_surface']['submission_gap_ms_peak'] for run in selected])
+    groups.append(group)
+summary = {'source_commit': suite['source_commit'], 'source_dirty': suite['source_dirty'],
+    'binary_sha256': suite['binary_sha256'], 'runs': runs, 'groups': groups,
+    'limits': suite['limits'] + ['GPU timestamp intervals include any stalls within the timed GPU command span.',
+        'OpenGL flush submission can leave CPU-induced gaps between GPU markers; WGPU encodes its span before submission.',
+        'CPU timing scopes differ and must not be ranked against one another.',
+        'Surface buffer/damage submissions are not physical presented or unique-content FPS.',
+        'NVIDIA per-process SM counters have coarse 1-second sampling; unsupported values are not zero.']}
+(root / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+print(json.dumps(groups, indent=2))
+if any(run['timestamp_coverage'] and not run['timestamp_coverage']['valid'] for run in runs):
+    raise SystemExit('Timestamp coverage needs inspection; summary retains the failure evidence.')

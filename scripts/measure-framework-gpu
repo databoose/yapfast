@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Measure one matching GPU workload on the private display only."""
+import argparse
+import json
+import os
+from pathlib import Path
+import runpy
+import signal
+import subprocess
+import threading
+import time
+
+
+root = Path(__file__).resolve().parent.parent
+runpy.run_path(str(root / 'scripts/framework-input'))['require_private_display']()
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--candidate', required=True, choices=['gpui', 'slint'])
+parser.add_argument('--output', required=True, type=Path)
+parser.add_argument('--warmup', type=float, default=8)
+parser.add_argument('--seconds', type=float, default=20)
+parser.add_argument('--without-timestamps', action='store_true')
+parser.add_argument('command', nargs=argparse.REMAINDER)
+args = parser.parse_args()
+command = args.command[1:] if args.command and args.command[0] == '--' else args.command
+if not command:
+    parser.error('Provide a binary after --.')
+args.output = args.output.resolve()
+args.output.parent.mkdir(parents=True, exist_ok=True)
+frame_path = args.output.with_suffix('.frames.ndjson')
+pmon_path = args.output.with_suffix('.pmon.ndjson')
+device_path = args.output.with_suffix('.device.ndjson')
+environment = dict(os.environ)
+environment.pop('TALK_GPU_FRAME_LOG', None)
+if not args.without_timestamps:
+    environment['TALK_GPU_FRAME_LOG'] = str(frame_path)
+stop = threading.Event()
+
+
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+for signum in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(signum, interrupted)
+
+
+def stream_pmon(process):
+    with pmon_path.open('w') as log:
+        for line in process.stdout:
+            log.write(json.dumps({'monotonic_ns': time.monotonic_ns(), 'line': line.rstrip()}) + '\n')
+            log.flush()
+
+
+def sample_device():
+    fields = ['name', 'driver_version', 'pstate', 'clocks.sm', 'clocks.mem',
+        'temperature.gpu', 'power.draw', 'utilization.gpu', 'utilization.memory']
+    with device_path.open('w') as log:
+        while not stop.is_set():
+            started = time.monotonic_ns()
+            try:
+                values = subprocess.check_output(['nvidia-smi', '--query-gpu=' + ','.join(fields),
+                    '--format=csv,noheader,nounits'], text=True, timeout=3).strip().split(', ')
+                sample = {'monotonic_ns': started, **dict(zip(fields, values))}
+            except (subprocess.SubprocessError, OSError) as error:
+                sample = {'monotonic_ns': started, 'error': str(error)}
+            log.write(json.dumps(sample) + '\n')
+            log.flush()
+            stop.wait(1)
+
+
+monitor = subprocess.Popen(['stdbuf', '-oL', 'nvidia-smi', 'pmon', '-d', '1', '-s', 'um'],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+reader = threading.Thread(target=stream_pmon, args=(monitor,), daemon=True)
+reader.start()
+device_reader = threading.Thread(target=sample_device, daemon=True)
+device_reader.start()
+collector = None
+try:
+    collector = subprocess.Popen([str(root / 'scripts/measure-framework'),
+        '--candidate', args.candidate, '--configuration', args.candidate + '-gpu',
+        '--output', str(args.output), '--warmup', str(args.warmup),
+        '--seconds', str(args.seconds), '--interval', '1', '--nvidia-memory',
+        '--post-window-grace', '1.25',
+        '--screenshot', 'weston-screenshooter', '--screenshot-vflip', '--', *command], env=environment)
+    result = collector.wait()
+    if result:
+        raise SystemExit(result)
+finally:
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, signal.SIG_IGN)
+    if collector is not None and collector.poll() is None:
+        collector.terminate()
+        try:
+            collector.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            collector.kill()
+            collector.wait(timeout=3)
+    monitor.terminate()
+    try:
+        monitor.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        monitor.kill()
+        monitor.wait(timeout=3)
+    reader.join(timeout=3)
+    stop.set()
+    device_reader.join(timeout=4)
+
+report = json.loads(args.output.read_text())
+app_log = args.output.with_suffix('.app.log').read_text(errors='replace')
+expected = {'gpui': ['is_software_emulated: false', 'actual_gpu='],
+    'slint': ['NVIDIA', 'gpu_scene=']}[args.candidate]
+if not all(fragment in app_log for fragment in expected):
+    raise SystemExit('Hardware renderer evidence is missing: ' + str(args.output.with_suffix('.app.log')))
+if report['summary']['nvidia_framebuffer_mib']['peak'] <= 0:
+    raise SystemExit('Owned application has no observed NVIDIA GPU allocation.')
+report['gpu_workload'] = {
+    'scene_specification': 'experiments/frameworks/GPU-PERF.md',
+    'items': int(environment.get('TALK_GPU_ITEMS', '1024')),
+    'timestamp_instrumentation': not args.without_timestamps,
+    'animation_driver': environment.get('TALK_GPU_ANIMATION', 'frame') if args.candidate == 'gpui' else 'timer',
+    'gpu_frame_log': frame_path.name if not args.without_timestamps else None,
+    'nvidia_process_log': pmon_path.name,
+    'nvidia_device_log': device_path.name,
+    'physical_presented_fps_measured': False,
+    'renderer_verification': {'expected_log_fragments': expected,
+        'evidence': [line for line in app_log.splitlines()
+            if any(word in line for word in ('actual_gpu', 'RENDERER', 'gpu_scene='))]},
+}
+args.output.write_text(json.dumps(report, indent=2) + '\n')
+print(json.dumps({'candidate': args.candidate, 'scenario': report['scenario'],
+    'items': report['gpu_workload']['items'], 'resource_report': args.output.name}), flush=True)
