@@ -157,6 +157,7 @@ def run(args):
             report = {
                 'candidate': args.candidate, 'configuration': args.configuration,
                 'scenario': os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
+                'actual_view': 'chat' if args.candidate in ('slint', 'iced') and os.environ.get('TALK_FRAMEWORK_SCENARIO') == 'input' else os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
                 'fixture': 'talk-chat-fixture-v1', 'build_mode': 'release',
                 'command': command, 'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
                 'started_monotonic_ns': int(started * 1_000_000_000),
