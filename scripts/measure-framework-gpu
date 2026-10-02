@@ -14,7 +14,7 @@ import time
 root = Path(__file__).resolve().parent.parent
 runpy.run_path(str(root / 'scripts/framework-input'))['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--candidate', required=True, choices=['gpui', 'slint'])
+parser.add_argument('--candidate', required=True, choices=['gpui', 'slint', 'slint-skia'])
 parser.add_argument('--output', required=True, type=Path)
 parser.add_argument('--warmup', type=float, default=8)
 parser.add_argument('--seconds', type=float, default=20)
@@ -108,7 +108,8 @@ finally:
 report = json.loads(args.output.read_text())
 app_log = args.output.with_suffix('.app.log').read_text(errors='replace')
 expected = {'gpui': ['is_software_emulated: false', 'actual_gpu='],
-    'slint': ['NVIDIA', 'gpu_scene=']}[args.candidate]
+    'slint': ['NVIDIA', 'selected=winit-femtovg', 'gpu_scene='],
+    'slint-skia': ['NVIDIA', 'selected=winit-skia-opengl', 'gpu_scene=']}[args.candidate]
 if not all(fragment in app_log for fragment in expected):
     raise SystemExit('Hardware renderer evidence is missing: ' + str(args.output.with_suffix('.app.log')))
 if report['summary']['nvidia_framebuffer_mib']['peak'] <= 0:

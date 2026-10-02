@@ -15,12 +15,13 @@ root = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--gpui', required=True, type=Path)
 parser.add_argument('--slint', required=True, type=Path)
+parser.add_argument('--slint-skia', type=Path, help='Optional Slint Skia OpenGL GPU executable')
 parser.add_argument('--output', required=True, type=Path)
 parser.add_argument('--repeats', type=int, default=3)
 parser.add_argument('--warmup', type=float, default=8)
 parser.add_argument('--seconds', type=float, default=20)
 parser.add_argument('--scene', action='append', choices=['scroll', 'grid1024', 'grid4096'])
-parser.add_argument('--candidate', action='append', choices=['gpui', 'slint'])
+parser.add_argument('--candidate', action='append', choices=['gpui', 'slint', 'slint-skia'])
 parser.add_argument('--without-timestamps', action='store_true')
 parser.add_argument('--gpui-animation', choices=['frame', 'timer'], default='frame')
 parser.add_argument('--dry-run', action='store_true')
@@ -28,16 +29,26 @@ args = parser.parse_args()
 if args.repeats <= 0 or args.warmup < 0 or args.seconds <= 0:
     parser.error('Use positive repeats and measurement duration, with nonnegative warmup.')
 binaries = {candidate: getattr(args, candidate).resolve() for candidate in ('gpui', 'slint')}
+if args.slint_skia:
+    binaries['slint-skia'] = args.slint_skia.resolve()
+if args.candidate and any(candidate not in binaries for candidate in args.candidate):
+    parser.error('Supply --slint-skia when selecting the slint-skia candidate.')
 scenes = {'scroll': ('gpu-scroll', 80), 'grid1024': ('gpu-grid', 1024), 'grid4096': ('gpu-grid', 4096)}
 cases = []
 generator = random.Random(20261002)
 for repeat in range(1, args.repeats + 1):
-    # Each scene has a matched pair; alternate its first renderer on each repeat.
+    # Interleave matching scenes; balance the first renderer across repeats.
     order = args.scene or list(scenes)
     order = list(order)
     generator.shuffle(order)
     for scene in order:
-        candidates = args.candidate or (['gpui', 'slint'] if repeat % 2 else ['slint', 'gpui'])
+        candidates = args.candidate or list(binaries)
+        if not args.candidate:
+            if len(candidates) == 2 and repeat % 2 == 0:
+                candidates = list(reversed(candidates))
+            elif len(candidates) > 2:
+                shift = (repeat - 1) % len(candidates)
+                candidates = candidates[shift:] + candidates[:shift]
         for candidate in candidates:
             cases.append({'candidate': candidate, 'scene': scene, 'repeat': repeat,
                 'scenario': scenes[scene][0], 'items': scenes[scene][1],
@@ -46,7 +57,7 @@ if args.dry_run:
     print(json.dumps(cases, indent=2))
     raise SystemExit(0)
 if any(not binary.is_file() for binary in binaries.values()):
-    raise SystemExit('Both release executables must exist.')
+    raise SystemExit('Every supplied release executable must exist.')
 args.output = args.output.resolve()
 args.output.mkdir(parents=True, exist_ok=True)
 status = {'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -56,6 +67,7 @@ status = {'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     'binary_sha256': {candidate: hashlib.sha256(binary.read_bytes()).hexdigest()
         for candidate, binary in binaries.items()},
     'timestamp_instrumentation': not args.without_timestamps,
+    'skia_gl_validation': False,
     'gpui_animation_driver': args.gpui_animation,
     'cases': [], 'limits': ['Shared GPU with the user desktop; other clients are observed, never stopped.',
         'Private headless 60Hz output; physical display presentation and maximum FPS are not measured.']}
@@ -102,7 +114,8 @@ try:
             TALK_FRAMEWORK_SURFACE_LOG=str(prefix.with_suffix('.surface.ndjson')),
             VK_DRIVER_FILES='/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.x86_64.json',
             VK_ICD_FILENAMES='/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.x86_64.json')
-        for key in ('TALK_GPU_FRAME_LOG', 'TALK_FRAMEWORK_FRAME_LOG', 'TALK_FRAMEWORK_DIAGNOSTICS'):
+        for key in ('TALK_GPU_FRAME_LOG', 'TALK_FRAMEWORK_FRAME_LOG', 'TALK_FRAMEWORK_DIAGNOSTICS',
+                'TALK_SKIA_VALIDATE_GL'):
             environment.pop(key, None)
         print(f"[{index}/{len(cases)}] {case['candidate']} {case['scene']} repeat {case['repeat']}", flush=True)
         command = [str(root / 'scripts/run-framework-isolated'),
