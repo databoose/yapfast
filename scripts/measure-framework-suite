@@ -22,6 +22,7 @@ parser.add_argument('--warmup', type=float, default=8)
 parser.add_argument('--seconds', type=float, default=20)
 parser.add_argument('--allow-builders', action='store_true', help='Preflight only; contaminated results are marked')
 parser.add_argument('--dry-run', action='store_true')
+parser.add_argument('--surface-updates', action='store_true', help='Separate opt-in per-surface submissions probe, not presented FPS')
 args = parser.parse_args()
 if args.repeats < 1 or args.warmup < 0 or args.seconds <= 0:
     parser.error('Positive repeats and measurement duration are required.')
@@ -149,10 +150,12 @@ try:
         environment = dict(os.environ, TALK_FRAMEWORK_SCENARIO=scenario,
             TALK_FRAMEWORK_ASSETS=str(root / 'experiments/frameworks/common/assets'),
             VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd))
-        for key in ('TALK_FRAMEWORK_DIAGNOSTICS', 'TALK_FRAMEWORK_FRAME_LOG', 'TOKIO_WORKER_THREADS',
+        for key in ('TALK_FRAMEWORK_DIAGNOSTICS', 'TALK_FRAMEWORK_FRAME_LOG', 'TALK_FRAMEWORK_SURFACE_LOG', 'TOKIO_WORKER_THREADS',
                     'FREYA_RENDERER', 'TALK_WEBVIEW_ACCELERATION'):
             environment.pop(key, None)
         environment.update(overrides)
+        if args.surface_updates:
+            environment['TALK_FRAMEWORK_SURFACE_LOG'] = str(prefix.with_suffix('.surface.ndjson'))
         command = [str(root / 'scripts/run-framework-isolated'),
             '--compositor-log', str(prefix.with_suffix('.weston.log')),
             '--audio', '--alsa-plugins', alsa_plugins, '--',
@@ -175,6 +178,9 @@ try:
         entry['elapsed_seconds'] = time.monotonic() - started
         if entry.get('status') == 'passed':
             entry['renderer_verification'] = renderer_evidence(configuration, prefix)
+            if args.surface_updates:
+                subprocess.run([str(root / 'scripts/summarize-framework-updates'),
+                    str(prefix.with_suffix('.json')), str(prefix.with_suffix('.surface.ndjson'))], check=True, timeout=5)
         status_path.write_text(json.dumps(status, indent=2))
         print('  ' + entry['status'] + f" in {entry['elapsed_seconds']:.1f}s", flush=True)
 finally:

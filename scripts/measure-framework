@@ -159,6 +159,7 @@ def run(args):
                 'scenario': os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
                 'fixture': 'talk-chat-fixture-v1', 'build_mode': 'release',
                 'command': command, 'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
+                'started_monotonic_ns': int(started * 1_000_000_000),
                 'interval_seconds': args.interval, 'summary': summarize(samples),
                 'membership': list(identities.values()),
                 'cpu_accounting': 'Cumulative live process-tree self CPU plus reaped-child CPU, including zombie CPU before wait.',
