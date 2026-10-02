@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+compose() { docker compose -f testing/compose.yaml "$@"; }
+
+case "${1:-up}" in
+  up)
+    compose up -d --wait --wait-timeout 90
+    # Scratch-based authorization images need a host-side health probe.
+    ready=false
+    for attempt in {1..30}; do
+      if curl -fsS --max-time 2 http://localhost:16080/healthz >/dev/null; then
+        ready=true
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$ready" != true ]]; then
+      compose logs --tail 30 authorization >&2
+      exit 1
+    fi
+    echo 'Test stack ready. Matrix http://localhost:18008, authorization http://localhost:16080, LiveKit ws://localhost:17880.'
+    ;;
+  down) compose down ;;
+  reset)
+    # Only deletes this Compose project's disposable test volumes.
+    compose down --volumes
+    exec "$0" up
+    ;;
+  status) compose ps ;;
+  check) python3 testing/check_stack.py ;;
+  logs) compose logs --tail 50 ;;
+  *) echo 'Usage: scripts/test-stack [up|down|reset|status|check|logs]' >&2; exit 2 ;;
+esac

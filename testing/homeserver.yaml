@@ -1,0 +1,52 @@
+# Disposable, local-only test server. Configuration facts follow Synapse's APIs.
+server_name: synapse
+public_baseurl: http://localhost:18008/
+report_stats: false
+pid_file: /data/homeserver.pid
+log_config: /config/log.config
+signing_key_path: /data/signing.key
+media_store_path: /data/media
+trusted_key_servers: []
+suppress_key_server_warning: true
+tls_certificate_path: /certificates/server.crt
+tls_private_key_path: /certificates/server.key
+
+listeners:
+  - port: 8008
+    type: http
+    tls: false
+    bind_addresses: [0.0.0.0]
+    resources:
+      - names: [client, openid]
+  - port: 8448
+    type: http
+    tls: true
+    bind_addresses: [0.0.0.0]
+    resources:
+      - names: [federation, openid]
+
+database:
+  name: sqlite3
+  args:
+    database: /data/homeserver.db
+
+enable_registration: true
+enable_registration_without_verification: true
+registration_shared_secret: talk-local-registration-only
+max_event_delay_duration: 24h
+experimental_features:
+  msc4222_enabled: true
+  msc4354_enabled: true
+rc_registration:
+  per_second: 20
+  burst_count: 100
+rc_login:
+  address:
+    per_second: 20
+    burst_count: 100
+  account:
+    per_second: 20
+    burst_count: 100
+  failed_attempts:
+    per_second: 20
+    burst_count: 100

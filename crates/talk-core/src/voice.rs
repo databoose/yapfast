@@ -1,0 +1,1008 @@
+//! One persistent voice connection, owned by a native thread rather than the UI.
+use std::{collections::HashSet, thread, time::Duration};
+
+use anyhow::{Context, Result, bail, ensure};
+use livekit::{
+    PlatformAudio, PlayoutDeviceId, RecordingDeviceId, RoomEvent,
+    options::TrackPublishOptions,
+    prelude::{LocalAudioTrack, RemoteTrack, TrackSource},
+};
+use matrix_rtc_livekit::{Call, CallOptions};
+use matrix_rtc_media::{CallEvent, MediaStreamKind};
+use matrix_sdk::{
+    Room,
+    ruma::{OwnedRoomId, api::client::state::get_state_event_for_key},
+};
+use tokio::{
+    sync::{mpsc, watch},
+    time::Instant,
+};
+
+use crate::{calls::require_trusted_encrypted_room, session::SessionLease};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    #[default]
+    Disconnected,
+    Joining,
+    Connected,
+    Reconnecting,
+    Leaving,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Participant {
+    pub id: String,
+    pub user: String,
+    pub local: bool,
+    pub muted: bool,
+    pub speaking: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct State {
+    pub phase: Phase,
+    pub room: Option<String>,
+    pub name: String,
+    pub muted: bool,
+    pub deafened: bool,
+    pub participants: Vec<Participant>,
+    pub microphones: Vec<Device>,
+    pub speakers: Vec<Device>,
+    pub microphone: Option<String>,
+    pub speaker: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            phase: Phase::Disconnected,
+            room: None,
+            name: String::new(),
+            muted: true,
+            deafened: false,
+            participants: vec![],
+            microphones: vec![],
+            speakers: vec![],
+            microphone: None,
+            speaker: None,
+            error: None,
+        }
+    }
+}
+
+impl State {
+    pub fn active(&self) -> bool {
+        self.phase != Phase::Disconnected
+    }
+    fn disconnected(&mut self) {
+        self.phase = Phase::Disconnected;
+        self.room = None;
+        self.participants.clear();
+        self.muted = true;
+        self.deafened = false;
+    }
+}
+
+pub enum Command {
+    Join(String),
+    Leave,
+    Mute(bool),
+    Deafen(bool),
+    Devices,
+    Microphone(String),
+    Speaker(String),
+}
+
+/// The session lease holds the SDK store lock until native departure finishes.
+pub struct Controller {
+    commands: Option<mpsc::UnboundedSender<Command>>,
+    pub states: watch::Receiver<State>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Controller {
+    pub(crate) fn start(session: SessionLease) -> Result<Self> {
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let (states, snapshots) = watch::channel(State::default());
+        let worker = thread::Builder::new()
+            .name("talk-voice".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                match runtime {
+                    Ok(runtime) => runtime.block_on(
+                        tokio::task::LocalSet::new().run_until(worker(session, receiver, states)),
+                    ),
+                    Err(_) => {
+                        states.send_modify(|state| {
+                            state.error =
+                                Some("Could not start voice. Restart Talk and try again.".into())
+                        });
+                    }
+                }
+            })
+            .context("could not start voice worker")?;
+        Ok(Self {
+            commands: Some(commands),
+            states: snapshots,
+            thread: Some(worker),
+        })
+    }
+
+    pub fn command(&self, command: Command) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(|sender| sender.send(command).is_ok())
+    }
+
+    pub async fn stop(&mut self) {
+        self.commands.take();
+        if let Some(worker) = self.thread.take() {
+            let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+        }
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.commands.take();
+        // Shutdown is bounded by the join and departure deadlines. Keep the
+        // process alive long enough to leave Matrix and release audio devices.
+        if let Some(worker) = self.thread.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+async fn worker(
+    session: SessionLease,
+    mut commands: mpsc::UnboundedReceiver<Command>,
+    snapshots: watch::Sender<State>,
+) {
+    let mut state = State::default();
+    while let Some(command) = commands.recv().await {
+        match command {
+            Command::Join(id) => {
+                state.error = None;
+                state.room = Some(id.clone());
+                state.name.clear();
+                state.phase = Phase::Joining;
+                state.muted = true;
+                state.deafened = false;
+                snapshots.send_replace(state.clone());
+                match joining(&session, id, &mut state, &mut commands, &snapshots).await {
+                    Ok(Some((call, audio))) => {
+                        if let Err(error) =
+                            connected(call, audio, &mut state, &mut commands, &snapshots).await
+                        {
+                            state.error = Some(error.to_string());
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => state.error = Some(error.to_string()),
+                }
+                state.disconnected();
+            }
+            Command::Devices => match devices(&mut state) {
+                Ok(()) => state.error = None,
+                Err(error) => state.error = Some(error.to_string()),
+            },
+            Command::Microphone(id) => {
+                state.microphone = Some(id);
+            }
+            Command::Speaker(id) => {
+                state.speaker = Some(id);
+            }
+            _ => {}
+        }
+        snapshots.send_replace(state.clone());
+    }
+}
+
+/// Commands remain responsive while signalling and transport connection are
+/// pending. Cancellation is polled through membership cleanup, never dropped.
+async fn joining(
+    session: &SessionLease,
+    id: String,
+    state: &mut State,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    snapshots: &watch::Sender<State>,
+) -> Result<Option<(Call, PlatformAudio)>> {
+    let id = OwnedRoomId::try_from(id)?;
+    let room = session
+        .client
+        .get_room(&id)
+        .context("Join this channel in a Matrix client first.")?;
+    state.name = room
+        .cached_display_name()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| id.to_string());
+    snapshots.send_replace(state.clone());
+    let (cancel, mut cancellation) = watch::channel(false);
+    let result = async {
+        // Before membership exists, cancellation can discard a slow room check.
+        tokio::select! {
+            biased;
+            _ = cancellation.changed() => return Ok(None),
+            result = require_voice_channel(&room) => result?,
+        }
+        let audio = audio()?;
+        let options = call_options(&room)?;
+        let call = Call::join_cancellable(&room, options, cancellation).await
+            .map_err(|_| anyhow::anyhow!("Could not join or finish leaving voice. Check the calling service and connection, then retry."))?;
+        let Some(call) = call else {
+            return Ok(None);
+        };
+        if !call.session().room().e2ee_manager().enabled() {
+            let _ = tokio::time::timeout(Duration::from_secs(10), call.leave()).await;
+            bail!("Voice encryption is unavailable. This connection was refused.");
+        }
+        Ok::<_, anyhow::Error>(Some((call, audio)))
+    };
+    tokio::pin!(result);
+    let deadline = tokio::time::sleep(Duration::from_secs(35));
+    tokio::pin!(deadline);
+    let mut cancelled = false;
+    loop {
+        tokio::select! {
+            biased;
+            command = commands.recv(), if !cancelled => {
+                match command {
+                    None | Some(Command::Leave) => {
+                        cancelled = true;
+                        state.phase = Phase::Leaving;
+                        cancel.send_replace(true);
+                    }
+                    Some(Command::Microphone(id)) => state.microphone = Some(id),
+                    Some(Command::Speaker(id)) => state.speaker = Some(id),
+                    Some(Command::Devices) => { let _ = devices(state); }
+                    _ => {}
+                }
+                snapshots.send_replace(state.clone());
+            }
+            _ = &mut deadline, if !cancelled => {
+                cancelled = true;
+                state.phase = Phase::Leaving;
+                state.error = Some("Voice joining timed out. Check the calling service and retry.".into());
+                cancel.send_replace(true);
+                snapshots.send_replace(state.clone());
+            }
+            result = &mut result => {
+                // A connection may finish in the same turn as Leave. Never
+                // publish Connected for a join the user has cancelled.
+                if cancelled {
+                    return match result {
+                        Ok(Some((call, _audio))) => {
+                            tokio::time::timeout(Duration::from_secs(10), call.leave()).await
+                                .context("Voice departure timed out. Check the connection before retrying.")?
+                                .map_err(|_| anyhow::anyhow!("Could not finish leaving voice. Check the connection before retrying."))?;
+                            Ok(None)
+                        }
+                        other => other,
+                    };
+                }
+                return result;
+            }
+        }
+    }
+}
+
+pub(crate) async fn require_voice_channel(room: &Room) -> Result<()> {
+    ensure!(
+        room.state() == matrix_sdk::RoomState::Joined,
+        "Join this channel in a Matrix client first."
+    );
+    ensure!(room.is_call(), "Select a voice channel to join voice.");
+    require_trusted_encrypted_room(room).await?;
+    // Read authoritative slot content before joining. An encrypted Matrix room
+    // alone does not require the RTC slot to encrypt its media.
+    let slot = room
+        .client()
+        .send(get_state_event_for_key::v3::Request::new(
+            room.room_id().to_owned(),
+            "m.rtc.slot".into(),
+            "m.call#ROOM".into(),
+        ))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("This voice channel has no available call. Ask its owner to set it up.")
+        })?;
+    let content: serde_json::Value = serde_json::from_str(slot.event_or_content.get())?;
+    ensure!(
+        content
+            .get("encryption")
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.as_str())
+            == Some("m.per_member"),
+        "This voice channel does not require encrypted audio. Ask its owner to enable it."
+    );
+    Ok(())
+}
+
+fn call_options(room: &Room) -> Result<CallOptions> {
+    let configured = std::env::var("TALK_RTC_AUTHORIZATION_URL").ok();
+    let fallback = configured.or_else(|| {
+        (room.client().homeserver().as_str() == "http://localhost:18008/")
+            .then(|| "http://localhost:16080".into())
+    });
+    if let Some(url) = &fallback {
+        let url = url::Url::parse(url)
+            .context("Invalid calling-service URL. Check Talk's configuration.")?;
+        let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        ensure!(
+            url.scheme() == "https" || (url.scheme() == "http" && local),
+            "The calling-service URL needs HTTPS."
+        );
+        ensure!(
+            url.username().is_empty() && url.password().is_none(),
+            "The calling-service URL must not contain credentials."
+        );
+    }
+    Ok(CallOptions {
+        livekit_service_url_fallback: fallback,
+        sticky_duration_ms: Some(300_000),
+        ..Default::default()
+    })
+}
+
+fn devices(state: &mut State) -> Result<()> {
+    let audio = audio()?;
+    collect_devices(&audio, state);
+    Ok(())
+}
+
+fn audio() -> Result<PlatformAudio> {
+    PlatformAudio::new().map_err(|_| {
+        anyhow::anyhow!(
+            "Audio devices are unavailable. Check your system's audio service and permissions."
+        )
+    })
+}
+
+fn collect_devices(audio: &PlatformAudio, state: &mut State) {
+    state.microphones = audio
+        .recording_devices()
+        .map(|device| Device {
+            id: device.id.as_str().into(),
+            name: device.name,
+        })
+        .collect();
+    state.speakers = audio
+        .playout_devices()
+        .map(|device| Device {
+            id: device.id.as_str().into(),
+            name: device.name,
+        })
+        .collect();
+}
+
+async fn connected(
+    mut call: Call,
+    audio: PlatformAudio,
+    state: &mut State,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    snapshots: &watch::Sender<State>,
+) -> Result<()> {
+    let result = async {
+        collect_devices(&audio, state);
+        ensure!(!state.speakers.is_empty(), "No speakers found. Connect an audio output and retry.");
+        if let Some(id) = &state.microphone { audio.set_recording_device(&RecordingDeviceId::from_unchecked_guid(id)).context("Selected microphone is unavailable. Choose another device.")?; }
+        if let Some(id) = &state.speaker { audio.set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id)).context("Selected speakers are unavailable. Choose another device.")?; }
+        let mut microphone: Option<LocalAudioTrack> = None;
+        let mut roster = call.subscribe_participants();
+        let mut events = call.subscribe_call_events();
+        let mut speaking = HashSet::new();
+        let mut encryption_fault = false;
+        let mut reconnect_deadline = None;
+        state.phase = Phase::Connected;
+        loop {
+            state.participants = roster.borrow_and_update().iter().map(|person| Participant {
+                id: person.member_id.clone(), user: person.user_id.clone(), local: person.is_local,
+                muted: if person.is_local { state.muted } else { person.streams.iter().filter(|stream| stream.kind == MediaStreamKind::Microphone).all(|stream| stream.muted) },
+                speaking: speaking.contains(&person.member_id),
+            }).collect();
+            state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));
+            snapshots.send_replace(state.clone());
+            tokio::select! {
+                command = commands.recv() => match command {
+                    None | Some(Command::Leave) => break,
+                    Some(Command::Join(_)) => state.error = Some("Leave your current voice channel before joining another.".into()),
+                    Some(Command::Mute(muted)) => {
+                        let result = set_muted(&call, &audio, &mut microphone, muted || state.deafened).await;
+                        match result { Ok(()) => { state.muted = muted || state.deafened; state.error = None; }, Err(error) => { state.muted = true; state.error = Some(error.to_string()); } }
+                    }
+                    Some(Command::Deafen(deafened)) => {
+                        if deafened {
+                            set_muted(&call, &audio, &mut microphone, true).await?;
+                            state.muted = true;
+                        }
+                        state.deafened = deafened;
+                        for person in call.session().room().remote_participants().values() {
+                            for publication in person.track_publications().values() {
+                                if let Some(RemoteTrack::Audio(track)) = publication.track() {
+                                    if deafened { track.disable(); } else { track.enable(); }
+                                }
+                            }
+                        }
+                    }
+                    Some(Command::Devices) => collect_devices(&audio, state),
+                    Some(Command::Microphone(id)) => {
+                        match audio.switch_recording_device(&RecordingDeviceId::from_unchecked_guid(&id)) {
+                            Ok(()) => { state.microphone = Some(id); state.error = None; },
+                            Err(_) => {
+                                set_muted(&call, &audio, &mut microphone, true).await?;
+                                state.muted = true;
+                                state.error = Some("Could not switch microphone. Refresh devices and choose another.".into());
+                            }
+                        }
+                    }
+                    Some(Command::Speaker(id)) => {
+                        match audio.switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&id)) {
+                            Ok(()) => { state.speaker = Some(id); state.error = None; },
+                            Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
+                        }
+                    }
+                },
+                changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
+                event = events.recv() => match event {
+                    Ok(CallEvent::ActiveSpeakers { speakers }) => speaking = speakers.into_iter().map(|speaker| speaker.member_id).collect(),
+                    Ok(CallEvent::MediaConnectionState { degraded }) => {
+                        state.phase = if degraded { Phase::Reconnecting } else { Phase::Connected };
+                        if degraded { reconnect_deadline.get_or_insert(Instant::now() + Duration::from_secs(60)); } else { reconnect_deadline = None; }
+                    }
+                    Ok(CallEvent::Ended { .. }) => bail!("Voice disconnected. Check your connection and join again."),
+                    Ok(CallEvent::FrameEncryptionState { state: encryption, .. }) if encryption.is_failure() => {
+                        set_muted(&call, &audio, &mut microphone, true).await?;
+                        state.muted = true;
+                        encryption_fault = true;
+                        state.error = Some("Audio encryption failed. Your microphone is muted. Check device verification or rejoin.".into());
+                    }
+                    Ok(CallEvent::FrameEncryptionState { .. }) if encryption_fault => {
+                        encryption_fault = false;
+                        state.error = None;
+                    }
+                    Ok(CallEvent::KeyDiscarded { .. }) => state.error = Some("A participant's audio key was refused. They may need to verify their device.".into()),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("Voice ended. Join again to reconnect."),
+                    _ => {}
+                },
+                event = call.events().recv() => match event {
+                    Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), .. }) => {
+                        if state.deafened { track.disable(); }
+                    },
+                    Some(RoomEvent::Disconnected { .. }) | None => bail!("Voice disconnected. Check your connection and join again."),
+                    _ => {}
+                },
+                _ = reconnect_timeout(reconnect_deadline) => bail!("Voice could not reconnect within 60 seconds. Join again when your connection returns."),
+            }
+        }
+        if let Some(track) = microphone.take() {
+            track.mute();
+            if audio.is_recording_initialized() { let _ = audio.stop_recording(); }
+        }
+        Ok(())
+    }.await;
+    state.phase = Phase::Leaving;
+    snapshots.send_replace(state.clone());
+    let departure = tokio::time::timeout(Duration::from_secs(10), call.leave()).await;
+    if result.is_ok() && !matches!(departure, Ok(Ok(()))) {
+        bail!(
+            "Audio stopped, but departure could not be confirmed. Channel membership will expire."
+        );
+    }
+    result
+}
+
+async fn reconnect_timeout(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn set_muted(
+    call: &Call,
+    audio: &PlatformAudio,
+    microphone: &mut Option<LocalAudioTrack>,
+    muted: bool,
+) -> Result<()> {
+    if muted {
+        if let Some(track) = microphone.as_ref() {
+            track.mute();
+            if audio.is_recording_initialized() {
+                audio.stop_recording().context(
+                    "Could not stop microphone capture. Leave voice to release the device.",
+                )?;
+            }
+        }
+    } else {
+        ensure!(
+            audio.recording_devices().next().is_some(),
+            "No microphone found. Connect a microphone and refresh devices."
+        );
+        if let Some(track) = microphone.as_ref() {
+            audio.start_recording().context(
+                "Could not start your microphone. Check permissions or choose another device.",
+            )?;
+            track.unmute();
+        } else {
+            let track = LocalAudioTrack::create_audio_track("Talk microphone", audio.rtc_source());
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                call.publish_audio_track(
+                    track.clone(),
+                    TrackPublishOptions {
+                        source: TrackSource::Microphone,
+                        ..Default::default()
+                    },
+                ),
+            )
+            .await;
+            match result {
+                Ok(Ok(_)) => {
+                    *microphone = Some(track);
+                    if audio.start_recording().is_err() {
+                        if let Some(track) = microphone.as_ref() {
+                            track.mute();
+                        }
+                        let _ = audio.stop_recording();
+                        bail!(
+                            "Could not start your microphone. Check permissions or choose another device."
+                        );
+                    }
+                }
+                _ => {
+                    track.mute();
+                    let _ = audio.stop_recording();
+                    bail!(
+                        "Could not publish your microphone. Check permissions and connection, then retry."
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::session::Session;
+
+    async fn wait(controller: &mut Controller, matches: impl Fn(&State) -> bool) -> State {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                let state = controller.states.borrow_and_update().clone();
+                if matches(&state) {
+                    return state;
+                }
+                assert!(state.error.is_none(), "voice error: {:?}", state.error);
+                controller
+                    .states
+                    .changed()
+                    .await
+                    .expect("voice worker stopped");
+            }
+        })
+        .await
+        .expect("voice state deadline exceeded")
+    }
+
+    async fn output_energy() -> f64 {
+        let output = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("timeout")
+                .args([
+                    "3s",
+                    "parec",
+                    "--device=talk_test_output.monitor",
+                    "--format=s16le",
+                    "--rate=48000",
+                    "--channels=1",
+                    "--latency-msec=50",
+                ])
+                .output()
+                .expect("parec must be available")
+        })
+        .await
+        .unwrap();
+        let samples: Vec<_> = output
+            .stdout
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f64)
+            .collect();
+        assert!(
+            samples.len() > 48_000,
+            "virtual speaker monitor produced too few samples"
+        );
+        let (real, imaginary) =
+            samples
+                .iter()
+                .enumerate()
+                .fold((0.0, 0.0), |(real, imaginary), (i, value)| {
+                    let phase = std::f64::consts::TAU * 440.0 * i as f64 / 48_000.0;
+                    (real + value * phase.cos(), imaginary + value * phase.sin())
+                });
+        real.hypot(imaginary) * 2.0 / samples.len() as f64
+    }
+
+    async fn virtual_devices(controller: &mut Controller) {
+        let state = controller.states.borrow().clone();
+        let microphone = state
+            .microphones
+            .iter()
+            .find(|device| device.name.contains("Talk_test_microphone"))
+            .expect("run scripts/test-voice to create the virtual microphone")
+            .id
+            .clone();
+        let speaker = state
+            .speakers
+            .iter()
+            .find(|device| device.name.contains("Talk_test_speakers"))
+            .expect("run scripts/test-voice to create virtual speakers")
+            .id
+            .clone();
+        controller.command(Command::Microphone(microphone.clone()));
+        controller.command(Command::Speaker(speaker.clone()));
+        wait(controller, |state| {
+            state.microphone.as_ref() == Some(&microphone)
+                && state.speaker.as_ref() == Some(&speaker)
+        })
+        .await;
+    }
+
+    struct ReceiverProcess(std::process::Child);
+
+    impl Drop for ReceiverProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    async fn receiver_ack(root: &std::path::Path, command: &str) {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                if std::fs::read_to_string(root.join("receiver-ack"))
+                    .ok()
+                    .as_deref()
+                    == Some(command)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("receiver did not acknowledge command");
+    }
+
+    async fn receiver_command(root: &std::path::Path, command: &str) {
+        std::fs::write(root.join("receiver-command"), command).unwrap();
+        receiver_ack(root, command).await;
+    }
+
+    #[test]
+    #[ignore = "requires the deployed beta and its saved Alice session; joins muted without recording"]
+    fn remote_beta_join_muted_and_leave() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let root = crate::test_data_directory().join("beta");
+            let rooms: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let alice = Session::restore(root.join("alice")).await.unwrap();
+            assert_eq!(
+                alice.client.homeserver().as_str(),
+                "https://matrix.org/"
+            );
+            let sync = alice.start_sync().await.unwrap();
+            sync.wait_until_ready().await.unwrap();
+            assert!(alice.device_is_trusted().await.unwrap());
+            let mut controller = Controller::start(alice.lease()).unwrap();
+            assert!(controller.command(Command::Join(
+                rooms["voice"].as_str().unwrap().into()
+            )));
+            let connected = wait(&mut controller, |state| state.phase == Phase::Connected).await;
+            assert!(connected.muted);
+            assert_eq!(connected.participants.len(), 1);
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let waiting = controller.states.borrow().clone();
+            assert_eq!(waiting.phase, Phase::Connected);
+            assert!(waiting.muted && waiting.error.is_none());
+            controller.command(Command::Leave);
+            let departed = wait(&mut controller, |state| state.phase == Phase::Disconnected).await;
+            assert!(departed.error.is_none());
+            controller.stop().await;
+            sync.stop().await;
+            println!("PASS: native encrypted voice joined muted through public discovery, waited alone for 10 seconds and left cleanly. No microphone was published.");
+        });
+    }
+
+    #[test]
+    #[ignore = "child process of the slow-authorization cancellation test"]
+    fn cancel_pending_join() {
+        let root = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_VOICE_ROOT").expect("test harness only"),
+        );
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let bob = Session::restore(root.join("bob")).await.unwrap();
+            let sync = bob.start_sync().await.unwrap();
+            sync.wait_until_ready().await.unwrap();
+            let mut controller = Controller::start(bob.lease()).unwrap();
+            controller.command(Command::Join(manifest["voice"].as_str().unwrap().into()));
+            wait(&mut controller, |state| state.phase == Phase::Joining).await;
+            tokio::time::timeout(Duration::from_secs(25), async {
+                while std::fs::read_to_string(root.join("receiver-command"))
+                    .ok()
+                    .as_deref()
+                    != Some("cancel")
+                {
+                    assert_eq!(controller.states.borrow().phase, Phase::Joining);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let start = Instant::now();
+            controller.command(Command::Leave);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let state = controller.states.borrow_and_update().clone();
+                    assert_ne!(
+                        state.phase,
+                        Phase::Connected,
+                        "cancelled join became connected"
+                    );
+                    assert!(
+                        state.error.is_none(),
+                        "cancellation error: {:?}",
+                        state.error
+                    );
+                    if state.phase == Phase::Disconnected {
+                        break;
+                    }
+                    controller.states.changed().await.unwrap();
+                }
+            })
+            .await
+            .expect("Leave waited for stalled authorization");
+            std::fs::write(
+                root.join("cancel-milliseconds"),
+                start.elapsed().as_millis().to_string(),
+            )
+            .unwrap();
+            controller.stop().await;
+            sync.stop().await;
+            std::fs::write(root.join("receiver-ack"), "cancel").unwrap();
+        });
+    }
+
+    #[test]
+    #[ignore = "child process of the virtual-device integration test"]
+    fn native_receiver() {
+        let root = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_VOICE_ROOT").expect("test harness only"),
+        );
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let bob = Session::restore(root.join("bob")).await.unwrap();
+            let sync = bob.start_sync().await.unwrap();
+            sync.wait_until_ready().await.unwrap();
+            let mut controller = Controller::start(bob.lease()).unwrap();
+            controller.command(Command::Join(manifest["voice"].as_str().unwrap().into()));
+            let state = wait(&mut controller, |state| {
+                state.phase == Phase::Connected && state.participants.len() == 2
+            })
+            .await;
+            assert!(state.muted);
+            virtual_devices(&mut controller).await;
+            std::fs::write(root.join("receiver-ack"), "ready").unwrap();
+            let mut previous = String::new();
+            tokio::time::timeout(Duration::from_secs(90), async {
+                loop {
+                    let command =
+                        std::fs::read_to_string(root.join("receiver-command")).unwrap_or_default();
+                    if command != previous {
+                        match command.as_str() {
+                            "deafen" => {
+                                controller.command(Command::Deafen(true));
+                                wait(&mut controller, |state| state.deafened && state.muted).await;
+                            }
+                            "undeafen" => {
+                                controller.command(Command::Deafen(false));
+                                let state = wait(&mut controller, |state| !state.deafened).await;
+                                assert!(state.muted);
+                            }
+                            "unmute" => {
+                                controller.command(Command::Mute(false));
+                                wait(&mut controller, |state| !state.muted).await;
+                            }
+                            "mute" => {
+                                controller.command(Command::Mute(true));
+                                wait(&mut controller, |state| state.muted).await;
+                            }
+                            "leave" => {
+                                controller.command(Command::Leave);
+                                wait(&mut controller, |state| state.phase == Phase::Disconnected)
+                                    .await;
+                                std::fs::write(root.join("receiver-ack"), "leave").unwrap();
+                                break;
+                            }
+                            "" => {}
+                            _ => panic!("unknown receiver command"),
+                        }
+                        if !command.is_empty() {
+                            std::fs::write(root.join("receiver-ack"), &command).unwrap();
+                        }
+                        previous = command;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("receiver harness deadline exceeded");
+            controller.stop().await;
+            sync.stop().await;
+        });
+    }
+
+    #[test]
+    #[ignore = "requires scripts/test-voice and scripts/test-stack up; uses virtual audio only"]
+    fn persistent_encrypted_voice_and_native_audio() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let root = crate::voice_demo::provision().await.unwrap();
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let voice_id = manifest["voice"].as_str().unwrap().to_string();
+            let text_id = manifest["text"].as_str().unwrap();
+            let alice = Session::restore(root.join("alice")).await.unwrap();
+            assert!(
+                require_voice_channel(
+                    &alice
+                        .client
+                        .get_room(&OwnedRoomId::try_from(text_id).unwrap())
+                        .unwrap()
+                )
+                .await
+                .is_err()
+            );
+            let mut plain = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
+            plain.creation_content = Some(
+                matrix_sdk::ruma::serde::Raw::from_json_string(
+                    serde_json::json!({"type":"org.matrix.msc3417.call"}).to_string(),
+                )
+                .unwrap(),
+            );
+            let plain = alice.client.create_room(plain).await.unwrap();
+            assert!(require_voice_channel(&plain).await.is_err());
+            // Even an encrypted room must have an encrypted RTC slot.
+            let voice_room = alice
+                .client
+                .get_room(&OwnedRoomId::try_from(voice_id.clone()).unwrap())
+                .unwrap();
+            matrix_rtc_livekit::open_slot(&alice.client, &voice_id, "m.call#ROOM", "m.call", None)
+                .await
+                .unwrap();
+            assert!(require_voice_channel(&voice_room).await.is_err());
+            matrix_rtc_livekit::open_slot(
+                &alice.client,
+                &voice_id,
+                "m.call#ROOM",
+                "m.call",
+                Some(matrix_rtc_core::SlotEncryption {
+                    encryption_type: "m.per_member".into(),
+                    extra: Default::default(),
+                }),
+            )
+            .await
+            .unwrap();
+            let alice_sync = alice.start_sync().await.unwrap();
+            alice_sync.wait_until_ready().await.unwrap();
+            let mut first = Controller::start(alice.lease()).unwrap();
+            first.command(Command::Join(voice_id.clone()));
+            let state = wait(&mut first, |state| {
+                state.phase == Phase::Connected && state.participants.len() == 1
+            })
+            .await;
+            assert!(state.muted);
+            virtual_devices(&mut first).await;
+            // Hold authorization open after Bob publishes membership. Leave
+            // must cancel that request and remove Bob before a fresh join.
+            let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", stalled.local_addr().unwrap());
+            let mut cancelling = ReceiverProcess(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "voice::tests::cancel_pending_join", "--ignored", "--nocapture"])
+                .env("TALK_TEST_VOICE_ROOT", &root).env("TALK_RTC_AUTHORIZATION_URL", url).spawn().unwrap());
+            let (pending_request, _) = tokio::time::timeout(Duration::from_secs(25), stalled.accept()).await.unwrap().unwrap();
+            wait(&mut first, |state| state.participants.len() == 2).await;
+            receiver_command(&root, "cancel").await;
+            assert!(cancelling.0.wait().unwrap().success());
+            wait(&mut first, |state| state.participants.len() == 1).await;
+            drop(pending_request);
+            let cancel_milliseconds: u64 = std::fs::read_to_string(root.join("cancel-milliseconds")).unwrap().parse().unwrap();
+            std::fs::remove_file(root.join("receiver-command")).unwrap();
+            std::fs::remove_file(root.join("receiver-ack")).unwrap();
+            // Longer than a heartbeat; there is no timeout based on being alone.
+            let wait_alone = if std::env::var("TALK_TEST_FAST").as_deref() == Ok("1") { 1 } else { 30 };
+            tokio::time::sleep(Duration::from_secs(wait_alone)).await;
+            assert_eq!(first.states.borrow().phase, Phase::Connected);
+            assert_eq!(first.states.borrow().participants.len(), 1);
+            // Each client needs its own process: LiveKit shares an ADM within
+            // one process, unlike two friends running Talk on separate machines.
+            let mut receiver = ReceiverProcess(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "voice::tests::native_receiver", "--ignored", "--nocapture"])
+                .env("TALK_TEST_VOICE_ROOT", &root).spawn().unwrap());
+            receiver_ack(&root, "ready").await;
+            wait(&mut first, |state| state.participants.len() == 2).await;
+            first.command(Command::Mute(false));
+            wait(&mut first, |state| !state.muted).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let signal = output_energy().await;
+            assert!(
+                signal > 50.0,
+                "native encrypted microphone did not reach virtual speakers: {signal}"
+            );
+            receiver_command(&root, "deafen").await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let deafened = output_energy().await;
+            assert!(
+                deafened < signal * 0.05,
+                "deafen did not silence output: {deafened} vs {signal}"
+            );
+            receiver_command(&root, "undeafen").await;
+            assert!(output_energy().await > signal * 0.25);
+            first.command(Command::Mute(true));
+            wait(&mut first, |state| state.muted).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert!(
+                output_energy().await < signal * 0.05,
+                "mute did not silence captured audio"
+            );
+            receiver_command(&root, "unmute").await;
+            let reverse = output_energy().await;
+            assert!(reverse > 50.0, "reverse native audio did not reach speakers: {reverse}");
+            receiver_command(&root, "mute").await;
+            receiver_command(&root, "leave").await;
+            assert!(receiver.0.wait().unwrap().success());
+            wait(&mut first, |state| state.participants.len() == 1).await;
+            assert_eq!(first.states.borrow().phase, Phase::Connected);
+            first.command(Command::Leave);
+            wait(&mut first, |state| state.phase == Phase::Disconnected).await;
+            first.stop().await;
+            alice_sync.stop().await;
+            std::fs::write(
+                root.join("voice-result.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "virtual_devices":true, "physical_hardware":false, "wait_alone_seconds":wait_alone,
+                    "cancel_stalled_join_milliseconds":cancel_milliseconds, "cancelled_membership_removed":true,
+                    "joined_muted":true, "late_join":true, "native_encrypted_audio":true,
+                    "received_440hz_amplitude":signal, "reverse_440hz_amplitude":reverse, "deafened_amplitude":deafened,
+                    "mute":true, "deafen":true, "clean_leave":true
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            println!(
+                "Voice controller and native virtual-device audio passed; report {}",
+                root.join("voice-result.json").display()
+            );
+        });
+    }
+}

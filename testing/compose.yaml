@@ -1,0 +1,77 @@
+name: talk-test
+
+services:
+  certificates:
+    image: alpine/openssl@sha256:86cfeb7413d9a121789d56829b204f0391123ac68d1a97601e4e6374654218f9
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        if [ ! -f /certificates/server.key ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+            -keyout /certificates/server.key -out /certificates/server.crt \
+            -subj /CN=synapse -addext subjectAltName=DNS:synapse
+        fi
+    volumes:
+      - certificates:/certificates
+
+  synapse:
+    image: ghcr.io/element-hq/synapse@sha256:416549f758d394f9600a9e34b9e4d5fb4b763ec83ce86efe57304e362a3b20b5
+    environment:
+      SYNAPSE_CONFIG_PATH: /config/homeserver.yaml
+      UID: "0"
+      GID: "0"
+    volumes:
+      - ./homeserver.yaml:/config/homeserver.yaml:ro
+      - ./log.config:/config/log.config:ro
+      - synapse:/data
+      - certificates:/certificates:ro
+    ports:
+      - 127.0.0.1:18008:8008
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8008/health]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  livekit:
+    image: livekit/livekit-server@sha256:9c0ced1211232fc995c7aafa4a979038814621fe930be42d44c94731759081db
+    command: --config /config/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/config/livekit.yaml:ro
+    ports:
+      - 127.0.0.1:17880:17880/tcp
+      - 127.0.0.1:17881:17881/tcp
+      - 127.0.0.1:16080:6080/tcp
+      - 127.0.0.1:50100-50120:50100-50120/udp
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:17880/]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  authorization:
+    image: ghcr.io/element-hq/lk-jwt-service@sha256:cbbbe3ace3be31b9c83b46a85e0a6577ae68894b3f5ff0c5e991d93a86a7686a
+    # The service's SFU URL must resolve both from the host and the container.
+    network_mode: service:livekit
+    environment:
+      LIVEKIT_JWT_BIND: :6080
+      LIVEKIT_URL: ws://localhost:17880
+      LIVEKIT_KEY: talk-test
+      LIVEKIT_SECRET: talk-test-secret-do-not-deploy
+      LIVEKIT_FULL_ACCESS_HOMESERVERS: synapse
+      LIVEKIT_INSECURE_SKIP_VERIFY_TLS: YES_I_KNOW_WHAT_I_AM_DOING
+      LIVEKIT_LOG_LEVEL: warn
+    depends_on:
+      synapse:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+
+volumes:
+  synapse:
+  certificates:

@@ -1,0 +1,28 @@
+[package]
+name = "talk-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+directories.workspace = true
+futures-util.workspace = true
+keyring.workspace = true
+livekit.workspace = true
+matrix-sdk.workspace = true
+matrix-sdk-ui.workspace = true
+matrix-sdk-crypto.workspace = true
+matrix-rtc-livekit.workspace = true
+matrix-rtc-core.workspace = true
+matrix-rtc-media.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+url.workspace = true
