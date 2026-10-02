@@ -15,8 +15,9 @@ root = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--artifacts-root', type=Path, required=True, help='Checkout containing target and .local/framework-targets')
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--config', action='append', help='Repeat to select configurations; default all twelve')
-parser.add_argument('--scenario', action='append', choices=['chat', 'images', 'media', 'gif', 'input'], help='Default chat')
+parser.add_argument('--config', action='append', help='Repeat to select configurations; default all available')
+parser.add_argument('--scenario', action='append', choices=['chat', 'images', 'media', 'gif', 'input', 'gpu-scroll', 'gpu-grid'], help='Default chat')
+parser.add_argument('--gpu-grid-items', type=int, default=4096, help='Rounded cells for the matched animated grid')
 parser.add_argument('--repeats', type=int, default=3)
 parser.add_argument('--warmup', type=float, default=8)
 parser.add_argument('--seconds', type=float, default=20)
@@ -26,10 +27,13 @@ parser.add_argument('--surface-updates', action='store_true', help='Separate opt
 args = parser.parse_args()
 if args.repeats < 1 or args.warmup < 0 or args.seconds <= 0:
     parser.error('Positive repeats and measurement duration are required.')
+if not 1 <= args.gpu_grid_items <= 6976:
+    parser.error('Use 1..6976 cells for the matched animated grid.')
 artifacts = args.artifacts_root.resolve()
 targets = artifacts / '.local/framework-targets'
 configurations = {
     'gpui-gpu': ('gpui', artifacts / 'target/release/talk-trial-gpui', {}),
+    'slint-skia-cpu': ('slint', targets / 'slint-iced/variants/slint-skia-software', {}),
     'slint-cpu': ('slint', targets / 'slint-iced/variants/slint-software', {}),
     'slint-gpu': ('slint', targets / 'slint-iced/variants/slint-gpu', {}),
     'iced-cpu': ('iced', targets / 'slint-iced/variants/iced-software', {}),
@@ -46,6 +50,8 @@ selected = args.config or list(configurations)
 if set(selected) - configurations.keys():
     parser.error('Unknown configurations: ' + ', '.join(set(selected) - configurations.keys()))
 scenarios = args.scenario or ['chat']
+if {'gpu-scroll', 'gpu-grid'} & set(scenarios) and set(selected) - {'slint-cpu', 'slint-skia-cpu'}:
+    parser.error('Matched animated scenes require the Slint CPU variants from this branch; use the dedicated GPU suite for GPU comparisons.')
 # Fixed random seed makes the interleaved run order reviewable and repeatable.
 cases = []
 generator = random.Random(20261002)
@@ -74,6 +80,8 @@ status = {'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     'source_dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root)),
     'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
     'compiler_activity_allowed': args.allow_builders, 'cases': []}
+binary_hashes = {configuration: hashlib.sha256(configurations[configuration][1].read_bytes()).hexdigest()
+    for configuration in selected if configurations[configuration][1].is_file()}
 status_path = args.output / 'suite.json'
 active = None
 
@@ -108,6 +116,7 @@ def renderer_evidence(configuration, prefix):
     expected = {
         'gpui-gpu': ['is_software_emulated: false', 'NVIDIA GeForce'],
         'slint-cpu': ['selected=winit-software'],
+        'slint-skia-cpu': ['selected=winit-skia-software'],
         'slint-gpu': ['selected=winit-femtovg', 'vendor=NVIDIA'],
         'iced-cpu': ['backend=tiny-skia adapter=CPU'],
         'iced-gpu': ['backend=Vulkan adapter=NVIDIA GeForce'],
@@ -119,13 +128,17 @@ def renderer_evidence(configuration, prefix):
         'dioxus-webkit-never': ['webkit_hardware_acceleration_policy=Never requested=never'],
         'dioxus-webkit-always': ['webkit_hardware_acceleration_policy=Always requested=always'],
     }[configuration]
+    if report['scenario'] in ('gpu-scroll', 'gpu-grid'):
+        items = args.gpu_grid_items if report['scenario'] == 'gpu-grid' else 80
+        expected.append(f"READY gpu_scene={report['scenario']} items={items} ")
     gpu_allocation = report['summary']['nvidia_framebuffer_mib']['peak']
     matches = all(fragment in log for fragment in expected)
     gpu_required = configuration in ('gpui-gpu', 'slint-gpu', 'iced-gpu',
         'freya-opengl', 'freya-vulkan', 'dioxus-native-gpu')
     return {'expected_log_fragments': expected, 'log_lines': evidence,
         'nvidia_framebuffer_peak_mib': gpu_allocation,
-        'verified': matches and (not gpu_required or gpu_allocation > 0),
+        'verified': matches and (not gpu_required or gpu_allocation > 0)
+            and (configuration not in ('slint-cpu', 'slint-skia-cpu') or gpu_allocation == 0),
         'limits': 'Native reports its exclusive compiled renderer; vendor allocation confirms GPU use but its adapter name is not logged. WebKit policy readback does not measure hardware-composited frame rate.'}
 
 try:
@@ -138,6 +151,7 @@ try:
         entry = {'configuration': configuration, 'scenario': scenario, 'repeat': repeat,
             'binary': str(binary), 'output': prefix.with_suffix('.json').name,
             'compiler_pids_at_start': builders, 'host_load_at_start': list(os.getloadavg()),
+            'scene_items': args.gpu_grid_items if scenario == 'gpu-grid' else 80 if scenario == 'gpu-scroll' else None,
             'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
         status['cases'].append(entry)
         status_path.write_text(json.dumps(status, indent=2))
@@ -147,11 +161,14 @@ try:
             status_path.write_text(json.dumps(status, indent=2))
             continue
         entry['binary_sha256'] = hashlib.sha256(binary.read_bytes()).hexdigest()
+        if entry['binary_sha256'] != binary_hashes[configuration]:
+            raise SystemExit('Binary changed during the suite: ' + str(binary))
         environment = dict(os.environ, TALK_FRAMEWORK_SCENARIO=scenario,
             TALK_FRAMEWORK_ASSETS=str(root / 'experiments/frameworks/common/assets'),
+            TALK_GPU_ITEMS=str(args.gpu_grid_items),
             VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd))
         for key in ('TALK_FRAMEWORK_DIAGNOSTICS', 'TALK_FRAMEWORK_FRAME_LOG', 'TALK_FRAMEWORK_SURFACE_LOG', 'TOKIO_WORKER_THREADS',
-                    'FREYA_RENDERER', 'TALK_WEBVIEW_ACCELERATION'):
+                    'FREYA_RENDERER', 'TALK_WEBVIEW_ACCELERATION', 'TALK_GPU_FRAME_LOG', 'TALK_SKIA_VALIDATE_GL'):
             environment.pop(key, None)
         environment.update(overrides)
         if args.surface_updates:
@@ -176,6 +193,8 @@ try:
                 active.wait(timeout=20)
             active = None
         entry['elapsed_seconds'] = time.monotonic() - started
+        if hashlib.sha256(binary.read_bytes()).hexdigest() != entry['binary_sha256']:
+            raise SystemExit('Binary changed during a case: ' + str(binary))
         if entry.get('status') == 'passed':
             entry['renderer_verification'] = renderer_evidence(configuration, prefix)
             if args.surface_updates:
@@ -193,5 +212,7 @@ finally:
             active.wait(timeout=5)
     status_path.write_text(json.dumps(status, indent=2))
 failed = [case for case in status['cases'] if case.get('status') != 'passed']
+unverified = [case for case in status['cases'] if case.get('status') == 'passed'
+    and not case['renderer_verification']['verified']]
 print(f'Completed {len(status["cases"])} cases; {len(failed)} failures. {status_path}', flush=True)
-raise SystemExit(bool(failed))
+raise SystemExit(bool(failed or unverified))

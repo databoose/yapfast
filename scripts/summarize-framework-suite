@@ -31,6 +31,24 @@ def summarize(directory):
                 'sampled_peak': max(report['summary'][metric]['peak'] for _, report in runs)}
         row['cpu_accounting_warning_count'] = sum(
             len(report['cpu_accounting_warnings']) for _, report in runs)
+        if scenario in ('gpu-scroll', 'gpu-grid') and any('wayland_updates' not in report for _, report in runs):
+            raise ValueError('Animated scenes require the surface submission probe: ' + scenario)
+        if all('wayland_updates' in report for _, report in runs):
+            rates, peak_gaps = [], []
+            for case, report in runs:
+                main = [surface for surface in report['wayland_updates']['surfaces']
+                    if surface['surface_id'] == surface['main_surface_id']
+                    and surface['max_current_width'] >= 1000
+                    and surface['max_current_height'] >= 700]
+                if len(main) > 1 or (scenario in ('gpu-scroll', 'gpu-grid') and len(main) != 1):
+                    raise ValueError('Expected one owned animated main window: ' + case['output'])
+                rates.append(main[0]['submissions_per_second'] if main else 0)
+                if main and main[0]['submission_gap_ms_peak'] is not None:
+                    peak_gaps.append(main[0]['submission_gap_ms_peak'])
+            row['main_window_submissions_per_second'] = {
+                'median': statistics.median(rates), 'min': min(rates), 'max': max(rates)}
+            row['main_window_submission_gap_ms_peak'] = max(peak_gaps) if peak_gaps else None
+            row['presented_fps_measured'] = False
         rows.append(row)
     return rows, failures
 
