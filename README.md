@@ -1,11 +1,11 @@
 # Talk
 
-A native Rust and GPUI client for Matrix chat and persistent voice channels.
+A native Rust and Slint client for Matrix chat and persistent voice channels.
 The [product scope](PRODUCT.md) and [implementation plan](docs/implementation-plan.md)
 describe the private beta.
 
 The [application architecture](docs/architecture.md) separates the reusable
-`talk-core` library from the GPUI client. Other native UIs can share sessions,
+`talk-core` library from the Slint client. Other native UIs can share sessions,
 chat and voice behavior, drafts, navigation and the local preview.
 
 The [UI framework comparison plan](docs/framework-comparison-plan.md) covers
@@ -18,6 +18,15 @@ message history, device recovery and encrypted text sending. Voice channels have
 join, leave, mute, deafen, participants and native audio device controls. Voice
 stays connected while you browse messages. A local preview lets you try the
 controls without an account or audio access.
+
+Skia GPU is the default renderer. To use the optional Skia Software mode:
+
+```sh
+nix develop path:./nix --command cargo run --locked -- --preview --renderer software
+```
+
+Omit `--preview` to sign in or restore your real account. Renderer selection
+does not change session storage, encryption or the native audio backend.
 
 ## Linux development
 
@@ -52,7 +61,8 @@ when you leave the preview, and closing the window quits Talk.
 
 `path:./nix` also works before files are tracked and keeps Cargo output out of
 the Nix source snapshot. The shell provides Clang 21, Protobuf, desktop libraries,
-and a checksum-pinned libwebrtc archive through `LK_CUSTOM_WEBRTC`. Rustup uses
+and checksum-pinned libwebrtc and Skia archives. The Skia archive keeps the
+verified JPEG symbol namespace needed to link it alongside WebRTC. Rustup uses
 the version in `rust-toolchain.toml`.
 
 ```sh
@@ -69,8 +79,9 @@ cargo test --locked -p talk-core chat::tests::encrypted_chat_restore_send_retry_
 
 This creates disposable accounts and checks session restoration, encrypted
 delivery, duplicate-free retry, Space membership and live channel removal, and
-refusal of plaintext rooms and unverified devices. Native UI captures and interaction notes are in
-[the chat UI report](docs/chat-ui.md).
+refusal of plaintext rooms and unverified devices. Current native UI validation
+is in [the Slint client report](docs/slint-client.md); the earlier GPUI checks
+remain in [the chat UI report](docs/chat-ui.md).
 
 Run those commands inside the Nix shell. The headless build still includes the
 Matrix and native media libraries. The smoke check allocates a synthetic audio

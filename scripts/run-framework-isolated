@@ -25,6 +25,7 @@ parser.add_argument('--compositor-log', required=True, type=Path)
 parser.add_argument('--seat-plugin', type=Path, default=Path(__file__).resolve().parent.parent / '.local/framework-weston-seat.so')
 parser.add_argument('--gtk-dpi-module', type=Path, default=Path(__file__).resolve().parent.parent / '.local/framework-gtk-dpi.so')
 parser.add_argument('--audio', action='store_true', help='Private PulseAudio with virtual devices only')
+parser.add_argument('--no-services', action='store_true', help='Private D-Bus without activation services, for disposable session tests')
 parser.add_argument('--alsa-plugins', type=Path, help='Directory containing the ALSA PulseAudio plugin')
 parser.add_argument('command', nargs=argparse.REMAINDER)
 args = parser.parse_args()
@@ -46,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
     run_token = uuid.uuid4().hex
     environment = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), WAYLAND_DISPLAY='wayland-talk-frameworks',
         XDG_SESSION_TYPE='wayland', XDG_CURRENT_DESKTOP='Weston', GDK_BACKEND='wayland',
-        XDG_CONFIG_HOME=str(configuration), XDG_CACHE_HOME=str(runtime / 'cache'),
+        XDG_CONFIG_HOME=str(configuration), XDG_CACHE_HOME=str(runtime / 'cache'), XDG_DATA_HOME=str(runtime / 'data'),
         GDK_SCALE='1', GDK_DPI_SCALE='1',
         GTK_MODULES=str(args.gtk_dpi_module.resolve()),
         WINIT_UNIX_BACKEND='wayland', TALK_FRAMEWORK_ISOLATED_DISPLAY='1',
@@ -88,7 +89,15 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
                     raise SystemExit('Private audio failed; see ' + str(audio_log))
                 time.sleep(.1)
         # Toolkits can require D-Bus. Give them a private session bus too.
-        session = subprocess.Popen(['dbus-run-session', '--', *command], env=environment, start_new_session=True)
+        bus_command = ['dbus-run-session']
+        if args.no_services:
+            bus_config = runtime / 'bus.conf'
+            bus_config.write_text('''<busconfig>
+<type>session</type><listen>unix:tmpdir=/tmp</listen><auth>EXTERNAL</auth>
+<policy context="default"><allow own="*"/><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/></policy>
+</busconfig>''')
+            bus_command.extend(['--config-file', str(bus_config)])
+        session = subprocess.Popen([*bus_command, '--', *command], env=environment, start_new_session=True)
         raise SystemExit(session.wait())
     finally:
         for signum in (signal.SIGTERM, signal.SIGINT):

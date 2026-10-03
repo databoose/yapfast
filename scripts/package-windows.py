@@ -9,12 +9,14 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import tarfile
+import urllib.parse
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
-SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
-SOURCE_DIRECTORIES = (".cargo", "src", "crates", "scripts", "nix", "vendor", "testing", "deploy", "docs")
+SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
+SOURCE_DIRECTORIES = (".cargo", "src", "ui", "crates", "scripts", "nix", "vendor", "testing", "deploy", "docs")
 
 
 def digest(path):
@@ -41,6 +43,12 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "target/dist")
     args = parser.parse_args()
     executable = args.exe.resolve()
+    newest_input = max(path.stat().st_mtime for path in
+                       [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "build.rs",
+                        *list((ROOT / "src").rglob("*.rs")), *list((ROOT / "ui").rglob("*"))]
+                       if path.is_file())
+    if executable.stat().st_mtime < newest_input:
+        raise SystemExit("Windows executable predates the current UI; run scripts/build-windows first")
     with executable.open("rb") as stream:
         header = stream.read(64)
         if header[:2] != b"MZ":
@@ -92,6 +100,7 @@ def main():
             "If anything fails, record the error text, Windows version, GPU and\n"
             "audio device model. Never send your password or recovery key in logs.\n\n"
             "If Talk closes immediately, run run-talk.cmd to keep its error visible.\n\n"
+            "For software rendering, run run-talk.cmd --renderer software.\n\n"
             "Source snapshot, dependency notices and original licenses are included.\n",
             encoding="utf-8",
         )
@@ -122,6 +131,27 @@ def main():
                 "name": item["name"], "version": item["version"], "license": item["license"],
                 "source": item["source"], "repository": item["repository"], "license_files": copied,
             })
+        skia_location = os.environ.get("SKIA_BINARIES_URL")
+        if not skia_location:
+            archives = list((ROOT / ".local/windows/skia-static-production/prepared").glob("*-static.tar.gz"))
+            if len(archives) != 1:
+                raise SystemExit("Prepare the pinned Windows Skia archive before packaging")
+            skia_location = archives[0].as_uri()
+        skia_url = urllib.parse.urlparse(skia_location)
+        if skia_url.scheme != "file":
+            raise SystemExit("Packaging requires the pinned local Skia archive")
+        skia_archive = Path(urllib.parse.unquote(skia_url.path))
+        with tarfile.open(skia_archive) as native:
+            for member in native.getmembers():
+                if member.isfile() and Path(member.name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE")):
+                    with native.extractfile(member) as notice:
+                        (licenses / ("skia-native-" + Path(member.name).name)).write_bytes(notice.read())
+        skia_source = Path(os.environ["TALK_SKIA_WINDOWS_SOURCE"])
+        for notice in skia_source.rglob("*"):
+            if license_file(notice):
+                destination = licenses / "skia-source" / notice.relative_to(skia_source)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(notice, destination)
         webrtc = Path(os.environ["LK_CUSTOM_WEBRTC"])
         shutil.copy2(webrtc / "LICENSE.md", licenses / "libwebrtc-LICENSE.md")
         (package / "THIRD-PARTY.json").write_text(json.dumps(dependencies, indent=2) + "\n", encoding="utf-8")
@@ -129,8 +159,14 @@ def main():
             "version": version, "target": TARGET,
             "rustc": subprocess.check_output(["rustc", "--version"], text=True, timeout=10).strip(),
             "cargo_xwin": subprocess.check_output(["cargo", "xwin", "--version"], text=True, timeout=10).strip(),
-            "shader_compiler_package": "Microsoft.Windows.SDK.CPP 10.0.26100.8249",
-            "shader_compiler_package_sha256": "f8787b2f6678164ae789bdca6247e696c2a0f529a39ceb969d6ef3d69a987131",
+            "ui_framework": "Slint 1.18.1",
+            "renderer_default": "skia",
+            "renderer_software": "skia-software",
+            "skia_version": "0.153.3",
+            "skia_source_revision": "61e7ca4e99062cdd0ab69445d5963fb3365778f6",
+            "skia_source_archive_sha256": "8401d0de878582a03abc1029bb62330aea58cda89904ae6ab187302e6d48ba5d",
+            "skia_runtime": "MT_StaticRelease",
+            "skia_archive_prepared_sha256": digest(skia_archive),
             "homeserver_default": "https://matrix.org",
             "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
             "executable_sha256": digest(executable),

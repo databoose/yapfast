@@ -1,0 +1,439 @@
+import { LineEdit, ComboBox, ScrollView, ListView, Palette } from "std-widgets.slint";
+
+global Theme {
+    out property <color> background: #0a0a0a;
+    out property <color> rail: #0e0e0e;
+    out property <color> sidebar: #141414;
+    out property <color> foreground: #fafafa;
+    out property <color> muted: #a3a3a3;
+    out property <color> border: #262626;
+    out property <color> selected: #212121;
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <string> label: root.text;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    in property <bool> selected;
+    in property <bool> primary;
+    in property <bool> ghost;
+    in property <bool> align-left;
+    callback clicked;
+    min-width: max(36px, content.preferred-width + 20px);
+    min-height: 34px;
+    vertical-stretch: 0;
+    border-radius: 6px;
+    background: !root.enabled ? #171717 : root.primary ? (pointer.has-hover ? #e5e5e5 : #fafafa) : root.selected ? Theme.selected : pointer.has-hover ? #262626 : root.ghost ? transparent : #202020;
+    border-width: focus.has-focus ? 1px : 0px;
+    border-color: #737373;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    content := HorizontalLayout {
+        padding: 10px; padding-top: 4px; padding-bottom: 4px;
+        spacing: 8px; alignment: root.align-left ? start : center;
+        if root.icon.width > 0: Rectangle {
+            width: 18px;
+            Image {
+                source: root.icon; width: 18px; height: 18px;
+                colorize: !root.enabled ? Theme.muted : root.primary ? #171717 : Theme.foreground;
+            }
+        }
+        if root.text != "": Text {
+            text: root.text; color: !root.enabled ? Theme.muted : root.primary ? #171717 : Theme.foreground;
+            vertical-alignment: center; overflow: elide;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea {
+            enabled: root.enabled;
+            clicked => { focus.focus(); root.clicked(); }
+        }
+    }
+}
+
+component Label inherits Text {
+    color: Theme.muted; font-size: 12px; wrap: word-wrap;
+    vertical-stretch: 0;
+}
+
+export struct ServerRow { id: string, name: string, initial: string, selected: bool }
+export struct RoomRow { id: string, name: string, heading: string, icon: image, selected: bool }
+export struct MessageRow { id: string, author: string, initial: string, body: string, time: string, own: bool }
+export struct PersonRow { name: string, status: string, muted: bool }
+
+export component TalkWindow inherits Window {
+    title: "Talk";
+    preferred-width: 1120px; preferred-height: 760px;
+    min-width: 800px; min-height: 560px;
+    background: Theme.background;
+    default-font-size: 14px;
+    init => { Palette.color-scheme = ColorScheme.dark; }
+    in property <bool> workspace;
+    in property <bool> preview;
+    in property <bool> busy;
+    in property <bool> trusted;
+    in property <bool> online;
+    in property <bool> restore-available;
+    in property <bool> dms-selected;
+    in property <string> sidebar-title;
+    in property <string> filter-placeholder;
+    in property <string> sidebar-empty;
+    in property <[ServerRow]> servers;
+    in property <[RoomRow]> rooms;
+    in property <[MessageRow]> messages;
+    in property <string> account;
+    in property <string> account-status;
+    in property <string> storage;
+    in property <string> notice;
+    in property <string> room-name;
+    in property <image> room-icon;
+    in property <string> members;
+    in property <bool> room-selected;
+    in property <bool> room-ready;
+    in property <bool> room-encrypted;
+    in property <bool> voice-room;
+    in property <bool> composer-enabled;
+    in property <bool> can-send;
+    in property <bool> sending;
+    in property <bool> loading-history;
+    in property <string> composer-hint;
+    in-out property <string> homeserver: "https://matrix.org";
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> recovery;
+    in-out property <string> draft;
+    in-out property <string> filter;
+    in property <bool> voice-visible;
+    in property <bool> voice-active;
+    in property <bool> voice-ready;
+    in property <bool> voice-leaving;
+    in property <bool> voice-here;
+    in property <bool> can-join;
+    in property <bool> muted;
+    in property <bool> deafened;
+    in property <string> voice-status;
+    in property <string> voice-name;
+    in property <string> voice-microphone-status;
+    in property <string> voice-description;
+    in property <string> voice-error;
+    in property <[PersonRow]> participants;
+    in property <string> switch-prompt;
+    in-out property <bool> audio-settings;
+    in property <[string]> microphones;
+    in property <[string]> speakers;
+    in property <int> microphone-index;
+    in property <int> speaker-index;
+
+    callback login;
+    callback restore;
+    callback explore-preview;
+    callback logout;
+    callback recover;
+    callback refresh-trust;
+    callback retry-sync;
+    callback navigate-dms;
+    callback navigate-server(string);
+    callback select-room(string);
+    callback draft-edited(string);
+    callback filter-edited;
+    callback send;
+    callback earlier;
+    callback join-voice;
+    callback toggle-mute;
+    callback toggle-deafen;
+    callback leave-voice;
+    callback confirm-switch;
+    callback cancel-switch;
+    callback dismiss-voice-error;
+    callback refresh-devices;
+    callback select-microphone(int);
+    callback select-speaker(int);
+
+    public function focus-composer() { composer.focus(); }
+    public function focus-sign-in() { username-field.focus(); }
+    public function timeline-at-end() -> bool { return timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 8px; }
+    public function timeline-extent() -> length { return timeline.content-height; }
+    public function scroll-to-latest() { timeline.content-y = min(0px, timeline.height - timeline.content-height); }
+    public function preserve-history-position(delta: length) { timeline.content-y = timeline.content-y - delta; }
+
+
+    changed audio-settings => {
+        if root.audio-settings { audio-popup.show(); } else { audio-popup.close(); }
+    }
+    property <bool> audio-open: audio-popup.is-open;
+    changed audio-open => { root.audio-settings = root.audio-open; }
+    audio-popup := PopupWindow {
+        x: 76px; y: max(16px, root.height - self.height - 208px);
+        width: 360px;
+        height: audio-content.preferred-height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.sidebar; border-color: Theme.border; border-width: 1px; border-radius: 6px;
+            audio-content := VerticalLayout {
+                padding: 16px; spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "Audio devices"; color: Theme.foreground; font-weight: 600; horizontal-stretch: 1; }
+                    ActionButton { text: "Close"; ghost: true; clicked => { root.audio-settings = false; } }
+                }
+                Label { text: "Microphone"; }
+                ComboBox { model: root.microphones; current-index: root.microphone-index; enabled: !root.preview && root.microphones.length > 0; accessible-label: "Microphone device"; selected => { root.select-microphone(self.current-index); } }
+                Label { text: "Speakers"; }
+                ComboBox { model: root.speakers; current-index: root.speaker-index; enabled: !root.preview && root.speakers.length > 0; accessible-label: "Speaker device"; selected => { root.select-speaker(self.current-index); } }
+                if root.preview: Label { text: "Device selection is available with a real account."; }
+                ActionButton { text: "Refresh devices"; ghost: true; enabled: !root.preview; clicked => { root.refresh-devices(); } }
+            }
+        }
+    }
+
+    Rectangle {
+        width: parent.width; height: parent.height;
+        Rectangle {
+            x: 0px; width: 64px; height: parent.height; background: Theme.rail;
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
+            VerticalLayout {
+                padding: 12px; padding-top: 16px; spacing: 12px;
+                if !root.workspace: Text { text: "T"; font-size: 20px; font-weight: 600; color: Theme.foreground; horizontal-alignment: center; vertical-stretch: 0; }
+                if root.workspace: ActionButton {
+                    height: 40px; width: 40px; ghost: true;
+                    icon: @image-url("icons/message-circle.svg"); label: "Direct messages"; selected: root.dms-selected;
+                    clicked => { root.navigate-dms(); }
+                }
+                if root.workspace: Rectangle { height: 1px; background: Theme.border; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 12px;
+                        for server in root.servers: ActionButton {
+                            height: 40px; width: 40px; ghost: true;
+                            text: server.initial; label: "Server: " + server.name; selected: server.selected;
+                            clicked => { root.navigate-server(server.id); }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            x: 64px; width: parent.width - 64px; height: parent.height; clip: true;
+        ScrollView {
+            visible: !root.workspace;
+            width: parent.width; height: parent.height;
+            VerticalLayout {
+                padding: 24px; spacing: 0px;
+                Rectangle { min-height: 20px; vertical-stretch: 1; }
+                HorizontalLayout {
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        width: 380px; spacing: 12px;
+                        Text { text: "Talk"; color: Theme.foreground; font-size: 30px; font-weight: 600; }
+                        Text { text: "Your people. Your Matrix account."; color: Theme.muted; wrap: word-wrap; }
+                        Rectangle { height: 8px; }
+                        Text { text: "Homeserver"; color: Theme.foreground; }
+                        LineEdit { text <=> root.homeserver; enabled: !root.busy; accessible-label: "Homeserver"; }
+                        Text { text: "Matrix ID"; color: Theme.foreground; }
+                        username-field := LineEdit { text <=> root.username; placeholder-text: "@you:matrix.org"; enabled: !root.busy; accessible-label: "Matrix ID"; }
+                        Text { text: "Password"; color: Theme.foreground; }
+                        LineEdit { text <=> root.password; input-type: InputType.password; enabled: !root.busy; accessible-label: "Password"; accepted => { root.login(); } }
+                        ActionButton { text: root.busy ? "Connecting..." : "Sign in"; primary: true; enabled: !root.busy; clicked => { root.login(); } }
+                        if root.notice != "": Text { text: root.notice; color: Theme.foreground; wrap: word-wrap; }
+                        if root.restore-available && !root.busy: ActionButton { text: "Retry saved session"; clicked => { root.restore(); } }
+                        Label { text: "Use an existing account. Password sign-in is supported in this build."; }
+                        Rectangle { height: 1px; background: Theme.border; }
+                        ActionButton { text: "Explore local preview"; ghost: true; enabled: !root.busy; clicked => { root.explore-preview(); } }
+                        Label { text: "Try the chat layout without an account. Nothing is sent."; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                Rectangle { min-height: 20px; vertical-stretch: 1; }
+            }
+        }
+        HorizontalLayout {
+            visible: root.workspace;
+            width: parent.width; height: parent.height;
+            spacing: 0px;
+            Rectangle {
+                width: 240px; background: Theme.sidebar;
+                Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
+                VerticalLayout {
+                    spacing: 0px;
+                    Rectangle {
+                        height: 64px;
+                        Text { x: 16px; width: parent.width - 32px; text: root.sidebar-title; font-weight: 600; color: Theme.foreground; vertical-alignment: center; overflow: elide; }
+                    }
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 12px; padding-bottom: 12px;
+                        LineEdit { placeholder-text: root.filter-placeholder; text <=> root.filter; accessible-label: root.filter-placeholder; edited => { root.filter-edited(); } }
+                    }
+                    ScrollView {
+                        min-height: 96px; vertical-stretch: 1;
+                        VerticalLayout {
+                            padding: 8px; padding-top: 0px; spacing: 4px;
+                            for room in root.rooms: VerticalLayout {
+                                spacing: 4px; vertical-stretch: 0;
+                                if room.heading != "": Label { text: room.heading; height: 28px; vertical-alignment: bottom; }
+                                ActionButton {
+                                    min-width: 36px;
+                                    text: room.name; label: room.name; icon: room.icon; selected: room.selected; ghost: true; align-left: true;
+                                    clicked => { root.select-room(room.id); }
+                                }
+                            }
+                            if root.sidebar-empty != "": Label { text: root.sidebar-empty; }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                    if root.voice-visible: VerticalLayout {
+                        padding: 12px; spacing: 8px; vertical-stretch: 0;
+                        Text { text: root.voice-status; color: Theme.foreground; font-weight: 600; }
+                        if root.voice-active: Text { text: root.voice-name; color: Theme.foreground; overflow: elide; }
+                        if root.voice-active: Label { text: root.voice-microphone-status; }
+                        if root.voice-active: HorizontalLayout {
+                            spacing: 4px;
+                            ActionButton { width: 36px; ghost: true; icon: root.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg"); label: root.muted ? "Unmute microphone" : "Mute microphone"; selected: root.muted; enabled: root.voice-ready && !root.deafened; clicked => { root.toggle-mute(); } }
+                            ActionButton { width: 36px; ghost: true; icon: @image-url("icons/headphones.svg"); label: root.deafened ? "Undeafen" : "Deafen"; selected: root.deafened; enabled: root.voice-ready; clicked => { root.toggle-deafen(); } }
+                            ActionButton { width: 36px; ghost: true; icon: @image-url("icons/settings.svg"); label: "Audio devices"; selected: root.audio-settings; clicked => { root.audio-settings = !root.audio-settings; if root.audio-settings { root.refresh-devices(); } } }
+                            ActionButton { text: "Leave"; ghost: true; enabled: !root.voice-leaving; clicked => { root.leave-voice(); } }
+                        }
+                        if root.voice-error != "": ScrollView {
+                            max-height: 48px;
+                            Text { text: root.voice-error; color: Theme.foreground; wrap: word-wrap; }
+                        }
+                        if !root.voice-active: ActionButton { text: "Dismiss"; ghost: true; clicked => { root.dismiss-voice-error(); } }
+                    }
+                    Rectangle { height: 1px; background: Theme.border; }
+                    VerticalLayout {
+                        padding: 12px; spacing: 8px; vertical-stretch: 0;
+                        Text { text: root.account; color: Theme.foreground; overflow: elide; }
+                        if root.storage != "" && !root.voice-active: Label { text: root.storage; }
+                        Label { text: root.account-status; }
+                        HorizontalLayout {
+                            ActionButton { text: root.preview ? "Back to sign in" : "Sign out"; ghost: true; enabled: !root.busy && !root.sending; clicked => { root.logout(); } }
+                            if !root.preview && !root.online: ActionButton { text: "Reconnect"; ghost: true; enabled: !root.busy; clicked => { root.retry-sync(); } }
+                        }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 0px;
+                Rectangle {
+                    height: 64px;
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+                    HorizontalLayout {
+                        padding-left: 24px; padding-right: 24px; spacing: 12px;
+                        Rectangle { width: 18px; Image { source: root.room-icon; width: 18px; height: 18px; colorize: Theme.foreground; } }
+                        Text { text: root.room-name; color: Theme.foreground; font-weight: 600; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        Label { text: root.members; vertical-alignment: center; }
+                    }
+                }
+                if root.preview: Rectangle {
+                    min-height: preview-text.preferred-height + 16px; background: #202020; vertical-stretch: 0;
+                    preview-text := Text { x: 24px; y: 8px; width: parent.width - 48px; text: "Local preview. Messages and voice controls are samples; no audio devices are opened."; color: Theme.foreground; font-size: 13px; wrap: word-wrap; }
+                }
+                if !root.preview && !root.trusted: Rectangle {
+                    min-height: trust-content.preferred-height; background: #202020; vertical-stretch: 0;
+                    trust-content := VerticalLayout {
+                        padding: 16px; spacing: 8px;
+                        Text { text: "Verify this device to send messages"; color: Theme.foreground; font-weight: 600; }
+                        Label { text: "Use your Matrix recovery key, or verify Talk in another client and check again."; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            LineEdit { text <=> root.recovery; input-type: InputType.password; placeholder-text: "Recovery key"; accessible-label: "Matrix recovery key"; enabled: !root.busy; accepted => { root.recover(); } }
+                            ActionButton { text: "Recover"; enabled: !root.busy; clicked => { root.recover(); } }
+                            ActionButton { text: "Check again"; enabled: !root.busy; clicked => { root.refresh-trust(); } }
+                        }
+                    }
+                }
+                if root.notice != "": Rectangle {
+                    min-height: notice-text.preferred-height + 16px; vertical-stretch: 0; background: #262626;
+                    notice-text := Text { x: 24px; y: 8px; width: parent.width - 48px; text: root.notice; color: Theme.foreground; wrap: word-wrap; }
+                }
+                if root.voice-room: ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        padding: 24px; spacing: 16px;
+                        Text { text: root.room-name; color: Theme.foreground; font-size: 18px; font-weight: 600; }
+                        Label { text: root.voice-description; font-size: 14px; }
+                        if !root.preview && !root.room-encrypted: Text { text: "This channel is unencrypted. Talk only joins encrypted voice channels."; color: Theme.foreground; wrap: word-wrap; }
+                        if !root.voice-here: HorizontalLayout { ActionButton { text: root.voice-active ? "Switch voice channel" : "Join voice"; primary: true; enabled: root.can-join; clicked => { root.join-voice(); } } Rectangle { horizontal-stretch: 1; } }
+                        if root.voice-here: Text { text: "In voice"; color: Theme.foreground; font-weight: 600; }
+                        for person in root.participants: HorizontalLayout {
+                            spacing: 12px;
+                            Image { source: person.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg"); width: 18px; height: 18px; colorize: Theme.foreground; }
+                            Text { text: person.name; color: Theme.foreground; overflow: elide; horizontal-stretch: 1; }
+                            Label { text: person.status; }
+                        }
+                        if root.switch-prompt != "": VerticalLayout {
+                            spacing: 8px;
+                            Text { text: root.switch-prompt; color: Theme.foreground; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                ActionButton { text: "Switch channel"; primary: true; clicked => { root.confirm-switch(); } }
+                                ActionButton { text: "Cancel"; ghost: true; clicked => { root.cancel-switch(); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+                if !root.voice-room: HorizontalLayout {
+                    padding-left: 24px; padding-right: 24px; padding-top: 8px; padding-bottom: 8px;
+                    ActionButton { text: root.loading-history ? "Loading..." : "Earlier messages"; ghost: true; enabled: !root.preview && root.room-ready && !root.loading-history && !root.busy; clicked => { root.earlier(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                timeline := ListView {
+                    visible: !root.voice-room;
+                    min-height: 0px;
+                    max-height: root.voice-room ? 0px : 100000px;
+                    vertical-stretch: root.voice-room ? 0 : 1;
+                    for message in root.messages: Rectangle {
+                        min-height: message-content.preferred-height + 24px;
+                        HorizontalLayout {
+                            padding-left: 24px; padding-right: 24px; padding-top: 12px; padding-bottom: 12px; spacing: 12px;
+                            Rectangle {
+                                width: 32px; height: 32px; border-radius: 6px; background: message.own ? #363636 : #232323;
+                                Text { text: message.initial; color: Theme.foreground; horizontal-alignment: center; vertical-alignment: center; font-weight: 600; }
+                            }
+                            message-content := VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Text { text: message.author; color: Theme.foreground; font-weight: 600; overflow: elide; }
+                                    Label { text: message.time; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                TextInput { text: message.body; color: Theme.foreground; read-only: true; single-line: false; wrap: word-wrap; selection-background-color: #4a4a4a; selection-foreground-color: #ffffff; accessible-label: "Message from " + message.author; }
+                            }
+                        }
+                    }
+                }
+                if !root.voice-room && root.messages.length == 0: Label {
+                    text: !root.room-selected ? "Choose a conversation to get started." : root.room-ready ? "No messages here yet." : "Loading conversation...";
+                    height: 48px; horizontal-alignment: center;
+                }
+                VerticalLayout {
+                    visible: !root.voice-room;
+                    min-height: 0px;
+                    max-height: root.voice-room ? 0px : 100000px;
+                    padding: 24px; padding-top: 12px; spacing: 8px; vertical-stretch: 0;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        composer := LineEdit { text <=> root.draft; enabled: root.composer-enabled; placeholder-text: "Write a message"; accessible-label: "Message"; edited => { root.draft-edited(self.text); } accepted => { root.send(); } }
+                        ActionButton { text: root.sending ? "Sending..." : "Send"; primary: true; enabled: root.can-send; clicked => { root.send(); } }
+                    }
+                    Label { text: root.composer-hint; }
+                }
+            }
+        }
+        }
+    }
+}

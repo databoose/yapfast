@@ -2,7 +2,7 @@
 
 ## Dependencies
 
-Talk pins Rust 1.97.1, GPUI Kit 0.7.0 and its GPUI 0.3.7 snapshot. Cargo.lock pins
+Talk pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
 the complete Rust graph. The Matrix SDK revision follows the pinned MatrixRTC
 revision. Keep those two sources together when upgrading.
 
@@ -15,7 +15,10 @@ updating the archive URL and checksum in nix/flake.nix too.
 The Linux environment includes ALSA, PulseAudio, fontconfig, FreeType, GLib, Wayland, X11,
 Vulkan, OpenGL, OpenSSL, Clang 21, CMake, pkg-config and Protobuf. It uses the
 host's graphics driver under `/run/opengl-driver/lib`. A real display session
-and a GPU supported by GPUI's renderer are required to open the window.
+are required to open the window. Skia GPU is the default; use
+`--renderer software` for CPU rendering. The Nix shell provides a checksum-pinned,
+prepared Skia archive whose JPEG table is privately named to avoid a WebRTC
+symbol collision. See [the Slint client](slint-client.md).
 
 The first build downloads dependencies and compiles native C++. Cargo limits
 parallel jobs to two to limit memory pressure. Development dependencies omit
@@ -25,30 +28,20 @@ symbols.
 ## Windows
 
 The Linux cross-build and portable ZIP route is documented in the
-[Windows beta guide](windows-beta.md). It supplies the Windows WebRTC archive
-and SDK shader compiler through the Windows Nix shell. The executable uses
-static CRT linkage to match LiveKit and embeds GPUI's release shaders.
+[Windows beta guide](windows-beta.md). It supplies the matching Windows WebRTC
+archive and checksum-pinned Skia source through the Windows Nix shell.
+`scripts/build-windows` prepares and caches a static-runtime Skia build before
+compiling Talk. The executable uses static CRT linkage to match LiveKit.
+GPUI's FXC shader build is no longer used.
 
-Build on 64-bit Windows using Rustup and the MSVC target. Install Visual Studio
-2022 Build Tools with Desktop development with C++, a Windows SDK, CMake, LLVM,
-and Protobuf. Include the SDK's FXC shader compiler for release builds. Run from
-a Developer PowerShell where `cl`, `clang`, `cmake`, and
-`protoc` are available. Confirm with:
-
-```powershell
-rustup show
-Get-Command cl, clang, cmake, protoc
-./scripts/check.ps1
-cargo build --locked --release
-./target/release/talk.exe
-```
-
-webrtc-sys-build downloads the matching Windows libwebrtc archive on its first
-build. It is version-pinned by Cargo.lock. Linux uses a Nix fixed-output fetch
-instead so the C++ build script needs no network access inside the Nix sandbox.
+The supported build route for this migration is the Linux MSVC cross-build.
+Native Windows development needs Rustup, Visual Studio C++ tools and SDK, CMake,
+LLVM and Protobuf, plus the same prepared Skia archive through
+`SKIA_BINARIES_URL`. That native-host preparation/build route has not been checked.
+The downloadable package needs none of these tools to run.
 
 Before accepting the Windows build, check text entry, selection, copy/paste,
-keyboard focus, the background-task button, resizing, normal close, and reopen
+keyboard focus, navigation, both renderers, resizing, normal close, and reopen
 on the tester's actual GPU. Record Windows and GPU versions in compatibility.md.
 Windows execution has not been demonstrated by a Linux build.
 
@@ -56,7 +49,7 @@ Windows execution has not been demonstrated by a Linux build.
 
 Talk logs only its own operational events at info level and above. Dependency
 logs are disabled because they can expose authentication data or message content.
-The build-check field never enters the log. Future errors must use fixed event
+Typed text never enters the log. Future errors must use fixed event
 names and safe classifications rather than raw protocol responses or SDK Debug
 output.
 
@@ -72,8 +65,9 @@ scripts/measure-process PID --seconds 30
 The JSON reports mean and peak RSS, mean PSS, CPU use relative to one core,
 and GPU engine counters when the driver exposes them through `/proc/PID/fdinfo`.
 An unavailable GPU metric is reported explicitly. Record hardware, account and
-room counts, warm-up, window size and activity alongside the output. The current
-empty build-check window has no account or sync and does not measure beta idle.
+room counts, renderer, build mode, warm-up, window size and activity alongside
+the output. The earlier empty GPUI build-check baseline had no account or sync;
+it does not measure the current connected Slint client.
 
 ## Local backend
 
