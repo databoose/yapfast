@@ -13,13 +13,17 @@ resolver = "3"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:slint", "dep:slint-build", "dep:skia-safe"]
+desktop = ["dep:slint", "dep:slint-build", "dep:skia-safe", "dep:rfd"]
 
 [dependencies]
 anyhow.workspace = true
-slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-skia", "renderer-skia-opengl", "accessibility"], optional = true }
+serde.workspace = true
+serde_json.workspace = true
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-skia", "renderer-skia-opengl", "accessibility", "unstable-winit-030"], optional = true }
 # Reject an unpinned native source build if the prepared Skia archive is unavailable.
 skia-safe = { version = "=0.153.3", default-features = false, features = ["binary-cache", "no-compile"], optional = true }
+# Native open and save dialogs: XDG portals on Linux, common dialogs on Windows.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 talk-core = { path = "crates/talk-core" }
 tracing.workspace = true
 
@@ -37,7 +41,7 @@ futures-util = "0.3"
 keyring = "=4.2.0"
 livekit = { version = "=0.7.48", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 # Keep this SDK source and revision identical to matrix-rust-rtc's workspace pin.
-matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd", features = ["bundled-sqlite"] }
+matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd", features = ["bundled-sqlite", "markdown"] }
 matrix-sdk-ui = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd", features = ["unstable-msc4354"] }
 matrix-sdk-crypto = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd" }
 matrix-rtc-livekit = { path = "vendor/matrix-rtc-livekit", features = ["matrix-sdk"] }

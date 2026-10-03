@@ -19,14 +19,17 @@ join, leave, mute, deafen, participants and native audio device controls. Voice
 stays connected while you browse messages. A local preview lets you try the
 controls without an account or audio access.
 
-Skia GPU is the default renderer. To use the optional Skia Software mode:
+Talk prefers Skia GPU. If the GPU cannot start, Talk restarts itself with Skia
+Software, explains why, and keeps using software until a GPU start succeeds again.
+To choose Skia Software yourself:
 
 ```sh
 nix develop path:./nix --command cargo run --locked -- --preview --renderer software
 ```
 
-Omit `--preview` to sign in or restore your real account. Renderer selection
-does not change session storage, encryption or the native audio backend.
+Omit `--preview` to sign in or restore your real account. `--renderer gpu` forces
+GPU rendering without fallback. Renderer selection does not change session
+storage, encryption or the native audio backend.
 
 ## Linux development
 
@@ -51,9 +54,11 @@ Passwords and recovery keys are entered in masked native fields.
 
 Real sending requires a verified device and an encrypted room. Verify Talk in
 another client and press "Check again", or enter your existing recovery key.
-Join rooms using another Matrix client for now. This first UI slice has no room
-creation, channel discovery, ringing DM calls, attachments, or offline send queue. Drafts
-survive conversation switches while Talk is open. Servers come from joined Matrix
+Join rooms using another Matrix client for now. Messages support Markdown,
+replies, reactions, editing, deletion and encrypted attachments. Messages written
+offline wait in the SDK's send queue, and drafts survive restarts; see
+[the chat guide](docs/chat-ui.md). There is no room creation, channel discovery
+or ringing DM calls yet. Servers come from joined Matrix
 Spaces, including channels in joined subspaces. Each server remembers its last
 selected channel. Only joined channels appear; standalone rooms outside Spaces
 are not shown in this navigation yet. Preview messages disappear

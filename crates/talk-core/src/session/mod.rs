@@ -169,7 +169,10 @@ impl Session {
     }
 
     pub async fn start_sync(&self) -> Result<SessionSync> {
+        // Offline mode keeps probing the homeserver after a network failure and
+        // resumes by itself; Talk then re-enables the paused send queue.
         let service = SyncService::builder(self.client.clone())
+            .with_offline_mode()
             .build()
             .await
             .map_err(|_| {
@@ -283,7 +286,9 @@ async fn build_client(homeserver: &str, path: PathBuf, passphrase: &str) -> Resu
     if !url.username().is_empty() || url.password().is_some() {
         bail!("homeserver URLs must not contain credentials")
     }
-    Client::builder().homeserver_url(homeserver).sqlite_store(path, Some(passphrase))
+    // Keep the URL checked above: a login response must not move Talk to
+    // another, possibly plain-HTTP, homeserver address.
+    Client::builder().homeserver_url(homeserver).respect_login_well_known(false).sqlite_store(path, Some(passphrase))
         .request_config(RequestConfig::new().timeout(Duration::from_secs(15)).retry_limit(1))
         .with_room_key_recipient_strategy(matrix_sdk_crypto::CollectStrategy::IdentityBasedStrategy)
         .with_encryption_settings(EncryptionSettings {

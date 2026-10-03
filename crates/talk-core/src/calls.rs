@@ -113,7 +113,7 @@ pub(crate) async fn require_trusted_encrypted_room(room: &Room) -> Result<()> {
     let client = room.client();
     ensure!(
         client.supports_sticky_events().await?,
-        "This homeserver does not support this voice build. Use a compatible homeserver."
+        "This homeserver doesn't support sticky events (MSC4354), which Talk voice channels need. Ask its administrator to enable them (Synapse: experimental_features.msc4354_enabled), or use another homeserver."
     );
     let user = client.user_id().context("sign in before joining voice")?;
     let device = client.device_id().context("sign in before joining voice")?;
@@ -332,14 +332,14 @@ async fn wait_for_members(calls: &[Call], count: usize) -> Result<()> {
     .context("call membership did not settle after join or leave")
 }
 
-struct Tone(tokio::task::JoinHandle<()>);
+pub(crate) struct Tone(tokio::task::JoinHandle<()>);
 impl Drop for Tone {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
+pub(crate) async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
     let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 50);
     let track = LocalAudioTrack::create_audio_track(
         "Talk synthetic test",

@@ -2,6 +2,8 @@
 #![recursion_limit = "256"]
 
 #[cfg(feature = "desktop")]
+mod graphics;
+#[cfg(feature = "desktop")]
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -21,15 +23,25 @@ fn main() -> Result<()> {
         return runtime.block_on(cli::session(&arguments[1..]));
     }
     match arguments.as_slice() {
-        [] => launch(runtime, session::default_directory()?, false, renderer),
-        [argument] if argument == "--preview" => {
-            launch(runtime, session::default_directory()?, true, renderer)
-        }
+        [] => launch(
+            runtime,
+            session::default_directory()?,
+            false,
+            renderer,
+            &arguments,
+        ),
+        [argument] if argument == "--preview" => launch(
+            runtime,
+            session::default_directory()?,
+            true,
+            renderer,
+            &arguments,
+        ),
         [argument, path] if argument == "--data-dir" => {
-            launch(runtime, path.into(), false, renderer)
+            launch(runtime, path.into(), false, renderer, &arguments)
         }
         [preview, argument, path] if preview == "--preview" && argument == "--data-dir" => {
-            launch(runtime, path.into(), true, renderer)
+            launch(runtime, path.into(), true, renderer, &arguments)
         }
         [argument] if argument == "--smoke-test" => {
             runtime.block_on(runtime.spawn(talk_core::check_build()))?;
@@ -49,7 +61,7 @@ fn main() -> Result<()> {
         }
         [argument] if argument == "--help" || argument == "-h" => {
             println!(
-                "Usage: talk [--preview] [--data-dir PATH] [--renderer gpu|software]\n       talk [--smoke-test | --help]\n       talk --call-experiment [--resume PATH]\n       talk [--voice-demo | --audio-devices]\n       talk session login --homeserver URL --user USER --password-stdin [--data-dir PATH]\n       talk session status [--data-dir PATH]\n       talk session recover --key-stdin [--data-dir PATH]\n       talk session logout [--data-dir PATH]\n\nWithout arguments, opens native Slint chat and restores a saved session.\n--renderer selects Skia GPU (default) or Skia Software.\n--preview opens local sample conversations without connecting to Matrix.\n--smoke-test checks the linked stack without signing in or opening audio devices.\n--call-experiment creates disposable local accounts and checks encrypted synthetic audio. Start scripts/test-stack up first.\n--voice-demo creates two local accounts and a server with encrypted text and voice channels.\n--audio-devices lists native audio devices without recording.\nSession commands support password sign-in. Secrets are read from stdin."
+                "Usage: talk [--preview] [--data-dir PATH] [--renderer gpu|software]\n       talk [--smoke-test | --help]\n       talk --call-experiment [--resume PATH]\n       talk [--voice-demo | --audio-devices]\n       talk session login --homeserver URL --user USER --password-stdin [--data-dir PATH]\n       talk session status [--data-dir PATH]\n       talk session recover --key-stdin [--data-dir PATH]\n       talk session logout [--data-dir PATH]\n\nWithout arguments, opens native Slint chat and restores a saved session.\n--renderer gpu or software selects one renderer. By default Talk uses Skia GPU\nand switches to Skia Software after a failed GPU start.\n--preview opens local sample conversations without connecting to Matrix.\n--smoke-test checks the linked stack without signing in or opening audio devices.\n--call-experiment creates disposable local accounts and checks encrypted synthetic audio. Start scripts/test-stack up first.\n--voice-demo creates two local accounts and a server with encrypted text and voice channels.\n--audio-devices lists native audio devices without recording.\nSession commands support password sign-in. Secrets are read from stdin."
             );
             Ok(())
         }
@@ -57,22 +69,64 @@ fn main() -> Result<()> {
     }
 }
 
+/// Set only for a process that replaces a failed automatic GPU start.
+#[cfg(feature = "desktop")]
+const GPU_FALLBACK_REASON: &str = "TALK_GPU_FALLBACK_REASON";
+
 #[cfg(feature = "desktop")]
 fn launch(
     runtime: BackgroundRuntime,
     root: std::path::PathBuf,
     preview: bool,
     renderer: &str,
+    arguments: &[String],
 ) -> Result<()> {
-    let renderer = match renderer {
-        "software" => ui::Renderer::Software,
-        _ => ui::Renderer::Gpu,
+    let mode = match renderer {
+        "gpu" => graphics::Mode::Gpu,
+        "software" => graphics::Mode::Software,
+        _ => graphics::Mode::Auto,
     };
-    ui::run(runtime, root, preview, renderer)
+    let reason = std::env::var(GPU_FALLBACK_REASON).ok();
+    let plan = graphics::plan(&root, mode, reason);
+    match ui::run(runtime, root, preview, plan)? {
+        ui::Exit::Closed => Ok(()),
+        ui::Exit::UseSoftware(reason) => relaunch_with_software(arguments, &reason),
+    }
+}
+
+/// The window system allows one renderer per process, so a failed GPU start
+/// continues in a new process after this one released its session and runtime.
+#[cfg(feature = "desktop")]
+fn relaunch_with_software(arguments: &[String], reason: &str) -> Result<()> {
+    let mut command = std::process::Command::new(
+        std::env::current_exe().context("could not find Talk to restart it")?,
+    );
+    command
+        .args(arguments)
+        .args(["--renderer", "software"])
+        .env(GPU_FALLBACK_REASON, reason);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(command.exec()).context("could not restart Talk with software rendering")
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command
+            .status()
+            .context("could not restart Talk with software rendering")?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 #[cfg(not(feature = "desktop"))]
-fn launch(_: BackgroundRuntime, _: std::path::PathBuf, _: bool, _: &str) -> Result<()> {
+fn launch(
+    _: BackgroundRuntime,
+    _: std::path::PathBuf,
+    _: bool,
+    _: &str,
+    _: &[String],
+) -> Result<()> {
     bail!(
         "this build has no desktop UI; run --help for headless commands or rebuild with default features"
     )
@@ -83,7 +137,7 @@ fn renderer_argument(arguments: &mut Vec<String>) -> Result<&'static str> {
         .iter()
         .position(|argument| argument == "--renderer")
     else {
-        return Ok("gpu");
+        return Ok("auto");
     };
     let renderer = match arguments.get(index + 1).map(String::as_str) {
         Some("gpu") => "gpu",

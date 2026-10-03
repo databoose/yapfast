@@ -1,8 +1,8 @@
 //! Shared client behavior. UI adapters dispatch actions and render the resulting state.
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::{
-    chat::{self, ChatMessage, ChatRoom, ChatServer, Command, Event},
+    chat::{self, ChatMessage, ChatRoom, ChatServer, Command, Event, Reaction, Reply},
     voice::{self, Phase},
 };
 
@@ -13,6 +13,18 @@ pub enum Navigation {
     #[default]
     DirectMessages,
     Server(String),
+}
+
+/// What the composer's next send does in a room, besides sending a new message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Compose {
+    Reply {
+        item: String,
+        author: String,
+        body: String,
+    },
+    /// Editing replaces the draft; cancelling or finishing restores it.
+    Edit { item: String, draft: String },
 }
 
 #[derive(Default)]
@@ -34,11 +46,16 @@ pub struct AppState {
     pub messages: Arc<Vec<ChatMessage>>,
     pub loading_history: bool,
     pub sending: Option<String>,
+    /// The selected room's message the user is asked to confirm deleting.
+    pub confirm_delete: Option<String>,
+    /// A file is being read and queued.
+    pub attaching: bool,
     /// Changes when selecting a room, including selecting the same room to retry opening it.
     pub selection_version: u64,
     /// Changes after logout so adapters can clear their inputs and focus sign-in.
     pub reset_version: u64,
     drafts: HashMap<String, String>,
+    compose: HashMap<String, Compose>,
 }
 
 impl AppState {
@@ -55,6 +72,23 @@ impl AppState {
             .map_or("", String::as_str)
     }
 
+    pub fn compose(&self) -> Option<&Compose> {
+        self.selected.as_ref().and_then(|id| self.compose.get(id))
+    }
+
+    pub fn message(&self, item: &str) -> Option<&ChatMessage> {
+        self.messages.iter().find(|message| message.item == item)
+    }
+
+    /// Whether this account's devices can write to the selected room.
+    pub fn can_write(&self) -> bool {
+        !self.busy
+            && self.room_ready
+            && self.selected_room().is_some_and(|room| {
+                !room.voice && (self.preview || (self.trusted && room.encrypted))
+            })
+    }
+
     pub fn in_scope(&self, room: &ChatRoom) -> bool {
         match &self.navigation {
             Navigation::DirectMessages => room.direct,
@@ -69,13 +103,11 @@ impl AppState {
     }
 
     pub fn can_send(&self) -> bool {
-        !self.busy
-            && self.sending.is_none()
-            && self.room_ready
-            && !self.draft().trim().is_empty()
-            && self.selected_room().is_some_and(|room| {
-                !room.voice && (self.preview || (self.trusted && room.encrypted))
-            })
+        self.can_write() && self.sending.is_none() && !self.draft().trim().is_empty()
+    }
+
+    pub fn can_attach(&self) -> bool {
+        self.can_write() && !self.preview && !self.attaching
     }
 
     pub fn can_join_voice(&self, id: &str) -> bool {
@@ -94,6 +126,24 @@ pub enum Action {
     SelectRoom(String),
     SetDraft(String),
     Send,
+    Reply(String),
+    Edit(String),
+    CancelCompose,
+    React {
+        item: String,
+        key: String,
+    },
+    RequestDelete(String),
+    ConfirmDelete,
+    CancelDelete,
+    Retry(String),
+    CancelSend(String),
+    Attach(PathBuf),
+    SaveAttachment {
+        item: String,
+        path: PathBuf,
+    },
+    DismissNotice,
     Earlier,
     Login {
         homeserver: String,
@@ -124,7 +174,6 @@ pub struct Application {
     pub state: AppState,
     last_selected: HashMap<Navigation, String>,
     samples: HashMap<String, Vec<ChatMessage>>,
-    retries: HashMap<String, (String, String)>,
 }
 
 impl Application {
@@ -144,12 +193,197 @@ impl Application {
             }
             Action::SelectRoom(id) => self.select(id),
             Action::SetDraft(body) => {
-                if let Some(id) = &self.state.selected {
-                    self.state.drafts.insert(id.clone(), body);
+                let Some(id) = self.state.selected.clone() else {
+                    return vec![];
+                };
+                if self
+                    .state
+                    .drafts
+                    .get(&id)
+                    .map_or(body.is_empty(), |draft| draft == &body)
+                {
+                    return vec![];
+                }
+                self.state.drafts.insert(id.clone(), body.clone());
+                // An edit's text is not a new message; the saved draft stays as it was.
+                if self.state.preview
+                    || matches!(self.state.compose.get(&id), Some(Compose::Edit { .. }))
+                {
+                    vec![]
+                } else {
+                    vec![Effect::Backend(Command::SaveDraft { room: id, body })]
+                }
+            }
+            Action::Send => self.send(),
+            Action::Reply(item) => {
+                let (Some(id), Some(message)) =
+                    (self.state.selected.clone(), self.state.message(&item))
+                else {
+                    return vec![];
+                };
+                if !message.can_reply || !self.state.can_write() {
+                    return vec![];
+                }
+                let reply = Compose::Reply {
+                    item,
+                    author: message.author.clone(),
+                    body: chat::plain_snippet(&message.body),
+                };
+                if let Some(Compose::Edit { draft, .. }) =
+                    self.state.compose.insert(id.clone(), reply)
+                {
+                    self.state.drafts.insert(id, draft);
                 }
                 vec![]
             }
-            Action::Send => self.send(),
+            Action::Edit(item) => {
+                let (Some(id), Some(message)) =
+                    (self.state.selected.clone(), self.state.message(&item))
+                else {
+                    return vec![];
+                };
+                if !message.can_edit || !self.state.can_write() {
+                    return vec![];
+                }
+                let body = message.body.clone();
+                let draft = match self.state.compose.get(&id) {
+                    Some(Compose::Edit { draft, .. }) => draft.clone(),
+                    _ => self.state.draft().to_owned(),
+                };
+                self.state
+                    .compose
+                    .insert(id.clone(), Compose::Edit { item, draft });
+                self.state.drafts.insert(id, body);
+                vec![]
+            }
+            Action::CancelCompose => {
+                if let Some(id) = self.state.selected.clone() {
+                    self.finish_compose(&id);
+                }
+                vec![]
+            }
+            Action::React { item, key } => {
+                if !self.state.can_write()
+                    || !self
+                        .state
+                        .message(&item)
+                        .is_some_and(|message| message.can_react)
+                {
+                    return vec![];
+                }
+                let room = self.state.selected.clone().expect("selected room exists");
+                if self.state.preview {
+                    self.update_sample(&room, &item, |message| {
+                        if let Some(index) = message
+                            .reactions
+                            .iter()
+                            .position(|reaction| reaction.key == key)
+                        {
+                            let reaction = &mut message.reactions[index];
+                            reaction.mine = !reaction.mine;
+                            reaction.count = if reaction.mine {
+                                reaction.count + 1
+                            } else {
+                                reaction.count.saturating_sub(1)
+                            };
+                            if reaction.count == 0 {
+                                message.reactions.remove(index);
+                            }
+                        } else {
+                            message.reactions.push(Reaction {
+                                key,
+                                count: 1,
+                                mine: true,
+                            });
+                        }
+                    });
+                    vec![]
+                } else {
+                    vec![Effect::Backend(Command::React { room, item, key })]
+                }
+            }
+            Action::RequestDelete(item) => {
+                if self
+                    .state
+                    .message(&item)
+                    .is_some_and(|message| message.can_delete)
+                {
+                    self.state.confirm_delete = Some(item);
+                }
+                vec![]
+            }
+            Action::CancelDelete => {
+                self.state.confirm_delete = None;
+                vec![]
+            }
+            Action::ConfirmDelete => {
+                let Some(item) = self.state.confirm_delete.take() else {
+                    return vec![];
+                };
+                let Some(room) = self.state.selected.clone() else {
+                    return vec![];
+                };
+                if self
+                    .state
+                    .compose
+                    .get(&room)
+                    .is_some_and(|compose| match compose {
+                        Compose::Reply { item: target, .. }
+                        | Compose::Edit { item: target, .. } => target == &item,
+                    })
+                {
+                    self.finish_compose(&room);
+                }
+                if self.state.preview {
+                    self.update_sample(&room, &item, |message| {
+                        message.body = "Message deleted".into();
+                        message.deleted = true;
+                        message.reactions.clear();
+                        message.can_reply = false;
+                        message.can_edit = false;
+                        message.can_delete = false;
+                        message.can_react = false;
+                    });
+                    vec![]
+                } else {
+                    vec![Effect::Backend(Command::Delete { room, item })]
+                }
+            }
+            Action::Retry(item) => {
+                self.queue_action(item, |room, item| Command::Retry { room, item })
+            }
+            Action::CancelSend(item) => {
+                self.queue_action(item, |room, item| Command::Cancel { room, item })
+            }
+            Action::Attach(path) => {
+                if !self.state.can_attach() {
+                    return vec![];
+                }
+                self.state.attaching = true;
+                self.state.notice = None;
+                let room = self.state.selected.clone().expect("selected room exists");
+                vec![Effect::Backend(Command::Attach { room, path })]
+            }
+            Action::SaveAttachment { item, path } => {
+                if self.state.preview
+                    || !self
+                        .state
+                        .message(&item)
+                        .is_some_and(|message| message.attachment.is_some())
+                {
+                    return vec![];
+                }
+                let room = self.state.selected.clone().expect("selected room exists");
+                vec![Effect::Backend(Command::SaveAttachment {
+                    room,
+                    item,
+                    path,
+                })]
+            }
+            Action::DismissNotice => {
+                self.state.notice = None;
+                vec![]
+            }
             Action::Earlier => {
                 if self.state.preview
                     || self.state.busy
@@ -326,15 +560,50 @@ impl Application {
                 }
                 match result {
                     Ok(()) => {
-                        if self.retries.get(&room).is_some_and(|retry| retry.0 == body) {
-                            self.retries.remove(&room);
-                        }
                         if self.state.drafts.get(&room) == Some(&body) {
                             self.state.drafts.remove(&room);
+                        }
+                        if matches!(self.state.compose.get(&room), Some(Compose::Reply { .. })) {
+                            self.state.compose.remove(&room);
                         }
                         self.state.notice = None;
                     }
                     Err(error) => self.state.notice = Some(error.into()),
+                }
+            }
+            Event::EditResult { room, item, result } => {
+                if self.state.sending.as_ref() == Some(&room) {
+                    self.state.sending = None;
+                }
+                match result {
+                    Ok(()) => {
+                        if matches!(self.state.compose.get(&room), Some(Compose::Edit { item: target, .. }) if target == &item)
+                        {
+                            self.finish_compose(&room);
+                        }
+                        self.state.notice = None;
+                    }
+                    Err(error) => self.state.notice = Some(error.into()),
+                }
+            }
+            Event::AttachResult { room: _, result } => {
+                self.state.attaching = false;
+                self.state.notice = result.err().map(str::to_owned);
+            }
+            Event::Draft { room, body } => {
+                // Text typed since opening the room wins over the saved draft.
+                if self.state.drafts.get(&room).is_none_or(String::is_empty)
+                    && !self.state.compose.contains_key(&room)
+                {
+                    self.state.drafts.insert(room, body);
+                }
+            }
+            Event::Saved { room, name, result } => {
+                if self.state.selected.as_ref() == Some(&room) {
+                    self.state.notice = Some(match result {
+                        Ok(()) => format!("Saved {name}."),
+                        Err(error) => error.into(),
+                    });
                 }
             }
             Event::Trust { trusted, error } => {
@@ -362,11 +631,12 @@ impl Application {
                     Some("Voice is unavailable. Reconnect to Matrix and retry.".into());
                 return;
             }
-            Command::Send { room, .. } => {
+            Command::Send { room, .. } | Command::Edit { room, .. } => {
                 if self.state.sending.as_ref() == Some(room) {
                     self.state.sending = None;
                 }
             }
+            Command::Attach { .. } => self.state.attaching = false,
             Command::Earlier(room) => {
                 if self.state.selected.as_ref() == Some(room) {
                     self.state.loading_history = false;
@@ -387,6 +657,7 @@ impl Application {
         self.state.busy = false;
         self.state.online = false;
         self.state.sending = None;
+        self.state.attaching = false;
         self.state.loading_history = false;
         if self.state.account.is_some() && (self.state.notice.is_none() || was_busy) {
             self.state.notice = Some(STOPPED.into());
@@ -417,6 +688,7 @@ impl Application {
             self.select(id)
         } else {
             self.state.selected = None;
+            self.state.confirm_delete = None;
             self.state.room_ready = false;
             self.state.loading_history = false;
             self.state.notice = None;
@@ -443,6 +715,7 @@ impl Application {
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
         self.state.selected = Some(id.clone());
+        self.state.confirm_delete = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
         self.state.notice = None;
@@ -466,38 +739,102 @@ impl Application {
         }
         let id = self.state.selected.clone().expect("selected room exists");
         let body = self.state.draft().to_owned();
-        if body.len() > 16_000 {
+        if body.len() > chat::MAX_MESSAGE_BYTES {
             self.state.notice = Some("Keep messages under 16 KB.".into());
             return vec![];
         }
+        let compose = self.state.compose.get(&id).cloned();
         if self.state.preview {
-            let messages = self.samples.entry(id.clone()).or_default();
-            messages.push(ChatMessage {
-                id: uuid::Uuid::new_v4().to_string(),
-                author: "You".into(),
-                body,
-                time: "Local preview".into(),
-                own: true,
-            });
-            self.state.messages = Arc::new(messages.clone());
-            self.state.drafts.remove(&id);
-            vec![]
-        } else {
-            let retry = self
-                .retries
-                .entry(id.clone())
-                .or_insert_with(|| (body.clone(), uuid::Uuid::new_v4().to_string()));
-            if retry.0 != body {
-                *retry = (body.clone(), uuid::Uuid::new_v4().to_string());
+            match compose {
+                Some(Compose::Edit { item, .. }) => {
+                    self.update_sample(&id, &item, |message| {
+                        message.body = body.clone();
+                        message.formatted = has_markdown(&body);
+                        message.edited = true;
+                    });
+                    self.finish_compose(&id);
+                }
+                compose => {
+                    let item = uuid::Uuid::new_v4().to_string();
+                    let messages = self.samples.entry(id.clone()).or_default();
+                    messages.push(ChatMessage {
+                        id: item.clone(),
+                        item,
+                        author: "You".into(),
+                        formatted: has_markdown(&body),
+                        body,
+                        time: "Local preview".into(),
+                        own: true,
+                        reply: match compose {
+                            Some(Compose::Reply { author, body, .. }) => {
+                                Some(Reply { author, body })
+                            }
+                            _ => None,
+                        },
+                        ..sample_actions()
+                    });
+                    self.state.messages = Arc::new(messages.clone());
+                    self.state.drafts.remove(&id);
+                    self.state.compose.remove(&id);
+                }
             }
-            let transaction = retry.1.clone();
-            self.state.sending = Some(id.clone());
-            self.state.notice = None;
-            vec![Effect::Backend(Command::Send {
+            return vec![];
+        }
+        self.state.sending = Some(id.clone());
+        self.state.notice = None;
+        match compose {
+            Some(Compose::Edit { item, .. }) => vec![Effect::Backend(Command::Edit {
+                room: id,
+                item,
+                body,
+            })],
+            Some(Compose::Reply { item, .. }) => vec![Effect::Backend(Command::Send {
                 room: id,
                 body,
-                transaction,
-            })]
+                reply: Some(item),
+            })],
+            None => vec![Effect::Backend(Command::Send {
+                room: id,
+                body,
+                reply: None,
+            })],
+        }
+    }
+
+    /// Leave reply or edit mode, restoring the draft an edit replaced.
+    fn finish_compose(&mut self, room: &str) {
+        if let Some(Compose::Edit { draft, .. }) = self.state.compose.remove(room) {
+            if draft.is_empty() {
+                self.state.drafts.remove(room);
+            } else {
+                self.state.drafts.insert(room.to_owned(), draft);
+            }
+        }
+    }
+
+    fn queue_action(
+        &mut self,
+        item: String,
+        command: impl FnOnce(String, String) -> Command,
+    ) -> Vec<Effect> {
+        if self.state.preview
+            || !self
+                .state
+                .message(&item)
+                .is_some_and(|message| message.delivery != chat::Delivery::Sent)
+        {
+            return vec![];
+        }
+        let room = self.state.selected.clone().expect("selected room exists");
+        vec![Effect::Backend(command(room, item))]
+    }
+
+    fn update_sample(&mut self, room: &str, item: &str, change: impl FnOnce(&mut ChatMessage)) {
+        if let Some(messages) = self.samples.get_mut(room)
+            && let Some(message) = messages.iter_mut().find(|message| message.item == item)
+        {
+            change(message);
+            self.state.messages = Arc::new(messages.clone());
         }
     }
 
@@ -607,10 +944,14 @@ impl Application {
                     .enumerate()
                     .map(|(i, (author, body))| ChatMessage {
                         id: format!("{room}-{i}"),
+                        item: format!("{room}-{i}"),
                         author: author.into(),
                         body: body.into(),
                         time: format!("19:{:02}", 20 + i),
                         own: author == "You",
+                        can_edit: author == "You",
+                        can_delete: author == "You",
+                        ..sample_actions()
                     })
                     .collect(),
             );
@@ -643,6 +984,8 @@ impl Application {
                             local: true,
                             muted: true,
                             speaking: false,
+                            connected: true,
+                            problem: None,
                         }],
                         ..Default::default()
                     };
@@ -675,7 +1018,25 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         voice: false,
         encrypted: true,
         members,
+        unread: 0,
+        mentions: 0,
     }
+}
+
+/// Preview messages support every local action; sent ones are also editable.
+fn sample_actions() -> ChatMessage {
+    ChatMessage {
+        can_reply: true,
+        can_edit: true,
+        can_delete: true,
+        can_react: true,
+        ..Default::default()
+    }
+}
+
+/// Preview messages render as Markdown when they contain its punctuation.
+fn has_markdown(body: &str) -> bool {
+    body.contains(['*', '_', '`', '~', '['])
 }
 
 #[cfg(test)]
@@ -730,13 +1091,6 @@ mod tests {
         }
     }
 
-    fn transaction(command: &Command) -> &str {
-        match command {
-            Command::Send { transaction, .. } => transaction,
-            _ => panic!("expected send command"),
-        }
-    }
-
     #[test]
     fn navigation_restores_each_scope_selection_and_draft() {
         let mut app = connected();
@@ -779,36 +1133,50 @@ mod tests {
         assert_eq!(app.state.selected.as_deref(), Some("dm"));
     }
 
+    fn message(item: &str, own: bool) -> ChatMessage {
+        ChatMessage {
+            id: item.into(),
+            item: item.into(),
+            author: if own { "Alice" } else { "Bob" }.into(),
+            body: format!("Body of {item}"),
+            own,
+            can_reply: true,
+            can_edit: own,
+            can_delete: own,
+            can_react: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn retries_reuse_transaction_until_body_changes_and_keep_newer_drafts() {
+    fn failed_sends_keep_the_draft_and_newer_drafts_survive_confirmation() {
         let mut app = connected();
-        app.dispatch(Action::SetDraft("First".into()));
-        let first = send_command(app.dispatch(Action::Send));
+        assert!(matches!(
+            app.dispatch(Action::SetDraft("First".into())).as_slice(),
+            [Effect::Backend(Command::SaveDraft { room, body })] if room == "dm" && body == "First"
+        ));
+        assert!(app.dispatch(Action::SetDraft("First".into())).is_empty());
+        assert!(matches!(
+            send_command(app.dispatch(Action::Send)),
+            Command::Send { reply: None, .. }
+        ));
+        assert!(app.dispatch(Action::Send).is_empty(), "one send at a time");
         app.apply(Event::SendResult {
             room: "dm".into(),
             body: "First".into(),
             result: Err("offline"),
         });
-        let retry = send_command(app.dispatch(Action::Send));
-        assert_eq!(transaction(&first), transaction(&retry));
-        app.apply(Event::SendResult {
-            room: "dm".into(),
-            body: "First".into(),
-            result: Err("offline"),
-        });
-        app.dispatch(Action::SetDraft("Edited".into()));
-        let edited = send_command(app.dispatch(Action::Send));
-        assert_ne!(transaction(&first), transaction(&edited));
+        assert_eq!(app.state.draft(), "First");
+        assert_eq!(app.state.notice.as_deref(), Some("offline"));
+        send_command(app.dispatch(Action::Send));
         app.dispatch(Action::SetDraft("Next message".into()));
         app.apply(Event::SendResult {
             room: "dm".into(),
-            body: "Edited".into(),
+            body: "First".into(),
             result: Ok(()),
         });
         assert_eq!(app.state.draft(), "Next message");
         assert!(app.state.sending.is_none());
-        let next = send_command(app.dispatch(Action::Send));
-        assert_ne!(transaction(&edited), transaction(&next));
         app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
         app.dispatch(Action::SetDraft("Other room draft".into()));
         app.apply(Event::SendResult {
@@ -817,8 +1185,133 @@ mod tests {
             result: Ok(()),
         });
         assert_eq!(app.state.draft(), "Other room draft");
-        app.dispatch(Action::Navigate(Navigation::DirectMessages));
-        assert!(app.state.draft().is_empty());
+    }
+
+    #[test]
+    fn replies_edits_and_saved_drafts_share_one_composer() {
+        let mut app = connected();
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![message("e:$bob", false), message("e:$mine", true)],
+        });
+        app.apply(Event::Draft {
+            room: "dm".into(),
+            body: "Saved earlier".into(),
+        });
+        assert_eq!(app.state.draft(), "Saved earlier");
+        app.dispatch(Action::SetDraft("Typed now".into()));
+        app.apply(Event::Draft {
+            room: "dm".into(),
+            body: "Stale".into(),
+        });
+        assert_eq!(app.state.draft(), "Typed now");
+
+        assert!(app.dispatch(Action::Edit("e:$bob".into())).is_empty());
+        assert!(
+            app.state.compose().is_none(),
+            "only own messages are editable"
+        );
+        app.dispatch(Action::Reply("e:$bob".into()));
+        assert!(
+            matches!(app.state.compose(), Some(Compose::Reply { author, .. }) if author == "Bob")
+        );
+        assert!(matches!(
+            send_command(app.dispatch(Action::Send)),
+            Command::Send { reply: Some(item), body, .. } if item == "e:$bob" && body == "Typed now"
+        ));
+        app.apply(Event::SendResult {
+            room: "dm".into(),
+            body: "Typed now".into(),
+            result: Ok(()),
+        });
+        assert!(app.state.compose().is_none() && app.state.draft().is_empty());
+
+        app.dispatch(Action::SetDraft("Unsent".into()));
+        app.dispatch(Action::Edit("e:$mine".into()));
+        assert_eq!(app.state.draft(), "Body of e:$mine");
+        assert!(
+            app.dispatch(Action::SetDraft("Corrected".into()))
+                .is_empty(),
+            "edits are not saved as drafts"
+        );
+        let effects = app.dispatch(Action::Send);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::Edit { item, body, .. })] if item == "e:$mine" && body == "Corrected"
+        ));
+        app.apply(Event::EditResult {
+            room: "dm".into(),
+            item: "e:$mine".into(),
+            result: Err("refused"),
+        });
+        assert_eq!(app.state.draft(), "Corrected");
+        app.dispatch(Action::Send);
+        app.apply(Event::EditResult {
+            room: "dm".into(),
+            item: "e:$mine".into(),
+            result: Ok(()),
+        });
+        assert_eq!(app.state.draft(), "Unsent");
+        app.dispatch(Action::Edit("e:$mine".into()));
+        app.dispatch(Action::CancelCompose);
+        assert_eq!(app.state.draft(), "Unsent");
+    }
+
+    #[test]
+    fn deletion_needs_confirmation_and_queue_actions_need_a_pending_message() {
+        let mut app = connected();
+        let mut pending = message("t:txn", true);
+        pending.delivery = chat::Delivery::Failed;
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![message("e:$bob", false), message("e:$mine", true), pending],
+        });
+        app.dispatch(Action::RequestDelete("e:$bob".into()));
+        assert!(app.state.confirm_delete.is_none());
+        app.dispatch(Action::RequestDelete("e:$mine".into()));
+        app.dispatch(Action::CancelDelete);
+        assert!(app.dispatch(Action::ConfirmDelete).is_empty());
+        app.dispatch(Action::RequestDelete("e:$mine".into()));
+        assert!(matches!(
+            app.dispatch(Action::ConfirmDelete).as_slice(),
+            [Effect::Backend(Command::Delete { item, .. })] if item == "e:$mine"
+        ));
+        assert!(app.dispatch(Action::Retry("e:$mine".into())).is_empty());
+        assert!(matches!(
+            app.dispatch(Action::Retry("t:txn".into())).as_slice(),
+            [Effect::Backend(Command::Retry { .. })]
+        ));
+        assert!(matches!(
+            app.dispatch(Action::CancelSend("t:txn".into())).as_slice(),
+            [Effect::Backend(Command::Cancel { .. })]
+        ));
+        assert!(matches!(
+            app.dispatch(Action::React { item: "e:$bob".into(), key: "👍".into() }).as_slice(),
+            [Effect::Backend(Command::React { key, .. })] if key == "👍"
+        ));
+        assert!(matches!(
+            app.dispatch(Action::Attach("/tmp/a.png".into())).as_slice(),
+            [Effect::Backend(Command::Attach { .. })]
+        ));
+        assert!(
+            app.dispatch(Action::Attach("/tmp/b.png".into())).is_empty(),
+            "one file at a time"
+        );
+        app.apply(Event::AttachResult {
+            room: "dm".into(),
+            result: Err("too large"),
+        });
+        assert!(!app.state.attaching);
+        assert_eq!(app.state.notice.as_deref(), Some("too large"));
+        app.state.trusted = false;
+        assert!(
+            app.dispatch(Action::React {
+                item: "e:$bob".into(),
+                key: "👍".into()
+            })
+            .is_empty()
+        );
+        assert!(app.dispatch(Action::Attach("/tmp/a.png".into())).is_empty());
     }
 
     #[test]
@@ -830,7 +1323,6 @@ mod tests {
         assert!(app.state.sending.is_none());
         assert_eq!(app.state.draft(), "Retry me");
         let retry = send_command(app.dispatch(Action::Send));
-        assert_eq!(transaction(&first), transaction(&retry));
         app.backend_failed(&retry);
         assert!(matches!(
             app.dispatch(Action::Logout).as_slice(),
@@ -867,7 +1359,7 @@ mod tests {
                 author: "Other".into(),
                 body: "Stale".into(),
                 time: "now".into(),
-                own: false,
+                ..Default::default()
             }],
         });
         assert!(Arc::ptr_eq(&messages, &app.state.messages));

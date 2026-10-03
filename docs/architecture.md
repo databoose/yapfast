@@ -17,8 +17,10 @@ flowchart LR
 ## Shared application behavior
 
 [`application.rs`](../crates/talk-core/src/application.rs) owns navigation,
-remembered channels, per-room drafts, selected timelines, send retries, account
-and trust status, history loading, call controls and voice-switch confirmation.
+remembered channels, per-room drafts, reply and edit modes, delete confirmation,
+selected timelines, account and trust status, history loading, call controls and
+voice-switch confirmation. The backend saves drafts in the encrypted session
+store and sends through the SDK's persistent send queue, which owns retries.
 Its local preview uses the same model and emits no network effects.
 
 A client sends an `Action` to `Application::dispatch` and applies backend events
@@ -70,7 +72,7 @@ behavior without claiming the native backend already runs on the web or Android.
 
 Framework experiments can use the shared preview first and connect to the same
 native backend afterward. They must preserve the model's behavior rather than
-implement their own drafts, retry IDs or voice lifecycle.
+implement their own drafts, send handling or voice lifecycle.
 
 ## Checks and packaging
 

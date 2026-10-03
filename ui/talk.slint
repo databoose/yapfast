@@ -19,6 +19,14 @@ component ActionButton inherits Rectangle {
     in property <bool> primary;
     in property <bool> ghost;
     in property <bool> align-left;
+    /// Unread activity: bold text, with a dot at the end unless a badge is shown.
+    in property <bool> unread;
+    /// A mention count shown at the end of the button.
+    in property <string> badge;
+    /// Unread activity without a count, such as on a server icon.
+    in property <bool> dot;
+    /// Empty uses the default font.
+    in property <string> font-family;
     callback clicked;
     min-width: max(36px, content.preferred-width + 20px);
     min-height: 34px;
@@ -44,8 +52,20 @@ component ActionButton inherits Rectangle {
         }
         if root.text != "": Text {
             text: root.text; color: !root.enabled ? Theme.muted : root.primary ? #171717 : Theme.foreground;
-            vertical-alignment: center; overflow: elide;
+            font-weight: root.unread || root.badge != "" ? 600 : 400; font-family: root.font-family;
+            vertical-alignment: center; overflow: elide; horizontal-stretch: root.align-left ? 1 : 0;
         }
+        if root.unread && root.badge == "": Rectangle {
+            width: 8px;
+            Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: Theme.foreground; }
+        }
+        if root.badge != "": Rectangle {
+            min-width: max(20px, badge-text.preferred-width + 10px); height: 18px; border-radius: 9px; background: Theme.foreground;
+            badge-text := Text { text: root.badge; color: #171717; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+    if root.dot: Rectangle {
+        x: parent.width - 10px; y: 2px; width: 8px; height: 8px; border-radius: 4px; background: Theme.foreground;
     }
     focus := FocusScope {
         enabled: root.enabled;
@@ -62,14 +82,63 @@ component ActionButton inherits Rectangle {
     }
 }
 
+// A dismissible message that applies to the whole window, such as a renderer fallback.
+component Banner inherits Rectangle {
+    in-out property <string> text;
+    min-height: banner-content.preferred-height; vertical-stretch: 0; background: #262626;
+    banner-content := HorizontalLayout {
+        padding-left: 24px; padding-right: 16px; padding-top: 8px; padding-bottom: 8px; spacing: 12px;
+        Text { text: root.text; color: Theme.foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+        ActionButton { text: "Dismiss"; ghost: true; clicked => { root.text = ""; } }
+    }
+}
+
+// A compact text button for actions on a single message.
+component MessageAction inherits ActionButton {
+    min-height: 26px; ghost: true;
+}
+
+// A reaction on a message: the emoji in a color emoji font, then the count.
+component ReactionToggle inherits Rectangle {
+    in property <string> key;
+    in property <int> count;
+    in property <bool> mine;
+    in property <bool> enabled;
+    in property <string> emoji-font;
+    callback clicked;
+    min-width: chip.preferred-width; height: 26px; border-radius: 13px;
+    background: root.mine ? Theme.selected : pointer.has-hover && root.enabled ? #262626 : transparent;
+    border-width: 1px; border-color: root.mine ? #737373 : Theme.border;
+    accessible-role: button;
+    accessible-label: root.key + ", " + root.count + (root.mine ? ", including you. Remove your reaction" : ". Add this reaction");
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    chip := HorizontalLayout {
+        padding-left: 8px; padding-right: 10px; spacing: 6px;
+        Text { text: root.key; font-family: root.emoji-font; vertical-alignment: center; }
+        Text { text: root.count; color: Theme.foreground; font-size: 12px; vertical-alignment: center; }
+    }
+    pointer := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
 component Label inherits Text {
     color: Theme.muted; font-size: 12px; wrap: word-wrap;
     vertical-stretch: 0;
 }
 
-export struct ServerRow { id: string, name: string, initial: string, selected: bool }
-export struct RoomRow { id: string, name: string, heading: string, icon: image, selected: bool }
-export struct MessageRow { id: string, author: string, initial: string, body: string, time: string, own: bool }
+export struct ServerRow { id: string, name: string, initial: string, selected: bool, unread: bool }
+export struct RoomRow { id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string }
+export struct ReactionChip { key: string, count: int, mine: bool }
+export struct MessageRow {
+    id: string, item: string, author: string, initial: string, body: string, time: string, own: bool,
+    formatted: bool, styled: styled-text, edited: bool, deleted: bool,
+    reply-author: string, reply-body: string, has-reply: bool,
+    reactions: [ReactionChip],
+    attachment: string, attachment-detail: string, has-attachment: bool,
+    image: image, has-image: bool, image-width: int, image-height: int,
+    delivery: string, can-retry: bool, can-cancel: bool,
+    can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool,
+}
 export struct PersonRow { name: string, status: string, muted: bool }
 
 export component TalkWindow inherits Window {
@@ -86,6 +155,7 @@ export component TalkWindow inherits Window {
     in property <bool> online;
     in property <bool> restore-available;
     in property <bool> dms-selected;
+    in property <bool> dms-unread;
     in property <string> sidebar-title;
     in property <string> filter-placeholder;
     in property <string> sidebar-empty;
@@ -96,6 +166,7 @@ export component TalkWindow inherits Window {
     in property <string> account-status;
     in property <string> storage;
     in property <string> notice;
+    in-out property <string> graphics-notice;
     in property <string> room-name;
     in property <image> room-icon;
     in property <string> members;
@@ -108,6 +179,16 @@ export component TalkWindow inherits Window {
     in property <bool> sending;
     in property <bool> loading-history;
     in property <string> composer-hint;
+    /// "Replying to …" or "Editing your message"; empty for a new message.
+    in property <string> compose-label;
+    in property <bool> can-attach;
+    in property <bool> attaching;
+    in property <string> confirm-delete;
+    in-out property <string> react-item;
+    in-out property <string> active-item;
+    in property <[string]> quick-reactions: ["👍", "❤️", "😂", "🎉", "😮", "😢"];
+    /// The platform's color emoji font, so reactions do not fall back to outline glyphs.
+    in property <string> emoji-font;
     in-out property <string> homeserver: "https://matrix.org";
     in-out property <string> username;
     in-out property <string> password;
@@ -127,6 +208,7 @@ export component TalkWindow inherits Window {
     in property <string> voice-microphone-status;
     in property <string> voice-description;
     in property <string> voice-error;
+    in property <string> voice-warning;
     in property <[PersonRow]> participants;
     in property <string> switch-prompt;
     in-out property <bool> audio-settings;
@@ -159,13 +241,47 @@ export component TalkWindow inherits Window {
     callback refresh-devices;
     callback select-microphone(int);
     callback select-speaker(int);
+    callback reply(string);
+    callback edit(string);
+    callback react(string, string);
+    callback request-delete(string);
+    callback confirm-delete-message;
+    callback cancel-delete;
+    callback retry(string);
+    callback cancel-send(string);
+    callback attach;
+    callback save-attachment(string);
+    callback cancel-compose;
+    callback dismiss-notice;
 
     public function focus-composer() { composer.focus(); }
     public function focus-sign-in() { username-field.focus(); }
     public function timeline-at-end() -> bool { return timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 8px; }
     public function timeline-extent() -> length { return timeline.content-height; }
-    public function scroll-to-latest() { timeline.content-y = min(0px, timeline.height - timeline.content-height); }
+    public function scroll-to-latest() {
+        root.follow-latest = true;
+        timeline.content-y = min(0px, timeline.height - timeline.content-height);
+    }
+    // While the newest message is in view, keep it there as rows grow, for example
+    // when an image preview or a reaction arrives after the row first appeared.
+    // The list may shift or reset its position before reporting the new height, so
+    // being at the end is judged against the smaller of the old and new heights.
+    property <bool> follow-latest: true;
+    property <length> known-content;
+    property <length> timeline-position: timeline.content-y;
+    property <length> timeline-content: timeline.content-height;
+    // The composer grows for a reply or edit, which shortens the list.
+    property <length> timeline-viewport: timeline.height;
+    changed timeline-viewport => { if root.follow-latest { root.scroll-to-latest(); } }
+    changed timeline-position => { root.follow-latest = timeline.content-y <= min(0px, timeline.height - min(root.known-content, timeline.content-height)) + 8px; }
+    changed timeline-content => {
+        root.known-content = timeline.content-height;
+        if root.follow-latest { root.scroll-to-latest(); }
+    }
     public function preserve-history-position(delta: length) { timeline.content-y = timeline.content-y - delta; }
+    // Formatted messages are not selectable, so Copy goes through a hidden text field.
+    function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
+    clipboard := TextInput { visible: false; width: 0px; height: 0px; }
 
 
     changed audio-settings => {
@@ -206,7 +322,7 @@ export component TalkWindow inherits Window {
                 if !root.workspace: Text { text: "T"; font-size: 20px; font-weight: 600; color: Theme.foreground; horizontal-alignment: center; vertical-stretch: 0; }
                 if root.workspace: ActionButton {
                     height: 40px; width: 40px; ghost: true;
-                    icon: @image-url("icons/message-circle.svg"); label: "Direct messages"; selected: root.dms-selected;
+                    icon: @image-url("icons/message-circle.svg"); label: root.dms-unread ? "Direct messages, unread" : "Direct messages"; selected: root.dms-selected; dot: root.dms-unread;
                     clicked => { root.navigate-dms(); }
                 }
                 if root.workspace: Rectangle { height: 1px; background: Theme.border; }
@@ -216,7 +332,7 @@ export component TalkWindow inherits Window {
                         spacing: 12px;
                         for server in root.servers: ActionButton {
                             height: 40px; width: 40px; ghost: true;
-                            text: server.initial; label: "Server: " + server.name; selected: server.selected;
+                            text: server.initial; label: "Server: " + server.name + (server.unread ? ", unread" : ""); selected: server.selected; dot: server.unread;
                             clicked => { root.navigate-server(server.id); }
                         }
                         Rectangle { vertical-stretch: 1; }
@@ -247,6 +363,7 @@ export component TalkWindow inherits Window {
                         LineEdit { text <=> root.password; input-type: InputType.password; enabled: !root.busy; accessible-label: "Password"; accepted => { root.login(); } }
                         ActionButton { text: root.busy ? "Connecting..." : "Sign in"; primary: true; enabled: !root.busy; clicked => { root.login(); } }
                         if root.notice != "": Text { text: root.notice; color: Theme.foreground; wrap: word-wrap; }
+                        if root.graphics-notice != "": Banner { text <=> root.graphics-notice; }
                         if root.restore-available && !root.busy: ActionButton { text: "Retry saved session"; clicked => { root.restore(); } }
                         Label { text: "Use an existing account. Password sign-in is supported in this build."; }
                         Rectangle { height: 1px; background: Theme.border; }
@@ -284,7 +401,7 @@ export component TalkWindow inherits Window {
                                 if room.heading != "": Label { text: room.heading; height: 28px; vertical-alignment: bottom; }
                                 ActionButton {
                                     min-width: 36px;
-                                    text: room.name; label: room.name; icon: room.icon; selected: room.selected; ghost: true; align-left: true;
+                                    text: room.name; label: room.name + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : ""); icon: room.icon; selected: room.selected; ghost: true; align-left: true; unread: room.unread; badge: room.badge;
                                     clicked => { root.select-room(room.id); }
                                 }
                             }
@@ -303,6 +420,10 @@ export component TalkWindow inherits Window {
                             ActionButton { width: 36px; ghost: true; icon: @image-url("icons/headphones.svg"); label: root.deafened ? "Undeafen" : "Deafen"; selected: root.deafened; enabled: root.voice-ready; clicked => { root.toggle-deafen(); } }
                             ActionButton { width: 36px; ghost: true; icon: @image-url("icons/settings.svg"); label: "Audio devices"; selected: root.audio-settings; clicked => { root.audio-settings = !root.audio-settings; if root.audio-settings { root.refresh-devices(); } } }
                             ActionButton { text: "Leave"; ghost: true; enabled: !root.voice-leaving; clicked => { root.leave-voice(); } }
+                        }
+                        if root.voice-warning != "" && root.voice-error == "": ScrollView {
+                            max-height: 64px;
+                            Label { text: root.voice-warning; }
                         }
                         if root.voice-error != "": ScrollView {
                             max-height: 48px;
@@ -353,9 +474,14 @@ export component TalkWindow inherits Window {
                         }
                     }
                 }
+                if root.graphics-notice != "": Banner { text <=> root.graphics-notice; }
                 if root.notice != "": Rectangle {
-                    min-height: notice-text.preferred-height + 16px; vertical-stretch: 0; background: #262626;
-                    notice-text := Text { x: 24px; y: 8px; width: parent.width - 48px; text: root.notice; color: Theme.foreground; wrap: word-wrap; }
+                    min-height: notice-content.preferred-height; vertical-stretch: 0; background: #262626;
+                    notice-content := HorizontalLayout {
+                        padding-left: 24px; padding-right: 16px; padding-top: 8px; padding-bottom: 8px; spacing: 12px;
+                        Text { text: root.notice; color: Theme.foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                        ActionButton { text: "Dismiss"; ghost: true; clicked => { root.dismiss-notice(); } }
+                    }
                 }
                 if root.voice-room: ScrollView {
                     vertical-stretch: 1;
@@ -370,7 +496,7 @@ export component TalkWindow inherits Window {
                             spacing: 12px;
                             Image { source: person.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg"); width: 18px; height: 18px; colorize: Theme.foreground; }
                             Text { text: person.name; color: Theme.foreground; overflow: elide; horizontal-stretch: 1; }
-                            Label { text: person.status; }
+                            Label { text: person.status; horizontal-stretch: 2; horizontal-alignment: right; }
                         }
                         if root.switch-prompt != "": VerticalLayout {
                             spacing: 8px;
@@ -397,21 +523,102 @@ export component TalkWindow inherits Window {
                     vertical-stretch: root.voice-room ? 0 : 1;
                     for message in root.messages: Rectangle {
                         min-height: message-content.preferred-height + 24px;
-                        HorizontalLayout {
-                            padding-left: 24px; padding-right: 24px; padding-top: 12px; padding-bottom: 12px; spacing: 12px;
-                            Rectangle {
-                                width: 32px; height: 32px; border-radius: 6px; background: message.own ? #363636 : #232323;
-                                Text { text: message.initial; color: Theme.foreground; horizontal-alignment: center; vertical-alignment: center; font-weight: 600; }
-                            }
-                            message-content := VerticalLayout {
-                                spacing: 4px;
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    Text { text: message.author; color: Theme.foreground; font-weight: 600; overflow: elide; }
-                                    Label { text: message.time; }
-                                    Rectangle { horizontal-stretch: 1; }
+                        background: root.active-item == message.item ? #111111 : transparent;
+                        // The pointer area wraps the row, so hovering selectable text still counts.
+                        // The last hovered or clicked message keeps its actions: the list takes
+                        // the pointer when a press starts, which ends hover, so a hover-only bar
+                        // would vanish before its button saw the click.
+                        row-pointer := TouchArea {
+                            changed has-hover => { if self.has-hover { root.active-item = message.item; } }
+                            clicked => { root.active-item = message.item; }
+                            HorizontalLayout {
+                                padding-left: 24px; padding-right: 24px; padding-top: 12px; padding-bottom: 12px; spacing: 12px;
+                                Rectangle {
+                                    width: 32px; height: 32px; border-radius: 6px; background: message.own ? #363636 : #232323;
+                                    Text { text: message.initial; color: Theme.foreground; horizontal-alignment: center; vertical-alignment: center; font-weight: 600; }
                                 }
-                                TextInput { text: message.body; color: Theme.foreground; read-only: true; single-line: false; wrap: word-wrap; selection-background-color: #4a4a4a; selection-foreground-color: #ffffff; accessible-label: "Message from " + message.author; }
+                                message-content := VerticalLayout {
+                                    spacing: 4px; horizontal-stretch: 1;
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Text { text: message.author; color: Theme.foreground; font-weight: 600; overflow: elide; }
+                                        Label { text: message.edited ? message.time + " (edited)" : message.time; wrap: no-wrap; }
+                                        Rectangle { horizontal-stretch: 1; }
+                                    }
+                                    if message.has-reply: HorizontalLayout {
+                                        spacing: 8px;
+                                        Rectangle { width: 2px; background: Theme.border; }
+                                        Label { text: message.reply-author != "" ? message.reply-author + ": " + message.reply-body : message.reply-body; overflow: elide; wrap: no-wrap; }
+                                    }
+                                    if message.formatted: StyledText { text: message.styled; default-color: Theme.foreground; link-color: #93c5fd; accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body; }
+                                    if !message.formatted && message.body != "": TextInput { text: message.body; color: message.deleted ? Theme.muted : Theme.foreground; read-only: true; single-line: false; wrap: word-wrap; selection-background-color: #4a4a4a; selection-foreground-color: #ffffff; accessible-label: "Message from " + message.author; }
+                                    // Fixed-size children sit beside a spacer, so they do not cap the column's width.
+                                    if message.has-image: HorizontalLayout {
+                                        Rectangle {
+                                            width: message.image-width * 1px; height: message.image-height * 1px; border-radius: 6px; clip: true; background: #171717;
+                                            Image { source: message.image; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: message.attachment; }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                    }
+                                    if message.has-attachment: HorizontalLayout {
+                                        Rectangle {
+                                            min-height: file-card.preferred-height; max-width: 420px; horizontal-stretch: 100;
+                                            border-color: Theme.border; border-width: 1px; border-radius: 6px;
+                                            file-card := HorizontalLayout {
+                                                padding: 8px; padding-left: 12px; spacing: 12px;
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 1;
+                                                    Text { text: message.attachment; color: Theme.foreground; overflow: elide; }
+                                                    if message.attachment-detail != "": Label { text: message.attachment-detail; }
+                                                }
+                                                ActionButton { text: "Save"; ghost: true; enabled: !root.preview && message.delivery == ""; clicked => { root.save-attachment(message.item); } }
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                    }
+                                    if message.reactions.length > 0: HorizontalLayout {
+                                        spacing: 6px; alignment: start;
+                                        for reaction in message.reactions: ReactionToggle {
+                                            key: reaction.key; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
+                                            enabled: message.can-react && root.composer-enabled;
+                                            clicked => { root.react(message.item, reaction.key); }
+                                        }
+                                    }
+                                    if message.delivery != "": HorizontalLayout {
+                                        spacing: 8px; alignment: start;
+                                        Label { text: message.delivery; vertical-alignment: center; }
+                                        if message.can-retry: MessageAction { text: "Retry"; clicked => { root.retry(message.item); } }
+                                        if message.can-cancel: MessageAction { text: "Cancel"; clicked => { root.cancel-send(message.item); } }
+                                    }
+                                }
+                            }
+                            // Actions, the reaction picker and delete confirmation float over the
+                            // row's top edge, so opening them never moves the timeline.
+                            if (root.active-item == message.item || root.react-item == message.item || root.confirm-delete == message.item) && !message.deleted && message.delivery == "": Rectangle {
+                                x: parent.width - self.width - 24px; y: 4px; width: actions.preferred-width; height: actions.preferred-height;
+                                background: Theme.sidebar; border-color: Theme.border; border-width: 1px; border-radius: 6px;
+                                actions := HorizontalLayout {
+                                    padding: 2px; spacing: 2px;
+                                    if root.confirm-delete == message.item: Text { text: "Delete for everyone?"; color: Theme.foreground; vertical-alignment: center; }
+                                    if root.confirm-delete == message.item: MessageAction { text: "Delete"; primary: true; clicked => { root.confirm-delete-message(); } }
+                                    if root.confirm-delete == message.item: MessageAction { text: "Cancel"; clicked => { root.cancel-delete(); } }
+                                    if root.react-item == message.item && root.confirm-delete != message.item: HorizontalLayout {
+                                        spacing: 2px;
+                                        for key in root.quick-reactions: MessageAction {
+                                            text: key; label: "React with " + key; font-family: root.emoji-font;
+                                            clicked => { root.react(message.item, key); root.react-item = ""; }
+                                        }
+                                        MessageAction { text: "Close"; clicked => { root.react-item = ""; } }
+                                    }
+                                    if root.react-item != message.item && root.confirm-delete != message.item: HorizontalLayout {
+                                        spacing: 2px;
+                                        if message.can-react && root.composer-enabled: MessageAction { text: "React"; clicked => { root.react-item = message.item; } }
+                                        if message.can-reply && root.composer-enabled: MessageAction { text: "Reply"; clicked => { root.reply(message.item); root.focus-composer(); } }
+                                        if message.can-edit && root.composer-enabled: MessageAction { text: "Edit"; clicked => { root.edit(message.item); root.focus-composer(); } }
+                                        if message.body != "": MessageAction { text: "Copy"; clicked => { root.copy-text(message.body); } }
+                                        if message.can-delete && root.composer-enabled: MessageAction { text: "Delete"; clicked => { root.request-delete(message.item); } }
+                                    }
+                                }
                             }
                         }
                     }
@@ -425,10 +632,16 @@ export component TalkWindow inherits Window {
                     min-height: 0px;
                     max-height: root.voice-room ? 0px : 100000px;
                     padding: 24px; padding-top: 12px; spacing: 8px; vertical-stretch: 0;
+                    if root.compose-label != "": HorizontalLayout {
+                        spacing: 8px;
+                        Label { text: root.compose-label; vertical-alignment: center; overflow: elide; wrap: no-wrap; horizontal-stretch: 1; }
+                        MessageAction { text: "Cancel"; clicked => { root.cancel-compose(); } }
+                    }
                     HorizontalLayout {
                         spacing: 12px;
-                        composer := LineEdit { text <=> root.draft; enabled: root.composer-enabled; placeholder-text: "Write a message"; accessible-label: "Message"; edited => { root.draft-edited(self.text); } accepted => { root.send(); } }
-                        ActionButton { text: root.sending ? "Sending..." : "Send"; primary: true; enabled: root.can-send; clicked => { root.send(); } }
+                        ActionButton { text: root.attaching ? "Attaching..." : "Attach"; ghost: true; label: "Attach a file"; enabled: root.can-attach; clicked => { root.attach(); } }
+                        composer := LineEdit { text <=> root.draft; enabled: root.composer-enabled; placeholder-text: root.compose-label == "Editing your message" ? "Edit your message" : root.compose-label != "" ? "Write a reply" : "Write a message"; accessible-label: "Message"; edited => { root.draft-edited(self.text); } accepted => { root.send(); } }
+                        ActionButton { text: root.sending ? "Sending..." : root.compose-label == "Editing your message" ? "Save" : "Send"; primary: true; enabled: root.can-send; clicked => { root.send(); } }
                     }
                     Label { text: root.composer-hint; }
                 }

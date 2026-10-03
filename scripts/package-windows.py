@@ -100,7 +100,9 @@ def main():
             "If anything fails, record the error text, Windows version, GPU and\n"
             "audio device model. Never send your password or recovery key in logs.\n\n"
             "If Talk closes immediately, run run-talk.cmd to keep its error visible.\n\n"
-            "For software rendering, run run-talk.cmd --renderer software.\n\n"
+            "Talk switches to software rendering if the GPU cannot start.\n"
+            "To choose it yourself, run run-talk.cmd --renderer software.\n"
+            "To retry the GPU after a fallback, run run-talk.cmd --renderer gpu.\n\n"
             "Source snapshot, dependency notices and original licenses are included.\n",
             encoding="utf-8",
         )
@@ -160,7 +162,7 @@ def main():
             "rustc": subprocess.check_output(["rustc", "--version"], text=True, timeout=10).strip(),
             "cargo_xwin": subprocess.check_output(["cargo", "xwin", "--version"], text=True, timeout=10).strip(),
             "ui_framework": "Slint 1.18.1",
-            "renderer_default": "skia",
+            "renderer_default": "skia-opengl, falling back to skia-software",
             "renderer_software": "skia-software",
             "skia_version": "0.153.3",
             "skia_source_revision": "61e7ca4e99062cdd0ab69445d5963fb3365778f6",

@@ -1,49 +1,76 @@
 //! Slint presentation and event-loop adapter for the shared application.
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{
+    ComponentHandle, Model, ModelRc, SharedString, VecModel, winit_030::WinitWindowAccessor,
+};
 use talk_core::{
-    application::{Action, Application, Effect, Navigation},
+    application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, Event},
+    chat::{ChatMessage, Delivery, Event, Picture},
     runtime::BackgroundRuntime,
     voice::{self, Phase},
 };
 
+use crate::graphics;
+
 slint::include_modules!();
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Renderer {
-    #[default]
-    Gpu,
-    Software,
+/// How the desktop window ended.
+pub enum Exit {
+    Closed,
+    /// The automatic GPU start failed; restart with Skia Software for this reason.
+    UseSoftware(String),
 }
 
-impl Renderer {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Gpu => "skia",
-            Self::Software => "skia-software",
-        }
-    }
-}
+/// Slint releases the first window after at most 500 ms of desktop appearance
+/// queries; this leaves time for the window, its GPU surface and first frames.
+/// Skia disables partial repainting while a rendering notifier is installed,
+/// so startup is confirmed by the native window rather than by a frame.
+const GPU_START_CONFIRMATION: Duration = Duration::from_secs(3);
 
 pub fn run(
     runtime: BackgroundRuntime,
     root: PathBuf,
     preview: bool,
-    renderer: Renderer,
-) -> Result<()> {
+    plan: graphics::Plan,
+) -> Result<Exit> {
+    // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
+    // surface; Talk owns the fallback and tells the user about it.
+    let renderer = match plan.renderer {
+        graphics::Renderer::Gpu => "skia-opengl",
+        graphics::Renderer::Software => "skia-software",
+    };
     slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name(renderer.name().into())
+        .renderer_name(renderer.into())
         .select()
         .context("could not select the Slint desktop backend")?;
-    let window = TalkWindow::new().context("could not create the Talk window")?;
-    window
-        .show()
-        .context("could not show Talk; try --renderer software")?;
+    let gpu = plan.start.map(Rc::new);
+    let failed = |error: slint::PlatformError, context: &'static str| -> Result<Exit> {
+        let reason = error.to_string();
+        if gpu.as_ref().is_some_and(|start| start.failed(&reason)) {
+            tracing::error!(%reason, "GPU rendering failed; restarting with Skia Software");
+            Ok(Exit::UseSoftware(reason))
+        } else {
+            Err(anyhow::Error::new(error).context(context))
+        }
+    };
+    let window = match TalkWindow::new() {
+        Ok(window) => window,
+        Err(error) => return failed(error, "could not create the Talk window"),
+    };
+    if let Err(error) = window.show() {
+        return failed(error, "could not show Talk; try --renderer software");
+    }
     // Only the private test compositor can request a different initial size.
     if std::env::var("TALK_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1")
         && let Ok(size) = std::env::var("TALK_UI_TEST_SIZE")
@@ -56,6 +83,16 @@ pub fn run(
             .window()
             .set_size(slint::PhysicalSize::new(width, height));
     }
+    window.set_emoji_font(
+        if cfg!(windows) {
+            "Segoe UI Emoji"
+        } else if cfg!(target_os = "macos") {
+            "Apple Color Emoji"
+        } else {
+            "Noto Color Emoji"
+        }
+        .into(),
+    );
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
     bind_callbacks(&window, &adapter);
     adapter.borrow_mut().refresh(&window);
@@ -66,10 +103,42 @@ pub fn run(
     } else {
         window.invoke_focus_sign_in();
     }
-    tracing::info!(renderer = renderer.name(), "Slint desktop window opened");
-    let result = window.run().context("Slint's desktop event loop failed");
+    window.set_graphics_notice(plan.notice.unwrap_or_default().into());
+    // Slint 1.18 keeps its event loop running when it creates a window late and
+    // the GPU surface fails, leaving no window. Check for the native window.
+    let missing_window = Rc::new(Cell::new(false));
+    if let Some(start) = &gpu {
+        let start = start.clone();
+        let missing_window = missing_window.clone();
+        let weak = window.as_weak();
+        slint::Timer::single_shot(GPU_START_CONFIRMATION, move || {
+            if weak
+                .upgrade()
+                .is_some_and(|window| window.window().has_winit_window())
+            {
+                start.confirm();
+            } else {
+                missing_window.set(true);
+                let _ = slint::quit_event_loop();
+            }
+        });
+    }
+    tracing::info!(renderer, "starting the Slint desktop window");
+    let result = window.run();
     adapter.borrow_mut().stop_backend();
-    result
+    match result {
+        Err(error) => failed(error, "Slint's desktop event loop failed"),
+        Ok(()) if missing_window.get() => failed(
+            "the window did not appear".into(),
+            "Talk's window did not appear; try --renderer software",
+        ),
+        Ok(()) => {
+            if let Some(start) = &gpu {
+                start.confirm();
+            }
+            Ok(Exit::Closed)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -103,6 +172,10 @@ struct Adapter {
     selection_version: u64,
     reset_version: u64,
     messages: Arc<Vec<ChatMessage>>,
+    /// Rows already built for unchanged messages, so the list keeps their state.
+    rows: HashMap<String, (ChatMessage, MessageRow)>,
+    /// One open or save dialog at a time; dropping it cancels the dialog's task.
+    dialog: Option<slint::JoinHandle<()>>,
 }
 
 impl Adapter {
@@ -138,8 +211,24 @@ impl Adapter {
                 selection_version: 0,
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
+                rows: HashMap::new(),
+                dialog: None,
             })
         }))
+    }
+
+    /// Run a native file dialog on Slint's executor, replacing any open one.
+    fn dialog(&mut self, task: impl std::future::Future<Output = ()> + 'static) {
+        if let Some(previous) = self.dialog.take() {
+            previous.abort();
+        }
+        match slint::spawn_local(task) {
+            Ok(handle) => self.dialog = Some(handle),
+            Err(error) => {
+                tracing::error!(%error, "could not open the file dialog");
+                self.app.state.notice = Some("Talk could not open a file dialog.".into());
+            }
+        }
     }
 
     fn stop_backend(&mut self) {
@@ -243,6 +332,12 @@ impl Adapter {
         window.set_online(state.online);
         window.set_restore_available(self.root.join("active.json").exists());
         window.set_dms_selected(state.navigation == Navigation::DirectMessages);
+        window.set_dms_unread(
+            state
+                .rooms
+                .iter()
+                .any(|room| room.direct && room.unread > 0),
+        );
         window.set_sidebar_title(match &state.navigation {
             Navigation::DirectMessages => "Direct messages".into(),
             Navigation::Server(id) => state
@@ -269,6 +364,9 @@ impl Adapter {
                     name: server.name.clone().into(),
                     initial: initial(&server.name),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
+                    unread: state.rooms.iter().any(|room| {
+                        room.unread > 0 && !room.direct && server.channels.contains(&room.id)
+                    }),
                 })
                 .collect(),
         );
@@ -302,6 +400,8 @@ impl Adapter {
                         self.icons.text.clone()
                     },
                     selected: Some(&room.id) == state.selected.as_ref(),
+                    unread: room.unread > 0,
+                    badge: mention_badge(room),
                 }
             })
             .collect();
@@ -357,6 +457,16 @@ impl Adapter {
                 && room.is_some_and(|room| !room.voice && (state.preview || room.encrypted)),
         );
         window.set_can_send(state.can_send());
+        window.set_can_attach(state.can_attach());
+        window.set_attaching(state.attaching);
+        window.set_confirm_delete(state.confirm_delete.clone().unwrap_or_default().into());
+        window.set_compose_label(match state.compose() {
+            Some(Compose::Reply { author, body, .. }) => {
+                format!("Replying to {author}: {body}").into()
+            }
+            Some(Compose::Edit { .. }) => "Editing your message".into(),
+            None => SharedString::default(),
+        });
         window.set_sending(state.sending.is_some());
         window.set_loading_history(state.loading_history);
         window.set_composer_hint(
@@ -374,16 +484,22 @@ impl Adapter {
             .into(),
         );
         if messages_changed || selection_changed || reset {
+            if selection_changed || reset {
+                window.set_react_item(SharedString::default());
+                window.set_active_item(SharedString::default());
+            }
+            let mut previous = std::mem::take(&mut self.rows);
             let rows = state
                 .messages
                 .iter()
-                .map(|message| MessageRow {
-                    id: message.id.clone().into(),
-                    author: message.author.clone().into(),
-                    initial: initial(&message.author),
-                    body: message.body.clone().into(),
-                    time: message.time.clone().into(),
-                    own: message.own,
+                .map(|message| {
+                    let row = match previous.remove(&message.id) {
+                        Some((old, row)) if &old == message => row,
+                        _ => message_row(message),
+                    };
+                    self.rows
+                        .insert(message.id.clone(), (message.clone(), row.clone()));
+                    row
                 })
                 .collect();
             update_model(&self.models.messages, rows);
@@ -448,6 +564,7 @@ impl Adapter {
             .into(),
         );
         window.set_voice_error(voice.error.as_deref().unwrap_or_default().into());
+        window.set_voice_warning(voice.warning.as_deref().unwrap_or_default().into());
         update_model(
             &self.models.participants,
             if voice_here {
@@ -460,7 +577,11 @@ impl Adapter {
                         } else {
                             person.user.clone().into()
                         },
-                        status: if person.muted {
+                        status: if let Some(problem) = &person.problem {
+                            problem.as_str()
+                        } else if !person.connected {
+                            "Connection lost"
+                        } else if person.muted {
                             "Muted"
                         } else if person.speaking {
                             "Speaking"
@@ -556,6 +677,94 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind!(on_cancel_switch, Action::CancelVoiceSwitch);
     bind!(on_dismiss_voice_error, Action::DismissVoiceError);
     bind!(on_refresh_devices, Action::Voice(voice::Command::Devices));
+    bind!(on_confirm_delete_message, Action::ConfirmDelete);
+    bind!(on_cancel_delete, Action::CancelDelete);
+    bind!(on_cancel_compose, Action::CancelCompose);
+    bind!(on_dismiss_notice, Action::DismissNotice);
+    macro_rules! bind_item {
+        ($callback:ident, $action:expr) => {{
+            let adapter = adapter.clone();
+            let weak = window.as_weak();
+            window.$callback(move |item| {
+                if let Some(window) = weak.upgrade() {
+                    adapter.borrow_mut().action(&window, $action(item.into()));
+                }
+            });
+        }};
+    }
+    bind_item!(on_reply, Action::Reply);
+    bind_item!(on_edit, Action::Edit);
+    bind_item!(on_request_delete, Action::RequestDelete);
+    bind_item!(on_retry, Action::Retry);
+    bind_item!(on_cancel_send, Action::CancelSend);
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_react(move |item, key| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(
+                &window,
+                Action::React {
+                    item: item.into(),
+                    key: key.into(),
+                },
+            );
+        }
+    });
+    let state = adapter.clone();
+    window.on_attach(move || {
+        let weak = Rc::downgrade(&state);
+        state.borrow_mut().dialog(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_title("Attach a file")
+                .pick_file()
+                .await;
+            if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {
+                let window = adapter.borrow().window.upgrade();
+                if let Some(window) = window {
+                    adapter
+                        .borrow_mut()
+                        .action(&window, Action::Attach(file.path().to_owned()));
+                }
+            }
+        });
+    });
+    let state = adapter.clone();
+    window.on_save_attachment(move |item| {
+        let item = item.to_string();
+        let name = state
+            .borrow()
+            .app
+            .state
+            .message(&item)
+            .and_then(|message| message.attachment.as_ref())
+            .map(|attachment| attachment.name.clone())
+            .unwrap_or_default();
+        let weak = Rc::downgrade(&state);
+        state.borrow_mut().dialog(async move {
+            // Only the file name is suggested; a sender cannot choose the folder.
+            let name = std::path::Path::new(&name)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "attachment".into());
+            let file = rfd::AsyncFileDialog::new()
+                .set_title("Save attachment")
+                .set_file_name(name)
+                .save_file()
+                .await;
+            if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {
+                let window = adapter.borrow().window.upgrade();
+                if let Some(window) = window {
+                    adapter.borrow_mut().action(
+                        &window,
+                        Action::SaveAttachment {
+                            item,
+                            path: file.path().to_owned(),
+                        },
+                    );
+                }
+            }
+        });
+    });
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_login(move || {
@@ -697,6 +906,119 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// Only mentions get a number; plain unread activity is a dot, because sync
+/// does not deliver every message of a room that isn't open.
+fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
+    match room.mentions {
+        0 => SharedString::default(),
+        count if count > 99 => "99+".into(),
+        count => count.to_string().into(),
+    }
+}
+
+fn file_size(bytes: u64) -> String {
+    match bytes {
+        0..1_024 => format!("{bytes} B"),
+        1_024..1_048_576 => format!("{:.0} KB", bytes as f64 / 1_024.),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.),
+    }
+}
+
+fn picture(picture: &Picture) -> slint::Image {
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        &picture.rgba,
+        picture.width,
+        picture.height,
+    );
+    slint::Image::from_rgba8(buffer)
+}
+
+fn message_row(message: &ChatMessage) -> MessageRow {
+    // Slint's Markdown subset rejects some syntax, such as headings; show those as typed.
+    let styled = if message.formatted {
+        slint::StyledText::from_markdown(&message.body)
+            .unwrap_or_else(|_| slint::StyledText::from_plain_text(&message.body))
+    } else {
+        slint::StyledText::default()
+    };
+    let attachment = message.attachment.as_ref();
+    let preview = attachment.and_then(|attachment| attachment.preview.as_deref());
+    let detail = attachment.map(|attachment| {
+        let size = attachment.size.map(file_size);
+        match (attachment.image, attachment.preview_failed, size) {
+            (true, true, Some(size)) => format!("{size} · Preview unavailable"),
+            (true, true, None) => "Preview unavailable".into(),
+            (_, _, Some(size)) => size,
+            _ => String::new(),
+        }
+    });
+    let (delivery, can_retry, can_cancel) = match message.delivery {
+        Delivery::Sent => ("", false, false),
+        Delivery::Sending => ("Sending...", false, true),
+        Delivery::Waiting => (
+            "Not sent yet. Talk sends it when the connection returns.",
+            false,
+            true,
+        ),
+        Delivery::Failed => ("Not sent. The server refused this message.", true, true),
+    };
+    MessageRow {
+        id: message.id.clone().into(),
+        item: message.item.clone().into(),
+        author: message.author.clone().into(),
+        initial: initial(&message.author),
+        body: message.body.clone().into(),
+        time: message.time.clone().into(),
+        own: message.own,
+        formatted: message.formatted,
+        styled,
+        edited: message.edited,
+        deleted: message.deleted,
+        has_reply: message.reply.is_some(),
+        reply_author: message
+            .reply
+            .as_ref()
+            .map(|reply| reply.author.clone())
+            .unwrap_or_default()
+            .into(),
+        reply_body: message
+            .reply
+            .as_ref()
+            .map(|reply| reply.body.clone())
+            .unwrap_or_default()
+            .into(),
+        reactions: ModelRc::new(VecModel::from(
+            message
+                .reactions
+                .iter()
+                .map(|reaction| ReactionChip {
+                    key: reaction.key.clone().into(),
+                    count: i32::try_from(reaction.count).unwrap_or(i32::MAX),
+                    mine: reaction.mine,
+                })
+                .collect::<Vec<_>>(),
+        )),
+        // An image with a preview shows the picture; any other attachment shows a file card.
+        has_attachment: attachment.is_some(),
+        attachment: attachment
+            .map(|attachment| attachment.name.clone())
+            .unwrap_or_default()
+            .into(),
+        attachment_detail: detail.unwrap_or_default().into(),
+        has_image: preview.is_some(),
+        image: preview.map(picture).unwrap_or_default(),
+        image_width: preview.map_or(0, |preview| preview.width as i32),
+        image_height: preview.map_or(0, |preview| preview.height as i32),
+        delivery: delivery.into(),
+        can_retry,
+        can_cancel,
+        can_reply: message.can_reply,
+        can_edit: message.can_edit,
+        can_delete: message.can_delete,
+        can_react: message.can_react,
+    }
+}
+
 fn initial(text: &str) -> SharedString {
     text.chars()
         .next()
@@ -833,6 +1155,66 @@ mod tests {
         assert!(!window.get_workspace() && !window.get_voice_active());
         assert!(window.get_password().is_empty() && window.get_recovery().is_empty());
         assert!(!window.get_audio_settings());
+    }
+
+    #[test]
+    fn message_actions_reach_the_shared_application_in_the_preview() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        let row = |item: &SharedString| {
+            window
+                .get_messages()
+                .iter()
+                .find(|row| row.item == *item)
+                .unwrap()
+        };
+        let own = window.get_messages().iter().find(|row| row.own).unwrap();
+        let other = window.get_messages().iter().find(|row| !row.own).unwrap();
+        assert!(own.can_edit && !other.can_edit && !window.get_can_attach());
+
+        window.invoke_react(other.item.clone(), "👍".into());
+        let reactions = row(&other.item).reactions;
+        assert_eq!(reactions.row_count(), 1);
+        assert!(reactions.row_data(0).unwrap().mine);
+        window.invoke_react(other.item.clone(), "👍".into());
+        assert_eq!(row(&other.item).reactions.row_count(), 0);
+
+        window.invoke_reply(other.item.clone());
+        assert!(window.get_compose_label().starts_with("Replying to Sam"));
+        window.invoke_draft_edited("**Sure**".into());
+        window.invoke_send();
+        let reply = window.get_messages().iter().last().unwrap();
+        assert!(reply.has_reply && reply.formatted && reply.reply_author == "Sam");
+        assert!(window.get_compose_label().is_empty() && window.get_draft().is_empty());
+
+        window.invoke_draft_edited("Unsent draft".into());
+        window.invoke_edit(own.item.clone());
+        assert_eq!(window.get_draft(), own.body);
+        assert_eq!(window.get_compose_label(), "Editing your message");
+        window.invoke_draft_edited("Changed".into());
+        window.invoke_send();
+        let edited = row(&own.item);
+        assert!(edited.edited && edited.body == "Changed");
+        assert_eq!(window.get_draft(), "Unsent draft");
+
+        window.invoke_request_delete(other.item.clone());
+        assert!(
+            window.get_confirm_delete().is_empty(),
+            "only own messages can be deleted"
+        );
+        window.invoke_request_delete(own.item.clone());
+        assert_eq!(window.get_confirm_delete(), own.item);
+        window.invoke_confirm_delete_message();
+        assert!(row(&own.item).deleted && window.get_confirm_delete().is_empty());
     }
 
     #[test]

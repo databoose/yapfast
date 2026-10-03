@@ -1,5 +1,9 @@
 //! One persistent voice connection, owned by a native thread rather than the UI.
-use std::{collections::HashSet, thread, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use livekit::{
@@ -7,10 +11,10 @@ use livekit::{
     options::TrackPublishOptions,
     prelude::{LocalAudioTrack, RemoteTrack, TrackSource},
 };
-use matrix_rtc_livekit::{Call, CallOptions};
+use matrix_rtc_livekit::{Call, CallOptions, compat::ElementCallCompat};
 use matrix_rtc_media::{CallEvent, MediaStreamKind};
 use matrix_sdk::{
-    Room,
+    Client, Room,
     ruma::{OwnedRoomId, api::client::state::get_state_event_for_key},
 };
 use tokio::{
@@ -19,6 +23,12 @@ use tokio::{
 };
 
 use crate::{calls::require_trusted_encrypted_room, session::SessionLease};
+
+/// The MatrixRTC slot every Talk voice channel uses.
+const SLOT: &str = "m.call#ROOM";
+/// How long a membership survives without refreshes, for example after a
+/// crash. MSC4354 does not allow less than five minutes.
+const STICKY_DURATION_MS: u64 = 300_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -43,6 +53,12 @@ pub struct Participant {
     pub local: bool,
     pub muted: bool,
     pub speaking: bool,
+    /// False after this participant's media connection disappeared, for
+    /// example when their client crashed. Their membership stays listed until
+    /// it expires. A participant who never unmuted shows no media connection.
+    pub connected: bool,
+    /// Why audio may not flow with this participant, if Talk can tell.
+    pub problem: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +74,9 @@ pub struct State {
     pub microphone: Option<String>,
     pub speaker: Option<String>,
     pub error: Option<String>,
+    /// A problem that leaves the call usable, such as a participant who has
+    /// not received this device's audio key.
+    pub warning: Option<String>,
 }
 
 impl Default for State {
@@ -74,6 +93,7 @@ impl Default for State {
             microphone: None,
             speaker: None,
             error: None,
+            warning: None,
         }
     }
 }
@@ -88,6 +108,7 @@ impl State {
         self.participants.clear();
         self.muted = true;
         self.deafened = false;
+        self.warning = None;
     }
 }
 
@@ -99,6 +120,9 @@ pub enum Command {
     Devices,
     Microphone(String),
     Speaker(String),
+    /// Remove memberships this device left in voice channels, for example
+    /// after Talk was killed. Ignored during a call.
+    LeaveStale,
 }
 
 /// The session lease holds the SDK store lock until native departure finishes.
@@ -181,8 +205,15 @@ async fn worker(
                 snapshots.send_replace(state.clone());
                 match joining(&session, id, &mut state, &mut commands, &snapshots).await {
                     Ok(Some((call, audio))) => {
-                        if let Err(error) =
-                            connected(call, audio, &mut state, &mut commands, &snapshots).await
+                        if let Err(error) = connected(
+                            call,
+                            audio,
+                            &session.client,
+                            &mut state,
+                            &mut commands,
+                            &snapshots,
+                        )
+                        .await
                         {
                             state.error = Some(error.to_string());
                         }
@@ -201,6 +232,16 @@ async fn worker(
             }
             Command::Speaker(id) => {
                 state.speaker = Some(id);
+            }
+            Command::LeaveStale => {
+                for room in session
+                    .client
+                    .joined_rooms()
+                    .into_iter()
+                    .filter(|room| room.is_call())
+                {
+                    leave_stale_memberships(&session.client, &room).await;
+                }
             }
             _ => {}
         }
@@ -237,8 +278,11 @@ async fn joining(
         }
         let audio = audio()?;
         let options = call_options(&room)?;
-        let call = Call::join_cancellable(&room, options, cancellation).await
-            .map_err(|_| anyhow::anyhow!("Could not join or finish leaving voice. Check the calling service and connection, then retry."))?;
+        // A membership left by a crash would otherwise appear beside the new one.
+        leave_stale_memberships(&session.client, &room).await;
+        let call = Call::join_cancellable(&room, options, cancellation)
+            .await
+            .map_err(join_error)?;
         let Some(call) = call else {
             return Ok(None);
         };
@@ -296,6 +340,28 @@ async fn joining(
     }
 }
 
+/// The library reports join failures as text; keep the cause users can act on.
+fn join_error(error: matrix_rtc_livekit::CallError) -> anyhow::Error {
+    let text = error.to_string();
+    let message = if text.contains("no livekit transport") {
+        "This homeserver doesn't advertise a MatrixRTC calling service (MSC4143). Ask its administrator to add one, or set TALK_RTC_AUTHORIZATION_URL."
+    } else if matches!(error, matrix_rtc_livekit::CallError::Media(_)) {
+        "The calling service refused the voice connection. Check that it allows this homeserver, then retry."
+    } else {
+        "Could not join or finish leaving voice. Check the calling service and connection, then retry."
+    };
+    tracing::warn!(kind = call_error_kind(&error), "voice join failed");
+    anyhow::anyhow!(message)
+}
+
+fn call_error_kind(error: &matrix_rtc_livekit::CallError) -> &'static str {
+    match error {
+        matrix_rtc_livekit::CallError::Signalling(_) => "signalling",
+        matrix_rtc_livekit::CallError::Media(_) => "media",
+        _ => "other",
+    }
+}
+
 pub(crate) async fn require_voice_channel(room: &Room) -> Result<()> {
     ensure!(
         room.state() == matrix_sdk::RoomState::Joined,
@@ -310,7 +376,7 @@ pub(crate) async fn require_voice_channel(room: &Room) -> Result<()> {
         .send(get_state_event_for_key::v3::Request::new(
             room.room_id().to_owned(),
             "m.rtc.slot".into(),
-            "m.call#ROOM".into(),
+            SLOT.into(),
         ))
         .await
         .map_err(|_| {
@@ -349,7 +415,7 @@ fn call_options(room: &Room) -> Result<CallOptions> {
     }
     Ok(CallOptions {
         livekit_service_url_fallback: fallback,
-        sticky_duration_ms: Some(300_000),
+        sticky_duration_ms: Some(STICKY_DURATION_MS),
         ..Default::default()
     })
 }
@@ -388,6 +454,7 @@ fn collect_devices(audio: &PlatformAudio, state: &mut State) {
 async fn connected(
     mut call: Call,
     audio: PlatformAudio,
+    client: &Client,
     state: &mut State,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     snapshots: &watch::Sender<State>,
@@ -403,14 +470,60 @@ async fn connected(
         let mut speaking = HashSet::new();
         let mut encryption_fault = false;
         let mut reconnect_deadline = None;
+        let own_member = call.membership_id().to_owned();
+        let identity = matrix_rtc_livekit::identity_mapper(ElementCallCompat::default());
+        // Key problems wait out the normal exchange after someone appears.
+        let mut seen: HashMap<String, Instant> = HashMap::new();
+        // LiveKit lists a participant only while they publish, and Talk joins
+        // without a microphone track, so only a lost connection is visible.
+        let mut published = HashSet::new();
+        let mut device_problems: HashMap<String, Option<&'static str>> = HashMap::new();
+        let mut undecryptable = HashSet::new();
+        let mut checks = tokio::time::interval(KEY_CHECK_INTERVAL);
+        checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         state.phase = Phase::Connected;
         loop {
-            state.participants = roster.borrow_and_update().iter().map(|person| Participant {
-                id: person.member_id.clone(), user: person.user_id.clone(), local: person.is_local,
-                muted: if person.is_local { state.muted } else { person.streams.iter().filter(|stream| stream.kind == MediaStreamKind::Microphone).all(|stream| stream.muted) },
-                speaking: speaking.contains(&person.member_id),
+            let people = roster.borrow_and_update().clone();
+            let now = Instant::now();
+            seen.retain(|member, _| people.iter().any(|person| &person.member_id == member));
+            published.retain(|member| people.iter().any(|person| &person.member_id == member));
+            device_problems.retain(|member, _| people.iter().any(|person| &person.member_id == member));
+            for person in people.iter().filter(|person| !person.is_local) {
+                seen.entry(person.member_id.clone()).or_insert(now);
+                if !device_problems.contains_key(&person.member_id) {
+                    device_problems.insert(person.member_id.clone(), device_problem(client, person).await);
+                }
+            }
+            let present: HashSet<String> = call.session().room().remote_participants().keys().map(ToString::to_string).collect();
+            state.participants = people.iter().map(|person| {
+                let sfu_identity = person.device_id.as_deref().map(|device| identity(&person.user_id, device, &person.member_id));
+                let present = sfu_identity.as_ref().is_some_and(|id| present.contains(id));
+                if present {
+                    published.insert(person.member_id.clone());
+                }
+                let connected = person.is_local || present || !published.contains(&person.member_id);
+                let settled = seen.get(&person.member_id).is_some_and(|since| now.duration_since(*since) >= KEY_GRACE);
+                let problem = if person.is_local {
+                    None
+                } else if let Some(Some(problem)) = device_problems.get(&person.member_id).filter(|_| settled) {
+                    Some(*problem)
+                } else if undecryptable.contains(&person.member_id) {
+                    Some("Their audio can't be decrypted. They may need to rejoin.")
+                } else if settled && connected && sfu_identity.is_some_and(|id| !call.imported_key_for(&id)) {
+                    Some("Their audio key hasn't arrived, so you can't hear them yet.")
+                } else {
+                    None
+                };
+                Participant {
+                    id: person.member_id.clone(), user: person.user_id.clone(), local: person.is_local,
+                    muted: if person.is_local { state.muted } else { person.streams.iter().filter(|stream| stream.kind == MediaStreamKind::Microphone).all(|stream| stream.muted) },
+                    speaking: speaking.contains(&person.member_id),
+                    connected,
+                    problem: problem.map(str::to_owned),
+                }
             }).collect();
             state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));
+            state.warning = state.participants.iter().find_map(|person| person.problem.as_ref().map(|problem| format!("{}: {problem}", person.user)));
             snapshots.send_replace(state.clone());
             tokio::select! {
                 command = commands.recv() => match command {
@@ -451,8 +564,12 @@ async fn connected(
                             Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                         }
                     }
+                    Some(Command::LeaveStale) => {}
                 },
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
+                // Device trust can change while connected, for example after
+                // verifying someone in another client.
+                _ = checks.tick() => device_problems.clear(),
                 event = events.recv() => match event {
                     Ok(CallEvent::ActiveSpeakers { speakers }) => speaking = speakers.into_iter().map(|speaker| speaker.member_id).collect(),
                     Ok(CallEvent::MediaConnectionState { degraded }) => {
@@ -460,15 +577,20 @@ async fn connected(
                         if degraded { reconnect_deadline.get_or_insert(Instant::now() + Duration::from_secs(60)); } else { reconnect_deadline = None; }
                     }
                     Ok(CallEvent::Ended { .. }) => bail!("Voice disconnected. Check your connection and join again."),
-                    Ok(CallEvent::FrameEncryptionState { state: encryption, .. }) if encryption.is_failure() => {
-                        set_muted(&call, &audio, &mut microphone, true).await?;
-                        state.muted = true;
-                        encryption_fault = true;
-                        state.error = Some("Audio encryption failed. Your microphone is muted. Check device verification or rejoin.".into());
+                    // Only our own sender failing means our audio is unprotected.
+                    Ok(CallEvent::FrameEncryptionState { member_id, state: encryption, .. }) if member_id == own_member => {
+                        if encryption.is_failure() {
+                            set_muted(&call, &audio, &mut microphone, true).await?;
+                            state.muted = true;
+                            encryption_fault = true;
+                            state.error = Some("Audio encryption failed. Your microphone is muted. Check device verification or rejoin.".into());
+                        } else if encryption_fault {
+                            encryption_fault = false;
+                            state.error = None;
+                        }
                     }
-                    Ok(CallEvent::FrameEncryptionState { .. }) if encryption_fault => {
-                        encryption_fault = false;
-                        state.error = None;
+                    Ok(CallEvent::FrameEncryptionState { member_id, state: encryption, .. }) => {
+                        if encryption.is_failure() { undecryptable.insert(member_id); } else { undecryptable.remove(&member_id); }
                     }
                     Ok(CallEvent::KeyDiscarded { .. }) => state.error = Some("A participant's audio key was refused. They may need to verify their device.".into()),
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("Voice ended. Join again to reconnect."),
@@ -478,6 +600,12 @@ async fn connected(
                     Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), .. }) => {
                         if state.deafened { track.disable(); }
                     },
+                    // A full reconnect republishes our microphone with a new
+                    // frame cryptor at key index 0, which late joiners cannot use.
+                    Some(RoomEvent::LocalTrackRepublished { .. }) => {
+                        tracing::info!("microphone republished after reconnecting; restoring its key index");
+                        call.reassert_local_key_index();
+                    }
                     Some(RoomEvent::Disconnected { .. }) | None => bail!("Voice disconnected. Check your connection and join again."),
                     _ => {}
                 },
@@ -499,6 +627,104 @@ async fn connected(
         );
     }
     result
+}
+
+/// How often device trust is checked again while connected.
+const KEY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// Media keys normally arrive within a few seconds of someone joining.
+const KEY_GRACE: Duration = Duration::from_secs(10);
+
+/// Talk's media-key policy shares keys only with cross-signed devices, and the
+/// SDK reports withheld keys only in its log. Predict that outcome here so the
+/// user learns why someone cannot hear them, instead of hearing silence.
+async fn device_problem(
+    client: &Client,
+    person: &matrix_rtc_media::Participant,
+) -> Option<&'static str> {
+    let Ok(user) = matrix_sdk::ruma::OwnedUserId::try_from(person.user_id.as_str()) else {
+        return Some("Unrecognized account; audio keys can't be exchanged.");
+    };
+    // One verified user with a changed identity blocks every key we send.
+    if let Ok(Some(identity)) = client.encryption().get_user_identity(&user).await
+        && identity.has_verification_violation()
+    {
+        return Some(
+            "Changed identity since you verified them. Nobody can receive your audio key until you verify them again in a Matrix client.",
+        );
+    }
+    let Some(device) = person.device_id.as_deref() else {
+        return Some("Unknown device; audio keys can't be exchanged.");
+    };
+    match client.encryption().get_device(&user, device.into()).await {
+        Ok(Some(device)) if device.is_cross_signed_by_owner() => None,
+        Ok(Some(_)) => {
+            Some("Unverified device. It can't receive your audio key, and Talk refuses its key.")
+        }
+        _ => Some("Unknown device; your audio key may not reach it."),
+    }
+}
+
+/// Leave memberships this device published but never removed, for example
+/// before a crash. Peers otherwise list them for up to the five-minute sticky
+/// lifetime, because the delayed leave does not replace a sticky membership.
+async fn leave_stale_memberships(client: &Client, room: &Room) -> usize {
+    let (Some(user), Some(device)) = (client.user_id(), client.device_id()) else {
+        return 0;
+    };
+    let stale: Vec<String> = room
+        .sticky_events()
+        .live()
+        .into_iter()
+        .filter(|entry| {
+            let event_type = entry.key.event_type.to_string();
+            (event_type == "m.rtc.member" || event_type == "org.matrix.msc4143.rtc.member")
+                && entry
+                    .raw()
+                    .get_field::<String>("sender")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(user.as_str())
+                && entry
+                    .encryption_info()
+                    .and_then(|info| info.sender_device.as_deref())
+                    == Some(device)
+        })
+        .filter_map(|entry| {
+            let content = entry
+                .raw()
+                .get_field::<serde_json::Value>("content")
+                .ok()
+                .flatten()?;
+            (content["slot_id"] == SLOT && content["member"]["membership"] == "join")
+                .then(|| content["member"]["id"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect();
+    let mut left = 0;
+    for member in stale {
+        let membership = matrix_rtc_core::OwnMembershipMachine::new(
+            std::sync::Arc::new(matrix_rtc_livekit::SdkCommandSender::new(client.clone())),
+            room.room_id().to_string(),
+            SLOT.into(),
+            member,
+            "m.call".into(),
+            matrix_rtc_core::MembershipTimings {
+                sticky_duration_ms: STICKY_DURATION_MS,
+                ..Default::default()
+            },
+        );
+        if matches!(
+            tokio::time::timeout(Duration::from_secs(10), membership.leave(None)).await,
+            Ok(Ok(()))
+        ) {
+            left += 1;
+        }
+    }
+    if left > 0 {
+        tracing::info!(left, "removed this device's stale voice memberships");
+    }
+    left
 }
 
 async fn reconnect_timeout(deadline: Option<Instant>) {
@@ -859,6 +1085,307 @@ mod tests {
             controller.stop().await;
             sync.stop().await;
         });
+    }
+
+    #[test]
+    fn join_errors_keep_the_cause_users_can_act_on() {
+        let missing = join_error(matrix_rtc_livekit::CallError::Signalling(
+            "the homeserver advertises no livekit transport and no fallback URL is configured"
+                .into(),
+        ));
+        assert!(missing.to_string().contains("MSC4143"));
+        let refused = join_error(matrix_rtc_livekit::CallError::Media(
+            matrix_rtc_media::TransportError::Connect("401 from the token service".into()),
+        ));
+        assert!(refused.to_string().contains("refused"));
+        assert!(!refused.to_string().contains("401"));
+    }
+
+    /// One participant process for `testing/test_voice_reliability.py`. Reads
+    /// commands appended to `<name>.commands` and rewrites `<name>.state.json`
+    /// after every voice change, so the harness can kill, pause or isolate it.
+    #[test]
+    #[ignore = "child process of testing/test_voice_reliability.py"]
+    fn scripted_participant() {
+        let root = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_VOICE_ROOT").expect("test harness only"),
+        );
+        let name = std::env::var("TALK_TEST_PARTICIPANT").expect("test harness only");
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        // Disposable fixture accounts only: dependency diagnostics are opt-in.
+        match std::env::var("TALK_TEST_LOG") {
+            Ok(filter) => tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                .init(),
+            Err(_) => crate::logging::init(),
+        }
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let voice_id = manifest["voice"].as_str().unwrap().to_string();
+            let session = match std::env::var("TALK_TEST_LOGIN") {
+                // "<homeserver> <user>": a new device of an existing fixture account.
+                Ok(login) if !root.join(&name).join("active.json").exists() => {
+                    let (homeserver, user) = login.split_once(' ').unwrap();
+                    Session::login(root.join(&name), homeserver, user, "talk-test-only").await.unwrap()
+                }
+                _ => Session::restore(root.join(&name)).await.unwrap(),
+            };
+            let sync = session.start_sync().await.unwrap();
+            sync.wait_until_ready().await.unwrap();
+            let mut controller = Controller::start(session.lease()).unwrap();
+            let started = Instant::now();
+            let state_path = root.join(format!("{name}.state.json"));
+            let write_state = |state: &State, sequence: u64| {
+                let snapshot = serde_json::json!({
+                    "sequence": sequence,
+                    "seconds": started.elapsed().as_secs_f64(),
+                    "phase": format!("{:?}", state.phase),
+                    "participants": state.participants.iter().map(|person| &person.user).collect::<Vec<_>>(),
+                    "people": state.participants.iter().map(|person| serde_json::json!({
+                        "user": person.user, "connected": person.connected, "problem": person.problem,
+                    })).collect::<Vec<_>>(),
+                    "members": state.participants.iter().map(|person| &person.id).collect::<Vec<_>>(),
+                    "muted": state.muted,
+                    "error": state.error,
+                    "warning": state.warning,
+                });
+                let temporary = state_path.with_extension("tmp");
+                std::fs::write(&temporary, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+                std::fs::rename(&temporary, &state_path).unwrap();
+            };
+            let mut sequence = 0;
+            write_state(&controller.states.borrow_and_update().clone(), sequence);
+            let commands_path = root.join(format!("{name}.commands"));
+            let mut handled = 0;
+            let mut poll = tokio::time::interval(Duration::from_millis(100));
+            'run: loop {
+                tokio::select! {
+                    changed = controller.states.changed() => {
+                        if changed.is_err() { break; }
+                        sequence += 1;
+                        write_state(&controller.states.borrow_and_update().clone(), sequence);
+                    }
+                    _ = poll.tick() => {
+                        let commands = std::fs::read_to_string(&commands_path).unwrap_or_default();
+                        let lines: Vec<_> = commands.lines().collect();
+                        for command in &lines[handled.min(lines.len())..] {
+                            match *command {
+                                "join" => { controller.command(Command::Join(voice_id.clone())); }
+                                "leave" => { controller.command(Command::Leave); }
+                                "unmute" => { controller.command(Command::Mute(false)); }
+                                "mute" => { controller.command(Command::Mute(true)); }
+                                "leave-stale" => { controller.command(Command::LeaveStale); }
+                                "exit" => break 'run,
+                                other => panic!("unknown participant command {other}"),
+                            }
+                        }
+                        handled = lines.len();
+                    }
+                }
+            }
+            controller.stop().await;
+            sync.stop().await;
+        });
+    }
+
+    /// Joins with a new, unverified device of a fixture account, as a client
+    /// with a looser key policy could. Talk's own identity-based policy
+    /// refuses to send anything from an unverified device.
+    #[test]
+    #[ignore = "child process of testing/test_voice_reliability.py"]
+    fn unverified_participant() {
+        let root = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_VOICE_ROOT").expect("test harness only"),
+        );
+        let user = std::env::var("TALK_TEST_LOGIN_USER").expect("test harness only");
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        crate::logging::init();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let voice_id = OwnedRoomId::try_from(manifest["voice"].as_str().unwrap()).unwrap();
+            let client = Client::builder()
+                .homeserver_url("http://localhost:18008")
+                .sqlite_store(root.join("unverified"), None)
+                .with_room_key_recipient_strategy(matrix_sdk_crypto::CollectStrategy::AllDevices)
+                .build()
+                .await
+                .unwrap();
+            client
+                .matrix_auth()
+                .login_username(&user, "talk-test-only")
+                .send()
+                .await
+                .unwrap();
+            let sync = matrix_sdk_ui::sync_service::SyncService::builder(client.clone())
+                .build()
+                .await
+                .unwrap();
+            sync.start().await;
+            let room = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if let Some(room) = client.get_room(&voice_id)
+                        && room.state() == matrix_sdk::RoomState::Joined
+                    {
+                        return room;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let call = Call::join(
+                &room,
+                CallOptions {
+                    livekit_service_url_fallback: Some("http://localhost:16080".into()),
+                    sticky_duration_ms: Some(STICKY_DURATION_MS),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let commands = root.join("unverified.commands");
+            let state = root.join("unverified.state.json");
+            std::fs::write(
+                &state,
+                serde_json::json!({"phase":"Connected","member":call.membership_id()}).to_string(),
+            )
+            .unwrap();
+            while !std::fs::read_to_string(&commands)
+                .unwrap_or_default()
+                .contains("exit")
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            tokio::time::timeout(Duration::from_secs(10), call.leave())
+                .await
+                .unwrap()
+                .unwrap();
+            std::fs::write(&state, r#"{"phase":"Disconnected"}"#).unwrap();
+            sync.stop().await;
+        }));
+    }
+
+    /// Remote load for `testing/measure_connected.py`: Bob plus extra fixture
+    /// accounts in one process. Generated tones use no audio device, so one
+    /// process can publish for every account. Commands appended to
+    /// `load.commands`: `chat-start`, `chat-stop`, `join N`, `leave`, `exit`.
+    #[test]
+    #[ignore = "child process of testing/measure_connected.py"]
+    fn load_participants() {
+        let root = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_VOICE_ROOT").expect("test harness only"),
+        );
+        let extra: usize =
+            std::env::var("TALK_TEST_EXTRA_ACCOUNTS").map_or(0, |count| count.parse().unwrap());
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        crate::logging::init();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let voice_id = OwnedRoomId::try_from(manifest["voice"].as_str().unwrap()).unwrap();
+            let text_id = OwnedRoomId::try_from(manifest["text"].as_str().unwrap()).unwrap();
+            let status = |text: &str| std::fs::write(root.join("load.status"), text).unwrap();
+            let bob = Session::restore(root.join("bob")).await.unwrap();
+            let mut sessions = vec![bob];
+            for index in 0..extra {
+                let directory = root.join(format!("load-{index}"));
+                let session = if directory.join("active.json").exists() {
+                    Session::restore(directory).await.unwrap()
+                } else {
+                    let username = format!("talk_load_{}_{index}", uuid::Uuid::new_v4().simple());
+                    let mut request = matrix_sdk::ruma::api::client::account::register::v3::Request::new();
+                    request.username = Some(username.clone());
+                    request.password = Some("talk-test-only".into());
+                    request.inhibit_login = true;
+                    request.auth = Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Dummy(Default::default()));
+                    sessions[0].client.send(request).await.unwrap();
+                    let session = Session::login(directory, "http://localhost:18008", &username, "talk-test-only").await.unwrap();
+                    let user = session.client.user_id().unwrap().to_owned();
+                    sessions[0].client.get_room(&voice_id).unwrap().invite_user_by_id(&user).await.unwrap();
+                    session.client.join_room_by_id(&voice_id).await.unwrap();
+                    session
+                };
+                sessions.push(session);
+            }
+            let mut syncs = Vec::new();
+            for session in &sessions {
+                let sync = session.start_sync().await.unwrap();
+                sync.wait_until_ready().await.unwrap();
+                syncs.push(sync);
+            }
+            status("ready");
+            let commands = root.join("load.commands");
+            let mut handled = 0;
+            let mut calls = Vec::new();
+            let mut tones = Vec::new();
+            let mut chatting = false;
+            let mut sent = 0u64;
+            let mut chat = tokio::time::interval(Duration::from_secs(2));
+            'run: loop {
+                tokio::select! {
+                    _ = chat.tick(), if chatting => {
+                        sent += 1;
+                        let room = sessions[0].client.get_room(&text_id).unwrap();
+                        let body = format!("Load message {sent}: the quick brown fox jumps over the lazy dog.");
+                        let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(body)).await;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                        let text = std::fs::read_to_string(&commands).unwrap_or_default();
+                        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+                        for command in lines.iter().skip(handled) {
+                            match command.split_once(' ').unwrap_or((command, "")) {
+                                ("chat-start", _) => chatting = true,
+                                ("chat-stop", _) => chatting = false,
+                                ("join", count) => {
+                                    let count: usize = count.parse().unwrap();
+                                    for (index, session) in sessions.iter().enumerate().skip(calls.len()).take(count.saturating_sub(calls.len())) {
+                                        let room = session.client.get_room(&voice_id).unwrap();
+                                        let call = Call::join(&room, CallOptions {
+                                            livekit_service_url_fallback: Some("http://localhost:16080".into()),
+                                            sticky_duration_ms: Some(STICKY_DURATION_MS),
+                                            ..Default::default()
+                                        }).await.unwrap();
+                                        // Distinct tones keep every stream audible and decodable.
+                                        tones.push(crate::calls::publish_tone(&call, 300.0 + 60.0 * index as f64).await.unwrap());
+                                        calls.push(call);
+                                    }
+                                    status(&format!("joined {}", calls.len()));
+                                }
+                                ("leave", _) => {
+                                    tones.clear();
+                                    while let Some(call) = calls.pop() {
+                                        let _ = tokio::time::timeout(Duration::from_secs(10), call.leave()).await;
+                                    }
+                                    status("ready");
+                                }
+                                ("exit", _) => break 'run,
+                                (other, _) => panic!("unknown load command {other}"),
+                            }
+                        }
+                        handled = lines.len();
+                    }
+                }
+            }
+            tones.clear();
+            while let Some(call) = calls.pop() {
+                let _ = tokio::time::timeout(Duration::from_secs(10), call.leave()).await;
+            }
+            for sync in syncs {
+                sync.stop().await;
+            }
+            status("stopped");
+        }));
     }
 
     #[test]

@@ -17,7 +17,9 @@ The package needs no Rust or Visual Studio installation. It includes the native
 media code and Skia renderer. A console window displays beta diagnostics.
 Closing Talk closes that console too.
 If it closes immediately, run `run-talk.cmd` to keep the error visible.
-Use `run-talk.cmd --renderer software` to try Skia Software.
+Talk switches to Skia Software by itself when the GPU cannot start, and says so
+in the window. Use `run-talk.cmd --renderer software` to choose it yourself, or
+`run-talk.cmd --renderer gpu` to retry the GPU after a fallback.
 
 Passwords, recovery keys and saved sessions are excluded from the package.
 Session secrets use Windows Credential Manager. Encrypted SDK stores live under
