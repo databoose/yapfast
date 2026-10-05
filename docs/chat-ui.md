@@ -4,6 +4,7 @@ The first chat UI was implemented on 2026-10-02 and moved to Slint on
 2026-10-03. The Milestone 2 conversation features followed on 2026-10-03; they
 add the SDK's Markdown feature, `image` for bounded decoding, `mime`,
 `pulldown-cmark` for plain reply snippets, and `rfd` for native file dialogs.
+The same day the window was redesigned after Discord's layout, set in Satoshi.
 
 ## Try it
 
@@ -16,8 +17,8 @@ nix develop path:./nix --command cargo run --locked -- --preview
 The preview has two sample servers, DMs and a group DM. The upper-left button
 opens DMs; buttons beneath it select servers. The sidebar shows only that server's
 channels, or only DMs when the DM button is selected. Filter the current list and
-send messages locally. "Back to sign in"
-opens the real account form. Samples and entered messages disappear on leaving
+send messages locally. The gear in the account panel opens settings, where "Back
+to sign in" opens the real account form. Samples and entered messages disappear on leaving
 the preview. They never connect to Matrix.
 
 Launch without `--preview` for password sign-in and automatic restoration.
@@ -40,16 +41,18 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Write Markdown. Messages with formatting render bold, italic, code and links;
   Slint's subset has no headings, so those show as typed. Formatted text isn't
   selectable, so every message has a Copy action.
-- Hover or click a message for its actions: React, Reply, Edit and Delete for
-  your own messages, and Copy. Reactions offer six quick emoji. Clicking an
+- Hover or click a message for its toolbar: Add reaction, Reply, Edit and Delete
+  for your own messages, and Copy text. The icons have tooltips and accessible
+  names. Reactions offer six quick emoji. Clicking an
   existing reaction adds or removes yours. Delete asks for confirmation, then
   redacts the message for everyone. Replies quote the original; edits are marked
   "(edited)". Reply and edit modes show above the composer, with Cancel.
   Cancelling an edit restores the draft it replaced.
 - Attach a file with the system file dialog. The SDK encrypts and uploads it
   through its send queue, up to 50 MB. Images show a decoded preview of up to
-  360×270, decoded with dimension and memory limits. Other files show a card.
-  Save writes the decrypted file where you choose.
+  360×270, decoded with dimension and memory limits, with a save button over the
+  picture on hover. Other files show a card with a save button. Saving writes the
+  decrypted file where you choose.
 - Send through the SDK's persistent send queue. A message appears at once with
   "Sending...". After a connection problem it shows "Not sent yet" and goes out
   by itself when sync recovers. Sync now uses the SDK's offline mode, which keeps
@@ -57,12 +60,45 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   messages can be cancelled, and they survive closing Talk.
 - Save each room's draft in the encrypted session store, so drafts survive
   restarts. Sending clears the saved draft.
-- Show unread channels in bold with a dot, and a dot on servers and the DM
-  button that contain them. Mentions show a count. Opening a conversation marks
+- Show unread channels in bold with a short pill at the sidebar edge, and the
+  same pill beside servers and the DM button that contain them. Mentions show a
+  red count. Opening a conversation marks
   it read. Talk counts unread messages on this device; for a room that isn't open,
   sync often delivers only the newest event, so Talk shows that something is
   unread rather than how much.
-- Show sync status, reconnect, and sign out while retaining encrypted stores.
+- Show sync status in the account panel. Reconnect appears there when offline;
+  sign out (which retains encrypted stores) is in settings.
+
+## Layout and look
+
+The window follows Discord's arrangement:
+
+- A 72px server rail. Each server is a circle that becomes a rounded square,
+  with a white pill at the rail edge for hover, selection or unread activity.
+  Hovering shows the server's name.
+- A 240px sidebar with the server name, a filter, and uppercase TEXT CHANNELS
+  and VOICE CHANNELS groups. DMs show the person's avatar. Participants of the
+  call you are in appear under its voice channel, with a green ring while they
+  speak and a muted icon. Talk knows only its own call's participants.
+- The voice panel, then the account panel with avatar, status, mute and deafen
+  during a call, and settings (account, audio devices, reconnect, sign out).
+- A conversation with a 48px header. Messages from one person within seven
+  minutes are grouped under one avatar and name. Hovering a grouped message
+  shows its time in the gutter. Replies draw a spine to the quoted message, and
+  a date divider starts each day. An "Earlier messages" pill sits above the
+  oldest loaded message. The composer is a rounded field with attach, the
+  message ("Message #general"), and a send button; reply and edit modes attach
+  a bar above it. With no conversation selected, the area shows "Pick a
+  conversation" and hides the composer. The local preview labels itself in a
+  strip under the header.
+- A voice stage with participant tiles, a green border while someone speaks,
+  and round mute, deafen and leave controls.
+
+Satoshi (ITF Free Font License, embedded in the binary; see `ui/fonts/README.md`)
+sets all text in four weights. The palette is layered graphite with one
+marigold accent for selection and primary actions, red only for mentions and
+destructive actions, and green only for live voice. Avatars get one of eight
+tints from the person's name.
 
 Network operations run on the existing two-worker Tokio runtime. The UI receives
 SDK events, and the message list virtualizes its rows. There is no UI polling loop.

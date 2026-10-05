@@ -761,6 +761,7 @@ impl Application {
                         id: item.clone(),
                         item,
                         author: "You".into(),
+                        sender: "You".into(),
                         formatted: has_markdown(&body),
                         body,
                         time: "Local preview".into(),
@@ -907,6 +908,10 @@ impl Application {
                 "general",
                 vec![
                     ("Sam", "Anyone around tonight?"),
+                    (
+                        "Sam",
+                        "Thinking **co-op** after nine, if people are up for it.",
+                    ),
                     ("Riley", "Yep. I should be free after dinner."),
                     ("You", "Nice, let's get a game going."),
                     (
@@ -946,6 +951,8 @@ impl Application {
                         id: format!("{room}-{i}"),
                         item: format!("{room}-{i}"),
                         author: author.into(),
+                        sender: author.into(),
+                        formatted: has_markdown(body),
                         body: body.into(),
                         time: format!("19:{:02}", 20 + i),
                         own: author == "You",
@@ -1417,10 +1424,10 @@ mod tests {
     fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
         let mut app = Application::default();
         assert!(app.dispatch(Action::Preview).is_empty());
-        assert_eq!(app.state.messages.len(), 4);
+        assert_eq!(app.state.messages.len(), 5);
         app.dispatch(Action::SetDraft("Local message".into()));
         assert!(app.dispatch(Action::Send).is_empty());
-        assert_eq!(app.state.messages.len(), 5);
+        assert_eq!(app.state.messages.len(), 6);
         assert_eq!(app.state.messages.last().unwrap().body, "Local message");
         assert!(app.state.draft().is_empty());
         assert!(

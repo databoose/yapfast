@@ -23,9 +23,10 @@ No remote push is part of this migration.
   leave, mute/deafen, native device selection and explicit channel-switch
   confirmation. Browsing text, DMs or another server retains the backend session
   and voice connection. Preview voice never opens an audio device.
-- The existing neutral dark layout, Lucide SVG icons, native text editing and
-  window sizing from 1120×760 down to 800×560. Audio devices use a popover above
-  the footer, dismissed by Close, Escape or clicking outside.
+- A Discord-style layout set in Satoshi (see [Chat UI](chat-ui.md#layout-and-look)),
+  Lucide SVG icons, custom text fields, and window sizing from 1120×760 down to
+  800×560. Settings, including audio devices, open in a popover above the account
+  panel, dismissed by its close button, Escape or clicking outside.
 
 `ui/talk.slint` defines the controls and layout; `src/ui.rs` adapts application
 state and effects. Backend events wake Slint's executor through the Tokio

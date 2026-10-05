@@ -362,7 +362,7 @@ impl Adapter {
                 .map(|server| ServerRow {
                     id: server.id.clone().into(),
                     name: server.name.clone().into(),
-                    initial: initial(&server.name),
+                    initial: initials(&server.name),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
                     unread: state.rooms.iter().any(|room| {
                         room.unread > 0 && !room.direct && server.channels.contains(&room.id)
@@ -381,10 +381,10 @@ impl Adapter {
                     ""
                 } else if room.voice && !listed_voice {
                     listed_voice = true;
-                    "Voice channels"
+                    "VOICE CHANNELS"
                 } else if !room.voice && !listed_text {
                     listed_text = true;
-                    "Text channels"
+                    "TEXT CHANNELS"
                 } else {
                     ""
                 };
@@ -402,6 +402,10 @@ impl Adapter {
                     selected: Some(&room.id) == state.selected.as_ref(),
                     unread: room.unread > 0,
                     badge: mention_badge(room),
+                    voice: room.voice,
+                    direct: room.direct,
+                    initial: initial(&room.name),
+                    tint: tint(&room.id),
                 }
             })
             .collect();
@@ -410,24 +414,28 @@ impl Adapter {
             else if state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." }
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
         update_model(&self.models.rooms, rows);
-        window.set_account(state.account.as_deref().unwrap_or("Local preview").into());
+        let account = state.account.as_deref().unwrap_or("Preview");
+        window.set_account(account.into());
+        window.set_account_name(display_part(account).into());
+        window.set_account_initial(initial(display_part(account)));
+        window.set_account_tint(tint(display_part(account)));
         window.set_account_status(
             if state.preview {
-                "Messages stay here"
+                "Local only"
             } else if state.online {
-                "Connected to Matrix"
+                "Online"
             } else {
-                "Sync paused or connecting"
+                "Offline, sync paused"
             }
             .into(),
         );
         window.set_storage(state.storage.unwrap_or_default().into());
         window.set_notice(state.notice.as_deref().unwrap_or_default().into());
         window.set_room_selected(room.is_some());
-        window.set_room_name(
-            room.map_or("Choose a conversation", |room| room.name.as_str())
-                .into(),
-        );
+        window.set_room_name(room.map_or("", |room| room.name.as_str()).into());
+        window.set_room_direct(room.is_some_and(|room| room.direct));
+        window.set_room_initial(room.map_or(SharedString::default(), |room| initial(&room.name)));
+        window.set_room_tint(room.map_or(slint::Color::default(), |room| tint(&room.id)));
         window.set_room_icon(if room.is_some_and(|room| room.voice) {
             self.icons.voice.clone()
         } else if room.is_some_and(|room| room.direct) {
@@ -489,16 +497,27 @@ impl Adapter {
                 window.set_active_item(SharedString::default());
             }
             let mut previous = std::mem::take(&mut self.rows);
+            let mut before: Option<&ChatMessage> = None;
             let rows = state
                 .messages
                 .iter()
                 .map(|message| {
-                    let row = match previous.remove(&message.id) {
+                    let mut row = match previous.remove(&message.id) {
                         Some((old, row)) if &old == message => row,
                         _ => message_row(message),
                     };
                     self.rows
                         .insert(message.id.clone(), (message.clone(), row.clone()));
+                    let day = day(message.timestamp);
+                    let new_day = !day.is_empty()
+                        && before.is_none_or(|before| self::day(before.timestamp) != day);
+                    row.first = new_day || before.is_none_or(|before| !continues(before, message));
+                    row.day = if new_day {
+                        day.into()
+                    } else {
+                        SharedString::default()
+                    };
+                    before = Some(message);
                     row
                 })
                 .collect();
@@ -528,6 +547,27 @@ impl Adapter {
         ));
         window.set_voice_leaving(voice.phase == Phase::Leaving);
         window.set_voice_here(voice_here);
+        window.set_voice_channel(
+            voice
+                .room
+                .as_deref()
+                .filter(|_| voice.active())
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_voice_tone(match voice.phase {
+            Phase::Connected => 1,
+            Phase::Disconnected => 2,
+            _ => 0,
+        });
+        window.set_voice_detail(
+            if state.preview {
+                format!("{} · Sample", voice.name)
+            } else {
+                format!("{} · End-to-end encrypted", voice.name)
+            }
+            .into(),
+        );
         window.set_can_join(room.is_some_and(|room| state.can_join_voice(&room.id)));
         window.set_muted(voice.muted);
         window.set_deafened(voice.deafened);
@@ -536,7 +576,7 @@ impl Adapter {
                 Phase::Disconnected => "Voice disconnected",
                 Phase::Joining => "Joining voice...",
                 Phase::Connected if state.preview => "Preview voice",
-                Phase::Connected => "Encrypted voice",
+                Phase::Connected => "Voice connected",
                 Phase::Reconnecting => "Reconnecting voice...",
                 Phase::Leaving => "Leaving voice...",
             }
@@ -567,7 +607,7 @@ impl Adapter {
         window.set_voice_warning(voice.warning.as_deref().unwrap_or_default().into());
         update_model(
             &self.models.participants,
-            if voice_here {
+            if voice.active() {
                 voice
                     .participants
                     .iter()
@@ -575,8 +615,20 @@ impl Adapter {
                         name: if person.local {
                             "You".into()
                         } else {
-                            person.user.clone().into()
+                            display_part(&person.user).into()
                         },
+                        initial: initial(if person.local {
+                            display_part(account)
+                        } else {
+                            display_part(&person.user)
+                        }),
+                        tint: tint(display_part(if person.local {
+                            account
+                        } else {
+                            &person.user
+                        })),
+                        speaking: person.speaking && !person.muted && person.connected,
+                        connected: person.connected,
                         status: if let Some(problem) = &person.problem {
                             problem.as_str()
                         } else if !person.connected {
@@ -615,7 +667,7 @@ impl Adapter {
             voice
                 .microphones
                 .iter()
-                .map(|device| device.name.clone().into())
+                .map(|device| device_label(&device.name))
                 .collect(),
         );
         update_model(
@@ -623,7 +675,7 @@ impl Adapter {
             voice
                 .speakers
                 .iter()
-                .map(|device| device.name.clone().into())
+                .map(|device| device_label(&device.name))
                 .collect(),
         );
         window.set_microphone_index(device_index(
@@ -916,6 +968,105 @@ fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
     }
 }
 
+/// Avatar tints: mid tones that keep a white initial legible.
+const TINTS: [(u8, u8, u8); 8] = [
+    (0xc2, 0x55, 0x4d),
+    (0xb8, 0x6e, 0x22),
+    (0x3a, 0x93, 0x57),
+    (0x2b, 0x8a, 0x98),
+    (0x4a, 0x74, 0xc9),
+    (0x7a, 0x5f, 0xc9),
+    (0xb3, 0x4f, 0x8c),
+    (0x64, 0x6b, 0x7a),
+];
+
+/// The same name always gets the same tint. People are keyed by display name,
+/// which is all a reply quote carries, so a quote matches its author's avatar.
+fn tint(key: &str) -> slint::Color {
+    let hash = key
+        .to_lowercase()
+        .bytes()
+        .fold(0x811c_9dc5_u32, |hash, byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+        });
+    // FNV-1a mixes its high bits far better than its low ones.
+    let (red, green, blue) = TINTS[(hash >> 20) as usize % TINTS.len()];
+    slint::Color::from_rgb_u8(red, green, blue)
+}
+
+/// The readable part of a Matrix ID: `@alice:example.org` becomes `alice`.
+fn display_part(name: &str) -> &str {
+    name.strip_prefix('@')
+        .and_then(|rest| rest.split_once(':'))
+        .map_or(name, |(local, _)| local)
+}
+
+/// A server icon shows the first letter of up to three words, as in "Co-op crew" → "Cc".
+fn initials(name: &str) -> SharedString {
+    let mut words = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next());
+    let mut text: String = words
+        .next()
+        .map(|first| first.to_uppercase().collect())
+        .unwrap_or_else(|| "?".into());
+    text.extend(words.take(2).flat_map(char::to_lowercase));
+    text.into()
+}
+
+/// A message continues the previous one's group when the same person sent it
+/// within seven minutes, without replying to something else.
+fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
+    let sender = |message: &ChatMessage| {
+        if message.sender.is_empty() {
+            message.author.clone()
+        } else {
+            message.sender.clone()
+        }
+    };
+    let close = before.timestamp == 0
+        || message.timestamp == 0
+        || message.timestamp.abs_diff(before.timestamp) <= 7 * 60;
+    message.reply.is_none() && sender(before) == sender(message) && close
+}
+
+/// The UTC calendar date of a timestamp, such as "3 October 2026"; empty when unknown.
+fn day(timestamp: u64) -> String {
+    if timestamp == 0 {
+        return String::new();
+    }
+    // Howard Hinnant's days-to-civil algorithm.
+    let days = (timestamp / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+}
+
 fn file_size(bytes: u64) -> String {
     match bytes {
         0..1_024 => format!("{bytes} B"),
@@ -962,25 +1113,39 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         ),
         Delivery::Failed => ("Not sent. The server refused this message.", true, true),
     };
+    let reply_author = message
+        .reply
+        .as_ref()
+        .map(|reply| reply.author.as_str())
+        .unwrap_or_default();
     MessageRow {
         id: message.id.clone().into(),
         item: message.item.clone().into(),
         author: message.author.clone().into(),
         initial: initial(&message.author),
+        tint: tint(&message.author),
         body: message.body.clone().into(),
         time: message.time.clone().into(),
+        // The gutter beside a grouped message shows only the clock time.
+        short_time: message
+            .time
+            .split_whitespace()
+            .next()
+            .filter(|time| time.contains(':'))
+            .unwrap_or_default()
+            .into(),
         own: message.own,
+        // Grouping depends on the neighbouring messages; refresh sets both.
+        first: true,
+        day: SharedString::default(),
         formatted: message.formatted,
         styled,
         edited: message.edited,
         deleted: message.deleted,
         has_reply: message.reply.is_some(),
-        reply_author: message
-            .reply
-            .as_ref()
-            .map(|reply| reply.author.clone())
-            .unwrap_or_default()
-            .into(),
+        reply_author: reply_author.into(),
+        reply_initial: initial(reply_author),
+        reply_tint: tint(reply_author),
         reply_body: message
             .reply
             .as_ref()
@@ -1010,6 +1175,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         image_width: preview.map_or(0, |preview| preview.width as i32),
         image_height: preview.map_or(0, |preview| preview.height as i32),
         delivery: delivery.into(),
+        delivery_failed: message.delivery == Delivery::Failed,
         can_retry,
         can_cancel,
         can_reply: message.can_reply,
@@ -1028,10 +1194,21 @@ fn initial(text: &str) -> SharedString {
         .into()
 }
 
+/// WebRTC names its default entry "default: Device"; show it as "Default (Device)".
+fn device_label(name: &str) -> SharedString {
+    match name.strip_prefix("default: ") {
+        Some(device) => format!("Default ({device})").into(),
+        None => name.into(),
+    }
+}
+
+/// Without a choice, voice uses WebRTC's default device, which it lists first.
 fn device_index(devices: &[voice::Device], selected: Option<&str>) -> i32 {
-    devices
-        .iter()
-        .position(|device| Some(device.id.as_str()) == selected)
+    let index = match selected {
+        Some(selected) => devices.iter().position(|device| device.id == selected),
+        None => (!devices.is_empty()).then_some(0),
+    };
+    index
         .and_then(|index| i32::try_from(index).ok())
         .unwrap_or(-1)
 }

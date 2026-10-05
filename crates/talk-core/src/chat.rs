@@ -127,10 +127,14 @@ pub struct ChatMessage {
     /// The timeline item that actions apply to: `e:` event ID or `t:` transaction ID.
     pub item: String,
     pub author: String,
+    /// The author's Matrix user ID, which tells apart people sharing a display name.
+    pub sender: String,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,
     pub time: String,
+    /// Seconds since the Unix epoch; zero when unknown.
+    pub timestamp: u64,
     pub own: bool,
     pub edited: bool,
     pub deleted: bool,
@@ -981,6 +985,7 @@ async fn publish_timeline(
             id: item.unique_id().0.clone(),
             item: item_key(&event.identifier()),
             author: display_name(event.sender(), event.sender_profile()),
+            sender: event.sender().to_string(),
             own: event.is_own(),
             ..Default::default()
         };
@@ -1164,6 +1169,7 @@ async fn publish_timeline(
         message.can_react = readable;
         let seconds: u64 = event.timestamp().as_secs().into();
         message.time = format!("{:02}:{:02} UTC", seconds / 3600 % 24, seconds / 60 % 60);
+        message.timestamp = seconds;
         messages.push(message);
     }
     let unread = open.timeline.room().num_unread_messages() > 0;
