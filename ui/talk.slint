@@ -586,6 +586,9 @@ export component TalkWindow inherits Window {
     changed timeline-position => { root.follow-latest = timeline.content-y <= min(0px, timeline.height - min(root.known-content, timeline.content-height)) + 8px; }
     changed timeline-content => {
         root.settle-lead();
+        // Scrolling up makes the list measure new rows, so the height can change
+        // before the position handler has seen the scroll. Check the position too.
+        root.follow-latest = root.follow-latest && timeline.content-y <= min(0px, timeline.height - min(root.known-content, timeline.content-height)) + 8px;
         root.known-content = timeline.content-height;
         if root.follow-latest { root.scroll-to-latest(); }
     }

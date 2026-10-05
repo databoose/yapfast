@@ -1413,6 +1413,62 @@ mod tests {
     }
 
     #[test]
+    fn scrolling_up_leaves_the_latest_message() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = TalkWindow::new().unwrap();
+        window.set_workspace(true);
+        window.set_room_selected(true);
+        window.set_room_ready(true);
+        let rows: Vec<MessageRow> = (0..200)
+            .map(|index| MessageRow {
+                id: format!("m{index}").into(),
+                item: format!("i{index}").into(),
+                author: "Bob".into(),
+                body: if index % 2 == 0 {
+                    format!("Message {index}").into()
+                } else {
+                    format!("Message {index}, a longer line that wraps across the timeline at ordinary window widths, and then some more words").into()
+                },
+                first: index % 5 == 0,
+                ..Default::default()
+            })
+            .collect();
+        window.set_messages(ModelRc::new(VecModel::from(rows)));
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        let settle = || {
+            for _ in 0..5 {
+                slint::platform::update_timers_and_animations();
+                let _ = window.invoke_timeline_extent();
+            }
+        };
+        settle();
+        window.invoke_scroll_to_latest();
+        settle();
+        assert!(
+            window.invoke_timeline_at_end(),
+            "starts at the latest message"
+        );
+        for _ in 0..8 {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(700., 380.),
+                    delta_x: 0.,
+                    delta_y: 50.,
+                });
+            settle();
+        }
+        assert!(
+            !window.invoke_timeline_at_end(),
+            "scrolling up leaves the latest message"
+        );
+        window.hide().unwrap();
+    }
+
+    #[test]
     fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
         i_slint_backend_testing::init_no_event_loop();
         let directory = tempfile::tempdir().unwrap();

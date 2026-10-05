@@ -29,6 +29,11 @@ def click(x, y):
     send('button 272 0')
 
 
+def scroll(pixels):
+    """Scroll vertically by surface pixels, as a touchpad does; negative scrolls up."""
+    send(f'scroll {pixels}')
+
+
 def key(code):
     send(f'key {code} 1')
     send(f'key {code} 0')
@@ -36,7 +41,7 @@ def key(code):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['move', 'click', 'key', 'keydown', 'keyup', 'type'])
+    parser.add_argument('action', choices=['move', 'click', 'scroll', 'key', 'keydown', 'keyup', 'type'])
     parser.add_argument('values', nargs='*')
     args = parser.parse_args()
     require_private_display()
@@ -50,6 +55,9 @@ if __name__ == '__main__':
             if character not in keys:
                 raise SystemExit('Type supports lowercase ASCII fixture text only.')
             key(keys[character])
+    elif args.action == 'scroll':
+        if len(args.values) != 1: parser.error('Expected a pixel distance.')
+        scroll(float(args.values[0]))
     elif args.action in ('click', 'move'):
         if len(args.values) != 2: parser.error('Expected x and y.')
         if args.action == 'click': click(*map(float, args.values))

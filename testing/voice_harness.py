@@ -37,17 +37,19 @@ def capture(folder, name):
         return path
 
 
-def locate_rail(picture):
-    """Top-left corner of Talk's window content, found by the rail's exact colour."""
+def locate_rail(picture, minimum_height=HEIGHT - 80):
+    """Top-left corner of Talk's window content in screenshot pixels, found by the rail's exact colour."""
     # The rail's exact graphite (Theme.rail, #111215) forms the window's long left edge.
+    output_width, output_height = (int(value) for value in subprocess.check_output(
+        ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
+         '-of', 'csv=p=0:s=x', str(picture)], text=True, timeout=10).strip().split('x'))
     pixels = subprocess.check_output(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', str(picture),
                                       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], timeout=10)
-    output_width, output_height = 1600, 1000
     target = bytes([17, 18, 21])
     columns = [sum(pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
-    if best < HEIGHT - 80:
+    if best < minimum_height:
         raise RuntimeError(f'Talk rail was not found; inspect {picture}')
     x = next(x for x, count in enumerate(columns) if count >= best - 2)
     ys = [y for y in range(output_height)

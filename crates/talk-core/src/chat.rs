@@ -2269,6 +2269,40 @@ mod tests {
                     .any(|m| m.reply.is_some() && m.delivery == Delivery::Sent)
             })
             .await;
+            // TALK_TEST_EXTRA_MESSAGES adds a long history, for scrolling tests.
+            let extra = std::env::var("TALK_TEST_EXTRA_MESSAGES")
+                .ok()
+                .and_then(|count| count.parse::<usize>().ok())
+                .unwrap_or(0);
+            for index in 0..extra {
+                let body = match index % 4 {
+                    0 => format!("Message {index}: short one"),
+                    1 => format!(
+                        "Message {index}: a longer line about the plan for the weekend, so it \
+                         wraps across the timeline at ordinary window widths"
+                    ),
+                    2 => format!("Message {index} with **bold**, `code` and a list:\n- one\n- two"),
+                    _ => format!("Message {index}: 👍 sounds good"),
+                };
+                commands
+                    .send(Command::Send {
+                        room: room.clone(),
+                        body,
+                        reply: None,
+                    })
+                    .unwrap();
+                // Each wait has its own deadline, so wait for every twentieth message.
+                if index % 20 == 19 {
+                    let prefixes = [format!("Message {index}:"), format!("Message {index} ")];
+                    timeline_where(&mut events, |messages| {
+                        messages.iter().any(|m| {
+                            m.delivery == Delivery::Sent
+                                && prefixes.iter().any(|prefix| m.body.starts_with(prefix))
+                        })
+                    })
+                    .await;
+                }
+            }
             commands
                 .send(Command::Send {
                     room: room.clone(),
