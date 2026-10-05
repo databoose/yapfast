@@ -167,6 +167,9 @@ pub enum Action {
 pub enum Effect {
     Start(chat::Start),
     Backend(Command),
+    /// List the system's audio devices for the preview, then report them
+    /// through [`Application::preview_devices`].
+    ListDevices,
 }
 
 #[derive(Default)]
@@ -191,7 +194,21 @@ impl Application {
                 self.state.navigation = navigation;
                 self.restore_selection()
             }
-            Action::SelectRoom(id) => self.select(id),
+            Action::SelectRoom(id) => {
+                let mut effects = self.select(id.clone());
+                // Clicking a voice channel joins it, or asks before leaving another
+                // call. Restoring a selection, for example on navigation, never joins.
+                let voice = self.state.selected.as_ref() == Some(&id)
+                    && self
+                        .state
+                        .rooms
+                        .iter()
+                        .any(|room| room.id == id && room.voice);
+                if voice {
+                    effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
+                }
+                effects
+            }
             Action::SetDraft(body) => {
                 let Some(id) = self.state.selected.clone() else {
                     return vec![];
@@ -966,6 +983,35 @@ impl Application {
         self.select("general".into())
     }
 
+    /// The preview's devices as listed for it; nothing else about voice is real.
+    pub fn preview_devices(
+        &mut self,
+        devices: Result<(Vec<voice::Device>, Vec<voice::Device>), String>,
+    ) {
+        if !self.state.preview {
+            return;
+        }
+        match devices {
+            Ok((microphones, speakers)) => {
+                self.state.voice.microphones = microphones;
+                self.state.voice.speakers = speakers;
+            }
+            Err(error) => self.state.voice.error = Some(error),
+        }
+    }
+
+    /// A preview call's starting state, keeping the devices listed and chosen so far.
+    fn preview_voice(&self) -> voice::State {
+        let voice = &self.state.voice;
+        voice::State {
+            microphones: voice.microphones.clone(),
+            speakers: voice.speakers.clone(),
+            microphone: voice.microphone.clone(),
+            speaker: voice.speaker.clone(),
+            ..Default::default()
+        }
+    }
+
     fn voice_command(&mut self, command: voice::Command) -> Vec<Effect> {
         if matches!(command, voice::Command::Leave) {
             self.state.switch_voice = None;
@@ -994,13 +1040,19 @@ impl Application {
                             connected: true,
                             problem: None,
                         }],
-                        ..Default::default()
+                        ..self.preview_voice()
                     };
                 }
             }
-            voice::Command::Leave => self.state.voice = voice::State::default(),
+            voice::Command::Leave => self.state.voice = self.preview_voice(),
+            voice::Command::Devices => return vec![Effect::ListDevices],
+            voice::Command::Microphone(id) => self.state.voice.microphone = Some(id),
+            voice::Command::Speaker(id) => self.state.voice.speaker = Some(id),
             voice::Command::Mute(muted) => {
-                self.state.voice.muted = muted || self.state.voice.deafened;
+                if !muted {
+                    self.state.voice.deafened = false;
+                }
+                self.state.voice.muted = muted;
             }
             voice::Command::Deafen(deafened) => {
                 self.state.voice.deafened = deafened;
@@ -1421,6 +1473,62 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_voice_channel_joins_it_and_asks_before_leaving_another() {
+        let mut app = Application::default();
+        app.dispatch(Action::Preview);
+        app.dispatch(Action::SelectRoom("lounge".into()));
+        assert_eq!(app.state.voice.room.as_deref(), Some("lounge"));
+        // Clicking the channel you are in only shows it.
+        app.dispatch(Action::SelectRoom("general".into()));
+        app.dispatch(Action::SelectRoom("lounge".into()));
+        assert!(app.state.switch_voice.is_none());
+        app.dispatch(Action::Navigate(Navigation::Server("coop".into())));
+        app.dispatch(Action::SelectRoom("party-voice".into()));
+        assert_eq!(app.state.voice.room.as_deref(), Some("lounge"));
+        assert_eq!(app.state.switch_voice.as_deref(), Some("party-voice"));
+        app.dispatch(Action::CancelVoiceSwitch);
+        assert_eq!(app.state.voice.room.as_deref(), Some("lounge"));
+        // Coming back to a server restores its voice channel without joining it.
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        app.dispatch(Action::Voice(voice::Command::Leave));
+        app.dispatch(Action::Navigate(Navigation::Server("coop".into())));
+        assert_eq!(app.state.selected.as_deref(), Some("party-voice"));
+        assert!(!app.state.voice.active() && app.state.switch_voice.is_none());
+        app.dispatch(Action::SelectRoom("party-voice".into()));
+        assert_eq!(app.state.voice.room.as_deref(), Some("party-voice"));
+    }
+
+    #[test]
+    fn the_preview_lists_and_chooses_real_devices_across_calls() {
+        let mut app = Application::default();
+        app.dispatch(Action::Preview);
+        let effects = app.dispatch(Action::Voice(voice::Command::Devices));
+        assert!(matches!(effects.as_slice(), [Effect::ListDevices]));
+        let device = |id: &str| voice::Device {
+            id: id.into(),
+            name: id.into(),
+        };
+        app.preview_devices(Ok((
+            vec![device("mic-a"), device("mic-b")],
+            vec![device("out")],
+        )));
+        assert!(
+            app.dispatch(Action::Voice(voice::Command::Microphone("mic-b".into())))
+                .is_empty()
+        );
+        app.dispatch(Action::RequestJoinVoice("lounge".into()));
+        app.dispatch(Action::Voice(voice::Command::Leave));
+        assert_eq!(app.state.voice.microphones.len(), 2);
+        assert_eq!(app.state.voice.microphone.as_deref(), Some("mic-b"));
+        app.preview_devices(Err("No sound server.".into()));
+        assert_eq!(app.state.voice.error.as_deref(), Some("No sound server."));
+        // A signed-in session lists devices in its voice worker instead.
+        app.dispatch(Action::Logout);
+        app.preview_devices(Ok((vec![], vec![])));
+        assert!(app.state.voice.error.is_none());
+    }
+
+    #[test]
     fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
         let mut app = Application::default();
         assert!(app.dispatch(Action::Preview).is_empty());
@@ -1455,10 +1563,12 @@ mod tests {
             app.dispatch(Action::Voice(voice::Command::Deafen(true)))
                 .is_empty()
         );
-        app.dispatch(Action::Voice(voice::Command::Mute(false)));
-        assert!(app.state.voice.muted);
         app.dispatch(Action::Voice(voice::Command::Deafen(false)));
         assert!(app.state.voice.muted);
+        // Unmuting while deafened undeafens too.
+        app.dispatch(Action::Voice(voice::Command::Deafen(true)));
+        app.dispatch(Action::Voice(voice::Command::Mute(false)));
+        assert!(!app.state.voice.muted && !app.state.voice.deafened);
         assert!(app.dispatch(Action::Logout).is_empty());
         assert!(!app.state.preview);
         assert!(!app.state.voice.active());

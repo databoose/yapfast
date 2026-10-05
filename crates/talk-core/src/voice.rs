@@ -1,15 +1,18 @@
 //! One persistent voice connection, owned by a native thread rather than the UI.
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     thread,
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use livekit::{
-    PlatformAudio, PlayoutDeviceId, RecordingDeviceId, RoomEvent,
+    PlatformAudio, RoomEvent,
     options::TrackPublishOptions,
     prelude::{LocalAudioTrack, RemoteTrack, TrackSource},
+    rtc_engine::lk_runtime::LkRuntime,
+    webrtc::peer_connection_factory::native::PeerConnectionFactoryExt,
 };
 use matrix_rtc_livekit::{Call, CallOptions, compat::ElementCallCompat};
 use matrix_rtc_media::{CallEvent, MediaStreamKind};
@@ -133,9 +136,25 @@ pub struct Controller {
 }
 
 impl Controller {
+    #[cfg(test)]
     pub(crate) fn start(session: SessionLease) -> Result<Self> {
+        Self::start_remembering(session, None)
+    }
+
+    /// Starts with the devices chosen earlier on this machine, and saves each
+    /// new choice to `devices`, a file that never leaves it.
+    pub(crate) fn start_remembering(
+        session: SessionLease,
+        devices: Option<PathBuf>,
+    ) -> Result<Self> {
         let (commands, receiver) = mpsc::unbounded_channel();
-        let (states, snapshots) = watch::channel(State::default());
+        let mut initial = State::default();
+        if let Some(path) = &devices {
+            let chosen = Chosen::read(path);
+            initial.microphone = chosen.microphone;
+            initial.speaker = chosen.speaker;
+        }
+        let (states, snapshots) = watch::channel(initial.clone());
         let worker = thread::Builder::new()
             .name("talk-voice".into())
             .spawn(move || {
@@ -144,7 +163,8 @@ impl Controller {
                     .build();
                 match runtime {
                     Ok(runtime) => runtime.block_on(
-                        tokio::task::LocalSet::new().run_until(worker(session, receiver, states)),
+                        tokio::task::LocalSet::new()
+                            .run_until(worker(session, receiver, states, initial, devices)),
                     ),
                     Err(_) => {
                         states.send_modify(|state| {
@@ -191,8 +211,9 @@ async fn worker(
     session: SessionLease,
     mut commands: mpsc::UnboundedReceiver<Command>,
     snapshots: watch::Sender<State>,
+    mut state: State,
+    remembered: Option<PathBuf>,
 ) {
-    let mut state = State::default();
     while let Some(command) = commands.recv().await {
         match command {
             Command::Join(id) => {
@@ -212,6 +233,7 @@ async fn worker(
                             &mut state,
                             &mut commands,
                             &snapshots,
+                            remembered.as_deref(),
                         )
                         .await
                         {
@@ -229,9 +251,11 @@ async fn worker(
             },
             Command::Microphone(id) => {
                 state.microphone = Some(id);
+                Chosen::write(remembered.as_deref(), &state);
             }
             Command::Speaker(id) => {
                 state.speaker = Some(id);
+                Chosen::write(remembered.as_deref(), &state);
             }
             Command::LeaveStale => {
                 for room in session
@@ -306,6 +330,7 @@ async fn joining(
                         state.phase = Phase::Leaving;
                         cancel.send_replace(true);
                     }
+                    // Saved once the call connects.
                     Some(Command::Microphone(id)) => state.microphone = Some(id),
                     Some(Command::Speaker(id)) => state.speaker = Some(id),
                     Some(Command::Devices) => { let _ = devices(state); }
@@ -420,6 +445,46 @@ fn call_options(room: &Room) -> Result<CallOptions> {
     })
 }
 
+/// The file in Talk's data folder that remembers the chosen devices.
+pub const DEVICES: &str = "devices.json";
+
+/// The devices chosen on this machine, kept beside its other local files.
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct Chosen {
+    microphone: Option<String>,
+    speaker: Option<String>,
+}
+
+impl Chosen {
+    fn read(path: &Path) -> Self {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn write(path: Option<&Path>, state: &State) {
+        let Some(path) = path else { return };
+        let chosen = Self {
+            microphone: state.microphone.clone(),
+            speaker: state.speaker.clone(),
+        };
+        let result = serde_json::to_vec_pretty(&chosen)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(path, bytes));
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not remember the chosen audio devices");
+        }
+    }
+}
+
+/// The system's microphones and speakers, listed without opening any of them.
+pub fn list_devices() -> Result<(Vec<Device>, Vec<Device>)> {
+    let mut state = State::default();
+    devices(&mut state)?;
+    Ok((state.microphones, state.speakers))
+}
+
 fn devices(state: &mut State) -> Result<()> {
     let audio = audio()?;
     collect_devices(&audio, state);
@@ -438,17 +503,69 @@ fn collect_devices(audio: &PlatformAudio, state: &mut State) {
     state.microphones = audio
         .recording_devices()
         .map(|device| Device {
-            id: device.id.as_str().into(),
+            id: device_id(device.id.as_str(), &device.name),
             name: device.name,
         })
         .collect();
     state.speakers = audio
         .playout_devices()
         .map(|device| Device {
-            id: device.id.as_str().into(),
+            id: device_id(device.id.as_str(), &device.name),
             name: device.name,
         })
         .collect();
+}
+
+/// WebRTC's PulseAudio devices have no GUID, and LiveKit selects only by GUID,
+/// which would always pick the first device. Those devices go by name instead,
+/// as `name:` and the name WebRTC reports.
+fn device_id(guid: &str, name: &str) -> String {
+    if guid.is_empty() {
+        format!("{NAMED}{name}")
+    } else {
+        guid.into()
+    }
+}
+
+/// Marks a device id made from the device's name.
+pub(crate) const NAMED: &str = "name:";
+
+/// Chooses a microphone by Talk's device id, reopening capture if it was running.
+fn use_microphone(audio: &PlatformAudio, id: &str) -> Result<()> {
+    let index = audio
+        .recording_devices()
+        .find(|device| device_id(device.id.as_str(), &device.name) == id)
+        .and_then(|device| u16::try_from(device.index).ok())
+        .context("Selected microphone is unavailable. Choose another device.")?;
+    let runtime = LkRuntime::instance();
+    let factory = runtime.pc_factory();
+    let running = factory.recording_is_initialized();
+    ensure!(
+        (!running || factory.stop_recording())
+            && factory.set_recording_device(index)
+            && (!running || (factory.init_recording() && factory.start_recording())),
+        "Could not switch microphone. Refresh devices and choose another."
+    );
+    Ok(())
+}
+
+/// Chooses speakers by Talk's device id, reopening playout if it was running.
+fn use_speakers(audio: &PlatformAudio, id: &str) -> Result<()> {
+    let index = audio
+        .playout_devices()
+        .find(|device| device_id(device.id.as_str(), &device.name) == id)
+        .and_then(|device| u16::try_from(device.index).ok())
+        .context("Selected speakers are unavailable. Choose another device.")?;
+    let runtime = LkRuntime::instance();
+    let factory = runtime.pc_factory();
+    let running = factory.playout_is_initialized();
+    ensure!(
+        (!running || factory.stop_playout())
+            && factory.set_playout_device(index)
+            && (!running || (factory.init_playout() && factory.start_playout())),
+        "Could not switch speakers. Refresh devices and choose another."
+    );
+    Ok(())
 }
 
 async fn connected(
@@ -458,12 +575,20 @@ async fn connected(
     state: &mut State,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     snapshots: &watch::Sender<State>,
+    remembered: Option<&Path>,
 ) -> Result<()> {
     let result = async {
         collect_devices(&audio, state);
         ensure!(!state.speakers.is_empty(), "No speakers found. Connect an audio output and retry.");
-        if let Some(id) = &state.microphone { audio.set_recording_device(&RecordingDeviceId::from_unchecked_guid(id)).context("Selected microphone is unavailable. Choose another device.")?; }
-        if let Some(id) = &state.speaker { audio.set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id)).context("Selected speakers are unavailable. Choose another device.")?; }
+        // A remembered device may be unplugged; the system default stands in
+        // for it, and the choice is kept for when it returns.
+        if let Some(id) = &state.microphone && let Err(error) = use_microphone(&audio, id) {
+            tracing::warn!(%error, "using the default microphone");
+        }
+        if let Some(id) = &state.speaker && let Err(error) = use_speakers(&audio, id) {
+            tracing::warn!(%error, "using the default speakers");
+        }
+        Chosen::write(remembered, state);
         let mut microphone: Option<LocalAudioTrack> = None;
         let mut roster = call.subscribe_participants();
         let mut events = call.subscribe_call_events();
@@ -534,8 +659,13 @@ async fn connected(
                     None | Some(Command::Leave) => break,
                     Some(Command::Join(_)) => state.error = Some("Leave your current voice channel before joining another.".into()),
                     Some(Command::Mute(muted)) => {
-                        let result = set_muted(&call, &audio, &mut microphone, muted || state.deafened).await;
-                        match result { Ok(()) => { state.muted = muted || state.deafened; state.error = None; }, Err(error) => { state.muted = true; state.error = Some(error.to_string()); } }
+                        // Unmuting while deafened means wanting to talk, which needs hearing too.
+                        if !muted && state.deafened {
+                            set_hearing(&call, true);
+                            state.deafened = false;
+                        }
+                        let result = set_muted(&call, &audio, &mut microphone, muted).await;
+                        match result { Ok(()) => { state.muted = muted; state.error = None; }, Err(error) => { state.muted = true; state.error = Some(error.to_string()); } }
                     }
                     Some(Command::Deafen(deafened)) => {
                         if deafened {
@@ -543,18 +673,12 @@ async fn connected(
                             state.muted = true;
                         }
                         state.deafened = deafened;
-                        for person in call.session().room().remote_participants().values() {
-                            for publication in person.track_publications().values() {
-                                if let Some(RemoteTrack::Audio(track)) = publication.track() {
-                                    if deafened { track.disable(); } else { track.enable(); }
-                                }
-                            }
-                        }
+                        set_hearing(&call, !deafened);
                     }
                     Some(Command::Devices) => collect_devices(&audio, state),
                     Some(Command::Microphone(id)) => {
-                        match audio.switch_recording_device(&RecordingDeviceId::from_unchecked_guid(&id)) {
-                            Ok(()) => { state.microphone = Some(id); state.error = None; },
+                        match use_microphone(&audio, &id) {
+                            Ok(()) => { state.microphone = Some(id); state.error = None; Chosen::write(remembered, state); },
                             Err(_) => {
                                 set_muted(&call, &audio, &mut microphone, true).await?;
                                 state.muted = true;
@@ -563,8 +687,8 @@ async fn connected(
                         }
                     }
                     Some(Command::Speaker(id)) => {
-                        match audio.switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&id)) {
-                            Ok(()) => { state.speaker = Some(id); state.error = None; },
+                        match use_speakers(&audio, &id) {
+                            Ok(()) => { state.speaker = Some(id); state.error = None; Chosen::write(remembered, state); },
                             Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                         }
                     }
@@ -753,6 +877,21 @@ async fn reconnect_timeout(deadline: Option<Instant>) {
     }
 }
 
+/// Plays or silences everyone else in the call.
+fn set_hearing(call: &Call, hearing: bool) {
+    for person in call.session().room().remote_participants().values() {
+        for publication in person.track_publications().values() {
+            if let Some(RemoteTrack::Audio(track)) = publication.track() {
+                if hearing {
+                    track.enable();
+                } else {
+                    track.disable();
+                }
+            }
+        }
+    }
+}
+
 async fn set_muted(
     call: &Call,
     audio: &PlatformAudio,
@@ -821,6 +960,26 @@ async fn set_muted(
 mod tests {
     use super::*;
     use crate::session::Session;
+
+    #[test]
+    fn devices_without_a_guid_are_known_by_name_and_choices_stay_on_disk() {
+        assert_eq!(device_id("", "Null Output"), "name:Null Output");
+        assert_eq!(device_id("{0.0.1}", "Speakers"), "{0.0.1}");
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(DEVICES);
+        assert!(Chosen::read(&path).microphone.is_none());
+        let state = State {
+            microphone: Some("name:USB Microphone".into()),
+            speaker: Some("name:Null Output".into()),
+            ..Default::default()
+        };
+        Chosen::write(Some(&path), &state);
+        let chosen = Chosen::read(&path);
+        assert_eq!(chosen.microphone.as_deref(), Some("name:USB Microphone"));
+        assert_eq!(chosen.speaker.as_deref(), Some("name:Null Output"));
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(Chosen::read(&path).speaker.is_none());
+    }
 
     async fn wait(controller: &mut Controller, matches: impl Fn(&State) -> bool) -> State {
         tokio::time::timeout(Duration::from_secs(25), async {

@@ -33,6 +33,17 @@ impl BackgroundRuntime {
         }
     }
 
+    /// Runs blocking work, such as a platform call, on Tokio's blocking pool.
+    pub fn spawn_blocking<F, T>(&self, work: F) -> BackgroundTask<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        BackgroundTask {
+            handle: self.runtime.spawn_blocking(work),
+        }
+    }
+
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
     }

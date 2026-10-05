@@ -2,17 +2,35 @@
 
 Talk can join one encrypted voice channel at a time, wait alone, and keep the
 connection while browsing text channels, other servers and DMs. Each join starts
-muted. The sidebar footer exposes mute, deafen, audio devices and Leave. Deafen
-also mutes the microphone; undeafening keeps it muted. The voice view shows the
-participants and their mute/speaking state. Switching voice channels asks before
-leaving the current one.
+muted. The dock under the rail and sidebar exposes mute, deafen, audio devices and Leave.
+A caret beside mute and beside deafen opens a menu that chooses the input or
+output device and links to the full settings. Deafen
+also mutes the microphone; undeafening keeps it muted, while unmuting when
+deafened undeafens too. The voice view shows the
+participants and their mute/speaking state. Clicking a voice channel joins it.
+Clicking another one during a call opens a dialog that asks before leaving the
+current one. Coming back to a server that had a voice channel selected shows it
+without joining.
 
 The native LiveKit audio engine captures and plays audio through system devices.
-The gear button opens a popover to select microphone and speakers by device ID,
-without hiding the channel list in small windows. Choices last while
-Talk is open. Refresh devices after plugging in hardware. No microphone track is
+The gear button opens a popover to select microphone and speakers,
+without hiding the channel list in small windows. Talk remembers the choice in
+`devices.json` in its data folder; it never leaves the machine. A remembered
+device that is unplugged gives way to the system default until it returns.
+Refresh devices after plugging in hardware. No microphone track is
 created until Unmute. Leaving releases the audio handle, and restarting Talk
-requires joining again. Preview controls only simulate these states.
+requires joining again. Preview calls are simulated, but the preview lists and
+chooses real devices without remembering them.
+
+WebRTC's PulseAudio devices report no GUID, and LiveKit selects devices only by
+GUID, which always chose the first device. Talk names such devices `name:` and
+their reported name, and selects them by their current index instead.
+
+The input menu's level meter reads the chosen microphone locally through
+PulseAudio, raw and before any processing, only while the menu is open. It
+works while muted, outside calls and in the preview, and it never touches the
+call: muted, nothing is published or sent. It shows as "Input level" in the
+system's recording streams. Windows has no meter yet.
 
 ## Run the local demo
 
@@ -107,8 +125,8 @@ The controller shows reconnecting and allows up to 60 seconds before ending a
 degraded connection. A joining request has a 35-second deadline. Leave cancels a pending join
 immediately and waits up to ten seconds for membership cleanup; normal leaving
 has the same cleanup deadline. Crash membership expiry uses a five-minute sticky lifetime.
-Ringing DM/group calls, video, screenshare, push-to-talk, device preference
-persistence and tray behavior are later slices.
+Ringing DM/group calls, video, screenshare, push-to-talk, input and output
+volume, and tray behavior are later slices.
 
 ## Reliability
 

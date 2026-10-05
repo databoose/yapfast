@@ -9,6 +9,7 @@ pub mod chat;
 pub mod cli;
 pub mod experiment;
 pub mod logging;
+pub mod meter;
 pub mod runtime;
 pub mod session;
 pub mod voice;

@@ -131,6 +131,7 @@ component IconButton inherits Rectangle {
     in property <color> fill: transparent;
     in property <int> tip-side: 0;
     in property <length> radius: 6px;
+    out property <bool> hovered: pointer.has-hover;
     callback clicked;
     // The root fills its row; the visible face stays square and centred.
     width: root.size; min-height: root.size;
@@ -176,6 +177,74 @@ component IconButton inherits Rectangle {
                     Tip.y = root.tip-side == 0 ? face.absolute-position.y : root.tip-side == 1 ? face.absolute-position.y + root.size / 2 : face.absolute-position.y + root.size;
                 } else if Tip.text == root.label {
                     Tip.text = "";
+                }
+            }
+        }
+    }
+}
+
+// A toggle with a caret beside it that opens its device menu. The pair shares one
+// hover ground, so the caret reads as part of the control it configures.
+component DeviceToggle inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> menu-label;
+    in property <bool> alert;
+    in property <bool> enabled: true;
+    in property <bool> open;
+    callback clicked;
+    callback menu;
+    width: 52px; min-height: 32px;
+    // The ground is the visible pair only, centred in the row like IconButton's face.
+    Rectangle {
+        y: (parent.height - self.height) / 2; height: 32px;
+        border-radius: 6px;
+        background: root.open || toggle.hovered || caret.has-hover ? Theme.hover : transparent;
+        animate background { duration: Theme.quick; }
+    }
+    HorizontalLayout {
+        toggle := IconButton {
+            icon: root.icon; label: root.label; alert: root.alert; enabled: root.enabled;
+            clicked => { root.clicked(); }
+        }
+        Rectangle {
+            width: 20px;
+            accessible-role: button;
+            accessible-label: root.menu-label;
+            accessible-action-default => { root.menu(); }
+            Rectangle {
+                y: (parent.height - self.height) / 2; width: 20px; height: 32px; border-radius: 6px;
+                background: caret.has-hover ? #ffffff14 : transparent;
+                animate background { duration: Theme.quick; }
+                border-width: caret-focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent;
+                Image {
+                    source: @image-url("icons/chevron-down.svg"); width: 14px; height: 14px;
+                    colorize: caret.has-hover || root.open ? Theme.text : Theme.muted;
+                    transform-rotation: root.open ? 180deg : 0deg;
+                    animate transform-rotation { duration: Theme.quick; }
+                }
+            }
+            caret-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == "\n" || event.text == " " {
+                        root.menu(); return accept;
+                    }
+                    return reject;
+                }
+                caret := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { Tip.text = ""; root.menu(); }
+                    changed has-hover => {
+                        if self.has-hover && !root.open {
+                            Tip.text = root.menu-label;
+                            Tip.side = 0;
+                            Tip.x = self.absolute-position.x + self.width / 2;
+                            Tip.y = self.absolute-position.y + (self.height - 32px) / 2;
+                        } else if Tip.text == root.menu-label {
+                            Tip.text = "";
+                        }
+                    }
                 }
             }
         }
@@ -373,6 +442,83 @@ component ChannelRow inherits Rectangle {
     }
 }
 
+// One choice in a menu, with a check beside the current one.
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> checked;
+    callback clicked;
+    height: 32px;
+    border-radius: 4px;
+    background: pointer.has-hover ? Theme.active : transparent;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 8px;
+        Image {
+            source: root.checked ? @image-url("icons/check.svg") : root.icon;
+            width: 16px; image-fit: contain;
+            colorize: root.checked ? Theme.accent : pointer.has-hover ? Theme.text : Theme.muted;
+        }
+        Text {
+            text: root.text; color: root.checked || pointer.has-hover ? Theme.text : Theme.secondary;
+            font-size: 14px; font-weight: root.checked ? 600 : 400;
+            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    }
+}
+
+// The menu behind a toggle's caret: its devices, anything placed inside, then
+// a way into the full settings.
+component DeviceMenu inherits Rectangle {
+    in property <string> heading;
+    in property <[string]> devices;
+    in property <int> current;
+    in property <string> empty;
+    callback select(int);
+    callback settings;
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    VerticalLayout {
+        padding: 6px; spacing: 6px;
+        HorizontalLayout {
+            padding-left: 8px; padding-top: 4px;
+            Text { text: root.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+        }
+        if root.devices.length > 0: ScrollView {
+            // Five devices before the list scrolls.
+            height: min(5, root.devices.length) * 32px;
+            VerticalLayout {
+                for device[index] in root.devices: MenuItem {
+                    text: device; checked: index == root.current;
+                    clicked => { root.select(index); }
+                }
+            }
+        }
+        if root.devices.length == 0: HorizontalLayout {
+            padding-left: 8px; padding-right: 8px;
+            Label { text: root.empty; }
+        }
+        @children
+        Rectangle { height: 1px; background: Theme.line; }
+        MenuItem { text: "Voice settings"; icon: @image-url("icons/settings.svg"); clicked => { root.settings(); } }
+    }
+}
+
 // A reaction under a message: the emoji in a color emoji font, then the count.
 component ReactionToggle inherits Rectangle {
     in property <string> key;
@@ -517,10 +663,17 @@ export component TalkWindow inherits Window {
     in property <[PersonRow]> participants;
     in property <string> switch-prompt;
     in-out property <bool> audio-settings;
+    // The sidebar keeps 220 to 380px. Dragging also leaves the conversation 420px;
+    // the window width cannot enter this binding, because it depends on the layout.
+    out property <length> sidebar-shown: max(220px, min(380px, root.sidebar-width));
     in property <[string]> microphones;
     in property <[string]> speakers;
     in property <int> microphone-index;
     in property <int> speaker-index;
+    /// The microphone level from 0 to 1, refreshed by meter-tick while the input menu is open.
+    in-out property <float> input-level;
+    /// Why the level can't be shown, if it can't.
+    in-out property <string> meter-note;
 
     callback login;
     callback restore;
@@ -546,6 +699,9 @@ export component TalkWindow inherits Window {
     callback refresh-devices;
     callback select-microphone(int);
     callback select-speaker(int);
+    /// Whether the input menu wants the microphone level measured.
+    callback metering(bool);
+    callback meter-tick;
     callback reply(string);
     callback edit(string);
     callback react(string, string);
@@ -558,6 +714,9 @@ export component TalkWindow inherits Window {
     callback save-attachment(string);
     callback cancel-compose;
     callback dismiss-notice;
+    // The sidebar's width, chosen by dragging its edge; Talk stores it on release.
+    in-out property <length> sidebar-width: 240px;
+    callback sidebar-resized(length);
 
     public function focus-composer() { composer.focus-input(); }
     public function focus-sign-in() { username-field.focus-input(); }
@@ -607,8 +766,60 @@ export component TalkWindow inherits Window {
     }
     property <bool> settings-open: settings-popup.is-open;
     changed settings-open => { root.audio-settings = root.settings-open; }
+
+    // The device menus open above the toggle whose caret was clicked.
+    property <length> menu-x;
+    property <length> menu-y;
+    function open-settings() { input-menu.close(); output-menu.close(); root.audio-settings = true; root.refresh-devices(); }
+    property <bool> input-open: input-menu.is-open;
+    property <bool> output-open: output-menu.is-open;
+    changed input-open => { root.input-level = 0; root.meter-note = ""; root.metering(root.input-open); }
+    Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
+    input-menu := PopupWindow {
+        x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
+        y: max(8px, root.menu-y - self.height - 6px);
+        width: 280px;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        DeviceMenu {
+            heading: "INPUT DEVICE"; devices: root.microphones; current: root.microphone-index;
+            empty: "No microphones found. Connect one, then reopen this menu.";
+            select(index) => { root.select-microphone(index); }
+            settings => { root.open-settings(); }
+            Rectangle { height: 1px; background: Theme.line; }
+            VerticalLayout {
+                padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 8px;
+                Text { text: "INPUT LEVEL"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                HorizontalLayout {
+                    height: 10px; spacing: 3px;
+                    accessible-role: progress-indicator;
+                    accessible-label: "Input level";
+                    accessible-value: round(root.input-level * 100) + "%" + (root.muted ? ", muted" : "");
+                    // Muted, the level still shows, in a faded green: heard here, sent nowhere.
+                    for segment in 24: Rectangle {
+                        border-radius: 2px;
+                        background: (segment + 0.5) / 24 > root.input-level ? Theme.line
+                            : root.muted ? Theme.live.with-alpha(0.4) : Theme.live;
+                    }
+                }
+                if root.meter-note != "": Label { text: root.meter-note; }
+                if root.meter-note == "" && root.muted: Label { text: "Muted. Nothing you say is sent."; }
+            }
+        }
+    }
+    output-menu := PopupWindow {
+        x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
+        y: max(8px, root.menu-y - self.height - 6px);
+        width: 280px;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        DeviceMenu {
+            heading: "OUTPUT DEVICE"; devices: root.speakers; current: root.speaker-index;
+            empty: "No speakers found. Connect one, then reopen this menu.";
+            select(index) => { root.select-speaker(index); }
+            settings => { root.open-settings(); }
+        }
+    }
     settings-popup := PopupWindow {
-        x: 80px; y: max(16px, root.height - self.height - 60px);
+        x: 8px; y: max(16px, root.height - self.height - 64px);
         width: 340px;
         height: settings-content.preferred-height;
         close-policy: PopupClosePolicy.close-on-click-outside;
@@ -631,13 +842,12 @@ export component TalkWindow inherits Window {
                 Rectangle { height: 1px; background: Theme.line; }
                 Text { text: "VOICE & AUDIO"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
                 Label { text: "Microphone"; color: Theme.secondary; }
-                ComboBox { model: root.microphones; current-index: root.microphone-index; enabled: !root.preview && root.microphones.length > 0; accessible-label: "Microphone device"; selected => { root.select-microphone(self.current-index); } }
+                ComboBox { model: root.microphones; current-index: root.microphone-index; enabled: root.microphones.length > 0; accessible-label: "Microphone device"; selected => { root.select-microphone(self.current-index); } }
                 Label { text: "Speakers"; color: Theme.secondary; }
-                ComboBox { model: root.speakers; current-index: root.speaker-index; enabled: !root.preview && root.speakers.length > 0; accessible-label: "Speaker device"; selected => { root.select-speaker(self.current-index); } }
-                if root.preview: Label { text: "Device selection is available with a real account."; }
-                if !root.preview && root.microphones.length == 0 && root.speakers.length == 0: Label { text: "No audio devices found. Connect one, then refresh."; }
+                ComboBox { model: root.speakers; current-index: root.speaker-index; enabled: root.speakers.length > 0; accessible-label: "Speaker device"; selected => { root.select-speaker(self.current-index); } }
+                if root.microphones.length == 0 && root.speakers.length == 0: Label { text: "No audio devices found. Connect one, then refresh."; }
                 HorizontalLayout {
-                    ActionButton { text: "Refresh devices"; icon: @image-url("icons/refresh-cw.svg"); ghost: true; small: true; enabled: !root.preview; clicked => { root.refresh-devices(); } }
+                    ActionButton { text: "Refresh devices"; icon: @image-url("icons/refresh-cw.svg"); ghost: true; small: true; clicked => { root.refresh-devices(); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
                 Rectangle { height: 1px; background: Theme.line; }
@@ -721,103 +931,120 @@ export component TalkWindow inherits Window {
     HorizontalLayout {
         visible: root.workspace;
         spacing: 0px;
-        // Server rail.
+        // Navigation: the rail and the sidebar, with the voice and account dock across both.
         Rectangle {
-            width: 72px; background: Theme.rail;
-            VerticalLayout {
-                padding-top: 12px; padding-bottom: 12px; spacing: 8px;
-                RailItem {
-                    icon: @image-url("icons/message-circle.svg");
-                    label: root.dms-unread ? "Direct messages, unread" : "Direct messages"; tip: "Direct messages";
-                    selected: root.dms-selected; unread: root.dms-unread;
-                    clicked => { root.navigate-dms(); }
-                }
-                HorizontalLayout {
-                    alignment: center;
-                    Rectangle { width: 32px; height: 2px; border-radius: 1px; background: Theme.line; }
-                }
-                ScrollView {
-                    vertical-stretch: 1;
-                    VerticalLayout {
-                        spacing: 8px;
-                        for server in root.servers: RailItem {
-                            initial: server.initial;
-                            label: server.name + (server.unread ? ", unread" : ""); tip: server.name;
-                            selected: server.selected; unread: server.unread;
-                            clicked => { root.navigate-server(server.id); }
-                        }
-                        Rectangle { vertical-stretch: 1; }
-                    }
-                }
-            }
-        }
-        // Channel sidebar.
-        Rectangle {
-            width: 240px; background: Theme.sidebar;
-            border-top-left-radius: 10px;
-            clip: true;
+            width: 72px + root.sidebar-shown; background: Theme.rail;
             VerticalLayout {
                 spacing: 0px;
-                Rectangle {
-                    height: 48px;
-                    Text { x: 16px; width: parent.width - 32px; text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
-                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
-                }
                 HorizontalLayout {
-                    padding: 10px; padding-bottom: 6px;
-                    TextField {
-                        min-height: 30px; text-size: 13px; pad: 8px; fill: Theme.sunken; ring: false;
-                        placeholder: root.filter-placeholder; text <=> root.filter; label: root.filter-placeholder;
-                        edited => { root.filter-edited(); }
-                    }
-                }
-                ScrollView {
-                    min-height: 96px; vertical-stretch: 1;
-                    VerticalLayout {
-                        padding-left: 8px; padding-right: 8px; padding-bottom: 12px; spacing: 2px;
-                        for room in root.rooms: VerticalLayout {
-                            spacing: 2px; vertical-stretch: 0;
-                            if room.heading != "": HorizontalLayout {
-                                padding-left: 8px; height: 36px;
-                                Text { text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+                    vertical-stretch: 1; spacing: 0px;
+                    // Server rail.
+                    Rectangle {
+                        width: 72px; background: Theme.rail;
+                        VerticalLayout {
+                            padding-top: 12px; padding-bottom: 12px; spacing: 8px;
+                            RailItem {
+                                icon: @image-url("icons/message-circle.svg");
+                                label: root.dms-unread ? "Direct messages, unread" : "Direct messages"; tip: "Direct messages";
+                                selected: root.dms-selected; unread: root.dms-unread;
+                                clicked => { root.navigate-dms(); }
                             }
-                            ChannelRow {
-                                text: room.name;
-                                label: room.name + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
-                                icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
-                                selected: room.selected; unread: room.unread; badge: room.badge;
-                                clicked => { root.select-room(room.id); }
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle { width: 32px; height: 2px; border-radius: 1px; background: Theme.line; }
                             }
-                            // Talk knows the participants of its own call only.
-                            if room.voice && room.id == root.voice-channel: VerticalLayout {
-                                padding-left: 32px; padding-bottom: 4px; spacing: 0px;
-                                for person in root.participants: HorizontalLayout {
-                                    height: 30px; spacing: 8px; padding-left: 4px; padding-right: 8px;
-                                    Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; speaking: person.speaking; } }
-                                    Text {
-                                        text: person.name; font-size: 14px; font-weight: person.speaking ? 700 : 500;
-                                        color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
-                                        vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                            ScrollView {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    spacing: 8px;
+                                    for server in root.servers: RailItem {
+                                        initial: server.initial;
+                                        label: server.name + (server.unread ? ", unread" : ""); tip: server.name;
+                                        selected: server.selected; unread: server.unread;
+                                        clicked => { root.navigate-server(server.id); }
                                     }
-                                    if person.muted: Image {
-                                        source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
-                                        colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
-                                    }
+                                    Rectangle { vertical-stretch: 1; }
                                 }
                             }
                         }
-                        if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
-                        Rectangle { vertical-stretch: 1; }
+                    }
+                    // Channel sidebar: a lighter sheet held by the rail and the dock.
+                    Rectangle {
+                        width: root.sidebar-shown; background: Theme.sidebar;
+                        border-top-left-radius: 10px; border-bottom-left-radius: 10px;
+                        clip: true;
+                        VerticalLayout {
+                            spacing: 0px;
+                            Rectangle {
+                                height: 48px;
+                                Text { x: 16px; width: parent.width - 32px; text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
+                            }
+                            HorizontalLayout {
+                                padding: 10px; padding-bottom: 6px;
+                                TextField {
+                                    min-height: 30px; text-size: 13px; pad: 8px; fill: Theme.sunken; ring: false;
+                                    placeholder: root.filter-placeholder; text <=> root.filter; label: root.filter-placeholder;
+                                    edited => { root.filter-edited(); }
+                                }
+                            }
+                            ScrollView {
+                                min-height: 96px; vertical-stretch: 1;
+                                VerticalLayout {
+                                    padding-left: 8px; padding-right: 8px; padding-bottom: 12px; spacing: 2px;
+                                    for room in root.rooms: VerticalLayout {
+                                        spacing: 2px; vertical-stretch: 0;
+                                        if room.heading != "": HorizontalLayout {
+                                            padding-left: 8px; height: 36px;
+                                            Text { text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+                                        }
+                                        ChannelRow {
+                                            text: room.name;
+                                            label: room.name + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                                            icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                                            selected: room.selected; unread: room.unread; badge: room.badge;
+                                            clicked => { root.select-room(room.id); }
+                                        }
+                                        // Talk knows the participants of its own call only.
+                                        if room.voice && room.id == root.voice-channel: VerticalLayout {
+                                            padding-left: 32px; padding-bottom: 4px; spacing: 0px;
+                                            for person in root.participants: HorizontalLayout {
+                                                height: 30px; spacing: 8px; padding-left: 4px; padding-right: 8px;
+                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; speaking: person.speaking; } }
+                                                Text {
+                                                    text: person.name; font-size: 14px; font-weight: person.speaking ? 700 : 500;
+                                                    color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
+                                                    vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                                                }
+                                                if person.muted: Image {
+                                                    source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
+                                                    colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
+                                    Rectangle { vertical-stretch: 1; }
+                                }
+                            }
+                        }
                     }
                 }
-                // Persistent voice connection.
+                // The dock spans the rail and the sidebar. Its avatar and voice icon sit on the
+                // rail's axis, 36px from the left; names and status start at 64px.
                 if root.voice-visible: Rectangle {
                     background: Theme.panel;
-                    Rectangle { height: 1px; y: 0px; background: Theme.line; }
                     VerticalLayout {
-                        padding: 10px; padding-left: 12px; spacing: 6px;
+                        padding-top: 10px; padding-bottom: 8px; padding-right: 8px; spacing: 6px;
                         HorizontalLayout {
-                            spacing: 8px;
+                            spacing: 0px;
+                            Rectangle {
+                                width: 64px;
+                                Image {
+                                    x: 26px; width: 20px; height: 20px; source: @image-url("icons/volume-2.svg");
+                                    image-fit: contain; colorize: root.voice-color;
+                                }
+                            }
                             VerticalLayout {
                                 alignment: center; horizontal-stretch: 1;
                                 Text { text: root.voice-status; color: root.voice-color; font-size: 14px; font-weight: 700; overflow: elide; }
@@ -829,15 +1056,22 @@ export component TalkWindow inherits Window {
                                 clicked => { root.leave-voice(); }
                             }
                         }
-                        if root.voice-warning != "" && root.voice-error == "": ScrollView {
-                            max-height: 64px;
-                            Label { text: root.voice-warning; color: Theme.accent; }
+                        if root.voice-warning != "" && root.voice-error == "": HorizontalLayout {
+                            padding-left: 64px;
+                            ScrollView {
+                                max-height: 64px;
+                                Label { text: root.voice-warning; color: Theme.accent; }
+                            }
                         }
-                        if root.voice-error != "": ScrollView {
-                            max-height: 48px;
-                            Text { text: root.voice-error; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+                        if root.voice-error != "": HorizontalLayout {
+                            padding-left: 64px;
+                            ScrollView {
+                                max-height: 48px;
+                                Text { text: root.voice-error; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+                            }
                         }
                         if !root.voice-active: HorizontalLayout {
+                            padding-left: 54px;
                             ActionButton { text: "Dismiss"; ghost: true; small: true; clicked => { root.dismiss-voice-error(); } }
                             Rectangle { horizontal-stretch: 1; }
                         }
@@ -846,14 +1080,14 @@ export component TalkWindow inherits Window {
                 // Account panel.
                 Rectangle {
                     height: 56px; background: Theme.panel;
-                    if !root.voice-visible: Rectangle { height: 1px; y: 0px; background: Theme.edge; }
+                    if root.voice-visible: Rectangle { x: 12px; y: 0px; width: parent.width - 24px; height: 1px; background: Theme.line; }
                     HorizontalLayout {
-                        padding-left: 8px; padding-right: 6px; spacing: 2px;
+                        padding-right: 8px; spacing: 2px;
                         Rectangle {
-                            width: 40px;
-                            Avatar { x: 0px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; }
+                            width: 64px;
+                            Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; }
                             Rectangle {
-                                x: 22px; y: parent.height / 2 + 4px; width: 14px; height: 14px; border-radius: 7px; background: Theme.panel;
+                                x: 41px; y: parent.height / 2 + 4px; width: 14px; height: 14px; border-radius: 7px; background: Theme.panel;
                                 Rectangle {
                                     width: 8px; height: 8px; border-radius: 4px;
                                     background: root.preview ? Theme.accent : root.online ? Theme.live : Theme.faint;
@@ -861,21 +1095,31 @@ export component TalkWindow inherits Window {
                             }
                         }
                         VerticalLayout {
-                            alignment: center; horizontal-stretch: 1; padding-left: 4px;
+                            alignment: center; horizontal-stretch: 1;
                             Text { text: root.account-name; color: Theme.text; font-size: 14px; font-weight: 700; overflow: elide; }
                             Text { text: root.account-status; color: Theme.muted; font-size: 12px; overflow: elide; }
                         }
-                        if root.voice-active: IconButton {
+                        if root.voice-active: DeviceToggle {
                             icon: root.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
                             label: root.muted ? "Unmute" : "Mute"; alert: root.muted;
-                            enabled: root.voice-ready && !root.deafened;
+                            menu-label: "Input options"; open: root.input-open;
+                            enabled: root.voice-ready;
                             clicked => { root.toggle-mute(); }
+                            menu => {
+                                root.menu-x = self.absolute-position.x; root.menu-y = self.absolute-position.y + (self.height - 32px) / 2;
+                                root.refresh-devices(); input-menu.show();
+                            }
                         }
-                        if root.voice-active: IconButton {
+                        if root.voice-active: DeviceToggle {
                             icon: root.deafened ? @image-url("icons/headphone-off.svg") : @image-url("icons/headphones.svg");
                             label: root.deafened ? "Undeafen" : "Deafen"; alert: root.deafened;
+                            menu-label: "Output options"; open: root.output-open;
                             enabled: root.voice-ready;
                             clicked => { root.toggle-deafen(); }
+                            menu => {
+                                root.menu-x = self.absolute-position.x; root.menu-y = self.absolute-position.y + (self.height - 32px) / 2;
+                                root.refresh-devices(); output-menu.show();
+                            }
                         }
                         if !root.preview && !root.online: IconButton {
                             icon: @image-url("icons/refresh-cw.svg"); label: "Reconnect"; enabled: !root.busy;
@@ -915,7 +1159,7 @@ export component TalkWindow inherits Window {
                         padding-left: 16px; padding-right: 16px; padding-top: 7px; padding-bottom: 7px; spacing: 10px;
                         Image { source: @image-url("icons/triangle-alert.svg"); width: 16px; image-fit: contain; colorize: Theme.accent; }
                         Text {
-                            text: "Local preview: sample data, no audio devices opened.";
+                            text: "Local preview: sample data. Nothing leaves this computer.";
                             color: Theme.secondary; font-size: 13px; font-weight: 500; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1;
                         }
                     }
@@ -958,24 +1202,9 @@ export component TalkWindow inherits Window {
                         Text { text: root.room-name; color: Theme.text; font-size: 26px; font-weight: 900; horizontal-alignment: center; overflow: elide; }
                         Text { text: root.voice-description; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
                         if !root.preview && !root.room-encrypted: Text { text: "This channel is unencrypted. Talk only joins encrypted voice channels."; color: Theme.accent; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
-                        if root.switch-prompt == "": HorizontalLayout {
+                        HorizontalLayout {
                             alignment: center; padding-top: 6px;
                             ActionButton { min-height: 42px; text: root.voice-active ? "Switch voice channel" : "Join voice"; primary: true; enabled: root.can-join; clicked => { root.join-voice(); } }
-                        }
-                        if root.switch-prompt != "": HorizontalLayout {
-                            alignment: center; padding-top: 6px;
-                            Rectangle {
-                                max-width: 440px; horizontal-stretch: 1; background: Theme.raised; border-radius: 10px;
-                                VerticalLayout {
-                                    padding: 16px; spacing: 12px;
-                                    Text { text: root.switch-prompt; color: Theme.text; wrap: word-wrap; horizontal-alignment: center; }
-                                    HorizontalLayout {
-                                        spacing: 8px; alignment: center;
-                                        ActionButton { text: "Switch channel"; primary: true; clicked => { root.confirm-switch(); } }
-                                        ActionButton { text: "Cancel"; ghost: true; clicked => { root.cancel-switch(); } }
-                                    }
-                                }
-                            }
                         }
                     }
                     if root.voice-here: VerticalLayout {
@@ -1031,7 +1260,7 @@ export component TalkWindow inherits Window {
                                 size: 52px; glyph: 22px; radius: 26px;
                                 icon: root.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
                                 label: root.muted ? "Unmute" : "Mute"; alert: root.muted; tint: Theme.text;
-                                enabled: root.voice-ready && !root.deafened;
+                                enabled: root.voice-ready;
                                 fill: self.alert ? Theme.danger.with-alpha(0.18) : Theme.raised;
                                 clicked => { root.toggle-mute(); }
                             }
@@ -1336,7 +1565,86 @@ export component TalkWindow inherits Window {
             }
         }
     }
+    // The edge between sidebar and conversation resizes the sidebar. A double-click
+    // restores the default width.
+    if root.workspace: TouchArea {
+        x: 72px + root.sidebar-shown - 4px; y: 0px; width: 8px; height: root.height;
+        mouse-cursor: ew-resize;
+        moved => {
+            if self.pressed {
+                root.sidebar-width = max(220px, min(380px, root.width - 72px - 420px, root.sidebar-shown + self.mouse-x - self.pressed-x));
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up { root.sidebar-resized(root.sidebar-shown); }
+        }
+        double-clicked => { root.sidebar-width = 240px; root.sidebar-resized(240px); }
+        Rectangle {
+            x: 3px; width: 2px;
+            background: parent.pressed ? Theme.faint : Theme.line;
+            opacity: parent.has-hover || parent.pressed ? 1 : 0;
+            animate opacity { duration: 120ms; }
+        }
+    }
 
+    // Switching voice channels asks first, over everything else. Clicking
+    // outside or Escape cancels; Enter switches. The dialog stays in the tree
+    // so it can fade out, keeping its text while it goes.
+    property <bool> switching: root.switch-prompt != "";
+    property <string> switch-text;
+    changed switch-prompt => { if root.switch-prompt != "" { root.switch-text = root.switch-prompt; } }
+    changed switching => { if root.switching { switch-keys.focus(); } else { switch-keys.clear-focus(); } }
+    Rectangle {
+        visible: self.opacity > 0;
+        opacity: root.switching ? 1 : 0;
+        animate opacity { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        background: #00000099;
+        TouchArea { enabled: root.switching; clicked => { root.cancel-switch(); } }
+        Rectangle {
+            width: min(420px, root.width - 48px); height: switch-content.preferred-height;
+            y: (parent.height - self.height) / 2 + (root.switching ? 0px : 10px);
+            transform-scale: root.switching ? 1 : 0.96;
+            animate y, transform-scale { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+            drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+            accessible-role: groupbox;
+            accessible-label: "Switch voice channel?";
+            // Clicks on the dialog itself never reach the backdrop.
+            TouchArea { enabled: root.switching; }
+            switch-keys := FocusScope {
+                enabled: root.switching;
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.cancel-switch(); return accept; }
+                    if event.text == "\n" { root.confirm-switch(); return accept; }
+                    return reject;
+                }
+                switch-content := VerticalLayout {
+                    padding: 20px; spacing: 18px;
+                    HorizontalLayout {
+                        spacing: 14px;
+                        VerticalLayout {
+                            alignment: start;
+                            Rectangle {
+                                width: 40px; height: 40px; border-radius: 20px; background: Theme.accent-soft;
+                                Image { source: @image-url("icons/volume-2.svg"); width: 20px; height: 20px; colorize: Theme.accent; }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 6px; horizontal-stretch: 1;
+                            Text { text: "Switch voice channel?"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                            Text { text: root.switch-text; color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end; spacing: 8px;
+                        // A fading dialog no longer acts.
+                        ActionButton { text: "Cancel"; ghost: true; clicked => { if root.switching { root.cancel-switch(); } } }
+                        ActionButton { text: "Switch channel"; primary: true; clicked => { if root.switching { root.confirm-switch(); } } }
+                    }
+                }
+            }
+        }
+    }
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 20px;
         property <length> h: 32px;

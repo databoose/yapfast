@@ -284,6 +284,7 @@ pub async fn run(
     mut commands: UnboundedReceiver<Command>,
     events: UnboundedSender<Event>,
 ) {
+    let remembered = root.join(voice::DEVICES);
     let session = match start {
         Start::Restore => Session::restore(root).await,
         Start::Login {
@@ -299,15 +300,16 @@ pub async fn run(
             return;
         }
     };
-    let mut voice = match voice::Controller::start(session.lease()) {
-        Ok(controller) => controller,
-        Err(_) => {
-            let _ = events.send(Event::Error(
-                "Could not start the voice worker. Restart Talk and retry.".into(),
-            ));
-            return;
-        }
-    };
+    let mut voice =
+        match voice::Controller::start_remembering(session.lease(), Some(remembered.clone())) {
+            Ok(controller) => controller,
+            Err(_) => {
+                let _ = events.send(Event::Error(
+                    "Could not start the voice worker. Restart Talk and retry.".into(),
+                ));
+                return;
+            }
+        };
     let client = session.client.clone();
     let mut trusted = session.device_is_trusted().await.unwrap_or(false);
     let _ = events.send(Event::Connected {
@@ -490,7 +492,7 @@ pub async fn run(
                         match session.logout().await {
                             Ok(()) => { let _ = events.send(Event::LoggedOut); break; }
                             Err(_) => {
-                                if let Ok(controller) = voice::Controller::start(session.lease()) { voice = controller; }
+                                if let Ok(controller) = voice::Controller::start_remembering(session.lease(), Some(remembered.clone())) { voice = controller; }
                                 let _ = events.send(Event::Voice(voice::State::default()));
                                 let _ = events.send(Event::Error("Sign-out failed. Your session is kept. Check the connection and try again.".into())); restart_sync = true;
                             }

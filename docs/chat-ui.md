@@ -76,12 +76,15 @@ The window follows Discord's arrangement:
 - A 72px server rail. Each server is a circle that becomes a rounded square,
   with a white pill at the rail edge for hover, selection or unread activity.
   Hovering shows the server's name.
-- A 240px sidebar with the server name, a filter, and uppercase TEXT CHANNELS
-  and VOICE CHANNELS groups. DMs show the person's avatar. Participants of the
-  call you are in appear under its voice channel, with a green ring while they
-  speak and a muted icon. Talk knows only its own call's participants.
-- The voice panel, then the account panel with avatar, status, mute and deafen
-  during a call, and settings (account, audio devices, reconnect, sign out).
+- A sidebar, 240px by default and resizable by dragging its edge, with the
+  server name, a filter, and uppercase TEXT CHANNELS and VOICE CHANNELS groups.
+  DMs show the person's avatar. Participants of the call you are in appear under
+  its voice channel, with a green ring while they speak and a muted icon. Talk
+  knows only its own call's participants.
+- A dock across the rail and sidebar: the voice panel, then the account panel
+  with avatar, status, mute and deafen during a call, and settings (account,
+  audio devices, reconnect, sign out). A caret beside mute and deafen opens a
+  device menu; the input menu shows a local level meter.
 - A conversation with a 48px header. Messages from one person within seven
   minutes are grouped under one avatar and name. Hovering a grouped message
   shows its time in the gutter. Replies draw a spine to the quoted message, and

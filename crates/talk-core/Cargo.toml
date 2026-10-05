@@ -31,3 +31,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 url.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The input meter reads the microphone locally through PulseAudio, the sound
+# server WebRTC already uses on Linux, without involving a call.
+libpulse-binding = { version = "2", default-features = false }
+libpulse-simple-binding = { version = "2", default-features = false }

@@ -37,7 +37,7 @@ def capture(folder, name):
         return path
 
 
-def locate_rail(picture, minimum_height=HEIGHT - 80):
+def locate_rail(picture, minimum_height=HEIGHT // 2):
     """Top-left corner of Talk's window content in screenshot pixels, found by the rail's exact colour."""
     # The rail's exact graphite (Theme.rail, #111215) forms the window's long left edge.
     output_width, output_height = (int(value) for value in subprocess.check_output(

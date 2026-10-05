@@ -16,6 +16,7 @@ use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
     chat::{ChatMessage, Delivery, Event, Picture},
+    meter::{self, InputMeter},
     runtime::BackgroundRuntime,
     voice::{self, Phase},
 };
@@ -260,6 +261,42 @@ fn allocator_stats() {
     }
 }
 
+/// The layout a person chose, such as the sidebar width, kept beside the session.
+const LAYOUT: &str = "layout.json";
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Layout {
+    sidebar_width: Option<f32>,
+}
+
+impl Layout {
+    fn read(root: &std::path::Path) -> Self {
+        std::fs::read(root.join(LAYOUT))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn apply(&self, window: &TalkWindow) {
+        if let Some(width) = self.sidebar_width {
+            window.set_sidebar_width(width);
+        }
+    }
+
+    /// A lost layout only costs the person their sidebar width; it never stops Talk.
+    fn write(&self, root: &std::path::Path) {
+        let result = std::fs::create_dir_all(root).and_then(|()| {
+            std::fs::write(
+                root.join(LAYOUT),
+                serde_json::to_vec(self).expect("layout serializes"),
+            )
+        });
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not store the window layout");
+        }
+    }
+}
+
 #[derive(Default)]
 struct Models {
     servers: Rc<VecModel<ServerRow>>,
@@ -306,6 +343,8 @@ struct Adapter {
     rows: HashMap<String, (ChatMessage, MessageRow)>,
     /// One open or save dialog at a time; dropping it cancels the dialog's task.
     dialog: Option<slint::JoinHandle<()>>,
+    /// Reads the microphone while the input menu shows its level.
+    meter: Option<InputMeter>,
 }
 
 impl Adapter {
@@ -321,6 +360,7 @@ impl Adapter {
         };
         let models = Models::default();
         models.attach(window);
+        Layout::read(&root).apply(window);
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,
@@ -338,6 +378,7 @@ impl Adapter {
                 messages: Arc::new(Vec::new()),
                 rows: HashMap::new(),
                 dialog: None,
+                meter: None,
             })
         }))
     }
@@ -345,6 +386,7 @@ impl Adapter {
     /// Present the existing models and state in a new window.
     fn attach(&mut self, window: &TalkWindow) {
         self.models.attach(window);
+        Layout::read(&self.root).apply(window);
         self.window = window.as_weak();
     }
 
@@ -405,6 +447,29 @@ impl Adapter {
                             self.backend = None;
                             self.app.stopped();
                         }
+                    }
+                }
+                Effect::ListDevices => {
+                    let weak = self.weak.clone();
+                    // Listing starts the platform's audio service, which can block.
+                    let listing = self.runtime.spawn_blocking(|| {
+                        voice::list_devices().map_err(|error| error.to_string())
+                    });
+                    let task = slint::spawn_local(async move {
+                        let devices = listing
+                            .await
+                            .unwrap_or_else(|_| Err("Could not list audio devices.".into()));
+                        if let Some(adapter) = weak.upgrade() {
+                            let window = adapter.borrow().window.upgrade();
+                            let mut adapter = adapter.borrow_mut();
+                            adapter.app.preview_devices(devices);
+                            if let Some(window) = window {
+                                adapter.refresh(&window);
+                            }
+                        }
+                    });
+                    if let Err(error) = task {
+                        tracing::error!(%error, "could not list audio devices for the preview");
                     }
                 }
                 Effect::Backend(command) => {
@@ -784,19 +849,23 @@ impl Adapter {
                 vec![]
             },
         );
+        let switching = state.switch_voice.as_ref().map(|id| {
+            state
+                .rooms
+                .iter()
+                .find(|room| &room.id == id)
+                .map_or("the other channel", |room| room.name.as_str())
+        });
         window.set_switch_prompt(
-            if state.switch_voice.as_ref() == state.selected.as_ref()
-                && state.switch_voice.is_some()
-            {
-                format!(
-                    "Leave {} and join {} muted?",
-                    voice.name,
-                    room.map_or("voice", |room| room.name.as_str())
-                )
-                .into()
-            } else {
-                SharedString::default()
-            },
+            switching
+                .map(|target| {
+                    format!(
+                        "You're already in {}. Leave it and join {}? You'll join muted.",
+                        voice.name, target
+                    )
+                })
+                .unwrap_or_default()
+                .into(),
         );
         update_model(
             &self.models.microphones,
@@ -897,6 +966,13 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                 },
             );
         }
+    });
+    let state = adapter.clone();
+    window.on_sidebar_resized(move |width| {
+        Layout {
+            sidebar_width: Some(width),
+        }
+        .write(&state.borrow().root);
     });
     let state = adapter.clone();
     window.on_attach(move || {
@@ -1065,9 +1141,11 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                     .map(|device| device.id.clone())
             });
             if let Some(id) = id {
-                state
-                    .borrow_mut()
-                    .action(&window, Action::Voice(voice::Command::Microphone(id)));
+                let mut adapter = state.borrow_mut();
+                if adapter.meter.is_some() {
+                    adapter.meter = Some(InputMeter::start(Some(&id)));
+                }
+                adapter.action(&window, Action::Voice(voice::Command::Microphone(id)));
             }
         }
     });
@@ -1090,6 +1168,27 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                     .borrow_mut()
                     .action(&window, Action::Voice(voice::Command::Speaker(id)));
             }
+        }
+    });
+    let state = adapter.clone();
+    window.on_metering(move |on| {
+        let mut adapter = state.borrow_mut();
+        let microphone = adapter.app.state.voice.microphone.clone();
+        adapter.meter = on.then(|| InputMeter::start(microphone.as_deref()));
+    });
+    // The level skips the application state, which would redraw far more than the meter.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_meter_tick(move || {
+        if let (Some(window), Some(meter)) = (weak.upgrade(), &state.borrow().meter) {
+            window.set_input_level(meter.level());
+            window.set_meter_note(SharedString::from(if !meter::AVAILABLE {
+                "The level meter isn't available on this system yet."
+            } else if meter.failed() {
+                "Talk can't read this microphone. Check that it's connected, or choose another."
+            } else {
+                ""
+            }));
         }
     });
 }
@@ -1405,6 +1504,101 @@ mod tests {
     }
 
     #[test]
+    fn the_input_caret_opens_its_menu_and_measures_only_while_open() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        adapter
+            .borrow_mut()
+            .action(&window, Action::RequestJoinVoice("lounge".into()));
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        // The caret sits right of the microphone toggle in the dock.
+        click(206., 732.);
+        assert!(adapter.borrow().meter.is_some());
+        assert!(window.get_muted());
+        click(800., 200.);
+        assert!(adapter.borrow().meter.is_none());
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn dragging_the_sidebar_edge_resizes_it_within_limits_and_remembers_it() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        let drag = |from: f32, to: f32| {
+            let window = window.window();
+            let button = slint::platform::PointerEventButton::Left;
+            let at = |x| slint::LogicalPosition::new(x, 400.);
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(from) });
+            window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(to) });
+            window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        assert_eq!(window.get_sidebar_shown(), 240.);
+        drag(312., 362.);
+        assert_eq!(window.get_sidebar_shown(), 290.);
+        assert_eq!(Layout::read(directory.path()).sidebar_width, Some(290.));
+        // The sidebar stops at 380px, and at 220px.
+        drag(362., 700.);
+        assert_eq!(window.get_sidebar_shown(), 380.);
+        drag(452., 0.);
+        assert_eq!(window.get_sidebar_shown(), 220.);
+        // In a narrow window, dragging keeps 420px for the conversation.
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(800., 560.));
+        drag(292., 700.);
+        assert_eq!(window.get_sidebar_shown(), 308.);
+        drag(380., 292.);
+        // A new window starts at the stored width.
+        let next = TalkWindow::new().unwrap();
+        adapter.borrow_mut().attach(&next);
+        assert_eq!(next.get_sidebar_width(), 220.);
+        window.hide().unwrap();
+    }
+
+    #[test]
     fn scrolling_up_leaves_the_latest_message() {
         i_slint_backend_testing::init_no_event_loop();
         let window = TalkWindow::new().unwrap();
@@ -1498,8 +1692,8 @@ mod tests {
         assert_eq!(window.get_messages().row_count(), count + 1);
         assert!(window.get_draft().is_empty());
         let voice_room = rooms.iter().find(|room| room.voice).unwrap();
+        // Clicking a voice channel joins it.
         window.invoke_select_room(voice_room.id.clone().into());
-        window.invoke_join_voice();
         assert!(window.get_voice_here() && window.get_voice_active() && window.get_muted());
         window.invoke_navigate_dms();
         assert!(window.get_voice_active() && window.get_voice_visible());
