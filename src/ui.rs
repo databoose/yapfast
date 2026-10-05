@@ -71,28 +71,7 @@ pub fn run(
     if let Err(error) = window.show() {
         return failed(error, "could not show Talk; try --renderer software");
     }
-    // Only the private test compositor can request a different initial size.
-    if std::env::var("TALK_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1")
-        && let Ok(size) = std::env::var("TALK_UI_TEST_SIZE")
-        && let Some((width, height)) = size.split_once('x')
-        && let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>())
-        && width >= 800
-        && height >= 560
-    {
-        window
-            .window()
-            .set_size(slint::PhysicalSize::new(width, height));
-    }
-    window.set_emoji_font(
-        if cfg!(windows) {
-            "Segoe UI Emoji"
-        } else if cfg!(target_os = "macos") {
-            "Apple Color Emoji"
-        } else {
-            "Noto Color Emoji"
-        }
-        .into(),
-    );
+    prepare(&window);
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
     bind_callbacks(&window, &adapter);
     adapter.borrow_mut().refresh(&window);
@@ -103,7 +82,8 @@ pub fn run(
     } else {
         window.invoke_focus_sign_in();
     }
-    window.set_graphics_notice(plan.notice.unwrap_or_default().into());
+    let notice = SharedString::from(plan.notice.unwrap_or_default());
+    window.set_graphics_notice(notice.clone());
     // Slint 1.18 keeps its event loop running when it creates a window late and
     // the GPU surface fails, leaving no window. Check for the native window.
     let missing_window = Rc::new(Cell::new(false));
@@ -124,7 +104,13 @@ pub fn run(
         });
     }
     tracing::info!(renderer, "starting the Slint desktop window");
-    let result = window.run();
+    let result = match test_control() {
+        Some(path) => {
+            let _control = control(path, window, adapter.clone(), notice);
+            slint::run_event_loop_until_quit()
+        }
+        None => window.run(),
+    };
     adapter.borrow_mut().stop_backend();
     match result {
         Err(error) => failed(error, "Slint's desktop event loop failed"),
@@ -141,6 +127,148 @@ pub fn run(
     }
 }
 
+/// Only the private test compositor can request a different initial size.
+fn isolated_display() -> bool {
+    std::env::var("TALK_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1")
+}
+
+fn prepare(window: &TalkWindow) {
+    if isolated_display()
+        && let Ok(size) = std::env::var("TALK_UI_TEST_SIZE")
+        && let Some((width, height)) = size.split_once('x')
+        && let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>())
+        && width >= 800
+        && height >= 560
+    {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, height));
+    }
+    window.set_emoji_font(
+        if cfg!(windows) {
+            "Segoe UI Emoji"
+        } else if cfg!(target_os = "macos") {
+            "Apple Color Emoji"
+        } else {
+            "Noto Color Emoji"
+        }
+        .into(),
+    );
+}
+
+/// A command file through which the private test compositor can hide, destroy
+/// and recreate the window while Talk keeps running, as a tray would.
+fn test_control() -> Option<PathBuf> {
+    isolated_display()
+        .then(|| std::env::var_os("TALK_UI_TEST_CONTROL"))
+        .flatten()
+        .map(PathBuf::from)
+}
+
+/// Run each new line of the command file. The event loop then runs until quit,
+/// so a hidden or destroyed window does not end Talk.
+fn control(
+    path: PathBuf,
+    window: TalkWindow,
+    adapter: Rc<RefCell<Adapter>>,
+    notice: SharedString,
+) -> slint::Timer {
+    let window = RefCell::new(Some(window));
+    let handled = Cell::new(0);
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(500),
+        move || {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return;
+            };
+            for command in text.lines().skip(handled.get()) {
+                handled.set(handled.get() + 1);
+                tracing::info!(command, "test window control");
+                let result = match command {
+                    "hide" => window
+                        .borrow()
+                        .as_ref()
+                        .map_or(Ok(()), |window| window.hide()),
+                    "show" => window
+                        .borrow()
+                        .as_ref()
+                        .map_or(Ok(()), |window| window.show()),
+                    // A shown window keeps itself alive; hide it, then drop the last handle.
+                    "destroy" => window.take().map_or(Ok(()), |window| {
+                        let weak = window.as_weak();
+                        let result = window.hide();
+                        drop(window);
+                        tracing::info!(
+                            released = weak.upgrade().is_none(),
+                            "test window destroyed"
+                        );
+                        result
+                    }),
+                    "create" if window.borrow().is_none() => {
+                        recreate(&adapter, &notice).map(|new| *window.borrow_mut() = Some(new))
+                    }
+                    "trim" => {
+                        trim();
+                        Ok(())
+                    }
+                    "stats" => {
+                        allocator_stats();
+                        Ok(())
+                    }
+                    "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
+                    _ => Ok(()),
+                };
+                if let Err(error) = result {
+                    tracing::error!(command, %error, "test window control failed");
+                }
+            }
+        },
+    );
+    timer
+}
+
+fn recreate(
+    adapter: &Rc<RefCell<Adapter>>,
+    notice: &SharedString,
+) -> Result<TalkWindow, slint::PlatformError> {
+    let window = TalkWindow::new()?;
+    window.show()?;
+    prepare(&window);
+    window.set_graphics_notice(notice.clone());
+    adapter.borrow_mut().attach(&window);
+    bind_callbacks(&window, adapter);
+    adapter.borrow_mut().refresh(&window);
+    Ok(window)
+}
+
+/// Return freed heap pages to the system, to separate memory still in use from
+/// memory glibc keeps for reuse.
+fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: malloc_trim only releases free memory held by the allocator.
+        unsafe { malloc_trim(0) };
+    }
+}
+
+/// Print the allocator's per-arena totals to standard error: memory held from
+/// the system against memory in use.
+fn allocator_stats() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_stats();
+        }
+        // SAFETY: malloc_stats only reads allocator state and writes to stderr.
+        unsafe { malloc_stats() };
+    }
+}
+
 #[derive(Default)]
 struct Models {
     servers: Rc<VecModel<ServerRow>>,
@@ -149,6 +277,17 @@ struct Models {
     participants: Rc<VecModel<PersonRow>>,
     microphones: Rc<VecModel<SharedString>>,
     speakers: Rc<VecModel<SharedString>>,
+}
+
+impl Models {
+    fn attach(&self, window: &TalkWindow) {
+        window.set_servers(ModelRc::from(self.servers.clone()));
+        window.set_rooms(ModelRc::from(self.rooms.clone()));
+        window.set_messages(ModelRc::from(self.messages.clone()));
+        window.set_participants(ModelRc::from(self.participants.clone()));
+        window.set_microphones(ModelRc::from(self.microphones.clone()));
+        window.set_speakers(ModelRc::from(self.speakers.clone()));
+    }
 }
 
 struct Icons {
@@ -190,12 +329,7 @@ impl Adapter {
             voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
         };
         let models = Models::default();
-        window.set_servers(ModelRc::from(models.servers.clone()));
-        window.set_rooms(ModelRc::from(models.rooms.clone()));
-        window.set_messages(ModelRc::from(models.messages.clone()));
-        window.set_participants(ModelRc::from(models.participants.clone()));
-        window.set_microphones(ModelRc::from(models.microphones.clone()));
-        window.set_speakers(ModelRc::from(models.speakers.clone()));
+        models.attach(window);
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,
@@ -215,6 +349,12 @@ impl Adapter {
                 dialog: None,
             })
         }))
+    }
+
+    /// Present the existing models and state in a new window.
+    fn attach(&mut self, window: &TalkWindow) {
+        self.models.attach(window);
+        self.window = window.as_weak();
     }
 
     /// Run a native file dialog on Slint's executor, replacing any open one.
@@ -247,22 +387,25 @@ impl Adapter {
                         Backend::start(self.runtime.clone(), self.root.clone(), start);
                     self.backend = Some(backend);
                     let weak = self.weak.clone();
-                    let window = self.window.clone();
                     // Network work stays on Tokio. Only channel delivery runs on
                     // Slint's executor, which wakes on an event and never polls idle.
+                    // Events still apply without a window, so the call and chat go on.
                     match slint::spawn_local(async move {
                         while let Some(event) = events.recv().await {
-                            let (Some(adapter), Some(window)) = (weak.upgrade(), window.upgrade())
-                            else {
+                            let Some(adapter) = weak.upgrade() else {
                                 return;
                             };
-                            adapter.borrow_mut().event(&window, event);
+                            let window = adapter.borrow().window.upgrade();
+                            adapter.borrow_mut().event(window.as_ref(), event);
                         }
-                        if let (Some(adapter), Some(window)) = (weak.upgrade(), window.upgrade()) {
+                        if let Some(adapter) = weak.upgrade() {
+                            let window = adapter.borrow().window.upgrade();
                             let mut adapter = adapter.borrow_mut();
                             adapter.app.stopped();
                             adapter.backend = None;
-                            adapter.refresh(&window);
+                            if let Some(window) = window {
+                                adapter.refresh(&window);
+                            }
                         }
                     }) {
                         Ok(task) => self.events = Some(task),
@@ -292,10 +435,12 @@ impl Adapter {
         self.refresh(window);
     }
 
-    fn event(&mut self, window: &TalkWindow, event: Event) {
+    fn event(&mut self, window: Option<&TalkWindow>, event: Event) {
         let effects = self.app.apply(event);
         self.execute(effects);
-        self.refresh(window);
+        if let Some(window) = window {
+            self.refresh(window);
+        }
     }
 
     fn refresh(&mut self, window: &TalkWindow) {

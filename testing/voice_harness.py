@@ -5,6 +5,7 @@ The scripts run inside scripts/run-framework-isolated, with the local stack up.
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import time
@@ -86,6 +87,77 @@ def process_memory_mib(pid):
     return values
 
 
+GPU_DRIVER = ('/dev/dri', 'nvidia', 'libGL', 'libEGL', 'libgbm', 'libdrm', 'libglapi', 'libLLVM', 'gallium',
+              'dri/', 'mesa', 'libvulkan')
+
+
+def process_memory_breakdown(pid):
+    """PSS by mapping kind and the anonymous total, in MiB, from smaps."""
+    executable = os.path.realpath(f'/proc/{pid}/exe')
+    kinds, anonymous, kind = {}, 0, None
+    for line in Path(f'/proc/{pid}/smaps').read_text().splitlines():
+        fields = line.split()
+        if '-' in fields[0] and not fields[0].endswith(':'):
+            path = fields[5] if len(fields) > 5 else ''
+            kind = ('binary' if path == executable else
+                    'gpu_driver' if any(part in path for part in GPU_DRIVER) else
+                    'shared_libraries' if '.so' in path else
+                    'heap_and_anonymous' if path in ('', '[heap]') or path.startswith('[anon') else 'other')
+        elif fields[0] == 'Pss:':
+            kinds[kind] = kinds.get(kind, 0) + int(fields[1]) / 1024
+        elif fields[0] == 'Anonymous:':
+            anonymous += int(fields[1]) / 1024
+    return {'pss_mib': {name: round(value, 1) for name, value in sorted(kinds.items())},
+            'anonymous_mib': round(anonymous, 1)}
+
+
 def host_ticks():
     values = [int(value) for value in Path('/proc/stat').read_text().splitlines()[0].split()[1:]]
     return sum(values), values[3] + values[4]
+
+
+class Participant:
+    """One headless person (voice::tests::stress_participant) in its own process, driven by a command file."""
+
+    def __init__(self, executable, fixture, account, index, count):
+        self.account = account
+        self.commands = account / 'commands'
+        self.commands.write_text('')
+        (account / 'status.json').unlink(missing_ok=True)
+        self.log = (account / 'participant.log').open('ab')
+        self.process = subprocess.Popen(
+            [executable, '--exact', 'voice::tests::stress_participant', '--ignored', '--nocapture'],
+            cwd=ROOT, stdout=self.log, stderr=self.log, start_new_session=True,
+            env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture), TALK_TEST_ACCOUNT_DIR=str(account),
+                     TALK_TEST_INDEX=str(index), TALK_TEST_COUNT=str(count)))
+
+    def send(self, command):
+        with self.commands.open('a') as commands:
+            commands.write(command + '\n')
+
+    def status(self):
+        if self.process.poll() is not None:
+            raise RuntimeError(f'participant exited; see {self.account / "participant.log"}')
+        try:
+            return json.loads((self.account / 'status.json').read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.send('exit')
+            try:
+                self.process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.process.pid, signal.SIGKILL)
+        self.log.close()
+
+
+def wait_for(condition, timeout):
+    """Seconds until condition() held, or None after timeout."""
+    started = time.monotonic()
+    while time.monotonic() - started < timeout:
+        if condition():
+            return time.monotonic() - started
+        time.sleep(.1)
+    return None

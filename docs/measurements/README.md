@@ -142,3 +142,36 @@ key during joins. Talk now shows a missing key only once it has lasted beyond th
 
 On a real network every round trip adds latency, so absolute join times will be
 longer than here. Windows, real devices and a remote homeserver remain unmeasured.
+
+[A call with the window hidden or destroyed, 2026-10-05](2026-10-05-linux-window-background.json)
+measures what a tray could save (`testing/measure_background.py`). Talk has no
+tray yet, so a test-only window control (`TALK_UI_TEST_CONTROL`) hides the window,
+destroys it and creates it again while Talk stays in the call. Alice runs the
+release Talk window with GPU rendering, the sample conversation loaded, unmuted
+in a ten-person call. The other nine are headless participant processes, as in
+the join measurement. Each state settles for 30 s and is sampled for 60 s.
+
+| Talk in a ten-person call | PSS | RSS | CPU, one core |
+| --- | --- | --- | --- |
+| Window open, voice view | 234 MiB | 305 MiB | 6.0% |
+| Window hidden | 234 MiB | 304 MiB | 5.8% |
+| Window destroyed | 235 MiB | 305 MiB | 5.5% |
+| Window destroyed, after `malloc_trim` | 210 MiB | 280 MiB | 5.6% |
+| Window created again | 235 MiB | 306 MiB | 5.9% |
+| Headless participant, no UI | 25 MiB | 91 MiB | 2.5% |
+
+Hiding the window saves nothing. Slint keeps the whole component, its models and
+the renderer. Destroying it releases the component, but glibc keeps the freed
+heap, so memory does not drop until `malloc_trim` returns about 25 MiB. Most of
+Talk's memory is not tied to the window. Of the 234 MiB PSS with the window open,
+93 MiB is resident code from Talk's own binary (Skia, WebRTC, Slint and the Matrix
+SDK), 48 MiB is the GPU driver, and 86 MiB is heap and anonymous memory. Destroying
+the window unmaps neither the code nor the driver. Talk's anonymous memory falls
+from 98 MiB to 73 MiB after the trim. A headless participant with the same voice
+stack has 15 MiB. Its RSS counts the shared test binary in full, and its CPU leaves
+out audio devices and audio processing.
+
+So a tray that hides the window keeps Talk's full cost. Destroying the window
+and trimming the heap saves about a tenth. A small background process for the
+session and call, with the window in a separate process started on demand,
+would come close to the headless figures.

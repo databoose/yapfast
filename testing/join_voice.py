@@ -28,8 +28,8 @@ import statistics
 import subprocess
 import time
 
-from voice_harness import (HEIGHT, ROOT, WIDTH, Container, locate_rail, process_cpu_seconds, process_memory_mib,
-                           provision)
+from voice_harness import (HEIGHT, ROOT, WIDTH, Container, Participant, locate_rail, process_cpu_seconds,
+                           process_memory_mib, provision, wait_for)
 import voice_harness
 
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
@@ -51,50 +51,6 @@ livekit, synapse = Container('talk-test-livekit-1'), Container('talk-test-synaps
 
 def capture(name):
     return voice_harness.capture(args.output, name)
-
-
-class Participant:
-    def __init__(self, executable, fixture, account, index, count):
-        self.account = account
-        self.commands = account / 'commands'
-        self.commands.write_text('')
-        (account / 'status.json').unlink(missing_ok=True)
-        self.log = (account / 'participant.log').open('ab')
-        self.process = subprocess.Popen(
-            [executable, '--exact', 'voice::tests::stress_participant', '--ignored', '--nocapture'],
-            cwd=ROOT, stdout=self.log, stderr=self.log, start_new_session=True,
-            env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture), TALK_TEST_ACCOUNT_DIR=str(account),
-                     TALK_TEST_INDEX=str(index), TALK_TEST_COUNT=str(count)))
-
-    def send(self, command):
-        with self.commands.open('a') as commands:
-            commands.write(command + '\n')
-
-    def status(self):
-        if self.process.poll() is not None:
-            raise RuntimeError(f'participant exited; see {self.account / "participant.log"}')
-        try:
-            return json.loads((self.account / 'status.json').read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
-    def stop(self):
-        if self.process.poll() is None:
-            self.send('exit')
-            try:
-                self.process.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
-        self.log.close()
-
-
-def wait_for(condition, timeout):
-    started = time.monotonic()
-    while time.monotonic() - started < timeout:
-        if condition():
-            return time.monotonic() - started
-        time.sleep(.1)
-    return None
 
 
 def cpu_snapshot(talk, people):
