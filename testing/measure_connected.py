@@ -32,6 +32,8 @@ parser.add_argument('--seconds', type=int, default=60, help='sample length')
 parser.add_argument('--extra', type=int, default=8, help='load accounts besides Bob (8 makes ten people)')
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--load-executable', type=Path, help='prebuilt talk-core test binary for the load process')
+parser.add_argument('--seed', action='store_true',
+                    help='post the sample conversation (Markdown, image, file, reply, reaction) before measuring')
 args = parser.parse_args()
 renderers = args.renderer or ['gpu', 'software']
 args.output.mkdir(parents=True, exist_ok=True)
@@ -71,11 +73,11 @@ def capture(name):
 
 
 def locate_rail(picture):
-    # The rail's exact neutral colour forms the window's long left edge.
+    # The rail's exact graphite (Theme.rail, #111215) forms the window's long left edge.
     pixels = subprocess.check_output(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', str(picture),
                                       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], timeout=10)
     output_width, output_height = 1600, 1000
-    target = bytes([14, 14, 14])
+    target = bytes([17, 18, 21])
     columns = [sum(pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
@@ -153,6 +155,9 @@ load = None
 executable = str(args.load_executable.resolve()) if args.load_executable else test_binary()
 fixture = provision()
 print(f'Fixture {fixture}', flush=True)
+if args.seed:
+    subprocess.run([executable, '--exact', 'chat::tests::fixture_conversation', '--ignored'], check=True, cwd=ROOT,
+                   env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture)), capture_output=True)
 try:
     load = Load(executable, fixture)
     load.wait('ready', 600)
@@ -172,8 +177,8 @@ try:
                 time.sleep(.3)
 
             notes = {'renderer': renderer, 'window': [WIDTH, HEIGHT], 'warmup_seconds': args.warmup}
-            click(32, 101)
-            click(150, 159)
+            click(36, 101)  # Server
+            click(141, 148)  # general
             time.sleep(args.warmup)
             capture(f'{renderer}-idle')
             results.append(sample(process.pid, 'settled idle, encrypted text channel open', notes))
@@ -184,9 +189,9 @@ try:
             load.send('chat-stop')
             capture(f'{renderer}-chat')
 
-            click(133, 226)  # Lounge
+            click(141, 222)  # Lounge
             time.sleep(1)
-            click(381, 174)  # Join voice
+            click(715, 495)  # Join voice
             time.sleep(args.warmup)
             capture(f'{renderer}-voice-alone')
             results.append(sample(process.pid, 'alone in voice, muted, voice view open', notes))
@@ -197,12 +202,12 @@ try:
             results.append(sample(process.pid, 'two-person call: Bob publishes a tone, Alice muted', notes))
 
             load.send(f'join {args.extra + 1}', f'joined {args.extra + 1}')
-            click(94, HEIGHT - 137)  # Unmute: Alice also publishes the private null-sink monitor.
+            click(222, HEIGHT - 30)  # Unmute in the account panel: Alice also publishes the private null-sink monitor.
             time.sleep(args.warmup)
             capture(f'{renderer}-voice-ten')
             results.append(sample(process.pid, f'{args.extra + 2}-person call: every remote participant publishes a tone, Alice unmuted', notes))
             load.send('leave', 'ready')
-            click(WIDTH - 18, -18)  # Close on the private window's title bar.
+            click(WIDTH - 19, -20)  # Close on the private window's title bar.
             process.wait(timeout=20)
         finally:
             if process.poll() is None:
@@ -218,6 +223,7 @@ finally:
         'os': f'{platform.system()} {platform.release()}', 'machine': platform.machine(),
         'isolation': 'Private headless Weston (GL renderer, same GPU), private PulseAudio null sink, private D-Bus without services',
         'remote_load': 'Generated tones from one load process; Bob plus extra fixture accounts on the local stack',
+        'history': 'sample conversation: Markdown, 800x500 image, file, reply, reaction' if args.seed else 'empty channel',
         'samples': results,
     }, indent=2) + '\n')
     print(f'Results {args.output / "results.json"}', flush=True)

@@ -68,3 +68,38 @@ This is one Linux host with generated audio and a local homeserver. Windows,
 older or integrated GPUs, a large account, physical devices and game
 interference remain unmeasured. The client measured predates the Milestone 2
 chat features.
+
+[Connected client after Milestone 2 and the UI overhaul, 2026-10-04](2026-10-04-linux-connected-overhaul.json)
+repeats the 2026-10-03 run on the same host, with the same workload, warm-up and
+sampling. It uses the release build with the conversation features, the Satoshi
+fonts and the Discord-style layout. The empty run keeps the baseline's empty
+channel. The seeded run first posts the sample conversation: Markdown, an
+800×500 image, a file and a reply (`testing/measure_connected.py --seed`).
+
+| Profile | GPU PSS | GPU RSS | GPU CPU | Software PSS | Software RSS | Software CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| Settled idle, empty channel | 195.1 MiB (+3.8) | 256.3 MiB | 0.35% | 97.8 MiB (+9.6) | 119.2 MiB | 0.35% |
+| Message every 2 s, empty channel | 204.9 MiB (+3.0) | 266.1 MiB | 0.68% | 99.9 MiB (+10.0) | 121.3 MiB | 1.47% |
+| Alone in voice, muted | 229.4 MiB (+5.6) | 291.2 MiB | 0.48% | 119.5 MiB (+10.3) | 142.3 MiB | 0.53% |
+| Two people, Bob speaking | 231.3 MiB (+5.2) | 293.7 MiB | 1.10% | 121.4 MiB (+10.1) | 144.3 MiB | 1.26% |
+| Ten people, everyone sending audio | 234.9 MiB (+5.5) | 297.3 MiB | 6.15% | 127.2 MiB (+12.4) | 150.1 MiB | 5.44% |
+| Settled idle, seeded history | 207.9 MiB | 269.6 MiB | 0.30% | 104.0 MiB | 125.4 MiB | 0.38% |
+| Message every 2 s, seeded history | 216.3 MiB | 278.1 MiB | 0.75% | 105.4 MiB | 126.7 MiB | 0.67% |
+| Ten people, seeded history | 241.9 MiB | 304.9 MiB | 6.07% | 131.7 MiB | 154.7 MiB | 6.02% |
+
+Brackets give the PSS change from the 2026-10-03 baseline. CPU is a percentage of
+one core. NVIDIA's monitor reported 36–37 MiB of GPU framebuffer memory.
+
+The new features cost 3–6 MiB of PSS with GPU rendering and about 10–12 MiB
+with Skia Software. Visible media adds about 13 MiB with GPU and 6 MiB with
+Software. The cause of the increases was not profiled. Settled idle CPU stays
+below 0.4%, and the call profiles use no more CPU than before. Receiving
+messages in an empty channel took 1.47% with Software, against 0.60% before. In
+the seeded channel it took 0.67%. While a channel's history is shorter than the
+window, Talk anchors it to the bottom, so each new message moves every row.
+
+The ten-person call stays below 400 MiB. Idle PSS meets the 250 MiB target with
+both renderers, and so does Software RSS. GPU RSS is now 6.3 MiB over with an
+empty channel and 19.6 MiB over with the seeded history; it was 2.8 MiB over
+before. RSS counts shared graphics-driver libraries in full. The measurement
+limits listed for the 2026-10-03 run still apply.
