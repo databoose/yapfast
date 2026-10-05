@@ -9,7 +9,23 @@ mod ui;
 use anyhow::{Context, Result, bail};
 use talk_core::{cli, experiment, logging, runtime::BackgroundRuntime, session, voice_demo};
 
+/// glibc gives threads that contend for the heap their own arenas, up to eight
+/// per core, and each arena keeps its freed memory. Talk runs dozens of threads.
+/// In a ten-person call two arenas held 12 MiB less heap at the same CPU.
+fn limit_heap_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        const M_ARENA_MAX: std::ffi::c_int = -8;
+        unsafe extern "C" {
+            fn mallopt(parameter: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+        }
+        // SAFETY: this runs first in main, before Talk starts any other thread.
+        unsafe { mallopt(M_ARENA_MAX, 2) };
+    }
+}
+
 fn main() -> Result<()> {
+    limit_heap_arenas();
     logging::init();
     talk_core::init_tls()?;
 

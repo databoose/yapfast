@@ -175,3 +175,32 @@ So a tray that hides the window keeps Talk's full cost. Destroying the window
 and trimming the heap saves about a tenth. A small background process for the
 session and call, with the window in a separate process started on demand,
 would come close to the headless figures.
+
+[Where the memory goes: renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
+repeats the window measurement with glibc's allocator statistics (`malloc_stats`)
+and a full smaps dump at each sample. It compares GPU rendering, GPU rendering
+with at most two heap arenas, and Skia Software. A heaptrack snapshot of the
+signed-in, synced client before it connected to the call found 28 MiB of
+anonymous memory and at most 9.7 MiB of live heap. Under heaptrack the voice join
+did not finish, so it could not profile the call itself.
+
+| Ten-person call, window open | PSS | Anonymous | Heap in use | Heap held | Arenas | CPU, one core |
+| --- | --- | --- | --- | --- | --- | --- |
+| GPU, glibc defaults | 247 MiB | 98 MiB | 78 MiB | 91 MiB | 47 | 5.8% |
+| GPU, `MALLOC_ARENA_MAX=2` | 226 MiB | 90 MiB | 78 MiB | 79 MiB | 2 | 5.6% |
+| GPU, arena cap built in | 238 MiB | 90 MiB | 78 MiB | 79 MiB | 2 | 5.5% |
+| Skia Software, glibc defaults | 131 MiB | 32 MiB | 18 MiB | 29 MiB | 43 | 5.6% |
+
+The renderer decides most of Talk's private memory. With GPU rendering the heap
+holds 78 MiB in use, against 18 MiB with Skia Software. The difference comes from
+the graphics driver and Skia's GPU state, not from the chat or the call. Hiding
+the window frees 24 MiB of that heap, but glibc keeps it, and it only goes back
+to the system after `malloc_trim`. In this voice view both renderers used the
+same CPU.
+
+glibc gave Talk's threads 47 arenas, which held 13 MiB more than was in use.
+Talk now caps them at two at startup unless `MALLOC_ARENA_MAX` is set. That
+removed the gap and 8 MiB of anonymous memory at the same CPU. PSS varies by
+about 10 MiB between runs of the same build, so the allocator columns are the
+better comparison. Lock contention in real-time audio threads was not measured
+beyond CPU and a clean call.
