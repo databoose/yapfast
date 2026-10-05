@@ -33,7 +33,14 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Flatten channels in joined subspaces, deduplicate shared links, and tolerate
   cyclic Space relationships. A shared channel can appear in multiple servers.
   Removed child links update the channel list during sync.
-- Restore each server's last selected channel and the last selected DM.
+- Restore each server's last selected channel and the last selected DM. Talk
+  keeps each server's channel in `layout.json`, so after a restart a server
+  opens its last channel; a server opened for the first time shows its top one.
+- List the joined members of the open text channel or group DM on the right,
+  grouped under ADMINS, MODERATORS and MEMBERS by Matrix power level (100 and
+  50), each by name. The first view fetches the full list from the homeserver,
+  since sync loads members lazily, and membership changes refresh it. Voice
+  channels and one-to-one DMs have no member list.
 - Read live text messages and load history in batches of 30.
 - Recover encryption keys or recheck verification performed in another client.
 - Send only from a cross-signed device into a joined encrypted room. Existing
@@ -94,6 +101,10 @@ The window follows Discord's arrangement:
   a bar above it. With no conversation selected, the area shows "Pick a
   conversation" and hides the composer. The local preview labels itself in a
   strip under the header.
+- A 240px member sidebar right of the conversation, under its header, on the
+  sidebar's tone. The member count in the header shows or hides it, and Talk
+  remembers a closed list. While it shows, dragging the left sidebar still
+  leaves the conversation 420px.
 - A voice stage with participant tiles, a green border while someone speaks,
   and round mute, deafen and leave controls.
 

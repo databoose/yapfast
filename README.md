@@ -58,8 +58,11 @@ replies, reactions, editing, deletion and encrypted attachments. Messages writte
 offline wait in the SDK's send queue, and drafts survive restarts; see
 [the chat guide](docs/chat-ui.md). There is no room creation, channel discovery
 or ringing DM calls yet. Servers come from joined Matrix
-Spaces, including channels in joined subspaces. Each server remembers its last
-selected channel. Only joined channels appear; standalone rooms outside Spaces
+Spaces, including channels in joined subspaces. Clicking a server opens the
+channel you last had open there, even after a restart, or else its top channel.
+Text channels and group DMs list their members on the right, grouped into admins,
+moderators and members; the header's member count shows or hides the list.
+Only joined channels appear; standalone rooms outside Spaces
 are not shown in this navigation yet. Preview messages disappear
 when you leave the preview, and closing the window quits Talk.
 

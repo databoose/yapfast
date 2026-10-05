@@ -9,7 +9,7 @@ use std::{
 
 use futures_util::{Stream, StreamExt};
 use matrix_sdk::{
-    Client, ComposerDraft, ComposerDraftType, Room,
+    Client, ComposerDraft, ComposerDraftType, Room, RoomMemberships,
     attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo},
     media::{MediaFormat, MediaRequestParameters},
     room::edit::EditedContent,
@@ -20,7 +20,9 @@ use matrix_sdk::{
             SyncStateEvent,
             room::{
                 MediaSource,
+                member::RoomMemberEventContent,
                 message::{MessageType, RoomMessageEventContentWithoutRelation},
+                power_levels::UserPowerLevel,
             },
             space::child::SpaceChildEventContent,
         },
@@ -36,7 +38,7 @@ use matrix_sdk_ui::{
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
-    task::JoinSet,
+    task::{AbortHandle, JoinSet},
     time::Instant,
 };
 
@@ -70,6 +72,22 @@ pub struct ChatServer {
     pub id: String,
     pub name: String,
     pub channels: Vec<String>,
+}
+
+/// A room's standing from its power levels: Matrix's admin is 100 and moderator 50.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    Admin,
+    Moderator,
+    Member,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatMember {
+    pub id: String,
+    /// The display name, or the user ID without one, as on the member's messages.
+    pub name: String,
+    pub role: Role,
 }
 
 pub struct RoomIndex {
@@ -227,6 +245,11 @@ pub enum Event {
         message: &'static str,
     },
     HistoryLoaded(String),
+    /// The open room's joined members, by role and then name.
+    Members {
+        room: String,
+        members: Result<Vec<ChatMember>, &'static str>,
+    },
     /// The send queue accepted or refused a message; delivery shows on its timeline item.
     SendResult {
         room: String,
@@ -270,6 +293,8 @@ struct OpenRoom {
     requested: HashSet<String>,
     // Dropping the set when the room closes cancels its downloads and requests.
     tasks: JoinSet<()>,
+    /// The member list being read; a newer membership change replaces it.
+    members: Option<AbortHandle>,
 }
 
 impl OpenRoom {
@@ -339,6 +364,15 @@ pub async fn run(
                 let _ = changed.send(());
             }
         });
+    let (member_changed, mut member_changes) = tokio::sync::mpsc::unbounded_channel();
+    let member_handler = client.add_event_handler(
+        move |_: SyncStateEvent<RoomMemberEventContent>, room: Room| {
+            let changed = member_changed.clone();
+            async move {
+                let _ = changed.send(room.room_id().to_string());
+            }
+        },
+    );
     let (media_sender, mut media) = tokio::sync::mpsc::unbounded_channel();
     let mut sync: Option<crate::session::SessionSync> = None;
     let mut sync_states: Pin<Box<dyn Stream<Item = State> + Send>> =
@@ -394,7 +428,8 @@ pub async fn run(
                             Ok(active) => {
                                 let (_, stream) = active.subscribe().await;
                                 updates = Box::pin(stream.map(|_| ()));
-                                let mut active = OpenRoom { timeline: Arc::new(active), pictures: HashMap::new(), requested: HashSet::new(), tasks: JoinSet::new() };
+                                let mut active = OpenRoom { timeline: Arc::new(active), pictures: HashMap::new(), requested: HashSet::new(), tasks: JoinSet::new(), members: None };
+                                load_members(&mut active, &events);
                                 publish_timeline(&mut active, &client, &media_sender, &events).await;
                                 // Sync often delivers only the latest event; fill the first screen.
                                 if active.timeline.items().await.len() < 30 {
@@ -506,6 +541,9 @@ pub async fn run(
             Some(_) = rooms_stream.next() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
             Ok(_) = room_info.recv() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
             Some(_) = space_changes.recv() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
+            Some(room) = member_changes.recv() => {
+                if let Some(active) = &mut open && active.id() == room { load_members(active, &events); }
+            }
             Some(_) = updates.next() => { if let Some(active) = &mut open { publish_timeline(active, &client, &media_sender, &events).await; } }
             Some((room, key, picture)) = media.recv() => {
                 if let Some(active) = &mut open && active.id() == room {
@@ -559,6 +597,58 @@ pub async fn run(
         service.stop().await;
     }
     client.remove_event_handler(space_handler);
+    client.remove_event_handler(member_handler);
+}
+
+/// Read the open room's joined members in the background. The first read fetches
+/// the full list from the homeserver, because sync loads members lazily.
+fn load_members(open: &mut OpenRoom, events: &UnboundedSender<Event>) {
+    if let Some(previous) = open.members.take() {
+        previous.abort();
+    }
+    let room = open.timeline.room().clone();
+    let events = events.clone();
+    open.members = Some(open.tasks.spawn(async move {
+        let members = room
+            .members(RoomMemberships::JOIN)
+            .await
+            .map(|members| {
+                let mut members: Vec<_> = members
+                    .iter()
+                    .map(|member| ChatMember {
+                        id: member.user_id().to_string(),
+                        name: member
+                            .display_name()
+                            .map_or_else(|| member.user_id().to_string(), ToOwned::to_owned),
+                        role: match member.power_level() {
+                            UserPowerLevel::Int(level) => match i64::from(level) {
+                                100.. => Role::Admin,
+                                50.. => Role::Moderator,
+                                _ => Role::Member,
+                            },
+                            // A room creator's level is infinite.
+                            _ => Role::Admin,
+                        },
+                    })
+                    .collect();
+                sort_members(&mut members);
+                members
+            })
+            .map_err(|_| "Could not load the member list. Open the channel again to retry.");
+        let _ = events.send(Event::Members {
+            room: room.room_id().to_string(),
+            members,
+        });
+    }));
+}
+
+pub fn sort_members(members: &mut [ChatMember]) {
+    members.sort_by(|a, b| {
+        a.role
+            .cmp(&b.role)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 async fn room_index(client: &Client) -> RoomIndex {
@@ -1265,6 +1355,7 @@ mod tests {
             pictures: HashMap::new(),
             requested: HashSet::new(),
             tasks: JoinSet::new(),
+            members: None,
         }
     }
 
@@ -1491,6 +1582,7 @@ mod tests {
             );
             drop(unverified_room);
             let client = session.client.clone();
+            let user = client.user_id().unwrap().to_string();
             // Keep no Session/Room lease alive while the actor acquires the store.
             drop(session);
             drop(client);
@@ -1529,11 +1621,33 @@ mod tests {
             })
             .await;
             commands.send(Command::Open(encrypted.to_string())).unwrap();
-            receive(&mut events, |event| match event {
-                Event::Timeline { room, .. } if room == encrypted.as_str() => Some(()),
-                _ => None,
-            })
-            .await;
+            // Opening a room publishes its timeline and, separately, its members.
+            let (mut opened, mut members) = (false, None);
+            while !opened || members.is_none() {
+                receive(&mut events, |event| match event {
+                    Event::Timeline { room, .. } if room == encrypted.as_str() => {
+                        opened = true;
+                        Some(())
+                    }
+                    Event::Members {
+                        room,
+                        members: list,
+                    } if room == encrypted.as_str() => {
+                        members = Some(list);
+                        Some(())
+                    }
+                    _ => None,
+                })
+                .await;
+            }
+            let members = members.unwrap().expect("the member list loads");
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].id, user);
+            assert_eq!(
+                members[0].role,
+                Role::Admin,
+                "a room's creator is its admin"
+            );
             commands
                 .send(Command::Send {
                     room: encrypted.to_string(),

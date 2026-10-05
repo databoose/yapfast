@@ -2,7 +2,9 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::{
-    chat::{self, ChatMessage, ChatRoom, ChatServer, Command, Event, Reaction, Reply},
+    chat::{
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Reaction, Reply, Role,
+    },
     voice::{self, Phase},
 };
 
@@ -44,6 +46,8 @@ pub struct AppState {
     pub selected: Option<String>,
     pub room_ready: bool,
     pub messages: Arc<Vec<ChatMessage>>,
+    /// The selected room's joined members, by role and then name; `None` while loading.
+    pub members: Option<Result<Vec<ChatMember>, &'static str>>,
     pub loading_history: bool,
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
@@ -87,6 +91,13 @@ impl AppState {
             && self.selected_room().is_some_and(|room| {
                 !room.voice && (self.preview || (self.trusted && room.encrypted))
             })
+    }
+
+    /// Text channels and group DMs list their members; voice channels and
+    /// one-to-one DMs don't.
+    pub fn lists_members(&self) -> bool {
+        self.selected_room()
+            .is_some_and(|room| !room.voice && !(room.direct && room.members <= 2))
     }
 
     pub fn in_scope(&self, room: &ChatRoom) -> bool {
@@ -566,6 +577,11 @@ impl Application {
                     self.state.notice = Some(message.into());
                 }
             }
+            Event::Members { room, members } => {
+                if self.state.selected.as_ref() == Some(&room) {
+                    self.state.members = Some(members);
+                }
+            }
             Event::HistoryLoaded(room) => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.loading_history = false;
@@ -710,6 +726,7 @@ impl Application {
             self.state.loading_history = false;
             self.state.notice = None;
             self.state.messages = Arc::new(vec![]);
+            self.state.members = None;
             self.state.selection_version = self.state.selection_version.wrapping_add(1);
             if self.state.preview {
                 vec![]
@@ -737,10 +754,12 @@ impl Application {
         self.state.loading_history = false;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
+        self.state.members = None;
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
         if self.state.preview {
             if !voice_room {
                 self.state.messages = Arc::new(self.samples.get(&id).cloned().unwrap_or_default());
+                self.state.members = Some(Ok(preview_members(&id)));
             }
             vec![]
         } else if voice_room {
@@ -983,6 +1002,28 @@ impl Application {
         self.select("general".into())
     }
 
+    /// Each server's last selected channel, by server ID, for an adapter to keep
+    /// across runs.
+    pub fn last_channels(&self) -> HashMap<String, String> {
+        self.last_selected
+            .iter()
+            .filter_map(|(navigation, room)| match navigation {
+                Navigation::Server(server) => Some((server.clone(), room.clone())),
+                Navigation::DirectMessages => None,
+            })
+            .collect()
+    }
+
+    /// Restore channels kept from [`Self::last_channels`]. A channel selected
+    /// during this run wins, and a channel no longer joined is skipped on navigation.
+    pub fn remember_channels(&mut self, channels: HashMap<String, String>) {
+        for (server, room) in channels {
+            self.last_selected
+                .entry(Navigation::Server(server))
+                .or_insert(room);
+        }
+    }
+
     /// The preview's devices as listed for it; nothing else about voice is real.
     pub fn preview_devices(
         &mut self,
@@ -1082,6 +1123,35 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
     }
 }
 
+/// Sample members whose names match the preview's messages.
+fn preview_members(room: &str) -> Vec<ChatMember> {
+    use Role::{Admin, Member, Moderator};
+    let people: &[(&str, Role)] = match room {
+        "announcements" | "looking-for-group" => {
+            &[("Riley", Admin), ("Sam", Member), ("You", Member)]
+        }
+        "party" => &[("Riley", Member), ("Sam", Member), ("You", Member)],
+        "sam" => &[("Sam", Member), ("You", Member)],
+        "riley" => &[("Riley", Member), ("You", Member)],
+        _ => &[
+            ("You", Admin),
+            ("Sam", Moderator),
+            ("Riley", Member),
+            ("Morgan", Member),
+        ],
+    };
+    let mut members: Vec<_> = people
+        .iter()
+        .map(|&(name, role)| ChatMember {
+            id: format!("@{}:preview.local", name.to_lowercase()),
+            name: name.into(),
+            role,
+        })
+        .collect();
+    chat::sort_members(&mut members);
+    members
+}
+
 /// Preview messages support every local action; sent ones are also editable.
 fn sample_actions() -> ChatMessage {
     ChatMessage {
@@ -1165,6 +1235,71 @@ mod tests {
         assert_eq!(app.state.draft(), "Games draft");
         assert!(app.dispatch(Action::SelectRoom("dm".into())).is_empty());
         assert_eq!(app.state.selected.as_deref(), Some("games"));
+    }
+
+    #[test]
+    fn servers_open_their_last_channel_across_runs_or_the_top_one() {
+        let mut app = connected();
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert_eq!(
+            app.state.selected.as_deref(),
+            Some("general"),
+            "top channel"
+        );
+        app.dispatch(Action::SelectRoom("games".into()));
+        let kept = app.last_channels();
+        assert_eq!(kept.get("friends").map(String::as_str), Some("games"));
+
+        let mut next = connected();
+        next.remember_channels(kept);
+        next.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert_eq!(next.state.selected.as_deref(), Some("games"));
+
+        let mut stale = connected();
+        stale.remember_channels(HashMap::from([("friends".into(), "gone".into())]));
+        stale.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert_eq!(stale.state.selected.as_deref(), Some("general"));
+    }
+
+    #[test]
+    fn members_belong_to_the_selected_text_room() {
+        let mut app = connected();
+        assert!(!app.state.lists_members(), "one-to-one DMs list no members");
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert!(app.state.lists_members() && app.state.members.is_none());
+        let member = ChatMember {
+            id: "@bob:test".into(),
+            name: "Bob".into(),
+            role: Role::Member,
+        };
+        app.apply(Event::Members {
+            room: "games".into(),
+            members: Ok(vec![member.clone()]),
+        });
+        assert!(
+            app.state.members.is_none(),
+            "another room's members are stale"
+        );
+        app.apply(Event::Members {
+            room: "general".into(),
+            members: Ok(vec![member]),
+        });
+        assert!(matches!(&app.state.members, Some(Ok(members)) if members.len() == 1));
+        app.dispatch(Action::SelectRoom("games".into()));
+        assert!(app.state.members.is_none());
+        app.dispatch(Action::SelectRoom("lounge".into()));
+        assert!(!app.state.lists_members());
+
+        let mut preview = Application::default();
+        preview.dispatch(Action::Preview);
+        let Some(Ok(members)) = &preview.state.members else {
+            panic!("the preview lists sample members");
+        };
+        assert_eq!(members[0].role, Role::Admin);
+        assert_eq!(
+            members.len() as u64,
+            preview.state.selected_room().unwrap().members
+        );
     }
 
     #[test]

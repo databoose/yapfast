@@ -15,7 +15,7 @@ use slint::{
 use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, Delivery, Event, Picture},
+    chat::{ChatMessage, Delivery, Event, Picture, Role},
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
     voice::{self, Phase},
@@ -264,9 +264,14 @@ fn allocator_stats() {
 /// The layout a person chose, such as the sidebar width, kept beside the session.
 const LAYOUT: &str = "layout.json";
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Layout {
     sidebar_width: Option<f32>,
+    /// The member list shows until someone closes it.
+    members_hidden: bool,
+    /// Each server's last selected channel, by server ID.
+    channels: HashMap<String, String>,
 }
 
 impl Layout {
@@ -281,9 +286,10 @@ impl Layout {
         if let Some(width) = self.sidebar_width {
             window.set_sidebar_width(width);
         }
+        window.set_member_list(!self.members_hidden);
     }
 
-    /// A lost layout only costs the person their sidebar width; it never stops Talk.
+    /// A lost layout only costs the person their arrangement; it never stops Talk.
     fn write(&self, root: &std::path::Path) {
         let result = std::fs::create_dir_all(root).and_then(|()| {
             std::fs::write(
@@ -302,6 +308,7 @@ struct Models {
     servers: Rc<VecModel<ServerRow>>,
     rooms: Rc<VecModel<RoomRow>>,
     messages: Rc<VecModel<MessageRow>>,
+    roster: Rc<VecModel<MemberRow>>,
     participants: Rc<VecModel<PersonRow>>,
     microphones: Rc<VecModel<SharedString>>,
     speakers: Rc<VecModel<SharedString>>,
@@ -312,6 +319,7 @@ impl Models {
         window.set_servers(ModelRc::from(self.servers.clone()));
         window.set_rooms(ModelRc::from(self.rooms.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
+        window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_participants(ModelRc::from(self.participants.clone()));
         window.set_microphones(ModelRc::from(self.microphones.clone()));
         window.set_speakers(ModelRc::from(self.speakers.clone()));
@@ -330,6 +338,7 @@ struct Adapter {
     backend: Option<Backend>,
     runtime: Arc<BackgroundRuntime>,
     root: PathBuf,
+    layout: Layout,
     app: Application,
     models: Models,
     icons: Icons,
@@ -360,13 +369,15 @@ impl Adapter {
         };
         let models = Models::default();
         models.attach(window);
-        Layout::read(&root).apply(window);
+        let layout = Layout::read(&root);
+        layout.apply(window);
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,
                 backend: None,
                 runtime,
                 root,
+                layout,
                 app: Application::default(),
                 models,
                 icons,
@@ -386,7 +397,7 @@ impl Adapter {
     /// Present the existing models and state in a new window.
     fn attach(&mut self, window: &TalkWindow) {
         self.models.attach(window);
-        Layout::read(&self.root).apply(window);
+        self.layout.apply(window);
         self.window = window.as_weak();
     }
 
@@ -416,6 +427,7 @@ impl Adapter {
             match effect {
                 Effect::Start(start) => {
                     self.stop_backend();
+                    self.app.remember_channels(self.layout.channels.clone());
                     let (backend, mut events) =
                         Backend::start(self.runtime.clone(), self.root.clone(), start);
                     self.backend = Some(backend);
@@ -656,6 +668,47 @@ impl Adapter {
             )
             .into()
         }));
+        window.set_members_available(state.lists_members());
+        let members = match &state.members {
+            Some(Ok(members)) => members.as_slice(),
+            _ => &[],
+        };
+        window.set_roster_note(
+            match &state.members {
+                None => "Loading members...",
+                Some(Err(error)) => *error,
+                Some(Ok(members)) if members.is_empty() => "No one else has joined yet.",
+                Some(Ok(_)) => "",
+            }
+            .into(),
+        );
+        update_model(
+            &self.models.roster,
+            members
+                .iter()
+                .enumerate()
+                .map(|(index, member)| MemberRow {
+                    id: member.id.clone().into(),
+                    name: member.name.clone().into(),
+                    initial: initial(&member.name),
+                    tint: tint(&member.name),
+                    heading: if index == 0 || members[index - 1].role != member.role {
+                        let count = members
+                            .iter()
+                            .filter(|other| other.role == member.role)
+                            .count();
+                        let role = match member.role {
+                            Role::Admin => "ADMINS",
+                            Role::Moderator => "MODERATORS",
+                            Role::Member => "MEMBERS",
+                        };
+                        format!("{role} — {count}").into()
+                    } else {
+                        SharedString::default()
+                    },
+                })
+                .collect(),
+        );
         window.set_voice_room(room.is_some_and(|room| room.voice));
         window.set_room_encrypted(room.is_some_and(|room| room.encrypted));
         window.set_room_ready(state.room_ready);
@@ -897,6 +950,14 @@ impl Adapter {
         self.selection_version = state.selection_version;
         self.reset_version = state.reset_version;
         self.messages = state.messages.clone();
+        if selection_changed && !state.preview && state.account.is_some() {
+            let mut layout = self.layout.clone();
+            layout.channels.extend(self.app.last_channels());
+            if layout != self.layout {
+                layout.write(&self.root);
+                self.layout = layout;
+            }
+        }
     }
 }
 
@@ -969,10 +1030,15 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     let state = adapter.clone();
     window.on_sidebar_resized(move |width| {
-        Layout {
-            sidebar_width: Some(width),
-        }
-        .write(&state.borrow().root);
+        let mut adapter = state.borrow_mut();
+        adapter.layout.sidebar_width = Some(width);
+        adapter.layout.write(&adapter.root);
+    });
+    let state = adapter.clone();
+    window.on_member_list_toggled(move |shown| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.members_hidden = !shown;
+        adapter.layout.write(&adapter.root);
     });
     let state = adapter.clone();
     window.on_attach(move || {
@@ -1579,22 +1645,76 @@ mod tests {
         drag(312., 362.);
         assert_eq!(window.get_sidebar_shown(), 290.);
         assert_eq!(Layout::read(directory.path()).sidebar_width, Some(290.));
-        // The sidebar stops at 380px, and at 220px.
+        // The sidebar stops at 380px, and at 180px.
         drag(362., 700.);
         assert_eq!(window.get_sidebar_shown(), 380.);
         drag(452., 0.);
-        assert_eq!(window.get_sidebar_shown(), 220.);
-        // In a narrow window, dragging keeps 420px for the conversation.
+        assert_eq!(window.get_sidebar_shown(), 180.);
+        // In a narrow window, dragging keeps 420px for the conversation,
+        // beside the member list when it shows.
         window
             .window()
             .set_size(slint::LogicalSize::new(800., 560.));
-        drag(292., 700.);
+        drag(252., 700.);
+        assert_eq!(window.get_sidebar_shown(), 180.);
+        window.set_member_list(false);
+        drag(252., 700.);
         assert_eq!(window.get_sidebar_shown(), 308.);
-        drag(380., 292.);
+        drag(380., 252.);
         // A new window starts at the stored width.
         let next = TalkWindow::new().unwrap();
         adapter.borrow_mut().attach(&next);
-        assert_eq!(next.get_sidebar_width(), 220.);
+        assert_eq!(next.get_sidebar_width(), 180.);
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn the_member_list_shows_for_text_channels_and_remembers_being_closed() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        assert!(window.get_members_available() && window.get_member_list());
+        let roster = window.get_roster();
+        assert_eq!(roster.row_count(), 4);
+        assert_eq!(roster.row_data(0).unwrap().heading, "ADMINS — 1");
+        assert_eq!(roster.row_data(2).unwrap().heading, "MEMBERS — 2");
+        assert!(roster.row_data(3).unwrap().heading.is_empty());
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        // The toggle ends the conversation header.
+        click(1080., 24.);
+        assert!(!window.get_member_list());
+        assert!(Layout::read(directory.path()).members_hidden);
+        click(1080., 24.);
+        assert!(window.get_member_list());
+        // Voice channels and one-to-one DMs have no member list.
+        window.invoke_select_room("lounge".into());
+        assert!(!window.get_members_available());
+        window.invoke_navigate_dms();
+        assert!(!window.get_members_available());
+        window.invoke_select_room("party".into());
+        assert!(window.get_members_available());
+        assert_eq!(window.get_roster().row_count(), 3);
         window.hide().unwrap();
     }
 
