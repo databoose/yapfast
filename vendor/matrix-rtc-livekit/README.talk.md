@@ -34,5 +34,10 @@ at index zero, so remote participants hear silence once the key has rotated.
 interrupts Bob's network for 30 seconds, and checks that Alice still receives
 Bob's tone after the reconnect.
 
+`connect_e2ee` also requests LiveKit's single peer connection mode. With separate
+publisher and subscriber connections, the subscriber reached `Connected` about one
+second after the publisher on every join, which made up most of the join time.
+`testing/join_voice.py` measures joins with one process per participant.
+
 Keep the remaining MatrixRTC crates and Matrix SDK revision pinned. Remove this
 copy when an upstream native publication API provides the same key-index handling and partial-join cleanup.

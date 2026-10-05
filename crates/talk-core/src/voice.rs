@@ -479,6 +479,8 @@ async fn connected(
         let mut published = HashSet::new();
         let mut device_problems: HashMap<String, Option<&'static str>> = HashMap::new();
         let mut undecryptable = HashSet::new();
+        // Frames can arrive just before their key; only a lasting gap is a problem.
+        let mut missing_since: HashMap<String, Instant> = HashMap::new();
         let mut checks = tokio::time::interval(KEY_CHECK_INTERVAL);
         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         state.phase = Phase::Connected;
@@ -488,6 +490,7 @@ async fn connected(
             seen.retain(|member, _| people.iter().any(|person| &person.member_id == member));
             published.retain(|member| people.iter().any(|person| &person.member_id == member));
             device_problems.retain(|member, _| people.iter().any(|person| &person.member_id == member));
+            missing_since.retain(|member, _| people.iter().any(|person| &person.member_id == member));
             for person in people.iter().filter(|person| !person.is_local) {
                 seen.entry(person.member_id.clone()).or_insert(now);
                 if !device_problems.contains_key(&person.member_id) {
@@ -509,7 +512,8 @@ async fn connected(
                     Some(*problem)
                 } else if undecryptable.contains(&person.member_id) {
                     Some("Their audio can't be decrypted. They may need to rejoin.")
-                } else if settled && connected && sfu_identity.is_some_and(|id| !call.imported_key_for(&id)) {
+                } else if missing_since.get(&person.member_id).is_some_and(|since| now.duration_since(*since) >= KEY_GRACE)
+                    || (settled && connected && sfu_identity.is_some_and(|id| !call.imported_key_for(&id))) {
                     Some("Their audio key hasn't arrived, so you can't hear them yet.")
                 } else {
                     None
@@ -590,7 +594,22 @@ async fn connected(
                         }
                     }
                     Ok(CallEvent::FrameEncryptionState { member_id, state: encryption, .. }) => {
-                        if encryption.is_failure() { undecryptable.insert(member_id); } else { undecryptable.remove(&member_id); }
+                        match encryption {
+                            matrix_rtc_media::FrameEncryptionState::Ok => {
+                                missing_since.remove(&member_id);
+                                if undecryptable.remove(&member_id) {
+                                    tracing::info!(member = %member_id, "participant audio decrypts again");
+                                }
+                            }
+                            matrix_rtc_media::FrameEncryptionState::MissingKey => {
+                                missing_since.entry(member_id).or_insert_with(Instant::now);
+                            }
+                            _ => {
+                                tracing::warn!(member = %member_id, state = ?encryption, "participant audio cannot be decrypted");
+                                missing_since.remove(&member_id);
+                                undecryptable.insert(member_id);
+                            }
+                        }
                     }
                     Ok(CallEvent::KeyDiscarded { .. }) => state.error = Some("A participant's audio key was refused. They may need to verify their device.".into()),
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("Voice ended. Join again to reconnect."),
@@ -1272,10 +1291,14 @@ mod tests {
         }));
     }
 
-    /// Remote load for `testing/measure_connected.py`: Bob plus extra fixture
-    /// accounts in one process. Generated tones use no audio device, so one
-    /// process can publish for every account. Commands appended to
-    /// `load.commands`: `chat-start`, `chat-stop`, `join N`, `leave`, `exit`.
+    /// Remote load for `testing/measure_connected.py` and `testing/stress_voice.py`:
+    /// Bob plus extra fixture accounts in one process. Generated tones use no audio
+    /// device, so one process can publish for every account. Commands appended to
+    /// `load.commands`: `chat-start`, `chat-stop`, `say TEXT`, `join N`, `leave`,
+    /// `exit`, `dtx on|off` (for later joins) and `pattern all|conversation`.
+    /// `conversation` passes the tone around, one speaker for 3 s at a time, with
+    /// digital silence from everyone else. `TALK_TEST_PUBLISH_ONLY=1` stops the load
+    /// accounts subscribing, so this process does not decode every stream.
     #[test]
     #[ignore = "child process of testing/measure_connected.py"]
     fn load_participants() {
@@ -1284,6 +1307,7 @@ mod tests {
         );
         let extra: usize =
             std::env::var("TALK_TEST_EXTRA_ACCOUNTS").map_or(0, |count| count.parse().unwrap());
+        let publish_only = std::env::var("TALK_TEST_PUBLISH_ONLY").is_ok_and(|value| value == "1");
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         crate::logging::init();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1330,6 +1354,10 @@ mod tests {
             let mut calls = Vec::new();
             let mut tones = Vec::new();
             let mut chatting = false;
+            let mut dtx = true;
+            let conversation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let speakers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let started = std::time::Instant::now();
             let mut sent = 0u64;
             let mut chat = tokio::time::interval(Duration::from_secs(2));
             'run: loop {
@@ -1347,6 +1375,12 @@ mod tests {
                             match command.split_once(' ').unwrap_or((command, "")) {
                                 ("chat-start", _) => chatting = true,
                                 ("chat-stop", _) => chatting = false,
+                                ("dtx", value) => dtx = value == "on",
+                                ("pattern", value) => conversation.store(value == "conversation", std::sync::atomic::Ordering::Relaxed),
+                                ("say", text) => {
+                                    let room = sessions[0].client.get_room(&text_id).unwrap();
+                                    let _ = room.send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(text)).await;
+                                }
                                 ("join", count) => {
                                     let count: usize = count.parse().unwrap();
                                     for (index, session) in sessions.iter().enumerate().skip(calls.len()).take(count.saturating_sub(calls.len())) {
@@ -1354,16 +1388,25 @@ mod tests {
                                         let call = Call::join(&room, CallOptions {
                                             livekit_service_url_fallback: Some("http://localhost:16080".into()),
                                             sticky_duration_ms: Some(STICKY_DURATION_MS),
+                                            auto_subscribe: !publish_only,
                                             ..Default::default()
                                         }).await.unwrap();
+                                        let (pattern, count) = (conversation.clone(), speakers.clone());
+                                        let speaking = move || {
+                                            use std::sync::atomic::Ordering::Relaxed;
+                                            !pattern.load(Relaxed)
+                                                || (started.elapsed().as_secs() / 3) as usize % count.load(Relaxed).max(1) == index
+                                        };
                                         // Distinct tones keep every stream audible and decodable.
-                                        tones.push(crate::calls::publish_tone(&call, 300.0 + 60.0 * index as f64).await.unwrap());
+                                        tones.push(crate::calls::publish_tone_while(&call, 300.0 + 60.0 * index as f64, dtx, speaking).await.unwrap());
                                         calls.push(call);
+                                        speakers.store(calls.len(), std::sync::atomic::Ordering::Relaxed);
                                     }
                                     status(&format!("joined {}", calls.len()));
                                 }
                                 ("leave", _) => {
                                     tones.clear();
+                                    speakers.store(0, std::sync::atomic::Ordering::Relaxed);
                                     while let Some(call) = calls.pop() {
                                         let _ = tokio::time::timeout(Duration::from_secs(10), call.leave()).await;
                                     }
@@ -1385,6 +1428,203 @@ mod tests {
                 sync.stop().await;
             }
             status("stopped");
+        }));
+    }
+
+    /// One remote participant per process for `testing/join_voice.py`, so each
+    /// client's cost and key exchange can be measured on its own. It restores the
+    /// fixture account in `TALK_TEST_ACCOUNT_DIR` and reads `join`, `leave` and
+    /// `exit` from `commands` there. While joined it publishes a tone in turn with
+    /// the others (`TALK_TEST_INDEX` of `TALK_TEST_COUNT`, 3 s each, silence
+    /// otherwise) and decodes every subscribed audio track, as playback would.
+    /// `status.json` reports its identity and membership, join and leave times, the
+    /// remote identities present and those whose key has arrived, the members whose
+    /// audio currently decrypts, and counts of missing-key and decryption failures.
+    #[test]
+    #[ignore = "child process of testing/join_voice.py"]
+    fn stress_participant() {
+        use futures_util::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_VOICE_ROOT").expect("test harness only"),
+        );
+        let account = std::path::PathBuf::from(
+            std::env::var("TALK_TEST_ACCOUNT_DIR").expect("test harness only"),
+        );
+        let index: usize = std::env::var("TALK_TEST_INDEX").unwrap().parse().unwrap();
+        let count: usize = std::env::var("TALK_TEST_COUNT").unwrap().parse().unwrap();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        crate::logging::init();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
+            let voice_id = OwnedRoomId::try_from(manifest["voice"].as_str().unwrap()).unwrap();
+            let session = Session::restore(account.clone()).await.unwrap();
+            let sync = session.start_sync().await.unwrap();
+            sync.wait_until_ready().await.unwrap();
+            // Frames that arrived before their key, and frames a held key could not decrypt.
+            let missing = std::rc::Rc::new(AtomicUsize::new(0));
+            let failures = std::rc::Rc::new(AtomicUsize::new(0));
+            let decrypting = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<String>::new()));
+            let mut status = serde_json::json!({"phase": "ready"});
+            let write = |status: &serde_json::Value| {
+                let temporary = account.join("status.json.tmp");
+                std::fs::write(&temporary, status.to_string()).unwrap();
+                std::fs::rename(temporary, account.join("status.json")).unwrap();
+            };
+            write(&status);
+            let commands = account.join("commands");
+            let mut handled = 0;
+            let mut call: Option<Call> = None;
+            let mut tone = None;
+            let mut decoders: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            let started = std::time::Instant::now();
+            'run: loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Some(active) = call.as_mut() {
+                    while let Ok(event) = active.events().try_recv() {
+                        if let RoomEvent::TrackSubscribed {
+                            track: RemoteTrack::Audio(track),
+                            ..
+                        } = event
+                        {
+                            let mut stream =
+                                livekit::webrtc::audio_stream::native::NativeAudioStream::new(
+                                    track.rtc_track(),
+                                    48_000,
+                                    1,
+                                );
+                            decoders.push(tokio::spawn(async move {
+                                while stream.next().await.is_some() {}
+                            }));
+                        }
+                    }
+                    let present: Vec<String> = active
+                        .session()
+                        .room()
+                        .remote_participants()
+                        .keys()
+                        .map(ToString::to_string)
+                        .collect();
+                    let keyed: Vec<&String> = present
+                        .iter()
+                        .filter(|identity| active.imported_key_for(identity))
+                        .collect();
+                    status["present"] = serde_json::json!(present);
+                    status["keyed"] = serde_json::json!(keyed);
+                    status["missing_key_events"] =
+                        serde_json::json!(missing.load(Ordering::Relaxed));
+                    status["decryption_failures"] =
+                        serde_json::json!(failures.load(Ordering::Relaxed));
+                    status["decrypting"] =
+                        serde_json::json!(decrypting.borrow().iter().collect::<Vec<_>>());
+                    write(&status);
+                }
+                let text = std::fs::read_to_string(&commands).unwrap_or_default();
+                let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+                for command in lines.iter().skip(handled) {
+                    match command.as_str() {
+                        "join" => {
+                            let room = session.client.get_room(&voice_id).unwrap();
+                            let began = std::time::Instant::now();
+                            let joined = Call::join(
+                                &room,
+                                CallOptions {
+                                    livekit_service_url_fallback: Some(
+                                        "http://localhost:16080".into(),
+                                    ),
+                                    sticky_duration_ms: Some(STICKY_DURATION_MS),
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                            .unwrap();
+                            status["join_ms"] =
+                                serde_json::json!(began.elapsed().as_millis() as u64);
+                            status["identity"] = serde_json::json!(joined.local_identity());
+                            status["member_id"] = serde_json::json!(joined.membership_id());
+                            let mut events = joined.subscribe_call_events();
+                            let (missing, counter, decrypting) =
+                                (missing.clone(), failures.clone(), decrypting.clone());
+                            decoders.push(tokio::task::spawn_local(async move {
+                                while let Ok(event) = events.recv().await {
+                                    if let CallEvent::FrameEncryptionState {
+                                        member_id,
+                                        state,
+                                        ..
+                                    } = event
+                                    {
+                                        match state {
+                                            matrix_rtc_media::FrameEncryptionState::Ok => {}
+                                            matrix_rtc_media::FrameEncryptionState::MissingKey => {
+                                                missing.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            _ => {
+                                                counter.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                        }
+                                        if matches!(
+                                            state,
+                                            matrix_rtc_media::FrameEncryptionState::Ok
+                                        ) {
+                                            decrypting.borrow_mut().insert(member_id);
+                                        } else {
+                                            decrypting.borrow_mut().remove(&member_id);
+                                        }
+                                    }
+                                }
+                            }));
+                            let speaking = move || {
+                                (started.elapsed().as_secs() / 3) as usize % count.max(1) == index
+                            };
+                            tone = Some(
+                                crate::calls::publish_tone_while(
+                                    &joined,
+                                    300.0 + 40.0 * index as f64,
+                                    true,
+                                    speaking,
+                                )
+                                .await
+                                .unwrap(),
+                            );
+                            call = Some(joined);
+                            status["phase"] = serde_json::json!("joined");
+                        }
+                        "leave" => {
+                            tone = None;
+                            decoders.drain(..).for_each(|task| task.abort());
+                            decrypting.borrow_mut().clear();
+                            if let Some(active) = call.take() {
+                                let began = std::time::Instant::now();
+                                let _ =
+                                    tokio::time::timeout(Duration::from_secs(30), active.leave())
+                                        .await;
+                                status["leave_ms"] =
+                                    serde_json::json!(began.elapsed().as_millis() as u64);
+                            }
+                            status["phase"] = serde_json::json!("ready");
+                            status["present"] = serde_json::json!([]);
+                            status["keyed"] = serde_json::json!([]);
+                            status["decrypting"] = serde_json::json!([]);
+                            write(&status);
+                        }
+                        "exit" => break 'run,
+                        other => panic!("unknown participant command {other}"),
+                    }
+                }
+                handled = lines.len();
+            }
+            drop(tone);
+            if let Some(active) = call.take() {
+                let _ = tokio::time::timeout(Duration::from_secs(10), active.leave()).await;
+            }
+            sync.stop().await;
+            status["phase"] = serde_json::json!("stopped");
+            write(&status);
         }));
     }
 

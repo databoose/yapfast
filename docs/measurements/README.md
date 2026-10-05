@@ -103,3 +103,42 @@ both renderers, and so does Software RSS. GPU RSS is now 6.3 MiB over with an
 empty channel and 19.6 MiB over with the seeded history; it was 2.8 MiB over
 before. RSS counts shared graphics-driver libraries in full. The measurement
 limits listed for the 2026-10-03 run still apply.
+
+[Joining a 20-person voice channel, 2026-10-05](2026-10-05-linux-voice-join-20.json)
+measures joins with one process per person (`testing/join_voice.py`). Alice runs
+the release Talk window, muted. The other 19 are separate release processes on
+the same voice stack. Each one publishes a tone in turn, sends digital silence
+with DTX the rest of the time, and decodes every stream it receives. People join
+12 s apart, so each arrival finds a settled call and rotates the media key. At
+full size one person leaves and rejoins three times. Talk, every participant,
+Synapse and LiveKit share one host, so network latency is near zero.
+
+| Per join | Two peer connections | One peer connection |
+| --- | --- | --- |
+| Join call returns, mean of 19 joins | 1.74 s | 0.61 s |
+| Join call returns, rejoin at 20 people | 1.24–1.36 s | 0.13–0.24 s |
+| Newcomer hears everyone, mean | 2.21 s | 1.73 s |
+| Newcomer hears everyone, rejoin at 20 | 1.7–1.8 s | 1.4–1.6 s |
+| Everyone hears the newcomer, rejoin at 20 | 1.5–1.6 s | 1.0–1.4 s |
+| CPU time of the other 19 clients, rejoin at 20 | 1.8–1.9 s total | 1.8–1.9 s total |
+
+Join time did not grow with call size in either configuration. An earlier run
+had grown to about 19 s per join at 50 people, but that put every remote person
+in one debug-build process, so the process, not the protocol, was the limit. The
+cost that does grow is spread out. Each existing client spends about 0.1 s of
+CPU per arrival, because a newcomer in a settled call makes everyone rotate and
+redistribute their key.
+
+The LiveKit connection took most of the join. With separate publisher and
+subscriber connections, the subscriber connected about one second after the
+publisher on every join. One peer connection removes that, and now the time to
+hear everyone is mostly key delivery through Matrix sync. In the 20-person call,
+the Talk window used 3.5% of one core and 243 MiB PSS (307 MiB RSS). Each
+headless participant used 3.6% and 26 MiB PSS (98 MiB RSS) without any UI.
+Steady state had no decryption failures and no participant who could not hear
+another. The 197 missing-key events came from audio that arrived just before its
+key during joins. Talk now shows a missing key only once it has lasted beyond the
+10 s grace period.
+
+On a real network every round trip adds latency, so absolute join times will be
+longer than here. Windows, real devices and a remote homeserver remain unmeasured.

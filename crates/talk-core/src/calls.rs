@@ -340,6 +340,17 @@ impl Drop for Tone {
 }
 
 pub(crate) async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
+    publish_tone_while(call, frequency, true, || true).await
+}
+
+/// Publishes the tone only while `speaking()` holds and digital silence otherwise,
+/// like a voice-activation gate. `dtx` is LiveKit's Opus silence-suppression request.
+pub(crate) async fn publish_tone_while(
+    call: &Call,
+    frequency: f64,
+    dtx: bool,
+    speaking: impl Fn() -> bool + Send + 'static,
+) -> Result<Tone> {
     let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 50);
     let track = LocalAudioTrack::create_audio_track(
         "Talk synthetic test",
@@ -352,6 +363,7 @@ pub(crate) async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
             LocalTrack::Audio(track),
             TrackPublishOptions {
                 source: TrackSource::Microphone,
+                dtx,
                 ..Default::default()
             },
         )
@@ -363,13 +375,17 @@ pub(crate) async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            let samples = (0..480)
-                .map(|_| {
-                    let sample = (phase.sin() * 8_000.0) as i16;
-                    phase = (phase + step) % std::f64::consts::TAU;
-                    sample
-                })
-                .collect();
+            let samples = if speaking() {
+                (0..480)
+                    .map(|_| {
+                        let sample = (phase.sin() * 8_000.0) as i16;
+                        phase = (phase + step) % std::f64::consts::TAU;
+                        sample
+                    })
+                    .collect()
+            } else {
+                vec![0; 480]
+            };
             if source
                 .capture_frame(&AudioFrame {
                     data: Cow::Owned(samples),

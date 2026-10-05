@@ -95,7 +95,9 @@ class Participant:
             # which pasta forwards to the host. WebRTC binds the namespace's LAN
             # address, which pasta cannot splice to loopback, so the SFU's media
             # ports go to pasta's gateway; pasta maps that to the host loopback.
-            command = ['pasta', '--config-net', '--quiet', '-T', '18008,16080,17880', '--',
+            # IPv4 only: the stack listens on 127.0.0.1, and a forwarded ::1 connection
+            # is reset rather than refused, so clients would not fall back to IPv4.
+            command = ['pasta', '--config-net', '--quiet', '--ipv4-only', '-T', '18008,16080,17880', '--',
                        'sh', '-ec', NAMESPACE_MEDIA, 'namespace'] + command
         self.log = (fixture / f'{name}.log').open('ab')
         self.process = subprocess.Popen(command, cwd=ROOT, stdout=self.log, stderr=self.log,
