@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Check automatic GPU-to-Skia-Software recovery on the private compositor.
+"""Check renderer selection and GPU-to-Skia-Software recovery on the private compositor.
 
-The GPU start is made to fail by hiding every EGL vendor from libglvnd, which is
-how a missing or broken OpenGL driver appears to the window. Each scenario uses
-its own data folder and captures the window for visual review.
+Talk starts with Skia Software unless --renderer gpu is given. A GPU start is
+made to fail by hiding every EGL vendor from libglvnd, which is how a missing or
+broken OpenGL driver appears to the window. Each scenario uses its own data
+folder and captures the window for visual review.
 """
 import argparse
 import json
@@ -21,7 +22,7 @@ INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/debug/talk')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/fast/talk')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 BROKEN_EGL = {'__EGL_VENDOR_LIBRARY_FILENAMES': '/nonexistent/talk-no-egl-vendor.json'}
@@ -37,11 +38,6 @@ def capture(name):
         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(picture),
                         '-vf', 'vflip', str(path)], check=True, timeout=10)
         return path
-
-
-def record(data):
-    path = data / 'graphics.json'
-    return json.loads(path.read_text()) if path.exists() else None
 
 
 def launch(name, data, renderer=None, environment=None, wait=2.0, keep=False):
@@ -75,50 +71,28 @@ def opened(log):
 
 base = Path(tempfile.mkdtemp(prefix='talk-fallback-data-', dir=args.output))
 
-# 1. A failed automatic GPU start continues in Skia Software in the same session.
+# 1. Without --renderer, Talk starts Skia Software and never tries the GPU.
+data = base / 'default'
+_, running, log, picture = launch('default', data)
+check('default start uses Skia Software', running and opened(log) == ['skia-software'],
+      f'renderers={opened(log)} screenshot={picture}')
+
+# 2. A GPU start with a broken driver continues in Skia Software and says why.
 data = base / 'broken-driver'
-_, running, log, picture = launch('auto-broken-egl', data, environment=BROKEN_EGL, wait=5.5)
-check('broken EGL relaunches with Skia Software',
+_, running, log, picture = launch('gpu-broken-egl', data, renderer='gpu', environment=BROKEN_EGL, wait=5.5)
+check('broken EGL restarts with Skia Software',
       running and opened(log) == ['skia-opengl', 'skia-software'] and 'restarting with Skia Software' in log,
       f'running={running} renderers={opened(log)} screenshot={picture}')
-saved = record(data)
-check('failure is recorded for later starts', saved and saved['state'] == 'failed' and saved['reason'],
-      json.dumps(saved))
 
-# 2. The next automatic start skips the GPU and explains why.
-_, running, log, picture = launch('auto-after-failure', data)
-check('recorded failure starts Skia Software directly',
-      running and opened(log) == ['skia-software'], f'renderers={opened(log)} screenshot={picture}')
+# 3. A working GPU start stays on Skia GPU past the window check.
+data = base / 'gpu'
+_, running, log, picture = launch('gpu', data, renderer='gpu', wait=4.5)
+check('GPU start keeps Skia GPU', running and opened(log) == ['skia-opengl'],
+      f'renderers={opened(log)} screenshot={picture}')
 
-# 3. Explicit GPU with a broken driver reports the error and does not relaunch.
-process, running, log, _ = launch('explicit-gpu-broken-egl', data, renderer='gpu',
-                                  environment=BROKEN_EGL, wait=4.5)
-check('explicit GPU failure exits without fallback',
-      not running and process.returncode != 0 and 'skia-software' not in opened(log),
-      f'exit={process.returncode} renderers={opened(log)}')
-
-# 4. A confirmed explicit GPU start clears the recorded failure.
-_, running, log, _ = launch('explicit-gpu-recovers', data, renderer='gpu', wait=4.5)
-check('confirmed explicit GPU start clears the record',
-      running and opened(log) == ['skia-opengl'] and record(data) is None,
-      f'renderers={opened(log)} record={record(data)}')
-
-# 5. Automatic mode uses the GPU again and confirms it.
-_, running, log, picture = launch('auto-gpu', data, wait=4.5)
-check('automatic start uses and confirms Skia GPU',
-      running and opened(log) == ['skia-opengl'] and record(data) is None,
-      f'renderers={opened(log)} record={record(data)} screenshot={picture}')
-
-# 6. A process that stops during GPU startup selects software next time.
-data = base / 'stopped-start'
-process, running, log, _ = launch('auto-killed-during-start', data, wait=0.8, keep=True)
-os.killpg(process.pid, signal.SIGKILL)
-process.wait(timeout=10)
-interrupted = record(data)
-_, running, log, picture = launch('auto-after-killed-start', data)
-check('unconfirmed GPU start selects software next time',
-      interrupted and interrupted['state'] == 'starting' and opened(log) == ['skia-software'],
-      f'record_after_kill={interrupted} renderers={opened(log)} screenshot={picture}')
+# 4. Nothing about renderers is stored between starts.
+stored = sorted(str(path.relative_to(base)) for path in base.rglob('graphics.json'))
+check('no renderer record is stored', not stored, f'records={stored}')
 
 (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
 raise SystemExit(0 if all(result['passed'] for result in results) else 1)

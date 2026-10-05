@@ -37,51 +37,46 @@ rows, and shutdown cancels event reception before releasing the backend actor.
 
 ## Renderers and native builds
 
-Skia GPU is the default. Start the local preview from the repository folder:
+Skia Software is the default. Start the local preview from the repository folder:
 
 ```sh
 nix develop path:./nix --command cargo run --locked -- --preview
 ```
 
-For Skia Software:
+For Skia GPU:
 
 ```sh
-nix develop path:./nix --command cargo run --locked -- --preview --renderer software
+nix develop path:./nix --command cargo run --locked -- --preview --renderer gpu
 ```
 
 Omit `--preview` for normal sign-in or session restoration. The current app uses
 stock Slint renderer code, without benchmark timing hooks.
 
-### Automatic renderer recovery
+Software became the default on 2026-10-05 after the
+[renderer measurements](measurements/README.md). In a ten-person call it used
+131 MiB PSS against 247 MiB with GPU rendering, at the same CPU. Scrolling a long
+history cost less CPU than the GPU, both in a 1120×760 window and in a 3600×2000
+window at 2× scale.
 
-Without `--renderer`, Talk starts Skia GPU through an explicit `skia-opengl`
-request. The generic `skia` renderer would silently substitute a software surface
-when OpenGL fails, so Talk owns the fallback instead:
+### GPU recovery
 
-- Before the GPU start, Talk writes `graphics.json` in the data folder with state
-  `starting`. Three seconds after the event loop starts, it checks that the native
-  window exists and removes the record. A normal close also confirms the start.
-- If window creation, the GPU surface or the event loop fails before that, Talk
-  stores the technical reason as `failed`, releases the session and runtime, and
-  restarts itself with `--renderer software`. Linux replaces the process; Windows
-  starts the new process and returns its exit code. The window shows a dismissible
-  notice; the log and record keep the technical reason.
-- A `starting` record found at launch means the previous GPU start never got
-  confirmed, for example because a driver crashed or hung. That launch uses Skia
-  Software and records the failure.
-- Later automatic launches use Skia Software while a `failed` record from the same
-  Talk version exists. A new version, or a confirmed `--renderer gpu` start, retries
-  the GPU. `--renderer gpu` and `--renderer software` never fall back.
-- A GPU failure after confirmation, such as a lost device, also restarts with Skia
-  Software but is not remembered for later launches.
+`--renderer gpu` requests Skia GPU through an explicit `skia-opengl` renderer.
+The generic `skia` renderer would silently substitute a software surface when
+OpenGL fails, so Talk owns the fallback instead:
 
-Slint 1.18 waits up to 500 ms for the desktop appearance query before creating
-the first window. A GPU surface failure at that point is stored without stopping
-the event loop, which leaves a running process with no window. The confirmation
-therefore checks for the native window through Slint's version-pinned
-`unstable-winit-030` accessor rather than relying on the event loop error. A
-rendering notifier would also work, but Skia disables partial repainting while
-one is installed.
+- If window creation, the GPU surface or the event loop fails, Talk logs the
+  technical reason, releases the session and runtime, and restarts itself with
+  `--renderer software`. Linux replaces the process; Windows starts the new
+  process and returns its exit code. The window shows a dismissible notice.
+- Three seconds after the event loop starts, Talk checks that the native window
+  exists. Slint 1.18 waits up to 500 ms for the desktop appearance query before
+  creating the first window, and a GPU surface failure at that point is stored
+  without stopping the event loop, which leaves a running process with no window.
+  The check uses Slint's version-pinned `unstable-winit-030` accessor rather than
+  a rendering notifier, because Skia disables partial repainting while one is
+  installed.
+- Nothing is remembered between starts. Without the flag, Talk does not try the
+  GPU at all.
 
 `testing/probe_renderer_fallback.py` checks this policy on the private compositor.
 It hides every EGL vendor from libglvnd to simulate a missing OpenGL driver:
@@ -90,12 +85,10 @@ It hides every EGL vendor from libglvnd to simulate a missing OpenGL driver:
 nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --no-services --compositor-log .local/fallback.weston.log -- python3 testing/probe_renderer_fallback.py --output .impeccable/review/renderer-fallback'
 ```
 
-On 2026-10-03 all seven checks passed on the NVIDIA host: a broken EGL start
-restarted into Skia Software with the notice and recorded glutin's error; the
-next automatic start used software directly; `--renderer gpu` with broken EGL
-exited with an error and no fallback; a confirmed `--renderer gpu` start cleared
-the record; automatic mode then confirmed Skia GPU; and a process killed 0.8 s
-into its GPU start made the next launch use software.
+On 2026-10-05 all four checks passed on the NVIDIA host: the default start used
+Skia Software; `--renderer gpu` with broken EGL restarted into Skia Software with
+the notice; a working `--renderer gpu` start kept Skia GPU; and no renderer record
+was stored.
 
 The Nix shells supply checksum-pinned native inputs. Linux uses the upstream
 Skia 0.153.3 archive. Windows builds the same pinned Skia source and dependencies

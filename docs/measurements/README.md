@@ -204,3 +204,45 @@ removed the gap and 8 MiB of anonymous memory at the same CPU. PSS varies by
 about 10 MiB between runs of the same build, so the allocator columns are the
 better comparison. Lock contention in real-time audio threads was not measured
 beyond CPU and a clean call.
+
+[Scrolling a long history with each renderer, 2026-10-05](2026-10-05-linux-scroll-renderers.json)
+checks whether Skia Software keeps up with the GPU when it has to redraw
+(`testing/measure_scroll.py`). Bob posts the sample conversation and 300 more
+messages. Talk opens the channel and settles, then the private seat sends 60
+touchpad scroll events a second, changing direction every two seconds. Frame
+rates count the buffers Talk submitted to the compositor, not frames presented.
+
+| Release build | Idle PSS | Scrolling PSS | Scrolling CPU | Buffers/s |
+| --- | --- | --- | --- | --- |
+| GPU, 1120×760 | 214 MiB | 223 MiB | 5.0% | 39.9 |
+| Software, 1120×760 | 98 MiB | 98 MiB | 3.0% | 39.8 |
+| GPU, 3600×2000 at 2× | 219 MiB | 228 MiB | 5.4% | 39.9 |
+| Software, 3600×2000 at 2× | 132 MiB | 131 MiB | 4.2% | 39.6 |
+
+Skia Software used less CPU than the GPU at both sizes, and about 90 MiB less
+memory even with the window's pixel buffers about eight times larger. Both
+renderers submitted the same number of buffers. They stopped near 40 a second,
+below the 60 scroll events, so the input path or Slint's frame pacing sets that
+limit, not the renderer. Settled idle CPU stayed below 0.5% throughout. Talk now
+renders with Skia Software by default; `--renderer gpu` opts into the GPU.
+
+This harness found that scrolling up never left the newest message. When the
+list measured newly visible rows, Talk snapped back to the end before it saw the
+scroll. The timeline now checks the position before following new messages, and
+`scrolling_up_leaves_the_latest_message` covers it.
+
+[Release and fast builds, 2026-10-05](2026-10-05-linux-fast-profile.json)
+measures the same source built with the `release` profile (thin LTO) and the
+`fast` profile (no LTO, incremental), back to back.
+
+| Profile | Release | Fast |
+| --- | --- | --- |
+| Ten-person call, GPU, window open: PSS | 237–241 MiB | 232–236 MiB |
+| Ten-person call, five window states: CPU | 5.7–6.4% | 5.8–6.6% |
+| Ten-person call, window open: heap in use | 78 MiB | 78 MiB |
+| Scrolling, Software, 1120×760: PSS | 104 MiB | 100 MiB |
+| Scrolling, Software, 1120×760: CPU | 2.8% | 3.0% |
+
+The differences are within the run-to-run variation of each build. Tests and
+local checks can use the `fast` profile. Recorded measurements still use
+`release`, which is what people run.

@@ -19,17 +19,16 @@ join, leave, mute, deafen, participants and native audio device controls. Voice
 stays connected while you browse messages. A local preview lets you try the
 controls without an account or audio access.
 
-Talk prefers Skia GPU. If the GPU cannot start, Talk restarts itself with Skia
-Software, explains why, and keeps using software until a GPU start succeeds again.
-To choose Skia Software yourself:
+Talk renders with Skia Software, which uses about half the memory of Skia GPU.
+To use the GPU:
 
 ```sh
-nix develop path:./nix --command cargo run --locked -- --preview --renderer software
+nix develop path:./nix --command cargo run --locked -- --preview --renderer gpu
 ```
 
-Omit `--preview` to sign in or restore your real account. `--renderer gpu` forces
-GPU rendering without fallback. Renderer selection does not change session
-storage, encryption or the native audio backend.
+Omit `--preview` to sign in or restore your real account. If the GPU cannot
+start, Talk restarts itself with Skia Software and explains why. Renderer
+selection does not change session storage, encryption or the native audio backend.
 
 ## Linux development
 

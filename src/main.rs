@@ -85,7 +85,7 @@ fn main() -> Result<()> {
     }
 }
 
-/// Set only for a process that replaces a failed automatic GPU start.
+/// Set only for a process that replaces a failed GPU start.
 #[cfg(feature = "desktop")]
 const GPU_FALLBACK_REASON: &str = "TALK_GPU_FALLBACK_REASON";
 
@@ -97,13 +97,11 @@ fn launch(
     renderer: &str,
     arguments: &[String],
 ) -> Result<()> {
-    let mode = match renderer {
-        "gpu" => graphics::Mode::Gpu,
-        "software" => graphics::Mode::Software,
-        _ => graphics::Mode::Auto,
+    let renderer = match renderer {
+        "gpu" => graphics::Renderer::Gpu,
+        _ => graphics::Renderer::Software,
     };
-    let reason = std::env::var(GPU_FALLBACK_REASON).ok();
-    let plan = graphics::plan(&root, mode, reason);
+    let plan = graphics::plan(renderer, std::env::var(GPU_FALLBACK_REASON).ok());
     match ui::run(runtime, root, preview, plan)? {
         ui::Exit::Closed => Ok(()),
         ui::Exit::UseSoftware(reason) => relaunch_with_software(arguments, &reason),
@@ -153,7 +151,7 @@ fn renderer_argument(arguments: &mut Vec<String>) -> Result<&'static str> {
         .iter()
         .position(|argument| argument == "--renderer")
     else {
-        return Ok("auto");
+        return Ok("software");
     };
     let renderer = match arguments.get(index + 1).map(String::as_str) {
         Some("gpu") => "gpu",

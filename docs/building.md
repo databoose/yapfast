@@ -15,8 +15,8 @@ updating the archive URL and checksum in nix/flake.nix too.
 The Linux environment includes ALSA, PulseAudio, fontconfig, FreeType, GLib, Wayland, X11,
 Vulkan, OpenGL, OpenSSL, Clang 21, CMake, pkg-config and Protobuf. It uses the
 host's graphics driver under `/run/opengl-driver/lib`. A real display session
-are required to open the window. Skia GPU is the default and falls back to Skia
-Software automatically; use `--renderer software` or `--renderer gpu` to force one. The Nix shell provides a checksum-pinned,
+are required to open the window. Skia Software is the default; `--renderer gpu` uses Skia GPU and falls back to
+Skia Software if the GPU fails. The Nix shell provides a checksum-pinned,
 prepared Skia archive whose JPEG table is privately named to avoid a WebRTC
 symbol collision. See [the Slint client](slint-client.md).
 

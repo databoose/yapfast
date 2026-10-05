@@ -26,7 +26,7 @@ use talk_ui::*;
 /// How the desktop window ended.
 pub enum Exit {
     Closed,
-    /// The automatic GPU start failed; restart with Skia Software for this reason.
+    /// GPU rendering failed; restart with Skia Software for this reason.
     UseSoftware(String),
 }
 
@@ -53,10 +53,10 @@ pub fn run(
         .renderer_name(renderer.into())
         .select()
         .context("could not select the Slint desktop backend")?;
-    let gpu = plan.start.map(Rc::new);
+    let gpu = plan.renderer == graphics::Renderer::Gpu;
     let failed = |error: slint::PlatformError, context: &'static str| -> Result<Exit> {
         let reason = error.to_string();
-        if gpu.as_ref().is_some_and(|start| start.failed(&reason)) {
+        if gpu {
             tracing::error!(%reason, "GPU rendering failed; restarting with Skia Software");
             Ok(Exit::UseSoftware(reason))
         } else {
@@ -68,7 +68,7 @@ pub fn run(
         Err(error) => return failed(error, "could not create the Talk window"),
     };
     if let Err(error) = window.show() {
-        return failed(error, "could not show Talk; try --renderer software");
+        return failed(error, "could not show Talk");
     }
     prepare(&window);
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
@@ -86,17 +86,14 @@ pub fn run(
     // Slint 1.18 keeps its event loop running when it creates a window late and
     // the GPU surface fails, leaving no window. Check for the native window.
     let missing_window = Rc::new(Cell::new(false));
-    if let Some(start) = &gpu {
-        let start = start.clone();
+    if gpu {
         let missing_window = missing_window.clone();
         let weak = window.as_weak();
         slint::Timer::single_shot(GPU_START_CONFIRMATION, move || {
-            if weak
+            if !weak
                 .upgrade()
                 .is_some_and(|window| window.window().has_winit_window())
             {
-                start.confirm();
-            } else {
                 missing_window.set(true);
                 let _ = slint::quit_event_loop();
             }
@@ -115,14 +112,9 @@ pub fn run(
         Err(error) => failed(error, "Slint's desktop event loop failed"),
         Ok(()) if missing_window.get() => failed(
             "the window did not appear".into(),
-            "Talk's window did not appear; try --renderer software",
+            "Talk's window did not appear",
         ),
-        Ok(()) => {
-            if let Some(start) = &gpu {
-                start.confirm();
-            }
-            Ok(Exit::Closed)
-        }
+        Ok(()) => Ok(Exit::Closed),
     }
 }
 
