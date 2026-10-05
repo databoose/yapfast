@@ -81,7 +81,7 @@ variant still uses `--no-default-features`. Run `scripts/check` inside the Nix
 development shell to check both workspace packages. Ignored chat and voice tests
 now belong to `talk-core`, so select them with `cargo test -p talk-core`.
 
-The Windows source archive includes `crates/`, `ui/` and `build.rs`. Existing session storage paths and
+The Windows source archive includes `crates/` and `ui/`. Existing session storage paths and
 formats are unchanged. Library tests keep disposable fixtures under the workspace's
 ignored `.local` directory even though Cargo runs them from the crate directory.
 

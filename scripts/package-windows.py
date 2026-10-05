@@ -15,7 +15,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
-SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
+SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
 SOURCE_DIRECTORIES = (".cargo", "src", "ui", "crates", "scripts", "nix", "vendor", "testing", "deploy", "docs")
 
 

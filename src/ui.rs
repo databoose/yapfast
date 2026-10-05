@@ -21,8 +21,7 @@ use talk_core::{
 };
 
 use crate::graphics;
-
-slint::include_modules!();
+use talk_ui::*;
 
 /// How the desktop window ended.
 pub enum Exit {

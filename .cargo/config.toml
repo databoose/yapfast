@@ -1,7 +1,3 @@
-[build]
-# The Matrix SDK and C++ media bindings can otherwise exhaust an 8 GB machine.
-jobs = 2
-
 # Match LiveKit's Windows runtime linkage, including its prebuilt libwebrtc.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

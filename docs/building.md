@@ -20,10 +20,20 @@ Software automatically; use `--renderer software` or `--renderer gpu` to force o
 prepared Skia archive whose JPEG table is privately named to avoid a WebRTC
 symbol collision. See [the Slint client](slint-client.md).
 
-The first build downloads dependencies and compiles native C++. Cargo limits
-parallel jobs to two to limit memory pressure. Development dependencies omit
-debug symbols; the app keeps line tables. Release builds use thin LTO and strip
-symbols.
+The first build downloads dependencies and compiles native C++. Cargo uses every
+core. On a machine with 8 GB of memory, set `CARGO_BUILD_JOBS=2` so the Matrix
+SDK and the C++ media bindings do not exhaust it.
+
+Development builds omit debug symbols for dependencies; the app keeps line
+tables. Release builds use thin LTO and strip symbols. Use them for builds
+people run and for measurements. The `fast` profile optimizes like release
+without LTO and builds incrementally. Use it for tests and local runs:
+`cargo build --profile fast` or `cargo test --profile fast`.
+
+With [direnv](https://direnv.net/), the repository's `.envrc` loads the Nix
+development shell when you enter the folder, so commands need no
+`nix develop` prefix. On NixOS, `programs.direnv.enable = true;` installs direnv
+with nix-direnv, which caches the shell.
 
 ## Windows
 

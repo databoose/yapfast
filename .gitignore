@@ -3,3 +3,4 @@
 /.local
 /.impeccable/review
 __pycache__/
+.direnv/

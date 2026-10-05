@@ -7465,8 +7465,8 @@ dependencies = [
  "serde_json",
  "skia-safe",
  "slint",
- "slint-build",
  "talk-core",
+ "talk-ui",
  "tempfile",
  "tracing",
 ]
@@ -7498,6 +7498,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talk-ui"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

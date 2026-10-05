@@ -29,7 +29,9 @@ No remote push is part of this migration.
   panel, dismissed by its close button, Escape or clicking outside.
 
 `ui/talk.slint` defines the controls and layout; `src/ui.rs` adapts application
-state and effects. Backend events wake Slint's executor through the Tokio
+state and effects. The `talk-ui` crate compiles the interface. Its generated code
+is large, so it lives apart from the application: changing Talk's Rust code does
+not recompile it. Backend events wake Slint's executor through the Tokio
 receiver. There is no idle polling timer. Stable widget models update changed
 rows, and shutdown cancels event reception before releasing the backend actor.
 
