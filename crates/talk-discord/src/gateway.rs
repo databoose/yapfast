@@ -33,6 +33,10 @@ const REQUEST_GUILD_MEMBERS: u64 = 8;
 const INVALID_SESSION: u64 = 9;
 const HELLO: u64 = 10;
 const HEARTBEAT_ACK: u64 = 11;
+const STREAM_CREATE: u64 = 18;
+const STREAM_DELETE: u64 = 19;
+const STREAM_WATCH: u64 = 20;
+const STREAM_SET_PAUSED: u64 = 22;
 const GUILD_SUBSCRIPTIONS_BULK: u64 = 37;
 
 /// Discord closed the gateway, with its close code.
@@ -188,6 +192,41 @@ impl Gateway {
         self.send(
             GUILD_SUBSCRIPTIONS_BULK,
             json!({"subscriptions": {guild_id: subscription}}),
+        )
+        .await
+    }
+
+    /// Starts sharing to the voice channel this account is in. Discord answers
+    /// with STREAM_CREATE and then STREAM_SERVER_UPDATE.
+    pub async fn create_stream(&mut self, guild_id: &str, channel_id: &str) -> Result<()> {
+        self.send(
+            STREAM_CREATE,
+            json!({
+                "type": "guild",
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "preferred_region": null,
+            }),
+        )
+        .await
+    }
+
+    /// Starts watching someone's stream, answered like [`Self::create_stream`].
+    pub async fn watch_stream(&mut self, stream_key: &str) -> Result<()> {
+        self.send(STREAM_WATCH, json!({"stream_key": stream_key}))
+            .await
+    }
+
+    /// Ends this account's own stream, or stops watching someone else's.
+    pub async fn delete_stream(&mut self, stream_key: &str) -> Result<()> {
+        self.send(STREAM_DELETE, json!({"stream_key": stream_key}))
+            .await
+    }
+
+    pub async fn pause_stream(&mut self, stream_key: &str, paused: bool) -> Result<()> {
+        self.send(
+            STREAM_SET_PAUSED,
+            json!({"stream_key": stream_key, "paused": paused}),
         )
         .await
     }

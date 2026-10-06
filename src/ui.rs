@@ -733,6 +733,7 @@ impl Adapter {
                             .people
                             .iter()
                             .map(|person| PersonRow {
+                                id: person.id.clone().into(),
                                 name: person.name.clone().into(),
                                 initial: initial(&person.name),
                                 tint: tint(&person.id),
@@ -743,6 +744,7 @@ impl Adapter {
                                 ),
                                 muted: person.muted,
                                 deafened: person.deafened,
+                                live: person.streaming,
                                 connected: true,
                                 ..Default::default()
                             })
@@ -1049,6 +1051,48 @@ impl Adapter {
         ));
         window.set_voice_leaving(voice.phase == Phase::Leaving);
         window.set_voice_here(voice_here);
+        window.set_can_share(
+            !state.preview
+                && voice.phase == Phase::Connected
+                && voice
+                    .room
+                    .as_deref()
+                    .is_some_and(talk_core::discord::is_discord),
+        );
+        window.set_sharing(voice.sharing.is_some());
+        window.set_share_live(
+            voice
+                .sharing
+                .as_ref()
+                .is_some_and(|sharing| sharing.phase == voice::SharePhase::Live),
+        );
+        window.set_share_status(
+            match voice.sharing.as_ref().map(|sharing| sharing.phase) {
+                Some(voice::SharePhase::Choosing) => "Choose what to share",
+                Some(voice::SharePhase::Starting) => "Starting your stream...",
+                Some(voice::SharePhase::Live) => "Live",
+                None => "",
+            }
+            .into(),
+        );
+        if voice.sharing.is_none() {
+            window.set_share_frame(slint::Image::default());
+        }
+        window.set_watching(voice.watching.is_some());
+        match &voice.watching {
+            Some(watching) => {
+                window.set_watch_title(format!("{}'s screen", watching.name).into());
+                window.set_watch_status(
+                    if watching.frames.is_none() {
+                        format!("Connecting to {}'s stream...", watching.name)
+                    } else {
+                        format!("Waiting for {}'s picture...", watching.name)
+                    }
+                    .into(),
+                );
+            }
+            None => window.set_watch_frame(slint::Image::default()),
+        }
         window.set_voice_channel(
             voice
                 .room
@@ -1119,6 +1163,8 @@ impl Adapter {
                     .participants
                     .iter()
                     .map(|person| PersonRow {
+                        id: person.id.clone().into(),
+                        local: person.local,
                         name: if person.local {
                             "You".into()
                         } else {
@@ -1150,6 +1196,7 @@ impl Adapter {
                         .into(),
                         muted: person.muted,
                         deafened: false,
+                        live: person.streaming,
                         picture: cached_picture(
                             &mut self.pictures,
                             state,
@@ -1517,6 +1564,67 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
             state
                 .borrow_mut()
                 .action(&window, Action::Voice(voice::Command::Mute(!muted)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_toggle_share(move || {
+        if let Some(window) = weak.upgrade() {
+            let sharing = state.borrow().app.state.voice.sharing.is_some();
+            let command = if sharing {
+                voice::Command::StopLive
+            } else {
+                voice::Command::GoLive
+            };
+            state.borrow_mut().action(&window, Action::Voice(command));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_watch_stream(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::Watch(id.into())));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_stop_watching(move || {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::StopWatching));
+        }
+    });
+    // Frames skip the application state, which would redraw far more than the pictures.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_stream_tick(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let adapter = state.borrow();
+        let voice = &adapter.app.state.voice;
+        let image = |width, height, pixels: &[u8]| {
+            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                pixels, width, height,
+            ))
+        };
+        if let Some(frame) = voice
+            .sharing
+            .as_ref()
+            .and_then(|sharing| sharing.frames.take(image))
+        {
+            window.set_share_frame(frame);
+        }
+        if let Some(frame) = voice
+            .watching
+            .as_ref()
+            .and_then(|watching| watching.frames.as_ref())
+            .and_then(|frames| frames.take(image))
+        {
+            window.set_watch_frame(frame);
         }
     });
     let state = adapter.clone();

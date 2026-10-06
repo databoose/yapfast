@@ -106,6 +106,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                             avatar: Some(member.avatar.clone()),
                             muted: member.muted,
                             deafened: member.deafened,
+                            streaming: member.streaming,
                         })
                         .collect(),
                 }
@@ -290,6 +291,7 @@ mod tests {
                     avatar: "ann.png".into(),
                     muted: true,
                     deafened: false,
+                    streaming: true,
                 }],
             )]
             .into(),
@@ -311,6 +313,7 @@ mod tests {
             "who is in voice shows without joining"
         );
         assert!(rooms[2].people[0].muted && rooms[3].people.is_empty());
+        assert!(rooms[2].people[0].streaming, "who is live shows");
         assert_eq!(rooms[2].people[0].avatar.as_deref(), Some("ann.png"));
         assert!(rooms.iter().all(|room| room.category.is_empty()));
         assert!(!rooms[0].voice && !rooms[0].encrypted && !rooms[0].read_only);

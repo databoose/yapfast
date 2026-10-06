@@ -6,6 +6,11 @@ rust-version = "1.97"
 publish = false
 
 [dependencies]
+# Go Live's transport encryption and DAVE, at the versions songbird uses.
+aes-gcm = "0.10.3"
+chacha20poly1305 = "0.10.1"
+davey = "0.1.4"
+rand = "0.9"
 anyhow.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
@@ -26,3 +31,10 @@ tokio = { workspace = true, features = ["macros", "signal"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+# Building DAVE handshake messages in tests, at the versions davey uses.
+openmls = "0.8.1"
+openmls_basic_credential = "0.5.0"
+openmls_rust_crypto = "0.5.1"

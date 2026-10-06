@@ -18,3 +18,11 @@ Changes, marked `Talk:` in the source:
 
 Upstream pull request 314 targeted the same symptom with a larger rewrite and
 was closed unmerged: https://github.com/serenity-rs/songbird/pull/314
+
+# Talk local voice server
+
+Talk's tests run Discord calls against testing/fake_discord.ts, which serves
+its voice gateway over plain WebSocket on this machine. `generate_url` in
+`driver/connection/mod.rs` accepts an endpoint written as `ws://host:port/path`
+when the host is a loopback address or `localhost`; every other endpoint keeps
+the upstream `wss://` form. Discord's endpoints never carry a scheme.

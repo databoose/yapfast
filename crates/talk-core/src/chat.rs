@@ -49,6 +49,8 @@ pub struct VoicePerson {
     pub avatar: Option<String>,
     pub muted: bool,
     pub deafened: bool,
+    /// Sharing their screen.
+    pub streaming: bool,
 }
 
 #[derive(Clone)]

@@ -13,7 +13,8 @@ owner and a friend talked through it on 2026-10-06. Audio uses PulseAudio and
 libwebrtc's processing module, so Windows needs its own audio backend. The
 token still comes from the browser through `talk-discord-probe store-token`;
 QR linking and DM calls are still open. songbird's DAVE receive fix is
-described in `vendor/songbird/README.talk.md`.
+described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
+groups in `vendor/davey/README.talk.md`.
 
 Server text channels from step 4 are in progress. They're listed under
 their Discord categories and open in Talk's timeline. History loads from
@@ -124,6 +125,105 @@ the processing module's reverse stream so echo cancellation has its reference.
 Check one linking risk before building on this. songbird encodes with `opus2`,
 which builds its own libopus, while Talk's libwebrtc archive already contains
 libopus. Linking both into Talk may clash, particularly on Windows MSVC.
+
+### Screen sharing
+
+Go Live streams come through Discord's gateway: op 18 starts sharing, op 20
+watches someone, op 22 pauses and op 19 ends either. Discord answers with
+STREAM_CREATE, naming the RTC server, then STREAM_SERVER_UPDATE with an
+endpoint and token. The stream gets a voice connection of its own to that
+server, reusing the call's voice session id. `talk_discord::stream` names
+streams by key (`guild:{server}:{channel}:{user}`) and
+`Discord::{go_live, watch, end_stream, pause_stream}` run the signalling. Voice
+states carry `self_stream`, which shows as a LIVE badge beside the person.
+
+Capture runs in a worker process, `talk --stream-worker`, so its buffers take
+memory only while sharing; the process exits when sharing stops.
+`stream_worker` starts it with one job as a JSON line and reads its reports
+back. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
+file in the runtime directory. The file is unlinked once the worker opens it.
+On Linux, libwebrtc's capturer asks the screen sharing portal what to share.
+The portal answers over D-Bus through GLib, so the worker runs GLib's main
+context while it waits for the dialog and for frames. Talk tells Discord it's
+live only once frames flow, so a cancelled dialog shares nothing.
+`TALK_STREAM_TEST_PATTERN=1` shares moving colour bars instead of a screen.
+
+Once Discord has started the stream, Talk unpauses it with op 22, as
+Discord-video-stream does, and the worker gets its server and sends the video
+there (`talk_discord::stream_connection`). The connection is like a call's,
+but on voice gateway version 8 as Discord's clients use, where songbird uses
+4: heartbeats acknowledge the last sequence number, and binary DAVE messages
+start with one. It identifies with the stream's RTC server and `video: true`,
+discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
+encryption. Talk offers H264 only and announces its size with op 12,
+again whenever someone connects. Frames come from OpenH264 in libwebrtc's
+archive through `native/h264.c`: constrained baseline, realtime and tuned for
+screen content, with a keyframe at least every 3 s and whenever RTCP asks for
+one. Talk also has VP8 (`native/vp8.c`, still built and tested); every Go
+Live sender known to work sends H264. H264 goes as whole NAL units or FU-A
+fragments, and past a frame's first 8 packets, 4 go out each millisecond:
+nothing resends a lost packet, and a 1080p keyframe of 200 sent at once can
+overflow buffers on the way. An RTCP sender report goes out every second.
+
+Talk shares up to 1080p at 30 fps, at the bitrates Discord's client uses:
+at most 3.5 Mbit/s up to 720p and 9 Mbit/s above, the cap op 12 announces.
+Like Discord's client it also follows the server's bandwidth estimate
+(REMB): when that drops below the cap, the encoder aims for the estimate
+instead, though never below 500 kbit/s, and it changes only when the two
+differ by more than a tenth. Discord's client allows accounts without Nitro
+720p30, but trials 1080p30 at 3.5 or 5 Mbit/s for them (its
+"2026-05-frontier-tuning" experiment). The worker converts captured
+frames to I420 with libyuv, scales them with libyuv's filtering scaler, and
+encodes those; the preview is the same picture scaled down to 720p.
+
+Each video packet carries the one-byte extensions a Discord client sends: a
+transport-wide sequence number (id 5), playout delay (6), screen content
+type (7) and the stream id `100` (11). The stream id is what ties a packet to
+the stream op 12 declared. These ids aren't the ones in Discord's WebRTC
+SDP, where 5 is playout delay. Talk once sent only playout delay as id 5, and
+Discord's server dropped every packet: its receiver reports said it had
+received nothing, while it did read our RTCP, and viewers timed out with
+error 2012. concord and IMDiscord, two clients that broadcast over this
+transport, use the same set. The fake server drops video without the stream
+id as well.
+
+DAVE follows songbird's handshake (`dave.rs`) and encrypts each frame once the
+group is ready. A stream's MLS group isn't the voice channel's: its id is the
+RTC server id minus one, which Discord-video-stream found too. If the server's
+proposals or commits name another group, Talk moves to it. The vendored
+davey's `set_channel_id` keeps the key package already sent, so the streamer's
+welcome still opens. Talk accepts the people op 11 names into the group, and
+also those named in video attributes (op 12) or in the stream key.
+
+With `TALK_LOG=debug`, Talk logs every 5 s while sharing what it sent and the
+RTCP that came back (`stream sent`): receiver reports with the highest
+sequence number Discord's server got and its echo of our sender reports
+(`lsr`), its bitrate estimate (REMB), and keyframe requests, and each change
+of bitrate. The voice connection logs the voice server's RTCP too, to compare
+with a sender Discord accepts. Messages the stream server sends are logged
+too, except those carrying keys.
+
+Watching works the same way in reverse. Clicking someone's LIVE badge, or
+their tile in the call, sends op 20 and starts a worker with a watch job. The
+worker connects as a viewer, offers H264 and VP8 for decoding only, and asks
+for video with op 15. It learns the streamer's SSRCs and codec from op 12 and
+op 14, then puts RTP packets back together into frames
+(`talk_discord::rtp::Assembler`: VP8 descriptors, and H264 single units, STAP-A
+and FU-A as Annex B). A frame with a gap is dropped, and so is everything after
+it until the next keyframe. The connection then asks for one with a picture
+loss indication, at most every 500 ms. The worker decodes with libvpx or with
+the FFmpeg H264 decoder in libwebrtc's archive (`native/decode.c`) and writes
+RGBA at up to 1080p into the shared frames. Watching is possible only in the
+call you're in. Stream audio isn't played yet. Watching a stream from Discord's
+own client works: H264 with DAVE, confirmed by hand.
+
+The fake server checks the transport, packetization, sender reports and frames
+that Talk sends, reading an H264 picture's size from its SPS, without DAVE. To
+viewers it streams the recordings in `testing/fixtures` (VP8, or H264 after
+`POST /_control/stream-codec`) once they ask with op 15. Checked by hand
+against real Discord: Discord's client shows Talk's stream at 1080p, and
+Talk shows streams from Discord's client. Still to check there: op 5's
+speaking value.
 
 ## Servers, channels and messages
 
@@ -283,9 +383,13 @@ channel on screen. Measure settled idle and a Discord call with the method in
 
 ## Testing
 
-There's no local Discord server to test against, so Discord tests need real
-Discord. Use a separate test account, which the owner provides, in a private
-test server. Run these tests by hand, never in CI: repeated automated logins
+`testing/fake_discord.ts` is a local Discord: the gateway, the parts of the
+HTTP API Talk uses, a voice server that answers the handshake without DAVE,
+and Go Live signalling. Set `TALK_DISCORD_TEST_SERVER` to it, and Talk uses a
+test token instead of the linked account. `crates/talk-discord/tests/fake_server.rs`
+runs against it. What the fake can't show, such as media and DAVE with
+Discord's servers, needs real Discord. Use a separate test account, which the
+owner provides, in a private test server. Run these tests by hand, never in CI: repeated automated logins
 are what gets accounts flagged. Keep the QR-linked test token in the developer's
 OS credential store, like any other Discord login. Matrix-side behavior, such
 as the mirror, request events and encrypted names, is tested against the local
@@ -310,4 +414,7 @@ material only, under the borrowing rules in the
    status.
 5. Mirroring into Matrix.
 
-Video and screen sharing follow after the beta.
+Screen sharing and watching streams in Discord calls (Go Live) came early.
+Next for it: the shared screen's sound, the preview image Discord shows of a
+stream, and resending lost packets when viewers ask. Camera video follows
+after the beta.

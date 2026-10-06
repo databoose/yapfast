@@ -3,11 +3,15 @@
 
 pub mod api;
 pub mod client;
+mod dave;
 pub mod gateway;
 pub mod member_list;
 pub mod message;
 pub mod ready;
+pub mod rtp;
 pub mod service;
+pub mod stream;
+pub mod stream_connection;
 pub mod token;
 pub mod unread;
 pub mod voice;

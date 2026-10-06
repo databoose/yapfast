@@ -773,7 +773,30 @@ component Banner inherits Rectangle {
 }
 
 export struct ServerRow { id: string, name: string, initial: string, picture: image, selected: bool, unread: bool, discord: bool }
-export struct PersonRow { name: string, status: string, muted: bool, deafened: bool, speaking: bool, connected: bool, initial: string, tint: color, picture: image }
+export struct PersonRow {
+    id: string, name: string, status: string, muted: bool, deafened: bool, speaking: bool, connected: bool, initial: string, tint: color, picture: image,
+    /// Sharing their screen.
+    live: bool,
+    /// This account, in a call.
+    local: bool,
+}
+
+// Marks someone sharing their screen, as Discord's red LIVE tag does.
+// Clickable when it opens the stream.
+component LivePill inherits Rectangle {
+    in property <bool> clickable;
+    in property <string> label: "Watch stream";
+    callback clicked;
+    width: live-text.preferred-width + 10px; height: 16px; border-radius: 8px;
+    background: root.clickable && live-touch.has-hover ? Theme.danger-hover : Theme.danger;
+    accessible-role: button; accessible-enabled: root.clickable; accessible-label: root.clickable ? root.label : "Live";
+    accessible-action-default => { if root.clickable { root.clicked(); } }
+    live-text := Text { text: "LIVE"; color: #ffffff; font-size: 10px; font-weight: 800; letter-spacing: 0.4px; }
+    live-touch := TouchArea {
+        enabled: root.clickable; mouse-cursor: root.clickable ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
@@ -933,6 +956,19 @@ export component TalkWindow inherits Window {
     in property <string> voice-error;
     in property <string> voice-warning;
     in property <[PersonRow]> participants;
+    /// Sharing a screen is offered in Discord calls.
+    in property <bool> can-share;
+    in property <bool> sharing;
+    in property <bool> share-live;
+    in property <string> share-status;
+    /// The newest preview of what's shared, refreshed by stream-tick while sharing.
+    in-out property <image> share-frame;
+    /// Watching someone's stream in the call.
+    in property <bool> watching;
+    in property <string> watch-title;
+    in property <string> watch-status;
+    /// The newest picture of the watched stream, refreshed by stream-tick.
+    in-out property <image> watch-frame;
     in property <string> switch-prompt;
     in-out property <bool> audio-settings;
     // The sidebar keeps 180 to 380px. Dragging also leaves the conversation 420px;
@@ -964,6 +1000,11 @@ export component TalkWindow inherits Window {
     callback join-voice;
     callback toggle-mute;
     callback toggle-deafen;
+    callback toggle-share;
+    callback stream-tick;
+    /// Watch the participant with this id's stream.
+    callback watch-stream(string);
+    callback stop-watching;
     callback leave-voice;
     callback confirm-switch;
     callback cancel-switch;
@@ -1063,6 +1104,7 @@ export component TalkWindow inherits Window {
     property <bool> output-open: output-menu.is-open;
     changed input-open => { root.input-level = 0; root.meter-note = ""; root.metering(root.input-open); }
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
+    Timer { interval: 33ms; running: root.sharing || root.watching; triggered => { root.stream-tick(); } }
     input-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);
@@ -1479,6 +1521,7 @@ export component TalkWindow inherits Window {
                                                     text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
                                                     vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
                                                 }
+                                                if person.live: Middle { LivePill { } }
                                                 if person.muted && !person.deafened: Image {
                                                     source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
                                                     colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
@@ -1498,6 +1541,12 @@ export component TalkWindow inherits Window {
                                                     text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
                                                     color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
                                                     vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                                                }
+                                                if person.live: Middle {
+                                                    LivePill {
+                                                        clickable: !person.local; label: "Watch " + person.name + "'s stream";
+                                                        clicked => { root.watch-stream(person.id); }
+                                                    }
                                                 }
                                                 if person.muted: Image {
                                                     source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
@@ -1707,12 +1756,44 @@ export component TalkWindow inherits Window {
                                     padding: 16px; padding-bottom: 0px;
                                     Text { text: root.voice-description; color: Theme.muted; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; }
                                 }
-                                stage := Flickable {
+                                if root.watching: Rectangle {
+                                    vertical-stretch: 1;
+                                    Rectangle {
+                                        x: 16px; y: 12px; width: parent.width - 32px; height: parent.height - 12px;
+                                        border-radius: 12px; background: #000000; clip: true;
+                                        accessible-role: image; accessible-label: root.watch-title;
+                                        Image { width: parent.width; height: parent.height; source: root.watch-frame; image-fit: contain; }
+                                        if root.watch-frame.width == 0: Text {
+                                            width: parent.width; height: parent.height;
+                                            text: root.watch-status; color: Theme.secondary; font-size: 15px;
+                                            horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap;
+                                        }
+                                        Rectangle {
+                                            x: 12px; y: 12px; height: 28px;
+                                            width: min(parent.width - 72px, watch-chip.preferred-width);
+                                            border-radius: 6px; background: #000000a6;
+                                            watch-chip := HorizontalLayout {
+                                                padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                                Text { text: root.watch-title; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                                                Middle { LivePill { } }
+                                            }
+                                        }
+                                        IconButton {
+                                            x: parent.width - self.width - 10px; y: 10px; height: self.size;
+                                            icon: @image-url("icons/x.svg"); label: "Stop watching"; tint: #ffffff;
+                                            fill: #000000a6; radius: 16px;
+                                            clicked => { root.stop-watching(); }
+                                        }
+                                    }
+                                }
+                                if !root.watching: stage := Flickable {
                                     vertical-stretch: 1;
                                     property <length> gap: 12px;
                                     property <length> inset: 24px;
                                     property <length> span: self.width - 2 * self.inset;
-                                    property <int> count: root.participants.length;
+                                    // Your shared screen leads the grid.
+                                    property <int> extra: root.sharing ? 1 : 0;
+                                    property <int> count: root.participants.length + self.extra;
                                     property <int> columns: max(1, min(self.count, floor((self.span + self.gap) / (240px + self.gap))));
                                     property <length> tile-width: min(420px, (self.span - (self.columns - 1) * self.gap) / self.columns);
                                     property <length> tile-height: self.tile-width * 0.5625;
@@ -1720,9 +1801,37 @@ export component TalkWindow inherits Window {
                                     property <length> grid-height: self.rows * self.tile-height + max(0, self.rows - 1) * self.gap;
                                     property <length> grid-width: self.columns * self.tile-width + (self.columns - 1) * self.gap;
                                     content-height: max(self.height, self.grid-height + 2 * self.inset);
-                                    for person[index] in root.participants: Rectangle {
-                                        x: (stage.width - stage.grid-width) / 2 + mod(index, stage.columns) * (stage.tile-width + stage.gap);
-                                        y: max(stage.inset, (stage.height - stage.grid-height) / 2) + floor(index / stage.columns) * (stage.tile-height + stage.gap);
+                                    if root.sharing: Rectangle {
+                                        x: (stage.width - stage.grid-width) / 2;
+                                        y: max(stage.inset, (stage.height - stage.grid-height) / 2);
+                                        width: stage.tile-width; height: stage.tile-height;
+                                        border-radius: 12px; background: #000000; clip: true;
+                                        accessible-role: text;
+                                        accessible-label: "Your screen, " + root.share-status;
+                                        Image { width: parent.width; height: parent.height; source: root.share-frame; image-fit: contain; }
+                                        if root.share-frame.width == 0: VerticalLayout {
+                                            alignment: center; spacing: 10px;
+                                            Image { height: 34px; source: @image-url("icons/screen-share.svg"); image-fit: contain; colorize: Theme.secondary; }
+                                            Text { text: root.share-status; color: Theme.secondary; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
+                                        }
+                                        Rectangle {
+                                            x: 10px; y: parent.height - self.height - 10px;
+                                            width: min(parent.width - 20px, share-chip.preferred-width); height: 26px;
+                                            border-radius: 6px; background: #000000a6;
+                                            share-chip := HorizontalLayout {
+                                                padding-left: 8px; padding-right: 8px; spacing: 6px;
+                                                Text { text: "Your screen"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                                                if root.share-live: Middle { LivePill { } }
+                                                if !root.share-live && root.share-frame.width > 0: Text {
+                                                    text: root.share-status; color: Theme.accent; font-size: 13px; vertical-alignment: center; overflow: elide;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    for person[position] in root.participants: Rectangle {
+                                        property <int> index: position + stage.extra;
+                                        x: (stage.width - stage.grid-width) / 2 + mod(self.index, stage.columns) * (stage.tile-width + stage.gap);
+                                        y: max(stage.inset, (stage.height - stage.grid-height) / 2) + floor(self.index / stage.columns) * (stage.tile-height + stage.gap);
                                         width: stage.tile-width; height: stage.tile-height;
                                         border-radius: 12px; background: Theme.raised;
                                         border-width: person.speaking ? 3px : 0px; border-color: Theme.live;
@@ -1733,6 +1842,18 @@ export component TalkWindow inherits Window {
                                             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2 - 8px;
                                             opacity: person.connected ? 1 : 0.5;
                                         }
+                                        if person.live && !person.local: TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.watch-stream(person.id); }
+                                        }
+                                        if person.live && !person.local: Rectangle {
+                                            x: parent.width - self.width - 10px; y: 10px; height: 26px;
+                                            width: watch-label.preferred-width + 20px; border-radius: 13px;
+                                            background: Theme.danger;
+                                            accessible-role: button; accessible-label: "Watch " + person.name + "'s stream";
+                                            accessible-action-default => { root.watch-stream(person.id); }
+                                            watch-label := Text { text: "Watch stream"; color: #ffffff; font-size: 13px; font-weight: 700; }
+                                        }
                                         Rectangle {
                                             x: 10px; y: parent.height - self.height - 10px;
                                             width: min(parent.width - 20px, chip.preferred-width); height: 26px;
@@ -1741,6 +1862,7 @@ export component TalkWindow inherits Window {
                                                 padding-left: 8px; padding-right: 8px; spacing: 6px;
                                                 if person.muted: Image { source: @image-url("icons/mic-off.svg"); width: 14px; image-fit: contain; colorize: Theme.danger; }
                                                 Text { text: person.name; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                                                if person.live: Middle { LivePill { } }
                                                 if person.status != "Muted" && person.status != "Speaking" && person.status != "Listening": Text {
                                                     text: person.status; color: Theme.accent; font-size: 13px; vertical-alignment: center; overflow: elide;
                                                 }
@@ -1765,6 +1887,14 @@ export component TalkWindow inherits Window {
                                         enabled: root.voice-ready;
                                         fill: self.alert ? Theme.danger.with-alpha(0.18) : Theme.raised;
                                         clicked => { root.toggle-deafen(); }
+                                    }
+                                    if root.can-share || root.sharing: IconButton {
+                                        size: 52px; glyph: 22px; radius: 26px;
+                                        icon: root.sharing ? @image-url("icons/screen-share-off.svg") : @image-url("icons/screen-share.svg");
+                                        label: root.sharing ? "Stop sharing" : "Share your screen"; tint: Theme.text;
+                                        enabled: root.voice-ready;
+                                        fill: root.sharing ? Theme.live.with-alpha(0.22) : Theme.raised;
+                                        clicked => { root.toggle-share(); }
                                     }
                                     Rectangle {
                                         width: 76px; height: 52px; border-radius: 26px;

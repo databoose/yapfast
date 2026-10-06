@@ -68,6 +68,10 @@
         wayland vulkan-loader libGL
         xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr
         xorg.libxcb
+        # libwebrtc's screen capture loads these at runtime: PipeWire and GBM
+        # for the screen sharing portal, the X extensions on X11.
+        pipewire libdrm libgbm
+        xorg.libXfixes xorg.libXdamage xorg.libXcomposite xorg.libXext
       ];
     in {
       devShells.${system} = {

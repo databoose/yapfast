@@ -1525,6 +1525,7 @@ impl Application {
                             connected: true,
                             problem: None,
                             avatar: None,
+                            streaming: false,
                         }],
                         ..self.preview_voice()
                     };
@@ -2485,6 +2486,7 @@ mod tests {
                     avatar: format!("{member}.png"),
                     muted: false,
                     deafened: false,
+                    streaming: false,
                 }],
             )]
             .into(),

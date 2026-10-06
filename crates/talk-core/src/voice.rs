@@ -3,6 +3,7 @@
 //! this module runs whichever one is joined, and lists the devices both use.
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     thread,
 };
 
@@ -44,8 +45,40 @@ pub struct Participant {
     pub connected: bool,
     /// Why audio may not flow with this participant, if Talk can tell.
     pub problem: Option<String>,
+    /// Sharing their screen.
+    pub streaming: bool,
     /// The address of their avatar; see [`crate::chat::Command::Pictures`].
     pub avatar: Option<String>,
+}
+
+/// Sharing this account's screen in the call.
+#[derive(Clone, Debug)]
+pub struct Sharing {
+    pub phase: SharePhase,
+    /// What's being shared, as the UI previews it.
+    pub frames: Arc<crate::frames::Frames>,
+}
+
+/// Watching someone's stream in the call.
+#[derive(Clone, Debug)]
+pub struct Watching {
+    /// Their user id, as in [`Participant::id`].
+    pub user: String,
+    pub name: String,
+    /// Until the first picture shows.
+    pub opening: bool,
+    /// Their stream's pictures, once the worker has started.
+    pub frames: Option<Arc<crate::frames::Frames>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharePhase {
+    /// The system's dialog is asking what to share.
+    Choosing,
+    /// Captured, while Discord starts the stream and the video connects.
+    Starting,
+    /// Others in the call can watch.
+    Live,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +97,8 @@ pub struct State {
     /// A problem that leaves the call usable, such as a participant who has
     /// not received this device's audio key.
     pub warning: Option<String>,
+    pub sharing: Option<Sharing>,
+    pub watching: Option<Box<Watching>>,
 }
 
 impl Default for State {
@@ -81,6 +116,8 @@ impl Default for State {
             speaker: None,
             error: None,
             warning: None,
+            sharing: None,
+            watching: None,
         }
     }
 }
@@ -96,6 +133,8 @@ impl State {
         self.muted = true;
         self.deafened = false;
         self.warning = None;
+        self.sharing = None;
+        self.watching = None;
     }
 }
 
@@ -107,6 +146,12 @@ pub enum Command {
     Devices,
     Microphone(String),
     Speaker(String),
+    /// Share a screen or window with Discord's Go Live.
+    GoLive,
+    StopLive,
+    /// Watch the participant with this id's stream.
+    Watch(String),
+    StopWatching,
     /// Remove memberships this device left in voice channels, for example
     /// after Talk was killed. Ignored during a call.
     LeaveStale,

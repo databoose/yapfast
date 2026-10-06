@@ -13,6 +13,8 @@ pub mod backend;
 pub mod calls;
 pub mod chat;
 pub mod cli;
+#[cfg(feature = "discord")]
+pub mod decode;
 pub mod discord;
 #[cfg(feature = "discord")]
 pub mod discord_audio;
@@ -20,8 +22,11 @@ pub mod discord_audio;
 pub mod discord_text;
 #[cfg(feature = "discord")]
 mod discord_voice;
+#[cfg(feature = "discord")]
+pub mod encode;
 #[cfg(feature = "matrix")]
 pub mod experiment;
+pub mod frames;
 pub mod links;
 pub mod logging;
 #[cfg(feature = "matrix")]
@@ -32,6 +37,8 @@ pub mod meter;
 pub mod runtime;
 #[cfg(feature = "matrix")]
 pub mod session;
+#[cfg(feature = "discord")]
+pub mod stream_worker;
 pub mod voice;
 #[cfg(feature = "matrix")]
 pub mod voice_demo;

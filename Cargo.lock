@@ -1692,8 +1692,6 @@ checksum = "0c03c416ed1a30fbb027ef484ba6ab6f80e1eada675e1a2b92fd673c045a1f1d"
 [[package]]
 name = "davey"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25028cc2ec8cd43138ca0d2c71d7f6019196238ebd6edea11dd35276fa85b860"
 dependencies = [
  "aead 0.5.2",
  "aes 0.8.4",
@@ -9206,6 +9204,7 @@ name = "talk-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cc",
  "directories",
  "futures-util",
  "image",
@@ -9219,6 +9218,7 @@ dependencies = [
  "matrix-sdk",
  "matrix-sdk-crypto",
  "matrix-sdk-ui",
+ "memmap2",
  "mime",
  "pulldown-cmark",
  "rustls 0.23.45",
@@ -9231,17 +9231,25 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "webrtc-sys-build",
 ]
 
 [[package]]
 name = "talk-discord"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "chacha20poly1305 0.10.1",
+ "davey",
  "futures-util",
  "keyring",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
+ "rand 0.9.5",
  "reqwest 0.13.5",
  "rustls 0.23.45",
  "serde",
@@ -9252,6 +9260,7 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

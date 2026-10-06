@@ -30,6 +30,12 @@ fn limit_heap_arenas() {
 
 fn main() -> Result<()> {
     limit_heap_arenas();
+    // A stream worker starts nothing else: no UI, runtime or TLS.
+    #[cfg(feature = "discord")]
+    if std::env::args().nth(1).as_deref() == Some(talk_core::stream_worker::ARGUMENT) {
+        logging::init_to_stderr();
+        return talk_core::stream_worker::run();
+    }
     logging::init();
     talk_core::init_tls()?;
 

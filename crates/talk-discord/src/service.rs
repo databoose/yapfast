@@ -19,6 +19,7 @@ use crate::{
     member_list::{ListedMember, MemberList},
     message::{self, Message, Names},
     ready::{self, Server},
+    stream::{self, Opening, StreamServer},
     unread::Unreads,
 };
 
@@ -39,6 +40,8 @@ pub struct VoiceMember {
     pub avatar: String,
     pub muted: bool,
     pub deafened: bool,
+    /// Sharing their screen with Go Live.
+    pub streaming: bool,
 }
 
 /// The linked account, as Discord shows it outside any server.
@@ -92,6 +95,18 @@ pub enum Live {
         channel: String,
         members: Vec<ListedMember>,
     },
+    /// Who watches a stream this account is in, and whether it's paused.
+    StreamUpdated {
+        stream_key: String,
+        viewers: Vec<String>,
+        paused: bool,
+    },
+    /// A stream this account shared or watched ended, with Discord's reason
+    /// such as "user_requested" or "stream_full".
+    StreamEnded {
+        stream_key: String,
+        reason: Option<String>,
+    },
 }
 
 /// What songbird needs to open the voice connection Discord assigned.
@@ -130,6 +145,22 @@ enum Request {
         guild: String,
         channel: String,
         sync: bool,
+    },
+    GoLive {
+        guild: String,
+        channel: String,
+        reply: oneshot::Sender<Result<StreamServer>>,
+    },
+    Watch {
+        stream_key: String,
+        reply: oneshot::Sender<Result<StreamServer>>,
+    },
+    EndStream {
+        stream_key: String,
+    },
+    PauseStream {
+        stream_key: String,
+        paused: bool,
     },
 }
 
@@ -337,6 +368,50 @@ impl Discord {
             deaf,
         });
     }
+
+    /// Starts sharing to the voice channel this account is in, and waits for
+    /// the server Discord assigns the stream.
+    pub async fn go_live(&self, guild: &str, channel: &str) -> Result<StreamServer> {
+        let (reply, answer) = oneshot::channel();
+        self.requests
+            .send(Request::GoLive {
+                guild: guild.into(),
+                channel: channel.into(),
+                reply,
+            })
+            .map_err(|_| anyhow!("Discord isn't connected. Restart Talk and try again."))?;
+        answer
+            .await
+            .map_err(|_| anyhow!("Discord disconnected while starting the stream."))?
+    }
+
+    /// Starts watching a stream in the voice channel this account is in.
+    pub async fn watch(&self, stream_key: &str) -> Result<StreamServer> {
+        let (reply, answer) = oneshot::channel();
+        self.requests
+            .send(Request::Watch {
+                stream_key: stream_key.into(),
+                reply,
+            })
+            .map_err(|_| anyhow!("Discord isn't connected. Restart Talk and try again."))?;
+        answer
+            .await
+            .map_err(|_| anyhow!("Discord disconnected while opening the stream."))?
+    }
+
+    /// Ends this account's stream, or stops watching someone else's.
+    pub fn end_stream(&self, stream_key: &str) {
+        let _ = self.requests.send(Request::EndStream {
+            stream_key: stream_key.into(),
+        });
+    }
+
+    pub fn pause_stream(&self, stream_key: &str, paused: bool) {
+        let _ = self.requests.send(Request::PauseStream {
+            stream_key: stream_key.into(),
+            paused,
+        });
+    }
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -427,6 +502,41 @@ fn refuse(request: Request, shared: &mut Shared) {
     }
 }
 
+/// Passes a stream dispatch to the streams being opened, and answers those
+/// that are now ready or that Discord refused.
+fn open_streams(
+    openings: &mut HashMap<String, PendingStream>,
+    tracker: &Tracker,
+    name: &str,
+    data: &Value,
+) {
+    let Some(key) = data["stream_key"].as_str() else {
+        return;
+    };
+    let Some(mut waiting) = openings.remove(key) else {
+        return;
+    };
+    if name == "STREAM_DELETE" {
+        let reason = match data["reason"].as_str() {
+            Some("stream_full") => "The stream is full.",
+            Some("unauthorized") => "You aren't allowed to stream or watch here.",
+            _ => "The stream ended before it started.",
+        };
+        let _ = waiting.reply.send(Err(anyhow!(reason)));
+        return;
+    }
+    waiting.opening.apply(key, name, data);
+    let session = tracker.voice_session(&waiting.guild);
+    match session.and_then(|session| waiting.opening.server(key, &tracker.me, session)) {
+        Some(server) => {
+            let _ = waiting.reply.send(Ok(server));
+        }
+        None => {
+            openings.insert(key.to_owned(), waiting);
+        }
+    }
+}
+
 enum Ended {
     /// Every handle was dropped.
     Dropped,
@@ -438,6 +548,19 @@ struct Pending {
     reply: oneshot::Sender<Result<VoiceServer>>,
     session_id: Option<String>,
     server: Option<(String, String)>,
+}
+
+/// A stream started or watched, waiting for its server.
+struct PendingStream {
+    guild: String,
+    reply: oneshot::Sender<Result<StreamServer>>,
+    opening: Opening,
+}
+
+fn fail_streams(openings: &mut HashMap<String, PendingStream>, message: &str) {
+    for (_, waiting) in openings.drain() {
+        let _ = waiting.reply.send(Err(anyhow!("{message}")));
+    }
 }
 
 async fn connected_session(
@@ -468,6 +591,9 @@ async fn connected_session(
     let mut pending: Option<Pending> = None;
     let deadline = tokio::time::sleep(JOIN_TIMEOUT);
     tokio::pin!(deadline);
+    let mut openings: HashMap<String, PendingStream> = HashMap::new();
+    let stream_deadline = tokio::time::sleep(JOIN_TIMEOUT);
+    tokio::pin!(stream_deadline);
     // The newest read message per channel, waiting to be acknowledged.
     let mut acks: HashMap<String, String> = HashMap::new();
     let ack_at = tokio::time::sleep(ACK_DELAY);
@@ -528,6 +654,55 @@ async fn connected_session(
                         }
                         Ok(())
                     }
+                    Request::GoLive { guild, channel, reply } => {
+                        if tracker.voice_channel(&guild).is_none_or(|current| current != channel) {
+                            let _ = reply.send(Err(anyhow!("Join the voice channel before going live.")));
+                            Ok(())
+                        } else {
+                            let key = stream::guild_key(&guild, &channel, &me);
+                            stream_deadline.as_mut().reset(tokio::time::Instant::now() + JOIN_TIMEOUT);
+                            let waiting = PendingStream { guild: guild.clone(), reply, opening: Opening::default() };
+                            if let Some(previous) = openings.insert(key.clone(), waiting) {
+                                let _ = previous.reply.send(Err(anyhow!("Going live again replaced this attempt.")));
+                            }
+                            // Unpaused straight away, as Discord-video-stream
+                            // does: viewers of a paused stream get no video.
+                            match gateway.create_stream(&guild, &channel).await {
+                                Ok(()) => gateway.pause_stream(&key, false).await,
+                                Err(error) => Err(error),
+                            }
+                        }
+                    }
+                    Request::Watch { stream_key, reply } => {
+                        match stream::parse(&stream_key) {
+                            Some((guild, channel, _)) if tracker.voice_channel(guild) == Some(channel) => {
+                                let guild = guild.to_owned();
+                                stream_deadline.as_mut().reset(tokio::time::Instant::now() + JOIN_TIMEOUT);
+                                let waiting = PendingStream { guild, reply, opening: Opening::default() };
+                                if let Some(previous) = openings.insert(stream_key.clone(), waiting) {
+                                    let _ = previous.reply.send(Err(anyhow!("Watching again replaced this attempt.")));
+                                }
+                                gateway.watch_stream(&stream_key).await
+                            }
+                            Some(_) => {
+                                let _ = reply.send(Err(anyhow!("Join the voice channel to watch its streams.")));
+                                Ok(())
+                            }
+                            None => {
+                                let _ = reply.send(Err(anyhow!("Talk can only watch streams in server voice channels.")));
+                                Ok(())
+                            }
+                        }
+                    }
+                    Request::EndStream { stream_key } => {
+                        if let Some(waiting) = openings.remove(&stream_key) {
+                            let _ = waiting.reply.send(Err(anyhow!("The stream was stopped before it started.")));
+                        }
+                        gateway.delete_stream(&stream_key).await
+                    }
+                    Request::PauseStream { stream_key, paused } => {
+                        gateway.pause_stream(&stream_key, paused).await
+                    }
                     Request::Members { guild, users } => {
                         // Discord answers at most 100 users per request.
                         let mut sent = Ok(());
@@ -552,6 +727,9 @@ async fn connected_session(
                     });
                 }
             }
+            () = &mut stream_deadline, if !openings.is_empty() => {
+                fail_streams(&mut openings, "Discord didn't assign a stream server. Try again.");
+            }
             () = &mut deadline, if pending.is_some() => {
                 if let Some(pending) = pending.take() {
                     let _ = pending.reply.send(Err(anyhow!("Discord didn't assign a voice server. Try again.")));
@@ -564,6 +742,7 @@ async fn connected_session(
                         if let Some(pending) = pending.take() {
                             let _ = pending.reply.send(Err(anyhow!("Discord disconnected while joining voice.")));
                         }
+                        fail_streams(&mut openings, "Discord disconnected while opening the stream.");
                         return Ended::Failed(error);
                     }
                 };
@@ -611,6 +790,9 @@ async fn connected_session(
                 if tracker.apply(&event.name, &event.data) {
                     shared.snapshots.send_replace(tracker.snapshot());
                 }
+                if !openings.is_empty() && event.name.starts_with("STREAM_") {
+                    open_streams(&mut openings, &tracker, &event.name, &event.data);
+                }
             }
         }
     }
@@ -618,8 +800,11 @@ async fn connected_session(
 
 struct VoiceEntry {
     channel: String,
+    /// The voice session, which a stream connection reuses.
+    session: Option<String>,
     muted: bool,
     deafened: bool,
+    streaming: bool,
 }
 
 /// The account's servers and voice channels, kept current from gateway events.
@@ -803,6 +988,19 @@ impl Tracker {
         }
     }
 
+    /// The voice channel this account is in, in `guild`.
+    fn voice_channel(&self, guild: &str) -> Option<&str> {
+        self.voice
+            .get(&(guild.to_owned(), self.me.clone()))
+            .map(|entry| entry.channel.as_str())
+    }
+
+    fn voice_session(&self, guild: &str) -> Option<&str> {
+        self.voice
+            .get(&(guild.to_owned(), self.me.clone()))
+            .and_then(|entry| entry.session.as_deref())
+    }
+
     fn voice_state(&mut self, guild: &str, state: &Value) {
         let Some(user) = state["user_id"].as_str() else {
             return;
@@ -815,8 +1013,10 @@ impl Tracker {
                     key,
                     VoiceEntry {
                         channel: channel.to_owned(),
+                        session: state["session_id"].as_str().map(str::to_owned),
                         muted: flag("self_mute") || flag("mute"),
                         deafened: flag("self_deaf") || flag("deaf"),
+                        streaming: flag("self_stream"),
                     },
                 );
             }
@@ -885,6 +1085,7 @@ impl Tracker {
                     avatar: names.avatar(Some(guild), user),
                     muted: entry.muted,
                     deafened: entry.deafened,
+                    streaming: entry.streaming,
                 });
         }
         for members in voice.values_mut() {
@@ -1008,6 +1209,29 @@ fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Value) -> Vec
             .collect(),
         // Answers to the member requests history makes.
         "GUILD_MEMBERS_CHUNK" => vec![Live::Names],
+        "STREAM_CREATE" | "STREAM_UPDATE" => data["stream_key"]
+            .as_str()
+            .map(|key| Live::StreamUpdated {
+                stream_key: key.to_owned(),
+                viewers: data["viewer_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+                paused: data["paused"].as_bool().unwrap_or(false),
+            })
+            .into_iter()
+            .collect(),
+        "STREAM_DELETE" => data["stream_key"]
+            .as_str()
+            .map(|key| Live::StreamEnded {
+                stream_key: key.to_owned(),
+                reason: data["reason"].as_str().map(str::to_owned),
+            })
+            .into_iter()
+            .collect(),
         _ => vec![],
     }
 }
