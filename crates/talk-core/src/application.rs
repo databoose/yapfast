@@ -257,6 +257,8 @@ pub enum Action {
     ShowHiddenChannels(bool),
     /// Mark Discord channels read on Discord when reading them in Talk.
     SyncDiscordReads(bool),
+    /// Accept the selected Discord message request, or ignore it.
+    AnswerRequest(bool),
 }
 
 /// An adapter executes these effects with the shared backend, then applies its events.
@@ -299,6 +301,9 @@ struct Shown {
 /// Discord channels whose last view is kept, as many as the Discord side
 /// keeps loaded.
 const SHOWN: usize = 16;
+/// DM pictures downloaded for the list. An account can have hundreds of
+/// DMs, and the ones further down keep their initials.
+const LISTED_PICTURES: usize = 50;
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
@@ -331,8 +336,8 @@ impl Application {
     }
 
     /// Asks for the server icons and avatars on screen that weren't asked
-    /// for before: the rail, the people in the listed voice channels, the
-    /// call, the open timeline and its member list.
+    /// for before: the rail, the first DMs listed, the people in the listed
+    /// voice channels, the call, the open timeline and its member list.
     fn request_pictures(&mut self) -> Option<Effect> {
         let state = &self.state;
         let shown = state
@@ -340,6 +345,19 @@ impl Application {
             .iter()
             .filter_map(|server| server.icon.as_deref())
             .chain(state.account_avatar.as_deref())
+            .chain(
+                state
+                    .rooms
+                    .iter()
+                    .filter(|room| state.in_scope(room))
+                    .filter_map(|room| room.avatar.as_deref())
+                    .take(LISTED_PICTURES),
+            )
+            .chain(
+                state
+                    .selected_room()
+                    .and_then(|room| room.avatar.as_deref()),
+            )
             .chain(
                 state
                     .rooms
@@ -798,6 +816,15 @@ impl Application {
                 self.state.sync_discord_reads = sync;
                 vec![]
             }
+            Action::AnswerRequest(accept) => match self.state.selected_room() {
+                Some(room) if room.request && self.state.discord_online => {
+                    vec![Effect::Backend(Command::AnswerRequest {
+                        room: room.id.clone(),
+                        accept,
+                    })]
+                }
+                _ => vec![],
+            },
             Action::Voice(voice::Command::Join(id)) => self.dispatch(Action::RequestJoinVoice(id)),
             Action::Voice(command) => self.voice_command(command),
         }
@@ -1017,11 +1044,12 @@ impl Application {
             .rooms
             .iter()
             .find(|room| Some(&room.id) == remembered && self.state.in_scope(room))
+            // A message request opens only when chosen.
             .or_else(|| {
                 self.state
                     .rooms
                     .iter()
-                    .find(|room| self.state.in_scope(room))
+                    .find(|room| self.state.in_scope(room) && !room.request)
             })
             .map(|room| room.id.clone());
         if let Some(id) = next {
@@ -1613,7 +1641,9 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         locked: false,
         read_only: false,
         category: String::new(),
+        request: false,
         people: vec![],
+        avatar: None,
     }
 }
 
@@ -2660,5 +2690,111 @@ mod tests {
             ..snapshot(false)
         }));
         assert!(!app.state.can_write(), "sending waits for Discord");
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_dms_list_with_their_pictures_and_read_when_shown() {
+        use talk_discord::service::{Conversation, Snapshot, Status};
+        let mut app = connected();
+        app.state.trusted = false;
+        let effects = app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            conversations: vec![
+                Conversation {
+                    id: "30".into(),
+                    name: "Ann".into(),
+                    avatar: Some("ann.png".into()),
+                    people: 2,
+                    unread: true,
+                    mentions: 2,
+                    ..Default::default()
+                },
+                Conversation {
+                    id: "31".into(),
+                    name: "Weekend".into(),
+                    group: true,
+                    people: 3,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }));
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "ann.png")
+            )),
+            "the DM list's avatars download"
+        );
+        let listed: Vec<_> = app
+            .state
+            .rooms
+            .iter()
+            .filter(|room| app.state.in_scope(room) && discord::is_discord(&room.id))
+            .map(|room| (room.id.as_str(), room.members, room.mentions))
+            .collect();
+        assert_eq!(
+            listed,
+            [("discord:@me:30", 2, 2), ("discord:@me:31", 3, 0)],
+            "Discord's order, after the Matrix DMs"
+        );
+        let effects = app.dispatch(Action::SelectRoom("discord:@me:30".into()));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::Open(id))] if id == "discord:@me:30"
+        ));
+        let effects = app.apply(Event::Timeline {
+            room: "discord:@me:30".into(),
+            messages: vec![],
+        });
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::MarkDiscordRead { room, .. })] if room == "discord:@me:30"
+        ));
+        assert!(app.state.can_write(), "Discord DMs don't need Matrix trust");
+        assert!(!app.state.lists_members(), "a DM lists no members");
+        app.dispatch(Action::SelectRoom("discord:@me:31".into()));
+        assert!(app.state.lists_members(), "a group DM does");
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_message_requests_are_answered_not_written_to() {
+        use talk_discord::service::{Conversation, Snapshot, Status};
+        let snapshot = |request: bool| Snapshot {
+            status: Status::Online,
+            conversations: vec![Conversation {
+                id: "40".into(),
+                name: "Erin".into(),
+                people: 2,
+                request,
+                unread: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut app = Application::default();
+        app.apply(Event::Discord(snapshot(true)));
+        assert_eq!(app.state.selected, None, "a request opens only when chosen");
+        let room = &app.state.rooms[0];
+        assert!(room.request && room.read_only && room.category == discord::REQUESTS);
+        app.dispatch(Action::SelectRoom("discord:@me:40".into()));
+        app.apply(Event::Timeline {
+            room: "discord:@me:40".into(),
+            messages: vec![],
+        });
+        assert!(!app.state.can_write(), "replying waits for accepting");
+        let effects = app.dispatch(Action::AnswerRequest(true));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::AnswerRequest { room, accept: true })] if room == "discord:@me:40"
+        ));
+        app.apply(Event::Discord(snapshot(false)));
+        assert!(app.state.can_write(), "an accepted request is a DM");
+        assert!(
+            app.dispatch(Action::AnswerRequest(false)).is_empty(),
+            "only requests are answered"
+        );
     }
 }

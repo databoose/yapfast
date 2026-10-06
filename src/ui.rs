@@ -682,13 +682,37 @@ impl Adapter {
         let mut listed_text = false;
         let mut listed_voice = false;
         let mut category: Option<&str> = None;
-        let rows: Vec<_> = state
+        let mut listed: Vec<_> = state
             .rooms
             .iter()
             .filter(|room| state.in_scope(room) && room.name.to_lowercase().contains(&query))
+            .collect();
+        let direct = state.navigation == Navigation::DirectMessages;
+        if direct {
+            // Message requests come first, as in Discord, and spam last.
+            listed.sort_by_key(|room| match room.category.as_str() {
+                discord::REQUESTS => 0,
+                discord::SPAM => 2,
+                _ => 1,
+            });
+        }
+        let counted = |name: &str| listed.iter().filter(|room| room.category == name).count();
+        let (requests, spam) = (counted(discord::REQUESTS), counted(discord::SPAM));
+        let rows: Vec<_> = listed
+            .into_iter()
             .map(|room| {
-                let heading = if state.navigation == Navigation::DirectMessages {
-                    String::new()
+                let heading = if direct {
+                    // Headings only once requests are listed.
+                    match (category.replace(&room.category), room.category.as_str()) {
+                        (previous, discord::REQUESTS) if previous != Some(discord::REQUESTS) => {
+                            format!("MESSAGE REQUESTS — {requests}")
+                        }
+                        (previous, discord::SPAM) if previous != Some(discord::SPAM) => {
+                            format!("SPAM — {spam}")
+                        }
+                        (Some(discord::REQUESTS), "") => "DIRECT MESSAGES".into(),
+                        _ => String::new(),
+                    }
                 } else if discord::is_discord(&room.id) {
                     // Discord channels sit under their categories, as in Discord.
                     if category.replace(&room.category) != Some(&room.category) {
@@ -725,6 +749,8 @@ impl Adapter {
                     direct: room.direct,
                     initial: initial(&room.name),
                     tint: tint(&room.id),
+                    picture: cached_picture(&mut self.pictures, state, room.avatar.as_deref()),
+                    discord: room.direct && discord::is_discord(&room.id),
                     locked: room.locked,
                     people: if room.people.is_empty() {
                         ModelRc::default()
@@ -790,8 +816,24 @@ impl Adapter {
         window.set_room_selected(room.is_some());
         window.set_room_name(room.map_or("", |room| room.name.as_str()).into());
         window.set_room_direct(room.is_some_and(|room| room.direct));
+        window.set_room_request(room.is_some_and(|room| room.request));
+        window.set_request_title(
+            match room {
+                Some(room) if room.category == discord::SPAM => {
+                    format!("Discord thinks {} may be spam", room.name)
+                }
+                Some(room) => format!("{} wants to message you", room.name),
+                None => String::new(),
+            }
+            .into(),
+        );
         window.set_room_initial(room.map_or(SharedString::default(), |room| initial(&room.name)));
         window.set_room_tint(room.map_or(slint::Color::default(), |room| tint(&room.id)));
+        window.set_room_picture(cached_picture(
+            &mut self.pictures,
+            state,
+            room.and_then(|room| room.avatar.as_deref()),
+        ));
         window.set_room_icon(if room.is_some_and(|room| room.voice) {
             self.icons.voice.clone()
         } else if room.is_some_and(|room| room.direct) {
@@ -975,6 +1017,8 @@ impl Adapter {
                 "Choose a DM or server channel to write a message."
             } else if state.preview {
                 "Enter to send locally."
+            } else if room.is_some_and(|room| room.request) {
+                "Discord · not end-to-end encrypted."
             } else if discord_room && room.is_some_and(|room| room.read_only || room.locked) {
                 "You can't send messages in this Discord channel."
             } else if discord_room && !state.discord_online {
@@ -1307,6 +1351,8 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     );
     bind!(on_send, Action::Send);
     bind!(on_earlier, Action::Earlier);
+    bind!(on_accept_request, Action::AnswerRequest(true));
+    bind!(on_ignore_request, Action::AnswerRequest(false));
     bind!(on_leave_voice, Action::Voice(voice::Command::Leave));
     bind!(on_confirm_switch, Action::ConfirmVoiceSwitch);
     bind!(on_cancel_switch, Action::CancelVoiceSwitch);

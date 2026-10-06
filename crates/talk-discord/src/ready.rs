@@ -13,7 +13,9 @@ use crate::client;
 const PICTURE_SIZE: u32 = 128;
 
 const GUILD_TEXT: u64 = 0;
+const DM: u64 = 1;
 const GUILD_VOICE: u64 = 2;
+const GROUP_DM: u64 = 3;
 const GUILD_CATEGORY: u64 = 4;
 const GUILD_ANNOUNCEMENT: u64 = 5;
 const GUILD_STAGE_VOICE: u64 = 13;
@@ -83,6 +85,74 @@ pub enum Access {
     Locked,
     /// Hidden from this account by the server's permissions.
     Hidden,
+}
+
+/// Where DMs and group DMs sit in place of a server, as in Discord's links.
+pub const PRIVATE: &str = "@me";
+
+/// A DM or group DM.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Private {
+    pub id: String,
+    pub group: bool,
+    /// A group DM's own name, if it was given one.
+    pub name: Option<String>,
+    /// The address of a group DM's icon, if it has one.
+    pub icon: Option<String>,
+    /// Everyone in it besides this account.
+    pub recipients: Vec<String>,
+    /// A message request: someone outside this account's DMs wrote, and it
+    /// waits to be accepted or ignored.
+    pub request: bool,
+    /// A request Discord thinks is spam.
+    pub spam: bool,
+    /// The rest are set when the service publishes it, as for [`Channel`].
+    pub unread: bool,
+    pub mentions: u64,
+    pub muted: bool,
+}
+
+/// A DM or group DM, or a message request, from a channel object.
+pub fn private_channel(channel: &Value) -> Option<Private> {
+    let group = match channel["type"].as_u64() {
+        Some(DM) => false,
+        Some(GROUP_DM) => true,
+        _ => return None,
+    };
+    let spam = channel["is_spam"] == true;
+    let id = channel["id"].as_str()?.to_owned();
+    // With deduplicated users, READY gives ids and lists the users apart.
+    let recipients = match channel["recipient_ids"].as_array() {
+        Some(ids) => ids
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        None => channel["recipients"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|user| user["id"].as_str().map(str::to_owned))
+            .collect(),
+    };
+    Some(Private {
+        group,
+        name: channel["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned),
+        icon: channel["icon"].as_str().map(|hash| {
+            format!(
+                "{}/channel-icons/{id}/{hash}.png?size={PICTURE_SIZE}",
+                cdn()
+            )
+        }),
+        recipients,
+        request: spam || channel["is_message_request"] == true,
+        spam,
+        id,
+        ..Default::default()
+    })
 }
 
 /// A channel's change to the permissions of one role or member.

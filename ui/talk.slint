@@ -426,6 +426,9 @@ component ChannelRow inherits Rectangle {
     in property <bool> person;
     in property <string> initial;
     in property <color> tint;
+    in property <image> picture;
+    /// Marks a Discord DM, as the rail marks Discord servers.
+    in property <bool> discord;
     in property <bool> selected;
     in property <bool> unread;
     in property <string> badge;
@@ -450,7 +453,16 @@ component ChannelRow inherits Rectangle {
     }
     HorizontalLayout {
         padding-left: 8px; padding-right: 8px; spacing: root.person ? 12px : 8px;
-        if root.person: Middle { Avatar { size: 32px; initial: root.initial; tint: root.tint; } }
+        if root.person: Middle {
+            Avatar {
+                size: 32px; initial: root.initial; tint: root.tint; picture: root.picture;
+                if root.discord: Rectangle {
+                    x: 20px; y: 20px; width: 14px; height: 14px; border-radius: 7px;
+                    background: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : Theme.sidebar;
+                    Rectangle { width: 9px; height: 9px; border-radius: 4.5px; background: #5865f2; }
+                }
+            }
+        }
         if !root.person: Image { source: root.icon; width: 20px; image-fit: contain; colorize: root.selected || root.unread ? Theme.secondary : Theme.faint; }
         Text {
             text: root.text; color: root.ink; font-size: 16px; font-weight: root.unread || root.selected ? 700 : 500;
@@ -800,6 +812,8 @@ component LivePill inherits Rectangle {
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
+    /// A DM's avatar or group icon, and whether it's a Discord DM.
+    picture: image, discord: bool,
     /// Listed but not open to join, such as a Discord channel the account's roles keep it out of.
     locked: bool,
     /// Who is in a Discord voice channel, shown without joining it.
@@ -873,6 +887,7 @@ export component TalkWindow inherits Window {
     in property <bool> room-direct;
     in property <string> room-initial;
     in property <color> room-tint;
+    in property <image> room-picture;
     in property <string> members;
     /// The open room lists its members: a text channel or a group DM.
     in property <bool> members-available;
@@ -894,6 +909,12 @@ export component TalkWindow inherits Window {
     in property <bool> room-encrypted;
     in property <bool> voice-room;
     in property <bool> composer-enabled;
+    /// The selected conversation is a Discord message request, introduced by
+    /// the title; it's answered instead of written to.
+    in property <bool> room-request;
+    in property <string> request-title;
+    callback accept-request;
+    callback ignore-request;
     in property <bool> can-send;
     in property <bool> sending;
     in property <bool> loading-history;
@@ -1556,8 +1577,9 @@ export component TalkWindow inherits Window {
                                         }
                                         ChannelRow {
                                             text: room.name;
-                                            label: room.name + (room.locked ? ", locked" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                                            label: room.name + (room.discord ? ", Discord" : "") + (room.locked ? ", locked" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                                             icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                                            picture: room.picture; discord: room.discord;
                                             selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                                             clicked => { root.select-room(room.id); }
                                         }
@@ -1725,7 +1747,7 @@ export component TalkWindow inherits Window {
                     height: 48px;
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 16px; spacing: 10px;
-                        if root.room-direct: Middle { Avatar { size: 26px; initial: root.room-initial; tint: root.room-tint; } }
+                        if root.room-direct: Middle { Avatar { size: 26px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; } }
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
                         Text { text: root.room-selected ? root.room-name : root.sidebar-title; color: root.room-selected ? Theme.text : Theme.secondary; font-size: 16px; font-weight: 700; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                         if root.members-available: Middle {
@@ -2204,7 +2226,7 @@ export component TalkWindow inherits Window {
                             if root.room-selected && root.messages.length == 0: VerticalLayout {
                                 width: parent.width; height: parent.height;
                                 padding: 24px; spacing: 8px; alignment: end;
-                                if root.room-selected && root.room-ready && root.room-direct: Avatar { size: 72px; initial: root.room-initial; tint: root.room-tint; }
+                                if root.room-selected && root.room-ready && root.room-direct: Avatar { size: 72px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; }
                                 if root.room-selected && root.room-ready && !root.room-direct: Rectangle {
                                     width: 68px; height: 68px; border-radius: 34px; background: Theme.raised;
                                     Image { source: root.room-icon; width: 36px; height: 36px; colorize: Theme.text; }
@@ -2227,6 +2249,20 @@ export component TalkWindow inherits Window {
                             max-height: root.voice-room || !root.room-selected ? 0px : 100000px;
                             padding-left: 16px; padding-right: 16px; padding-top: 0px; padding-bottom: 0px;
                             spacing: 0px; vertical-stretch: 0;
+                            if root.room-request: Rectangle {
+                                background: Theme.field; border-radius: 10px;
+                                HorizontalLayout {
+                                    padding: 12px; padding-left: 16px; spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                        // One line each: a wrapped line would spill over the hint below.
+                                        Text { text: root.request-title; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
+                                        Text { text: "Accept to reply. Ignoring removes it without telling them."; color: Theme.secondary; font-size: 14px; overflow: elide; }
+                                    }
+                                    Middle { ActionButton { text: "Ignore"; label: "Ignore the message request"; clicked => { root.ignore-request(); } } }
+                                    Middle { ActionButton { text: "Accept"; label: "Accept the message request"; primary: true; clicked => { root.accept-request(); } } }
+                                }
+                            }
                             if root.compose-label != "": Rectangle {
                                 height: 36px; background: Theme.sidebar;
                                 border-top-left-radius: 10px; border-top-right-radius: 10px;
@@ -2238,7 +2274,9 @@ export component TalkWindow inherits Window {
                                 }
                             }
                             Rectangle {
-                                min-height: 48px; background: Theme.field;
+                                visible: !root.room-request;
+                                min-height: root.room-request ? 0px : 48px; max-height: root.room-request ? 0px : 100000px;
+                                background: Theme.field;
                                 border-radius: 10px;
                                 border-top-left-radius: root.compose-label != "" ? 0px : 10px;
                                 border-top-right-radius: root.compose-label != "" ? 0px : 10px;

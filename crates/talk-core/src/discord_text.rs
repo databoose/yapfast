@@ -997,6 +997,33 @@ pub fn command(
         }
         return None;
     }
+    if let Command::AnswerRequest { room, accept } = command {
+        match (discord, discord::parse_room(&room)) {
+            (Some(discord), Some((_, channel))) => {
+                let (discord, events, channel) =
+                    (discord.clone(), events.clone(), channel.to_owned());
+                // The DM list changes when Discord confirms it.
+                tokio::spawn(async move {
+                    if let Err(error) = discord.answer_request(&channel, accept).await {
+                        let _ = events.send(Event::RoomError {
+                            room,
+                            message: format!(
+                                "Could not {} the message request: {error}",
+                                if accept { "accept" } else { "ignore" }
+                            ),
+                        });
+                    }
+                });
+            }
+            _ => {
+                let _ = events.send(Event::RoomError {
+                    room,
+                    message: "Discord isn't linked on this device.".into(),
+                });
+            }
+        }
+        return None;
+    }
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }

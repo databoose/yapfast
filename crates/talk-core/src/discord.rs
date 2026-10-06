@@ -1,13 +1,14 @@
-//! Discord servers and channels in Talk's lists. They appear as servers and
-//! channels with ids that can't collide with Matrix ones, so the rail, channel
-//! list, timeline, voice dock and the one-call rule cover them. The ids are
-//! known in every build; listing needs the `discord` feature.
+//! Discord servers, channels and DMs in Talk's lists. They appear as servers,
+//! channels and DMs with ids that can't collide with Matrix ones, so the
+//! rail, channel list, DM list, timeline, voice dock and the one-call rule
+//! cover them. A DM's id takes `@me` for its server, as in Discord's links.
+//! The ids are known in every build; listing needs the `discord` feature.
 #[cfg(feature = "discord")]
 use std::sync::Arc;
 
 #[cfg(feature = "discord")]
 use talk_discord::{
-    ready::Access,
+    ready::{Access, PRIVATE},
     service::{Discord, Snapshot},
 };
 #[cfg(feature = "discord")]
@@ -20,6 +21,9 @@ use tokio::{
 use crate::chat::{self, ChatRoom, ChatServer, Event, VoicePerson};
 
 const PREFIX: &str = "discord:";
+/// The categories message requests are listed under in the DM list.
+pub const REQUESTS: &str = "Message requests";
+pub const SPAM: &str = "Spam";
 /// Icons and avatars are small; anything larger isn't one.
 #[cfg(feature = "discord")]
 const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
@@ -47,14 +51,40 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(feature = "discord")]
-/// The servers and channels to list, in Discord's order: by category, text
-/// channels before voice channels in each. They stay listed while Discord
-/// reconnects; joining and sending wait for the connection. Voice channels
-/// this account can see but not join are listed locked, as in Discord, and
-/// text channels it can't send in are read-only. Channels hidden from it are
-/// listed locked only with `show_hidden`.
+/// The servers, channels and DMs to list, in Discord's order: by category,
+/// text channels before voice channels in each, and the latest DM first.
+/// They stay listed while Discord reconnects; joining and sending wait for
+/// the connection. Voice channels this account can see but not join are
+/// listed locked, as in Discord, and text channels it can't send in are
+/// read-only. Channels hidden from it are listed locked only with
+/// `show_hidden`.
 pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<ChatServer>) {
-    let mut rooms = Vec::new();
+    let mut rooms: Vec<_> = snapshot
+        .conversations
+        .iter()
+        .map(|dm| ChatRoom {
+            id: room_id(PRIVATE, &dm.id),
+            name: dm.name.clone(),
+            direct: true,
+            voice: false,
+            encrypted: false,
+            members: dm.people as u64,
+            unread: u64::from(dm.unread),
+            mentions: dm.mentions,
+            locked: false,
+            // Replying waits until the request is accepted.
+            read_only: dm.request,
+            category: match (dm.request, dm.spam) {
+                (_, true) => SPAM,
+                (true, false) => REQUESTS,
+                _ => "",
+            }
+            .into(),
+            request: dm.request,
+            people: vec![],
+            avatar: dm.avatar.clone(),
+        })
+        .collect();
     let mut servers = Vec::new();
     for server in &snapshot.servers {
         let text = server.text_channels.iter().map(|channel| (false, channel));
@@ -95,6 +125,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     locked: channel.access != Access::Join,
                     read_only: false,
                     category,
+                    request: false,
                     people: snapshot
                         .voice
                         .get(&channel.id)
@@ -109,6 +140,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                             streaming: member.streaming,
                         })
                         .collect(),
+                    avatar: None,
                 }
             } else {
                 ChatRoom {
@@ -129,7 +161,9 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     locked: channel.access == Access::Hidden,
                     read_only: channel.access == Access::Locked,
                     category,
+                    request: false,
                     people: vec![],
+                    avatar: None,
                 }
             });
             channels.push(id);
