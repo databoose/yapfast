@@ -1,5 +1,9 @@
 # First chat window
 
+This is the original GPUI surface brief. The current Slint brief is
+`.impeccable/surfaces/src-ui-rs.md`; [the migration report](slint-client.md)
+records the new implementation and validation.
+
 Mode: Operate. Native Linux and Windows desktop, implemented in Rust and GPUI.
 
 Friends should be able to try the layout immediately, then sign into an existing

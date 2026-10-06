@@ -16,6 +16,8 @@ The local changes support native device tracks and cancellable joins:
   cancellation it drops connection work, removes any published Matrix membership,
   and waits for bounded cleanup before returning. The existing join API remains
   available.
+- `Call::reassert_local_key_index` exposes the connection method above. Talk
+  calls it on LiveKit's `LocalTrackRepublished` event.
 
 Without this, unmuting for the first time after a key rotation publishes a cryptor
 at index zero. A late joiner holds only the newer index and hears silence.
@@ -25,6 +27,17 @@ mute, deafen and normal leave run in separate processes using virtual devices.
 The same test holds an authorization request open, cancels joining, verifies that
 Leave completes within five seconds and that the other account loses the pending
 participant, then joins again successfully.
+
+A full LiveKit reconnect also republishes local tracks with new frame cryptors
+at index zero, so remote participants hear silence once the key has rotated.
+`testing/test_voice_reliability.py` (republish scenario) rotates Alice's key,
+interrupts Bob's network for 30 seconds, and checks that Alice still receives
+Bob's tone after the reconnect.
+
+`connect_e2ee` also requests LiveKit's single peer connection mode. With separate
+publisher and subscriber connections, the subscriber reached `Connected` about one
+second after the publisher on every join, which made up most of the join time.
+`testing/join_voice.py` measures joins with one process per participant.
 
 Keep the remaining MatrixRTC crates and Matrix SDK revision pinned. Remove this
 copy when an upstream native publication API provides the same key-index handling and partial-join cleanup.

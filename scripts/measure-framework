@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Measure one isolated application process group. Linux PSS is the primary RAM metric."""
+import argparse
+import json
+import os
+from pathlib import Path
+import signal
+import statistics
+import subprocess
+import tempfile
+import time
+import uuid
+import xml.etree.ElementTree as ET
+
+
+def process_table():
+    table = {}
+    for directory in Path('/proc').iterdir():
+        if not directory.name.isdecimal():
+            continue
+        try:
+            fields = (directory / 'stat').read_text().rsplit(')', 1)[1].split()
+            table[int(directory.name)] = {
+                'ppid': int(fields[1]), 'pgrp': int(fields[2]), 'session': int(fields[3]),
+                'ticks': int(fields[11]) + int(fields[12]), 'start_ticks': int(fields[19]),
+                'reaped_child_ticks': int(fields[13]) + int(fields[14]),
+                'threads': int(fields[17]),
+            }
+        except (OSError, ValueError, IndexError):
+            pass
+    return table
+
+
+def members(root_pid, token, table):
+    found = {pid for pid, info in table.items() if info['pgrp'] == root_pid or info['session'] == root_pid}
+    found.add(root_pid)
+    while True:
+        children = {pid for pid, info in table.items() if info['ppid'] in found}
+        if children <= found:
+            break
+        found.update(children)
+    # Engines may reparent or create another session. Only this run's inherited
+    # marker admits such processes; unrelated browser processes are excluded.
+    marker = b'TALK_FRAMEWORK_RUN_ID=' + token.encode() + b'\0'
+    for pid in table.keys() - found:
+        try:
+            if marker in Path(f'/proc/{pid}/environ').read_bytes():
+                found.add(pid)
+        except OSError:
+            pass
+    return found & table.keys()
+
+
+def memory(pid):
+    counters = {}
+    for line in Path(f'/proc/{pid}/smaps_rollup').read_text().splitlines():
+        key, _, value = line.partition(':')
+        if key in ('Rss', 'Pss', 'Private_Clean', 'Private_Dirty', 'Private_Hugetlb', 'Swap', 'SwapPss'):
+            counters[key] = int(value.split()[0])
+    return {
+        'rss_mib': counters.get('Rss', 0) / 1024,
+        'pss_mib': counters.get('Pss', 0) / 1024,
+        'private_resident_mib': sum(counters.get(key, 0) for key in ('Private_Clean', 'Private_Dirty', 'Private_Hugetlb')) / 1024,
+        'swap_mib': counters.get('Swap', 0) / 1024,
+        'swap_pss_mib': counters.get('SwapPss', 0) / 1024,
+    }
+
+
+def nvidia_memory(pids):
+    document = ET.fromstring(subprocess.check_output(['nvidia-smi', '-q', '-x'], timeout=3))
+    total = 0.0
+    for process in document.findall('gpu/processes/process_info'):
+        if int(process.findtext('pid', '-1')) in pids:
+            value = process.findtext('used_memory', '')
+            if not value.endswith(' MiB'):
+                raise RuntimeError('NVIDIA process memory is unavailable: ' + value)
+            total += float(value.split()[0])
+    return total
+
+
+def summarize(samples):
+    result = {}
+    for key in ('pss_mib', 'rss_mib', 'private_resident_mib', 'swap_mib', 'swap_pss_mib', 'cpu_percent_one_core', 'threads', 'process_count'):
+        values = [sample[key] for sample in samples]
+        result[key] = {'mean': statistics.mean(values), 'median': statistics.median(values), 'peak': max(values)}
+    if samples and 'nvidia_framebuffer_mib' in samples[0]:
+        values = [sample['nvidia_framebuffer_mib'] for sample in samples]
+        result['nvidia_framebuffer_mib'] = {'mean': statistics.mean(values), 'median': statistics.median(values), 'peak': max(values)}
+    return result
+
+
+def run(args):
+    def interrupted(signum, _frame):
+        raise SystemExit(128 + signum)
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, interrupted)
+    if os.environ.get('TALK_FRAMEWORK_ISOLATED_DISPLAY') != '1':
+        raise SystemExit('Use scripts/run-framework-isolated; desktop automation is prohibited.')
+    command = args.command
+    if command and command[0] == '--':
+        command = command[1:]
+    if not command:
+        raise SystemExit('An executable command is required after --.')
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    environment = dict(os.environ, TALK_FRAMEWORK_RUN_ID=token)
+    log_path = args.output.with_suffix('.app.log')
+    samples = []
+    warmup_samples = []
+    identities = {}
+    process = None
+    started = time.monotonic()
+    with log_path.open('wb') as log:
+        process = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True)
+        try:
+            previous_tree_ticks = 0
+            previous_time = started
+            cpu_accounting_warnings = []
+            deadline = started + args.warmup + args.seconds
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(f'App exited before measurement finished: {process.returncode}; see {log_path}')
+                time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+                now = time.monotonic()
+                table = process_table()
+                pids = members(process.pid, token, table)
+                totals = {key: 0.0 for key in ('pss_mib', 'rss_mib', 'private_resident_mib', 'swap_mib', 'swap_pss_mib')}
+                tree_ticks = sum(table[pid]['ticks'] + table[pid]['reaped_child_ticks'] for pid in pids)
+                ticks = tree_ticks - previous_tree_ticks
+                if ticks < 0:
+                    cpu_accounting_warnings.append({'elapsed_seconds': now - started, 'lost_ticks': -ticks})
+                ticks = max(0, ticks)
+                previous_tree_ticks = tree_ticks
+                observed = []
+                threads = 0
+                for pid in sorted(pids):
+                    try:
+                        counters = memory(pid)
+                        info = table[pid]
+                        threads += info['threads']
+                        for key in totals:
+                            totals[key] += counters[key]
+                        if pid not in identities:
+                            identities[pid] = {'pid': pid, 'start_ticks': info['start_ticks'], 'name': Path(f'/proc/{pid}/comm').read_text().strip()}
+                        observed.append({'pid': pid, **counters})
+                    except OSError:
+                        pass
+                sample = {'elapsed_seconds': now - started, **totals,
+                    'cpu_percent_one_core': ticks / os.sysconf('SC_CLK_TCK') / (now - previous_time) * 100,
+                    'process_count': len(observed), 'threads': threads, 'processes': observed}
+                if args.nvidia_memory:
+                    sample['nvidia_framebuffer_mib'] = nvidia_memory(pids)
+                (samples if previous_time - started >= args.warmup else warmup_samples).append(sample)
+                previous_time = now
+                # Preserve partial evidence if a toolkit crashes or the outer run times out.
+                args.output.with_suffix('.samples.json').write_text(json.dumps({'warmup': warmup_samples, 'measured': samples}, indent=2))
+            report = {
+                'candidate': args.candidate, 'configuration': args.configuration,
+                'scenario': os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
+                'actual_view': 'chat' if args.candidate in ('slint', 'iced') and os.environ.get('TALK_FRAMEWORK_SCENARIO') == 'input' else os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
+                'fixture': 'talk-chat-fixture-v1', 'build_mode': 'release',
+                'command': command, 'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
+                'post_window_grace_seconds': args.post_window_grace,
+                'started_monotonic_ns': int(started * 1_000_000_000),
+                'interval_seconds': args.interval, 'summary': summarize(samples),
+                'membership': list(identities.values()),
+                'cpu_accounting': 'Cumulative live process-tree self CPU plus reaped-child CPU, including zombie CPU before wait.',
+                'cpu_accounting_warnings': cpu_accounting_warnings,
+                'raw_samples': args.output.with_suffix('.samples.json').name,
+                'app_log': log_path.name,
+                'display': {'wayland': os.environ.get('WAYLAND_DISPLAY'), 'x11': os.environ.get('DISPLAY'),
+                    'compositor_log': os.environ.get('TALK_FRAMEWORK_COMPOSITOR_LOG')},
+                'limits': ['Short deterministic fixture screen, not synced beta idle.',
+                    'Actual presented FPS is not measured by this collector.',
+                    'NVIDIA framebuffer memory is vendor-reported per-process allocation, separate from Linux RAM PSS.' if args.nvidia_memory else 'GPU allocations are not measured by this run.',
+                    'Summed RSS may double-count shared pages; primary RAM is whole-group PSS.',
+                    'Processes that exit between samples may have unobserved final CPU or memory peaks.'],
+            }
+            args.output.write_text(json.dumps(report, indent=2))
+            if args.screenshot:
+                with tempfile.TemporaryDirectory(prefix='talk-framework-shot-') as directory:
+                    shot = subprocess.run([args.screenshot], env=dict(os.environ, XDG_PICTURES_DIR=directory),
+                        capture_output=True, text=True, timeout=10)
+                    images = list(Path(directory).glob('*.png'))
+                    if shot.returncode == 0 and len(images) == 1:
+                        target = args.output.with_suffix('.png')
+                        if args.screenshot_vflip:
+                            subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                                '-i', str(images[0]), '-vf', 'vflip', str(target)], check=True, timeout=10)
+                            report['screenshot_transform'] = 'vflip: correct NVIDIA/Weston headless capture orientation'
+                        else:
+                            target.write_bytes(images[0].read_bytes())
+                        report['screenshot'] = target.name
+                    else:
+                        report['screenshot_error'] = shot.stderr.strip() or 'No screenshot captured'
+                args.output.write_text(json.dumps(report, indent=2))
+            # Extra GPU-probe time is outside the recorded sampling window. It
+            # lets delayed query readbacks and buffered logs complete before
+            # SIGTERM; original frame timestamps still decide eligibility.
+            if args.post_window_grace:
+                time.sleep(args.post_window_grace)
+            print(json.dumps({'candidate': args.candidate, 'configuration': args.configuration, 'summary': report['summary']}, indent=2))
+        finally:
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(signum, signal.SIG_IGN)
+            table = process_table()
+            pids = members(process.pid, token, table)
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            # The parent can exit before a decoder or browser helper. Clean up
+            # all remaining processes bearing this run's marker as well.
+            remaining = members(process.pid, token, process_table())
+            for pid in remaining:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if process.poll() is None:
+                process.wait(timeout=5)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--candidate', required=True)
+    parser.add_argument('--configuration', required=True)
+    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--warmup', type=float, default=15)
+    parser.add_argument('--seconds', type=float, default=30)
+    parser.add_argument('--interval', type=float, default=1)
+    parser.add_argument('--screenshot', help='Path to Weston screenshooter; capture after sampling')
+    parser.add_argument('--screenshot-vflip', action='store_true', help='Correct an inverted compositor capture, after measurement')
+    parser.add_argument('--nvidia-memory', action='store_true', help='Collect vendor-reported GPU framebuffer memory for owned processes')
+    parser.add_argument('--post-window-grace', type=float, default=0,
+        help='Unmeasured time for asynchronous timing/log completion before termination')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    arguments = parser.parse_args()
+    if arguments.warmup < 0 or arguments.seconds <= 0 or arguments.interval <= 0 or arguments.post_window_grace < 0:
+        parser.error('Durations must be positive, with optional zero warmup.')
+    run(arguments)

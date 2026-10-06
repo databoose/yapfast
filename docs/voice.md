@@ -2,17 +2,35 @@
 
 Talk can join one encrypted voice channel at a time, wait alone, and keep the
 connection while browsing text channels, other servers and DMs. Each join starts
-muted. The sidebar footer exposes mute, deafen, audio devices and Leave. Deafen
-also mutes the microphone; undeafening keeps it muted. The voice view shows the
-participants and their mute/speaking state. Switching voice channels asks before
-leaving the current one.
+muted. The dock under the rail and sidebar exposes mute, deafen, audio devices and Leave.
+A caret beside mute and beside deafen opens a menu that chooses the input or
+output device and links to the full settings. Deafen
+also mutes the microphone; undeafening keeps it muted, while unmuting when
+deafened undeafens too. The voice view shows the
+participants and their mute/speaking state. Clicking a voice channel joins it.
+Clicking another one during a call opens a dialog that asks before leaving the
+current one. Coming back to a server that had a voice channel selected shows it
+without joining.
 
 The native LiveKit audio engine captures and plays audio through system devices.
-The gear button opens a popover to select microphone and speakers by device ID,
-without hiding the channel list in small windows. Choices last while
-Talk is open. Refresh devices after plugging in hardware. No microphone track is
+The gear button opens a popover to select microphone and speakers,
+without hiding the channel list in small windows. Talk remembers the choice in
+`devices.json` in its data folder; it never leaves the machine. A remembered
+device that is unplugged gives way to the system default until it returns.
+Refresh devices after plugging in hardware. No microphone track is
 created until Unmute. Leaving releases the audio handle, and restarting Talk
-requires joining again. Preview controls only simulate these states.
+requires joining again. Preview calls are simulated, but the preview lists and
+chooses real devices without remembering them.
+
+WebRTC's PulseAudio devices report no GUID, and LiveKit selects devices only by
+GUID, which always chose the first device. Talk names such devices `name:` and
+their reported name, and selects them by their current index instead.
+
+The input menu's level meter reads the chosen microphone locally through
+PulseAudio, raw and before any processing, only while the menu is open. It
+works while muted, outside calls and in the preview, and it never touches the
+call: muted, nothing is published or sent. It shows as "Input level" in the
+system's recording streams. Windows has no meter yet.
 
 ## Run the local demo
 
@@ -107,6 +125,54 @@ The controller shows reconnecting and allows up to 60 seconds before ending a
 degraded connection. A joining request has a 35-second deadline. Leave cancels a pending join
 immediately and waits up to ten seconds for membership cleanup; normal leaving
 has the same cleanup deadline. Crash membership expiry uses a five-minute sticky lifetime.
-Extended waiting, forced crashes, network recovery and outbound media-key
-failure reporting still need evidence. Ringing DM/group calls, video, screenshare,
-push-to-talk, device preference persistence and tray behavior are later slices.
+Ringing DM/group calls, video, screenshare, push-to-talk, input and output
+volume, and tray behavior are later slices.
+
+## Reliability
+
+Talk reports call problems instead of leaving them in the log:
+
+- A participant whose device is unverified, unknown, or violates their verified
+  identity is labelled in the voice view. Talk can't send them its audio key and
+  refuses theirs, so the sidebar also shows a warning.
+- A participant whose audio key hasn't arrived after ten seconds, or whose audio
+  can't be decrypted, is labelled. Only a failure of Talk's own key mutes the
+  microphone with an error.
+- A participant who stops sending audio after having connected is shown as
+  "Connection lost" until their membership ends.
+- If Talk was killed during a call, the next start removes the sticky membership
+  this device left, instead of others seeing it for up to five minutes.
+- After a full LiveKit reconnect, Talk restores the microphone's key index, so
+  others keep hearing it after a key rotation.
+- Join failures name the cause users can act on: a homeserver without sticky
+  events (MSC4354), a missing MatrixRTC transport, or a calling service that
+  refused the connection.
+
+`testing/test_voice_reliability.py` checks these with separate processes, the
+local stack and private PulseAudio null devices; no physical microphone is
+recorded. Bob runs in a pasta network namespace, so stopping pasta simulates a
+network loss for Bob only. Run it from the development shell after
+`scripts/test-stack up`:
+
+```sh
+python3 testing/test_voice_reliability.py --report .local/voice-reliability.json
+```
+
+The full run on 2026-10-03 ([report](measurements/2026-10-03-linux-voice-reliability.json)):
+
+| Scenario | Result |
+| --- | --- |
+| Wait alone, then a late join | Passed after 600 s alone |
+| 20 s network loss | Recovered 1.1 s after the network returned |
+| 75 s network loss | Ended after 60 s with an error; rejoined 2.0 s after the network returned, with no stale entry |
+| Full reconnect after a key rotation | Bob's tone still decoded (amplitude 107.7 before, 126.0 after) |
+| Unverified participant | Labelled, with a warning; Alice's audio unaffected |
+| Killed, then restarted | Stale membership removed 0.2 s after restart |
+| Killed, not restarted | Shown as connection lost after 21 s; removed by expiry after 298.7 s |
+| Homeserver without sticky events | Refused with the MSC4354 explanation (rerun, see below) |
+
+The first full run failed only the last check: the test proxied a homeserver
+that hides MSC4354, but Synapse's login response pointed the SDK back to the
+real address. Talk now keeps the homeserver address the user entered, which
+also stops a login response from moving Talk to an unchecked plain-HTTP
+address. Rerun on its own after that fix, the scenario passed.

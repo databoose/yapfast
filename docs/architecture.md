@@ -1,12 +1,12 @@
 # Application core and client UI
 
-Talk uses two workspace packages. The `talk` executable contains the GPUI client
+Talk uses two workspace packages. The `talk` executable contains the Slint client
 and command-line entry point. `talk-core` contains application behavior and the
 native Matrix and voice backend. Both run in the same process.
 
 ```mermaid
 flowchart LR
-    UI[GPUI widgets and rendering] -->|Actions| App[Application model]
+    UI[Slint widgets and Skia rendering] -->|Actions| App[Application model]
     App -->|State| UI
     App -->|Effects| Adapter[Client event loop]
     Adapter -->|Commands| Backend[Native Matrix and voice backend]
@@ -17,8 +17,10 @@ flowchart LR
 ## Shared application behavior
 
 [`application.rs`](../crates/talk-core/src/application.rs) owns navigation,
-remembered channels, per-room drafts, selected timelines, send retries, account
-and trust status, history loading, call controls and voice-switch confirmation.
+remembered channels, per-room drafts, reply and edit modes, delete confirmation,
+selected timelines, account and trust status, history loading, call controls and
+voice-switch confirmation. The backend saves drafts in the encrypted session
+store and sends through the SDK's persistent send queue, which owns retries.
 Its local preview uses the same model and emits no network effects.
 
 A client sends an `Action` to `Application::dispatch` and applies backend events
@@ -26,7 +28,7 @@ with `Application::apply`. These methods return effects for starting a session
 or sending a backend command. `AppState` supplies ordinary Rust data for rendering,
 including shared timeline storage through `Arc<Vec<ChatMessage>>`.
 
-The GPUI adapter in [`src/ui.rs`](../src/ui.rs) owns input widgets, password
+The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`ui/talk.slint`](../ui/talk.slint) owns input widgets, password
 masking, focus, filtering, scroll position, list virtualization, device selectors,
 window state, theme and icons. It updates widgets after model changes. A programmatic
 composer update uses the new room's draft, so it cannot overwrite that draft with
@@ -39,6 +41,12 @@ its command sender, background task and runtime reference. The client retains
 this handle for the session, independently of the selected text or voice channel.
 Incoming events arrive through a Tokio receiver, so each UI framework can choose
 how to wake its event loop.
+
+Slint waits asynchronously on that receiver and updates presentation on its UI
+thread. No timer polls the network or redraws an idle window. The adapter retains
+one backend across navigation and cancels its event receiver before releasing
+the backend. Widget models update changed rows instead of replacing every list
+on voice or sync events.
 
 The actor owns one Matrix session and its sync service. The voice controller
 leases that same client and encrypted store. Encryption and device trust checks
@@ -64,7 +72,7 @@ behavior without claiming the native backend already runs on the web or Android.
 
 Framework experiments can use the shared preview first and connect to the same
 native backend afterward. They must preserve the model's behavior rather than
-implement their own drafts, retry IDs or voice lifecycle.
+implement their own drafts, send handling or voice lifecycle.
 
 ## Checks and packaging
 
@@ -73,7 +81,7 @@ variant still uses `--no-default-features`. Run `scripts/check` inside the Nix
 development shell to check both workspace packages. Ignored chat and voice tests
 now belong to `talk-core`, so select them with `cargo test -p talk-core`.
 
-The Windows source archive includes `crates/`. Existing session storage paths and
+The Windows source archive includes `crates/` and `ui/`. Existing session storage paths and
 formats are unchanged. Library tests keep disposable fixtures under the workspace's
 ignored `.local` directory even though Cargo runs them from the crate directory.
 
@@ -92,3 +100,9 @@ executable has not yet had a Windows runtime test.
 
 The GPUI preview opened and sent a local message with Enter. Future GUI trials
 must use an isolated display as described in the comparison plan.
+
+The 2026-10-03 [Slint validation](slint-client.md) passed the complete Linux check
+script, 3 desktop tests in addition to the 15 core tests, and a separate encrypted
+chat integration test. Private GPU/software UI fixtures passed real encrypted
+sending, close, session restoration and logout. Current Windows evidence and
+remaining manual checks are recorded in the [Windows guide](windows-beta.md).

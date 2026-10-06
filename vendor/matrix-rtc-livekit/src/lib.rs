@@ -170,6 +170,10 @@ pub async fn connect_e2ee(
     // are actually subscribed and unneeded ones stop being encoded.
     options.dynacast = true;
     options.auto_subscribe = auto_subscribe;
+    // Talk: one peer connection for publishing and subscribing. With two, the
+    // subscriber connection took about a second longer to connect on every join.
+    // The SDK falls back to two connections on servers without support.
+    options.single_peer_connection = true;
     LiveKitSession::connect_with_options(&sfu_token, options).await
 }
 

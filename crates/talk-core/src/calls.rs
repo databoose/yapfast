@@ -113,7 +113,7 @@ pub(crate) async fn require_trusted_encrypted_room(room: &Room) -> Result<()> {
     let client = room.client();
     ensure!(
         client.supports_sticky_events().await?,
-        "This homeserver does not support this voice build. Use a compatible homeserver."
+        "This homeserver doesn't support sticky events (MSC4354), which Talk voice channels need. Ask its administrator to enable them (Synapse: experimental_features.msc4354_enabled), or use another homeserver."
     );
     let user = client.user_id().context("sign in before joining voice")?;
     let device = client.device_id().context("sign in before joining voice")?;
@@ -332,14 +332,25 @@ async fn wait_for_members(calls: &[Call], count: usize) -> Result<()> {
     .context("call membership did not settle after join or leave")
 }
 
-struct Tone(tokio::task::JoinHandle<()>);
+pub(crate) struct Tone(tokio::task::JoinHandle<()>);
 impl Drop for Tone {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
+pub(crate) async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
+    publish_tone_while(call, frequency, true, || true).await
+}
+
+/// Publishes the tone only while `speaking()` holds and digital silence otherwise,
+/// like a voice-activation gate. `dtx` is LiveKit's Opus silence-suppression request.
+pub(crate) async fn publish_tone_while(
+    call: &Call,
+    frequency: f64,
+    dtx: bool,
+    speaking: impl Fn() -> bool + Send + 'static,
+) -> Result<Tone> {
     let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 50);
     let track = LocalAudioTrack::create_audio_track(
         "Talk synthetic test",
@@ -352,6 +363,7 @@ async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
             LocalTrack::Audio(track),
             TrackPublishOptions {
                 source: TrackSource::Microphone,
+                dtx,
                 ..Default::default()
             },
         )
@@ -363,13 +375,17 @@ async fn publish_tone(call: &Call, frequency: f64) -> Result<Tone> {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            let samples = (0..480)
-                .map(|_| {
-                    let sample = (phase.sin() * 8_000.0) as i16;
-                    phase = (phase + step) % std::f64::consts::TAU;
-                    sample
-                })
-                .collect();
+            let samples = if speaking() {
+                (0..480)
+                    .map(|_| {
+                        let sample = (phase.sin() * 8_000.0) as i16;
+                        phase = (phase + step) % std::f64::consts::TAU;
+                        sample
+                    })
+                    .collect()
+            } else {
+                vec![0; 480]
+            };
             if source
                 .capture_frame(&AudioFrame {
                     data: Cow::Owned(samples),

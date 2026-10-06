@@ -2,9 +2,9 @@
 
 The portable package targets Intel/AMD PCs running 64-bit Windows 10 or 11.
 The homeserver is prefilled as `https://matrix.org` and remains editable.
-GPUI's DirectWrite renderer requires Windows 10 version 1703 or later. Its ICU
-import is also supplied by Windows starting with that version, as documented by
-[Microsoft](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
+The current build uses Slint with Skia. Its cross-build and command-line checks
+are recorded below. The 2026-10-02 manual and Wine reports describe the previous
+GPUI package. Recheck the new UI on the tester's PC.
 
 ## Run the package
 
@@ -14,9 +14,12 @@ import is also supplied by Windows starting with that version, as documented by
 4. Open **Talk beta**, then **general** for encrypted text or **Lounge** for voice.
 
 The package needs no Rust or Visual Studio installation. It includes the native
-media code and compiled GPUI shaders. A console window displays beta diagnostics.
+media code and Skia renderer. A console window displays beta diagnostics.
 Closing Talk closes that console too.
 If it closes immediately, run `run-talk.cmd` to keep the error visible.
+Talk renders with Skia Software. Use `run-talk.cmd --renderer gpu` to try the
+GPU; if it cannot start, Talk switches back to Skia Software and says so in the
+window.
 
 Passwords, recovery keys and saved sessions are excluded from the package.
 Session secrets use Windows Credential Manager. Encrypted SDK stores live under
@@ -36,8 +39,9 @@ With Alice signed in on Linux and Bob on Windows:
    window resizing, and any error text. Never include passwords or recovery keys.
 
 The build and execution evidence is recorded in [compatibility](compatibility.md).
-The user has confirmed basic messaging and voice on the Windows tester's machine.
-Exact Windows, GPU/driver and audio-device details still need to be recorded.
+The user confirmed basic messaging and voice with the earlier GPUI package.
+Repeat these checks with Slint. Exact Windows, GPU/driver and audio-device details
+still need to be recorded.
 
 ## User-reported two-machine check on 2026-10-02
 
@@ -50,6 +54,26 @@ These are user-reported manual results. Windows release, GPU/driver and audio
 device models were not supplied. Restart behavior, extended waiting alone,
 network interruption, forced crashes, resizing and copy/paste were not covered
 by this confirmation.
+
+## Slint build validation on 2026-10-03
+
+The all-target Windows MSVC compilation check and release link passed. Skia was
+built from pinned source with the static release CRT used by WebRTC; runtime,
+symbol and native section checks passed before linking. The AMD64 PE import
+table contains Windows system DLLs and no separate Visual C++ runtime DLL.
+
+`--help` and `--smoke-test` passed under Wine 10.0 in a private prefix with private
+XDG directories and no desktop display. The smoke check uses synthetic native
+media and opens no microphone. These checks do not validate the Slint window,
+Windows device selection, restored credentials or Linux–Windows audio.
+
+The executable is 158.4 MiB, the source ZIP 64.4 MiB, and the portable ZIP about
+121.5 MiB. The source includes the accumulated framework measurement artifacts.
+Its implementation files, ZIP CRCs, embedded executable/source hashes, Skia
+notices and exclusion of credential/session paths were checked. The executable
+SHA-256 is `c381f8b5f734a68ab9b466f07582752dcf53b7ba9e387905afc7f039a4cc1847`.
+`SHA256SUMS.txt` supplies the archive hashes, which change when documentation is
+repackaged.
 
 ## Build validation on 2026-10-02
 
@@ -87,12 +111,14 @@ This installs the pinned Rust toolchain's Windows target, cross-compiles with
 cargo-xwin and Clang, then packages the executable. The first run downloads the
 Microsoft CRT/SDK and compiles the C++ media bindings. Cargo uses two jobs.
 
-The Windows Nix shell supplies the matching `webrtc-51ef663` Windows archive,
-LLVM 21, Protobuf, Wine and a checksum-pinned Microsoft SDK shader compiler.
-The [GPUI patch](../vendor/gpui-pre-windows/README.talk.md) lets its release build
-script run on Linux. `scripts/fxc-wine` invokes FXC through an isolated Wine
-prefix and converts its input/output paths. The finished executable embeds the
-shader bytes. Wine is needed only on the cross-build host.
+The Windows Nix shell supplies the matching `webrtc-51ef663` archive, LLVM 21,
+GN, Protobuf and checksum-pinned Skia 0.153.3 source with its dependencies.
+`scripts/build-windows` builds Skia with `/MT` to match WebRTC; the upstream Skia
+Windows archive uses an incompatible dynamic CRT. This source build uses two
+native jobs and is cached. Preparation then gives Skia's JPEG table a private
+symbol name. It checks runtime directives and symbols, and preserves every
+native section's code/data and relocations through the rename. The GPUI FXC/Wine
+shader build is no longer part of this client.
 
 A [one-line WebRTC patch](../vendor/webrtc-sys/README.talk.md) also fixes an
 MSVC class/struct declaration mismatch, matching the upstream resolution.

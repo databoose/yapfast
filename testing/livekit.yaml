@@ -2,8 +2,8 @@ port: 17880
 bind_addresses: [0.0.0.0]
 rtc:
   tcp_port: 17881
-  port_range_start: 50100
-  port_range_end: 50120
+  # One multiplexed UDP port; a port range runs out past ten people.
+  udp_port: 50100
   node_ip: 127.0.0.1
   use_external_ip: false
 keys:

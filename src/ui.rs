@@ -1,292 +1,494 @@
-use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
+//! Slint presentation and event-loop adapter for the shared application.
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
-use anyhow::Result;
-use gpui_kit::assets::IconName;
-use gpui_kit::{
-    Anchor, App, AssetSource, Bounds, Context, Entity, ListAlignment, ListState, Render,
-    SharedString, Subscription, Task, Window, WindowBounds, WindowOptions,
-    component::{
-        ActiveTheme, Disableable, Selectable, StyledExt, Theme, ThemeMode,
-        button::{Button, ButtonVariants},
-        input::{Input, InputEvent, InputState},
-        popover::Popover,
-        select::{Select, SelectEvent, SelectItem, SelectState},
-    },
-    div, list,
-    prelude::*,
-    px, rgb, size,
+use anyhow::{Context, Result};
+use slint::{
+    ComponentHandle, Model, ModelRc, SharedString, VecModel, winit_030::WinitWindowAccessor,
 };
 use talk_core::{
-    application::{Action, AppState, Application, Effect, Navigation},
+    application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, ChatRoom, Event, Start},
+    chat::{ChatMessage, Delivery, Event, Picture, Role},
+    meter::{self, InputMeter},
     runtime::BackgroundRuntime,
     voice::{self, Phase},
 };
 
-// The default component bundle omits these two application navigation icons.
-gpui_kit::assets::icon_assets!(
-    ChatIcons,
-    [
-        Hash,
-        MessageCircle,
-        Volume2,
-        MicOff,
-        Mic,
-        Headphones,
-        PhoneOff,
-        Settings
-    ]
-);
-struct TalkAssets;
-impl AssetSource for TalkAssets {
-    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        match ChatIcons.load(path)? {
-            Some(asset) => Ok(Some(asset)),
-            None => gpui_kit::assets::Assets.load(path),
-        }
-    }
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut assets = gpui_kit::assets::Assets.list(path)?;
-        assets.extend(ChatIcons.list(path)?);
-        Ok(assets)
-    }
+use crate::{emoji, graphics};
+use talk_ui::*;
+
+/// How the desktop window ended.
+pub enum Exit {
+    Closed,
+    /// GPU rendering failed; restart with Skia Software for this reason.
+    UseSoftware(String),
 }
 
-pub fn run(runtime: BackgroundRuntime, root: PathBuf, preview: bool) -> Result<()> {
-    let runtime = Arc::new(runtime);
-    let window_failed = Rc::new(Cell::new(false));
-    let failed = window_failed.clone();
-    gpui_kit::application()
-        .with_assets(TalkAssets)
-        .run(move |cx: &mut App| {
-            gpui_kit::init(cx);
-            cx.set_app_identity("chat.talk.Talk", "Talk");
-            Theme::change(ThemeMode::Dark, None, cx);
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            let options = WindowOptions {
-                app_id: Some("chat.talk.Talk".into()),
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(1120.), px(760.)),
-                    cx,
-                ))),
-                window_min_size: Some(size(px(800.), px(560.))),
-                titlebar: Some(gpui_kit::TitlebarOptions {
-                    title: Some("Talk".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            match gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| TalkApp::new(runtime, root, preview, window, cx))
-            }) {
-                Ok(_) => {
-                    cx.activate(true);
-                    tracing::info!("desktop window opened");
-                }
-                Err(_) => {
-                    failed.set(true);
-                    tracing::error!("could not open desktop window");
-                    cx.quit();
-                }
+/// Slint releases the first window after at most 500 ms of desktop appearance
+/// queries; this leaves time for the window, its GPU surface and first frames.
+/// Skia disables partial repainting while a rendering notifier is installed,
+/// so startup is confirmed by the native window rather than by a frame.
+const GPU_START_CONFIRMATION: Duration = Duration::from_secs(3);
+
+pub fn run(
+    runtime: BackgroundRuntime,
+    root: PathBuf,
+    preview: bool,
+    plan: graphics::Plan,
+) -> Result<Exit> {
+    // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
+    // surface; Talk owns the fallback and tells the user about it.
+    let renderer = match plan.renderer {
+        graphics::Renderer::Gpu => "skia-opengl",
+        graphics::Renderer::Software => "skia-software",
+    };
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name(renderer.into())
+        .select()
+        .context("could not select the Slint desktop backend")?;
+    let gpu = plan.renderer == graphics::Renderer::Gpu;
+    let failed = |error: slint::PlatformError, context: &'static str| -> Result<Exit> {
+        let reason = error.to_string();
+        if gpu {
+            tracing::error!(%reason, "GPU rendering failed; restarting with Skia Software");
+            Ok(Exit::UseSoftware(reason))
+        } else {
+            Err(anyhow::Error::new(error).context(context))
+        }
+    };
+    let window = match TalkWindow::new() {
+        Ok(window) => window,
+        Err(error) => return failed(error, "could not create the Talk window"),
+    };
+    if let Err(error) = window.show() {
+        return failed(error, "could not show Talk");
+    }
+    prepare(&window);
+    let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
+    bind_callbacks(&window, &adapter);
+    adapter.borrow_mut().refresh(&window);
+    if preview {
+        adapter.borrow_mut().action(&window, Action::Preview);
+    } else if adapter.borrow().root.join("active.json").exists() {
+        adapter.borrow_mut().action(&window, Action::Restore);
+    } else {
+        window.invoke_focus_sign_in();
+    }
+    let notice = SharedString::from(plan.notice.unwrap_or_default());
+    window.set_graphics_notice(notice.clone());
+    // Slint 1.18 keeps its event loop running when it creates a window late and
+    // the GPU surface fails, leaving no window. Check for the native window.
+    let missing_window = Rc::new(Cell::new(false));
+    if gpu {
+        let missing_window = missing_window.clone();
+        let weak = window.as_weak();
+        slint::Timer::single_shot(GPU_START_CONFIRMATION, move || {
+            if !weak
+                .upgrade()
+                .is_some_and(|window| window.window().has_winit_window())
+            {
+                missing_window.set(true);
+                let _ = slint::quit_event_loop();
             }
         });
-    if window_failed.get() {
-        anyhow::bail!(
-            "could not open the desktop window; check your display session and graphics driver"
-        );
     }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct AudioDevice {
-    id: String,
-    name: SharedString,
-}
-impl SelectItem for AudioDevice {
-    type Value = String;
-    fn title(&self) -> SharedString {
-        self.name.clone()
-    }
-    fn value(&self) -> &String {
-        &self.id
+    tracing::info!(renderer, "starting the Slint desktop window");
+    let result = match test_control() {
+        Some(path) => {
+            let _control = control(path, window, adapter.clone(), notice);
+            slint::run_event_loop_until_quit()
+        }
+        None => window.run(),
+    };
+    adapter.borrow_mut().stop_backend();
+    match result {
+        Err(error) => failed(error, "Slint's desktop event loop failed"),
+        Ok(()) if missing_window.get() => failed(
+            "the window did not appear".into(),
+            "Talk's window did not appear",
+        ),
+        Ok(()) => Ok(Exit::Closed),
     }
 }
 
-struct TalkApp {
-    runtime: Arc<BackgroundRuntime>,
-    root: PathBuf,
-    model: Application,
-    homeserver: Entity<InputState>,
-    username: Entity<InputState>,
-    password: Entity<InputState>,
-    recovery: Entity<InputState>,
-    filter: Entity<InputState>,
-    composer: Entity<InputState>,
-    audio_settings: bool,
-    microphone: Entity<SelectState<Vec<AudioDevice>>>,
-    speaker: Entity<SelectState<Vec<AudioDevice>>>,
-    list: ListState,
-    backend: Option<Backend>,
-    events: Option<Task<()>>,
-    _subscriptions: Vec<Subscription>,
+/// Only the private test compositor can request a different initial size.
+fn isolated_display() -> bool {
+    std::env::var("TALK_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1")
 }
 
-// Snapshot only values needed to update widgets and preserve the reading position.
-struct PresentationState {
-    navigation: Navigation,
-    selection_version: u64,
-    reset_version: u64,
-    draft: String,
-    messages: Arc<Vec<ChatMessage>>,
-    voice: voice::State,
+fn prepare(window: &TalkWindow) {
+    if isolated_display()
+        && let Ok(size) = std::env::var("TALK_UI_TEST_SIZE")
+        && let Some((width, height)) = size.split_once('x')
+        && let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>())
+        && width >= 800
+        && height >= 560
+    {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, height));
+    }
+    window.set_emoji_font(emoji::family().into());
 }
 
-impl PresentationState {
-    fn capture(state: &AppState) -> Self {
-        Self {
-            navigation: state.navigation.clone(),
-            selection_version: state.selection_version,
-            reset_version: state.reset_version,
-            draft: state.draft().to_owned(),
-            messages: state.messages.clone(),
-            voice: state.voice.clone(),
+/// A command file through which the private test compositor can hide, destroy
+/// and recreate the window while Talk keeps running, as a tray would.
+fn test_control() -> Option<PathBuf> {
+    isolated_display()
+        .then(|| std::env::var_os("TALK_UI_TEST_CONTROL"))
+        .flatten()
+        .map(PathBuf::from)
+}
+
+/// Run each new line of the command file. The event loop then runs until quit,
+/// so a hidden or destroyed window does not end Talk.
+fn control(
+    path: PathBuf,
+    window: TalkWindow,
+    adapter: Rc<RefCell<Adapter>>,
+    notice: SharedString,
+) -> slint::Timer {
+    let window = RefCell::new(Some(window));
+    let handled = Cell::new(0);
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(500),
+        move || {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return;
+            };
+            for command in text.lines().skip(handled.get()) {
+                handled.set(handled.get() + 1);
+                tracing::info!(command, "test window control");
+                let result = match command {
+                    "hide" => window
+                        .borrow()
+                        .as_ref()
+                        .map_or(Ok(()), |window| window.hide()),
+                    "show" => window
+                        .borrow()
+                        .as_ref()
+                        .map_or(Ok(()), |window| window.show()),
+                    // A shown window keeps itself alive; hide it, then drop the last handle.
+                    "destroy" => window.take().map_or(Ok(()), |window| {
+                        let weak = window.as_weak();
+                        let result = window.hide();
+                        drop(window);
+                        tracing::info!(
+                            released = weak.upgrade().is_none(),
+                            "test window destroyed"
+                        );
+                        result
+                    }),
+                    "create" if window.borrow().is_none() => {
+                        recreate(&adapter, &notice).map(|new| *window.borrow_mut() = Some(new))
+                    }
+                    "trim" => {
+                        trim();
+                        Ok(())
+                    }
+                    "stats" => {
+                        allocator_stats();
+                        Ok(())
+                    }
+                    "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
+                    _ => Ok(()),
+                };
+                if let Err(error) = result {
+                    tracing::error!(command, %error, "test window control failed");
+                }
+            }
+        },
+    );
+    timer
+}
+
+fn recreate(
+    adapter: &Rc<RefCell<Adapter>>,
+    notice: &SharedString,
+) -> Result<TalkWindow, slint::PlatformError> {
+    let window = TalkWindow::new()?;
+    window.show()?;
+    prepare(&window);
+    window.set_graphics_notice(notice.clone());
+    adapter.borrow_mut().attach(&window);
+    bind_callbacks(&window, adapter);
+    adapter.borrow_mut().refresh(&window);
+    Ok(window)
+}
+
+/// Return freed heap pages to the system, to separate memory still in use from
+/// memory glibc keeps for reuse.
+fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: malloc_trim only releases free memory held by the allocator.
+        unsafe { malloc_trim(0) };
+    }
+}
+
+/// Print the allocator's per-arena totals to standard error: memory held from
+/// the system against memory in use.
+fn allocator_stats() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_stats();
+        }
+        // SAFETY: malloc_stats only reads allocator state and writes to stderr.
+        unsafe { malloc_stats() };
+    }
+}
+
+/// The layout a person chose, such as the sidebar width, kept beside the session.
+const LAYOUT: &str = "layout.json";
+
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Layout {
+    sidebar_width: Option<f32>,
+    /// The member list shows until someone closes it.
+    members_hidden: bool,
+    /// Each server's last selected channel, by server ID.
+    channels: HashMap<String, String>,
+    /// How often this device added each reaction, for the frequent reactions.
+    reactions: HashMap<String, u32>,
+}
+
+impl Layout {
+    fn read(root: &std::path::Path) -> Self {
+        std::fs::read(root.join(LAYOUT))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn apply(&self, window: &TalkWindow) {
+        if let Some(width) = self.sidebar_width {
+            window.set_sidebar_width(width);
+        }
+        window.set_member_list(!self.members_hidden);
+    }
+
+    /// A lost layout only costs the person their arrangement; it never stops Talk.
+    fn write(&self, root: &std::path::Path) {
+        let result = std::fs::create_dir_all(root).and_then(|()| {
+            std::fs::write(
+                root.join(LAYOUT),
+                serde_json::to_vec(self).expect("layout serializes"),
+            )
+        });
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not store the window layout");
         }
     }
 }
 
-impl TalkApp {
+#[derive(Default)]
+struct Models {
+    servers: Rc<VecModel<ServerRow>>,
+    rooms: Rc<VecModel<RoomRow>>,
+    messages: Rc<VecModel<MessageRow>>,
+    roster: Rc<VecModel<MemberRow>>,
+    bar_reactions: Rc<VecModel<EmojiCell>>,
+    menu_reactions: Rc<VecModel<EmojiCell>>,
+    emoji_rows: Rc<VecModel<EmojiRow>>,
+    forward_targets: Rc<VecModel<ForwardRow>>,
+    participants: Rc<VecModel<PersonRow>>,
+    microphones: Rc<VecModel<SharedString>>,
+    speakers: Rc<VecModel<SharedString>>,
+}
+
+impl Models {
+    fn attach(&self, window: &TalkWindow) {
+        window.set_servers(ModelRc::from(self.servers.clone()));
+        window.set_rooms(ModelRc::from(self.rooms.clone()));
+        window.set_messages(ModelRc::from(self.messages.clone()));
+        window.set_roster(ModelRc::from(self.roster.clone()));
+        window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
+        window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
+        window.set_emoji_rows(ModelRc::from(self.emoji_rows.clone()));
+        window.set_forward_targets(ModelRc::from(self.forward_targets.clone()));
+        window.set_participants(ModelRc::from(self.participants.clone()));
+        window.set_microphones(ModelRc::from(self.microphones.clone()));
+        window.set_speakers(ModelRc::from(self.speakers.clone()));
+    }
+}
+
+struct Icons {
+    dm: slint::Image,
+    text: slint::Image,
+    voice: slint::Image,
+}
+
+struct Adapter {
+    // Cancel the UI event receiver before releasing the actor and runtime.
+    events: Option<slint::JoinHandle<()>>,
+    backend: Option<Backend>,
+    runtime: Arc<BackgroundRuntime>,
+    root: PathBuf,
+    layout: Layout,
+    app: Application,
+    models: Models,
+    icons: Icons,
+    weak: std::rc::Weak<RefCell<Self>>,
+    window: slint::Weak<TalkWindow>,
+    navigation: Navigation,
+    /// Whether the forward dialog was open at the last refresh.
+    forwarding: bool,
+    selection_version: u64,
+    reset_version: u64,
+    messages: Arc<Vec<ChatMessage>>,
+    /// Rows already built for unchanged messages, so the list keeps their state.
+    rows: HashMap<String, (ChatMessage, MessageRow)>,
+    /// One open or save dialog at a time; dropping it cancels the dialog's task.
+    dialog: Option<slint::JoinHandle<()>>,
+    /// Reads the microphone while the input menu shows its level.
+    meter: Option<InputMeter>,
+}
+
+impl Adapter {
     fn new(
         runtime: Arc<BackgroundRuntime>,
         root: PathBuf,
-        preview: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let homeserver =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://matrix.org"));
-        homeserver.update(cx, |input, cx| {
-            input.set_value("https://matrix.org", window, cx)
-        });
-        let username =
-            cx.new(|cx| InputState::new(window, cx).placeholder("@you:matrix.org"));
-        let password = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder("Password")
-        });
-        let recovery = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder("Recovery key")
-        });
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find a DM"));
-        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Write a message"));
-        let microphone = cx.new(|cx| SelectState::new(Vec::<AudioDevice>::new(), None, window, cx));
-        let speaker = cx.new(|cx| SelectState::new(Vec::<AudioDevice>::new(), None, window, cx));
-        let subscriptions = vec![
-            cx.subscribe_in(
-                &microphone,
-                window,
-                |this, _, event: &SelectEvent<Vec<AudioDevice>>, window, cx| {
-                    if let SelectEvent::Confirm(Some(id)) = event {
-                        this.voice_command(voice::Command::Microphone(id.clone()), window, cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &speaker,
-                window,
-                |this, _, event: &SelectEvent<Vec<AudioDevice>>, window, cx| {
-                    if let SelectEvent::Confirm(Some(id)) = event {
-                        this.voice_command(voice::Command::Speaker(id.clone()), window, cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &composer,
-                window,
-                |this, _, event, window, cx| match event {
-                    InputEvent::PressEnter { .. } => this.send(window, cx),
-                    InputEvent::Change => {
-                        let draft = this.composer.read(cx).value().to_string();
-                        this.model.dispatch(Action::SetDraft(draft));
-                        cx.notify();
-                    }
-                    _ => {}
-                },
-            ),
-            cx.subscribe_in(&password, window, |this, _, event, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.login(window, cx);
-                }
-            }),
-            cx.subscribe_in(&recovery, window, |this, _, event, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.recover(window, cx);
-                }
-            }),
-            cx.subscribe_in(&filter, window, |_, _, _: &InputEvent, _, cx| cx.notify()),
-        ];
-        let mut app = Self {
-            runtime,
-            root,
-            homeserver,
-            username,
-            password,
-            recovery,
-            filter,
-            composer,
-            model: Application::default(),
-            audio_settings: false,
-            microphone,
-            speaker,
-            list: ListState::new(0, ListAlignment::Bottom, px(320.)),
-            backend: None,
-            events: None,
-            _subscriptions: subscriptions,
+        window: &TalkWindow,
+    ) -> Result<Rc<RefCell<Self>>> {
+        let icons = Icons {
+            dm: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/message-circle.svg"))?,
+            text: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/hash.svg"))?,
+            voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
         };
-        if preview {
-            app.start_preview(window, cx);
-        } else if app.root.join("active.json").exists() {
-            app.start(Start::Restore, window, cx);
-        } else {
-            app.username.update(cx, |input, cx| input.focus(window, cx));
-        }
-        app
+        let models = Models::default();
+        models.attach(window);
+        let layout = Layout::read(&root);
+        layout.apply(window);
+        let mut app = Application::default();
+        app.remember_reaction_uses(layout.reactions.clone());
+        Ok(Rc::new_cyclic(|weak| {
+            RefCell::new(Self {
+                events: None,
+                backend: None,
+                runtime,
+                root,
+                layout,
+                app,
+                models,
+                icons,
+                weak: weak.clone(),
+                window: window.as_weak(),
+                navigation: Navigation::default(),
+                forwarding: false,
+                selection_version: 0,
+                reset_version: 0,
+                messages: Arc::new(Vec::new()),
+                rows: HashMap::new(),
+                dialog: None,
+                meter: None,
+            })
+        }))
     }
 
-    fn execute(&mut self, effects: Vec<Effect>, cx: &mut Context<Self>) {
+    /// Present the existing models and state in a new window.
+    fn attach(&mut self, window: &TalkWindow) {
+        self.models.attach(window);
+        self.layout.apply(window);
+        self.window = window.as_weak();
+    }
+
+    /// Run a native file dialog on Slint's executor, replacing any open one.
+    fn dialog(&mut self, task: impl std::future::Future<Output = ()> + 'static) {
+        if let Some(previous) = self.dialog.take() {
+            previous.abort();
+        }
+        match slint::spawn_local(task) {
+            Ok(handle) => self.dialog = Some(handle),
+            Err(error) => {
+                tracing::error!(%error, "could not open the file dialog");
+                self.app.state.notice = Some("Talk could not open a file dialog.".into());
+            }
+        }
+    }
+
+    fn stop_backend(&mut self) {
+        if let Some(events) = self.events.take() {
+            events.abort();
+        }
+        self.backend = None;
+    }
+
+    fn execute(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
                 Effect::Start(start) => {
+                    self.stop_backend();
+                    self.app.remember_channels(self.layout.channels.clone());
                     let (backend, mut events) =
                         Backend::start(self.runtime.clone(), self.root.clone(), start);
                     self.backend = Some(backend);
-                    self.events = Some(cx.spawn(async move |this, cx| {
+                    let weak = self.weak.clone();
+                    // Network work stays on Tokio. Only channel delivery runs on
+                    // Slint's executor, which wakes on an event and never polls idle.
+                    // Events still apply without a window, so the call and chat go on.
+                    match slint::spawn_local(async move {
                         while let Some(event) = events.recv().await {
-                            if this
-                                .update_in(cx, |this, window, cx| {
-                                    this.event(event, window, cx);
-                                })
-                                .is_err()
-                            {
-                                break;
+                            let Some(adapter) = weak.upgrade() else {
+                                return;
+                            };
+                            let window = adapter.borrow().window.upgrade();
+                            adapter.borrow_mut().event(window.as_ref(), event);
+                        }
+                        if let Some(adapter) = weak.upgrade() {
+                            let window = adapter.borrow().window.upgrade();
+                            let mut adapter = adapter.borrow_mut();
+                            adapter.app.stopped();
+                            adapter.backend = None;
+                            if let Some(window) = window {
+                                adapter.refresh(&window);
                             }
                         }
-                        let _ = this.update(cx, |this, cx| {
-                            this.model.stopped();
-                            this.backend = None;
-                            cx.notify();
-                        });
-                    }));
+                    }) {
+                        Ok(task) => self.events = Some(task),
+                        Err(error) => {
+                            tracing::error!(%error, "could not connect backend events to Slint");
+                            self.backend = None;
+                            self.app.stopped();
+                        }
+                    }
+                }
+                Effect::ListDevices => {
+                    let weak = self.weak.clone();
+                    // Listing starts the platform's audio service, which can block.
+                    let listing = self.runtime.spawn_blocking(|| {
+                        voice::list_devices().map_err(|error| error.to_string())
+                    });
+                    let task = slint::spawn_local(async move {
+                        let devices = listing
+                            .await
+                            .unwrap_or_else(|_| Err("Could not list audio devices.".into()));
+                        if let Some(adapter) = weak.upgrade() {
+                            let window = adapter.borrow().window.upgrade();
+                            let mut adapter = adapter.borrow_mut();
+                            adapter.app.preview_devices(devices);
+                            if let Some(window) = window {
+                                adapter.refresh(&window);
+                            }
+                        }
+                    });
+                    if let Err(error) = task {
+                        tracing::error!(%error, "could not list audio devices for the preview");
+                    }
                 }
                 Effect::Backend(command) => {
                     let result = match &self.backend {
@@ -294,879 +496,1592 @@ impl TalkApp {
                         None => Err(command),
                     };
                     if let Err(command) = result {
-                        self.model.backend_failed(&command);
+                        self.app.backend_failed(&command);
                     }
                 }
             }
         }
     }
 
-    fn action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        let before = PresentationState::capture(&self.model.state);
-        let effects = self.model.dispatch(action);
-        self.execute(effects, cx);
-        self.update_presentation(before, window, cx);
-        cx.notify();
+    fn action(&mut self, window: &TalkWindow, action: Action) {
+        let effects = self.app.dispatch(action);
+        self.execute(effects);
+        self.refresh(window);
     }
 
-    fn event(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
-        let before = PresentationState::capture(&self.model.state);
-        let effects = self.model.apply(event);
-        self.execute(effects, cx);
-        self.update_presentation(before, window, cx);
-        cx.notify();
+    fn event(&mut self, window: Option<&TalkWindow>, event: Event) {
+        let effects = self.app.apply(event);
+        self.execute(effects);
+        if let Some(window) = window {
+            self.refresh(window);
+        }
     }
 
-    fn update_presentation(
-        &mut self,
-        before: PresentationState,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let state = &self.model.state;
-        let reset = before.reset_version != state.reset_version;
-        let selection_changed = before.selection_version != state.selection_version;
-        if reset || before.navigation != state.navigation {
-            let placeholder = if state.navigation == Navigation::DirectMessages {
-                "Find a DM"
-            } else {
-                "Find a channel"
-            };
-            self.filter.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-                input.set_placeholder(placeholder, window, cx);
-            });
-        }
-        if reset || selection_changed {
-            self.list.reset(state.messages.len());
-            self.list.scroll_to_end();
-        } else if !Arc::ptr_eq(&before.messages, &state.messages) {
-            let at_end = self.list.is_scrolled_to_end().unwrap_or(true);
-            let prefix = before
-                .messages
-                .iter()
-                .zip(state.messages.iter())
-                .take_while(|(a, b)| a.id == b.id && a.body == b.body && a.author == b.author)
-                .count();
-            self.list
-                .splice(prefix..before.messages.len(), state.messages.len() - prefix);
-            if at_end {
-                self.list.scroll_to_end();
-            }
-        }
-        if reset || selection_changed || before.draft != state.draft() {
-            let draft = state.draft().to_owned();
-            let focus = selection_changed && state.selected_room().is_some_and(|room| !room.voice);
-            self.composer.update(cx, |input, cx| {
-                input.set_value(draft, window, cx);
-                if focus {
-                    input.focus(window, cx);
-                }
-            });
-        }
-        if before.voice.microphones != state.voice.microphones
-            || before.voice.microphone != state.voice.microphone
-        {
-            self.microphone.update(cx, |select, cx| {
-                select.set_items(
-                    state
-                        .voice
-                        .microphones
-                        .iter()
-                        .map(|device| AudioDevice {
-                            id: device.id.clone(),
-                            name: device.name.clone().into(),
-                        })
-                        .collect(),
-                    window,
-                    cx,
-                );
-                if let Some(id) = &state.voice.microphone {
-                    select.set_selected_value(id, window, cx);
-                }
-            });
-        }
-        if before.voice.speakers != state.voice.speakers
-            || before.voice.speaker != state.voice.speaker
-        {
-            self.speaker.update(cx, |select, cx| {
-                select.set_items(
-                    state
-                        .voice
-                        .speakers
-                        .iter()
-                        .map(|device| AudioDevice {
-                            id: device.id.clone(),
-                            name: device.name.clone().into(),
-                        })
-                        .collect(),
-                    window,
-                    cx,
-                );
-                if let Some(id) = &state.voice.speaker {
-                    select.set_selected_value(id, window, cx);
-                }
-            });
+    fn refresh(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        let reset = self.reset_version != state.reset_version;
+        let selection_changed = self.selection_version != state.selection_version;
+        let navigation_changed = self.navigation != state.navigation;
+        if reset || navigation_changed {
+            window.set_filter(SharedString::default());
         }
         if reset {
-            self.audio_settings = false;
-            self.recovery
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.username
-                .update(cx, |input, cx| input.focus(window, cx));
+            window.set_password(SharedString::default());
+            window.set_recovery(SharedString::default());
+            window.set_audio_settings(false);
         }
-    }
-
-    fn start(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
-        match start {
-            Start::Restore => self.action(Action::Restore, window, cx),
-            Start::Login {
-                homeserver,
-                username,
-                password,
-            } => self.action(
-                Action::Login {
-                    homeserver,
-                    username,
-                    password,
-                },
-                window,
-                cx,
-            ),
-        }
-    }
-
-    fn login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let action = Action::Login {
-            homeserver: self.homeserver.read(cx).value().to_string(),
-            username: self.username.read(cx).value().to_string(),
-            password: self.password.read(cx).value().to_string(),
-        };
-        let was_busy = self.model.state.busy;
-        self.action(action, window, cx);
-        if !was_busy && self.model.state.busy {
-            self.password
-                .update(cx, |input, cx| input.set_value("", window, cx));
-        }
-    }
-
-    fn navigate(&mut self, navigation: Navigation, window: &mut Window, cx: &mut Context<Self>) {
-        self.action(Action::Navigate(navigation), window, cx);
-    }
-
-    fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.action(Action::SelectRoom(id), window, cx);
-    }
-
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.model.state.messages.len();
-        self.action(Action::Send, window, cx);
-        if self.model.state.preview && self.model.state.messages.len() > count {
-            self.list.scroll_to_end();
-        }
-    }
-
-    fn recover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key = self.recovery.read(cx).value().to_string();
-        let was_busy = self.model.state.busy;
-        self.action(Action::Recover(key), window, cx);
-        if !was_busy && self.model.state.busy {
-            self.recovery
-                .update(cx, |input, cx| input.set_value("", window, cx));
-        }
-    }
-
-    fn start_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.action(Action::Preview, window, cx);
-    }
-
-    fn sign_in_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("sign-in-scroll")
-            .flex_1()
-            .h_full()
-            .overflow_y_scroll()
-            .child(self.sign_in_body(cx))
-    }
-
-    fn sign_in_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div().w_full().min_h_full().flex_shrink_0().v_flex().items_center().justify_center().p_6().gap_6()
-            .child(div().w(px(380.)).v_flex().gap_2()
-                .child(div().text_3xl().font_semibold().child("Talk"))
-                .child(div().text_color(cx.theme().muted_foreground).child("Your people. Your Matrix account.")))
-            .child(div().w(px(380.)).v_flex().gap_4()
-                .child(field("Homeserver", Input::new(&self.homeserver).aria_label("Homeserver").disabled(self.model.state.busy)))
-                .child(field("Matrix ID", Input::new(&self.username).aria_label("Matrix ID").disabled(self.model.state.busy)))
-                .child(field("Password", Input::new(&self.password).aria_label("Password").mask_toggle().disabled(self.model.state.busy)))
-                .child(Button::new("sign-in").primary().label(if self.model.state.busy { "Connecting..." } else { "Sign in" })
-                    .disabled(self.model.state.busy).on_click(cx.listener(|this, _, window, cx| this.login(window, cx))))
-                .when_some(self.model.state.notice.clone().map(SharedString::from), |view, notice| view.child(div().text_sm().child(notice)))
-                .when(self.root.join("active.json").exists() && !self.model.state.busy, |view| view.child(Button::new("restore").label("Retry saved session").on_click(cx.listener(|this, _, window, cx| this.start(Start::Restore, window, cx)))))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Use an existing account. Password sign-in is supported in this build.")))
-            .child(div().w(px(380.)).v_flex().gap_2().pt_4().border_t_1().border_color(cx.theme().border)
-                .child(Button::new("preview").ghost().label("Explore local preview").disabled(self.model.state.busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.start_preview(window, cx))))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Try the chat layout without an account. Nothing is sent.")))
-    }
-
-    fn voice_command(
-        &mut self,
-        command: voice::Command,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.action(Action::Voice(command), window, cx);
-    }
-
-    fn join_voice(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.action(Action::RequestJoinVoice(id), window, cx);
-    }
-
-    fn audio_devices_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let microphone = self.microphone.clone();
-        let speaker = self.speaker.clone();
-        let preview = self.model.state.preview;
-        let has_microphones = !self.model.state.voice.microphones.is_empty();
-        let has_speakers = !self.model.state.voice.speakers.is_empty();
-        let weak = cx.entity().downgrade();
-        Popover::new("voice-device-popover")
-            .anchor(Anchor::BottomLeft)
-            .open(self.audio_settings)
-            .on_open_change(cx.listener(|this, open, window, cx| {
-                this.audio_settings = *open;
-                if *open {
-                    this.voice_command(voice::Command::Devices, window, cx);
-                }
-                cx.notify();
-            }))
-            .trigger(
-                Button::new("voice-audio-settings")
-                    .ghost()
-                    .size(px(36.))
-                    .icon(IconName::Settings)
-                    .accessibility_label("Audio devices")
-                    .tooltip("Audio devices"),
-            )
-            .content(move |_, _, cx| {
-                let weak = weak.clone();
-                div()
-                    .w(px(264.))
-                    .v_flex()
-                    .gap_2()
-                    .child(div().text_sm().font_semibold().child("Audio devices"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Microphone"),
-                    )
-                    .child(
-                        Select::new(&microphone)
-                            .placeholder("System default")
-                            .accessibility_label("Microphone device")
-                            .disabled(preview || !has_microphones)
-                            .w_full(),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Speakers"),
-                    )
-                    .child(
-                        Select::new(&speaker)
-                            .placeholder("System default")
-                            .accessibility_label("Speaker device")
-                            .disabled(preview || !has_speakers)
-                            .w_full(),
-                    )
-                    .when(preview, |view| {
-                        view.child(
-                            div()
-                                .text_xs()
-                                .child("Device selection is available with a real account."),
-                        )
-                    })
-                    .child(
-                        Button::new("refresh-audio")
-                            .ghost()
-                            .label("Refresh devices")
-                            .disabled(preview)
-                            .on_click(cx.listener(move |_, _, window, cx| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.voice_command(voice::Command::Devices, window, cx)
-                                });
-                            })),
-                    )
-            })
-    }
-
-    fn voice_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ready = matches!(
-            self.model.state.voice.phase,
-            Phase::Connected | Phase::Reconnecting
+        let messages_changed = !Arc::ptr_eq(&self.messages, &state.messages);
+        let at_end = window.invoke_timeline_at_end();
+        let old_extent = window.invoke_timeline_extent();
+        let prepended = messages_changed
+            && !selection_changed
+            && self.messages.first().is_some_and(|first| {
+                state.messages.first().is_some_and(|new| first.id != new.id)
+                    && state.messages.iter().any(|message| message.id == first.id)
+            });
+        let query = window.get_filter().to_lowercase();
+        let room = state.selected_room();
+        let voice = &state.voice;
+        let voice_here =
+            room.is_some_and(|room| voice.room.as_ref() == Some(&room.id)) && voice.active();
+        window.set_workspace(state.preview || state.account.is_some());
+        window.set_preview(state.preview);
+        window.set_busy(state.busy);
+        window.set_trusted(state.trusted);
+        window.set_online(state.online);
+        window.set_restore_available(self.root.join("active.json").exists());
+        window.set_dms_selected(state.navigation == Navigation::DirectMessages);
+        window.set_dms_unread(
+            state
+                .rooms
+                .iter()
+                .any(|room| room.direct && room.unread > 0),
         );
-        let muted = cx.theme().muted_foreground;
-        let status = match self.model.state.voice.phase {
-            Phase::Disconnected => "Voice disconnected",
-            Phase::Joining => "Joining voice...",
-            Phase::Connected if self.model.state.preview => "Preview voice",
-            Phase::Connected => "Encrypted voice",
-            Phase::Reconnecting => "Reconnecting voice...",
-            Phase::Leaving => "Leaving voice...",
-        };
-        let mic_label = if self.model.state.voice.muted {
-            "Unmute microphone"
-        } else {
-            "Mute microphone"
-        };
-        div()
-            .flex_shrink_0()
-            .p_3()
-            .v_flex()
-            .gap_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(div().text_sm().font_semibold().child(status))
-            .when(self.model.state.voice.active(), |view| {
-                view.child(
-                    div()
-                        .text_sm()
-                        .truncate()
-                        .child(SharedString::from(self.model.state.voice.name.clone())),
-                )
-                .child(div().text_xs().text_color(muted).child(
-                    if self.model.state.voice.deafened {
-                        "Deafened and muted"
-                    } else if self.model.state.voice.muted {
-                        "Microphone muted"
-                    } else {
-                        "Microphone live"
-                    },
-                ))
-                .child(
-                    div()
-                        .h_flex()
-                        .gap_1()
-                        .child(
-                            Button::new("voice-mute")
-                                .ghost()
-                                .size(px(36.))
-                                .icon(if self.model.state.voice.muted {
-                                    IconName::MicOff
-                                } else {
-                                    IconName::Mic
-                                })
-                                .accessibility_label(mic_label)
-                                .tooltip(mic_label)
-                                .selected(self.model.state.voice.muted)
-                                .disabled(!ready || self.model.state.voice.deafened)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.voice_command(
-                                        voice::Command::Mute(!this.model.state.voice.muted),
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        )
-                        .child(
-                            Button::new("voice-deafen")
-                                .ghost()
-                                .size(px(36.))
-                                .icon(IconName::Headphones)
-                                .accessibility_label(if self.model.state.voice.deafened {
-                                    "Undeafen"
-                                } else {
-                                    "Deafen"
-                                })
-                                .tooltip(if self.model.state.voice.deafened {
-                                    "Undeafen"
-                                } else {
-                                    "Deafen"
-                                })
-                                .selected(self.model.state.voice.deafened)
-                                .disabled(!ready)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.voice_command(
-                                        voice::Command::Deafen(!this.model.state.voice.deafened),
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        )
-                        .child(self.audio_devices_popover(cx))
-                        .child(
-                            Button::new("voice-leave")
-                                .ghost()
-                                .label("Leave")
-                                .disabled(self.model.state.voice.phase == Phase::Leaving)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.voice_command(voice::Command::Leave, window, cx);
-                                })),
-                        ),
-                )
-            })
-            .when_some(self.model.state.voice.error.clone(), |view, error| {
-                view.child(
-                    div()
-                        .id("voice-error")
-                        .max_h(px(48.))
-                        .overflow_y_scroll()
-                        .text_sm()
-                        .child(SharedString::from(error)),
-                )
-            })
-            .when(!self.model.state.voice.active(), |view| {
-                view.child(
-                    Button::new("dismiss-voice")
-                        .ghost()
-                        .label("Dismiss")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.audio_settings = false;
-                            this.action(Action::DismissVoiceError, window, cx);
-                        })),
-                )
-            })
-    }
-
-    fn voice_view(&self, room: &ChatRoom, cx: &mut Context<Self>) -> impl IntoElement {
-        let here = self.model.state.voice.room.as_ref() == Some(&room.id)
-            && self.model.state.voice.active();
-        let id = room.id.clone();
-        let muted = cx.theme().muted_foreground;
-        div()
-            .id("voice-channel-scroll")
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .overflow_y_scroll()
-            .p_6()
-            .v_flex()
-            .gap_4()
-            .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .child(SharedString::from(room.name.clone())),
-            )
-            .child(div().text_sm().text_color(muted).child(if here {
-                if self.model.state.voice.participants.len() == 1 {
-                    "You're here alone. Stay as long as you like; others can join later."
-                } else {
-                    "Voice stays connected while you browse other conversations."
-                }
-            } else {
-                "Join muted and hang out. The channel stays here when empty."
-            }))
-            .when(!self.model.state.preview && !room.encrypted, |view| {
-                view.child(div().text_sm().child(
-                    "This channel is unencrypted. Talk only joins encrypted voice channels.",
-                ))
-            })
-            .when(!here, |view| {
-                view.child(
-                    div().h_flex().child(
-                        Button::new("join-voice")
-                            .primary()
-                            .label(if self.model.state.voice.active() {
-                                "Switch voice channel"
-                            } else {
-                                "Join voice"
-                            })
-                            .disabled(!self.model.state.can_join_voice(&room.id))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.join_voice(id.clone(), window, cx)
-                            })),
-                    ),
-                )
-            })
-            .when(here, |view| {
-                view.child(
-                    div()
-                        .v_flex()
-                        .gap_2()
-                        .child(div().font_semibold().child("In voice"))
-                        .children(self.model.state.voice.participants.iter().map(|person| {
-                            div()
-                                .h_flex()
-                                .items_center()
-                                .gap_3()
-                                .py_2()
-                                .child(if person.muted {
-                                    IconName::MicOff
-                                } else {
-                                    IconName::Mic
-                                })
-                                .child(div().flex_1().min_w_0().truncate().child(
-                                    SharedString::from(if person.local {
-                                        "You".into()
-                                    } else {
-                                        person.user.clone()
-                                    }),
-                                ))
-                                .child(div().text_sm().text_color(muted).child(if person.muted {
-                                    "Muted"
-                                } else if person.speaking {
-                                    "Speaking"
-                                } else {
-                                    "Listening"
-                                }))
-                        })),
-                )
-            })
-            .when(
-                self.model.state.switch_voice.as_ref() == Some(&room.id),
-                |view| {
-                    view.child(
-                        div()
-                            .v_flex()
-                            .gap_2()
-                            .child(div().text_sm().child(SharedString::from(format!(
-                                "Leave {} and join {} muted?",
-                                self.model.state.voice.name, room.name
-                            ))))
-                            .child(
-                                div()
-                                    .h_flex()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("confirm-switch-voice")
-                                            .primary()
-                                            .label("Switch channel")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.action(Action::ConfirmVoiceSwitch, window, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("cancel-switch-voice")
-                                            .ghost()
-                                            .label("Cancel")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.action(Action::CancelVoiceSwitch, window, cx);
-                                            })),
-                                    ),
-                            ),
-                    )
-                },
-            )
-    }
-
-    fn workspace(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.filter.read(cx).value().to_lowercase();
-        let room = self
-            .model
-            .state
-            .rooms
-            .iter()
-            .find(|room| Some(&room.id) == self.model.state.selected.as_ref())
-            .cloned();
-        let sidebar_title = match &self.model.state.navigation {
-            Navigation::DirectMessages => "Direct messages".to_owned(),
-            Navigation::Server(id) => self
-                .model
-                .state
+        window.set_sidebar_title(match &state.navigation {
+            Navigation::DirectMessages => "Direct messages".into(),
+            Navigation::Server(id) => state
                 .servers
                 .iter()
                 .find(|server| &server.id == id)
-                .map(|server| server.name.clone())
-                .unwrap_or_else(|| "Server".into()),
-        };
-        let has_rooms = self
-            .model
-            .state
-            .rooms
-            .iter()
-            .any(|room| self.model.state.in_scope(room));
-        let read_only =
-            !self.model.state.preview && room.as_ref().is_some_and(|room| !room.encrypted);
-        let messages = self.model.state.messages.clone();
-        let muted = cx.theme().muted_foreground;
-        let foreground = cx.theme().foreground;
-        let border = cx.theme().border;
-        let mut listed_voice = false;
+                .map_or("Server".into(), |server| server.name.clone().into()),
+        });
+        window.set_filter_placeholder(
+            if state.navigation == Navigation::DirectMessages {
+                "Find a DM"
+            } else {
+                "Find a channel"
+            }
+            .into(),
+        );
+        update_model(
+            &self.models.servers,
+            state
+                .servers
+                .iter()
+                .map(|server| ServerRow {
+                    id: server.id.clone().into(),
+                    name: server.name.clone().into(),
+                    initial: initials(&server.name),
+                    selected: state.navigation == Navigation::Server(server.id.clone()),
+                    unread: state.rooms.iter().any(|room| {
+                        room.unread > 0 && !room.direct && server.channels.contains(&room.id)
+                    }),
+                })
+                .collect(),
+        );
         let mut listed_text = false;
-        let room_buttons: Vec<_> = self
-            .model
-            .state
+        let mut listed_voice = false;
+        let rows: Vec<_> = state
             .rooms
             .iter()
-            .filter(|room| {
-                self.model.state.in_scope(room) && room.name.to_lowercase().contains(&query)
-            })
+            .filter(|room| state.in_scope(room) && room.name.to_lowercase().contains(&query))
             .map(|room| {
-                let id = room.id.clone();
-                let heading = if self.model.state.navigation == Navigation::DirectMessages {
-                    None
+                let heading = if state.navigation == Navigation::DirectMessages {
+                    ""
                 } else if room.voice && !listed_voice {
                     listed_voice = true;
-                    Some("Voice channels")
+                    "VOICE CHANNELS"
                 } else if !room.voice && !listed_text {
                     listed_text = true;
-                    Some("Text channels")
+                    "TEXT CHANNELS"
                 } else {
-                    None
+                    ""
                 };
-                div()
-                    .v_flex()
-                    .gap_1()
-                    .when_some(heading, |view, label| {
-                        view.child(
-                            div()
-                                .px_2()
-                                .pt_3()
-                                .pb_1()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(label),
-                        )
-                    })
-                    .child(
-                        Button::new(SharedString::from(format!("room-{id}")))
-                            .ghost()
-                            .w_full()
-                            .accessibility_label(SharedString::from(room.name.clone()))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(if room.voice {
-                                        IconName::Volume2
-                                    } else if room.direct {
-                                        IconName::MessageCircle
-                                    } else {
-                                        IconName::Hash
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(SharedString::from(room.name.clone())),
-                                    ),
-                            )
-                            .selected(Some(&room.id) == self.model.state.selected.as_ref())
-                            .tooltip(SharedString::from(room.name.clone()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select(id.clone(), window, cx)
-                            })),
-                    )
+                RoomRow {
+                    id: room.id.clone().into(),
+                    name: room.name.clone().into(),
+                    heading: heading.into(),
+                    icon: if room.voice {
+                        self.icons.voice.clone()
+                    } else if room.direct {
+                        self.icons.dm.clone()
+                    } else {
+                        self.icons.text.clone()
+                    },
+                    selected: Some(&room.id) == state.selected.as_ref(),
+                    unread: room.unread > 0,
+                    badge: mention_badge(room),
+                    voice: room.voice,
+                    direct: room.direct,
+                    initial: initial(&room.name),
+                    tint: tint(&room.id),
+                }
             })
             .collect();
-        div().h_flex().flex_1().min_w_0().h_full()
-            .child(div().w(px(240.)).flex_shrink_0().h_full().v_flex().bg(rgb(0x141414)).border_r_1().border_color(border)
-                .child(div().h(px(64.)).flex_shrink_0().px_4().h_flex().items_center().font_semibold().child(div().min_w_0().truncate().child(SharedString::from(sidebar_title))))
-                .child(div().flex_shrink_0().px_3().pb_3().child(Input::new(&self.filter).aria_label(if self.model.state.navigation == Navigation::DirectMessages { "Find a DM" } else { "Find a channel" })))
-                .child(div().id("rooms-scroll").flex_1().min_h(px(96.)).overflow_y_scroll().px_2().v_flex().gap_1()
-                    .children(room_buttons)
-                    .when(!has_rooms, |view| view.child(div().p_3().text_sm().text_color(muted).child(if self.model.state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." } else { "No joined channels in this server. Join a channel in another Matrix client to see it here." })))
-                    .when(has_rooms && !self.model.state.rooms.iter().any(|room| self.model.state.in_scope(room) && room.name.to_lowercase().contains(&query)), |view| view.child(div().p_3().text_sm().text_color(muted).child("No matching conversations."))))
-                .when(self.model.state.voice.active() || self.model.state.voice.error.is_some() || self.audio_settings, |view| view.child(self.voice_footer(cx)))
-                .child(div().flex_shrink_0().p_3().v_flex().gap_2().border_t_1().border_color(border)
-                    .child(div().text_sm().truncate().child(SharedString::from(self.model.state.account.clone().unwrap_or_else(|| "Local preview".into()))))
-                    .when_some(self.model.state.storage.filter(|_| !self.model.state.voice.active()), |view, storage| view.child(div().text_xs().text_color(muted).child(storage)))
-                    .child(div().text_xs().text_color(muted).child(if self.model.state.preview { "Messages stay here" } else if self.model.state.online { "Connected to Matrix" } else { "Sync paused or connecting" }))
-                    .child(div().h_flex().gap_1().child(Button::new("exit").ghost().label(if self.model.state.preview { "Back to sign in" } else { "Sign out" }).disabled(self.model.state.busy || self.model.state.sending.is_some())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.action(Action::Logout, window, cx);
-                        })))
-                    .when(!self.model.state.preview && !self.model.state.online, |view| view.child(Button::new("retry-sync").ghost().label("Reconnect").disabled(self.model.state.busy).on_click(cx.listener(|this, _, window, cx| { this.action(Action::RetrySync, window, cx); })))))))
-            .child(div().flex_1().min_w_0().h_full().v_flex()
-                .child(div().h(px(64.)).flex_shrink_0().px_6().h_flex().items_center().gap_3().border_b_1().border_color(border)
-                    .child(if room.as_ref().is_some_and(|r| r.voice) { IconName::Volume2 } else if room.as_ref().is_some_and(|r| r.direct) { IconName::MessageCircle } else { IconName::Hash })
-                    .child(div().flex_1().min_w_0().font_semibold().truncate().child(SharedString::from(room.as_ref().map(|r| r.name.clone()).unwrap_or_else(|| "Choose a conversation".into()))))
-                    .when_some(room.clone(), |view, room| view.child(div().text_sm().text_color(muted).child(format!("{} {}", room.members, if room.members == 1 { "member" } else { "members" })))))
-                .when(self.model.state.preview, |view| view.child(div().px_6().py_2().text_sm().bg(rgb(0x202020)).child("Local preview. Messages and voice controls are samples; no audio devices are opened.")))
-                .when(!self.model.state.preview && !self.model.state.trusted, |view| view.child(div().px_6().py_3().v_flex().gap_2().bg(rgb(0x202020))
-                    .child(div().font_semibold().child("Verify this device to send messages"))
-                    .child(div().text_sm().text_color(muted).child("Use your Matrix recovery key, or verify Talk in another client and check again."))
-                    .child(div().h_flex().gap_2()
-                        .child(div().flex_1().min_w_0().child(Input::new(&self.recovery).aria_label("Matrix recovery key").mask_toggle().disabled(self.model.state.busy)))
-                        .child(Button::new("recover").label("Recover").disabled(self.model.state.busy || self.model.state.voice.active()).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))))
-                        .child(Button::new("check-trust").ghost().label("Check again").disabled(self.model.state.busy).on_click(cx.listener(|this, _, window, cx| { this.action(Action::RefreshTrust, window, cx); }))))))
-                .when_some(self.model.state.notice.clone().map(SharedString::from), |view, notice| view.child(div().px_6().py_2().text_sm().bg(rgb(0x262626)).child(notice)))
-                .when(self.model.state.selected.is_some() && !self.model.state.preview && !room.as_ref().is_some_and(|r| r.voice), |view| view.child(div().px_6().py_2().h_flex()
-                    .child(Button::new("earlier").ghost().label(if self.model.state.loading_history { "Loading history..." } else { "Load earlier messages" }).disabled(self.model.state.busy || !self.model.state.room_ready || self.model.state.loading_history)
-                        .on_click(cx.listener(|this, _, window, cx| { this.action(Action::Earlier, window, cx); })))))
-                .when(room.as_ref().is_some_and(|r| r.voice), |view| view.child(self.voice_view(room.as_ref().unwrap(), cx)))
-                .when(!room.as_ref().is_some_and(|r| r.voice), |view| view
-                .child(div().flex_1().min_h_0().min_w_0().v_flex()
-                    .when(self.model.state.messages.is_empty(), |view| view.child(div().flex_1().v_flex().justify_center().items_center().p_6().gap_2()
-                        .child(div().text_lg().font_semibold().child(if !self.model.state.room_ready && self.model.state.selected.is_some() { "Loading conversation..." } else if read_only { "No messages loaded" } else { "Room to talk" }))
-                        .child(div().text_sm().text_color(muted).child(if self.model.state.selected.is_none() { "Select a conversation on the left." } else if read_only { "Load earlier history to read this room." } else { "No messages loaded. Start a conversation or load earlier history." }))))
-                    .when(!self.model.state.messages.is_empty(), |view| view.child(list(self.list.clone(), move |index, _, _| render_message(&messages[index], foreground, muted).into_any_element()).flex_1().size_full())))
-                .child(div().px_6().pt_3().pb_4().v_flex().gap_2()
-                    .child(div().h_flex().gap_2()
-                        .child(div().flex_1().min_w_0().child(Input::new(&self.composer).aria_label("Message").disabled(!self.model.state.room_ready || self.model.state.busy || read_only)))
-                        .child(Button::new("send").primary().label(if self.model.state.sending.is_some() { "Sending..." } else { "Send" }).disabled(!self.model.state.can_send())
-                            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
-                    .child(div().text_xs().text_color(muted).child(if self.model.state.selected.is_none() { "Choose a DM or server channel to write a message." } else if self.model.state.preview { "Enter to send locally." } else if !self.model.state.trusted { "Sending is locked until this device is verified." } else if room.as_ref().is_some_and(|r| r.encrypted) { "End-to-end encrypted. Enter to send." } else { "Unencrypted room. Reading only in this build." })))))
-    }
-}
-
-impl Render for TalkApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let workspace = self.model.state.preview || self.model.state.account.is_some();
-        div()
-            .size_full()
-            .h_flex()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .child(
-                div()
-                    .w(px(64.))
-                    .h_full()
-                    .flex_shrink_0()
-                    .v_flex()
-                    .items_center()
-                    .py_4()
-                    .gap_3()
-                    .bg(rgb(0x0e0e0e))
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .when(!workspace, |view| {
-                        view.child(div().text_xl().font_semibold().child("T"))
-                    })
-                    .when(workspace, |view| {
-                        view.child(
-                            Button::new("dm-chats")
-                                .ghost()
-                                .size(px(40.))
-                                .icon(IconName::MessageCircle)
-                                .accessibility_label("Direct messages")
-                                .tooltip("Direct messages")
-                                .selected(self.model.state.navigation == Navigation::DirectMessages)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.navigate(Navigation::DirectMessages, window, cx)
-                                })),
-                        )
-                        .child(div().w(px(32.)).h(px(1.)).bg(cx.theme().border))
-                        .child(
-                            div()
-                                .id("servers-scroll")
-                                .flex_1()
-                                .min_h_0()
-                                .w_full()
-                                .overflow_y_scroll()
-                                .v_flex()
-                                .items_center()
-                                .gap_3()
-                                .children(self.model.state.servers.iter().map(|server| {
-                                    let id = server.id.clone();
-                                    Button::new(SharedString::from(format!("server-{id}")))
-                                        .ghost()
-                                        .size(px(40.))
-                                        .label(
-                                            server
-                                                .name
-                                                .chars()
-                                                .next()
-                                                .unwrap_or('?')
-                                                .to_uppercase()
-                                                .to_string(),
-                                        )
-                                        .accessibility_label(SharedString::from(format!(
-                                            "Server: {}",
-                                            server.name
-                                        )))
-                                        .tooltip(SharedString::from(server.name.clone()))
-                                        .selected(
-                                            self.model.state.navigation
-                                                == Navigation::Server(id.clone()),
-                                        )
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.navigate(
-                                                Navigation::Server(id.clone()),
-                                                window,
-                                                cx,
-                                            )
-                                        }))
-                                })),
-                        )
-                    }),
-            )
-            .child(if workspace {
-                self.workspace(cx).into_any_element()
+        window.set_sidebar_empty(if !rows.is_empty() { "" }
+            else if state.rooms.iter().any(|room| state.in_scope(room)) { "No matching conversations." }
+            else if state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." }
+            else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
+        update_model(&self.models.rooms, rows);
+        let account = state.account.as_deref().unwrap_or("Preview");
+        window.set_account(account.into());
+        window.set_account_name(display_part(account).into());
+        window.set_account_initial(initial(display_part(account)));
+        window.set_account_tint(tint(display_part(account)));
+        window.set_account_status(
+            if state.preview {
+                "Local only"
+            } else if state.online {
+                "Online"
             } else {
-                self.sign_in_view(cx).into_any_element()
-            })
+                "Offline, sync paused"
+            }
+            .into(),
+        );
+        window.set_storage(state.storage.unwrap_or_default().into());
+        window.set_notice(state.notice.as_deref().unwrap_or_default().into());
+        window.set_room_selected(room.is_some());
+        window.set_room_name(room.map_or("", |room| room.name.as_str()).into());
+        window.set_room_direct(room.is_some_and(|room| room.direct));
+        window.set_room_initial(room.map_or(SharedString::default(), |room| initial(&room.name)));
+        window.set_room_tint(room.map_or(slint::Color::default(), |room| tint(&room.id)));
+        window.set_room_icon(if room.is_some_and(|room| room.voice) {
+            self.icons.voice.clone()
+        } else if room.is_some_and(|room| room.direct) {
+            self.icons.dm.clone()
+        } else {
+            self.icons.text.clone()
+        });
+        window.set_members(room.map_or(SharedString::default(), |room| {
+            format!(
+                "{} {}",
+                room.members,
+                if room.members == 1 {
+                    "member"
+                } else {
+                    "members"
+                }
+            )
+            .into()
+        }));
+        window.set_members_available(state.lists_members());
+        let members = match &state.members {
+            Some(Ok(members)) => members.as_slice(),
+            _ => &[],
+        };
+        window.set_roster_note(
+            match &state.members {
+                None => "Loading members...",
+                Some(Err(error)) => *error,
+                Some(Ok(members)) if members.is_empty() => "No one else has joined yet.",
+                Some(Ok(_)) => "",
+            }
+            .into(),
+        );
+        update_model(
+            &self.models.roster,
+            members
+                .iter()
+                .enumerate()
+                .map(|(index, member)| MemberRow {
+                    id: member.id.clone().into(),
+                    name: member.name.clone().into(),
+                    initial: initial(&member.name),
+                    tint: tint(&member.name),
+                    heading: if index == 0 || members[index - 1].role != member.role {
+                        let count = members
+                            .iter()
+                            .filter(|other| other.role == member.role)
+                            .count();
+                        let role = match member.role {
+                            Role::Admin => "ADMINS",
+                            Role::Moderator => "MODERATORS",
+                            Role::Member => "MEMBERS",
+                        };
+                        format!("{role} — {count}").into()
+                    } else {
+                        SharedString::default()
+                    },
+                })
+                .collect(),
+        );
+        update_model(
+            &self.models.bar_reactions,
+            self.app
+                .frequent_reactions(3)
+                .iter()
+                .map(|key| emoji::cell(key))
+                .collect(),
+        );
+        update_model(
+            &self.models.menu_reactions,
+            self.app
+                .frequent_reactions(4)
+                .iter()
+                .map(|key| emoji::cell(key))
+                .collect(),
+        );
+        let forwarding = state.forwarding.as_ref();
+        window.set_forward_open(forwarding.is_some());
+        if forwarding.is_some() != self.forwarding {
+            window.set_forward_query(SharedString::default());
+        }
+        let forward_query = window.get_forward_query().to_lowercase();
+        window.set_forward_preview(
+            forwarding
+                .and_then(|forwarding| state.message(&forwarding.item))
+                .map(|message| match &message.attachment {
+                    Some(attachment) if message.body.is_empty() => attachment.name.clone(),
+                    _ => talk_core::chat::plain_snippet(&message.body),
+                })
+                .unwrap_or_default()
+                .into(),
+        );
+        update_model(
+            &self.models.forward_targets,
+            forwarding.map_or_else(Vec::new, |forwarding| {
+                state
+                    .rooms
+                    .iter()
+                    .filter(|room| {
+                        state.can_forward_to(room)
+                            && room.name.to_lowercase().contains(&forward_query)
+                    })
+                    .map(|room| ForwardRow {
+                        id: room.id.clone().into(),
+                        name: room.name.clone().into(),
+                        place: if room.direct {
+                            "Direct message".into()
+                        } else {
+                            state
+                                .servers
+                                .iter()
+                                .find(|server| server.channels.contains(&room.id))
+                                .map_or("Channel".into(), |server| server.name.clone().into())
+                        },
+                        icon: if room.direct {
+                            self.icons.dm.clone()
+                        } else {
+                            self.icons.text.clone()
+                        },
+                        direct: room.direct,
+                        initial: initial(&room.name),
+                        tint: tint(&room.id),
+                        sent: forwarding.sent.contains(&room.id),
+                    })
+                    .collect()
+            }),
+        );
+        window.set_voice_room(room.is_some_and(|room| room.voice));
+        window.set_room_encrypted(room.is_some_and(|room| room.encrypted));
+        window.set_room_ready(state.room_ready);
+        window.set_draft(state.draft().into());
+        window.set_composer_enabled(
+            state.room_ready
+                && !state.busy
+                && room.is_some_and(|room| !room.voice && (state.preview || room.encrypted)),
+        );
+        window.set_can_send(state.can_send());
+        window.set_can_attach(state.can_attach());
+        window.set_attaching(state.attaching);
+        window.set_confirm_delete(state.confirm_delete.clone().unwrap_or_default().into());
+        window.set_compose_label(match state.compose() {
+            Some(Compose::Reply { author, body, .. }) => {
+                format!("Replying to {author}: {body}").into()
+            }
+            Some(Compose::Edit { .. }) => "Editing your message".into(),
+            None => SharedString::default(),
+        });
+        window.set_sending(state.sending.is_some());
+        window.set_loading_history(state.loading_history);
+        window.set_composer_hint(
+            if room.is_none() {
+                "Choose a DM or server channel to write a message."
+            } else if state.preview {
+                "Enter to send locally."
+            } else if !state.trusted {
+                "Sending is locked until this device is verified."
+            } else if room.is_some_and(|room| room.encrypted) {
+                "End-to-end encrypted. Enter to send."
+            } else {
+                "Unencrypted room. Reading only in this build."
+            }
+            .into(),
+        );
+        if messages_changed || selection_changed || reset {
+            if selection_changed || reset {
+                window.set_react_item(SharedString::default());
+                window.set_active_item(SharedString::default());
+            }
+            let mut previous = std::mem::take(&mut self.rows);
+            let mut before: Option<&ChatMessage> = None;
+            let rows = state
+                .messages
+                .iter()
+                .map(|message| {
+                    let mut row = match previous.remove(&message.id) {
+                        Some((old, row)) if &old == message => row,
+                        _ => message_row(message),
+                    };
+                    self.rows
+                        .insert(message.id.clone(), (message.clone(), row.clone()));
+                    let day = day(message.timestamp);
+                    let new_day = !day.is_empty()
+                        && before.is_none_or(|before| self::day(before.timestamp) != day);
+                    row.first = new_day || before.is_none_or(|before| !continues(before, message));
+                    row.day = if new_day {
+                        day.into()
+                    } else {
+                        SharedString::default()
+                    };
+                    before = Some(message);
+                    row
+                })
+                .collect();
+            update_model(&self.models.messages, rows);
+            let weak = window.as_weak();
+            if selection_changed || at_end {
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(window) = weak.upgrade() {
+                        window.invoke_scroll_to_latest();
+                    }
+                });
+            } else if prepended {
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(window) = weak.upgrade() {
+                        window.invoke_preserve_history_position(
+                            (window.invoke_timeline_extent() - old_extent).max(0.),
+                        );
+                    }
+                });
+            }
+        }
+        window.set_voice_active(voice.active());
+        window.set_voice_visible(voice.active() || voice.error.is_some());
+        window.set_voice_ready(matches!(
+            voice.phase,
+            Phase::Connected | Phase::Reconnecting
+        ));
+        window.set_voice_leaving(voice.phase == Phase::Leaving);
+        window.set_voice_here(voice_here);
+        window.set_voice_channel(
+            voice
+                .room
+                .as_deref()
+                .filter(|_| voice.active())
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_voice_tone(match voice.phase {
+            Phase::Connected => 1,
+            Phase::Disconnected => 2,
+            _ => 0,
+        });
+        window.set_voice_detail(
+            if state.preview {
+                format!("{} · Sample", voice.name)
+            } else {
+                format!("{} · End-to-end encrypted", voice.name)
+            }
+            .into(),
+        );
+        window.set_can_join(room.is_some_and(|room| state.can_join_voice(&room.id)));
+        window.set_muted(voice.muted);
+        window.set_deafened(voice.deafened);
+        window.set_voice_status(
+            match voice.phase {
+                Phase::Disconnected => "Voice disconnected",
+                Phase::Joining => "Joining voice...",
+                Phase::Connected if state.preview => "Preview voice",
+                Phase::Connected => "Voice connected",
+                Phase::Reconnecting => "Reconnecting voice...",
+                Phase::Leaving => "Leaving voice...",
+            }
+            .into(),
+        );
+        window.set_voice_name(voice.name.clone().into());
+        window.set_voice_microphone_status(
+            if voice.deafened {
+                "Deafened and muted"
+            } else if voice.muted {
+                "Microphone muted"
+            } else {
+                "Microphone live"
+            }
+            .into(),
+        );
+        window.set_voice_description(
+            if voice_here && voice.participants.len() == 1 {
+                "You're here alone. Stay as long as you like; others can join later."
+            } else if voice_here {
+                "Voice stays connected while you browse other conversations."
+            } else {
+                "Join muted and hang out. The channel stays here when empty."
+            }
+            .into(),
+        );
+        window.set_voice_error(voice.error.as_deref().unwrap_or_default().into());
+        window.set_voice_warning(voice.warning.as_deref().unwrap_or_default().into());
+        update_model(
+            &self.models.participants,
+            if voice.active() {
+                voice
+                    .participants
+                    .iter()
+                    .map(|person| PersonRow {
+                        name: if person.local {
+                            "You".into()
+                        } else {
+                            display_part(&person.user).into()
+                        },
+                        initial: initial(if person.local {
+                            display_part(account)
+                        } else {
+                            display_part(&person.user)
+                        }),
+                        tint: tint(display_part(if person.local {
+                            account
+                        } else {
+                            &person.user
+                        })),
+                        speaking: person.speaking && !person.muted && person.connected,
+                        connected: person.connected,
+                        status: if let Some(problem) = &person.problem {
+                            problem.as_str()
+                        } else if !person.connected {
+                            "Connection lost"
+                        } else if person.muted {
+                            "Muted"
+                        } else if person.speaking {
+                            "Speaking"
+                        } else {
+                            "Listening"
+                        }
+                        .into(),
+                        muted: person.muted,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            },
+        );
+        let switching = state.switch_voice.as_ref().map(|id| {
+            state
+                .rooms
+                .iter()
+                .find(|room| &room.id == id)
+                .map_or("the other channel", |room| room.name.as_str())
+        });
+        window.set_switch_prompt(
+            switching
+                .map(|target| {
+                    format!(
+                        "You're already in {}. Leave it and join {}? You'll join muted.",
+                        voice.name, target
+                    )
+                })
+                .unwrap_or_default()
+                .into(),
+        );
+        update_model(
+            &self.models.microphones,
+            voice
+                .microphones
+                .iter()
+                .map(|device| device_label(&device.name))
+                .collect(),
+        );
+        update_model(
+            &self.models.speakers,
+            voice
+                .speakers
+                .iter()
+                .map(|device| device_label(&device.name))
+                .collect(),
+        );
+        window.set_microphone_index(device_index(
+            &voice.microphones,
+            voice.microphone.as_deref(),
+        ));
+        window.set_speaker_index(device_index(&voice.speakers, voice.speaker.as_deref()));
+        if selection_changed && room.is_some_and(|room| !room.voice) {
+            window.invoke_focus_composer();
+        } else if reset && !state.preview && state.account.is_none() {
+            window.invoke_focus_sign_in();
+        }
+        self.navigation = state.navigation.clone();
+        self.selection_version = state.selection_version;
+        self.reset_version = state.reset_version;
+        self.messages = state.messages.clone();
+        self.forwarding = state.forwarding.is_some();
+        if self.app.reaction_uses() != &self.layout.reactions {
+            self.layout.reactions = self.app.reaction_uses().clone();
+            self.layout.write(&self.root);
+        }
+        if selection_changed && !state.preview && state.account.is_some() {
+            let mut layout = self.layout.clone();
+            layout.channels.extend(self.app.last_channels());
+            if layout != self.layout {
+                layout.write(&self.root);
+                self.layout = layout;
+            }
+        }
     }
 }
 
-fn field(label: &'static str, input: Input) -> impl IntoElement {
-    div()
-        .v_flex()
-        .gap_2()
-        .child(div().text_sm().child(label))
-        .child(input)
+impl Drop for Adapter {
+    fn drop(&mut self) {
+        self.stop_backend();
+    }
 }
 
-fn render_message(
-    message: &ChatMessage,
-    foreground: gpui_kit::Hsla,
-    muted: gpui_kit::Hsla,
-) -> impl IntoElement {
-    div()
-        .w_full()
-        .h_flex()
-        .items_start()
-        .gap_3()
-        .px_6()
-        .py_3()
-        .min_w_0()
-        .child(
-            div()
-                .size(px(32.))
-                .flex_shrink_0()
-                .rounded_md()
-                .bg(rgb(if message.own { 0x363636 } else { 0x232323 }))
-                .h_flex()
-                .justify_center()
-                .items_center()
-                .text_sm()
-                .font_semibold()
-                .child(
-                    message
-                        .author
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_uppercase()
-                        .to_string(),
-                ),
+fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+    macro_rules! bind {
+        ($callback:ident, $action:expr) => {{
+            let adapter = adapter.clone();
+            let weak = window.as_weak();
+            window.$callback(move || {
+                if let Some(window) = weak.upgrade() {
+                    adapter.borrow_mut().action(&window, $action);
+                }
+            });
+        }};
+    }
+    bind!(on_explore_preview, Action::Preview);
+    bind!(on_restore, Action::Restore);
+    bind!(on_logout, Action::Logout);
+    bind!(on_refresh_trust, Action::RefreshTrust);
+    bind!(on_retry_sync, Action::RetrySync);
+    bind!(
+        on_navigate_dms,
+        Action::Navigate(Navigation::DirectMessages)
+    );
+    bind!(on_send, Action::Send);
+    bind!(on_earlier, Action::Earlier);
+    bind!(on_leave_voice, Action::Voice(voice::Command::Leave));
+    bind!(on_confirm_switch, Action::ConfirmVoiceSwitch);
+    bind!(on_cancel_switch, Action::CancelVoiceSwitch);
+    bind!(on_dismiss_voice_error, Action::DismissVoiceError);
+    bind!(on_refresh_devices, Action::Voice(voice::Command::Devices));
+    bind!(on_confirm_delete_message, Action::ConfirmDelete);
+    bind!(on_cancel_delete, Action::CancelDelete);
+    bind!(on_cancel_compose, Action::CancelCompose);
+    bind!(on_close_forward, Action::CloseForward);
+    bind!(on_dismiss_notice, Action::DismissNotice);
+    macro_rules! bind_item {
+        ($callback:ident, $action:expr) => {{
+            let adapter = adapter.clone();
+            let weak = window.as_weak();
+            window.$callback(move |item| {
+                if let Some(window) = weak.upgrade() {
+                    adapter.borrow_mut().action(&window, $action(item.into()));
+                }
+            });
+        }};
+    }
+    bind_item!(on_reply, Action::Reply);
+    bind_item!(on_edit, Action::Edit);
+    bind_item!(on_request_delete, Action::RequestDelete);
+    bind_item!(on_retry, Action::Retry);
+    bind_item!(on_cancel_send, Action::CancelSend);
+    bind_item!(on_start_forward, Action::StartForward);
+    bind_item!(on_forward_to, Action::Forward);
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_forward_search(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().refresh(&window);
+        }
+    });
+    let state = adapter.clone();
+    window.on_emoji_search(move |query| {
+        let adapter = state.borrow();
+        update_model(
+            &adapter.models.emoji_rows,
+            emoji::rows(&query, &adapter.app.frequent_reactions(16)),
+        );
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_react(move |item, key| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(
+                &window,
+                Action::React {
+                    item: item.into(),
+                    key: key.into(),
+                },
+            );
+        }
+    });
+    let state = adapter.clone();
+    window.on_sidebar_resized(move |width| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.sidebar_width = Some(width);
+        adapter.layout.write(&adapter.root);
+    });
+    let state = adapter.clone();
+    window.on_member_list_toggled(move |shown| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.members_hidden = !shown;
+        adapter.layout.write(&adapter.root);
+    });
+    let state = adapter.clone();
+    window.on_attach(move || {
+        let weak = Rc::downgrade(&state);
+        state.borrow_mut().dialog(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_title("Attach a file")
+                .pick_file()
+                .await;
+            if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {
+                let window = adapter.borrow().window.upgrade();
+                if let Some(window) = window {
+                    adapter
+                        .borrow_mut()
+                        .action(&window, Action::Attach(file.path().to_owned()));
+                }
+            }
+        });
+    });
+    let state = adapter.clone();
+    window.on_save_attachment(move |item| {
+        let item = item.to_string();
+        let name = state
+            .borrow()
+            .app
+            .state
+            .message(&item)
+            .and_then(|message| message.attachment.as_ref())
+            .map(|attachment| attachment.name.clone())
+            .unwrap_or_default();
+        let weak = Rc::downgrade(&state);
+        state.borrow_mut().dialog(async move {
+            // Only the file name is suggested; a sender cannot choose the folder.
+            let name = std::path::Path::new(&name)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "attachment".into());
+            let file = rfd::AsyncFileDialog::new()
+                .set_title("Save attachment")
+                .set_file_name(name)
+                .save_file()
+                .await;
+            if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {
+                let window = adapter.borrow().window.upgrade();
+                if let Some(window) = window {
+                    adapter.borrow_mut().action(
+                        &window,
+                        Action::SaveAttachment {
+                            item,
+                            path: file.path().to_owned(),
+                        },
+                    );
+                }
+            }
+        });
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_login(move || {
+        if let Some(window) = weak.upgrade() {
+            let mut state = state.borrow_mut();
+            let busy = state.app.state.busy;
+            state.action(
+                &window,
+                Action::Login {
+                    homeserver: window.get_homeserver().into(),
+                    username: window.get_username().into(),
+                    password: window.get_password().into(),
+                },
+            );
+            if !busy && state.app.state.busy {
+                window.set_password(SharedString::default());
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_recover(move || {
+        if let Some(window) = weak.upgrade() {
+            let mut state = state.borrow_mut();
+            let busy = state.app.state.busy;
+            state.action(&window, Action::Recover(window.get_recovery().into()));
+            if !busy && state.app.state.busy {
+                window.set_recovery(SharedString::default());
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_navigate_server(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Navigate(Navigation::Server(id.into())));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_select_room(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::SelectRoom(id.into()));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_draft_edited(move |text| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::SetDraft(text.into()));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_filter_edited(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().refresh(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_join_voice(move || {
+        if let Some(window) = weak.upgrade() {
+            let id = state.borrow().app.state.selected.clone();
+            if let Some(id) = id {
+                state
+                    .borrow_mut()
+                    .action(&window, Action::RequestJoinVoice(id));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_toggle_mute(move || {
+        if let Some(window) = weak.upgrade() {
+            let muted = state.borrow().app.state.voice.muted;
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::Mute(!muted)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_toggle_deafen(move || {
+        if let Some(window) = weak.upgrade() {
+            let deafened = state.borrow().app.state.voice.deafened;
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::Deafen(!deafened)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_select_microphone(move |index| {
+        if let Some(window) = weak.upgrade() {
+            let id = usize::try_from(index).ok().and_then(|index| {
+                state
+                    .borrow()
+                    .app
+                    .state
+                    .voice
+                    .microphones
+                    .get(index)
+                    .map(|device| device.id.clone())
+            });
+            if let Some(id) = id {
+                let mut adapter = state.borrow_mut();
+                if adapter.meter.is_some() {
+                    adapter.meter = Some(InputMeter::start(Some(&id)));
+                }
+                adapter.action(&window, Action::Voice(voice::Command::Microphone(id)));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_select_speaker(move |index| {
+        if let Some(window) = weak.upgrade() {
+            let id = usize::try_from(index).ok().and_then(|index| {
+                state
+                    .borrow()
+                    .app
+                    .state
+                    .voice
+                    .speakers
+                    .get(index)
+                    .map(|device| device.id.clone())
+            });
+            if let Some(id) = id {
+                state
+                    .borrow_mut()
+                    .action(&window, Action::Voice(voice::Command::Speaker(id)));
+            }
+        }
+    });
+    let state = adapter.clone();
+    window.on_metering(move |on| {
+        let mut adapter = state.borrow_mut();
+        let microphone = adapter.app.state.voice.microphone.clone();
+        adapter.meter = on.then(|| InputMeter::start(microphone.as_deref()));
+    });
+    // The level skips the application state, which would redraw far more than the meter.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_meter_tick(move || {
+        if let (Some(window), Some(meter)) = (weak.upgrade(), &state.borrow().meter) {
+            window.set_input_level(meter.level());
+            window.set_meter_note(SharedString::from(if !meter::AVAILABLE {
+                "The level meter isn't available on this system yet."
+            } else if meter.failed() {
+                "Talk can't read this microphone. Check that it's connected, or choose another."
+            } else {
+                ""
+            }));
+        }
+    });
+}
+
+/// Only mentions get a number; plain unread activity is a dot, because sync
+/// does not deliver every message of a room that isn't open.
+fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
+    match room.mentions {
+        0 => SharedString::default(),
+        count if count > 99 => "99+".into(),
+        count => count.to_string().into(),
+    }
+}
+
+/// Avatar tints: mid tones that keep a white initial legible.
+const TINTS: [(u8, u8, u8); 8] = [
+    (0xc2, 0x55, 0x4d),
+    (0xb8, 0x6e, 0x22),
+    (0x3a, 0x93, 0x57),
+    (0x2b, 0x8a, 0x98),
+    (0x4a, 0x74, 0xc9),
+    (0x7a, 0x5f, 0xc9),
+    (0xb3, 0x4f, 0x8c),
+    (0x64, 0x6b, 0x7a),
+];
+
+/// The same name always gets the same tint. People are keyed by display name,
+/// which is all a reply quote carries, so a quote matches its author's avatar.
+fn tint(key: &str) -> slint::Color {
+    let hash = key
+        .to_lowercase()
+        .bytes()
+        .fold(0x811c_9dc5_u32, |hash, byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+        });
+    // FNV-1a mixes its high bits far better than its low ones.
+    let (red, green, blue) = TINTS[(hash >> 20) as usize % TINTS.len()];
+    slint::Color::from_rgb_u8(red, green, blue)
+}
+
+/// The readable part of a Matrix ID: `@alice:example.org` becomes `alice`.
+fn display_part(name: &str) -> &str {
+    name.strip_prefix('@')
+        .and_then(|rest| rest.split_once(':'))
+        .map_or(name, |(local, _)| local)
+}
+
+/// A server icon shows the first letter of up to three words, as in "Co-op crew" → "Cc".
+fn initials(name: &str) -> SharedString {
+    let mut words = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next());
+    let mut text: String = words
+        .next()
+        .map(|first| first.to_uppercase().collect())
+        .unwrap_or_else(|| "?".into());
+    text.extend(words.take(2).flat_map(char::to_lowercase));
+    text.into()
+}
+
+/// A message continues the previous one's group when the same person sent it
+/// within seven minutes, without replying to something else.
+fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
+    let sender = |message: &ChatMessage| {
+        if message.sender.is_empty() {
+            message.author.clone()
+        } else {
+            message.sender.clone()
+        }
+    };
+    let close = before.timestamp == 0
+        || message.timestamp == 0
+        || message.timestamp.abs_diff(before.timestamp) <= 7 * 60;
+    message.reply.is_none() && sender(before) == sender(message) && close
+}
+
+/// The UTC calendar date of a timestamp, such as "3 October 2026"; empty when unknown.
+fn day(timestamp: u64) -> String {
+    if timestamp == 0 {
+        return String::new();
+    }
+    // Howard Hinnant's days-to-civil algorithm.
+    let days = (timestamp / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+}
+
+fn file_size(bytes: u64) -> String {
+    match bytes {
+        0..1_024 => format!("{bytes} B"),
+        1_024..1_048_576 => format!("{:.0} KB", bytes as f64 / 1_024.),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.),
+    }
+}
+
+fn picture(picture: &Picture) -> slint::Image {
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        &picture.rgba,
+        picture.width,
+        picture.height,
+    );
+    slint::Image::from_rgba8(buffer)
+}
+
+fn message_row(message: &ChatMessage) -> MessageRow {
+    // Slint's Markdown subset rejects some syntax, such as headings; show those as typed.
+    let styled = if message.formatted {
+        slint::StyledText::from_markdown(&message.body)
+            .unwrap_or_else(|_| slint::StyledText::from_plain_text(&message.body))
+    } else {
+        slint::StyledText::default()
+    };
+    let attachment = message.attachment.as_ref();
+    let preview = attachment.and_then(|attachment| attachment.preview.as_deref());
+    let detail = attachment.map(|attachment| {
+        let size = attachment.size.map(file_size);
+        match (attachment.image, attachment.preview_failed, size) {
+            (true, true, Some(size)) => format!("{size} · Preview unavailable"),
+            (true, true, None) => "Preview unavailable".into(),
+            (_, _, Some(size)) => size,
+            _ => String::new(),
+        }
+    });
+    let (delivery, can_retry, can_cancel) = match message.delivery {
+        Delivery::Sent => ("", false, false),
+        Delivery::Sending => ("Sending...", false, true),
+        Delivery::Waiting => (
+            "Not sent yet. Talk sends it when the connection returns.",
+            false,
+            true,
+        ),
+        Delivery::Failed => ("Not sent. The server refused this message.", true, true),
+    };
+    let reply_author = message
+        .reply
+        .as_ref()
+        .map(|reply| reply.author.as_str())
+        .unwrap_or_default();
+    MessageRow {
+        id: message.id.clone().into(),
+        item: message.item.clone().into(),
+        author: message.author.clone().into(),
+        initial: initial(&message.author),
+        tint: tint(&message.author),
+        body: message.body.clone().into(),
+        time: message.time.clone().into(),
+        // The gutter beside a grouped message shows only the clock time.
+        short_time: message
+            .time
+            .split_whitespace()
+            .next()
+            .filter(|time| time.contains(':'))
+            .unwrap_or_default()
+            .into(),
+        own: message.own,
+        // Grouping depends on the neighbouring messages; refresh sets both.
+        first: true,
+        day: SharedString::default(),
+        formatted: message.formatted,
+        styled,
+        edited: message.edited,
+        deleted: message.deleted,
+        has_reply: message.reply.is_some(),
+        reply_author: reply_author.into(),
+        reply_initial: initial(reply_author),
+        reply_tint: tint(reply_author),
+        reply_body: message
+            .reply
+            .as_ref()
+            .map(|reply| reply.body.clone())
+            .unwrap_or_default()
+            .into(),
+        reactions: ModelRc::new(VecModel::from(
+            message
+                .reactions
+                .iter()
+                .map(|reaction| ReactionChip {
+                    key: reaction.key.clone().into(),
+                    count: i32::try_from(reaction.count).unwrap_or(i32::MAX),
+                    mine: reaction.mine,
+                })
+                .collect::<Vec<_>>(),
+        )),
+        // An image with a preview shows the picture; any other attachment shows a file card.
+        has_attachment: attachment.is_some(),
+        attachment: attachment
+            .map(|attachment| attachment.name.clone())
+            .unwrap_or_default()
+            .into(),
+        attachment_detail: detail.unwrap_or_default().into(),
+        has_image: preview.is_some(),
+        image: preview.map(picture).unwrap_or_default(),
+        image_width: preview.map_or(0, |preview| preview.width as i32),
+        image_height: preview.map_or(0, |preview| preview.height as i32),
+        delivery: delivery.into(),
+        delivery_failed: message.delivery == Delivery::Failed,
+        can_retry,
+        can_cancel,
+        can_reply: message.can_reply,
+        can_edit: message.can_edit,
+        can_delete: message.can_delete,
+        can_react: message.can_react,
+        can_forward: message.can_forward,
+    }
+}
+
+fn initial(text: &str) -> SharedString {
+    text.chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string()
+        .into()
+}
+
+/// WebRTC names its default entry "default: Device"; show it as "Default (Device)".
+fn device_label(name: &str) -> SharedString {
+    match name.strip_prefix("default: ") {
+        Some(device) => format!("Default ({device})").into(),
+        None => name.into(),
+    }
+}
+
+/// Without a choice, voice uses WebRTC's default device, which it lists first.
+fn device_index(devices: &[voice::Device], selected: Option<&str>) -> i32 {
+    let index = match selected {
+        Some(selected) => devices.iter().position(|device| device.id == selected),
+        None => (!devices.is_empty()).then_some(0),
+    };
+    index
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
+}
+
+fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    let common = model.row_count().min(rows.len());
+    for (index, row) in rows.iter().take(common).enumerate() {
+        if model.row_data(index).as_ref() != Some(row) {
+            model.set_row_data(index, row.clone());
+        }
+    }
+    while model.row_count() > rows.len() {
+        model.remove(model.row_count() - 1);
+    }
+    for row in rows.into_iter().skip(common) {
+        model.push(row);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_input_reaches_navigation_buttons() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .h_flex()
-                        .gap_3()
-                        .items_baseline()
-                        .child(
-                            div()
-                                .font_semibold()
-                                .truncate()
-                                .text_color(foreground)
-                                .child(SharedString::from(message.author.clone())),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .flex_shrink_0()
-                                .text_color(muted)
-                                .child(SharedString::from(message.time.clone())),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .text_color(foreground)
-                        .child(SharedString::from(message.body.clone())),
-                ),
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        click(32., 36.);
+        assert!(window.get_dms_selected());
+        assert_eq!(window.get_sidebar_title(), "Direct messages");
+        click(32., 101.);
+        assert!(!window.get_dms_selected());
+        assert_eq!(window.get_sidebar_title(), "Friends");
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn the_input_caret_opens_its_menu_and_measures_only_while_open() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
         )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        adapter
+            .borrow_mut()
+            .action(&window, Action::RequestJoinVoice("lounge".into()));
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        // The caret sits right of the microphone toggle in the dock.
+        click(206., 732.);
+        assert!(adapter.borrow().meter.is_some());
+        assert!(window.get_muted());
+        click(800., 200.);
+        assert!(adapter.borrow().meter.is_none());
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn dragging_the_sidebar_edge_resizes_it_within_limits_and_remembers_it() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        let drag = |from: f32, to: f32| {
+            let window = window.window();
+            let button = slint::platform::PointerEventButton::Left;
+            let at = |x| slint::LogicalPosition::new(x, 400.);
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(from) });
+            window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(to) });
+            window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        assert_eq!(window.get_sidebar_shown(), 240.);
+        drag(312., 362.);
+        assert_eq!(window.get_sidebar_shown(), 290.);
+        assert_eq!(Layout::read(directory.path()).sidebar_width, Some(290.));
+        // The sidebar stops at 380px, and at 180px.
+        drag(362., 700.);
+        assert_eq!(window.get_sidebar_shown(), 380.);
+        drag(452., 0.);
+        assert_eq!(window.get_sidebar_shown(), 180.);
+        // In a narrow window, dragging keeps 420px for the conversation,
+        // beside the member list when it shows.
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(800., 560.));
+        drag(252., 700.);
+        assert_eq!(window.get_sidebar_shown(), 180.);
+        window.set_member_list(false);
+        drag(252., 700.);
+        assert_eq!(window.get_sidebar_shown(), 308.);
+        drag(380., 252.);
+        // A new window starts at the stored width.
+        let next = TalkWindow::new().unwrap();
+        adapter.borrow_mut().attach(&next);
+        assert_eq!(next.get_sidebar_width(), 180.);
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn the_member_list_shows_for_text_channels_and_remembers_being_closed() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        assert!(window.get_members_available() && window.get_member_list());
+        let roster = window.get_roster();
+        assert_eq!(roster.row_count(), 4);
+        assert_eq!(roster.row_data(0).unwrap().heading, "ADMINS — 1");
+        assert_eq!(roster.row_data(2).unwrap().heading, "MEMBERS — 2");
+        assert!(roster.row_data(3).unwrap().heading.is_empty());
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        // The toggle ends the conversation header.
+        click(1080., 24.);
+        assert!(!window.get_member_list());
+        assert!(Layout::read(directory.path()).members_hidden);
+        click(1080., 24.);
+        assert!(window.get_member_list());
+        // Voice channels and one-to-one DMs have no member list.
+        window.invoke_select_room("lounge".into());
+        assert!(!window.get_members_available());
+        window.invoke_navigate_dms();
+        assert!(!window.get_members_available());
+        window.invoke_select_room("party".into());
+        assert!(window.get_members_available());
+        assert_eq!(window.get_roster().row_count(), 3);
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn forwarding_and_frequent_reactions_reach_the_window() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        let glyphs =
+            |model: ModelRc<EmojiCell>| model.iter().map(|cell| cell.glyph).collect::<Vec<_>>();
+        assert_eq!(glyphs(window.get_bar_reactions()), ["👍", "❤️", "😂"]);
+        let message = window.get_messages().row_data(0).unwrap();
+        window.invoke_react(message.item.clone(), "🍕".into());
+        assert_eq!(
+            glyphs(window.get_menu_reactions()),
+            ["🍕", "👍", "❤️", "😂"]
+        );
+        assert_eq!(Layout::read(directory.path()).reactions.get("🍕"), Some(&1));
+
+        window.invoke_start_forward(message.item.clone());
+        assert!(window.get_forward_open());
+        assert_eq!(window.get_forward_preview(), "Anyone around tonight?");
+        let targets = window.get_forward_targets();
+        assert!(
+            targets.iter().all(|target| target.id != "lounge"),
+            "voice is no target"
+        );
+        window.set_forward_query("gam".into());
+        window.invoke_forward_search();
+        assert_eq!(window.get_forward_targets().row_count(), 1);
+        window.invoke_forward_to("games".into());
+        assert!(window.get_forward_targets().row_data(0).unwrap().sent);
+        window.invoke_close_forward();
+        assert!(!window.get_forward_open());
+
+        window.invoke_emoji_search("pizza".into());
+        assert_eq!(window.get_emoji_rows().row_count(), 1);
+    }
+
+    #[test]
+    fn scrolling_up_leaves_the_latest_message() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = TalkWindow::new().unwrap();
+        window.set_workspace(true);
+        window.set_room_selected(true);
+        window.set_room_ready(true);
+        let rows: Vec<MessageRow> = (0..200)
+            .map(|index| MessageRow {
+                id: format!("m{index}").into(),
+                item: format!("i{index}").into(),
+                author: "Bob".into(),
+                body: if index % 2 == 0 {
+                    format!("Message {index}").into()
+                } else {
+                    format!("Message {index}, a longer line that wraps across the timeline at ordinary window widths, and then some more words").into()
+                },
+                first: index % 5 == 0,
+                ..Default::default()
+            })
+            .collect();
+        window.set_messages(ModelRc::new(VecModel::from(rows)));
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        let settle = || {
+            for _ in 0..5 {
+                slint::platform::update_timers_and_animations();
+                let _ = window.invoke_timeline_extent();
+            }
+        };
+        settle();
+        window.invoke_scroll_to_latest();
+        settle();
+        assert!(
+            window.invoke_timeline_at_end(),
+            "starts at the latest message"
+        );
+        for _ in 0..8 {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(700., 380.),
+                    delta_x: 0.,
+                    delta_y: 50.,
+                });
+            settle();
+        }
+        assert!(
+            !window.invoke_timeline_at_end(),
+            "scrolling up leaves the latest message"
+        );
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        assert!(window.get_workspace() && window.get_preview());
+        let server = adapter.borrow().app.state.servers[0].id.clone();
+        window.invoke_navigate_server(server.clone().into());
+        let rooms = adapter
+            .borrow()
+            .app
+            .state
+            .rooms
+            .iter()
+            .filter(|room| adapter.borrow().app.state.in_scope(room))
+            .cloned()
+            .collect::<Vec<_>>();
+        let text_rooms = rooms.iter().filter(|room| !room.voice).collect::<Vec<_>>();
+        window.invoke_select_room(text_rooms[0].id.clone().into());
+        window.invoke_draft_edited("Draft survives navigation".into());
+        window.invoke_select_room(text_rooms[1].id.clone().into());
+        window.invoke_draft_edited("Different channel draft".into());
+        window.invoke_select_room(text_rooms[0].id.clone().into());
+        assert_eq!(window.get_draft(), "Draft survives navigation");
+        assert!(window.get_can_send());
+        let count = window.get_messages().row_count();
+        window.invoke_send();
+        assert_eq!(window.get_messages().row_count(), count + 1);
+        assert!(window.get_draft().is_empty());
+        let voice_room = rooms.iter().find(|room| room.voice).unwrap();
+        // Clicking a voice channel joins it.
+        window.invoke_select_room(voice_room.id.clone().into());
+        assert!(window.get_voice_here() && window.get_voice_active() && window.get_muted());
+        window.invoke_navigate_dms();
+        assert!(window.get_voice_active() && window.get_voice_visible());
+        assert!(!window.get_voice_here());
+        assert!(window.get_rooms().iter().all(|row| {
+            adapter
+                .borrow()
+                .app
+                .state
+                .rooms
+                .iter()
+                .any(|room| room.id.as_str() == row.id.as_str() && room.direct)
+        }));
+        window.invoke_toggle_mute();
+        assert!(!window.get_muted());
+        window.invoke_toggle_deafen();
+        assert!(window.get_muted() && window.get_deafened());
+        window.set_password("secret that must be cleared".into());
+        window.set_recovery("recovery that must be cleared".into());
+        window.set_audio_settings(true);
+        window.invoke_logout();
+        assert!(!window.get_workspace() && !window.get_voice_active());
+        assert!(window.get_password().is_empty() && window.get_recovery().is_empty());
+        assert!(!window.get_audio_settings());
+    }
+
+    #[test]
+    fn message_actions_reach_the_shared_application_in_the_preview() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        let row = |item: &SharedString| {
+            window
+                .get_messages()
+                .iter()
+                .find(|row| row.item == *item)
+                .unwrap()
+        };
+        let own = window.get_messages().iter().find(|row| row.own).unwrap();
+        let other = window.get_messages().iter().find(|row| !row.own).unwrap();
+        assert!(own.can_edit && !other.can_edit && !window.get_can_attach());
+
+        window.invoke_react(other.item.clone(), "👍".into());
+        let reactions = row(&other.item).reactions;
+        assert_eq!(reactions.row_count(), 1);
+        assert!(reactions.row_data(0).unwrap().mine);
+        window.invoke_react(other.item.clone(), "👍".into());
+        assert_eq!(row(&other.item).reactions.row_count(), 0);
+
+        window.invoke_reply(other.item.clone());
+        assert!(window.get_compose_label().starts_with("Replying to Sam"));
+        window.invoke_draft_edited("**Sure**".into());
+        window.invoke_send();
+        let reply = window.get_messages().iter().last().unwrap();
+        assert!(reply.has_reply && reply.formatted && reply.reply_author == "Sam");
+        assert!(window.get_compose_label().is_empty() && window.get_draft().is_empty());
+
+        window.invoke_draft_edited("Unsent draft".into());
+        window.invoke_edit(own.item.clone());
+        assert_eq!(window.get_draft(), own.body);
+        assert_eq!(window.get_compose_label(), "Editing your message");
+        window.invoke_draft_edited("Changed".into());
+        window.invoke_send();
+        let edited = row(&own.item);
+        assert!(edited.edited && edited.body == "Changed");
+        assert_eq!(window.get_draft(), "Unsent draft");
+
+        window.invoke_request_delete(other.item.clone());
+        assert!(
+            window.get_confirm_delete().is_empty(),
+            "only own messages can be deleted"
+        );
+        window.invoke_request_delete(own.item.clone());
+        assert_eq!(window.get_confirm_delete(), own.item);
+        window.invoke_confirm_delete_message();
+        assert!(row(&own.item).deleted && window.get_confirm_delete().is_empty());
+    }
+
+    #[test]
+    fn signed_in_controls_keep_trust_and_plaintext_sending_gates() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        {
+            let mut adapter = adapter.borrow_mut();
+            adapter.app.state.preview = false;
+            adapter.app.state.account = Some("@test:example.invalid".into());
+            adapter.app.state.trusted = false;
+            adapter.refresh(&window);
+        }
+        window.invoke_draft_edited("Keep encrypted".into());
+        assert!(!window.get_can_send());
+        window.invoke_send();
+        assert!(!window.get_sending());
+        {
+            let mut adapter = adapter.borrow_mut();
+            adapter.app.state.trusted = true;
+            let id = adapter.app.state.selected.clone().unwrap();
+            adapter
+                .app
+                .state
+                .rooms
+                .iter_mut()
+                .find(|room| room.id == id)
+                .unwrap()
+                .encrypted = false;
+            adapter.refresh(&window);
+        }
+        assert!(!window.get_composer_enabled() && !window.get_can_send());
+        window.invoke_send();
+        assert_eq!(window.get_draft(), "Keep encrypted");
+        assert!(!window.get_sending());
+    }
 }

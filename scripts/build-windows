@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 rustup target add x86_64-pc-windows-msvc
-export GPUI_FXC_PATH="$PWD/scripts/fxc-wine"
-export TALK_FXC_WINEPREFIX="$PWD/.local/windows/shader-wine"
 mkdir -p "$PWD/.local/windows"
+talk_skia_archive=$(python3 nix/prepare-windows-skia.py)
+export SKIA_BINARIES_URL="file://$talk_skia_archive"
 cargo xwin build --locked --release --target x86_64-pc-windows-msvc
 python3 scripts/package-windows.py

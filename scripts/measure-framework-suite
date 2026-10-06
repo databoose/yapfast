@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Run release framework screens sequentially, exclusively on private displays."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import random
+import shutil
+import signal
+import subprocess
+import time
+
+root = Path(__file__).resolve().parent.parent
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--artifacts-root', type=Path, required=True, help='Checkout containing target and .local/framework-targets')
+parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--config', action='append', help='Repeat to select configurations; default all available')
+parser.add_argument('--scenario', action='append', choices=['chat', 'images', 'media', 'gif', 'input', 'gpu-scroll', 'gpu-grid'], help='Default chat')
+parser.add_argument('--gpu-grid-items', type=int, default=4096, help='Rounded cells for the matched animated grid')
+parser.add_argument('--repeats', type=int, default=3)
+parser.add_argument('--warmup', type=float, default=8)
+parser.add_argument('--seconds', type=float, default=20)
+parser.add_argument('--allow-builders', action='store_true', help='Preflight only; contaminated results are marked')
+parser.add_argument('--dry-run', action='store_true')
+parser.add_argument('--surface-updates', action='store_true', help='Separate opt-in per-surface submissions probe, not presented FPS')
+args = parser.parse_args()
+if args.repeats < 1 or args.warmup < 0 or args.seconds <= 0:
+    parser.error('Positive repeats and measurement duration are required.')
+if not 1 <= args.gpu_grid_items <= 6976:
+    parser.error('Use 1..6976 cells for the matched animated grid.')
+artifacts = args.artifacts_root.resolve()
+targets = artifacts / '.local/framework-targets'
+configurations = {
+    'gpui-gpu': ('gpui', artifacts / 'target/release/talk-trial-gpui', {}),
+    'slint-skia-cpu': ('slint', targets / 'slint-iced/variants/slint-skia-software', {}),
+    'slint-cpu': ('slint', targets / 'slint-iced/variants/slint-software', {}),
+    'slint-gpu': ('slint', targets / 'slint-iced/variants/slint-gpu', {}),
+    'iced-cpu': ('iced', targets / 'slint-iced/variants/iced-software', {}),
+    'iced-gpu': ('iced', targets / 'slint-iced/variants/iced-gpu', {}),
+    'freya-cpu': ('freya', targets / 'freya/release/talk-framework-freya', {'FREYA_RENDERER': 'software'}),
+    'freya-opengl': ('freya', targets / 'freya/release/talk-framework-freya', {'FREYA_RENDERER': 'opengl'}),
+    'freya-vulkan': ('freya', targets / 'freya/release/talk-framework-freya', {'FREYA_RENDERER': 'vulkan'}),
+    'dioxus-native-cpu': ('dioxus-native', targets / 'dioxus/release/talk-trial-dioxus-native-cpu', {}),
+    'dioxus-native-gpu': ('dioxus-native', targets / 'dioxus/release/talk-trial-dioxus-native-gpu', {}),
+    'dioxus-webkit-never': ('dioxus-desktop', targets / 'dioxus/release/talk-trial-dioxus-desktop', {'TALK_WEBVIEW_ACCELERATION': 'never'}),
+    'dioxus-webkit-always': ('dioxus-desktop', targets / 'dioxus/release/talk-trial-dioxus-desktop', {'TALK_WEBVIEW_ACCELERATION': 'always'}),
+}
+selected = args.config or list(configurations)
+if set(selected) - configurations.keys():
+    parser.error('Unknown configurations: ' + ', '.join(set(selected) - configurations.keys()))
+scenarios = args.scenario or ['chat']
+if {'gpu-scroll', 'gpu-grid'} & set(scenarios) and set(selected) - {'slint-cpu', 'slint-skia-cpu'}:
+    parser.error('Matched animated scenes require the Slint CPU variants from this branch; use the dedicated GPU suite for GPU comparisons.')
+# Fixed random seed makes the interleaved run order reviewable and repeatable.
+cases = []
+generator = random.Random(20261002)
+for repeat in range(1, args.repeats + 1):
+    order = [(configuration, scenario, repeat) for configuration in selected for scenario in scenarios]
+    generator.shuffle(order)
+    cases.extend(order)
+if args.dry_run:
+    print(json.dumps([{'configuration': key, 'scenario': scenario, 'repeat': repeat,
+        'binary': str(configurations[key][1]), 'exists': configurations[key][1].is_file()}
+        for key, scenario, repeat in cases], indent=2))
+    raise SystemExit(0)
+for program in ('weston', 'weston-screenshooter', 'nvidia-smi', 'ffmpeg', 'pulseaudio'):
+    if not shutil.which(program):
+        parser.error(program + ' is missing; enter experiments/frameworks/shell.nix.')
+icd = Path('/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.x86_64.json')
+if not icd.is_file():
+    parser.error('This recorded hardware suite requires the NVIDIA ICD. Adapt configurations for another machine.')
+alsa_plugins = os.environ.get('TALK_FRAMEWORK_ALSA_PLUGINS')
+if not alsa_plugins:
+    parser.error('Comparison shell ALSA plugin path is missing.')
+args.output = args.output.resolve()
+args.output.mkdir(parents=True, exist_ok=True)
+status = {'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
+    'source_dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root)),
+    'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
+    'compiler_activity_allowed': args.allow_builders, 'cases': []}
+binary_hashes = {configuration: hashlib.sha256(configurations[configuration][1].read_bytes()).hexdigest()
+    for configuration in selected if configurations[configuration][1].is_file()}
+status_path = args.output / 'suite.json'
+active = None
+
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
+
+for signum in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(signum, interrupted)
+
+def compilers():
+    found = []
+    for directory in Path('/proc').iterdir():
+        if directory.name.isdecimal():
+            try:
+                name = (directory / 'comm').read_text().strip()
+                command = (directory / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+                if name in ('cargo', 'rustc'):
+                    cwd = (directory / 'cwd').resolve()
+                    environment = (directory / 'environ').read_bytes().decode(errors='replace')
+                    if (str(artifacts) in command or cwd.is_relative_to(artifacts)
+                            or str(targets) in environment):
+                        found.append(int(directory.name))
+            except OSError:
+                pass
+    return found
+
+def renderer_evidence(configuration, prefix):
+    log = prefix.with_suffix('.app.log').read_text(errors='replace')
+    report = json.loads(prefix.with_suffix('.json').read_text())
+    evidence = [line for line in log.splitlines() if any(word in line.lower()
+        for word in ('renderer', 'actual_gpu', 'adapter', 'vendor', 'acceleration_policy'))]
+    expected = {
+        'gpui-gpu': ['is_software_emulated: false', 'NVIDIA GeForce'],
+        'slint-cpu': ['selected=winit-software'],
+        'slint-skia-cpu': ['selected=winit-skia-software'],
+        'slint-gpu': ['selected=winit-femtovg', 'vendor=NVIDIA'],
+        'iced-cpu': ['backend=tiny-skia adapter=CPU'],
+        'iced-gpu': ['backend=Vulkan adapter=NVIDIA GeForce'],
+        'freya-cpu': ['TALK_FRAMEWORK_RENDERER=Software'],
+        'freya-opengl': ['TALK_FRAMEWORK_RENDERER=OpenGL'],
+        'freya-vulkan': ['TALK_FRAMEWORK_RENDERER=Vulkan'],
+        'dioxus-native-cpu': ['renderer=vello-cpu-softbuffer'],
+        'dioxus-native-gpu': ['renderer=vello-hybrid'],
+        'dioxus-webkit-never': ['webkit_hardware_acceleration_policy=Never requested=never'],
+        'dioxus-webkit-always': ['webkit_hardware_acceleration_policy=Always requested=always'],
+    }[configuration]
+    if report['scenario'] in ('gpu-scroll', 'gpu-grid'):
+        items = args.gpu_grid_items if report['scenario'] == 'gpu-grid' else 80
+        expected.append(f"READY gpu_scene={report['scenario']} items={items} ")
+    gpu_allocation = report['summary']['nvidia_framebuffer_mib']['peak']
+    matches = all(fragment in log for fragment in expected)
+    gpu_required = configuration in ('gpui-gpu', 'slint-gpu', 'iced-gpu',
+        'freya-opengl', 'freya-vulkan', 'dioxus-native-gpu')
+    return {'expected_log_fragments': expected, 'log_lines': evidence,
+        'nvidia_framebuffer_peak_mib': gpu_allocation,
+        'verified': matches and (not gpu_required or gpu_allocation > 0)
+            and (configuration not in ('slint-cpu', 'slint-skia-cpu') or gpu_allocation == 0),
+        'limits': 'Native reports its exclusive compiled renderer; vendor allocation confirms GPU use but its adapter name is not logged. WebKit policy readback does not measure hardware-composited frame rate.'}
+
+try:
+    for index, (configuration, scenario, repeat) in enumerate(cases, 1):
+        builders = compilers()
+        if builders and not args.allow_builders:
+            raise SystemExit('Experimental compiler processes are active: ' + str(builders))
+        candidate, binary, overrides = configurations[configuration]
+        prefix = args.output / f'{configuration}-{scenario}-r{repeat}'
+        entry = {'configuration': configuration, 'scenario': scenario, 'repeat': repeat,
+            'binary': str(binary), 'output': prefix.with_suffix('.json').name,
+            'compiler_pids_at_start': builders, 'host_load_at_start': list(os.getloadavg()),
+            'scene_items': args.gpu_grid_items if scenario == 'gpu-grid' else 80 if scenario == 'gpu-scroll' else None,
+            'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+        status['cases'].append(entry)
+        status_path.write_text(json.dumps(status, indent=2))
+        print(f'[{index}/{len(cases)}] {configuration} {scenario} repeat {repeat}', flush=True)
+        if not binary.is_file():
+            entry.update(status='missing-binary')
+            status_path.write_text(json.dumps(status, indent=2))
+            continue
+        entry['binary_sha256'] = hashlib.sha256(binary.read_bytes()).hexdigest()
+        if entry['binary_sha256'] != binary_hashes[configuration]:
+            raise SystemExit('Binary changed during the suite: ' + str(binary))
+        environment = dict(os.environ, TALK_FRAMEWORK_SCENARIO=scenario,
+            TALK_FRAMEWORK_ASSETS=str(root / 'experiments/frameworks/common/assets'),
+            TALK_GPU_ITEMS=str(args.gpu_grid_items),
+            VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd))
+        for key in ('TALK_FRAMEWORK_DIAGNOSTICS', 'TALK_FRAMEWORK_FRAME_LOG', 'TALK_FRAMEWORK_SURFACE_LOG', 'TOKIO_WORKER_THREADS',
+                    'FREYA_RENDERER', 'TALK_WEBVIEW_ACCELERATION', 'TALK_GPU_FRAME_LOG', 'TALK_SKIA_VALIDATE_GL'):
+            environment.pop(key, None)
+        environment.update(overrides)
+        if args.surface_updates:
+            environment['TALK_FRAMEWORK_SURFACE_LOG'] = str(prefix.with_suffix('.surface.ndjson'))
+        command = [str(root / 'scripts/run-framework-isolated'),
+            '--compositor-log', str(prefix.with_suffix('.weston.log')),
+            '--audio', '--alsa-plugins', alsa_plugins, '--',
+            str(root / 'scripts/measure-framework'), '--candidate', candidate,
+            '--configuration', configuration, '--output', str(prefix.with_suffix('.json')),
+            '--warmup', str(args.warmup), '--seconds', str(args.seconds),
+            '--nvidia-memory', '--screenshot', shutil.which('weston-screenshooter'),
+            '--screenshot-vflip', '--', str(binary)]
+        started = time.monotonic()
+        with prefix.with_suffix('.runner.log').open('wb') as log:
+            active = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True)
+            try:
+                code = active.wait(timeout=args.warmup + args.seconds + 40)
+                entry.update(status='passed' if code == 0 else 'failed', exit_code=code)
+            except subprocess.TimeoutExpired:
+                entry.update(status='timeout')
+                os.killpg(active.pid, signal.SIGTERM)
+                active.wait(timeout=20)
+            active = None
+        entry['elapsed_seconds'] = time.monotonic() - started
+        if hashlib.sha256(binary.read_bytes()).hexdigest() != entry['binary_sha256']:
+            raise SystemExit('Binary changed during a case: ' + str(binary))
+        if entry.get('status') == 'passed':
+            entry['renderer_verification'] = renderer_evidence(configuration, prefix)
+            if args.surface_updates:
+                subprocess.run([str(root / 'scripts/summarize-framework-updates'),
+                    str(prefix.with_suffix('.json')), str(prefix.with_suffix('.surface.ndjson'))], check=True, timeout=5)
+        status_path.write_text(json.dumps(status, indent=2))
+        print('  ' + entry['status'] + f" in {entry['elapsed_seconds']:.1f}s", flush=True)
+finally:
+    if active is not None:
+        os.killpg(active.pid, signal.SIGTERM)
+        try:
+            active.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(active.pid, signal.SIGKILL)
+            active.wait(timeout=5)
+    status_path.write_text(json.dumps(status, indent=2))
+failed = [case for case in status['cases'] if case.get('status') != 'passed']
+unverified = [case for case in status['cases'] if case.get('status') == 'passed'
+    and not case['renderer_verification']['verified']]
+print(f'Completed {len(status["cases"])} cases; {len(failed)} failures. {status_path}', flush=True)
+raise SystemExit(bool(failed or unverified))

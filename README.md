@@ -1,11 +1,11 @@
 # Talk
 
-A native Rust and GPUI client for Matrix chat and persistent voice channels.
+A native Rust and Slint client for Matrix chat and persistent voice channels.
 The [product scope](PRODUCT.md) and [implementation plan](docs/implementation-plan.md)
 describe the private beta.
 
 The [application architecture](docs/architecture.md) separates the reusable
-`talk-core` library from the GPUI client. Other native UIs can share sessions,
+`talk-core` library from the Slint client. Other native UIs can share sessions,
 chat and voice behavior, drafts, navigation and the local preview.
 
 The [UI framework comparison plan](docs/framework-comparison-plan.md) covers
@@ -18,6 +18,17 @@ message history, device recovery and encrypted text sending. Voice channels have
 join, leave, mute, deafen, participants and native audio device controls. Voice
 stays connected while you browse messages. A local preview lets you try the
 controls without an account or audio access.
+
+Talk renders with Skia Software, which uses about half the memory of Skia GPU.
+To use the GPU:
+
+```sh
+nix develop path:./nix --command cargo run --locked -- --preview --renderer gpu
+```
+
+Omit `--preview` to sign in or restore your real account. If the GPU cannot
+start, Talk restarts itself with Skia Software and explains why. Renderer
+selection does not change session storage, encryption or the native audio backend.
 
 ## Linux development
 
@@ -42,17 +53,23 @@ Passwords and recovery keys are entered in masked native fields.
 
 Real sending requires a verified device and an encrypted room. Verify Talk in
 another client and press "Check again", or enter your existing recovery key.
-Join rooms using another Matrix client for now. This first UI slice has no room
-creation, channel discovery, ringing DM calls, attachments, or offline send queue. Drafts
-survive conversation switches while Talk is open. Servers come from joined Matrix
-Spaces, including channels in joined subspaces. Each server remembers its last
-selected channel. Only joined channels appear; standalone rooms outside Spaces
+Join rooms using another Matrix client for now. Messages support Markdown,
+replies, reactions, editing, deletion and encrypted attachments. Messages written
+offline wait in the SDK's send queue, and drafts survive restarts; see
+[the chat guide](docs/chat-ui.md). There is no room creation, channel discovery
+or ringing DM calls yet. Servers come from joined Matrix
+Spaces, including channels in joined subspaces. Clicking a server opens the
+channel you last had open there, even after a restart, or else its top channel.
+Text channels and group DMs list their members on the right, grouped into admins,
+moderators and members; the header's member count shows or hides the list.
+Only joined channels appear; standalone rooms outside Spaces
 are not shown in this navigation yet. Preview messages disappear
 when you leave the preview, and closing the window quits Talk.
 
 `path:./nix` also works before files are tracked and keeps Cargo output out of
 the Nix source snapshot. The shell provides Clang 21, Protobuf, desktop libraries,
-and a checksum-pinned libwebrtc archive through `LK_CUSTOM_WEBRTC`. Rustup uses
+and checksum-pinned libwebrtc and Skia archives. The Skia archive keeps the
+verified JPEG symbol namespace needed to link it alongside WebRTC. Rustup uses
 the version in `rust-toolchain.toml`.
 
 ```sh
@@ -69,8 +86,9 @@ cargo test --locked -p talk-core chat::tests::encrypted_chat_restore_send_retry_
 
 This creates disposable accounts and checks session restoration, encrypted
 delivery, duplicate-free retry, Space membership and live channel removal, and
-refusal of plaintext rooms and unverified devices. Native UI captures and interaction notes are in
-[the chat UI report](docs/chat-ui.md).
+refusal of plaintext rooms and unverified devices. Current native UI validation
+is in [the Slint client report](docs/slint-client.md); the earlier GPUI checks
+remain in [the chat UI report](docs/chat-ui.md).
 
 Run those commands inside the Nix shell. The headless build still includes the
 Matrix and native media libraries. The smoke check allocates a synthetic audio
