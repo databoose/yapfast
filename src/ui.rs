@@ -1999,41 +1999,9 @@ fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
     message.reply.is_none() && sender(before) == sender(message) && close
 }
 
-/// The UTC calendar date of a timestamp, such as "3 October 2026"; empty when unknown.
+/// The local calendar date of a timestamp, such as "3 October 2026"; empty when unknown.
 fn day(timestamp: u64) -> String {
-    if timestamp == 0 {
-        return String::new();
-    }
-    // Howard Hinnant's days-to-civil algorithm.
-    let days = (timestamp / 86_400) as i64 + 719_468;
-    let era = days.div_euclid(146_097);
-    let day_of_era = days.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+    talk_core::clock::day(timestamp)
 }
 
 fn file_size(bytes: u64) -> String {

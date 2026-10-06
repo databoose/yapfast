@@ -46,6 +46,8 @@ tempfile.workspace = true
 
 [workspace.dependencies]
 anyhow = "1"
+# Message times in the local time zone.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 directories = "6"
 futures-util = "0.3"
 keyring = "=4.2.0"

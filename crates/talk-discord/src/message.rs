@@ -535,39 +535,22 @@ impl Names {
     }
 }
 
-/// A Unix time as `2026-10-06 14:05 UTC`.
+/// A Unix time in the local time zone, such as `2026-10-06 14:05`.
 fn date_time(seconds: i64) -> String {
-    let (year, month, day) = civil(seconds.div_euclid(86_400));
-    let minutes = seconds.rem_euclid(86_400) / 60;
-    format!(
-        "{year}-{month:02}-{day:02} {:02}:{:02} UTC",
-        minutes / 60,
-        minutes % 60
-    )
+    local(seconds).format("%Y-%m-%d %H:%M").to_string()
 }
 
-/// A day in Unix milliseconds as profiles show it: `6 Oct 2026`.
+/// A day in Unix milliseconds as profiles show it, in the local time zone: `6 Oct 2026`.
 pub fn date(ms: u64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let (year, month, day) = civil((ms / 86_400_000) as i64);
-    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+    local(i64::try_from(ms / 1000).unwrap_or(i64::MAX))
+        .format("%-d %b %Y")
+        .to_string()
 }
 
-/// The year, month and day of a count of days since the Unix epoch.
-fn civil(days: i64) -> (i64, i64, i64) {
-    // Howard Hinnant's days-to-civil algorithm.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
+fn local(seconds: i64) -> chrono::DateTime<chrono::Local> {
+    chrono::DateTime::from_timestamp(seconds, 0)
+        .unwrap_or_default()
+        .with_timezone(&chrono::Local)
 }
 
 #[cfg(test)]
@@ -703,7 +686,10 @@ mod tests {
                 Some(&server),
                 "<@2> <@!1> <@&30> in <#11> <:pog:5> <a:dance:6> <t:1791295500:R> <@9> a < b"
             ),
-            "@Annie @me @Mods in #general :pog: :dance: 2026-10-06 14:05 UTC @Discord user a < b"
+            format!(
+                "@Annie @me @Mods in #general :pog: :dance: {} @Discord user a < b",
+                date_time(1_791_295_500)
+            )
         );
         assert!(names.knows_member("10", "2") && !names.knows_member("10", "1"));
     }

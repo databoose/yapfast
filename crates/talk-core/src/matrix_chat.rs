@@ -1385,7 +1385,7 @@ async fn publish_timeline(
             && matches!(content.kind, MsgLikeKind::Message(_))
             && event.event_id().is_some();
         let seconds: u64 = event.timestamp().as_secs().into();
-        message.time = format!("{:02}:{:02} UTC", seconds / 3600 % 24, seconds / 60 % 60);
+        message.time = crate::clock::time(seconds);
         message.timestamp = seconds;
         messages.push(message);
     }

@@ -725,11 +725,7 @@ impl OpenChannel {
                 color: server.and_then(|server| discord.color(server, &message.author_id)),
                 body,
                 formatted: ordinary,
-                time: format!(
-                    "{:02}:{:02} UTC",
-                    timestamp / 3600 % 24,
-                    timestamp / 60 % 60
-                ),
+                time: crate::clock::time(timestamp),
                 timestamp,
                 own,
                 edited: message.edited,

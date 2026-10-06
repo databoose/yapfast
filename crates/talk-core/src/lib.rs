@@ -13,6 +13,7 @@ pub mod backend;
 pub mod calls;
 pub mod chat;
 pub mod cli;
+pub mod clock;
 #[cfg(feature = "discord")]
 pub mod decode;
 pub mod discord;

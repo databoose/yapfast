@@ -14,6 +14,7 @@ discord = ["dep:talk-discord", "dep:opus2", "dep:rand", "dep:base64"]
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 # A Go Live stream's preview goes to Discord as a data URI.
 base64 = { version = "0.22", optional = true }
 directories.workspace = true
