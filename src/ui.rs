@@ -265,6 +265,8 @@ struct Layout {
     channels: HashMap<String, String>,
     /// How often this device added each reaction, for the frequent reactions.
     reactions: HashMap<String, u32>,
+    /// List Discord channels hidden from this account, locked.
+    show_hidden_channels: bool,
 }
 
 impl Layout {
@@ -331,6 +333,7 @@ struct Icons {
     dm: slint::Image,
     text: slint::Image,
     voice: slint::Image,
+    lock: slint::Image,
 }
 
 struct Adapter {
@@ -369,6 +372,7 @@ impl Adapter {
             dm: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/message-circle.svg"))?,
             text: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/hash.svg"))?,
             voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
+            lock: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/lock.svg"))?,
         };
         let models = Models::default();
         models.attach(window);
@@ -376,6 +380,7 @@ impl Adapter {
         layout.apply(window);
         let mut app = Application::default();
         app.remember_reaction_uses(layout.reactions.clone());
+        app.dispatch(Action::ShowHiddenChannels(layout.show_hidden_channels));
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,
@@ -557,6 +562,8 @@ impl Adapter {
                 .iter()
                 .any(|room| room.direct && room.unread > 0),
         );
+        window.set_discord_linked(state.servers.iter().any(|server| server.discord));
+        window.set_show_hidden_channels(state.show_hidden_channels);
         window.set_sidebar_title(match &state.navigation {
             Navigation::DirectMessages => "Direct messages".into(),
             Navigation::Server(id) => state
@@ -586,6 +593,7 @@ impl Adapter {
                     unread: state.rooms.iter().any(|room| {
                         room.unread > 0 && !room.direct && server.channels.contains(&room.id)
                     }),
+                    discord: server.discord,
                 })
                 .collect(),
         );
@@ -611,7 +619,9 @@ impl Adapter {
                     id: room.id.clone().into(),
                     name: room.name.clone().into(),
                     heading: heading.into(),
-                    icon: if room.voice {
+                    icon: if room.locked {
+                        self.icons.lock.clone()
+                    } else if room.voice {
                         self.icons.voice.clone()
                     } else if room.direct {
                         self.icons.dm.clone()
@@ -625,6 +635,7 @@ impl Adapter {
                     direct: room.direct,
                     initial: initial(&room.name),
                     tint: tint(&room.id),
+                    locked: room.locked,
                 }
             })
             .collect();
@@ -921,7 +932,9 @@ impl Adapter {
             .into(),
         );
         window.set_voice_description(
-            if voice_here && voice.participants.len() == 1 {
+            if room.is_some_and(|room| room.locked) {
+                "Your roles on this Discord server don't let you join this channel."
+            } else if voice_here && voice.participants.len() == 1 {
                 "You're here alone. Stay as long as you like; others can join later."
             } else if voice_here {
                 "Voice stays connected while you browse other conversations."
@@ -1135,6 +1148,16 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         let mut adapter = state.borrow_mut();
         adapter.layout.members_hidden = !shown;
         adapter.layout.write(&adapter.root);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_show_hidden_channels_toggled(move |shown| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.show_hidden_channels = shown;
+        adapter.layout.write(&adapter.root);
+        if let Some(window) = weak.upgrade() {
+            adapter.action(&window, Action::ShowHiddenChannels(shown));
+        }
     });
     let state = adapter.clone();
     window.on_attach(move || {

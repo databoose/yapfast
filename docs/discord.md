@@ -1,6 +1,19 @@
 # Discord in Talk
 
-Status: agreed plan, not started. Decisions recorded 2026-10-06.
+Status: decisions recorded 2026-10-06. Step 2 of the [order of work](#order-of-work)
+works on Linux. Talk lists the linked account's Discord servers in the rail
+with a Discord badge and their voice channels. Channels the account's roles
+and channel overwrites keep it out of show greyed out with a lock, as in
+Discord; channels hidden from it appear the same way only with the "Show
+channels you can't access" setting, which is off by default. Clicking a
+voice channel joins through the same voice dock and one-call rule as Matrix
+voice. Calls start muted, mute and deafen show in Discord, and a voice gate
+sends audio only during speech. The
+owner and a friend talked through it on 2026-10-06. Audio uses PulseAudio and
+libwebrtc's processing module, so Windows needs its own audio backend. The
+token still comes from the browser through `talk-discord-probe store-token`;
+QR linking and DM calls are still open. songbird's DAVE receive fix is
+described in `vendor/songbird/README.talk.md`.
 
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,
@@ -75,10 +88,18 @@ Since March 2026, Discord voice requires its end-to-end encryption, DAVE, and
 built on it, but it's written for bots and may only partly fit.
 
 Talk's current audio path runs inside LiveKit's libwebrtc. Discord voice needs
-its own Opus encoding and decoding plus the same audio processing. Whether Talk
-can reuse libwebrtc's audio device and processing modules outside a LiveKit
-room is the first technical question. The answer decides how much audio code
-Discord voice needs.
+its own Opus encoding and decoding plus the same audio processing. libwebrtc's
+device module can't be reused outside a LiveKit room: it hands captured audio
+straight to WebRTC and only plays remote WebRTC streams. Its audio processing
+module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
+Discord voice gets a small path of its own: `cpal` for the microphone and
+speakers at 48 kHz, the processing module for echo cancellation, noise
+suppression and gain, then songbird for Opus and DAVE. Feed the speaker mix to
+the processing module's reverse stream so echo cancellation has its reference.
+
+Check one linking risk before building on this. songbird encodes with `opus2`,
+which builds its own libopus, while Talk's libwebrtc archive already contains
+libopus. Linking both into Talk may clash, particularly on Windows MSVC.
 
 ## Servers, channels and messages
 

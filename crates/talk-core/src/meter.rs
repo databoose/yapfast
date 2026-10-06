@@ -76,7 +76,7 @@ fn meter_level(rms: f32) -> f32 {
 }
 
 #[cfg(target_os = "linux")]
-mod pulse {
+pub(crate) mod pulse {
     use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
 
     use anyhow::{Context as _, Result, bail};
@@ -147,23 +147,34 @@ mod pulse {
     /// The PulseAudio source behind a WebRTC device: its first entry is the
     /// default source, prefixed "default: ", and the rest are the sources that
     /// are not monitors, by description.
-    fn source(microphone: Option<&str>) -> Result<Option<String>> {
-        let Some(description) = microphone.and_then(|id| id.strip_prefix(NAMED)) else {
+    pub(crate) fn source(microphone: Option<&str>) -> Result<Option<String>> {
+        device(microphone, false)
+            .map_err(|error| error.context("this microphone is no longer connected"))
+    }
+
+    /// The PulseAudio sink behind a WebRTC playout device, named the same way.
+    pub(crate) fn sink(speakers: Option<&str>) -> Result<Option<String>> {
+        device(speakers, true)
+            .map_err(|error| error.context("these speakers are no longer connected"))
+    }
+
+    fn device(id: Option<&str>, sink: bool) -> Result<Option<String>> {
+        let Some(description) = id.and_then(|id| id.strip_prefix(NAMED)) else {
             return Ok(None);
         };
         if description.starts_with("default: ") {
             return Ok(None);
         }
-        let sources = sources()?;
-        sources
+        list(sink)?
             .into_iter()
             .find(|(_, found)| found == description)
             .map(|(name, _)| Some(name))
-            .context("this microphone is no longer connected")
+            .context("device not found")
     }
 
-    /// Every source that is not a monitor, as its name and description.
-    fn sources() -> Result<Vec<(String, String)>> {
+    /// Every sink, or every source that is not a monitor, as its name and
+    /// description.
+    fn list(sinks: bool) -> Result<Vec<(String, String)>> {
         let mut mainloop = Mainloop::new().context("no PulseAudio main loop")?;
         let mut context = Context::new(&mainloop, "Talk").context("no PulseAudio context")?;
         context
@@ -180,10 +191,26 @@ mod pulse {
         }
         let found = Rc::new(RefCell::new(Vec::new()));
         let done = Rc::new(RefCell::new(false));
-        let _operation = context.introspect().get_source_info_list({
+        let introspect = context.introspect();
+        // Each listing is its own operation type; keep whichever runs alive.
+        let _sinks = sinks.then(|| {
             let found = found.clone();
             let done = done.clone();
-            move |result| match result {
+            introspect.get_sink_info_list(move |result| match result {
+                ListResult::Item(info) => {
+                    if let (Some(name), Some(description)) = (&info.name, &info.description) {
+                        found
+                            .borrow_mut()
+                            .push((name.to_string(), description.to_string()));
+                    }
+                }
+                ListResult::End | ListResult::Error => *done.borrow_mut() = true,
+            })
+        });
+        let _sources = (!sinks).then(|| {
+            let found = found.clone();
+            let done = done.clone();
+            introspect.get_source_info_list(move |result| match result {
                 ListResult::Item(info) if info.monitor_of_sink.is_none() => {
                     if let (Some(name), Some(description)) = (&info.name, &info.description) {
                         found
@@ -193,7 +220,7 @@ mod pulse {
                 }
                 ListResult::Item(_) => {}
                 ListResult::End | ListResult::Error => *done.borrow_mut() = true,
-            }
+            })
         });
         while !*done.borrow() {
             iterate(&mut mainloop)?;
