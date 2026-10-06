@@ -1,6 +1,12 @@
 # Discord in Talk
 
-Status: agreed plan, not started. Decisions recorded 2026-10-06.
+Status: decisions recorded 2026-10-06. Step 1 of the [order of work](#order-of-work)
+is in progress. `talk-discord-probe` in `crates/talk-discord` joined a server
+voice channel as a user account on 2026-10-06, with DAVE: a listener in the
+official client heard its audio, and the probe recorded that listener's speech
+cleanly. That needed a fix to songbird's DAVE receive path, described in
+`vendor/songbird/README.talk.md`. The probe takes a token pasted from the
+browser for now; QR linking, DM calls and the audio path below are still open.
 
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,
@@ -75,10 +81,18 @@ Since March 2026, Discord voice requires its end-to-end encryption, DAVE, and
 built on it, but it's written for bots and may only partly fit.
 
 Talk's current audio path runs inside LiveKit's libwebrtc. Discord voice needs
-its own Opus encoding and decoding plus the same audio processing. Whether Talk
-can reuse libwebrtc's audio device and processing modules outside a LiveKit
-room is the first technical question. The answer decides how much audio code
-Discord voice needs.
+its own Opus encoding and decoding plus the same audio processing. libwebrtc's
+device module can't be reused outside a LiveKit room: it hands captured audio
+straight to WebRTC and only plays remote WebRTC streams. Its audio processing
+module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
+Discord voice gets a small path of its own: `cpal` for the microphone and
+speakers at 48 kHz, the processing module for echo cancellation, noise
+suppression and gain, then songbird for Opus and DAVE. Feed the speaker mix to
+the processing module's reverse stream so echo cancellation has its reference.
+
+Check one linking risk before building on this. songbird encodes with `opus2`,
+which builds its own libopus, while Talk's libwebrtc archive already contains
+libopus. Linking both into Talk may clash, particularly on Windows MSVC.
 
 ## Servers, channels and messages
 

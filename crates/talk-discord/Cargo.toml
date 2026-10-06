@@ -1,0 +1,28 @@
+[package]
+name = "talk-discord"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+base64 = "0.22"
+futures-util.workspace = true
+keyring.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls-no-provider"] }
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Discord voice with DAVE end-to-end encryption, used without serenity or
+# twilight: Talk's own gateway supplies the connection details. "gateway"
+# only adds dashmap, which "receive" needs but doesn't enable in 0.6.0.
+songbird = { version = "0.6", default-features = false, features = ["driver", "gateway", "receive", "rustls", "tungstenite"] }
+# songbird's raw input is PCM, which Symphonia only decodes with this feature.
+symphonia = { version = "0.5", default-features = false, features = ["pcm"] }
+tokio = { workspace = true, features = ["macros", "signal"] }
+# The same version songbird uses for the voice gateway.
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
