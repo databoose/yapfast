@@ -40,6 +40,8 @@ pub struct Server {
     pub roles: HashMap<String, u64>,
     /// Role names by id, for mentions.
     pub role_names: HashMap<String, String>,
+    /// The position and RGB colour of each coloured role, by id.
+    pub role_colors: HashMap<String, (i64, u32)>,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -261,8 +263,34 @@ impl Server {
             if let Some(name) = value["name"].as_str() {
                 self.role_names.insert(id.clone(), name.to_owned());
             }
+            match value["color"].as_u64().filter(|color| *color != 0) {
+                Some(color) => {
+                    let position = value["position"].as_i64().unwrap_or_default();
+                    self.role_colors
+                        .insert(id.clone(), (position, color as u32));
+                }
+                None => {
+                    self.role_colors.remove(&id);
+                }
+            }
             self.roles.insert(id, permissions);
         }
+    }
+
+    /// Removes a deleted role.
+    pub fn remove_role(&mut self, id: &str) {
+        self.roles.remove(id);
+        self.role_names.remove(id);
+        self.role_colors.remove(id);
+    }
+
+    /// The colour Discord gives a member's name: their highest coloured role's.
+    pub fn color(&self, roles: &[String]) -> Option<u32> {
+        roles
+            .iter()
+            .filter_map(|role| self.role_colors.get(role))
+            .max_by_key(|(position, _)| *position)
+            .map(|(_, color)| *color)
     }
 }
 

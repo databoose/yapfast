@@ -4,6 +4,7 @@
 pub mod api;
 pub mod client;
 pub mod gateway;
+pub mod member_list;
 pub mod message;
 pub mod ready;
 pub mod service;

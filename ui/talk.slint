@@ -680,7 +680,36 @@ component HeaderToggle inherits Rectangle {
 }
 
 /// A member of the open room. A heading starts each role's group.
-export struct MemberRow { id: string, name: string, initial: string, tint: color, heading: string }
+export struct MemberRow {
+    id: string, name: string, initial: string, tint: color, picture: image, heading: string,
+    /// Discord's presence: "online", "idle", "dnd" or "offline"; empty for Matrix.
+    presence: string,
+    /// The name's colour, from a coloured Discord role.
+    color: color, has-color: bool,
+    /// A custom status or what they're doing, under the name.
+    activity: string,
+}
+
+// A presence dot on a ring cut from the background, as in Discord: green when
+// online, a moon when idle, a bar when they don't want to be disturbed.
+component StatusDot inherits Rectangle {
+    in property <string> presence;
+    in property <color> ring;
+    width: 16px; height: 16px; border-radius: 8px;
+    background: root.ring;
+    accessible-role: image;
+    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : "Online";
+    Rectangle {
+        width: 10px; height: 10px; border-radius: 5px;
+        background: root.presence == "dnd" ? Theme.danger : root.presence == "idle" ? Theme.accent : Theme.live;
+    }
+    if root.presence == "idle": Rectangle {
+        x: 2px; y: 2px; width: 6px; height: 6px; border-radius: 3px; background: root.ring;
+    }
+    if root.presence == "dnd": Rectangle {
+        width: 6px; height: 2px; border-radius: 1px; background: root.ring;
+    }
+}
 
 // The open room's members, grouped by role under the conversation header.
 component MemberPanel inherits Rectangle {
@@ -703,8 +732,25 @@ component MemberPanel inherits Rectangle {
                     height: 42px; padding-left: 8px; padding-right: 8px; spacing: 12px;
                     accessible-role: list-item;
                     accessible-label: member.name + ", " + member.id;
-                    Middle { Avatar { size: 32px; initial: member.initial; tint: member.tint; } }
-                    Text { text: member.name; color: Theme.secondary; font-size: 16px; font-weight: 500; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    // Offline Discord members are faded, as in Discord.
+                    Middle {
+                        Rectangle {
+                            width: 32px; height: 32px;
+                            Avatar { size: 32px; initial: member.initial; tint: member.tint; picture: member.picture; opacity: member.presence == "offline" ? 0.4 : 1; }
+                            if member.presence != "" && member.presence != "offline": StatusDot { x: 20px; y: 20px; presence: member.presence; ring: Theme.sidebar; }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 1;
+                        Text {
+                            text: member.name; color: member.has-color ? member.color : Theme.secondary; font-size: 16px; font-weight: 500; overflow: elide;
+                            opacity: member.presence == "offline" ? 0.5 : 1;
+                        }
+                        if member.activity != "": Text {
+                            text: member.activity; color: Theme.muted; font-size: 12px; overflow: elide;
+                            opacity: member.presence == "offline" ? 0.5 : 1;
+                        }
+                    }
                 }
             }
             if root.note != "": HorizontalLayout { padding: 8px; Label { text: root.note; } }
@@ -787,6 +833,7 @@ export component TalkWindow inherits Window {
     in property <string> account-name;
     in property <string> account-initial;
     in property <color> account-tint;
+    in property <image> account-picture;
     in property <string> account-status;
     in property <string> storage;
     in property <string> notice;
@@ -1049,7 +1096,7 @@ export component TalkWindow inherits Window {
                 padding: 16px; spacing: 10px;
                 HorizontalLayout {
                     spacing: 12px;
-                    Middle { Avatar { size: 40px; initial: root.account-initial; tint: root.account-tint; } }
+                    Middle { Avatar { size: 40px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; } }
                     VerticalLayout {
                         alignment: center; horizontal-stretch: 1;
                         Text { text: root.account; color: Theme.text; font-weight: 700; overflow: elide; }
@@ -1499,7 +1546,7 @@ export component TalkWindow inherits Window {
                         padding-right: 8px; spacing: 2px;
                         Rectangle {
                             width: 64px;
-                            Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; }
+                            Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; }
                             Rectangle {
                                 x: 41px; y: parent.height / 2 + 4px; width: 14px; height: 14px; border-radius: 7px; background: Theme.panel;
                                 Rectangle {

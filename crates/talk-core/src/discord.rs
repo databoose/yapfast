@@ -117,7 +117,12 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     voice: false,
                     // Discord messages aren't end-to-end encrypted.
                     encrypted: false,
-                    members: 0,
+                    // Known for the channel whose member list is on screen.
+                    members: snapshot
+                        .listed
+                        .as_ref()
+                        .filter(|(listed, _)| *listed == channel.id)
+                        .map_or(0, |(_, count)| *count),
                     unread: u64::from(channel.unread),
                     mentions: channel.mentions,
                     locked: channel.access == Access::Hidden,
@@ -290,7 +295,16 @@ mod tests {
             .into(),
             ..Default::default()
         };
+        let snapshot = Snapshot {
+            listed: Some(("21".into(), 4)),
+            ..snapshot
+        };
         let (rooms, servers) = index(&snapshot, false);
+        assert_eq!(
+            (rooms[0].members, rooms[1].members),
+            (4, 0),
+            "a listed text channel counts its readers"
+        );
         assert_eq!(rooms[0].id, "discord:10:21");
         assert_eq!(
             rooms[2].people[0].name, "Ann",

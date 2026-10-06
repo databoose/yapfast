@@ -74,6 +74,26 @@ pub struct ChatMember {
     /// The display name, or the user ID without one, as on the member's messages.
     pub name: String,
     pub role: Role,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// The heading Discord lists them under, with its size, such as
+    /// `Online — 12`. Matrix members are grouped by `role` instead.
+    pub group: Option<String>,
+    /// Whether they're around; Matrix members have no presence here.
+    pub presence: Option<Presence>,
+    /// The RGB colour of their name, from their highest coloured Discord role.
+    pub color: Option<u32>,
+    /// Their custom status, else what they're doing, from Discord.
+    pub activity: Option<String>,
+}
+
+/// Whether a Discord member is around, as their status dot shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    Online,
+    Idle,
+    DoNotDisturb,
+    Offline,
 }
 
 pub struct RoomIndex {

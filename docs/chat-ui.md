@@ -40,7 +40,11 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   grouped under ADMINS, MODERATORS and MEMBERS by Matrix power level (100 and
   50), each by name. The first view fetches the full list from the homeserver,
   since sync loads members lazily, and membership changes refresh it. Voice
-  channels and one-to-one DMs have no member list.
+  channels and one-to-one DMs have no member list. A Discord text channel
+  lists whoever can read it, grouped as in Discord: under hoisted roles, then
+  ONLINE and OFFLINE, with counts, avatars, status dots, role colours and
+  custom statuses. Talk subscribes to the list's
+  first 100 rows while the channel is open, and Discord keeps them current.
 - Read live text messages and load history in batches of 30.
 - Recover encryption keys or recheck verification performed in another client.
 - Send only from a cross-signed device into a joined encrypted room. Existing

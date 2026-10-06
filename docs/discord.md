@@ -30,8 +30,14 @@ Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
 Showing an unread channel marks it read, and with the "Mark messages read on
 Discord" setting, on by default, acknowledges it on Discord within a second.
-Forwarding, member lists, typing, desktop notifications and DMs are still
-open.
+The open text channel lists its members on the right as Discord's sidebar
+does: under hoisted roles, then online, then offline, with offline members
+faded. Each shows a status dot for online, idle or do not disturb, their name
+in their highest coloured role's colour, and their custom status or what
+they're playing below it. Talk shows the list's first 100 rows, headings
+included. A build without Matrix shows the Discord account's name, avatar and
+connection in the bottom-left panel. Forwarding,
+typing, desktop notifications and DMs are still open.
 
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,

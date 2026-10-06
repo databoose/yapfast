@@ -18,7 +18,7 @@ use tokio_tungstenite::{
     },
 };
 
-use crate::client;
+use crate::{client, member_list};
 
 const URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
 /// The capability bits the web client sends, as used by mautrix-discord.
@@ -174,15 +174,20 @@ impl Gateway {
 
     /// Subscribes to a server while one of its channels is on screen, as the
     /// web client does. Large servers send their messages only to subscribers.
-    /// Talk doesn't show member lists yet, so it asks for none.
-    pub async fn subscribe(&mut self, guild_id: &str) -> Result<()> {
+    /// With `channel`, Discord also sends that channel's member list, its
+    /// first [`member_list::ROWS`] rows, as GUILD_MEMBER_LIST_UPDATE.
+    pub async fn subscribe(&mut self, guild_id: &str, channel: Option<&str>) -> Result<()> {
+        let mut subscription = json!({
+            "typing": true,
+            "activities": true,
+            "threads": true,
+        });
+        if let Some(channel) = channel {
+            subscription["channels"] = json!({channel: [[0, member_list::ROWS - 1]]});
+        }
         self.send(
             GUILD_SUBSCRIPTIONS_BULK,
-            json!({"subscriptions": {guild_id: {
-                "typing": true,
-                "activities": true,
-                "threads": true,
-            }}}),
+            json!({"subscriptions": {guild_id: subscription}}),
         )
         .await
     }

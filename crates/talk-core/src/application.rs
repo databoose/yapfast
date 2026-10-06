@@ -56,6 +56,11 @@ pub struct AppState {
     pub sync_discord_reads: bool,
     pub switch_voice: Option<String>,
     pub account: Option<String>,
+    /// The account's name, avatar address and connection status, where the
+    /// network gives them; a Discord-only build shows Discord's.
+    pub account_name: Option<String>,
+    pub account_avatar: Option<String>,
+    pub account_status: Option<String>,
     pub preview: bool,
     pub busy: bool,
     pub trusted: bool,
@@ -273,13 +278,14 @@ impl Application {
 
     /// Asks for the server icons and avatars on screen that weren't asked
     /// for before: the rail, the people in the listed voice channels, the
-    /// call and the open timeline.
+    /// call, the open timeline and its member list.
     fn request_pictures(&mut self) -> Option<Effect> {
         let state = &self.state;
         let shown = state
             .servers
             .iter()
             .filter_map(|server| server.icon.as_deref())
+            .chain(state.account_avatar.as_deref())
             .chain(
                 state
                     .rooms
@@ -300,6 +306,14 @@ impl Application {
                     .messages
                     .iter()
                     .filter_map(|message| message.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .members
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|member| member.avatar.as_deref()),
             );
         let mut wanted = Vec::new();
         for url in shown {
@@ -719,6 +733,21 @@ impl Application {
             Event::Discord(snapshot) => {
                 self.state.discord_online =
                     snapshot.status == talk_discord::service::Status::Online;
+                // Without Matrix, the account is Discord's.
+                #[cfg(not(feature = "matrix"))]
+                {
+                    use talk_discord::service::Status;
+                    self.state.online = self.state.discord_online;
+                    if let Some(account) = &snapshot.account {
+                        self.state.account_name = Some(account.name.clone());
+                        self.state.account_avatar = Some(account.avatar.clone());
+                    }
+                    self.state.account_status = Some(match &snapshot.status {
+                        Status::Online => "Online".into(),
+                        Status::Connecting => "Connecting to Discord...".into(),
+                        Status::Offline(reason) => reason.clone(),
+                    });
+                }
                 self.discord = Some(snapshot);
                 let mut effects = self.list_discord();
                 effects.extend(self.mark_discord_read());
@@ -1469,6 +1498,11 @@ fn preview_members(room: &str) -> Vec<ChatMember> {
             id: format!("@{}:preview.local", name.to_lowercase()),
             name: name.into(),
             role,
+            avatar: None,
+            group: None,
+            presence: None,
+            color: None,
+            activity: None,
         })
         .collect();
     chat::sort_members(&mut members);
@@ -1598,6 +1632,11 @@ mod tests {
             id: "@bob:test".into(),
             name: "Bob".into(),
             role: Role::Member,
+            avatar: None,
+            group: None,
+            presence: None,
+            color: None,
+            activity: None,
         };
         app.apply(Event::Members {
             room: "games".into(),

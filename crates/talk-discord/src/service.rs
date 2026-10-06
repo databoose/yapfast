@@ -16,6 +16,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::{
     api::Api,
     gateway::{Closed, Gateway},
+    member_list::{ListedMember, MemberList},
     message::{self, Message, Names},
     ready::{self, Server},
     unread::Unreads,
@@ -40,13 +41,25 @@ pub struct VoiceMember {
     pub deafened: bool,
 }
 
+/// The linked account, as Discord shows it outside any server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub name: String,
+    /// The address of its avatar.
+    pub avatar: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub status: Status,
     pub user_id: Option<String>,
+    pub account: Option<Account>,
     pub servers: Vec<Server>,
     /// Who is in each voice channel, by channel id and then by name.
     pub voice: HashMap<String, Vec<VoiceMember>>,
+    /// The channel whose member list is on screen, and how many people can
+    /// read it.
+    pub listed: Option<(String, u64)>,
 }
 
 /// A message event from the gateway, for any channel.
@@ -74,6 +87,11 @@ pub enum Live {
     },
     /// Names were learned, so mentions and authors may render differently.
     Names,
+    /// The member list of the channel last viewed, as it stands now.
+    Members {
+        channel: String,
+        members: Vec<ListedMember>,
+    },
 }
 
 /// What songbird needs to open the voice connection Discord assigned.
@@ -102,6 +120,7 @@ enum Request {
     },
     View {
         guild: String,
+        channel: Option<String>,
     },
     Members {
         guild: String,
@@ -144,6 +163,7 @@ impl Discord {
                 names: names.clone(),
                 api: api.clone(),
                 viewing: HashSet::new(),
+                listing: None,
             },
         ));
         Ok(Self {
@@ -164,10 +184,12 @@ impl Discord {
         self.live.subscribe()
     }
 
-    /// Tells Discord a server's channel is on screen, so its messages arrive live.
-    pub fn view(&self, guild: &str) {
+    /// Tells Discord a server's channel is on screen, so its messages arrive
+    /// live. With a text `channel`, its member list arrives as [`Live::Members`].
+    pub fn view(&self, guild: &str, channel: Option<&str>) {
         let _ = self.requests.send(Request::View {
             guild: guild.into(),
+            channel: channel.map(str::to_owned),
         });
     }
 
@@ -330,6 +352,8 @@ struct Shared {
     api: Arc<Api>,
     /// Servers with a channel on screen, subscribed again after reconnecting.
     viewing: HashSet<String>,
+    /// The server and channel whose member list is on screen.
+    listing: Option<(String, String)>,
 }
 
 async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut shared: Shared) {
@@ -393,7 +417,10 @@ fn refuse(request: Request, shared: &mut Shared) {
                 "Discord isn't connected right now. Try again in a moment."
             )));
         }
-        Request::View { guild } => {
+        Request::View { guild, channel } => {
+            if let Some(channel) = channel {
+                shared.listing = Some((guild.clone(), channel));
+            }
             shared.viewing.insert(guild);
         }
         _ => {}
@@ -424,8 +451,17 @@ async fn connected_session(
     };
     let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
     shared.snapshots.send_replace(tracker.snapshot());
+    tracker.list = shared
+        .listing
+        .clone()
+        .map(|(guild, channel)| MemberList::new(guild, channel));
     for guild in &shared.viewing {
-        if let Err(error) = gateway.subscribe(guild).await {
+        let channel = tracker
+            .list
+            .as_ref()
+            .filter(|list| list.guild() == guild)
+            .map(MemberList::channel);
+        if let Err(error) = gateway.subscribe(guild, channel).await {
             return Ended::Failed(error);
         }
     }
@@ -461,11 +497,23 @@ async fn connected_session(
                     Request::SelfState { guild, channel, mute, deaf } => {
                         gateway.update_voice_state(Some(&guild), Some(&channel), mute, deaf).await
                     }
-                    Request::View { guild } => {
-                        if shared.viewing.insert(guild.clone()) {
-                            gateway.subscribe(&guild).await
-                        } else {
-                            Ok(())
+                    Request::View { guild, channel } => {
+                        let new = shared.viewing.insert(guild.clone());
+                        match channel {
+                            Some(channel) if shared.listing.as_ref().is_none_or(|(g, c)| *g != guild || *c != channel) => {
+                                shared.listing = Some((guild.clone(), channel.clone()));
+                                tracker.list = Some(MemberList::new(guild.clone(), channel.clone()));
+                                gateway.subscribe(&guild, Some(&channel)).await
+                            }
+                            // The same channel again: what Discord sent still stands.
+                            Some(_) => {
+                                if tracker.list.as_ref().is_some_and(MemberList::synced) {
+                                    publish_members(&tracker, shared);
+                                }
+                                Ok(())
+                            }
+                            None if new => gateway.subscribe(&guild, None).await,
+                            None => Ok(()),
                         }
                     }
                     Request::MarkRead { guild, channel, sync } => {
@@ -539,6 +587,24 @@ async fn connected_session(
                         }
                     }
                 }
+                if event.name == "PRESENCE_UPDATE"
+                    && tracker.list.as_mut().is_some_and(|list| list.presence(&event.data))
+                {
+                    publish_members(&tracker, shared);
+                }
+                if event.name == "GUILD_MEMBER_LIST_UPDATE"
+                    && let Some(list) = tracker.list.as_mut()
+                {
+                    let count = list.count();
+                    let changed = list.apply(&event.data, &mut shared.names.write().unwrap_or_else(|poisoned| poisoned.into_inner()));
+                    let counted = list.count() != count;
+                    if changed {
+                        publish_members(&tracker, shared);
+                    }
+                    if counted {
+                        shared.snapshots.send_replace(tracker.snapshot());
+                    }
+                }
                 for live in live_events(&me, &shared.names, &event.name, &event.data) {
                     let _ = shared.live.send(live);
                 }
@@ -566,6 +632,8 @@ struct Tracker {
     /// This account's roles, by server id.
     my_roles: HashMap<String, Vec<String>>,
     unreads: Unreads,
+    /// The member list of the channel on screen.
+    list: Option<MemberList>,
 }
 
 impl Tracker {
@@ -577,6 +645,7 @@ impl Tracker {
             voice: HashMap::new(),
             my_roles: HashMap::new(),
             unreads: Unreads::from_ready(ready),
+            list: None,
         };
         tracker.learn_user(&ready["user"]);
         for user in ready["users"].as_array().into_iter().flatten() {
@@ -645,8 +714,7 @@ impl Tracker {
                 };
                 if name == "GUILD_ROLE_DELETE" {
                     if let Some(role) = data["role_id"].as_str() {
-                        server.roles.remove(role);
-                        server.role_names.remove(role);
+                        server.remove_role(role);
                     }
                 } else {
                     server.put_role(&data["role"]);
@@ -848,10 +916,36 @@ impl Tracker {
         Snapshot {
             status: Status::Online,
             user_id: Some(self.me.clone()),
+            account: names.user_name(&self.me).map(|name| Account {
+                name: name.to_owned(),
+                avatar: names.avatar(None, &self.me),
+            }),
             servers,
             voice,
+            listed: self
+                .list
+                .as_ref()
+                .and_then(|list| Some((list.channel().to_owned(), list.count()?))),
         }
     }
+}
+
+fn publish_members(tracker: &Tracker, shared: &Shared) {
+    let Some(list) = &tracker.list else {
+        return;
+    };
+    let server = tracker
+        .servers
+        .iter()
+        .find(|server| server.id == list.guild());
+    let names = shared
+        .names
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = shared.live.send(Live::Members {
+        channel: list.channel().to_owned(),
+        members: list.members(server, &names),
+    });
 }
 
 /// The live message events in one gateway event, learning the names it carries.

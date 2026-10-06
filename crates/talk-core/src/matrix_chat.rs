@@ -633,6 +633,11 @@ fn load_members(open: &mut OpenRoom, events: &UnboundedSender<Event>) {
                             // A room creator's level is infinite.
                             _ => Role::Admin,
                         },
+                        avatar: None,
+                        group: None,
+                        presence: None,
+                        color: None,
+                        activity: None,
                     })
                     .collect();
                 sort_members(&mut members);

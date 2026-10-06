@@ -393,6 +393,11 @@ impl Names {
         self.members.contains(&(guild.to_owned(), user.to_owned()))
     }
 
+    /// A user's display name or username, outside any server.
+    pub fn user_name(&self, user: &str) -> Option<&str> {
+        self.users.get(user).map(String::as_str)
+    }
+
     pub fn name(&self, guild: &str, user: &str) -> Option<&str> {
         self.nicknames
             .get(&(guild.to_owned(), user.to_owned()))

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use talk_discord::{
     client,
+    member_list::Presence,
     service::{Discord, Live, Snapshot, Status},
     token,
 };
@@ -100,8 +101,44 @@ async fn talks_to_the_fake_server() {
     assert!(preview.starts_with(b"\x89PNG"));
     assert_eq!(&preview[16..24], &[0, 0, 1, 104, 0, 0, 0, 225], "360x225");
 
+    // The channel's member list arrives once it's on screen, grouped as in
+    // Discord: the hoisted Mods role, then online, then offline.
+    let mut live = discord.live();
+    discord.view(&guild, Some(&general));
+    let members = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == general => Some(members),
+        _ => None,
+    })
+    .await;
+    let listed: Vec<_> = members
+        .iter()
+        .map(|member| (member.name.as_str(), member.group.as_str(), member.presence))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Bob", "Mods — 1", Presence::DoNotDisturb),
+            ("Alice", "Online — 2", Presence::Online),
+            ("Carol", "Online — 2", Presence::Idle),
+            ("Dave", "Offline — 1", Presence::Offline)
+        ]
+    );
+    assert_eq!(members[0].color, Some(0x3498db), "the Mods role's blue");
+    assert_eq!(members[0].activity.as_deref(), Some("Playing Factorio"));
+    assert_eq!(members[2].activity.as_deref(), Some("🌙 back later"));
+    assert!(
+        members[2].avatar.contains("/guilds/"),
+        "Carol's server avatar"
+    );
+    let account = snapshot.account.as_ref().expect("the account");
+    assert_eq!(account.name, "Alice");
+    assert!(
+        account
+            .avatar
+            .contains("/avatars/1400000000000000001/alice1.png")
+    );
+
     // Reading the channel clears its unread mark.
-    discord.view(&guild);
     discord.mark_read(&guild, &general, true);
     snapshot_where(&discord, |snapshot| {
         !snapshot.servers[0].text_channels[0].unread
@@ -109,7 +146,6 @@ async fn talks_to_the_fake_server() {
     .await;
 
     // Bob chats live until stopped.
-    let mut live = discord.live();
     let control = reqwest::Client::new();
     control
         .post(format!("{server}/_control/chat-start"))

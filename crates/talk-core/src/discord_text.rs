@@ -9,6 +9,7 @@ use std::{
 
 use talk_discord::{
     api::PAGE,
+    member_list::{ListedMember, Presence as DiscordPresence},
     message::{Message, Reply as DiscordReply},
     service::{Discord, Live, Snapshot, Status},
 };
@@ -23,8 +24,8 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMessage, Command, Delivery, Event, MAX_PREVIEW_DOWNLOAD_BYTES, Picture,
-        Reaction, Reply, decode_preview, plain_snippet,
+        Attachment, ChatMember, ChatMessage, Command, Delivery, Event, MAX_PREVIEW_DOWNLOAD_BYTES,
+        Picture, Presence, Reaction, Reply, Role, decode_preview, plain_snippet,
     },
     discord,
 };
@@ -109,7 +110,7 @@ impl OpenChannel {
     /// Opens a channel and starts loading its latest messages.
     pub fn open(discord: &Discord, room: &str, done: &UnboundedSender<Done>) -> Option<Self> {
         let mut open = Self::new(room)?;
-        discord.view(&open.guild);
+        discord.view(&open.guild, Some(&open.channel));
         open.load(discord, done, None);
         Some(open)
     }
@@ -867,13 +868,8 @@ pub fn command(
     };
     if let Command::Open(_) = command {
         match OpenChannel::open(discord, &room, done) {
-            Some(channel) => {
-                *open = Some(channel);
-                let _ = events.send(Event::Members {
-                    room,
-                    members: Err("Talk doesn't list Discord members yet."),
-                });
-            }
+            // The member list follows as Live::Members.
+            Some(channel) => *open = Some(channel),
             None => {
                 let _ = events.send(Event::RoomError {
                     room,
@@ -1051,12 +1047,41 @@ pub fn live(
         return;
     };
     match event {
+        Ok(Live::Members {
+            channel: id,
+            members,
+        }) => {
+            if id == channel.channel {
+                let _ = events.send(Event::Members {
+                    room: channel.room.clone(),
+                    members: Ok(members.into_iter().map(chat_member).collect()),
+                });
+            }
+        }
         Ok(event) => {
             if channel.live(&event) {
                 publish(channel, discord, done, events);
             }
         }
         Err(_) => channel.refresh(discord, done),
+    }
+}
+
+fn chat_member(member: ListedMember) -> ChatMember {
+    ChatMember {
+        id: member.user_id,
+        name: member.name,
+        role: Role::Member,
+        avatar: Some(member.avatar),
+        group: Some(member.group),
+        presence: Some(match member.presence {
+            DiscordPresence::Online => Presence::Online,
+            DiscordPresence::Idle => Presence::Idle,
+            DiscordPresence::DoNotDisturb => Presence::DoNotDisturb,
+            DiscordPresence::Offline => Presence::Offline,
+        }),
+        color: member.color,
+        activity: member.activity,
     }
 }
 

@@ -15,7 +15,7 @@ use slint::{
 use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, Delivery, Event, Picture, Role},
+    chat::{ChatMessage, Delivery, Event, Picture, Presence, Role},
     discord, links,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
@@ -692,13 +692,24 @@ impl Adapter {
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
         update_model(&self.models.rooms, rows);
         let account = state.account.as_deref().unwrap_or("Preview");
+        let account_name = state
+            .account_name
+            .as_deref()
+            .unwrap_or_else(|| display_part(account));
         window.set_account(account.into());
-        window.set_account_name(display_part(account).into());
-        window.set_account_initial(initial(display_part(account)));
-        window.set_account_tint(tint(display_part(account)));
+        window.set_account_name(account_name.into());
+        window.set_account_initial(initial(account_name));
+        window.set_account_tint(tint(account_name));
+        window.set_account_picture(cached_picture(
+            &mut self.pictures,
+            state,
+            state.account_avatar.as_deref(),
+        ));
         window.set_account_status(
             if state.preview {
                 "Local only"
+            } else if let Some(status) = &state.account_status {
+                status
             } else if state.online {
                 "Online"
             } else {
@@ -756,7 +767,28 @@ impl Adapter {
                     name: member.name.clone().into(),
                     initial: initial(&member.name),
                     tint: tint(&member.name),
-                    heading: if index == 0 || members[index - 1].role != member.role {
+                    picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                    presence: match member.presence {
+                        Some(Presence::Online) => "online",
+                        Some(Presence::Idle) => "idle",
+                        Some(Presence::DoNotDisturb) => "dnd",
+                        Some(Presence::Offline) => "offline",
+                        None => "",
+                    }
+                    .into(),
+                    color: member.color.map_or_else(slint::Color::default, |rgb| {
+                        slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+                    }),
+                    has_color: member.color.is_some(),
+                    activity: member.activity.clone().unwrap_or_default().into(),
+                    // Discord names its groups; Matrix members group by role.
+                    heading: if let Some(group) = &member.group {
+                        if index == 0 || members[index - 1].group.as_ref() != Some(group) {
+                            group.to_uppercase().into()
+                        } else {
+                            SharedString::default()
+                        }
+                    } else if index == 0 || members[index - 1].role != member.role {
                         let count = members
                             .iter()
                             .filter(|other| other.role == member.role)

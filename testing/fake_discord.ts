@@ -569,6 +569,52 @@ function readySupplemental() {
   };
 }
 
+// Who is around and what they're doing, as their presence says.
+const presences: Record<string, { status: string; activities: unknown[] }> = {
+  [users.alice.id]: { status: "online", activities: [] },
+  [users.bob.id]: { status: "dnd", activities: [{ type: 0, name: "Factorio" }] },
+  [users.carol.id]: {
+    status: "idle",
+    activities: [{ type: 4, name: "Custom Status", state: "back later", emoji: { name: "🌙", id: null } }],
+  },
+  [users.dave.id]: { status: "offline", activities: [] },
+};
+
+// The member list of a channel everyone reads, as Discord groups it: Bob under
+// the hoisted Mods role, then who is online, then Dave, who isn't.
+function memberList() {
+  const offline = (user: User) => presences[user.id]!.status === "offline";
+  const mods = [users.bob];
+  const others = Object.values(users).filter((user) => !mods.includes(user));
+  const groups = [
+    { id: MODS, count: mods.length },
+    { id: "online", count: others.filter((user) => !offline(user)).length },
+    { id: "offline", count: others.filter(offline).length },
+  ];
+  const row = (user: User) => ({
+    member: {
+      ...member(user, mods.includes(user) ? [MODS] : []),
+      presence: { user: { id: user.id }, client_status: {}, ...presences[user.id] },
+    },
+  });
+  const items = [
+    { group: groups[0] },
+    ...mods.map(row),
+    { group: groups[1] },
+    ...others.filter((user) => !offline(user)).map(row),
+    { group: groups[2] },
+    ...others.filter(offline).map(row),
+  ];
+  return {
+    guild_id: GUILD,
+    id: "everyone",
+    member_count: Object.keys(users).length,
+    online_count: groups[0]!.count + groups[1]!.count,
+    groups,
+    ops: [{ op: "SYNC", range: [0, 99], items }],
+  };
+}
+
 function gatewayMessage(ws: Socket, text: string) {
   let payload: { op?: number; d?: any };
   try {
@@ -626,8 +672,16 @@ function gatewayMessage(ws: Socket, text: string) {
       });
       break;
     }
-    case 37: // Guild subscriptions: everything is sent anyway.
+    case 37: {
+      // Guild subscriptions: messages are sent anyway; a channel's member
+      // list is sent when asked for.
+      for (const [guildId, subscription] of Object.entries<any>(d.subscriptions ?? {})) {
+        if (guildId === GUILD && Object.keys(subscription.channels ?? {}).length > 0) {
+          send(ws, 0, memberList(), "GUILD_MEMBER_LIST_UPDATE");
+        }
+      }
       break;
+    }
     default:
       console.error(`gateway: unhandled op ${payload.op}`);
   }
