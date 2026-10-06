@@ -6,8 +6,39 @@ Talk pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
 the complete Rust graph. `vendor/i-slint-renderer-skia` is Slint's Skia
 renderer 1.18.1 with one change: glyphs use Skia's slight (vertical-only)
 hinting, because the default hinting spaces Satoshi's letters unevenly. Copy the
-matching release over it, and reapply that line, when upgrading Slint. The Matrix SDK revision follows the pinned MatrixRTC
-revision. Keep those two sources together when upgrading.
+matching release over it, and reapply that line, when upgrading Slint.
+
+`vendor/i-slint-core` is Slint's core 1.18.1 with `StyledText` made selectable,
+which upstream Slint doesn't offer. Dragging selects, a double press selects a
+word and a triple press a paragraph. Dragging past a text carries the selection
+on through the texts and pictures around it: those sharing its nearest flickable,
+such as a list's rows, in reading order. Pictures are the `Image`s with
+an `accessible-label`, and copy as `[Picture]`. Ctrl+C copies the selection
+as read, without its Markdown: texts level with each other joined by a space, the
+rest by line breaks. Talk shows message authors and times as `StyledText` so the
+selection takes them in. The selection is kept as positions in the list's model,
+so it survives its rows scrolling away. Dragging near the top or bottom of the
+list scrolls it, and Talk supplies the text of the rows in between through
+`talk_selection::set_row_text`. A click that selects nothing still follows a
+link and leaves the focus where it was. A left press anywhere clears the
+selection, as does Escape. The highlight is the text's `link-color` at 35%
+opacity, since `StyledText` has no property of its own for it.
+
+The core of it is `talk_selection.rs`. The other changes are marked `Talk:` in:
+
+- `items/text.rs`
+- `items/image.rs`, which tints covered pictures
+- `items/flickable.rs`, which keeps the pointer through a drag
+- `window.rs`, for the press, Ctrl+C and Escape
+- `item_rendering.rs`
+- `textlayout/sharedparley.rs`
+- `textlayout/sharedparley/shaping.rs`
+
+Reapply them to the matching release when upgrading Slint. Styled paragraphs now
+have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
+
+The Matrix SDK revision follows the pinned MatrixRTC revision. Keep those two
+sources together when upgrading.
 
 LiveKit's Rust crates must stay on the mutually compatible versions in Cargo.lock.
 Do not run an unrestricted `cargo update`. Upgrade against the MatrixRTC lockfile

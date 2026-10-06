@@ -16,7 +16,7 @@ default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["talk-core/matrix"]
 discord = ["talk-core/discord"]
-desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser"]
+desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,6 +31,9 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], o
 emojis = { version = "0.9", optional = true }
 # Maps the color emoji font Talk registers with Slint, rather than copying it.
 memmap2 = { version = "0.9", optional = true }
+# Slint's internals, for the selection of text across messages Talk patches in; see
+# docs/building.md. Tests also read the testing backend's clipboard through it.
+i-slint-core = { version = "=1.18.1", optional = true }
 talk-core = { path = "crates/talk-core", default-features = false }
 talk-ui = { path = "crates/talk-ui", optional = true }
 # Opens links clicked in messages in the default browser.
@@ -68,6 +71,7 @@ url = "2"
 # Cargo does not inherit the SDK's patches through a git dependency.
 [patch.crates-io]
 webrtc-sys = { path = "vendor/webrtc-sys" }
+i-slint-core = { path = "vendor/i-slint-core" }
 i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
 songbird = { path = "vendor/songbird" }
 davey = { path = "vendor/davey" }

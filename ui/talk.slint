@@ -1017,16 +1017,16 @@ export struct ImageCell { index: int, name: string, image: image, x: int, y: int
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
 /// An embed's field, and a row of them: inline fields share a row.
-export struct EmbedField { name: string, value: styled-text }
+export struct EmbedField { name: styled-text, value: styled-text }
 export struct EmbedFieldRow { fields: [EmbedField] }
 /// A Discord link preview or bot card. `title` links to the page when
 /// there's one. A video's pictures are its poster, which opens `url`.
 export struct EmbedCard {
     color: color, has-color: bool,
-    provider: string, author: string, title: styled-text, has-title: bool, url: string,
+    provider: styled-text, has-provider: bool, author: styled-text, has-author: bool, title: styled-text, has-title: bool, url: string,
     description: styled-text, has-description: bool,
     field-rows: [EmbedFieldRow],
-    footer: string,
+    footer: styled-text, has-footer: bool,
     /// The small picture beside the text; `thumbnail-index` is its place among the message's attachments.
     thumbnail: image, thumbnail-index: int, has-thumbnail: bool,
     images: [ImageCell], gallery-width: int, gallery-height: int,
@@ -1040,7 +1040,9 @@ export struct MessageRow {
     first: bool,
     /// A date divider above this message, when it starts a new day.
     day: string,
-    formatted: bool, styled: styled-text, edited: bool, deleted: bool,
+    /// The body, and the author and time as selectable text: a selection runs across messages
+    /// through all three.
+    styled: styled-text, author-styled: styled-text, time-styled: styled-text, edited: bool, deleted: bool,
     reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, has-reply: bool,
     reactions: [ReactionChip],
     /// Images with previews, laid out in a gallery of this size; other
@@ -2326,20 +2328,14 @@ export component TalkWindow inherits Window {
                                                     }
                                                     if message.first: HorizontalLayout {
                                                         spacing: 8px;
-                                                        Text { text: message.author; color: message.has-color ? message.color : Theme.text; font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center; }
-                                                        Text { text: message.time; color: Theme.muted; font-size: 13px; font-weight: 500; wrap: no-wrap; vertical-alignment: center; }
+                                                        StyledText { text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: 16px; max-lines: 1; vertical-alignment: center; }
+                                                        StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: 13px; max-lines: 1; vertical-alignment: center; }
                                                         Rectangle { horizontal-stretch: 1; }
                                                     }
-                                                    if message.formatted: StyledText {
-                                                        text: message.styled; default-color: message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
+                                                    if message.body != "": StyledText {
+                                                        text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
                                                         link-clicked(link) => { root.open-link(link); }
                                                         accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
-                                                    }
-                                                    if !message.formatted && message.body != "": TextInput {
-                                                        text: message.body; color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text;
-                                                        read-only: true; single-line: false; wrap: word-wrap;
-                                                        selection-background-color: Theme.accent.with-alpha(0.35); selection-foreground-color: Theme.text;
-                                                        accessible-label: "Message from " + message.author;
                                                     }
                                                     if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
                                                     // Fixed-size children sit beside a spacer, so they do not cap the column's width.
@@ -2400,8 +2396,8 @@ export component TalkWindow inherits Window {
                                                                 padding: 12px; padding-left: 16px; padding-right: 16px; spacing: 16px;
                                                                 VerticalLayout {
                                                                     spacing: 8px; horizontal-stretch: 1; alignment: start;
-                                                                    if embed.provider != "": Text { text: embed.provider; color: Theme.muted; font-size: 12px; overflow: elide; }
-                                                                    if embed.author != "": Text { text: embed.author; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
+                                                                    if embed.has-provider: StyledText { text: embed.provider; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; max-lines: 1; }
+                                                                    if embed.has-author: StyledText { text: embed.author; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
                                                                     if embed.has-title: StyledText {
                                                                         text: embed.title; default-color: Theme.text; link-color: Theme.link; default-font-size: 16px;
                                                                         link-clicked(link) => { root.open-link(link); }
@@ -2414,7 +2410,7 @@ export component TalkWindow inherits Window {
                                                                         spacing: 8px;
                                                                         for field in row.fields: VerticalLayout {
                                                                             spacing: 2px; horizontal-stretch: 1;
-                                                                            Text { text: field.name; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
+                                                                            StyledText { text: field.name; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
                                                                             StyledText {
                                                                                 text: field.value; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
                                                                                 link-clicked(link) => { root.open-link(link); }
@@ -2446,13 +2442,13 @@ export component TalkWindow inherits Window {
                                                                         }
                                                                         Rectangle { horizontal-stretch: 1; }
                                                                     }
-                                                                    if embed.footer != "": Text { text: embed.footer; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                                                                    if embed.has-footer: StyledText { text: embed.footer; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; }
                                                                 }
                                                                 if embed.has-thumbnail: VerticalLayout {
                                                                     alignment: start;
                                                                     Rectangle {
                                                                         width: 80px; height: 80px; border-radius: 4px; clip: true;
-                                                                        Image { source: embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; }
+                                                                        Image { source: embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Thumbnail"; }
                                                                         TouchArea {
                                                                             mouse-cursor: MouseCursor.pointer;
                                                                             clicked => { root.view-image(message.item, embed.thumbnail-index); }

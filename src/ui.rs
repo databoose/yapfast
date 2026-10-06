@@ -140,6 +140,71 @@ fn prepare(window: &TalkWindow) {
             .set_size(slint::PhysicalSize::new(width, height));
     }
     window.set_emoji_font(emoji::family().into());
+    copy_whole_messages(window);
+}
+
+/// Lets a selection of text copy the messages it covers whole, including those scrolled out of
+/// view, which the list no longer shows.
+fn copy_whole_messages(window: &TalkWindow) {
+    let window = window.as_weak();
+    i_slint_core::talk_selection::set_row_text(move |row| {
+        Some(message_text(
+            &window.upgrade()?.get_messages().row_data(row)?,
+        ))
+    });
+}
+
+/// A message as a selection covering it copies it, reading as its row shows it: texts beside
+/// each other joined by a space, others by line breaks, and each picture as `[Picture]`.
+fn message_text(row: &MessageRow) -> String {
+    let plain = i_slint_core::talk_selection::plain;
+    let mut lines = Vec::new();
+    if row.first {
+        lines.push(format!(
+            "{} {}",
+            plain(&row.author_styled),
+            plain(&row.time_styled)
+        ));
+    }
+    if !row.body.is_empty() {
+        lines.push(plain(&row.styled));
+    }
+    let pictures = |count: usize| std::iter::repeat_n("[Picture]".to_string(), count);
+    lines.extend(pictures(row.images.row_count()));
+    for embed in row.embeds.iter() {
+        let mut card = Vec::new();
+        let texts = [
+            (embed.has_provider, &embed.provider),
+            (embed.has_author, &embed.author),
+            (embed.has_title, &embed.title),
+            (embed.has_description, &embed.description),
+        ];
+        card.extend(
+            texts
+                .iter()
+                .filter(|(shown, _)| *shown)
+                .map(|(_, text)| plain(text)),
+        );
+        for fields in embed.field_rows.iter() {
+            let (names, values): (Vec<_>, Vec<_>) = fields
+                .fields
+                .iter()
+                .map(|field| (plain(&field.name), plain(&field.value)))
+                .unzip();
+            card.push(names.join(" "));
+            card.push(values.join(" "));
+        }
+        card.extend(pictures(embed.images.row_count()));
+        if embed.has_footer {
+            card.push(plain(&embed.footer));
+        }
+        // The thumbnail sits level with the card's first text, to its right.
+        if embed.has_thumbnail {
+            card.insert(card.len().min(1), "[Picture]".into());
+        }
+        lines.extend(card);
+    }
+    lines.join("\n")
 }
 
 /// A command file through which the private test compositor can hide, destroy
@@ -2126,14 +2191,7 @@ fn markdown(body: &str) -> slint::StyledText {
 
 /// An embed's title in bold, linking to its page when it has one.
 fn embed_title(title: &str, url: &str) -> slint::StyledText {
-    // Backslashes escape Markdown's punctuation, so the title shows as typed.
-    let escaped: String = title
-        .chars()
-        .flat_map(|c| {
-            let escape = c.is_ascii_punctuation().then_some('\\');
-            escape.into_iter().chain([c])
-        })
-        .collect();
+    let escaped = escape_markdown(title);
     let markdown = if url.is_empty() {
         format!("**{escaped}**")
     } else {
@@ -2143,6 +2201,22 @@ fn embed_title(title: &str, url: &str) -> slint::StyledText {
         .unwrap_or_else(|_| slint::StyledText::from_plain_text(title))
 }
 
+/// `text` with Markdown's punctuation escaped by backslashes, so it shows as typed.
+fn escape_markdown(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escape = c.is_ascii_punctuation().then_some('\\');
+            escape.into_iter().chain([c])
+        })
+        .collect()
+}
+
+/// `text` in bold, as typed.
+fn bold(text: &str) -> slint::StyledText {
+    slint::StyledText::from_markdown(&format!("**{}**", escape_markdown(text)))
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(text))
+}
+
 /// An embed's fields in rows: up to three inline fields share one, and any
 /// other field takes a row of its own, as in Discord.
 fn field_rows(fields: &[EmbedField]) -> ModelRc<EmbedFieldRow> {
@@ -2150,7 +2224,7 @@ fn field_rows(fields: &[EmbedField]) -> ModelRc<EmbedFieldRow> {
     let mut open = false;
     for field in fields {
         let cell = talk_ui::EmbedField {
-            name: field.name.clone().into(),
+            name: bold(&field.name),
             value: markdown(&field.value),
         };
         match rows.last_mut() {
@@ -2182,14 +2256,12 @@ fn role_color(rgb: Option<u32>) -> slint::Color {
 }
 
 fn message_row(message: &ChatMessage) -> MessageRow {
-    // Plain text with web addresses is styled too, so the addresses can be clicked.
-    let (formatted, styled) = if message.formatted {
-        (true, markdown(&message.body))
+    // Plain text shows as typed, its web addresses linked.
+    let styled = if message.formatted {
+        markdown(&message.body)
     } else {
-        match plain_with_links(&message.body) {
-            Some(styled) => (true, styled),
-            None => (false, slint::StyledText::default()),
-        }
+        plain_with_links(&message.body)
+            .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
     };
     // An image with a preview shows in the gallery; any other attachment shows
     // a file card. Embeds' pictures show in their cards.
@@ -2216,15 +2288,18 @@ fn message_row(message: &ChatMessage) -> MessageRow {
             EmbedCard {
                 color: role_color(embed.color),
                 has_color: embed.color.is_some(),
-                provider: embed.provider.clone().into(),
-                author: embed.author.clone().into(),
+                provider: slint::StyledText::from_plain_text(&embed.provider),
+                has_provider: !embed.provider.is_empty(),
+                author: bold(&embed.author),
+                has_author: !embed.author.is_empty(),
                 title: embed_title(&embed.title, &embed.url),
                 has_title: !embed.title.is_empty(),
                 url: embed.url.clone().into(),
                 description: markdown(&embed.description),
                 has_description: !embed.description.is_empty(),
                 field_rows: field_rows(&embed.fields),
-                footer: embed.footer.clone().into(),
+                footer: slint::StyledText::from_plain_text(&embed.footer),
+                has_footer: !embed.footer.is_empty(),
                 thumbnail: thumbnail
                     .map(|(_, _, preview)| picture(preview))
                     .unwrap_or_default(),
@@ -2298,8 +2373,9 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         // Grouping depends on the neighbouring messages; refresh sets both.
         first: true,
         day: SharedString::default(),
-        formatted,
         styled,
+        author_styled: bold(&message.author),
+        time_styled: slint::StyledText::from_plain_text(&message.time),
         edited: message.edited,
         deleted: message.deleted,
         has_reply: message.reply.is_some(),
@@ -2402,18 +2478,292 @@ mod tests {
             field("e", false),
             field("f", true),
         ]);
-        let names: Vec<Vec<String>> = rows
+        let names: Vec<Vec<slint::StyledText>> = rows
             .iter()
-            .map(|row| {
-                row.fields
-                    .iter()
-                    .map(|field| field.name.to_string())
-                    .collect()
+            .map(|row| row.fields.iter().map(|field| field.name).collect())
+            .collect();
+        let expected: Vec<Vec<slint::StyledText>> = [&["a", "b", "c"][..], &["d"], &["e"], &["f"]]
+            .iter()
+            .map(|row| row.iter().map(|name| bold(name)).collect())
+            .collect();
+        assert_eq!(names, expected);
+    }
+
+    /// A window showing one styled message from Sam, with the composer.
+    fn one_message(body: &str) -> TalkWindow {
+        messages(&[("Sam", body)])
+    }
+
+    /// A window showing styled messages, each starting a group, with the composer.
+    fn messages(lines: &[(&str, &str)]) -> TalkWindow {
+        showing(
+            lines
+                .iter()
+                .map(|(author, body)| ChatMessage {
+                    author: (*author).into(),
+                    body: (*body).into(),
+                    formatted: true,
+                    ..Default::default()
+                })
+                .collect(),
+        )
+    }
+
+    /// A window showing these messages, each starting a group and sent at 19:2 and its
+    /// index, with the composer.
+    fn showing(chat: Vec<ChatMessage>) -> TalkWindow {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = TalkWindow::new().unwrap();
+        copy_whole_messages(&window);
+        window.set_workspace(true);
+        window.set_room_selected(true);
+        window.set_room_ready(true);
+        window.set_composer_enabled(true);
+        let rows: Vec<MessageRow> = chat
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| {
+                message_row(&ChatMessage {
+                    id: format!("m{index}"),
+                    item: format!("i{index}"),
+                    time: format!("19:2{index}"),
+                    ..message
+                })
             })
             .collect();
+        window.set_messages(ModelRc::new(VecModel::from(rows)));
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        settle(&window);
+        window
+    }
+
+    fn settle(window: &TalkWindow) {
+        for _ in 0..5 {
+            slint::platform::update_timers_and_animations();
+            let _ = window.invoke_timeline_extent();
+        }
+    }
+
+    /// For each height down the window, presses there beside the text, drags up past the top
+    /// of the list, turning the wheel `wheel` times on the way, lets go and presses Ctrl+C;
+    /// then returns the clipboard. The last drag to start on a message starts at the end of
+    /// the lowest, so it selects up to the end of that message. The list returns to the newest
+    /// message before each.
+    fn copy_upwards(window: &TalkWindow, wheel: usize) -> Option<String> {
+        use slint::platform::{Key, PointerEventButton, WindowEvent};
+        let dispatch = |event| window.window().dispatch_event(event);
+        let at = |x, y| slint::LogicalPosition::new(x, y);
+        let button = PointerEventButton::Left;
+        for y in (100..700).step_by(4) {
+            window.invoke_scroll_to_latest();
+            settle(window);
+            let y = y as f32;
+            dispatch(WindowEvent::PointerMoved {
+                position: at(900., y),
+            });
+            dispatch(WindowEvent::PointerPressed {
+                position: at(900., y),
+                button,
+            });
+            dispatch(WindowEvent::PointerMoved {
+                position: at(900., y - 8.),
+            });
+            dispatch(WindowEvent::PointerMoved {
+                position: at(900., 60.),
+            });
+            for _ in 0..wheel {
+                dispatch(WindowEvent::PointerScrolled {
+                    position: at(900., 60.),
+                    delta_x: 0.,
+                    delta_y: 400.,
+                });
+                settle(window);
+            }
+            dispatch(WindowEvent::PointerReleased {
+                position: at(900., 60.),
+                button,
+            });
+            dispatch(WindowEvent::KeyPressed {
+                text: Key::Control.into(),
+            });
+            dispatch(WindowEvent::KeyPressed { text: "c".into() });
+            dispatch(WindowEvent::KeyReleased { text: "c".into() });
+            dispatch(WindowEvent::KeyReleased {
+                text: Key::Control.into(),
+            });
+        }
+        // The composer's single line would turn line breaks into spaces, so
+        // read the clipboard itself.
+        i_slint_core::window::WindowInner::from_pub(window.window())
+            .context()
+            .platform()
+            .clipboard_text(i_slint_core::platform::Clipboard::DefaultClipboard)
+    }
+
+    #[test]
+    fn a_selection_runs_across_messages_with_their_names_and_times() {
+        let window = messages(&[
+            ("Sam", "Thinking **co-op** after nine."),
+            ("Riley", "Yep. I should be free after dinner."),
+        ]);
         assert_eq!(
-            names,
-            [vec!["a", "b", "c"], vec!["d"], vec!["e"], vec!["f"]]
+            copy_upwards(&window, 0).as_deref(),
+            Some(
+                "Sam 19:20\nThinking co-op after nine.\nRiley 19:21\nYep. I should be free after dinner."
+            )
+        );
+    }
+
+    #[test]
+    fn a_selection_copies_the_pictures_it_runs_through() {
+        let picture = Arc::new(Picture {
+            width: 40,
+            height: 30,
+            rgba: vec![128; 40 * 30 * 4],
+        });
+        let window = showing(vec![
+            ChatMessage {
+                author: "Sam".into(),
+                body: "Look at this.".into(),
+                attachments: vec![talk_core::chat::Attachment {
+                    name: "cat.png".into(),
+                    size: None,
+                    image: true,
+                    dimensions: Some((400, 300)),
+                    preview: Some(picture),
+                    preview_failed: false,
+                    placement: Placement::Message,
+                }],
+                ..Default::default()
+            },
+            ChatMessage {
+                author: "Riley".into(),
+                body: "Nice.".into(),
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(
+            copy_upwards(&window, 0).as_deref(),
+            Some("Sam 19:20\nLook at this.\n[Picture]\nRiley 19:21\nNice.")
+        );
+    }
+
+    #[test]
+    fn a_selection_keeps_the_messages_it_scrolls_past() {
+        let chat: Vec<ChatMessage> = (0..40)
+            .map(|index| ChatMessage {
+                author: "Sam".into(),
+                body: format!("Message {index}."),
+                ..Default::default()
+            })
+            .collect();
+        let window = showing(chat);
+        let expected: Vec<String> = (0..40)
+            .map(|index| format!("Sam 19:2{index}\nMessage {index}."))
+            .collect();
+        assert_eq!(copy_upwards(&window, 40), Some(expected.join("\n")));
+    }
+
+    #[test]
+    fn a_click_on_a_link_in_selectable_text_opens_it() {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let window = one_message("See https://example.com/talk");
+        let opened = Rc::new(RefCell::new(Vec::<String>::new()));
+        let record = opened.clone();
+        window.on_open_link(move |link| record.borrow_mut().push(link.into()));
+        let button = PointerEventButton::Left;
+        // The link starts after "See ", a little way into the text column.
+        for y in (100..700).step_by(4) {
+            let position = slint::LogicalPosition::new(440., y as f32);
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        }
+        let opened = opened.borrow();
+        assert!(!opened.is_empty(), "a click on the link opens it");
+        assert!(opened.iter().all(|link| link == "https://example.com/talk"));
+    }
+
+    #[test]
+    fn styled_messages_select_by_dragging_and_copy_as_plain_text() {
+        use slint::platform::{Key, PointerEventButton, WindowEvent};
+        let window = one_message("Thinking **co-op** after nine, if people are up for it.");
+        let dispatch = |event| window.window().dispatch_event(event);
+        let button = PointerEventButton::Left;
+        let at = |x, y| slint::LogicalPosition::new(x, y);
+        let ctrl = |key: &str| {
+            dispatch(WindowEvent::KeyPressed {
+                text: Key::Control.into(),
+            });
+            dispatch(WindowEvent::KeyPressed { text: key.into() });
+            dispatch(WindowEvent::KeyReleased { text: key.into() });
+            dispatch(WindowEvent::KeyReleased {
+                text: Key::Control.into(),
+            });
+        };
+
+        // Clicking the message without selecting leaves typing in the composer.
+        let click = |x, y| {
+            dispatch(WindowEvent::PointerPressed {
+                position: at(x, y),
+                button,
+            });
+            dispatch(WindowEvent::PointerReleased {
+                position: at(x, y),
+                button,
+            });
+        };
+        let type_key = |key: &str| {
+            dispatch(WindowEvent::KeyPressed { text: key.into() });
+            dispatch(WindowEvent::KeyReleased { text: key.into() });
+        };
+        click(600., 712.);
+        type_key("a");
+        for y in (100..700).step_by(4) {
+            click(500., y as f32);
+        }
+        type_key("b");
+        assert_eq!(window.get_draft(), "ab");
+        window.set_draft(SharedString::default());
+
+        // Without element lookups in this build, drag down the timeline row by
+        // row: from right of the text, past its end, to left of the timeline,
+        // past its start. A drag that lands on the message selects all of it,
+        // and copies it.
+        for y in (100..700).step_by(4) {
+            let y = y as f32;
+            dispatch(WindowEvent::PointerMoved {
+                position: at(900., y),
+            });
+            dispatch(WindowEvent::PointerPressed {
+                position: at(900., y),
+                button,
+            });
+            dispatch(WindowEvent::PointerMoved {
+                position: at(600., y),
+            });
+            dispatch(WindowEvent::PointerMoved {
+                position: at(200., y),
+            });
+            dispatch(WindowEvent::PointerReleased {
+                position: at(200., y),
+                button,
+            });
+            ctrl("c");
+        }
+
+        // Pasting shows what was copied: the text as read, without its Markdown.
+        click(600., 712.);
+        ctrl("v");
+        assert_eq!(
+            window.get_draft(),
+            "Thinking co-op after nine, if people are up for it."
         );
     }
 
@@ -2896,7 +3246,7 @@ mod tests {
         window.invoke_draft_edited("**Sure**".into());
         window.invoke_send();
         let reply = window.get_messages().iter().last().unwrap();
-        assert!(reply.has_reply && reply.formatted && reply.reply_author == "Sam");
+        assert!(reply.has_reply && reply.reply_author == "Sam");
         assert!(window.get_compose_label().is_empty() && window.get_draft().is_empty());
 
         window.invoke_draft_edited("Unsent draft".into());
