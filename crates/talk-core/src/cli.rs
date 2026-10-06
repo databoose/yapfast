@@ -1,11 +1,15 @@
+#[cfg(feature = "matrix")]
 use std::{
     collections::BTreeMap,
     io::{self, BufRead, IsTerminal},
     path::PathBuf,
 };
 
-use crate::session::{self, Session};
-use anyhow::{Context, Result, bail};
+#[cfg(feature = "matrix")]
+use crate::session::Session;
+use anyhow::Result;
+#[cfg(feature = "matrix")]
+use anyhow::{Context, bail};
 
 /// List native audio devices without creating or publishing a microphone track.
 pub fn audio_devices() -> Result<()> {
@@ -24,6 +28,7 @@ pub fn audio_devices() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "matrix")]
 pub async fn session(arguments: &[String]) -> Result<()> {
     let (command, arguments) = arguments
         .split_first()
@@ -54,7 +59,7 @@ pub async fn session(arguments: &[String]) -> Result<()> {
     }
     let root = match options.remove("--data-dir") {
         Some(path) => PathBuf::from(path),
-        None => session::default_directory()?,
+        None => crate::default_directory()?,
     };
     match command.as_str() {
         "login" => {
@@ -100,6 +105,7 @@ pub async fn session(arguments: &[String]) -> Result<()> {
     }
 }
 
+#[cfg(feature = "matrix")]
 fn read_secret() -> Result<String> {
     if io::stdin().is_terminal() {
         bail!(
@@ -120,6 +126,7 @@ fn read_secret() -> Result<String> {
     Ok(secret)
 }
 
+#[cfg(feature = "matrix")]
 async fn status(session: &Session) -> Result<()> {
     println!(
         "Account: {}",

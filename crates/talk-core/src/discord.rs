@@ -1,8 +1,11 @@
 //! Discord servers and channels in Talk's lists. They appear as servers and
 //! channels with ids that can't collide with Matrix ones, so the rail, channel
-//! list, timeline, voice dock and the one-call rule cover them.
+//! list, timeline, voice dock and the one-call rule cover them. The ids are
+//! known in every build; listing needs the `discord` feature.
+#[cfg(feature = "discord")]
 use talk_discord::{ready::Access, service::Snapshot};
 
+#[cfg(feature = "discord")]
 use crate::chat::{ChatRoom, ChatServer, VoicePerson};
 
 const PREFIX: &str = "discord:";
@@ -24,6 +27,7 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(PREFIX)?.split_once(':')
 }
 
+#[cfg(feature = "discord")]
 /// The servers and channels to list, in Discord's order: by category, text
 /// channels before voice channels in each. They stay listed while Discord
 /// reconnects; joining and sending wait for the connection. Voice channels
@@ -115,7 +119,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
     (rooms, servers)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "discord"))]
 mod tests {
     use talk_discord::ready::{Channel, Server};
 

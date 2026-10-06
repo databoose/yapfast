@@ -78,7 +78,7 @@ pub fn run(
     adapter.borrow_mut().refresh(&window);
     if preview {
         adapter.borrow_mut().action(&window, Action::Preview);
-    } else if adapter.borrow().root.join("active.json").exists() {
+    } else if talk_core::chat::can_restore(&adapter.borrow().root) {
         adapter.borrow_mut().action(&window, Action::Restore);
     } else {
         window.invoke_focus_sign_in();
@@ -560,7 +560,7 @@ impl Adapter {
         window.set_busy(state.busy);
         window.set_trusted(state.trusted);
         window.set_online(state.online);
-        window.set_restore_available(self.root.join("active.json").exists());
+        window.set_restore_available(talk_core::chat::can_restore(&self.root));
         window.set_dms_selected(state.navigation == Navigation::DirectMessages);
         window.set_dms_unread(
             state

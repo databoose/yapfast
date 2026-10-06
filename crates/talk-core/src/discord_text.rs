@@ -10,9 +10,16 @@ use std::{
 use talk_discord::{
     api::PAGE,
     message::{Message, Reply as DiscordReply},
-    service::{Discord, Live},
+    service::{Discord, Live, Snapshot, Status},
 };
-use tokio::{sync::mpsc::UnboundedSender, task::JoinSet};
+use tokio::{
+    sync::{
+        broadcast::{self, error::RecvError},
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        watch,
+    },
+    task::JoinSet,
+};
 
 use crate::{
     chat::{
@@ -675,6 +682,130 @@ impl OpenChannel {
     }
 }
 
+/// What woke the Discord side of the chat actor.
+pub(crate) enum Wake {
+    Snapshot(Option<Snapshot>),
+    Live(Option<Result<Live, RecvError>>),
+    Finished(Done),
+}
+
+/// The linked Discord account in the chat actor: its connection and the open
+/// channel. The chat actor owns it beside Matrix and voice.
+pub(crate) struct Chat {
+    discord: Discord,
+    // Each becomes None once the connection is gone.
+    states: Option<watch::Receiver<Snapshot>>,
+    live: Option<broadcast::Receiver<Live>>,
+    online: bool,
+    open: Option<OpenChannel>,
+    done: UnboundedSender<Done>,
+    finished: UnboundedReceiver<Done>,
+}
+
+impl Chat {
+    /// Connects when this device has a linked account.
+    pub(crate) fn start() -> Option<Self> {
+        let discord = talk_discord::token::load()
+            .ok()
+            .and_then(|token| Discord::start(token).ok())?;
+        let (done, finished) = tokio::sync::mpsc::unbounded_channel();
+        Some(Self {
+            states: Some(discord.snapshots()),
+            live: Some(discord.live()),
+            discord,
+            online: false,
+            open: None,
+            done,
+            finished,
+        })
+    }
+
+    pub(crate) fn service(&self) -> Discord {
+        self.discord.clone()
+    }
+
+    pub(crate) fn command(
+        &mut self,
+        command: Command,
+        events: &UnboundedSender<Event>,
+    ) -> Option<Command> {
+        self::command(
+            command,
+            Some(&self.discord),
+            &mut self.open,
+            &self.done,
+            events,
+        )
+    }
+
+    /// Waits for Discord. Cancel safe: the chat actor handles what it returns.
+    pub(crate) async fn wait(&mut self) -> Wake {
+        tokio::select! {
+            snapshot = changed(&mut self.states) => Wake::Snapshot(snapshot),
+            event = next_live(&mut self.live) => Wake::Live(event),
+            Some(finished) = self.finished.recv() => Wake::Finished(finished),
+        }
+    }
+
+    pub(crate) fn handle(&mut self, wake: Wake, events: &UnboundedSender<Event>) {
+        match wake {
+            Wake::Snapshot(Some(snapshot)) => {
+                let online = snapshot.status == Status::Online;
+                // Messages sent while disconnected arrive with the latest page.
+                if online
+                    && !self.online
+                    && let Some(channel) = &mut self.open
+                {
+                    channel.refresh(&self.discord, &self.done);
+                }
+                self.online = online;
+                let _ = events.send(Event::Discord(snapshot));
+            }
+            Wake::Live(Some(event)) => {
+                live(event, &self.discord, &mut self.open, &self.done, events);
+            }
+            Wake::Finished(done) => {
+                finished(
+                    done,
+                    Some(&self.discord),
+                    &mut self.open,
+                    &self.done,
+                    events,
+                );
+            }
+            Wake::Snapshot(None) | Wake::Live(None) => {}
+        }
+    }
+}
+
+/// The next snapshot, or never after the connection is gone.
+async fn changed(states: &mut Option<watch::Receiver<Snapshot>>) -> Option<Snapshot> {
+    let Some(receiver) = states else {
+        return std::future::pending().await;
+    };
+    if receiver.changed().await.is_err() {
+        *states = None;
+        return None;
+    }
+    Some(receiver.borrow_and_update().clone())
+}
+
+/// The next message event, or never after the connection is gone.
+async fn next_live(
+    live: &mut Option<broadcast::Receiver<Live>>,
+) -> Option<Result<Live, RecvError>> {
+    let Some(receiver) = live else {
+        return std::future::pending().await;
+    };
+    match receiver.recv().await {
+        Err(RecvError::Closed) => {
+            *live = None;
+            None
+        }
+        event => Some(event),
+    }
+}
+
 /// Carries out a command for a Discord room, and gives back commands for
 /// Matrix rooms. Opening any room closes the open Discord channel.
 pub fn command(
@@ -901,7 +1032,7 @@ pub fn finished(
 
 /// Applies a gateway event to the open channel. Missed events reload it.
 pub fn live(
-    event: Result<Live, tokio::sync::broadcast::error::RecvError>,
+    event: Result<Live, RecvError>,
     discord: &Discord,
     open: &mut Option<OpenChannel>,
     done: &UnboundedSender<Done>,

@@ -10,7 +10,7 @@ sample also records glibc's malloc_stats totals and saves Talk's smaps.
 
 Alice runs the given Talk build with the sample conversation loaded, joins the
 voice channel and unmutes. Every other person is a separate headless participant
-process (voice::tests::stress_participant) taking turns to speak; those processes
+process (matrix_voice::tests::stress_participant) taking turns to speak; those processes
 show the cost of the same session and call with no interface at all.
 
 --heap-snapshot runs Talk under heaptrack instead of sampling it. Once the given
@@ -118,13 +118,13 @@ fixture = provision()
 print(f'Fixture {fixture}', flush=True)
 executable = str(args.participant_executable.resolve())
 try:
-    subprocess.run([executable, '--exact', 'chat::tests::fixture_conversation', '--ignored'], check=True, cwd=ROOT,
+    subprocess.run([executable, '--exact', 'matrix_chat::tests::fixture_conversation', '--ignored'], check=True, cwd=ROOT,
                    env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture)), capture_output=True)
     # The load helper registers Bob's companions and joins them to the rooms, then exits.
     count = args.people - 1
     (fixture / 'load.commands').write_text('exit\n')
     with (fixture / 'load.log').open('ab') as log:
-        subprocess.run([executable, '--exact', 'voice::tests::load_participants', '--ignored', '--nocapture'],
+        subprocess.run([executable, '--exact', 'matrix_voice::tests::load_participants', '--ignored', '--nocapture'],
                        cwd=ROOT, stdout=log, stderr=log, check=True, timeout=1200,
                        env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
                                 TALK_TEST_EXTRA_ACCOUNTS=str(count - 1)))

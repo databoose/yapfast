@@ -241,6 +241,7 @@ pub struct Application {
     matrix_servers: Vec<ChatServer>,
     discord_rooms: Vec<ChatRoom>,
     discord_servers: Vec<ChatServer>,
+    #[cfg(feature = "discord")]
     discord: Option<talk_discord::service::Snapshot>,
     last_selected: HashMap<Navigation, String>,
     samples: HashMap<String, Vec<ChatMessage>>,
@@ -651,6 +652,7 @@ impl Application {
                 self.matrix_servers = index.servers;
                 return self.show_lists();
             }
+            #[cfg(feature = "discord")]
             Event::Discord(snapshot) => {
                 self.state.discord_online =
                     snapshot.status == talk_discord::service::Status::Online;
@@ -858,6 +860,7 @@ impl Application {
     }
 
     fn list_discord(&mut self) -> Vec<Effect> {
+        #[cfg(feature = "discord")]
         if let Some(snapshot) = &self.discord {
             (self.discord_rooms, self.discord_servers) =
                 discord::index(snapshot, self.state.show_hidden_channels);
@@ -2116,6 +2119,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "discord")]
     fn discord_channels_join_unless_locked_and_hidden_ones_show_on_request() {
         use talk_discord::{
             ready::{Access, Channel, Server},
@@ -2173,6 +2177,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "discord")]
     fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
         use talk_discord::{
             ready::{Access, Channel, Server},

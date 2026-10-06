@@ -27,6 +27,9 @@ pub fn store(token: &str) -> Result<()> {
 }
 
 pub fn load() -> Result<String> {
+    if crate::client::test_server().is_some() {
+        return Ok(crate::client::TEST_TOKEN.to_owned());
+    }
     match entry()?.get_password() {
         Ok(token) => return Ok(token),
         Err(keyring::Error::NoEntry) => {}

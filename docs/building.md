@@ -33,6 +33,27 @@ people run and for measurements. The `fast` profile optimizes like release
 without LTO and builds incrementally. Use it for tests and local runs:
 `cargo build --profile fast` or `cargo test --profile fast`.
 
+## Networks
+
+Matrix and Discord are Cargo features, `matrix` and `discord`, and the default
+build has both. A build can leave either one out:
+
+```sh
+cargo build --release --no-default-features --features desktop,discord  # Discord only
+cargo build --release --no-default-features --features desktop,matrix   # Matrix only
+```
+
+A Discord-only build has no sign-in screen. It connects with the Discord
+account linked on the device, and shows an error if there is none. Voice calls
+still need LiveKit's libwebrtc, which provides the audio processing and the
+device list for both networks. The `--no-default-features` build without either
+network only opens `--preview`.
+
+`TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400` points Discord at
+`testing/fake_discord.ts` (`bun testing/fake_discord.ts --port 18400`). It uses a
+test token instead of the linked account, so the real token never reaches it.
+[Network memory](measurements/README.md) compares the three builds.
+
 With [direnv](https://direnv.net/), the repository's `.envrc` loads the Nix
 development shell when you enter the folder, so commands need no
 `nix develop` prefix. On NixOS, `programs.direnv.enable = true;` installs direnv

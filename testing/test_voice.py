@@ -38,7 +38,7 @@ try:
         env = dict(os.environ, PULSE_SOURCE="talk_test_microphone", PULSE_SINK="talk_test_output")
         if "--fast" in sys.argv:
             env["TALK_TEST_FAST"] = "1"
-        result = subprocess.run(["cargo", "test", "--locked", "-p", "talk-core", "voice::tests::persistent_encrypted_voice_and_native_audio", "--", "--ignored", "--nocapture"], env=env)
+        result = subprocess.run(["cargo", "test", "--locked", "-p", "talk-core", "matrix_voice::tests::persistent_encrypted_voice_and_native_audio", "--", "--ignored", "--nocapture"], env=env)
         raise SystemExit(result.returncode)
 finally:
     if tone:

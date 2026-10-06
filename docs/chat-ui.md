@@ -159,7 +159,7 @@ The local chat integration tests create disposable accounts:
 Run them after `scripts/test-stack up`:
 
 ```sh
-cargo test --locked -p talk-core chat::tests -- --ignored --test-threads=1
+cargo test --locked -p talk-core matrix_chat::tests -- --ignored --test-threads=1
 ```
 
 On 2026-10-03 the conversation features were also driven through the real

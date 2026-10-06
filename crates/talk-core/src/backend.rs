@@ -45,7 +45,8 @@ impl Backend {
     }
 }
 
-#[cfg(test)]
+// Without Matrix, restoring depends on this machine's saved Discord login.
+#[cfg(all(test, feature = "matrix"))]
 mod tests {
     use super::*;
 

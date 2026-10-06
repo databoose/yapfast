@@ -6,4 +6,4 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo build --locked --workspace
 cargo run --locked -- --smoke-test
-cargo run --locked --no-default-features -- --smoke-test
+cargo run --locked --no-default-features --features matrix,discord -- --smoke-test

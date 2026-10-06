@@ -79,7 +79,16 @@ impl Gateway {
     /// Connect and identify, returning the gateway and the READY payload.
     pub async fn connect(token: &str) -> Result<(Self, Value)> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let mut request = URL.into_client_request()?;
+        let url = match client::test_server() {
+            Some(server) => {
+                let server = server
+                    .replacen("https://", "wss://", 1)
+                    .replacen("http://", "ws://", 1);
+                format!("{server}/?v=9&encoding=json")
+            }
+            None => URL.to_owned(),
+        };
+        let mut request = url.into_client_request()?;
         let headers = request.headers_mut();
         headers.insert(
             header::USER_AGENT,

@@ -59,7 +59,7 @@ class Load:
         self.commands = fixture / 'load.commands'
         self.commands.write_text('')
         self.log = (fixture / 'load.log').open('ab')
-        self.process = subprocess.Popen([executable, '--exact', 'voice::tests::load_participants', '--ignored',
+        self.process = subprocess.Popen([executable, '--exact', 'matrix_voice::tests::load_participants', '--ignored',
                                          '--nocapture'], cwd=ROOT, stdout=self.log, stderr=self.log,
                                         env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
                                                  TALK_TEST_EXTRA_ACCOUNTS=str(extra),
