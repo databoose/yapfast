@@ -155,15 +155,20 @@ but on voice gateway version 8 as Discord's clients use, where songbird uses
 4: heartbeats acknowledge the last sequence number, and binary DAVE messages
 start with one. It identifies with the stream's RTC server and `video: true`,
 discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
-encryption. Talk offers H264 only and announces its size with op 12,
-again whenever someone connects. Frames come from OpenH264 in libwebrtc's
-archive through `native/h264.c`: constrained baseline, realtime and tuned for
-screen content, with a keyframe at least every 3 s and whenever RTCP asks for
-one. Talk also has VP8 (`native/vp8.c`, still built and tested); every Go
-Live sender known to work sends H264. H264 goes as whole NAL units or FU-A
-fragments, and past a frame's first 8 packets, 4 go out each millisecond:
-nothing resends a lost packet, and a 1080p keyframe of 200 sent at once can
-overflow buffers on the way. An RTCP sender report goes out every second.
+encryption. Talk offers H264 only and announces its size with op 12, again
+whenever someone connects. Frames come from OpenH264 in libwebrtc's archive
+through `native/h264.c`: constrained baseline, realtime and tuned for screen
+content, with a keyframe at least every 3 s and whenever RTCP asks for one.
+Talk also has VP8 (`native/vp8.c`, still built and tested); every Go Live
+sender known to work sends H264. H264 goes as whole NAL units or FU-A
+fragments, and past a frame's first 8 packets, 4 go out each millisecond: a
+1080p keyframe of 200 sent at once can overflow buffers on the way. Talk keeps
+the last 2048 video packets, and when a viewer reports some lost with a
+generic NACK (RTCP 205), resends up to 128 of them as Discord's client does:
+on the RTX SSRC with RTX's payload type and numbering, the original sequence
+number before the payload (RFC 4588), and the repaired stream id (extension
+12) in place of the stream id. The fake server reports one packet lost and
+checks what comes back. An RTCP sender report goes out every second.
 
 Talk shares up to 1080p at 30 fps, at the bitrates Discord's client uses:
 at most 3.5 Mbit/s up to 720p and 9 Mbit/s above, the cap op 12 announces.
@@ -433,6 +438,5 @@ material only, under the borrowing rules in the
 5. Mirroring into Matrix.
 
 Screen sharing and watching streams in Discord calls (Go Live) came early.
-Next for it: the preview image Discord shows of a stream, resending lost
-packets when viewers ask, and playing a watched stream's sound. Camera video follows
-after the beta.
+Next for it: the preview image Discord shows of a stream, and playing a
+watched stream's sound. Camera video follows after the beta.

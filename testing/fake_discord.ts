@@ -820,10 +820,19 @@ type Received = {
   audioUndecryptable: number;
   audioSenderReports: number;
   speaking: number | null;
+  /** The streamer's audio SSRC; video and RTX follow it. */
+  ssrc: number;
+  rtcpCounter: number;
+  /** The video packet the fake reported lost, and the resends that came. */
+  nacked: number | null;
+  retransmitted: number;
+  badRetransmissions: number;
 };
 const received = new Map<number, Received>();
 /** The same records, by the stream's audio SSRC. */
 const receivedAudio = new Map<number, Received>();
+/** And by its RTX SSRC. */
+const receivedRtx = new Map<number, Received>();
 
 // --- Watching: Bob's recorded stream --------------------------------------------
 
@@ -878,8 +887,7 @@ const peers = new Map<number, { address: string; port: number }>();
 const PLAYOUT_DELAY = Buffer.from([0xbe, 0xde, 0x00, 0x01, 0x52, 0x00, 0x00, 0x00]);
 
 /** Seals an RTP packet as "rtpsize" AES-GCM: header and extension preamble in the clear. */
-function sealRtp(packet: Buffer, key: Buffer, counter: number): Buffer {
-  const clear = 16;
+function sealRtp(packet: Buffer, key: Buffer, counter: number, clear = 16): Buffer {
   const nonce = Buffer.alloc(12);
   nonce.writeUInt32BE(counter >>> 0, 0);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
@@ -949,23 +957,8 @@ function openRtp(packet: Buffer, key: Buffer, rtcp = false): Buffer | undefined 
   }
 }
 
-/** Counts a packet of a stream's sound: Opus, payload type 120. */
-function receiveAudio(stream: Received, packet: Buffer) {
-  stream.audioPackets++;
-  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
-  if (!plain || (plain[1]! & 0x7f) !== 120) stream.audioUndecryptable++;
-}
-
-/** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
-function receiveVideo(packet: Buffer) {
-  const stream = received.get(packet.readUInt32BE(8));
-  if (!stream) return;
-  stream.packets++;
-  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
-  if (!plain || (plain[1]! & 0x7f) !== stream.payloadType) {
-    stream.undecryptable++;
-    return;
-  }
+/** A decrypted RTP packet's one-byte extensions by id, and where its payload starts. */
+function rtpExtensions(plain: Buffer): { extensions: Map<number, Buffer>; at: number } {
   let at = 12 + (plain[0]! & 0x0f) * 4;
   const extensions = new Map<number, Buffer>();
   if (plain[0]! & 0x10) {
@@ -983,11 +976,64 @@ function receiveVideo(packet: Buffer) {
     }
     at = end;
   }
+  return { extensions, at };
+}
+
+/** Sends the streamer a generic NACK (RTCP 205, format 1) for one video packet. */
+function nack(stream: Received, sequence: number) {
+  const peer = peers.get(stream.ssrc);
+  if (!peer) return;
+  stream.nacked = sequence;
+  const packet = Buffer.alloc(16);
+  packet[0] = 0x81;
+  packet[1] = 205;
+  packet.writeUInt16BE(3, 2);
+  packet.writeUInt32BE(1, 4);
+  packet.writeUInt32BE(stream.ssrc + 1, 8);
+  packet.writeUInt16BE(sequence, 12);
+  udp.send(sealRtp(packet, stream.key, stream.rtcpCounter++, 8), peer.port, peer.address);
+}
+
+/** Checks a resent packet: the RTX payload type, the NACKed sequence number
+ * before the payload, and the repaired stream id in place of the stream id. */
+function receiveRtx(stream: Received, packet: Buffer) {
+  const plain = openRtp(packet, stream.key);
+  const { extensions, at } = plain ? rtpExtensions(plain) : { extensions: new Map<number, Buffer>(), at: 0 };
+  const good =
+    plain &&
+    (plain[1]! & 0x7f) === stream.payloadType + 1 &&
+    extensions.get(12)?.toString() === "100" &&
+    !extensions.has(11) &&
+    plain.readUInt16BE(at) === stream.nacked;
+  if (good) stream.retransmitted++;
+  else stream.badRetransmissions++;
+}
+
+/** Counts a packet of a stream's sound: Opus, payload type 120. */
+function receiveAudio(stream: Received, packet: Buffer) {
+  stream.audioPackets++;
+  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== 120) stream.audioUndecryptable++;
+}
+
+/** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
+function receiveVideo(packet: Buffer) {
+  const stream = received.get(packet.readUInt32BE(8));
+  if (!stream) return;
+  stream.packets++;
+  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== stream.payloadType) {
+    stream.undecryptable++;
+    return;
+  }
+  const { extensions, at } = rtpExtensions(plain);
   const transportSequence = extensions.get(5);
   if (extensions.get(11)?.toString() !== "100" || (transportSequence && transportSequence.length !== 2)) {
     stream.unattached++;
     return;
   }
+  // Report the first packet lost, as a viewer would, to see it resent.
+  if (stream.nacked === null) nack(stream, plain.readUInt16BE(2));
   const payload = plain.subarray(at);
   const size = stream.codec === "H264" ? h264Keyframe(payload) : vp8Keyframe(payload);
   if (size) {
@@ -1065,8 +1111,11 @@ const udp = await Bun.udpSocket({
       // IP discovery: type 1, length 70, SSRC, then the answer fills in the address.
       if (data.length !== 74 || data.readUInt16BE(0) !== 1) {
         if (data.length > 12 && (data[0]! & 0xc0) === 0x80 && !(data[1]! >= 192 && data[1]! <= 223)) {
-          const sound = receivedAudio.get(data.readUInt32BE(8));
+          const ssrc = data.readUInt32BE(8);
+          const sound = receivedAudio.get(ssrc);
+          const resent = receivedRtx.get(ssrc);
           if (sound) receiveAudio(sound, data);
+          else if (resent) receiveRtx(resent, data);
           else receiveVideo(data);
         }
         // A streamer's RTCP sender report, from its video or audio SSRC.
@@ -1143,9 +1192,11 @@ function voiceMessage(ws: Socket, text: string) {
           packets: 0, undecryptable: 0, unattached: 0, frames: 0, keyframes: 0, width: 0, height: 0,
           senderReports: 0, reportedPackets: 0,
           audioPackets: 0, audioUndecryptable: 0, audioSenderReports: 0, speaking: null,
+          ssrc: ws.data.ssrc, rtcpCounter: 1, nacked: null, retransmitted: 0, badRetransmissions: 0,
         };
         received.set(ws.data.ssrc + 1, record);
         receivedAudio.set(ws.data.ssrc, record);
+        receivedRtx.set(ws.data.ssrc + 2, record);
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
       const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();

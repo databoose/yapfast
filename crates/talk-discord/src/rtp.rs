@@ -70,6 +70,8 @@ const TRANSPORT_SEQUENCE: u8 = 5;
 const PLAYOUT_DELAY: u8 = 6;
 const CONTENT_TYPE: u8 = 7;
 const RID: u8 = 11;
+/// The stream id on a retransmission, in place of [`RID`].
+const REPAIRED_RID: u8 = 12;
 /// The extension block's size: its preamble, then four words of elements.
 const EXTENSIONS: usize = 4 + 16;
 
@@ -91,6 +93,8 @@ pub struct Packetizer {
     ssrc: u32,
     codec: Codec,
     sequence: u16,
+    /// Retransmissions' own numbering, on the RTX SSRC.
+    rtx_sequence: u16,
     /// Counts every packet sent, for Discord's congestion control.
     transport: u16,
     picture: u16,
@@ -102,6 +106,7 @@ impl Packetizer {
             ssrc,
             codec,
             sequence: rand::random(),
+            rtx_sequence: rand::random(),
             transport: 1,
             picture: rand::random::<u16>() & 0x7fff,
         }
@@ -120,31 +125,79 @@ impl Packetizer {
             .into_iter()
             .enumerate()
             .map(|(index, payload)| {
-                let mut packet = Vec::with_capacity(HEADER + EXTENSIONS + payload.len() + 20);
-                let marker = if index + 1 == count { 0x80 } else { 0 };
-                // Version 2 with the extension bit.
-                packet.extend_from_slice(&[0x90, marker | payload_type]);
-                packet.extend_from_slice(&self.sequence.to_be_bytes());
-                packet.extend_from_slice(&timestamp.to_be_bytes());
-                packet.extend_from_slice(&self.ssrc.to_be_bytes());
-                packet.extend_from_slice(&[0xbe, 0xde, 0, ((EXTENSIONS - 4) / 4) as u8]);
-                let mut extension = |id: u8, value: &[u8]| {
-                    packet.push(id << 4 | (value.len() - 1) as u8);
-                    packet.extend_from_slice(value);
-                };
-                extension(TRANSPORT_SEQUENCE, &self.transport.to_be_bytes());
-                // No buffering at the receiver.
-                extension(PLAYOUT_DELAY, &[0, 0, 0]);
-                // Screen content.
-                extension(CONTENT_TYPE, &[1]);
-                extension(RID, STREAM_RID.as_bytes());
-                packet.resize(HEADER + EXTENSIONS, 0);
-                packet.extend_from_slice(&payload);
+                let packet = self.header(
+                    payload_type,
+                    index + 1 == count,
+                    self.sequence,
+                    timestamp,
+                    self.ssrc,
+                    RID,
+                    &payload,
+                );
                 self.sequence = self.sequence.wrapping_add(1);
-                self.transport = self.transport.wrapping_add(1);
                 packet
             })
             .collect()
+    }
+
+    /// A packet sent before, again: on `rtx_ssrc` with the RTX payload type
+    /// and numbering, the original sequence number before its payload
+    /// (RFC 4588), and the repaired stream id. None for a packet that isn't
+    /// this packetizer's video.
+    pub fn retransmit(&mut self, original: &[u8], rtx_ssrc: u32) -> Option<Vec<u8>> {
+        let sent = parse(original)?;
+        let (payload_type, rtx_payload_type) = self.codec.payload_types();
+        if sent.payload_type != payload_type || sent.ssrc != self.ssrc {
+            return None;
+        }
+        let payload = [&sent.sequence.to_be_bytes()[..], sent.payload].concat();
+        let packet = self.header(
+            rtx_payload_type,
+            sent.marker,
+            self.rtx_sequence,
+            sent.timestamp,
+            rtx_ssrc,
+            REPAIRED_RID,
+            &payload,
+        );
+        self.rtx_sequence = self.rtx_sequence.wrapping_add(1);
+        Some(packet)
+    }
+
+    /// An RTP packet with the extensions a Discord client sends, naming
+    /// the stream with `rid`, and the next transport sequence number.
+    #[allow(clippy::too_many_arguments)]
+    fn header(
+        &mut self,
+        payload_type: u8,
+        marker: bool,
+        sequence: u16,
+        timestamp: u32,
+        ssrc: u32,
+        rid: u8,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(HEADER + EXTENSIONS + payload.len() + 20);
+        // Version 2 with the extension bit.
+        packet.extend_from_slice(&[0x90, u8::from(marker) << 7 | payload_type]);
+        packet.extend_from_slice(&sequence.to_be_bytes());
+        packet.extend_from_slice(&timestamp.to_be_bytes());
+        packet.extend_from_slice(&ssrc.to_be_bytes());
+        packet.extend_from_slice(&[0xbe, 0xde, 0, ((EXTENSIONS - 4) / 4) as u8]);
+        let mut extension = |id: u8, value: &[u8]| {
+            packet.push(id << 4 | (value.len() - 1) as u8);
+            packet.extend_from_slice(value);
+        };
+        extension(TRANSPORT_SEQUENCE, &self.transport.to_be_bytes());
+        // No buffering at the receiver.
+        extension(PLAYOUT_DELAY, &[0, 0, 0]);
+        // Screen content.
+        extension(CONTENT_TYPE, &[1]);
+        extension(rid, STREAM_RID.as_bytes());
+        packet.resize(HEADER + EXTENSIONS, 0);
+        packet.extend_from_slice(payload);
+        self.transport = self.transport.wrapping_add(1);
+        packet
     }
 
     /// VP8 payloads: each chunk after the extended payload descriptor with
@@ -699,6 +752,64 @@ pub fn bandwidth_estimate(mut rtcp: &[u8], ssrc: u32) -> Option<u64> {
     lowest
 }
 
+/// The video packets sent lately, unencrypted, to resend when a viewer
+/// reports one lost: about two seconds at 9 Mbit/s.
+pub struct History {
+    packets: Vec<Option<(u16, Vec<u8>)>>,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            packets: vec![None; 2048],
+        }
+    }
+}
+
+impl History {
+    pub fn remember(&mut self, packet: &[u8]) {
+        if let Some(sent) = parse(packet) {
+            let slot = usize::from(sent.sequence) % self.packets.len();
+            self.packets[slot] = Some((sent.sequence, packet.to_vec()));
+        }
+    }
+
+    pub fn get(&self, sequence: u16) -> Option<&[u8]> {
+        match &self.packets[usize::from(sequence) % self.packets.len()] {
+            Some((kept, packet)) if *kept == sequence => Some(packet),
+            _ => None,
+        }
+    }
+}
+
+/// The sequence numbers of `media` packets that generic NACKs (RTCP 205,
+/// format 1) in a decrypted compound packet report lost: each entry names
+/// one, and a bitmask the 16 after it.
+pub fn nacked(mut rtcp: &[u8], media: u32) -> Vec<u16> {
+    let mut lost = vec![];
+    while rtcp.len() >= 4 {
+        let length = (usize::from(u16::from_be_bytes([rtcp[2], rtcp[3]])) + 1) * 4;
+        let packet = &rtcp[..length.min(rtcp.len())];
+        if packet[1] == 205
+            && packet[0] & 0x1f == 1
+            && packet.get(8..12) == Some(&media.to_be_bytes()[..])
+        {
+            for entry in packet[12..].chunks_exact(4) {
+                let first = u16::from_be_bytes([entry[0], entry[1]]);
+                let mask = u16::from_be_bytes([entry[2], entry[3]]);
+                lost.push(first);
+                lost.extend(
+                    (0..16)
+                        .filter(|bit| mask & (1 << bit) != 0)
+                        .map(|bit| first.wrapping_add(bit + 1)),
+                );
+            }
+        }
+        rtcp = rtcp.get(length..).unwrap_or_default();
+    }
+    lost
+}
+
 /// Whether a datagram is RTCP rather than RTP, by its packet type.
 pub fn is_rtcp(packet: &[u8]) -> bool {
     packet.get(1).is_some_and(|kind| (192..=223).contains(kind))
@@ -960,6 +1071,45 @@ mod tests {
             None,
             "about another stream"
         );
+    }
+
+    #[test]
+    fn retransmits_what_viewers_report_lost() {
+        let mut packetizer = Packetizer::new(77, Codec::H264);
+        let mut history = History::default();
+        let frame = [&[0, 0, 0, 1, 0x65][..], &[9; 3000]].concat();
+        let sent = packetizer.packets(&frame, 9000);
+        for packet in &sent {
+            history.remember(packet);
+        }
+        let first = parse(&sent[0]).unwrap().sequence;
+        // A NACK for the first packet and, by its bitmask, the third.
+        let mut nack = vec![0x81, 205, 0, 3, 0, 0, 0, 1];
+        nack.extend_from_slice(&77u32.to_be_bytes());
+        nack.extend_from_slice(&first.to_be_bytes());
+        nack.extend_from_slice(&0b10u16.to_be_bytes());
+        let lost = nacked(&nack, 77);
+        assert_eq!(lost, [first, first.wrapping_add(2)]);
+        assert!(nacked(&nack, 78).is_empty(), "about another stream");
+        let again = packetizer
+            .retransmit(history.get(lost[1]).unwrap(), 79)
+            .unwrap();
+        let original = parse(&sent[2]).unwrap();
+        let resent = parse(&again).unwrap();
+        assert_eq!(
+            (
+                resent.payload_type,
+                resent.ssrc,
+                resent.timestamp,
+                resent.marker
+            ),
+            (H264_RTX, 79, 9000, original.marker)
+        );
+        assert_eq!(&resent.payload[..2], &lost[1].to_be_bytes());
+        assert_eq!(&resent.payload[2..], original.payload);
+        assert_eq!(again[25], 0xc2, "the repaired stream id, not the stream id");
+        assert!(history.get(first.wrapping_sub(1)).is_none(), "never sent");
+        assert!(packetizer.retransmit(&again, 79).is_none(), "not video");
     }
 
     #[test]

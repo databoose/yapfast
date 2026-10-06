@@ -437,6 +437,7 @@ async fn talks_to_the_fake_server() {
                     found["stream"] == mine.stream_key.as_str()
                         && found["frames"] == 5
                         && found["audioPackets"] == 5
+                        && found["retransmitted"] == 1
                 })
             {
                 return found.clone();
@@ -449,6 +450,10 @@ async fn talks_to_the_fake_server() {
     assert_eq!(video["undecryptable"], 0);
     assert_eq!(video["unattached"], 0, "every packet names its stream");
     assert_eq!(video["audioUndecryptable"], 0);
+    assert_eq!(
+        video["badRetransmissions"], 0,
+        "the reported packet came back as RTX"
+    );
     assert_eq!(
         video["audioSenderReports"], 1,
         "one report in the first second"

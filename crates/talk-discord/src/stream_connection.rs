@@ -43,9 +43,11 @@ const KEYFRAME_REQUESTS: Duration = Duration::from_millis(500);
 const SENDER_REPORTS: Duration = Duration::from_secs(1);
 /// How often a viewer logs what it received while no picture comes through.
 const LOG_EVERY: Duration = Duration::from_secs(5);
+/// The most packets resent for one NACK, which can name hundreds.
+const RESENDS: usize = 128;
 /// A frame's packets past the first `BURST` go out `PACE` a millisecond,
 /// about 37 Mbit/s: a 1080p keyframe sent at once can overflow buffers on
-/// the way, and nothing resends what's lost.
+/// the way.
 const BURST: usize = 8;
 const PACE: usize = 4;
 
@@ -698,6 +700,7 @@ async fn send(
         bail!("Discord asked for {codec:?} video, and Talk only sends {SEND_CODEC:?}");
     }
     let mut packetizer = Packetizer::new(video, SEND_CODEC);
+    let mut history = rtp::History::default();
     let interval = connection.interval;
     let mut heartbeat = tokio::time::interval_at(Instant::now() + interval, interval);
     let mut datagram = vec![0u8; 1500];
@@ -740,6 +743,7 @@ async fn send(
                     if index >= BURST && index % PACE == 0 {
                         tokio::time::sleep(Duration::from_millis(1)).await;
                     }
+                    history.remember(&packet);
                     let clear = rtp::rtp_clear_len(&packet).unwrap_or(packet.len());
                     packets = packets.wrapping_add(1);
                     octets = octets.wrapping_add((packet.len() - clear) as u32);
@@ -824,6 +828,16 @@ async fn send(
                 if let Some(estimate) = rtp::bandwidth_estimate(&rtcp, video) {
                     shared.estimate.store(estimate, Ordering::Relaxed);
                 }
+                for lost in rtp::nacked(&rtcp, video).into_iter().take(RESENDS) {
+                    let Some(mut again) = history.get(lost).and_then(|original| packetizer.retransmit(original, rtx)) else {
+                        sent.too_late += 1;
+                        continue;
+                    };
+                    let clear = rtp::rtp_clear_len(&again).unwrap_or(again.len());
+                    connection.transport.seal(&mut again, clear)?;
+                    connection.udp.send(&again).await?;
+                    sent.resent += 1;
+                }
             }
             _ = log.tick() => {
                 tracing::debug!(?sent, packets, octets, "stream sent");
@@ -846,6 +860,10 @@ struct Sent {
     said: std::collections::BTreeMap<String, String>,
     /// Keyframe requests among them.
     requests: u32,
+    /// Packets resent when a viewer reported them lost, and those already
+    /// gone from the history.
+    resent: u32,
+    too_late: u32,
     /// RTCP that wouldn't decrypt.
     unopened: u32,
     /// RTP, which a streamer isn't sent.
