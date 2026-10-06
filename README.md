@@ -74,14 +74,14 @@ the version in `rust-toolchain.toml`.
 
 ```sh
 scripts/check
-cargo run --locked --no-default-features -- --smoke-test
+cargo run --locked --no-default-features --features matrix,discord -- --smoke-test
 cargo build --locked --release
 ```
 
 With the local stack running, check the desktop messaging backend with:
 
 ```sh
-cargo test --locked -p talk-core chat::tests::encrypted_chat_restore_send_retry_and_security_gates -- --ignored
+cargo test --locked -p talk-core matrix_chat::tests::encrypted_chat_restore_send_retry_and_security_gates -- --ignored
 ```
 
 This creates disposable accounts and checks session restoration, encrypted
@@ -126,7 +126,7 @@ not prove audio encryption or room-membership authorization.
 With the local services running:
 
 ```sh
-cargo run --locked --no-default-features -- --call-experiment
+cargo run --locked --no-default-features --features matrix,discord -- --call-experiment
 ```
 
 This creates fresh disposable accounts, checks restoration and recovery, then
@@ -134,7 +134,7 @@ tests audio in both directions, invalid keys and key rotation after a participan
 leaves. It uses synthetic PCM and accesses no microphone or speaker.
 The [experiment report](docs/native-call-experiment.md) records its evidence and limits.
 
-Run `cargo run --locked --no-default-features -- --help` for session commands.
+Run `cargo run --locked --no-default-features --features matrix,discord -- --help` for session commands.
 [Session instructions](docs/sessions.md) cover hidden password/key prompts, secure
 storage, logout retention and current authentication coverage.
 

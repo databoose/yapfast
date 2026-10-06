@@ -12,7 +12,10 @@ exclude = ["vendor/matrix-rtc-livekit", "vendor/webrtc-sys", "vendor/gpui-pre-wi
 resolver = "3"
 
 [features]
-default = ["desktop"]
+default = ["desktop", "matrix", "discord"]
+# Each network is optional, so a build can carry Matrix, Discord or both.
+matrix = ["talk-core/matrix"]
+discord = ["talk-core/discord"]
 desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser"]
 
 [dependencies]
@@ -28,7 +31,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], o
 emojis = { version = "0.9", optional = true }
 # Maps the color emoji font Talk registers with Slint, rather than copying it.
 memmap2 = { version = "0.9", optional = true }
-talk-core = { path = "crates/talk-core" }
+talk-core = { path = "crates/talk-core", default-features = false }
 talk-ui = { path = "crates/talk-ui", optional = true }
 # Opens links clicked in messages in the default browser.
 webbrowser = { version = "1", optional = true }

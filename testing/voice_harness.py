@@ -17,7 +17,7 @@ TICKS = os.sysconf('SC_CLK_TCK')
 
 def provision():
     """Create a voice-demo fixture: Alice, Bob, a Space, a text and a voice room."""
-    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--', '--voice-demo'],
+    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--features', 'matrix,discord', '--', '--voice-demo'],
                             check=True, capture_output=True, text=True, cwd=ROOT).stdout
     for line in output.splitlines():
         if '--data-dir' in line and line.rstrip().endswith('/alice'):
@@ -119,7 +119,7 @@ def host_ticks():
 
 
 class Participant:
-    """One headless person (voice::tests::stress_participant) in its own process, driven by a command file."""
+    """One headless person (matrix_voice::tests::stress_participant) in its own process, driven by a command file."""
 
     def __init__(self, executable, fixture, account, index, count):
         self.account = account
@@ -128,7 +128,7 @@ class Participant:
         (account / 'status.json').unlink(missing_ok=True)
         self.log = (account / 'participant.log').open('ab')
         self.process = subprocess.Popen(
-            [executable, '--exact', 'voice::tests::stress_participant', '--ignored', '--nocapture'],
+            [executable, '--exact', 'matrix_voice::tests::stress_participant', '--ignored', '--nocapture'],
             cwd=ROOT, stdout=self.log, stderr=self.log, start_new_session=True,
             env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture), TALK_TEST_ACCOUNT_DIR=str(account),
                      TALK_TEST_INDEX=str(index), TALK_TEST_COUNT=str(count)))

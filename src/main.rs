@@ -9,7 +9,9 @@ mod graphics;
 mod ui;
 
 use anyhow::{Context, Result, bail};
-use talk_core::{cli, experiment, logging, runtime::BackgroundRuntime, session, voice_demo};
+use talk_core::{cli, logging, runtime::BackgroundRuntime};
+#[cfg(feature = "matrix")]
+use talk_core::{experiment, voice_demo};
 
 /// glibc gives threads that contend for the heap their own arenas, up to eight
 /// per core, and each arena keeps its freed memory. Talk runs dozens of threads.
@@ -34,6 +36,7 @@ fn main() -> Result<()> {
     let runtime = BackgroundRuntime::new().context("could not start background workers")?;
     let mut arguments: Vec<_> = std::env::args().skip(1).collect();
     let renderer = renderer_argument(&mut arguments)?;
+    #[cfg(feature = "matrix")]
     if arguments
         .first()
         .is_some_and(|argument| argument == "session")
@@ -43,14 +46,14 @@ fn main() -> Result<()> {
     match arguments.as_slice() {
         [] => launch(
             runtime,
-            session::default_directory()?,
+            talk_core::default_directory()?,
             false,
             renderer,
             &arguments,
         ),
         [argument] if argument == "--preview" => launch(
             runtime,
-            session::default_directory()?,
+            talk_core::default_directory()?,
             true,
             renderer,
             &arguments,
@@ -64,16 +67,29 @@ fn main() -> Result<()> {
         [argument] if argument == "--smoke-test" => {
             runtime.block_on(runtime.spawn(talk_core::check_build()))?;
             println!(
-                "Talk {}: Tokio, Matrix SDK, MatrixRTC and LiveKit build check passed.",
-                env!("CARGO_PKG_VERSION")
+                "Talk {}: Tokio, LiveKit{}{} build check passed.",
+                env!("CARGO_PKG_VERSION"),
+                if cfg!(feature = "matrix") {
+                    ", Matrix SDK, MatrixRTC"
+                } else {
+                    ""
+                },
+                if cfg!(feature = "discord") {
+                    ", Discord voice"
+                } else {
+                    ""
+                },
             );
             Ok(())
         }
+        #[cfg(feature = "matrix")]
         [argument] if argument == "--voice-demo" => {
             runtime.block_on(voice_demo::provision()).map(|_| ())
         }
         [argument] if argument == "--audio-devices" => cli::audio_devices(),
+        #[cfg(feature = "matrix")]
         [argument] if argument == "--call-experiment" => runtime.block_on(experiment::run()),
+        #[cfg(feature = "matrix")]
         [argument, resume, path] if argument == "--call-experiment" && resume == "--resume" => {
             runtime.block_on(experiment::resume(path.into()))
         }

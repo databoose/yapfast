@@ -13,9 +13,9 @@ prompt so the password stays out of shell history and process arguments:
 
 ```fish
 read --silent --prompt-str 'Matrix password: ' talk_password
-printf '%s\n' "$talk_password" | cargo run --locked --no-default-features -- session login --homeserver http://localhost:18008 --user alice --password-stdin --data-dir .local/manual-session
+printf '%s\n' "$talk_password" | cargo run --locked --no-default-features --features matrix,discord -- session login --homeserver http://localhost:18008 --user alice --password-stdin --data-dir .local/manual-session
 set --erase talk_password
-cargo run --locked --no-default-features -- session status --data-dir .local/manual-session
+cargo run --locked --no-default-features --features matrix,discord -- session status --data-dir .local/manual-session
 ```
 
 The local `alice` account is provisioned by `scripts/test-stack check`. For an
@@ -26,7 +26,7 @@ Import an existing recovery key with the same hidden-prompt pattern:
 
 ```fish
 read --silent --prompt-str 'Recovery key: ' talk_recovery_key
-printf '%s\n' "$talk_recovery_key" | cargo run --locked --no-default-features -- session recover --key-stdin --data-dir .local/manual-session
+printf '%s\n' "$talk_recovery_key" | cargo run --locked --no-default-features --features matrix,discord -- session recover --key-stdin --data-dir .local/manual-session
 set --erase talk_recovery_key
 ```
 
@@ -65,7 +65,7 @@ their passwords, including unsent local data. This is the initial deliberate
 retention policy; a user-facing removal flow is later work.
 
 ```sh
-cargo run --locked --no-default-features -- session logout --data-dir .local/manual-session
+cargo run --locked --no-default-features --features matrix,discord -- session logout --data-dir .local/manual-session
 ```
 
 The password flow does not request refresh tokens. Refresh-token persistence and

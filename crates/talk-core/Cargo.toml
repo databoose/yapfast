@@ -5,33 +5,40 @@ edition = "2024"
 rust-version = "1.97"
 publish = false
 
+[features]
+default = ["matrix", "discord"]
+# Matrix: sign-in, encrypted rooms and MatrixRTC voice.
+matrix = ["dep:keyring", "dep:matrix-sdk", "dep:matrix-sdk-ui", "dep:matrix-sdk-crypto", "dep:matrix-rtc-livekit", "dep:matrix-rtc-core", "dep:matrix-rtc-media", "dep:mime", "dep:url"]
+# Discord through the account linked on this device; see docs/discord.md.
+discord = ["dep:talk-discord"]
+
 [dependencies]
 anyhow.workspace = true
 directories.workspace = true
 futures-util.workspace = true
 # Decode received images with bounded dimensions before the UI sees them.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-keyring.workspace = true
+keyring = { workspace = true, optional = true }
 livekit.workspace = true
-matrix-sdk.workspace = true
-matrix-sdk-ui.workspace = true
-matrix-sdk-crypto.workspace = true
-matrix-rtc-livekit.workspace = true
-matrix-rtc-core.workspace = true
-matrix-rtc-media.workspace = true
-mime = "0.3"
+matrix-sdk = { workspace = true, optional = true }
+matrix-sdk-ui = { workspace = true, optional = true }
+matrix-sdk-crypto = { workspace = true, optional = true }
+matrix-rtc-livekit = { workspace = true, optional = true }
+matrix-rtc-core = { workspace = true, optional = true }
+matrix-rtc-media = { workspace = true, optional = true }
+mime = { version = "0.3", optional = true }
 # Plain-text reply snippets from Markdown; the SDK already uses it to format messages.
 pulldown-cmark = { version = "0.13", default-features = false }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-talk-discord = { path = "../talk-discord" }
+talk-discord = { path = "../talk-discord", optional = true }
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-url.workspace = true
+url = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The input meter reads the microphone locally through PulseAudio, the sound

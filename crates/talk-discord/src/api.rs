@@ -27,6 +27,8 @@ pub struct Upload {
 pub struct Api {
     http: Client,
     token: String,
+    /// The API's base URL: Discord's, or the test server's.
+    base: String,
 }
 
 impl Api {
@@ -42,12 +44,16 @@ impl Api {
             .default_headers(headers)
             .build()
             .context("could not set up HTTPS")?;
-        Ok(Self { http, token })
+        let base = match client::test_server() {
+            Some(server) => format!("{server}/api/v9"),
+            None => API.to_owned(),
+        };
+        Ok(Self { http, token, base })
     }
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
         self.http
-            .request(method, format!("{API}{path}"))
+            .request(method, format!("{}{path}", self.base))
             .header(header::AUTHORIZATION, &self.token)
     }
 
@@ -190,10 +196,15 @@ impl Api {
         self.empty(self.request(method, &path)).await
     }
 
-    /// Downloads a file from Discord's CDN, refusing anything over `limit` bytes.
+    /// Downloads a file from Discord's CDN, or the test server, refusing
+    /// anything over `limit` bytes.
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        let test_file = client::test_server()
+            .and_then(|server| url.strip_prefix(server))
+            .is_some_and(|path| path.starts_with('/'));
         if !url.starts_with("https://cdn.discordapp.com/")
             && !url.starts_with("https://media.discordapp.net/")
+            && !test_file
         {
             bail!("not a Discord file");
         }

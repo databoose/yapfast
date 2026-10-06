@@ -86,7 +86,7 @@ def sample(pid, renderer, profile, during=None):
 results = []
 fixture = provision()
 print(f'Fixture {fixture}', flush=True)
-seeded = subprocess.run([str(args.fixture_executable.resolve()), '--exact', 'chat::tests::fixture_conversation',
+seeded = subprocess.run([str(args.fixture_executable.resolve()), '--exact', 'matrix_chat::tests::fixture_conversation',
                          '--ignored', '--nocapture'], cwd=ROOT, capture_output=True, text=True, timeout=600,
                         env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture), TALK_TEST_EXTRA_MESSAGES=str(args.messages)))
 if seeded.returncode != 0:

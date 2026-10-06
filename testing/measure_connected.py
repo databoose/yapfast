@@ -52,7 +52,7 @@ def test_binary():
 
 
 def provision():
-    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--', '--voice-demo'],
+    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--features', 'matrix,discord', '--', '--voice-demo'],
                             check=True, capture_output=True, text=True, cwd=ROOT).stdout
     for line in output.splitlines():
         if '--data-dir' in line and line.rstrip().endswith('/alice'):
@@ -118,7 +118,7 @@ class Load:
         self.commands = fixture / 'load.commands'
         self.commands.write_text('')
         self.log = (fixture / 'load.log').open('ab')
-        self.process = subprocess.Popen([executable, '--exact', 'voice::tests::load_participants', '--ignored',
+        self.process = subprocess.Popen([executable, '--exact', 'matrix_voice::tests::load_participants', '--ignored',
                                          '--nocapture'], cwd=ROOT, stdout=self.log, stderr=self.log,
                                         env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
                                                  TALK_TEST_EXTRA_ACCOUNTS=str(args.extra)),
@@ -156,7 +156,7 @@ executable = str(args.load_executable.resolve()) if args.load_executable else te
 fixture = provision()
 print(f'Fixture {fixture}', flush=True)
 if args.seed:
-    subprocess.run([executable, '--exact', 'chat::tests::fixture_conversation', '--ignored'], check=True, cwd=ROOT,
+    subprocess.run([executable, '--exact', 'matrix_chat::tests::fixture_conversation', '--ignored'], check=True, cwd=ROOT,
                    env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture)), capture_output=True)
 try:
     load = Load(executable, fixture)

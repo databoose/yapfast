@@ -2,7 +2,7 @@
 """Measure joining a voice channel as it fills, with one process per person.
 
 Alice runs the given Talk build and joins muted first. Every other person is a
-separate headless participant process (voice::tests::stress_participant) using
+separate headless participant process (matrix_voice::tests::stress_participant) using
 the same voice stack: it publishes a tone in turn with the others, with digital
 silence and Opus DTX otherwise, and decodes every stream it receives.
 
@@ -149,7 +149,7 @@ try:
     count = args.people - 1
     (fixture / 'load.commands').write_text('exit\n')
     with (fixture / 'load.log').open('ab') as log:
-        subprocess.run([str(args.participant_executable.resolve()), '--exact', 'voice::tests::load_participants',
+        subprocess.run([str(args.participant_executable.resolve()), '--exact', 'matrix_voice::tests::load_participants',
                         '--ignored', '--nocapture'], cwd=ROOT, stdout=log, stderr=log, check=True, timeout=1200,
                        env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
                                 TALK_TEST_EXTRA_ACCOUNTS=str(count - 1)))

@@ -11,4 +11,4 @@ Invoke-Cargo clippy --locked --workspace --all-targets -- -D warnings
 Invoke-Cargo test --locked --workspace
 Invoke-Cargo build --locked --workspace
 Invoke-Cargo run --locked -- --smoke-test
-Invoke-Cargo run --locked --no-default-features -- --smoke-test
+Invoke-Cargo run --locked --no-default-features --features matrix,discord -- --smoke-test

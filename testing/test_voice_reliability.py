@@ -58,7 +58,7 @@ NO_BUS = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/talk-
 
 
 def provision():
-    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--', '--voice-demo'],
+    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--features', 'matrix,discord', '--', '--voice-demo'],
                             check=True, capture_output=True, text=True, cwd=ROOT, env=NO_BUS).stdout
     for line in output.splitlines():
         if '--data-dir' in line and line.rstrip().endswith('/alice'):
@@ -82,7 +82,7 @@ exec "$@"
 
 
 class Participant:
-    def __init__(self, name, executable, fixture, environment, isolated, test='voice::tests::scripted_participant'):
+    def __init__(self, name, executable, fixture, environment, isolated, test='matrix_voice::tests::scripted_participant'):
         self.name = name
         self.fixture = fixture
         self.commands = fixture / f'{name}.commands'
@@ -350,7 +350,7 @@ try:
         # A peer whose device is not cross-signed gets no media key under the
         # identity-based policy. Alice must say so, without muting herself.
         unverified = Participant('unverified', executable, fixture, dict(environment, TALK_TEST_LOGIN_USER=bob_id),
-                                 isolated=False, test='voice::tests::unverified_participant')
+                                 isolated=False, test='matrix_voice::tests::unverified_participant')
         participants.append(unverified)
         unverified.wait('joined', lambda state: state['phase'] == 'Connected', 90)
         warned = alice.wait('warns about the unverified device',

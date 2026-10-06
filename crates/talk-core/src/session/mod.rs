@@ -298,9 +298,3 @@ async fn build_client(homeserver: &str, path: PathBuf, passphrase: &str) -> Resu
         })
         .build().await.map_err(|_| anyhow::anyhow!("could not open the Matrix client and encrypted stores; check the homeserver URL and preserve existing stores"))
 }
-
-pub fn default_directory() -> Result<PathBuf> {
-    directories::ProjectDirs::from("chat", "Talk", "Talk")
-        .map(|dirs| dirs.data_local_dir().to_owned())
-        .context("could not find an application data directory; pass --data-dir")
-}

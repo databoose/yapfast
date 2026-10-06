@@ -246,3 +246,36 @@ measures the same source built with the `release` profile (thin LTO) and the
 The differences are within the run-to-run variation of each build. Tests and
 local checks can use the `fast` profile. Recorded measurements still use
 `release`, which is what people run.
+
+[Matrix, Discord or both, 2026-10-06](2026-10-06-linux-networks.json) compares
+builds with only Matrix, only Discord, or both, made with the `matrix` and
+`discord` Cargo features ([building](../building.md#networks)). Both networks
+run on test data: Matrix on the local stack with a seeded #general, Discord on
+`testing/fake_discord.ts` with the same 60 messages, image, file and reply
+(`testing/measure_networks.py`). The combined build is measured with each
+network's #general open. Builds use the `fast` profile and Skia Software at
+1120×760. Each sample is 30 s after a 20 s warm-up, with two runs in opposite
+orders.
+
+| Build, open channel | PSS idle | RSS idle | PSS, message every 2 s | CPU, message every 2 s | Binary |
+| --- | --- | --- | --- | --- | --- |
+| Discord only, Discord #general | 65.9–66.1 MiB | 90.5–90.8 MiB | 66.0–66.1 MiB | 0.5–0.6% | 101 MB |
+| Both, Discord #general | 109.2–110.4 MiB | 134.0–135.0 MiB | 109.2–110.4 MiB | 0.9–1.0% | 241 MB |
+| Matrix only, Matrix #general | 92.1–118.9 MiB | 117.0–143.5 MiB | 96.6–120.3 MiB | 1.2% | 227 MB |
+| Both, Matrix #general | 94.8–116.2 MiB | 119.0–140.9 MiB | 100.7–120.7 MiB | 1.3–3.7% | 241 MB |
+
+Binary sizes are unstripped `fast` builds. With Discord open, leaving Matrix
+out saves 43–44 MiB of PSS, 40%, and both runs agree within 1.3 MiB. Most of
+it is Matrix's sync, encrypted stores and room list running in the background,
+not the open channel.
+
+The Matrix rows vary by about 24 MiB between runs. Whichever Matrix profile ran
+first measured higher, even after an unmeasured launch of the same account
+beforehand, so the cause isn't the first restore. Measured second, the
+Matrix-only and combined builds differ by 3 MiB, so Discord's connection costs
+little next to Matrix. Repeated, interleaved runs would pin both down.
+
+The test data is small on both sides: one server and 60 messages. A real
+Discord account's READY snapshot, which Talk keeps, and a real Matrix account's
+stores both grow with the account. Voice isn't measured, because the fake has
+no voice server, and Discord calls also load libwebrtc's audio processing.

@@ -77,7 +77,7 @@ implement their own drafts, send handling or voice lifecycle.
 ## Checks and packaging
 
 `cargo run --locked` and `--preview` keep their existing behavior. The headless
-variant still uses `--no-default-features`. Run `scripts/check` inside the Nix
+variant uses `--no-default-features --features matrix,discord`. Run `scripts/check` inside the Nix
 development shell to check both workspace packages. Ignored chat and voice tests
 now belong to `talk-core`, so select them with `cargo test -p talk-core`.
 
