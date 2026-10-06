@@ -788,6 +788,10 @@ export component TalkWindow inherits Window {
     in property <bool> discord-linked;
     in-out property <bool> show-hidden-channels;
     callback show-hidden-channels-toggled(bool);
+    /// A link in a message was clicked.
+    callback open-link(string);
+    in-out property <bool> sync-discord-reads;
+    callback sync-discord-reads-toggled(bool);
     in property <bool> room-selected;
     in property <bool> room-ready;
     in property <bool> room-encrypted;
@@ -907,7 +911,9 @@ export component TalkWindow inherits Window {
 
     public function focus-composer() { composer.focus-input(); }
     public function focus-sign-in() { username-field.focus-input(); }
-    public function timeline-at-end() -> bool { return timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 8px; }
+    public function timeline-at-end() -> bool { return root.follow-latest; }
+    // How far the newest message is below the view; zero at the end.
+    public function timeline-below() -> length { return max(0px, timeline.content-y - min(0px, timeline.height - timeline.content-height)); }
     public function timeline-extent() -> length { return timeline.content-height; }
     public function scroll-to-latest() {
         root.follow-latest = true;
@@ -915,10 +921,11 @@ export component TalkWindow inherits Window {
     }
     // While the newest message is in view, keep it there as rows grow, for example
     // when an image preview or a reaction arrives after the row first appeared.
-    // The list may shift or reset its position before reporting the new height, so
-    // being at the end is judged against the smaller of the old and new heights.
+    // Only scrolling stops following, and reaching the end again resumes it. The
+    // list re-estimates its height as it measures rows, so heights can't tell
+    // whether someone scrolled; and a wheel scroll is reported before its
+    // animation moves the list, so the position at that moment can't either.
     property <bool> follow-latest: true;
-    property <length> known-content;
     property <length> timeline-position: timeline.content-y;
     property <length> timeline-content: timeline.content-height;
     // The composer grows for a reply or edit, which shortens the list.
@@ -929,13 +936,11 @@ export component TalkWindow inherits Window {
     property <length> lead;
     function settle-lead() { root.lead = max(0px, timeline.height - (timeline.content-height - root.lead)); }
     changed timeline-viewport => { root.settle-lead(); if root.follow-latest { root.scroll-to-latest(); } }
-    changed timeline-position => { root.follow-latest = timeline.content-y <= min(0px, timeline.height - min(root.known-content, timeline.content-height)) + 8px; }
+    changed timeline-position => {
+        if timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 0.5px { root.follow-latest = true; }
+    }
     changed timeline-content => {
         root.settle-lead();
-        // Scrolling up makes the list measure new rows, so the height can change
-        // before the position handler has seen the scroll. Check the position too.
-        root.follow-latest = root.follow-latest && timeline.content-y <= min(0px, timeline.height - min(root.known-content, timeline.content-height)) + 8px;
-        root.known-content = timeline.content-height;
         if root.follow-latest { root.scroll-to-latest(); }
     }
     public function preserve-history-position(delta: length) { timeline.content-y = timeline.content-y - delta; }
@@ -1054,6 +1059,12 @@ export component TalkWindow inherits Window {
                         toggled => { root.show-hidden-channels = self.checked; root.show-hidden-channels-toggled(self.checked); }
                     }
                     Label { text: "They appear locked. Server admins hid them on purpose."; }
+                    Switch {
+                        text: "Mark messages read on Discord";
+                        checked: root.sync-discord-reads;
+                        toggled => { root.sync-discord-reads = self.checked; root.sync-discord-reads-toggled(self.checked); }
+                    }
+                    Label { text: "Channels you read in Talk show as read in the Discord apps too."; }
                 }
                 Rectangle { height: 1px; background: Theme.line; }
                 HorizontalLayout {
@@ -1666,6 +1677,7 @@ export component TalkWindow inherits Window {
                             vertical-stretch: root.voice-room ? 0 : 1;
                             timeline := ListView {
                                 width: parent.width; height: parent.height;
+                                scrolled => { root.follow-latest = false; }
                                 for message[index] in root.messages: Rectangle {
                                     property <bool> lit: root.active-item == message.item;
                                     // The space that holds a short history down stays outside the row.
@@ -1753,6 +1765,7 @@ export component TalkWindow inherits Window {
                                                     }
                                                     if message.formatted: StyledText {
                                                         text: message.styled; default-color: message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
+                                                        link-clicked(link) => { root.open-link(link); }
                                                         accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
                                                     }
                                                     if !message.formatted && message.body != "": TextInput {

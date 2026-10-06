@@ -44,14 +44,14 @@ use tokio::{
     time::Instant,
 };
 
-use crate::{session::Session, voice};
+use crate::{discord_text, session::Session, voice};
 
 /// The text limit Talk enforces before queueing a message or an edit.
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
 /// Synapse's default upload limit; the send queue holds the whole file in memory.
 const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
 /// Larger downloads only get a file card, never an inline preview.
-const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
+pub(crate) const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 const PREVIEW_WIDTH: u32 = 360;
 const PREVIEW_HEIGHT: u32 = 270;
 /// How long a recoverable send failure pauses a room's queue before Talk retries.
@@ -70,6 +70,11 @@ pub struct ChatRoom {
     /// Listed, but this account may not join it, such as a Discord channel
     /// its roles keep it out of.
     pub locked: bool,
+    /// Readable, but this account may not send here, such as a Discord
+    /// announcement channel.
+    pub read_only: bool,
+    /// The Discord category the channel is listed under; empty for none.
+    pub category: String,
 }
 
 #[derive(Clone)]
@@ -79,6 +84,8 @@ pub struct ChatServer {
     pub channels: Vec<String>,
     /// A Discord server, reached through the linked Discord account.
     pub discord: bool,
+    /// Its unread messages don't mark it in the rail; mentions still do.
+    pub muted: bool,
 }
 
 /// A room's standing from its power levels: Matrix's admin is 100 and moderator 50.
@@ -237,6 +244,11 @@ pub enum Command {
         body: String,
     },
     Earlier(String),
+    /// Mark a Discord channel read in Talk, and on Discord with `sync`.
+    MarkDiscordRead {
+        room: String,
+        sync: bool,
+    },
     Recover(String),
     RefreshTrust,
     RetrySync,
@@ -259,7 +271,7 @@ pub enum Event {
     },
     RoomError {
         room: String,
-        message: &'static str,
+        message: String,
     },
     HistoryLoaded(String),
     /// The open room's joined members, by role and then name.
@@ -276,7 +288,7 @@ pub enum Event {
     EditResult {
         room: String,
         item: String,
-        result: Result<(), &'static str>,
+        result: Result<(), String>,
     },
     AttachResult {
         room: String,
@@ -350,10 +362,14 @@ pub async fn run(
     // Discord connects when this device has a linked account; see docs/discord.md.
     let discord = talk_discord::token::load()
         .ok()
-        .map(talk_discord::service::Discord::start);
+        .and_then(|token| talk_discord::service::Discord::start(token).ok());
     let mut discord_states = discord
         .as_ref()
         .map(talk_discord::service::Discord::snapshots);
+    let mut discord_live = discord.as_ref().map(talk_discord::service::Discord::live);
+    let mut discord_online = false;
+    let mut open_channel: Option<discord_text::OpenChannel> = None;
+    let (discord_done, mut discord_finished) = tokio::sync::mpsc::unbounded_channel();
     let mut voice = match voice::Controller::start_remembering(
         session.lease(),
         Some(remembered.clone()),
@@ -437,6 +453,7 @@ pub async fn run(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break; };
+                let Some(command) = discord_text::command(command, discord.as_ref(), &mut open_channel, &discord_done, &events) else { continue; };
                 match command {
                     Command::Voice(command) => { voice.command(command); }
                     Command::CloseRoom => {
@@ -448,7 +465,7 @@ pub async fn run(
                         updates = Box::pin(futures_util::stream::pending());
                         let room = client.get_room(&match OwnedRoomId::try_from(id.clone()) { Ok(id) => id, Err(_) => continue });
                         let Some(room) = room else {
-                            let _ = events.send(Event::RoomError { room: id, message: "This room is no longer joined. Select another conversation." }); continue;
+                            let _ = events.send(Event::RoomError { room: id, message: "This room is no longer joined. Select another conversation.".into() }); continue;
                         };
                         if let Ok(Some(draft)) = room.load_composer_draft(None).await
                             && matches!(draft.draft_type, ComposerDraftType::NewMessage)
@@ -470,7 +487,7 @@ pub async fn run(
                                 }
                                 open = Some(active);
                             }
-                            Err(_) => { let _ = events.send(Event::RoomError { room: id, message: "Could not open this conversation. Select it again to retry." }); }
+                            Err(_) => { let _ = events.send(Event::RoomError { room: id, message: "Could not open this conversation. Select it again to retry.".into() }); }
                         }
                     }
                     Command::Send { room, body, reply } => {
@@ -478,7 +495,7 @@ pub async fn run(
                         let _ = events.send(Event::SendResult { room, body, result });
                     }
                     Command::Edit { room, item, body } => {
-                        let result = edit(&session, open.as_ref(), &room, &item, &body).await;
+                        let result = edit(&session, open.as_ref(), &room, &item, &body).await.map_err(Into::into);
                         let _ = events.send(Event::EditResult { room, item, result });
                     }
                     Command::Forward { room, item, target } => {
@@ -490,14 +507,14 @@ pub async fn run(
                             (Some(timeline), Some(id)) if !key.is_empty() && key.len() <= 64 => timeline.toggle_reaction(&id, &key).await.map(|_| ()).map_err(|_| ()),
                             _ => Err(()),
                         };
-                        if result.is_err() { let _ = events.send(Event::RoomError { room, message: "Could not change the reaction. Check your connection and try again." }); }
+                        if result.is_err() { let _ = events.send(Event::RoomError { room, message: "Could not change the reaction. Check your connection and try again.".into() }); }
                     }
                     Command::Delete { room, item } => {
                         let result = match (active_timeline(open.as_ref(), &room), parse_item(&item)) {
                             (Some(timeline), Some(id)) => timeline.redact(&id, None).await.map_err(|_| ()),
                             _ => Err(()),
                         };
-                        if result.is_err() { let _ = events.send(Event::RoomError { room, message: "Could not delete the message. Check your connection and try again." }); }
+                        if result.is_err() { let _ = events.send(Event::RoomError { room, message: "Could not delete the message. Check your connection and try again.".into() }); }
                     }
                     Command::Retry { room, item } => {
                         if let (Some(timeline), Some(id)) = (active_timeline(open.as_ref(), &room), parse_item(&item)) {
@@ -511,7 +528,7 @@ pub async fn run(
                             (Some(timeline), Some(id)) => timeline.abort_send(&id, SendTarget::Event).await.map_err(|_| ()),
                             _ => Err(()),
                         };
-                        if !matches!(result, Ok(true)) { let _ = events.send(Event::RoomError { room, message: "That message was already sent, so it could not be cancelled." }); }
+                        if !matches!(result, Ok(true)) { let _ = events.send(Event::RoomError { room, message: "That message was already sent, so it could not be cancelled.".into() }); }
                     }
                     Command::Attach { room, path } => {
                         let result = attach(&session, open.as_ref(), &room, &path).await;
@@ -534,7 +551,7 @@ pub async fn run(
                     Command::Earlier(id) => {
                         if let Some(active) = &mut open && active.id() == id {
                             if active.timeline.paginate_backwards(30).await.is_err() {
-                                let _ = events.send(Event::RoomError { room: id.clone(), message: "Could not load older messages. Check your connection and try again." });
+                                let _ = events.send(Event::RoomError { room: id.clone(), message: "Could not load older messages. Check your connection and try again.".into() });
                             } else { publish_timeline(active, &client, &media_sender, &events).await; }
                         }
                         let _ = events.send(Event::HistoryLoaded(id));
@@ -557,6 +574,8 @@ pub async fn run(
                         let _ = events.send(Event::Trust { trusted: result.as_ref().copied().unwrap_or(false), error: result.err().map(|_| "Could not check device verification. Check your connection and retry.") });
                     }
                     Command::RetrySync => restart_sync = true,
+                    // Discord commands never reach Matrix.
+                    Command::MarkDiscordRead { .. } => {}
                     Command::Logout => {
                         voice.stop().await;
                         if let Some(previous) = sync.take() { previous.stop().await; }
@@ -574,7 +593,21 @@ pub async fn run(
             changed = voice.states.changed(), if voice.states.has_changed().is_ok() => {
                 if changed.is_ok() { let _ = events.send(Event::Voice(voice.states.borrow_and_update().clone())); }
             }
-            Some(snapshot) = discord_changed(&mut discord_states) => { let _ = events.send(Event::Discord(snapshot)); }
+            Some(snapshot) = discord_changed(&mut discord_states) => {
+                let online = snapshot.status == talk_discord::service::Status::Online;
+                // Messages sent while disconnected arrive with the latest page.
+                if online && !discord_online && let (Some(discord), Some(channel)) = (&discord, &mut open_channel) {
+                    channel.refresh(discord, &discord_done);
+                }
+                discord_online = online;
+                let _ = events.send(Event::Discord(snapshot));
+            }
+            Some(event) = discord_event(&mut discord_live) => {
+                if let Some(discord) = &discord { discord_text::live(event, discord, &mut open_channel, &discord_done, &events); }
+            }
+            Some(finished) = discord_finished.recv() => {
+                discord_text::finished(finished, discord.as_ref(), &mut open_channel, &discord_done, &events);
+            }
             Some(_) = rooms_stream.next() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
             Ok(_) = room_info.recv() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
             Some(_) = space_changes.recv() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
@@ -734,6 +767,7 @@ async fn room_index(client: &Client) -> RoomIndex {
                 .unwrap_or_else(|| space.room_id().to_string()),
             channels: Vec::new(),
             discord: false,
+            muted: false,
         });
     }
     for room in client
@@ -757,6 +791,8 @@ async fn room_index(client: &Client) -> RoomIndex {
             unread: room.num_unread_messages(),
             mentions: room.num_unread_mentions(),
             locked: false,
+            read_only: false,
+            category: String::new(),
         });
     }
     result.sort_by(|a, b| {
@@ -809,6 +845,22 @@ fn parse_item(key: &str) -> Option<TimelineEventItemId> {
         key.strip_prefix("t:")
             .filter(|id| !id.is_empty())
             .map(|id| TimelineEventItemId::TransactionId(OwnedTransactionId::from(id)))
+    }
+}
+
+/// The next Discord message event, or never without a linked account.
+async fn discord_event(
+    live: &mut Option<tokio::sync::broadcast::Receiver<talk_discord::service::Live>>,
+) -> Option<Result<talk_discord::service::Live, tokio::sync::broadcast::error::RecvError>> {
+    let Some(receiver) = live else {
+        return std::future::pending().await;
+    };
+    match receiver.recv().await {
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+            *live = None;
+            None
+        }
+        event => Some(event),
     }
 }
 
@@ -1090,7 +1142,7 @@ fn media_key(source: &MediaSource) -> String {
 }
 
 /// Decode an image with dimension and allocation limits, then shrink it for the timeline.
-fn decode_preview(data: &[u8]) -> Option<Picture> {
+pub(crate) fn decode_preview(data: &[u8]) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;

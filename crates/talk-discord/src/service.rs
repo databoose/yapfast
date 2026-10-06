@@ -1,16 +1,24 @@
 //! Talk's Discord connection: one gateway session kept open while Talk runs.
-//! It tracks the account's servers, their voice channels and who is in them,
-//! and hands the voice server details for a join to the voice worker.
+//! It tracks the account's servers, their channels and who is in voice,
+//! passes on live message events, and hands the voice server details for a
+//! join to the voice worker.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
+    api::Api,
     gateway::{Closed, Gateway},
+    message::{self, Message, Names},
     ready::{self, Server},
+    unread::Unreads,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,6 +47,33 @@ pub struct Snapshot {
     pub voice: HashMap<String, Vec<VoiceMember>>,
 }
 
+/// A message event from the gateway, for any channel.
+#[derive(Clone, Debug)]
+pub enum Live {
+    Created(Message),
+    Updated(Message),
+    Deleted {
+        channel: String,
+        id: String,
+    },
+    Reaction {
+        channel: String,
+        message: String,
+        key: String,
+        emoji: String,
+        me: bool,
+        added: bool,
+    },
+    /// Every reaction, or every one with `key`, was removed.
+    ReactionsCleared {
+        channel: String,
+        message: String,
+        key: Option<String>,
+    },
+    /// Names were learned, so mentions and authors may render differently.
+    Names,
+}
+
 /// What songbird needs to open the voice connection Discord assigned.
 #[derive(Clone)]
 pub struct VoiceServer {
@@ -63,6 +98,18 @@ enum Request {
         mute: bool,
         deaf: bool,
     },
+    View {
+        guild: String,
+    },
+    Members {
+        guild: String,
+        users: Vec<String>,
+    },
+    MarkRead {
+        guild: String,
+        channel: String,
+        sync: bool,
+    },
 }
 
 /// A handle to the connection. It ends when every handle is dropped.
@@ -70,23 +117,164 @@ enum Request {
 pub struct Discord {
     requests: mpsc::UnboundedSender<Request>,
     snapshots: watch::Receiver<Snapshot>,
+    live: broadcast::Sender<Live>,
+    api: Arc<Api>,
+    names: Arc<RwLock<Names>>,
 }
+
+const LIVE_BACKLOG: usize = 256;
 
 impl Discord {
     /// Connects on the current Tokio runtime and keeps reconnecting until
     /// Discord rejects the token.
-    pub fn start(token: String) -> Self {
+    pub fn start(token: String) -> Result<Self> {
+        let api = Arc::new(Api::new(token.clone())?);
         let (requests, receiver) = mpsc::unbounded_channel();
         let (snapshots, watcher) = watch::channel(Snapshot::default());
-        tokio::spawn(run(token, receiver, snapshots));
-        Self {
+        let (live, _) = broadcast::channel(LIVE_BACKLOG);
+        let names = Arc::new(RwLock::new(Names::default()));
+        tokio::spawn(run(
+            token,
+            receiver,
+            Shared {
+                snapshots,
+                live: live.clone(),
+                names: names.clone(),
+                api: api.clone(),
+                viewing: HashSet::new(),
+            },
+        ));
+        Ok(Self {
             requests,
             snapshots: watcher,
-        }
+            live,
+            api,
+            names,
+        })
     }
 
     pub fn snapshots(&self) -> watch::Receiver<Snapshot> {
         self.snapshots.clone()
+    }
+
+    /// Message events for every channel, from now on.
+    pub fn live(&self) -> broadcast::Receiver<Live> {
+        self.live.subscribe()
+    }
+
+    /// Tells Discord a server's channel is on screen, so its messages arrive live.
+    pub fn view(&self, guild: &str) {
+        let _ = self.requests.send(Request::View {
+            guild: guild.into(),
+        });
+    }
+
+    /// Marks a channel read in Talk, and on Discord too with `sync`.
+    pub fn mark_read(&self, guild: &str, channel: &str, sync: bool) {
+        let _ = self.requests.send(Request::MarkRead {
+            guild: guild.into(),
+            channel: channel.into(),
+            sync,
+        });
+    }
+
+    /// A page of messages before `before`, or the latest page, oldest first.
+    pub async fn history(
+        &self,
+        guild: &str,
+        channel: &str,
+        before: Option<&str>,
+    ) -> Result<Vec<Message>> {
+        let values = self.api.messages(channel, before).await?;
+        let mut unknown = HashSet::new();
+        {
+            let mut names = self.write_names();
+            for value in &values {
+                names.learn_message(Some(guild), value);
+                if let Some(author) = value["author"]["id"].as_str()
+                    && !names.knows_member(guild, author)
+                {
+                    unknown.insert(author.to_owned());
+                }
+            }
+        }
+        // History carries no server profiles, so nicknames come separately.
+        if !unknown.is_empty() {
+            let _ = self.requests.send(Request::Members {
+                guild: guild.into(),
+                users: unknown.into_iter().collect(),
+            });
+        }
+        let mut messages: Vec<Message> = values.iter().filter_map(message::parse).collect();
+        messages.reverse();
+        Ok(messages)
+    }
+
+    /// Sends a message, or a reply to `reply` in the same channel, with a
+    /// file given as its name and contents.
+    pub async fn send(
+        &self,
+        guild: &str,
+        channel: &str,
+        content: &str,
+        nonce: &str,
+        reply: Option<&str>,
+        file: Option<(String, Vec<u8>)>,
+    ) -> Result<Message> {
+        let upload = match file {
+            Some((name, data)) => Some(self.api.upload(channel, &name, data).await?),
+            None => None,
+        };
+        let sent = self
+            .api
+            .send(Some(guild), channel, content, nonce, reply, upload.as_ref())
+            .await;
+        if let (Err(_), Some(upload)) = (&sent, &upload) {
+            let _ = self.api.discard(upload).await;
+        }
+        let value = sent?;
+        self.write_names().learn_message(Some(guild), &value);
+        message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
+    }
+
+    pub async fn edit(&self, channel: &str, id: &str, content: &str) -> Result<Message> {
+        let value = self.api.edit(channel, id, content).await?;
+        message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
+    }
+
+    pub async fn delete(&self, channel: &str, id: &str) -> Result<()> {
+        self.api.delete(channel, id).await
+    }
+
+    /// Adds or removes this account's reaction; `emoji` is in the API's form.
+    pub async fn react(&self, channel: &str, id: &str, emoji: &str, add: bool) -> Result<()> {
+        self.api.react(channel, id, emoji, add).await
+    }
+
+    pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        self.api.download(url, limit).await
+    }
+
+    /// A user's name in a server: their nickname, display name or username.
+    pub fn name(&self, guild: &str, user: &str) -> Option<String> {
+        self.read_names().name(guild, user).map(str::to_owned)
+    }
+
+    /// Discord Markdown for Talk, with mentions, custom emoji and times as text.
+    pub fn render(&self, server: Option<&Server>, content: &str) -> String {
+        self.read_names().render(server, content)
+    }
+
+    fn read_names(&self) -> std::sync::RwLockReadGuard<'_, Names> {
+        self.names
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write_names(&self) -> std::sync::RwLockWriteGuard<'_, Names> {
+        self.names
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Asks Discord to join a voice channel, muted like every Talk call at
@@ -123,14 +311,22 @@ impl Discord {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Reads within this long go to Discord as one acknowledgement per channel.
+const ACK_DELAY: Duration = Duration::from_secs(1);
 const FIRST_RETRY: Duration = Duration::from_secs(2);
 const LAST_RETRY: Duration = Duration::from_secs(60);
 
-async fn run(
-    token: String,
-    mut requests: mpsc::UnboundedReceiver<Request>,
+struct Shared {
     snapshots: watch::Sender<Snapshot>,
-) {
+    live: broadcast::Sender<Live>,
+    names: Arc<RwLock<Names>>,
+    api: Arc<Api>,
+    /// Servers with a channel on screen, subscribed again after reconnecting.
+    viewing: HashSet<String>,
+}
+
+async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut shared: Shared) {
+    let snapshots = shared.snapshots.clone();
     let mut retry = FIRST_RETRY;
     loop {
         snapshots.send_modify(|snapshot| snapshot.status = Status::Connecting);
@@ -141,7 +337,7 @@ async fn run(
         let error = match connected {
             Ok((gateway, ready)) => {
                 retry = FIRST_RETRY;
-                match connected_session(gateway, &ready, &mut requests, &snapshots).await {
+                match connected_session(gateway, &ready, &mut requests, &mut shared).await {
                     Ended::Dropped => return,
                     Ended::Failed(error) => error,
                 }
@@ -159,7 +355,7 @@ async fn run(
             });
             // Keep answering until Talk drops the handles.
             while let Some(request) = requests.recv().await {
-                refuse(request);
+                refuse(request, &mut shared);
             }
             return;
         }
@@ -173,7 +369,7 @@ async fn run(
             tokio::select! {
                 () = &mut wait => break,
                 request = requests.recv() => match request {
-                    Some(request) => refuse(request),
+                    Some(request) => refuse(request, &mut shared),
                     None => return,
                 },
             }
@@ -182,11 +378,18 @@ async fn run(
     }
 }
 
-fn refuse(request: Request) {
-    if let Request::Join { reply, .. } = request {
-        let _ = reply.send(Err(anyhow!(
-            "Discord isn't connected right now. Try again in a moment."
-        )));
+/// Answers a request while disconnected. Viewing a channel is remembered.
+fn refuse(request: Request, shared: &mut Shared) {
+    match request {
+        Request::Join { reply, .. } => {
+            let _ = reply.send(Err(anyhow!(
+                "Discord isn't connected right now. Try again in a moment."
+            )));
+        }
+        Request::View { guild } => {
+            shared.viewing.insert(guild);
+        }
+        _ => {}
     }
 }
 
@@ -207,16 +410,25 @@ async fn connected_session(
     mut gateway: Gateway,
     ready: &Value,
     requests: &mut mpsc::UnboundedReceiver<Request>,
-    snapshots: &watch::Sender<Snapshot>,
+    shared: &mut Shared,
 ) -> Ended {
     let Some(me) = ready::user_id(ready).map(str::to_owned) else {
         return Ended::Failed(anyhow!("Discord's READY had no user"));
     };
-    let mut tracker = Tracker::from_ready(me.clone(), ready);
-    snapshots.send_replace(tracker.snapshot());
+    let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
+    shared.snapshots.send_replace(tracker.snapshot());
+    for guild in &shared.viewing {
+        if let Err(error) = gateway.subscribe(guild).await {
+            return Ended::Failed(error);
+        }
+    }
     let mut pending: Option<Pending> = None;
     let deadline = tokio::time::sleep(JOIN_TIMEOUT);
     tokio::pin!(deadline);
+    // The newest read message per channel, waiting to be acknowledged.
+    let mut acks: HashMap<String, String> = HashMap::new();
+    let ack_at = tokio::time::sleep(ACK_DELAY);
+    tokio::pin!(ack_at);
     loop {
         tokio::select! {
             request = requests.recv() => {
@@ -242,9 +454,47 @@ async fn connected_session(
                     Request::SelfState { guild, channel, mute, deaf } => {
                         gateway.update_voice_state(Some(&guild), Some(&channel), mute, deaf).await
                     }
+                    Request::View { guild } => {
+                        if shared.viewing.insert(guild.clone()) {
+                            gateway.subscribe(&guild).await
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Request::MarkRead { guild, channel, sync } => {
+                        if let Some(message) = tracker.unreads.mark_read(&guild, &channel) {
+                            shared.snapshots.send_replace(tracker.snapshot());
+                            if sync {
+                                if acks.is_empty() {
+                                    ack_at.as_mut().reset(tokio::time::Instant::now() + ACK_DELAY);
+                                }
+                                acks.insert(channel, message);
+                            }
+                        }
+                        Ok(())
+                    }
+                    Request::Members { guild, users } => {
+                        // Discord answers at most 100 users per request.
+                        let mut sent = Ok(());
+                        for users in users.chunks(100) {
+                            sent = gateway.request_members(&guild, users).await;
+                            if sent.is_err() { break; }
+                        }
+                        sent
+                    }
                 };
                 if let Err(error) = sent {
                     return Ended::Failed(error);
+                }
+            }
+            () = &mut ack_at, if !acks.is_empty() => {
+                for (channel, message) in acks.drain() {
+                    let api = shared.api.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = api.ack(&channel, &message).await {
+                            tracing::warn!(%error, "could not mark a Discord channel read");
+                        }
+                    });
                 }
             }
             () = &mut deadline, if pending.is_some() => {
@@ -282,8 +532,11 @@ async fn connected_session(
                         }
                     }
                 }
+                for live in live_events(&me, &shared.names, &event.name, &event.data) {
+                    let _ = shared.live.send(live);
+                }
                 if tracker.apply(&event.name, &event.data) {
-                    snapshots.send_replace(tracker.snapshot());
+                    shared.snapshots.send_replace(tracker.snapshot());
                 }
             }
         }
@@ -300,25 +553,23 @@ struct VoiceEntry {
 struct Tracker {
     me: String,
     servers: Vec<Server>,
-    /// Display names by user id.
-    names: HashMap<String, String>,
-    /// Server nicknames by server and user id.
-    nicknames: HashMap<(String, String), String>,
+    names: Arc<RwLock<Names>>,
     /// Where each user is in voice, by server and user id.
     voice: HashMap<(String, String), VoiceEntry>,
     /// This account's roles, by server id.
     my_roles: HashMap<String, Vec<String>>,
+    unreads: Unreads,
 }
 
 impl Tracker {
-    fn from_ready(me: String, ready: &Value) -> Self {
+    fn from_ready(me: String, ready: &Value, names: Arc<RwLock<Names>>) -> Self {
         let mut tracker = Self {
             me,
             servers: ready::servers(ready),
-            names: HashMap::new(),
-            nicknames: HashMap::new(),
+            names,
             voice: HashMap::new(),
             my_roles: HashMap::new(),
+            unreads: Unreads::from_ready(ready),
         };
         tracker.learn_user(&ready["user"]);
         for user in ready["users"].as_array().into_iter().flatten() {
@@ -330,6 +581,11 @@ impl Tracker {
 
     /// Applies one dispatched event; returns whether anything visible changed.
     fn apply(&mut self, name: &str, data: &Value) -> bool {
+        let unreads = self.unreads.apply(name, data, &self.me, &self.my_roles);
+        self.apply_servers(name, data) || unreads
+    }
+
+    fn apply_servers(&mut self, name: &str, data: &Value) -> bool {
         match name {
             "READY_SUPPLEMENTAL" => {
                 for guild in data["guilds"].as_array().into_iter().flatten() {
@@ -383,9 +639,10 @@ impl Tracker {
                 if name == "GUILD_ROLE_DELETE" {
                     if let Some(role) = data["role_id"].as_str() {
                         server.roles.remove(role);
+                        server.role_names.remove(role);
                     }
-                } else if let Some((id, bits)) = ready::role(&data["role"]) {
-                    server.roles.insert(id, bits);
+                } else {
+                    server.put_role(&data["role"]);
                 }
                 true
             }
@@ -405,12 +662,50 @@ impl Tracker {
                 let Some(server) = self.servers.iter_mut().find(|server| server.id == guild) else {
                     return false;
                 };
-                server.voice_channels.retain(|channel| channel.id != id);
-                if name != "CHANNEL_DELETE"
-                    && let Some(channel) = ready::voice_channel(data)
+                if name == "CHANNEL_DELETE" {
+                    server.remove_channel(id);
+                } else {
+                    server.put_channel(data);
+                }
+                true
+            }
+            // Large servers report voice in these until subscribed.
+            "PASSIVE_UPDATE_V1" | "PASSIVE_UPDATE_V2" => {
+                let Some(guild) = data["guild_id"].as_str() else {
+                    return false;
+                };
+                let members = data["members"]
+                    .as_array()
+                    .or_else(|| data["updated_members"].as_array());
+                for member in members.into_iter().flatten() {
+                    self.learn_member(guild, member);
+                }
+                if name == "PASSIVE_UPDATE_V1" {
+                    self.voice.retain(|(server, _), _| server != guild);
+                }
+                let states = data["voice_states"]
+                    .as_array()
+                    .or_else(|| data["updated_voice_states"].as_array());
+                for state in states.into_iter().flatten() {
+                    self.voice_state(guild, state);
+                }
+                for user in data["removed_voice_states"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
                 {
-                    server.voice_channels.push(channel);
-                    ready::sort_channels(&mut server.voice_channels);
+                    if let Some(user) = user.as_str() {
+                        self.voice.remove(&(guild.to_owned(), user.to_owned()));
+                    }
+                }
+                true
+            }
+            "GUILD_MEMBERS_CHUNK" => {
+                let Some(guild) = data["guild_id"].as_str() else {
+                    return false;
+                };
+                for member in data["members"].as_array().into_iter().flatten() {
+                    self.learn_member(guild, member);
                 }
                 true
             }
@@ -442,19 +737,16 @@ impl Tracker {
     }
 
     fn learn_user(&mut self, user: &Value) {
-        if let (Some(id), Some(name)) = (user["id"].as_str(), ready::display_name(user)) {
-            self.names.insert(id.to_owned(), name.to_owned());
-        }
+        self.write_names().learn_user(user);
     }
 
     fn learn_member(&mut self, guild: &str, member: &Value) {
-        self.learn_user(&member["user"]);
+        self.write_names().learn_member(guild, member);
         let user = member["user_id"]
             .as_str()
             .or_else(|| member["user"]["id"].as_str());
-        if let (Some(user), Some(nick)) = (user, member["nick"].as_str()) {
-            self.nicknames
-                .insert((guild.to_owned(), user.to_owned()), nick.to_owned());
+        if user == Some(self.me.as_str()) {
+            self.unreads.learn_own_member(guild, member);
         }
         if user == Some(self.me.as_str())
             && let Some(roles) = member["roles"].as_array()
@@ -481,12 +773,18 @@ impl Tracker {
         }
     }
 
+    fn write_names(&self) -> std::sync::RwLockWriteGuard<'_, Names> {
+        self.names
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn name(&self, guild: &str, user: &str) -> String {
-        self.nicknames
-            .get(&(guild.to_owned(), user.to_owned()))
-            .or_else(|| self.names.get(user))
-            .cloned()
-            .unwrap_or_else(|| "Discord user".into())
+        let names = self
+            .names
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        names.name(guild, user).unwrap_or("Discord user").to_owned()
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -510,19 +808,22 @@ impl Tracker {
                     .then_with(|| a.user_id.cmp(&b.user_id))
             });
         }
-        // Mark what this account may do in each voice channel.
+        // Mark what this account may do in each channel.
         let servers = self
             .servers
             .iter()
             .map(|server| {
                 let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
-                let mut server = server.clone();
-                let mut channels = std::mem::take(&mut server.voice_channels);
-                for channel in &mut channels {
+                let mut marked = server.clone();
+                for channel in marked
+                    .text_channels
+                    .iter_mut()
+                    .chain(&mut marked.voice_channels)
+                {
                     channel.access = server.access(channel, &self.me, roles);
                 }
-                server.voice_channels = channels;
-                server
+                self.unreads.mark(&mut marked);
+                marked
             })
             .collect();
         Snapshot {
@@ -531,6 +832,70 @@ impl Tracker {
             servers,
             voice,
         }
+    }
+}
+
+/// The live message events in one gateway event, learning the names it carries.
+fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Value) -> Vec<Live> {
+    let channel = || data["channel_id"].as_str().unwrap_or_default().to_owned();
+    let reaction = |added: bool| {
+        let (key, emoji) = message::emoji(&data["emoji"])?;
+        Some(Live::Reaction {
+            channel: channel(),
+            message: data["message_id"].as_str()?.to_owned(),
+            key,
+            emoji,
+            me: data["user_id"] == me,
+            added,
+        })
+    };
+    match name {
+        "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
+            let Some(message) = message::parse(data) else {
+                return vec![];
+            };
+            names
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .learn_message(data["guild_id"].as_str(), data);
+            vec![if name == "MESSAGE_CREATE" {
+                Live::Created(message)
+            } else {
+                Live::Updated(message)
+            }]
+        }
+        "MESSAGE_DELETE" => data["id"]
+            .as_str()
+            .map(|id| Live::Deleted {
+                channel: channel(),
+                id: id.to_owned(),
+            })
+            .into_iter()
+            .collect(),
+        "MESSAGE_DELETE_BULK" => data["ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|id| Live::Deleted {
+                channel: channel(),
+                id: id.to_owned(),
+            })
+            .collect(),
+        "MESSAGE_REACTION_ADD" => reaction(true).into_iter().collect(),
+        "MESSAGE_REACTION_REMOVE" => reaction(false).into_iter().collect(),
+        "MESSAGE_REACTION_REMOVE_ALL" | "MESSAGE_REACTION_REMOVE_EMOJI" => data["message_id"]
+            .as_str()
+            .map(|message| Live::ReactionsCleared {
+                channel: channel(),
+                message: message.to_owned(),
+                key: message::emoji(&data["emoji"]).map(|(key, _)| key),
+            })
+            .into_iter()
+            .collect(),
+        // Answers to the member requests history makes.
+        "GUILD_MEMBERS_CHUNK" => vec![Live::Names],
+        _ => vec![],
     }
 }
 
@@ -549,7 +914,7 @@ mod tests {
                 {"id": "11", "name": "Lounge", "type": 2, "position": 0},
             ]}],
         });
-        let mut tracker = Tracker::from_ready("1".into(), &ready);
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         tracker.apply(
             "READY_SUPPLEMENTAL",
             &json!({
@@ -598,7 +963,7 @@ mod tests {
                 ]}],
             "merged_members": [[{"user_id": "1", "roles": []}]],
         });
-        let mut tracker = Tracker::from_ready("1".into(), &ready);
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         let channels = |tracker: &Tracker| -> Vec<String> {
             tracker.snapshot().servers[0]
                 .voice_channels

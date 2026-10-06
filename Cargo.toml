@@ -13,7 +13,7 @@ resolver = "3"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis"]
+desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser"]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,6 +30,8 @@ emojis = { version = "0.9", optional = true }
 memmap2 = { version = "0.9", optional = true }
 talk-core = { path = "crates/talk-core" }
 talk-ui = { path = "crates/talk-ui", optional = true }
+# Opens links clicked in messages in the default browser.
+webbrowser = { version = "1", optional = true }
 tracing.workspace = true
 
 [dev-dependencies]

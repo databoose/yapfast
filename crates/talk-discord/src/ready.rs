@@ -6,22 +6,35 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+const GUILD_TEXT: u64 = 0;
 const GUILD_VOICE: u64 = 2;
+const GUILD_CATEGORY: u64 = 4;
+const GUILD_ANNOUNCEMENT: u64 = 5;
 const GUILD_STAGE_VOICE: u64 = 13;
 
 const ADMINISTRATOR: u64 = 1 << 3;
 const VIEW_CHANNEL: u64 = 1 << 10;
+const SEND_MESSAGES: u64 = 1 << 11;
 const CONNECT: u64 = 1 << 20;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Server {
     pub id: String,
     pub name: String,
+    /// Text and announcement channels, in Discord's order.
+    pub text_channels: Vec<Channel>,
     pub voice_channels: Vec<Channel>,
+    /// Categories by id, which group and order the channels in them.
+    pub categories: HashMap<String, Category>,
     pub owner_id: Option<String>,
     /// Each role's permission bits, by role id. The @everyone role has the
     /// server's id.
     pub roles: HashMap<String, u64>,
+    /// Role names by id, for mentions.
+    pub role_names: HashMap<String, String>,
+    /// Muted in the account's notification settings; set when the service
+    /// publishes it.
+    pub muted: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -29,17 +42,34 @@ pub struct Channel {
     pub id: String,
     pub name: String,
     pub position: i64,
+    /// The category the channel sits in.
+    pub parent: Option<String>,
     pub overwrites: Vec<Overwrite>,
-    /// What this account may do here; set when the service publishes it.
+    /// What this account may do here, and the rest below, are set when the
+    /// service publishes it.
     pub access: Access,
+    /// A text channel with messages this account hasn't read.
+    pub unread: bool,
+    /// Unread messages that mention this account.
+    pub mentions: u64,
+    /// Muted, directly or through its category.
+    pub muted: bool,
 }
 
-/// What an account may do in a voice channel.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Category {
+    pub name: String,
+    pub position: i64,
+}
+
+/// What an account may do in a channel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Access {
+    /// Connect to a voice channel, or send in a text channel.
     #[default]
     Join,
-    /// Visible, as in Discord with a lock, but not open to connect.
+    /// Visible but closed: a voice channel shows a lock, as in Discord, and a
+    /// text channel can only be read.
     Locked,
     /// Hidden from this account by the server's permissions.
     Hidden,
@@ -56,21 +86,108 @@ pub struct Overwrite {
 
 impl Server {
     /// Whether `user`, holding `roles`, can see `channel` and connect to it,
-    /// computed as Discord does: the roles' permissions, then the channel's
-    /// overwrites for @everyone, for the roles, and for the member.
+    /// or send in it for a text channel. Computed as Discord does: the roles'
+    /// permissions, then the channel's overwrites for @everyone, for the roles,
+    /// and for the member.
     pub fn access(&self, channel: &Channel, user: &str, roles: &[String]) -> Access {
         // Without the server's roles there is nothing to decide with.
         if self.roles.is_empty() {
             return Access::Join;
         }
         let permissions = self.permissions(channel, user, roles);
+        let act = if self.text_channels.iter().any(|text| text.id == channel.id) {
+            SEND_MESSAGES
+        } else {
+            CONNECT
+        };
         if permissions & VIEW_CHANNEL == 0 {
             Access::Hidden
-        } else if permissions & CONNECT == 0 {
+        } else if permissions & act == 0 {
             Access::Locked
         } else {
             Access::Join
         }
+    }
+
+    /// Adds or replaces a channel from a channel object.
+    pub fn put_channel(&mut self, channel: &Value) {
+        let Some(id) = channel["id"].as_str() else {
+            return;
+        };
+        self.remove_channel(id);
+        match channel["type"].as_u64() {
+            Some(GUILD_TEXT | GUILD_ANNOUNCEMENT) => {
+                if let Some(channel) = parse_channel(channel) {
+                    self.text_channels.push(channel);
+                }
+            }
+            Some(GUILD_VOICE | GUILD_STAGE_VOICE) => {
+                if let Some(channel) = parse_channel(channel) {
+                    self.voice_channels.push(channel);
+                }
+            }
+            Some(GUILD_CATEGORY) => {
+                self.categories.insert(
+                    id.to_owned(),
+                    Category {
+                        name: channel["name"].as_str().unwrap_or_default().to_owned(),
+                        position: channel["position"].as_i64().unwrap_or_default(),
+                    },
+                );
+            }
+            _ => {}
+        }
+        self.sort_channels();
+    }
+
+    pub fn remove_channel(&mut self, id: &str) {
+        self.text_channels.retain(|channel| channel.id != id);
+        self.voice_channels.retain(|channel| channel.id != id);
+        self.categories.remove(id);
+    }
+
+    /// The channel's category, if it has one this server still lists.
+    pub fn category(&self, channel: &Channel) -> Option<&Category> {
+        self.categories.get(channel.parent.as_ref()?)
+    }
+
+    /// Where a channel's category comes in Discord's order: channels outside
+    /// categories first, then each category by position.
+    pub fn category_order(&self, channel: &Channel) -> (bool, i64, String) {
+        match self.category(channel) {
+            Some(category) => (
+                true,
+                category.position,
+                channel.parent.clone().unwrap_or_default(),
+            ),
+            None => (false, 0, String::new()),
+        }
+    }
+
+    /// Discord's order: by category, then by position.
+    fn sort_channels(&mut self) {
+        let mut text = std::mem::take(&mut self.text_channels);
+        let mut voice = std::mem::take(&mut self.voice_channels);
+        let key = |channel: &Channel| {
+            (
+                self.category_order(channel),
+                channel.position,
+                channel.id.clone(),
+            )
+        };
+        text.sort_by_cached_key(key);
+        voice.sort_by_cached_key(key);
+        self.text_channels = text;
+        self.voice_channels = voice;
+    }
+
+    /// A text or voice channel's name.
+    pub fn channel_name(&self, id: &str) -> Option<&str> {
+        self.text_channels
+            .iter()
+            .chain(&self.voice_channels)
+            .find(|channel| channel.id == id)
+            .map(|channel| channel.name.as_str())
     }
 
     fn permissions(&self, channel: &Channel, user: &str, roles: &[String]) -> u64 {
@@ -129,6 +246,18 @@ pub fn role(role: &Value) -> Option<(String, u64)> {
     Some((role["id"].as_str()?.to_owned(), bits(&role["permissions"])))
 }
 
+impl Server {
+    /// Adds or replaces a role from a role object.
+    pub fn put_role(&mut self, value: &Value) {
+        if let Some((id, permissions)) = role(value) {
+            if let Some(name) = value["name"].as_str() {
+                self.role_names.insert(id.clone(), name.to_owned());
+            }
+            self.roles.insert(id, permissions);
+        }
+    }
+}
+
 pub fn user_id(ready: &Value) -> Option<&str> {
     ready["user"]["id"].as_str()
 }
@@ -162,44 +291,30 @@ pub fn server(guild: &Value) -> Option<Server> {
         .or_else(|| guild["properties"]["name"].as_str())
         .unwrap_or(&id)
         .to_owned();
-    let mut voice_channels: Vec<Channel> = guild["channels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(voice_channel)
-        .collect();
-    sort_channels(&mut voice_channels);
     let owner_id = guild["owner_id"]
         .as_str()
         .or_else(|| guild["properties"]["owner_id"].as_str())
         .map(str::to_owned);
-    let roles = guild["roles"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(role)
-        .collect();
-    Some(Server {
+    let mut server = Server {
         id,
         name,
-        voice_channels,
         owner_id,
-        roles,
-    })
-}
-
-pub fn sort_channels(channels: &mut [Channel]) {
-    channels.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-}
-
-/// A channel object, if it is a voice or stage channel.
-pub fn voice_channel(channel: &Value) -> Option<Channel> {
-    if !matches!(
-        channel["type"].as_u64(),
-        Some(GUILD_VOICE | GUILD_STAGE_VOICE)
-    ) {
-        return None;
+        ..Default::default()
+    };
+    for role in guild["roles"].as_array().into_iter().flatten() {
+        server.put_role(role);
     }
+    let channels = guild["channels"].as_array().into_iter().flatten();
+    // Categories first, so the channels in them sort by their position.
+    let (categories, channels): (Vec<_>, Vec<_>) =
+        channels.partition(|channel| channel["type"].as_u64() == Some(GUILD_CATEGORY));
+    for channel in categories.into_iter().chain(channels) {
+        server.put_channel(channel);
+    }
+    Some(server)
+}
+
+fn parse_channel(channel: &Value) -> Option<Channel> {
     let overwrites = channel["permission_overwrites"]
         .as_array()
         .into_iter()
@@ -218,8 +333,9 @@ pub fn voice_channel(channel: &Value) -> Option<Channel> {
         id: channel["id"].as_str()?.to_owned(),
         name: channel["name"].as_str().unwrap_or_default().to_owned(),
         position: channel["position"].as_i64().unwrap_or_default(),
+        parent: channel["parent_id"].as_str().map(str::to_owned),
         overwrites,
-        access: Access::Join,
+        ..Default::default()
     })
 }
 

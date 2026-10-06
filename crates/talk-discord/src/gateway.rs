@@ -29,9 +29,11 @@ const HEARTBEAT: u64 = 1;
 const IDENTIFY: u64 = 2;
 const VOICE_STATE_UPDATE: u64 = 4;
 const RECONNECT: u64 = 7;
+const REQUEST_GUILD_MEMBERS: u64 = 8;
 const INVALID_SESSION: u64 = 9;
 const HELLO: u64 = 10;
 const HEARTBEAT_ACK: u64 = 11;
+const GUILD_SUBSCRIPTIONS_BULK: u64 = 37;
 
 /// Discord closed the gateway, with its close code.
 #[derive(Debug)]
@@ -157,6 +159,30 @@ impl Gateway {
                 "self_deaf": self_deaf,
                 "self_video": false,
             }),
+        )
+        .await
+    }
+
+    /// Subscribes to a server while one of its channels is on screen, as the
+    /// web client does. Large servers send their messages only to subscribers.
+    /// Talk doesn't show member lists yet, so it asks for none.
+    pub async fn subscribe(&mut self, guild_id: &str) -> Result<()> {
+        self.send(
+            GUILD_SUBSCRIPTIONS_BULK,
+            json!({"subscriptions": {guild_id: {
+                "typing": true,
+                "activities": true,
+                "threads": true,
+            }}}),
+        )
+        .await
+    }
+
+    /// Asks for these members' server profiles, which arrive as GUILD_MEMBERS_CHUNK.
+    pub async fn request_members(&mut self, guild_id: &str, user_ids: &[String]) -> Result<()> {
+        self.send(
+            REQUEST_GUILD_MEMBERS,
+            json!({"guild_id": [guild_id], "user_ids": user_ids, "presences": false}),
         )
         .await
     }
