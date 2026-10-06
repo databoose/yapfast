@@ -17,6 +17,8 @@
 // write to her, opening a DM with her the first time. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
+// GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
+// banner and a server bio, Carol a banner colour, and the rest nothing more.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -143,11 +145,41 @@ function sunset(width: number, height: number): Uint8Array {
 }
 
 /** An avatar or server icon: two tones split diagonally, picked from its path. */
+// Banners are wide, as Discord's are.
 function picture(path: string): Uint8Array {
   const hue = crc32(new TextEncoder().encode(path));
   const light = [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160));
   const dark = light.map((c) => c >> 1);
-  return png(128, 128, (x, y) => [...(x + y < 128 ? light : dark), 255]);
+  const [width, height] = path.includes("/banners/") ? [600, 240] : [128, 128];
+  return png(width, height, (x, y) => [...(x / width + y / height < 1 ? light : dark), 255]);
+}
+
+// A person's profile as GET /users/{id}/profile gives it, with the server's
+// side when asked for with guild_id.
+function wireProfile(user: User, guild: string | null) {
+  const bob = user.id === users.bob.id;
+  const carol = user.id === users.carol.id;
+  const inServer = Object.values(users).includes(user) && user.id !== ALICE;
+  const profile = {
+    bio: bob ? "Plays bass in a **ska** band. Ask me about https://example.com/gigs" : "",
+    pronouns: bob ? "he/him" : "",
+    banner: bob ? "bob-banner" : null,
+    accent_color: carol ? 0x5865f2 : null,
+  };
+  return {
+    user: { ...wireUser(user), banner: profile.banner, accent_color: profile.accent_color, bio: profile.bio },
+    user_profile: profile,
+    ...(guild === GUILD && inServer
+      ? {
+          guild_member_profile: { guild_id: GUILD, bio: bob ? "Keeps #general tidy." : "", pronouns: "", banner: null, accent_color: null },
+          guild_member: member(user),
+        }
+      : {}),
+    mutual_guilds: inServer ? [{ id: GUILD, nick: null }] : [],
+    mutual_friends: bob ? [wireUser(users.carol)] : [],
+    badges: [],
+    premium_type: null,
+  };
 }
 
 function png(width: number, height: number, pixel: (x: number, y: number) => number[]): Uint8Array {
@@ -1413,6 +1445,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return new Response(null, { status: 204 });
   }
 
+  if (method === "GET" && (m = path.match(/^\/users\/(\d+)\/profile$/))) {
+    const user = userById.get(m[1]!);
+    if (!user) return notFound("Unknown User", 10013);
+    return json(wireProfile(user, url.searchParams.get("guild_id")));
+  }
+
   if (method === "GET" && path === "/users/@me") {
     return json({ ...wireUser(users.alice), email: "alice@example.org", verified: true });
   }
@@ -1627,8 +1665,8 @@ const server = Bun.serve<SocketData>({
     if (req.method === "GET" && path.startsWith("/media/attachments/")) {
       return serveFile(path.slice("/media/attachments/".length), url);
     }
-    // Discord's CDN: server icons and avatars.
-    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/avatars)\/[^/]+\.png$/.test(path)) {
+    // Discord's CDN: server icons, avatars and banners.
+    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
     if (req.method === "PUT" && path.startsWith("/_upload/")) {

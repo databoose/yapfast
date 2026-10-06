@@ -461,6 +461,25 @@ async fn talks_to_the_fake_server() {
     })
     .await;
 
+    // Bob's profile: in the server, his server bio wins over his own; from
+    // a DM, his own shows.
+    let in_server = discord.profile(&guild, &bob).await.unwrap();
+    assert_eq!(in_server.name, "Bob");
+    assert_eq!(in_server.pronouns.as_deref(), Some("he/him"));
+    assert_eq!(in_server.bio.as_deref(), Some("Keeps #general tidy."));
+    assert!(
+        in_server
+            .banner
+            .is_some_and(|banner| banner.contains("/banners/"))
+    );
+    assert_eq!(in_server.roles.len(), 1, "Bob is a Mod");
+    assert!(in_server.joined.is_some());
+    assert_eq!(in_server.mutual_servers, [guild.as_str()]);
+    assert_eq!(in_server.mutual_friends, ["Carol"]);
+    let own = discord.profile(PRIVATE, &bob).await.unwrap();
+    assert!(own.bio.is_some_and(|bio| bio.starts_with("Plays bass")));
+    assert!(own.roles.is_empty() && own.joined.is_none());
+
     // Go Live: watching Bob needs the voice channel; then Alice joins the
     // call, watches him and shares her own screen.
     let bob_stream = stream::guild_key(&guild, &lounge, &bob);

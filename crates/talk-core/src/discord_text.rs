@@ -26,7 +26,8 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, Command, Delivery, Event, MAX_PREVIEW_DOWNLOAD_BYTES,
-        Picture, Presence, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
+        Picture, Presence, Profile, ProfileRole, Reaction, Reply, Role, decode_preview,
+        decode_view, plain_snippet,
     },
     discord,
 };
@@ -1000,6 +1001,31 @@ pub fn command(
         }
         return None;
     }
+    if let Command::Profile { room, user } = command {
+        match (discord, discord::parse_room(&room)) {
+            (Some(discord), Some((guild, _))) => {
+                let (discord, events, guild) = (discord.clone(), events.clone(), guild.to_owned());
+                tokio::spawn(async move {
+                    let result = discord
+                        .profile(&guild, &user)
+                        .await
+                        .map(|profile| chat_profile(&discord, &guild, profile))
+                        .map_err(|error| {
+                            tracing::warn!(%error, "could not fetch a Discord profile");
+                            error.to_string()
+                        });
+                    let _ = events.send(Event::Profile { user, result });
+                });
+            }
+            _ => {
+                let _ = events.send(Event::Profile {
+                    user,
+                    result: Err("Discord isn't linked on this device.".into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::AnswerRequest { room, accept } = command {
         match (discord, discord::parse_room(&room)) {
             (Some(discord), Some((_, channel))) => {
@@ -1303,6 +1329,48 @@ pub fn live(
             }
         }
         Err(_) => channel.refresh(discord, done),
+    }
+}
+
+/// A Discord profile as Talk's profile card shows it, with the server's role
+/// names, colours and names known now.
+fn chat_profile(
+    discord: &Discord,
+    guild: &str,
+    profile: talk_discord::profile::Profile,
+) -> Profile {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot.servers.iter().find(|server| server.id == guild);
+    Profile {
+        name: profile.name,
+        avatar: Some(profile.avatar),
+        banner: profile.banner,
+        accent: profile.accent,
+        pronouns: profile.pronouns.unwrap_or_default(),
+        bio: profile
+            .bio
+            .map(|bio| discord.render(server, &bio))
+            .unwrap_or_default(),
+        roles: server
+            .map(|server| server.named_roles(&profile.roles))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, color)| ProfileRole { name, color })
+            .collect(),
+        created: Some(talk_discord::message::date(profile.created)),
+        joined: profile.joined.map(talk_discord::message::date),
+        servers: profile
+            .mutual_servers
+            .iter()
+            .filter_map(|id| snapshot.servers.iter().find(|server| &server.id == id))
+            .map(|server| server.name.clone())
+            .collect(),
+        friends: profile.mutual_friends,
+        handle: profile.username,
+        id: profile.user_id,
+        // What the member list knows; the profile doesn't say.
+        presence: None,
+        activity: None,
     }
 }
 

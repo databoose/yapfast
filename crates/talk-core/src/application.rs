@@ -7,8 +7,8 @@ use std::{
 
 use crate::{
     chat::{
-        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Picture, Reaction,
-        Reply, Role,
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Picture, Profile,
+        ProfileRole, Reaction, Reply, Role,
     },
     discord,
     voice::{self, Phase},
@@ -42,6 +42,17 @@ pub struct Viewer {
     /// Images at viewing size by attachment: `None` while one downloads,
     /// else the image or why it can't show.
     pub pictures: HashMap<usize, Option<Result<Arc<Picture>, &'static str>>>,
+}
+
+/// A person's profile card: beside the member list, or large over the window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfileView {
+    pub profile: Profile,
+    pub large: bool,
+    /// The rest of a Discord profile is on its way.
+    pub loading: bool,
+    /// Why Discord didn't give the rest.
+    pub note: Option<String>,
 }
 
 /// What the composer's next send does in a room, besides sending a new message.
@@ -98,6 +109,8 @@ pub struct AppState {
     pub forwarding: Option<Forwarding>,
     /// The image viewer, open over the selected room.
     pub viewer: Option<Viewer>,
+    /// The profile card that's open.
+    pub profile: Option<ProfileView>,
     /// Changes when selecting a room, including selecting the same room to retry opening it.
     pub selection_version: u64,
     /// Changes after logout so adapters can clear their inputs and focus sign-in.
@@ -259,6 +272,17 @@ pub enum Action {
     SyncDiscordReads(bool),
     /// Accept the selected Discord message request, or ignore it.
     AnswerRequest(bool),
+    /// Show the profile of a member of the selected room, as a card beside
+    /// the member list or large.
+    ShowProfile {
+        user: String,
+        large: bool,
+    },
+    /// Show the profile of the other person in a one-to-one DM, large.
+    ShowDmProfile(String),
+    /// Show the open profile card large.
+    EnlargeProfile,
+    CloseProfile,
 }
 
 /// An adapter executes these effects with the shared backend, then applies its events.
@@ -358,6 +382,11 @@ impl Application {
                     .selected_room()
                     .and_then(|room| room.avatar.as_deref()),
             )
+            .chain(state.profile.iter().flat_map(|view| {
+                [&view.profile.avatar, &view.profile.banner]
+                    .into_iter()
+                    .filter_map(Option::as_deref)
+            }))
             .chain(
                 state
                     .rooms
@@ -816,6 +845,80 @@ impl Application {
                 self.state.sync_discord_reads = sync;
                 vec![]
             }
+            Action::ShowProfile { user, large } => {
+                let (Some(room), Some(Ok(members))) =
+                    (self.state.selected_room(), &self.state.members)
+                else {
+                    return vec![];
+                };
+                let Some(member) = members.iter().find(|member| member.id == user) else {
+                    return vec![];
+                };
+                let discord = discord::is_discord(&room.id);
+                let role = match member.role {
+                    Role::Admin => Some("Admin"),
+                    Role::Moderator => Some("Moderator"),
+                    Role::Member => None,
+                };
+                let profile = Profile {
+                    id: member.id.clone(),
+                    name: member.name.clone(),
+                    // A Discord username comes with the profile.
+                    handle: if discord {
+                        String::new()
+                    } else {
+                        member.id.clone()
+                    },
+                    avatar: member.avatar.clone(),
+                    presence: member.presence,
+                    activity: member.activity.clone(),
+                    // Discord's roles come with the profile too.
+                    roles: role
+                        .filter(|_| !discord)
+                        .map(|name| ProfileRole {
+                            name: name.into(),
+                            color: None,
+                        })
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                };
+                let room = room.id.clone();
+                self.open_profile(room, profile, large)
+            }
+            Action::ShowDmProfile(id) => {
+                let Some((room, person)) = self
+                    .state
+                    .rooms
+                    .iter()
+                    .filter(|room| room.id == id)
+                    .find_map(|room| Some((room, room.person.clone()?)))
+                else {
+                    return vec![];
+                };
+                let profile = Profile {
+                    name: room.name.clone(),
+                    handle: if discord::is_discord(&room.id) {
+                        String::new()
+                    } else {
+                        person.clone()
+                    },
+                    avatar: room.avatar.clone(),
+                    id: person,
+                    ..Default::default()
+                };
+                self.open_profile(id, profile, true)
+            }
+            Action::EnlargeProfile => {
+                if let Some(view) = &mut self.state.profile {
+                    view.large = true;
+                }
+                vec![]
+            }
+            Action::CloseProfile => {
+                self.state.profile = None;
+                vec![]
+            }
             Action::AnswerRequest(accept) => match self.state.selected_room() {
                 Some(room) if room.request && self.state.discord_online => {
                     vec![Effect::Backend(Command::AnswerRequest {
@@ -899,6 +1002,30 @@ impl Application {
             Event::RoomError { room, message } => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.notice = Some(message);
+                }
+            }
+            Event::Profile { user, result } => {
+                if let Some(view) = self
+                    .state
+                    .profile
+                    .as_mut()
+                    .filter(|view| view.profile.id == user)
+                {
+                    view.loading = false;
+                    match result {
+                        // Presence comes from the member list; the profile doesn't carry it.
+                        Ok(profile) => {
+                            view.profile = Profile {
+                                presence: profile.presence.or(view.profile.presence),
+                                activity: profile.activity.or(view.profile.activity.take()),
+                                ..profile
+                            };
+                        }
+                        Err(_) => {
+                            view.note =
+                                Some("Discord didn't share the rest of this profile.".into());
+                        }
+                    }
                 }
             }
             Event::Members { room, members } => {
@@ -1074,6 +1201,24 @@ impl Application {
         }
     }
 
+    /// Opens a profile card with what Talk knows, and fetches the rest of a
+    /// Discord profile.
+    fn open_profile(&mut self, room: String, profile: Profile, large: bool) -> Vec<Effect> {
+        let fetch = discord::is_discord(&room) && !self.state.preview;
+        let user = profile.id.clone();
+        self.state.profile = Some(ProfileView {
+            profile,
+            large,
+            loading: fetch,
+            note: None,
+        });
+        if fetch {
+            vec![Effect::Backend(Command::Profile { room, user })]
+        } else {
+            vec![]
+        }
+    }
+
     /// Showing an unread Discord channel reads it, as Matrix rooms are read
     /// in the backend.
     fn mark_discord_read(&self) -> Vec<Effect> {
@@ -1149,6 +1294,7 @@ impl Application {
         self.state.confirm_delete = None;
         self.state.forwarding = None;
         self.state.viewer = None;
+        self.state.profile = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
         self.state.notice = None;
@@ -1642,6 +1788,7 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         read_only: false,
         category: String::new(),
         request: false,
+        person: (direct && members <= 2).then(|| format!("@{id}:preview")),
         people: vec![],
         avatar: None,
     }
@@ -2756,6 +2903,125 @@ mod tests {
         assert!(!app.state.lists_members(), "a DM lists no members");
         app.dispatch(Action::SelectRoom("discord:@me:31".into()));
         assert!(app.state.lists_members(), "a group DM does");
+    }
+
+    #[test]
+    fn matrix_profiles_show_what_the_member_list_knows() {
+        let mut app = connected();
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        app.dispatch(Action::SelectRoom("general".into()));
+        app.apply(Event::Members {
+            room: "general".into(),
+            members: Ok(vec![ChatMember {
+                id: "@bob:test".into(),
+                name: "Bob".into(),
+                role: Role::Moderator,
+                avatar: Some("bob.png".into()),
+                group: None,
+                presence: None,
+                color: None,
+                activity: None,
+            }]),
+        });
+        let effects = app.dispatch(Action::ShowProfile {
+            user: "@bob:test".into(),
+            large: false,
+        });
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Backend(Command::Profile { .. }))),
+            "Matrix has nothing more to fetch"
+        );
+        let view = app.state.profile.as_ref().unwrap();
+        assert!(!view.large && !view.loading);
+        assert_eq!(view.profile.handle, "@bob:test");
+        assert_eq!(view.profile.roles[0].name, "Moderator");
+        app.dispatch(Action::EnlargeProfile);
+        assert!(app.state.profile.as_ref().unwrap().large);
+        app.dispatch(Action::SelectRoom("games".into()));
+        assert!(app.state.profile.is_none(), "another room closes it");
+
+        app.dispatch(Action::Navigate(Navigation::DirectMessages));
+        app.dispatch(Action::ShowDmProfile("dm".into()));
+        let view = app.state.profile.as_ref().unwrap();
+        assert!(view.large, "a DM's profile opens full size");
+        assert_eq!(view.profile.name, "DM");
+        app.dispatch(Action::CloseProfile);
+        assert!(app.state.profile.is_none());
+        app.dispatch(Action::ShowDmProfile("general".into()));
+        assert!(app.state.profile.is_none(), "a room has no one person");
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_profiles_load_the_rest_from_discord() {
+        use talk_discord::service::{Conversation, Snapshot, Status};
+        let mut app = Application::default();
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            conversations: vec![Conversation {
+                id: "30".into(),
+                name: "Ann".into(),
+                avatar: Some("ann.png".into()),
+                person: Some("7".into()),
+                people: 2,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        let effects = app.dispatch(Action::ShowDmProfile("discord:@me:30".into()));
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Backend(Command::Profile { room, user }) if room == "discord:@me:30" && user == "7"
+            )),
+            "Discord's profile is fetched"
+        );
+        let view = app.state.profile.as_ref().unwrap();
+        assert!(view.loading && view.profile.handle.is_empty());
+        assert_eq!(view.profile.avatar.as_deref(), Some("ann.png"));
+
+        app.apply(Event::Profile {
+            user: "8".into(),
+            result: Err("gone".into()),
+        });
+        assert!(
+            app.state.profile.as_ref().unwrap().loading,
+            "another person's answer is stale"
+        );
+        let effects = app.apply(Event::Profile {
+            user: "7".into(),
+            result: Ok(Profile {
+                id: "7".into(),
+                name: "Ann".into(),
+                handle: "ann".into(),
+                banner: Some("ann-banner.png".into()),
+                bio: "Hi".into(),
+                ..Default::default()
+            }),
+        });
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "ann-banner.png")
+            )),
+            "the banner downloads"
+        );
+        let view = app.state.profile.as_ref().unwrap();
+        assert!(!view.loading && view.note.is_none());
+        assert_eq!(
+            (view.profile.handle.as_str(), view.profile.bio.as_str()),
+            ("ann", "Hi")
+        );
+
+        app.dispatch(Action::ShowDmProfile("discord:@me:30".into()));
+        app.apply(Event::Profile {
+            user: "7".into(),
+            result: Err("Missing Access".into()),
+        });
+        let view = app.state.profile.as_ref().unwrap();
+        assert!(!view.loading && view.note.is_some());
     }
 
     #[test]

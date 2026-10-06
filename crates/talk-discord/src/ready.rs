@@ -44,6 +44,8 @@ pub struct Server {
     pub role_names: HashMap<String, String>,
     /// The position and RGB colour of each coloured role, by id.
     pub role_colors: HashMap<String, (i64, u32)>,
+    /// Each role's position, by id: higher roles list first.
+    pub role_positions: HashMap<String, i64>,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -333,6 +335,8 @@ impl Server {
             if let Some(name) = value["name"].as_str() {
                 self.role_names.insert(id.clone(), name.to_owned());
             }
+            self.role_positions
+                .insert(id.clone(), value["position"].as_i64().unwrap_or_default());
             match value["color"].as_u64().filter(|color| *color != 0) {
                 Some(color) => {
                     let position = value["position"].as_i64().unwrap_or_default();
@@ -352,6 +356,26 @@ impl Server {
         self.roles.remove(id);
         self.role_names.remove(id);
         self.role_colors.remove(id);
+        self.role_positions.remove(id);
+    }
+
+    /// A member's named roles, highest first, each with its colour if it has one.
+    pub fn named_roles(&self, roles: &[String]) -> Vec<(String, Option<u32>)> {
+        let mut named: Vec<_> = roles
+            .iter()
+            .filter(|role| **role != self.id)
+            .filter_map(|role| {
+                let name = self.role_names.get(role)?;
+                let position = self.role_positions.get(role).copied().unwrap_or_default();
+                let color = self.role_colors.get(role).map(|(_, color)| *color);
+                Some((std::cmp::Reverse(position), name.clone(), color))
+            })
+            .collect();
+        named.sort();
+        named
+            .into_iter()
+            .map(|(_, name, color)| (name, color))
+            .collect()
     }
 
     /// The colour Discord gives a member's name: their highest coloured role's.
@@ -478,6 +502,19 @@ pub fn avatar(user: &str, hash: Option<&str>) -> String {
             format!("{}/embed/avatars/{index}.png", cdn())
         }
     }
+}
+
+/// A profile banner, at the profile card's widest.
+pub fn banner(user: &str, hash: &str) -> String {
+    format!("{}/banners/{user}/{hash}.png?size=600", cdn())
+}
+
+/// The banner a member set for one server.
+pub fn member_banner(guild: &str, user: &str, hash: &str) -> String {
+    format!(
+        "{}/guilds/{guild}/users/{user}/banners/{hash}.png?size=600",
+        cdn()
+    )
 }
 
 /// The avatar a member set for one server, which Discord shows there instead.

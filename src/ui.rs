@@ -15,7 +15,7 @@ use slint::{
 use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, Delivery, Event, Picture, Presence, Role},
+    chat::{ChatMessage, Delivery, Event, Picture, Presence, ProfileRole, Role},
     discord, links,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
@@ -541,6 +541,58 @@ impl Adapter {
         }
     }
 
+    /// The open profile card, with what's known so far.
+    fn show_profile(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        window.set_profile_open(state.profile.is_some());
+        let Some(view) = &state.profile else {
+            return;
+        };
+        window.set_profile_large(view.large);
+        window.set_profile_member(if view.large {
+            SharedString::default()
+        } else {
+            view.profile.id.clone().into()
+        });
+        let profile = &view.profile;
+        let handle = [profile.handle.as_str(), profile.pronouns.as_str()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let strings = |items: &[String]| {
+            ModelRc::new(VecModel::from(
+                items.iter().map(SharedString::from).collect::<Vec<_>>(),
+            ))
+        };
+        window.set_profile(ProfileData {
+            id: profile.id.clone().into(),
+            name: profile.name.clone().into(),
+            initial: initial(&profile.name),
+            tint: tint(&profile.name),
+            picture: cached_picture(&mut self.pictures, state, profile.avatar.as_deref()),
+            handle: handle.into(),
+            banner: cached_picture(&mut self.pictures, state, profile.banner.as_deref()),
+            accent: role_color(profile.accent),
+            has_accent: profile.accent.is_some(),
+            presence: presence_name(profile.presence).into(),
+            activity: profile.activity.clone().unwrap_or_default().into(),
+            bio: markdown(&profile.bio),
+            has_bio: !profile.bio.trim().is_empty(),
+            role_rows: role_rows(&profile.roles, PROFILE_CARD_WIDTH),
+            role_rows_large: role_rows(&profile.roles, PROFILE_LARGE_WIDTH),
+            created: profile.created.clone().unwrap_or_default().into(),
+            joined: profile.joined.clone().unwrap_or_default().into(),
+            servers: strings(&profile.servers),
+            friends: strings(&profile.friends),
+            note: if view.loading {
+                "Loading the profile...".into()
+            } else {
+                view.note.clone().unwrap_or_default().into()
+            },
+        });
+    }
+
     /// The image viewer: the full image once it arrives, the preview until then.
     fn show_viewer(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
@@ -620,6 +672,7 @@ impl Adapter {
 
     fn refresh(&mut self, window: &TalkWindow) {
         self.show_viewer(window);
+        self.show_profile(window);
         let state = &self.app.state;
         let reset = self.reset_version != state.reset_version;
         let selection_changed = self.selection_version != state.selection_version;
@@ -771,6 +824,7 @@ impl Adapter {
                     picture: cached_picture(&mut self.pictures, state, room.avatar.as_deref()),
                     discord: room.direct && discord::is_discord(&room.id),
                     locked: room.locked,
+                    person: room.person.is_some(),
                     people: if room.people.is_empty() {
                         ModelRc::default()
                     } else {
@@ -897,14 +951,7 @@ impl Adapter {
                     initial: initial(&member.name),
                     tint: tint(&member.name),
                     picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
-                    presence: match member.presence {
-                        Some(Presence::Online) => "online",
-                        Some(Presence::Idle) => "idle",
-                        Some(Presence::DoNotDisturb) => "dnd",
-                        Some(Presence::Offline) => "offline",
-                        None => "",
-                    }
-                    .into(),
+                    presence: presence_name(member.presence).into(),
                     color: role_color(member.color),
                     has_color: member.color.is_some(),
                     activity: member.activity.clone().unwrap_or_default().into(),
@@ -1369,6 +1416,8 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind!(on_send, Action::Send);
     bind!(on_earlier, Action::Earlier);
     bind!(on_accept_request, Action::AnswerRequest(true));
+    bind!(on_enlarge_profile, Action::EnlargeProfile);
+    bind!(on_close_profile, Action::CloseProfile);
     bind!(on_ignore_request, Action::AnswerRequest(false));
     bind!(on_leave_voice, Action::Voice(voice::Command::Leave));
     bind!(on_confirm_switch, Action::ConfirmVoiceSwitch);
@@ -1417,6 +1466,11 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         }};
     }
     bind_item!(on_reply, Action::Reply);
+    bind_item!(on_show_dm_profile, Action::ShowDmProfile);
+    bind_item!(
+        on_show_profile,
+        (|user| Action::ShowProfile { user, large: false })
+    );
     bind_item!(on_edit, Action::Edit);
     bind_item!(on_request_delete, Action::RequestDelete);
     bind_item!(on_retry, Action::Retry);
@@ -2009,6 +2063,71 @@ fn gallery(
     }
 }
 
+/// How the UI names a presence; empty when there's none.
+fn presence_name(presence: Option<Presence>) -> &'static str {
+    match presence {
+        Some(Presence::Online) => "online",
+        Some(Presence::Idle) => "idle",
+        Some(Presence::DoNotDisturb) => "dnd",
+        Some(Presence::Offline) => "offline",
+        None => "",
+    }
+}
+
+/// The width role chips fill in the profile card and the full profile: the
+/// cards' widths less their padding.
+const PROFILE_CARD_WIDTH: f32 = 300. - 2. * 16.;
+const PROFILE_LARGE_WIDTH: f32 = 600. - 2. * 24.;
+
+/// Roles as chips, a row at a time. Slint has no wrapping layout, so chips
+/// are measured roughly: Satoshi Medium at 13px averages under 7px a letter.
+fn role_rows(roles: &[ProfileRole], width: f32) -> ModelRc<ProfileRoleRow> {
+    const GAP: f32 = 4.;
+    // Padding, the colour dot and the space after it.
+    const CHROME: f32 = 8. + 10. + 6. + 8.;
+    let mut rows: Vec<Vec<talk_ui::ProfileRole>> = Vec::new();
+    let mut used = width;
+    for role in roles {
+        let chip = CHROME + 7. * role.name.chars().count() as f32;
+        if used + GAP + chip > width || rows.is_empty() {
+            rows.push(Vec::new());
+            used = chip;
+        } else {
+            used += GAP + chip;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push(talk_ui::ProfileRole {
+                name: role.name.clone().into(),
+                color: role_color(role.color),
+                has_color: role.color.is_some(),
+            });
+        }
+    }
+    ModelRc::new(VecModel::from(
+        rows.into_iter()
+            .map(|roles| ProfileRoleRow {
+                roles: ModelRc::new(VecModel::from(roles)),
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Markdown as styled text, with web addresses linked. Slint's Markdown
+/// subset rejects some syntax, such as headings; those show as typed,
+/// keeping their links.
+fn markdown(body: &str) -> slint::StyledText {
+    slint::StyledText::from_markdown(&links::linkify(body))
+        .ok()
+        .or_else(|| plain_with_links(body))
+        .unwrap_or_else(|| slint::StyledText::from_plain_text(body))
+}
+
+/// Plain text with its web addresses linked; none when it has none.
+fn plain_with_links(body: &str) -> Option<slint::StyledText> {
+    links::plain_with_links(body)
+        .and_then(|markdown| slint::StyledText::from_markdown(&markdown).ok())
+}
+
 /// A Discord role's RGB colour for Slint.
 fn role_color(rgb: Option<u32>) -> slint::Color {
     rgb.map_or_else(slint::Color::default, |rgb| {
@@ -2017,21 +2136,11 @@ fn role_color(rgb: Option<u32>) -> slint::Color {
 }
 
 fn message_row(message: &ChatMessage) -> MessageRow {
-    // Slint's Markdown subset rejects some syntax, such as headings; show
-    // those as typed, keeping their links. Plain text with web addresses is
-    // styled too, so the addresses can be clicked.
-    let as_plain = || {
-        links::plain_with_links(&message.body)
-            .and_then(|markdown| slint::StyledText::from_markdown(&markdown).ok())
-    };
+    // Plain text with web addresses is styled too, so the addresses can be clicked.
     let (formatted, styled) = if message.formatted {
-        let styled = slint::StyledText::from_markdown(&links::linkify(&message.body))
-            .ok()
-            .or_else(as_plain)
-            .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body));
-        (true, styled)
+        (true, markdown(&message.body))
     } else {
-        match as_plain() {
+        match plain_with_links(&message.body) {
             Some(styled) => (true, styled),
             None => (false, slint::StyledText::default()),
         }

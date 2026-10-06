@@ -76,6 +76,18 @@ no mentions, spam isn't marked unread, and Talk never opens a request on its
 own when it picks a conversation. Forwarding, typing, desktop notifications,
 DM calls and starting a new DM are still open.
 
+Clicking someone in a channel's member list shows their profile in a small
+card beside it, which "View full profile" enlarges into a centred one;
+right-clicking a DM and choosing "Profile" opens the full one. Talk fetches it
+from `GET /users/{id}/profile` with the open server's id, so the server's
+nickname, avatar, banner, bio and pronouns win over the person's own, and the
+card lists their roles in role order, when they joined Discord and the server,
+and the servers and friends the account shares with them. Profiles are kept for
+five minutes, at most 32 of them. Presence and activity come from the member
+list, since the profile doesn't carry them. When Discord refuses, the card
+keeps what the member list knew and says so. Matrix members and one-to-one
+Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
+
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,
 shows their servers, channels and DMs, and sends and receives messages. This is

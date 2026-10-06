@@ -599,6 +599,7 @@ impl Matrix {
             Command::Voice(_)
             | Command::MarkDiscordRead { .. }
             | Command::AnswerRequest { .. }
+            | Command::Profile { .. }
             | Command::Pictures(_) => {}
         }
         true
@@ -700,13 +701,23 @@ async fn room_index(client: &Client) -> RoomIndex {
         .into_iter()
         .filter(|room| !room.is_space())
     {
+        let direct = room.is_direct().await.unwrap_or(false);
+        // A DM's other person, when it's with exactly one Matrix user.
+        let targets = room.direct_targets();
+        let person = match (direct, targets.len()) {
+            (true, 1) => targets
+                .iter()
+                .map(ToString::to_string)
+                .find(|target| target.starts_with('@')),
+            _ => None,
+        };
         result.push(ChatRoom {
             id: room.room_id().to_string(),
             name: room
                 .cached_display_name()
                 .map(|name| name.to_string())
                 .unwrap_or_else(|| room.room_id().to_string()),
-            direct: room.is_direct().await.unwrap_or(false),
+            direct,
             voice: room.is_call(),
             encrypted: room.encryption_state().is_encrypted(),
             members: room.joined_members_count(),
@@ -719,6 +730,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             read_only: false,
             category: String::new(),
             request: false,
+            person,
             people: vec![],
             avatar: None,
         });

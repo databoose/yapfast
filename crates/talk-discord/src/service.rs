@@ -5,8 +5,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
-    time::Duration,
+    sync::{Arc, Mutex, RwLock},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
@@ -18,6 +18,7 @@ use crate::{
     gateway::{Closed, Gateway},
     member_list::{self, ListedMember, MemberList, Presence},
     message::{self, Message, Names},
+    profile::{self, Profile},
     ready::{self, PRIVATE, Private, Server},
     stream::{self, Opening, StreamServer},
     unread::Unreads,
@@ -67,6 +68,8 @@ pub struct Conversation {
     pub request: bool,
     /// A request Discord thinks is spam.
     pub spam: bool,
+    /// The other person in a DM; none in a group.
+    pub person: Option<String>,
     pub unread: bool,
     /// Unread messages, as every message in a DM counts as a mention.
     pub mentions: u64,
@@ -194,9 +197,22 @@ pub struct Discord {
     live: broadcast::Sender<Live>,
     api: Arc<Api>,
     names: Arc<RwLock<Names>>,
+    /// Profiles fetched lately, oldest first.
+    profiles: Arc<Mutex<Vec<Kept>>>,
+}
+
+/// A profile fetched lately, for a user in a server.
+struct Kept {
+    user: String,
+    guild: String,
+    at: Instant,
+    profile: Profile,
 }
 
 const LIVE_BACKLOG: usize = 256;
+/// Profiles are fetched again after this long; Discord limits how often.
+const PROFILE_AGE: Duration = Duration::from_secs(5 * 60);
+const PROFILES: usize = 32;
 
 impl Discord {
     /// Connects on the current Tokio runtime and keeps reconnecting until
@@ -227,6 +243,7 @@ impl Discord {
             live,
             api,
             names,
+            profiles: Arc::default(),
         })
     }
 
@@ -333,6 +350,42 @@ impl Discord {
 
     pub async fn delete(&self, channel: &str, id: &str) -> Result<()> {
         self.api.delete(channel, id).await
+    }
+
+    /// A user's profile, in a server or with [`PRIVATE`] outside any. One
+    /// fetched in the last few minutes is given again.
+    pub async fn profile(&self, guild: &str, user: &str) -> Result<Profile> {
+        let kept = |kept: &&Kept| kept.user == user && kept.guild == guild;
+        if let Some(fresh) = self
+            .lock_profiles()
+            .iter()
+            .filter(kept)
+            .find(|fresh| fresh.at.elapsed() < PROFILE_AGE)
+        {
+            return Ok(fresh.profile.clone());
+        }
+        let value = self.api.profile(user, server(guild)).await?;
+        self.write_names().learn_user(&value["user"]);
+        let profile = profile::parse(&value, server(guild))
+            .ok_or_else(|| anyhow!("could not understand Discord's answer"))?;
+        let mut profiles = self.lock_profiles();
+        profiles.retain(|old| !kept(&old));
+        profiles.push(Kept {
+            user: user.to_owned(),
+            guild: guild.to_owned(),
+            at: Instant::now(),
+            profile: profile.clone(),
+        });
+        if profiles.len() > PROFILES {
+            profiles.remove(0);
+        }
+        Ok(profile)
+    }
+
+    fn lock_profiles(&self) -> std::sync::MutexGuard<'_, Vec<Kept>> {
+        self.profiles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Accepts a message request, or ignores it. The DM list changes when
@@ -1326,6 +1379,9 @@ impl Tracker {
                     people: private.recipients.len() + 1,
                     request: private.request,
                     spam: private.spam,
+                    person: (!private.group)
+                        .then(|| private.recipients.first().cloned())
+                        .flatten(),
                     unread: private.unread && !private.spam,
                     mentions: if private.request { 0 } else { private.mentions },
                 }

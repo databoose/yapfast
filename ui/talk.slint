@@ -435,6 +435,8 @@ component ChannelRow inherits Rectangle {
     /// A channel this account may not join: drawn faint.
     in property <bool> locked;
     callback clicked;
+    /// A right click, where it happened in the window.
+    callback context-menu(length, length);
     height: root.person ? 42px : 34px;
     border-radius: 6px;
     background: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : transparent;
@@ -482,7 +484,15 @@ component ChannelRow inherits Rectangle {
             }
             return reject;
         }
-        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+        pointer := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
     }
 }
 
@@ -728,6 +738,10 @@ component MemberPanel inherits Rectangle {
     in property <[MemberRow]> rows;
     /// Shown instead of the list while it loads or when it can't.
     in property <string> note;
+    /// The member whose profile card is open.
+    in property <string> selected;
+    /// A member was clicked: their id, and where their row is in the window.
+    callback open-profile(string, length);
     background: Theme.sidebar;
     accessible-role: list;
     accessible-label: "Members";
@@ -740,10 +754,18 @@ component MemberPanel inherits Rectangle {
                     padding-left: 8px; height: 36px;
                     Text { text: member.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
                 }
-                HorizontalLayout {
-                    height: 42px; padding-left: 8px; padding-right: 8px; spacing: 12px;
-                    accessible-role: list-item;
-                    accessible-label: member.name + ", " + member.id;
+                Rectangle {
+                  height: 42px; border-radius: 6px;
+                  background: member.id == root.selected ? Theme.active : member-pointer.has-hover ? Theme.hover : transparent;
+                  accessible-role: button;
+                  accessible-label: member.name + ", " + member.id + ", show profile";
+                  accessible-action-default => { root.open-profile(member.id, self.absolute-position.y); }
+                  member-pointer := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.open-profile(member.id, self.absolute-position.y); }
+                  }
+                  HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; spacing: 12px;
                     // Offline Discord members are faded, as in Discord.
                     Middle {
                         Rectangle {
@@ -763,11 +785,165 @@ component MemberPanel inherits Rectangle {
                             opacity: member.presence == "offline" ? 0.5 : 1;
                         }
                     }
+                  }
                 }
             }
             if root.note != "": HorizontalLayout { padding: 8px; Label { text: root.note; } }
             Rectangle { vertical-stretch: 1; }
         }
+    }
+}
+
+export struct ProfileRole { name: string, color: color, has-color: bool }
+/// A profile card's roles a row at a time, laid out to fit the card.
+export struct ProfileRoleRow { roles: [ProfileRole] }
+export struct ProfileData {
+    id: string, name: string, initial: string, tint: color, picture: image,
+    /// A Discord username or Matrix ID, then pronouns when they give them.
+    handle: string,
+    /// The banner picture, else its colour.
+    banner: image, accent: color, has-accent: bool,
+    /// As in MemberRow.
+    presence: string, activity: string,
+    bio: styled-text, has-bio: bool,
+    role-rows: [ProfileRoleRow], role-rows-large: [ProfileRoleRow],
+    /// Dates: on Discord since, and in this server since.
+    created: string, joined: string,
+    servers: [string], friends: [string],
+    /// Loading, or why there's no more.
+    note: string,
+}
+
+component ProfileHeading inherits Text {
+    color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+}
+
+// A person's profile: a card beside the member list, or large over the
+// window, where it scrolls once it's taller than the window allows.
+component ProfileCard inherits Rectangle {
+    in property <ProfileData> data;
+    in property <bool> large;
+    /// The tallest the card may be.
+    in property <length> limit: 100000px;
+    callback enlarge;
+    callback close;
+    callback open-link(string);
+    property <length> banner-height: root.large ? 210px : 105px;
+    property <length> avatar-size: root.large ? 120px : 80px;
+    property <length> pad: root.large ? 24px : 16px;
+    height: min(body.preferred-height, root.limit);
+    background: Theme.sidebar;
+    border-radius: 12px; border-width: 1px; border-color: Theme.edge;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    accessible-role: groupbox;
+    accessible-label: root.data.name + "'s profile";
+    // Clicks on the card stay on it, instead of closing it.
+    TouchArea { }
+    Rectangle {
+        border-radius: 12px; clip: true;
+        ScrollView {
+            body := VerticalLayout {
+                padding-bottom: root.pad; spacing: 0px;
+                // The banner, with the avatar hanging over its lower edge.
+                Rectangle {
+                    height: root.banner-height + root.avatar-size / 2 + 8px;
+                    Rectangle {
+                        y: 0px; height: root.banner-height;
+                        background: root.data.has-accent ? root.data.accent : Theme.raised;
+                        if root.data.banner.width > 0: Image {
+                            width: parent.width; height: parent.height; source: root.data.banner; image-fit: cover;
+                        }
+                    }
+                    Rectangle {
+                        x: root.pad - 6px; y: root.banner-height - root.avatar-size / 2 - 6px;
+                        width: root.avatar-size + 12px; height: self.width; border-radius: self.width / 2;
+                        background: Theme.sidebar;
+                        Avatar { size: root.avatar-size; initial: root.data.initial; tint: root.data.tint; picture: root.data.picture; }
+                        if root.data.presence != "" && root.data.presence != "offline": StatusDot {
+                            x: parent.width - self.width - (root.large ? 14px : 10px); y: parent.height - self.height - (root.large ? 14px : 10px);
+                            presence: root.data.presence; ring: Theme.sidebar;
+                        }
+                        if !root.large: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
+                    }
+                }
+                VerticalLayout {
+                    padding-left: root.pad; padding-right: root.pad; spacing: 16px;
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text: root.data.name; color: Theme.text; font-size: root.large ? 26px : 20px; font-weight: 700;
+                            overflow: elide;
+                            if !root.large: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
+                        }
+                        if root.data.handle != "": Text { text: root.data.handle; color: Theme.secondary; font-size: 14px; font-weight: 500; overflow: elide; }
+                        if root.data.activity != "": Text {
+                            text: root.data.activity; color: Theme.secondary; font-size: 14px;
+                            wrap: word-wrap; overflow: elide; max-height: 40px;
+                        }
+                    }
+                    if root.data.has-bio: VerticalLayout {
+                        spacing: 6px;
+                        ProfileHeading { text: "ABOUT ME"; }
+                        // The card shows the start; the full profile shows it all.
+                        Rectangle {
+                            clip: true; max-height: root.large ? 100000px : 110px;
+                            VerticalLayout {
+                                StyledText {
+                                    text: root.data.bio; default-color: Theme.text; link-color: Theme.link;
+                                    link-clicked(link) => { root.open-link(link); }
+                                }
+                            }
+                        }
+                    }
+                    if root.data.created != "" || root.data.joined != "": VerticalLayout {
+                        spacing: 6px;
+                        ProfileHeading { text: "MEMBER SINCE"; }
+                        HorizontalLayout {
+                            spacing: 24px; alignment: start;
+                            if root.data.created != "": VerticalLayout {
+                                Text { text: root.data.created; color: Theme.text; font-size: 14px; font-weight: 500; }
+                                Text { text: "On Discord"; color: Theme.muted; font-size: 12px; }
+                            }
+                            if root.data.joined != "": VerticalLayout {
+                                Text { text: root.data.joined; color: Theme.text; font-size: 14px; font-weight: 500; }
+                                Text { text: "In this server"; color: Theme.muted; font-size: 12px; }
+                            }
+                        }
+                    }
+                    if (root.large ? root.data.role-rows-large : root.data.role-rows).length > 0: VerticalLayout {
+                        spacing: 6px;
+                        ProfileHeading { text: "ROLES"; }
+                        for row in (root.large ? root.data.role-rows-large : root.data.role-rows): HorizontalLayout {
+                            spacing: 4px; alignment: start;
+                            for role in row.roles: Rectangle {
+                                height: 24px; border-radius: 4px; background: Theme.raised;
+                                HorizontalLayout {
+                                    padding-left: 8px; padding-right: 8px; spacing: 6px;
+                                    Middle { Rectangle { width: 10px; height: 10px; border-radius: 5px; background: role.has-color ? role.color : Theme.faint; } }
+                                    Text { text: role.name; color: Theme.secondary; font-size: 13px; font-weight: 500; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+                    if root.large && root.data.servers.length > 0: VerticalLayout {
+                        spacing: 6px;
+                        ProfileHeading { text: "MUTUAL SERVERS — " + root.data.servers.length; }
+                        for server in root.data.servers: Text { text: server; color: Theme.secondary; font-size: 15px; font-weight: 500; overflow: elide; }
+                    }
+                    if root.large && root.data.friends.length > 0: VerticalLayout {
+                        spacing: 6px;
+                        ProfileHeading { text: "MUTUAL FRIENDS — " + root.data.friends.length; }
+                        for friend in root.data.friends: Text { text: friend; color: Theme.secondary; font-size: 15px; font-weight: 500; overflow: elide; }
+                    }
+                    if root.data.note != "": Text { text: root.data.note; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                    if !root.large: ActionButton { text: "View full profile"; small: true; clicked => { root.enlarge(); } }
+                }
+            }
+        }
+    }
+    if root.large: Rectangle {
+        x: parent.width - 44px; y: 10px; width: 34px; height: 34px; border-radius: 17px; background: #00000080;
+        IconButton { icon: @image-url("icons/x.svg"); label: "Close profile"; tint: #ffffff; clicked => { root.close(); } }
     }
 }
 
@@ -816,6 +992,8 @@ export struct RoomRow {
     picture: image, discord: bool,
     /// Listed but not open to join, such as a Discord channel the account's roles keep it out of.
     locked: bool,
+    /// A one-to-one DM, whose other person has a profile.
+    person: bool,
     /// Who is in a Discord voice channel, shown without joining it.
     people: [PersonRow],
 }
@@ -937,6 +1115,18 @@ export component TalkWindow inherits Window {
     /// The forward dialog, open while Talk forwards a message of the open room.
     in property <bool> forward-open;
     /// The image viewer: the image, its full size in pixels, and what to say about it.
+    /// The open profile card: beside the member list, or large over the window.
+    in property <bool> profile-open;
+    in property <bool> profile-large;
+    in property <ProfileData> profile;
+    /// Where the member whose card is open is listed.
+    property <length> profile-y;
+    /// The member whose card is beside the list, highlighted in it.
+    in property <string> profile-member;
+    callback show-profile(string);
+    callback show-dm-profile(string);
+    callback enlarge-profile();
+    callback close-profile();
     in property <bool> viewer-open;
     in property <image> viewer-image;
     in property <int> viewer-width;
@@ -1310,6 +1500,25 @@ export component TalkWindow inherits Window {
     property <MessageRow> menu-message;
     property <string> menu-item: menu-open ? root.menu-message.item : "";
     property <bool> menu-open: message-menu.is-open;
+    // The DM whose menu is open.
+    property <string> menu-room;
+    room-menu := PopupWindow {
+        width: 200px; height: room-menu-content.preferred-height;
+        x: max(8px, min(root.width - self.width - 8px, root.anchor-x));
+        y: root.anchor-y + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            room-menu-content := VerticalLayout {
+                padding: 6px;
+                MenuItem {
+                    text: "Profile"; icon: @image-url("icons/user.svg");
+                    clicked => { root.show-dm-profile(root.menu-room); room-menu.close(); }
+                }
+            }
+        }
+    }
     function open-menu(message: MessageRow) {
         root.menu-message = message;
         message-menu.show();
@@ -1584,6 +1793,14 @@ export component TalkWindow inherits Window {
                                             picture: room.picture; discord: room.discord;
                                             selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                                             clicked => { root.select-room(room.id); }
+                                            // A DM's menu offers its other person's profile.
+                                            context-menu(x, y) => {
+                                                if room.person {
+                                                    root.anchor(x, y, 0px, 0px, true);
+                                                    root.menu-room = room.id;
+                                                    room-menu.show();
+                                                }
+                                            }
                                         }
                                         // Discord reports who is in every voice channel; Matrix
                                         // only shows the call Talk is in, below.
@@ -2311,7 +2528,10 @@ export component TalkWindow inherits Window {
                             }
                         }
                     }
-                    if root.members-docked: MemberPanel { width: 240px; rows: root.roster; note: root.roster-note; }
+                    if root.members-docked: MemberPanel {
+                        width: 240px; rows: root.roster; note: root.roster-note; selected: root.profile-member;
+                        open-profile(id, y) => { root.profile-y = y; root.show-profile(id); }
+                    }
                 }
             }
             // The header casts a soft shadow over the conversation.
@@ -2404,6 +2624,46 @@ export component TalkWindow inherits Window {
     // An image shown large over everything. Arrow keys or the side buttons
     // step through the message's images; Escape, the close button or a click
     // outside the image closes it.
+    // A member's card, beside the member list. Escape or a click outside closes it.
+    if root.profile-open && !root.profile-large: Rectangle {
+        TouchArea { clicked => { root.close-profile(); } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-profile(); return accept; }
+                return reject;
+            }
+        }
+        ProfileCard {
+            width: 300px; limit: root.height - 16px;
+            x: root.width - 240px - 8px - self.width;
+            y: max(8px, min(root.height - self.height - 8px, root.profile-y - 16px));
+            data: root.profile;
+            enlarge => { root.enlarge-profile(); }
+            close => { root.close-profile(); }
+            open-link(link) => { root.open-link(link); }
+        }
+    }
+    // A full profile over the window, as the viewer shows images.
+    if root.profile-open && root.profile-large: Rectangle {
+        background: #000000b3;
+        TouchArea { clicked => { root.close-profile(); } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-profile(); return accept; }
+                return reject;
+            }
+        }
+        ProfileCard {
+            large: true;
+            width: min(600px, root.width - 64px); limit: root.height - 64px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            data: root.profile;
+            close => { root.close-profile(); }
+            open-link(link) => { root.open-link(link); }
+        }
+    }
     if root.viewer-open: Rectangle {
         background: #000000e6;
         accessible-role: groupbox;

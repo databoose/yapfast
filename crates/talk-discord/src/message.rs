@@ -511,8 +511,26 @@ impl Names {
 
 /// A Unix time as `2026-10-06 14:05 UTC`.
 fn date_time(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
+    let (year, month, day) = civil(seconds.div_euclid(86_400));
     let minutes = seconds.rem_euclid(86_400) / 60;
+    format!(
+        "{year}-{month:02}-{day:02} {:02}:{:02} UTC",
+        minutes / 60,
+        minutes % 60
+    )
+}
+
+/// A day in Unix milliseconds as profiles show it: `6 Oct 2026`.
+pub fn date(ms: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (year, month, day) = civil((ms / 86_400_000) as i64);
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+}
+
+/// The year, month and day of a count of days since the Unix epoch.
+fn civil(days: i64) -> (i64, i64, i64) {
     // Howard Hinnant's days-to-civil algorithm.
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -523,11 +541,7 @@ fn date_time(seconds: i64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year}-{month:02}-{day:02} {:02}:{:02} UTC",
-        minutes / 60,
-        minutes % 60
-    )
+    (year, month, day)
 }
 
 #[cfg(test)]

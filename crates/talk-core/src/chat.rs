@@ -41,6 +41,8 @@ pub struct ChatRoom {
     /// A Discord message request: readable, but answered by accepting or
     /// ignoring it before replying.
     pub request: bool,
+    /// The other person in a one-to-one DM: their Discord user id or Matrix ID.
+    pub person: Option<String>,
     /// Who is in a Discord voice channel, known without joining it.
     pub people: Vec<VoicePerson>,
     /// The address of a Discord DM's picture: the other person's avatar or
@@ -79,6 +81,44 @@ pub enum Role {
     Admin,
     Moderator,
     Member,
+}
+
+/// A person's profile, as their profile card shows it. Matrix gives what the
+/// member list knows; Discord adds the rest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Profile {
+    /// Their Discord user id or Matrix ID, as in [`ChatMember::id`].
+    pub id: String,
+    pub name: String,
+    /// Their Discord username or Matrix ID.
+    pub handle: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// The address of their banner, and its colour when there's no picture.
+    pub banner: Option<String>,
+    pub accent: Option<u32>,
+    pub pronouns: String,
+    /// Their "About me", as Markdown.
+    pub bio: String,
+    pub presence: Option<Presence>,
+    pub activity: Option<String>,
+    /// Their roles, highest first: Discord roles in this server, or Matrix
+    /// room roles above member.
+    pub roles: Vec<ProfileRole>,
+    /// When they made their Discord account, as a date.
+    pub created: Option<String>,
+    /// When they joined this server, as a date.
+    pub joined: Option<String>,
+    /// The servers and friends this account shares with them.
+    pub servers: Vec<String>,
+    pub friends: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRole {
+    pub name: String,
+    /// Its RGB colour, for a coloured Discord role.
+    pub color: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -277,6 +317,12 @@ pub enum Command {
         room: String,
         accept: bool,
     },
+    /// Fetch a Discord user's profile, as a member of a room's server or as
+    /// the other person in a DM. It comes back as [`Event::Profile`].
+    Profile {
+        room: String,
+        user: String,
+    },
     /// Download server icons and avatars by address. Each that arrives comes
     /// back as [`Event::Picture`]; one that fails doesn't.
     Pictures(Vec<String>),
@@ -288,6 +334,11 @@ pub enum Command {
 
 pub enum Event {
     Voice(voice::State),
+    /// A profile [`Command::Profile`] asked for, or why Discord didn't give it.
+    Profile {
+        user: String,
+        result: Result<Profile, String>,
+    },
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(talk_discord::service::Snapshot),
@@ -546,6 +597,7 @@ pub async fn run(
                     // Discord commands never reach Matrix.
                     Command::MarkDiscordRead { .. }
                     | Command::AnswerRequest { .. }
+                    | Command::Profile { .. }
                     | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
                     command => {

@@ -113,6 +113,18 @@ impl Api {
             .await
     }
 
+    /// A user's profile, with what they share with this account, and their
+    /// profile in `guild`.
+    pub async fn profile(&self, user: &str, guild: Option<&str>) -> Result<Value> {
+        let mut path = format!(
+            "/users/{user}/profile?with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
+        );
+        if let Some(guild) = guild {
+            path.push_str(&format!("&guild_id={guild}"));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
     /// Accepts a message request, which makes it an ordinary DM.
     pub async fn accept_request(&self, channel: &str) -> Result<()> {
         let path = format!("/channels/{channel}/recipients/@me");

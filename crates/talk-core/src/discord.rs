@@ -27,6 +27,9 @@ pub const SPAM: &str = "Spam";
 /// Icons and avatars are small; anything larger isn't one.
 #[cfg(feature = "discord")]
 const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
+/// Profile banners, at the full profile's width; Discord's are 5:2.
+#[cfg(feature = "discord")]
+const BANNER_SIZE: (u32, u32) = (600, 240);
 /// The size Discord serves them at; a larger one is shrunk to it.
 #[cfg(feature = "discord")]
 const PICTURE_SIZE: u32 = 128;
@@ -81,6 +84,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
             }
             .into(),
             request: dm.request,
+            person: dm.person.clone(),
             people: vec![],
             avatar: dm.avatar.clone(),
         })
@@ -126,6 +130,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     read_only: false,
                     category,
                     request: false,
+                    person: None,
                     people: snapshot
                         .voice
                         .get(&channel.id)
@@ -162,6 +167,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     read_only: channel.access == Access::Locked,
                     category,
                     request: false,
+                    person: None,
                     people: vec![],
                     avatar: None,
                 }
@@ -219,10 +225,14 @@ impl Pictures {
                         return;
                     }
                 };
-                let decoded = tokio::task::spawn_blocking(move || {
-                    chat::decode_picture(&data, PICTURE_SIZE, PICTURE_SIZE)
-                })
-                .await;
+                let (width, height) = if url.contains("/banners/") {
+                    BANNER_SIZE
+                } else {
+                    (PICTURE_SIZE, PICTURE_SIZE)
+                };
+                let decoded =
+                    tokio::task::spawn_blocking(move || chat::decode_picture(&data, width, height))
+                        .await;
                 match decoded {
                     Ok(Some(picture)) => {
                         let _ = events.send(Event::Picture {
