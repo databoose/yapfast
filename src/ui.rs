@@ -365,6 +365,9 @@ struct Adapter {
     pictures_seen: usize,
     /// The viewer's image, converted for Slint while it shows.
     viewer_image: Option<(Arc<Picture>, slint::Image)>,
+    /// The size the viewer opened an image at, by item and attachment, kept
+    /// so the full image replaces the preview without the image moving.
+    viewer_size: Option<(String, usize, u32, u32)>,
     /// One open or save dialog at a time; dropping it cancels the dialog's task.
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
@@ -414,6 +417,7 @@ impl Adapter {
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 viewer_image: None,
+                viewer_size: None,
                 dialog: None,
                 meter: None,
             })
@@ -547,6 +551,7 @@ impl Adapter {
         window.set_viewer_open(viewing.is_some());
         let Some((viewer, message, attachment)) = viewing else {
             self.viewer_image = None;
+            self.viewer_size = None;
             return;
         };
         let loaded = viewer.pictures.get(&viewer.index);
@@ -562,12 +567,26 @@ impl Adapter {
             }
             .into(),
         );
-        // The full image's size from the start, so it doesn't jump on arrival.
-        let (width, height) = match (full, attachment.dimensions, &attachment.preview) {
-            (Some(full), _, _) => (full.width, full.height),
-            (None, Some((width, height)), _) => fit(width, height),
-            (None, None, Some(preview)) => (preview.width, preview.height),
-            _ => (1, 1),
+        // The full image's size from the start where it's known, else the
+        // preview's. Either way the image keeps the size it opened at, so the
+        // full image only sharpens it on arrival.
+        let (width, height) = match &self.viewer_size {
+            Some((item, index, width, height))
+                if *item == viewer.item && *index == viewer.index =>
+            {
+                (*width, *height)
+            }
+            _ => {
+                let size = match (full, attachment.dimensions, &attachment.preview) {
+                    (Some(full), _, _) => Some((full.width, full.height)),
+                    (None, Some((width, height)), _) => Some(fit(width, height)),
+                    (None, None, Some(preview)) => Some((preview.width, preview.height)),
+                    _ => None,
+                };
+                self.viewer_size =
+                    size.map(|(width, height)| (viewer.item.clone(), viewer.index, width, height));
+                size.unwrap_or((1, 1))
+            }
         };
         window.set_viewer_width(width as i32);
         window.set_viewer_height(height as i32);

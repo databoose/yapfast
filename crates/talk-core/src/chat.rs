@@ -381,7 +381,9 @@ pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
     decode_picture(data, VIEW_WIDTH, VIEW_HEIGHT)
 }
 
-/// Decode an image with dimension and allocation limits, shrunk to fit `width` by `height`.
+/// Decode an image with dimension and allocation limits, shrunk to fit `width`
+/// by `height`. A smaller image keeps its size: enlarging it would blur it
+/// and cost memory, and the viewer sizes images from their own dimensions.
 pub(crate) fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
@@ -391,7 +393,13 @@ pub(crate) fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Pic
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let picture = reader.decode().ok()?.thumbnail(width, height).into_rgba8();
+    let decoded = reader.decode().ok()?;
+    let picture = if decoded.width() > width || decoded.height() > height {
+        decoded.thumbnail(width, height)
+    } else {
+        decoded
+    }
+    .into_rgba8();
     Some(Picture {
         width: picture.width(),
         height: picture.height(),
@@ -577,6 +585,27 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        image::RgbaImage::new(width, height)
+            .write_to(
+                &mut std::io::Cursor::new(&mut data),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        data
+    }
+
+    #[test]
+    fn pictures_shrink_to_fit_but_never_grow() {
+        let small = decode_view(&png(800, 500)).unwrap();
+        assert_eq!((small.width, small.height), (800, 500));
+        let large = decode_view(&png(3840, 1200)).unwrap();
+        assert_eq!((large.width, large.height), (1920, 600));
+        let preview = decode_preview(&png(800, 500)).unwrap();
+        assert_eq!((preview.width, preview.height), (360, 225));
+    }
 
     #[test]
     fn reply_snippets_are_the_first_line_without_markdown() {
