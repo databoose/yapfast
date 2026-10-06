@@ -352,6 +352,17 @@ impl Drop for Connection {
 }
 
 fn generate_url(endpoint: &str) -> Result<Url> {
+    // Talk: a test server on this machine may name a plain WebSocket address,
+    // which Discord's endpoints never do.
+    if let Some(local) = endpoint.strip_prefix("ws://") {
+        let url = Url::parse(&format!("ws://{local}/?v={VOICE_GATEWAY_VERSION}"))
+            .or(Err(Error::EndpointUrl))?;
+        return match url.host() {
+            Some(url::Host::Ipv4(ip)) if ip.is_loopback() => Ok(url),
+            Some(url::Host::Domain("localhost")) => Ok(url),
+            _ => Err(Error::EndpointUrl),
+        };
+    }
     Url::parse(&format!("wss://{endpoint}/?v={VOICE_GATEWAY_VERSION}")).or(Err(Error::EndpointUrl))
 }
 

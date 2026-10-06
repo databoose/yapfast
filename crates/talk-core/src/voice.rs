@@ -3,6 +3,7 @@
 //! this module runs whichever one is joined, and lists the devices both use.
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     thread,
 };
 
@@ -44,6 +45,68 @@ pub struct Participant {
     pub connected: bool,
     /// Why audio may not flow with this participant, if Talk can tell.
     pub problem: Option<String>,
+    /// Sharing their screen.
+    pub streaming: bool,
+    /// The address of their avatar; see [`crate::chat::Command::Pictures`].
+    pub avatar: Option<String>,
+}
+
+/// Sharing this account's screen in the call.
+#[derive(Clone, Debug)]
+pub struct Sharing {
+    pub phase: SharePhase,
+    /// What's being shared, as the UI previews it.
+    pub frames: Arc<crate::frames::Frames>,
+}
+
+/// Watching someone's stream in the call.
+#[derive(Clone, Debug)]
+pub struct Watching {
+    /// Their user id, as in [`Participant::id`].
+    pub user: String,
+    pub name: String,
+    /// Until the first picture shows.
+    pub opening: bool,
+    /// Their stream's pictures, once the worker has started.
+    pub frames: Option<Arc<crate::frames::Frames>>,
+}
+
+/// How large a shared screen is sent, as Discord's client offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolution {
+    P720,
+    #[default]
+    P1080,
+    /// The screen's own size, up to 4K.
+    Source,
+}
+
+/// How a screen is shared: chosen before going live, and remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct StreamQuality {
+    pub resolution: Resolution,
+    /// Frames a second: 15, 30 or 60.
+    pub fps: u32,
+}
+
+impl Default for StreamQuality {
+    fn default() -> Self {
+        Self {
+            resolution: Resolution::P1080,
+            fps: 30,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharePhase {
+    /// The system's dialog is asking what to share.
+    Choosing,
+    /// Captured, while Discord starts the stream and the video connects.
+    Starting,
+    /// Others in the call can watch.
+    Live,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +125,10 @@ pub struct State {
     /// A problem that leaves the call usable, such as a participant who has
     /// not received this device's audio key.
     pub warning: Option<String>,
+    pub sharing: Option<Sharing>,
+    pub watching: Option<Box<Watching>>,
+    /// How the next screen share is sent.
+    pub quality: StreamQuality,
 }
 
 impl Default for State {
@@ -79,6 +146,9 @@ impl Default for State {
             speaker: None,
             error: None,
             warning: None,
+            sharing: None,
+            watching: None,
+            quality: StreamQuality::default(),
         }
     }
 }
@@ -94,6 +164,8 @@ impl State {
         self.muted = true;
         self.deafened = false;
         self.warning = None;
+        self.sharing = None;
+        self.watching = None;
     }
 }
 
@@ -105,6 +177,13 @@ pub enum Command {
     Devices,
     Microphone(String),
     Speaker(String),
+    /// Share a screen or window with Discord's Go Live, at this quality,
+    /// which is remembered for next time.
+    GoLive(StreamQuality),
+    StopLive,
+    /// Watch the participant with this id's stream.
+    Watch(String),
+    StopWatching,
     /// Remove memberships this device left in voice channels, for example
     /// after Talk was killed. Ignored during a call.
     LeaveStale,
@@ -154,6 +233,7 @@ impl Controller {
             let chosen = Chosen::read(path);
             initial.microphone = chosen.microphone;
             initial.speaker = chosen.speaker;
+            initial.quality = chosen.quality;
         }
         let (states, snapshots) = watch::channel(initial.clone());
         let worker = thread::Builder::new()
@@ -308,11 +388,14 @@ async fn join(
 /// The file in Talk's data folder that remembers the chosen devices.
 pub const DEVICES: &str = "devices.json";
 
-/// The devices chosen on this machine, kept beside its other local files.
+/// The devices and stream quality chosen on this machine, kept beside its
+/// other local files.
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct Chosen {
     microphone: Option<String>,
     speaker: Option<String>,
+    #[serde(default)]
+    quality: StreamQuality,
 }
 
 impl Chosen {
@@ -328,12 +411,13 @@ impl Chosen {
         let chosen = Self {
             microphone: state.microphone.clone(),
             speaker: state.speaker.clone(),
+            quality: state.quality,
         };
         let result = serde_json::to_vec_pretty(&chosen)
             .map_err(std::io::Error::other)
             .and_then(|bytes| std::fs::write(path, bytes));
         if let Err(error) = result {
-            tracing::warn!(%error, "could not remember the chosen audio devices");
+            tracing::warn!(%error, "could not remember the chosen devices and stream quality");
         }
     }
 }
@@ -404,12 +488,24 @@ mod tests {
         let state = State {
             microphone: Some("name:USB Microphone".into()),
             speaker: Some("name:Null Output".into()),
+            quality: StreamQuality {
+                resolution: Resolution::Source,
+                fps: 60,
+            },
             ..Default::default()
         };
         Chosen::write(Some(&path), &state);
         let chosen = Chosen::read(&path);
         assert_eq!(chosen.microphone.as_deref(), Some("name:USB Microphone"));
         assert_eq!(chosen.speaker.as_deref(), Some("name:Null Output"));
+        assert_eq!(chosen.quality, state.quality);
+        // Choices saved before there was a quality to choose still load.
+        std::fs::write(
+            &path,
+            br#"{"microphone": null, "speaker": "name:Null Output"}"#,
+        )
+        .unwrap();
+        assert_eq!(Chosen::read(&path).quality, StreamQuality::default());
         std::fs::write(&path, b"not json").unwrap();
         assert!(Chosen::read(&path).speaker.is_none());
     }

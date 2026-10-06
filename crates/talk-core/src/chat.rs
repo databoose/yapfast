@@ -14,6 +14,10 @@ pub const MAX_MESSAGE_BYTES: usize = 16_000;
 pub(crate) const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 pub(crate) const PREVIEW_WIDTH: u32 = 360;
 pub(crate) const PREVIEW_HEIGHT: u32 = 270;
+/// The image viewer shows pictures up to this size, so a full-size photo
+/// costs at most about 9 MiB while it's open.
+pub const VIEW_WIDTH: u32 = 1920;
+pub const VIEW_HEIGHT: u32 = 1200;
 
 #[derive(Clone)]
 pub struct ChatRoom {
@@ -41,8 +45,12 @@ pub struct ChatRoom {
 pub struct VoicePerson {
     pub id: String,
     pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
     pub muted: bool,
     pub deafened: bool,
+    /// Sharing their screen.
+    pub streaming: bool,
 }
 
 #[derive(Clone)]
@@ -54,6 +62,8 @@ pub struct ChatServer {
     pub discord: bool,
     /// Its unread messages don't mark it in the rail; mentions still do.
     pub muted: bool,
+    /// The address of the server's icon; see [`Command::Pictures`].
+    pub icon: Option<String>,
 }
 
 /// A room's standing from its power levels: Matrix's admin is 100 and moderator 50.
@@ -70,6 +80,26 @@ pub struct ChatMember {
     /// The display name, or the user ID without one, as on the member's messages.
     pub name: String,
     pub role: Role,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// The heading Discord lists them under, with its size, such as
+    /// `Online — 12`. Matrix members are grouped by `role` instead.
+    pub group: Option<String>,
+    /// Whether they're around; Matrix members have no presence here.
+    pub presence: Option<Presence>,
+    /// The RGB colour of their name, from their highest coloured Discord role.
+    pub color: Option<u32>,
+    /// Their custom status, else what they're doing, from Discord.
+    pub activity: Option<String>,
+}
+
+/// Whether a Discord member is around, as their status dot shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    Online,
+    Idle,
+    DoNotDisturb,
+    Offline,
 }
 
 pub struct RoomIndex {
@@ -115,6 +145,8 @@ pub struct Attachment {
     pub name: String,
     pub size: Option<u64>,
     pub image: bool,
+    /// The full image's width and height, when the sender said.
+    pub dimensions: Option<(u32, u32)>,
     pub preview: Option<Arc<Picture>>,
     /// The preview could not be downloaded or decoded; the file can still be saved.
     pub preview_failed: bool,
@@ -129,6 +161,8 @@ pub struct ChatMessage {
     pub author: String,
     /// The author's Matrix user ID, which tells apart people sharing a display name.
     pub sender: String,
+    /// The address of the author's avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,
@@ -141,7 +175,9 @@ pub struct ChatMessage {
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,
-    pub attachment: Option<Attachment>,
+    /// Files and images, in the order the sender attached them. Matrix
+    /// messages carry at most one.
+    pub attachments: Vec<Attachment>,
     pub can_reply: bool,
     pub can_edit: bool,
     pub can_delete: bool,
@@ -201,10 +237,19 @@ pub enum Command {
         room: String,
         path: PathBuf,
     },
+    /// Save the attachment at `index` in an item's attachments.
     SaveAttachment {
         room: String,
         item: String,
+        index: usize,
         path: PathBuf,
+    },
+    /// Download an image attachment at viewing size; it arrives as
+    /// [`Event::Image`].
+    ViewImage {
+        room: String,
+        item: String,
+        index: usize,
     },
     /// Store a room's composer text in the encrypted session store; empty text clears it.
     SaveDraft {
@@ -217,6 +262,9 @@ pub enum Command {
         room: String,
         sync: bool,
     },
+    /// Download server icons and avatars by address. Each that arrives comes
+    /// back as [`Event::Picture`]; one that fails doesn't.
+    Pictures(Vec<String>),
     Recover(String),
     RefreshTrust,
     RetrySync,
@@ -228,6 +276,18 @@ pub enum Event {
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(talk_discord::service::Snapshot),
+    /// An image [`Command::ViewImage`] asked for, or why it can't show.
+    Image {
+        room: String,
+        item: String,
+        index: usize,
+        picture: Result<Arc<Picture>, &'static str>,
+    },
+    /// A picture [`Command::Pictures`] asked for, decoded.
+    Picture {
+        url: String,
+        picture: Arc<Picture>,
+    },
     Connected {
         user: String,
         trusted: bool,
@@ -298,6 +358,16 @@ pub fn sort_members(members: &mut [ChatMember]) {
 
 /// Decode an image with dimension and allocation limits, then shrink it for the timeline.
 pub(crate) fn decode_preview(data: &[u8]) -> Option<Picture> {
+    decode_picture(data, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+}
+
+/// Decode an image for the viewer, shrunk to fit a large window.
+pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
+    decode_picture(data, VIEW_WIDTH, VIEW_HEIGHT)
+}
+
+/// Decode an image with dimension and allocation limits, shrunk to fit `width` by `height`.
+pub(crate) fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -306,11 +376,7 @@ pub(crate) fn decode_preview(data: &[u8]) -> Option<Picture> {
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let picture = reader
-        .decode()
-        .ok()?
-        .thumbnail(PREVIEW_WIDTH, PREVIEW_HEIGHT)
-        .into_rgba8();
+    let picture = reader.decode().ok()?.thumbnail(width, height).into_rgba8();
     Some(Picture {
         width: picture.width(),
         height: picture.height(),
@@ -455,7 +521,7 @@ pub async fn run(
                         voice.command(command);
                     }
                     // Discord commands never reach Matrix.
-                    Command::MarkDiscordRead { .. } => {}
+                    Command::MarkDiscordRead { .. } | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
                     command => {
                         if !matrix.command(command, &mut voice, &events).await {

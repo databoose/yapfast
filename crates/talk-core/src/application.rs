@@ -1,9 +1,14 @@
 //! Shared client behavior. UI adapters dispatch actions and render the resulting state.
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use crate::{
     chat::{
-        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Reaction, Reply, Role,
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Picture, Reaction,
+        Reply, Role,
     },
     discord,
     voice::{self, Phase},
@@ -26,6 +31,17 @@ pub enum Navigation {
 pub struct Forwarding {
     pub item: String,
     pub sent: Vec<String>,
+}
+
+/// An image attachment shown large, and the message's other images to step to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Viewer {
+    pub item: String,
+    /// The attachment shown, by its place in the message.
+    pub index: usize,
+    /// Images at viewing size by attachment: `None` while one downloads,
+    /// else the image or why it can't show.
+    pub pictures: HashMap<usize, Option<Result<Arc<Picture>, &'static str>>>,
 }
 
 /// What the composer's next send does in a room, besides sending a new message.
@@ -51,6 +67,11 @@ pub struct AppState {
     pub sync_discord_reads: bool,
     pub switch_voice: Option<String>,
     pub account: Option<String>,
+    /// The account's name, avatar address and connection status, where the
+    /// network gives them; a Discord-only build shows Discord's.
+    pub account_name: Option<String>,
+    pub account_avatar: Option<String>,
+    pub account_status: Option<String>,
     pub preview: bool,
     pub busy: bool,
     pub trusted: bool,
@@ -59,6 +80,8 @@ pub struct AppState {
     pub notice: Option<String>,
     pub rooms: Vec<ChatRoom>,
     pub servers: Vec<ChatServer>,
+    /// Server icons and avatars that arrived, by address.
+    pub pictures: HashMap<String, Arc<Picture>>,
     pub navigation: Navigation,
     pub selected: Option<String>,
     pub room_ready: bool,
@@ -73,6 +96,8 @@ pub struct AppState {
     pub attaching: bool,
     /// The selected room's message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
+    /// The image viewer, open over the selected room.
+    pub viewer: Option<Viewer>,
     /// Changes when selecting a room, including selecting the same room to retry opening it.
     pub selection_version: u64,
     /// Changes after logout so adapters can clear their inputs and focus sign-in.
@@ -196,10 +221,20 @@ pub enum Action {
     Retry(String),
     CancelSend(String),
     Attach(PathBuf),
+    /// Save the attachment at `index` of an item.
     SaveAttachment {
         item: String,
+        index: usize,
         path: PathBuf,
     },
+    /// Show an item's image attachment large.
+    ViewImage {
+        item: String,
+        index: usize,
+    },
+    /// Show the message's next image, or with -1 its previous one, wrapping around.
+    StepImage(isize),
+    CloseImage,
     DismissNotice,
     Earlier,
     Login {
@@ -247,10 +282,89 @@ pub struct Application {
     samples: HashMap<String, Vec<ChatMessage>>,
     /// How often this device added each reaction.
     reaction_uses: HashMap<String, u32>,
+    /// Pictures asked for once; they aren't asked for again.
+    requested_pictures: HashSet<String>,
 }
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
+        let mut effects = self.dispatch_action(action);
+        effects.extend(self.request_pictures());
+        effects
+    }
+
+    pub fn apply(&mut self, event: Event) -> Vec<Effect> {
+        let mut effects = self.apply_event(event);
+        effects.extend(self.request_pictures());
+        effects
+    }
+
+    /// Downloads the viewer's image at viewing size, unless it has it or is
+    /// getting it. The preview shows until it arrives.
+    fn load_image(&mut self) -> Vec<Effect> {
+        let (Some(viewer), Some(room)) = (&mut self.state.viewer, &self.state.selected) else {
+            return vec![];
+        };
+        if self.state.preview || viewer.pictures.contains_key(&viewer.index) {
+            return vec![];
+        }
+        viewer.pictures.insert(viewer.index, None);
+        vec![Effect::Backend(Command::ViewImage {
+            room: room.clone(),
+            item: viewer.item.clone(),
+            index: viewer.index,
+        })]
+    }
+
+    /// Asks for the server icons and avatars on screen that weren't asked
+    /// for before: the rail, the people in the listed voice channels, the
+    /// call, the open timeline and its member list.
+    fn request_pictures(&mut self) -> Option<Effect> {
+        let state = &self.state;
+        let shown = state
+            .servers
+            .iter()
+            .filter_map(|server| server.icon.as_deref())
+            .chain(state.account_avatar.as_deref())
+            .chain(
+                state
+                    .rooms
+                    .iter()
+                    .filter(|room| state.in_scope(room))
+                    .flat_map(|room| &room.people)
+                    .filter_map(|person| person.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .voice
+                    .participants
+                    .iter()
+                    .filter_map(|person| person.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .members
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|member| member.avatar.as_deref()),
+            );
+        let mut wanted = Vec::new();
+        for url in shown {
+            if self.requested_pictures.insert(url.to_owned()) {
+                wanted.push(url.to_owned());
+            }
+        }
+        (!wanted.is_empty()).then_some(Effect::Backend(Command::Pictures(wanted)))
+    }
+
+    fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
             Action::Navigate(navigation) => {
                 if self.state.navigation == navigation {
@@ -476,12 +590,12 @@ impl Application {
                 let room = self.state.selected.clone().expect("selected room exists");
                 vec![Effect::Backend(Command::Attach { room, path })]
             }
-            Action::SaveAttachment { item, path } => {
+            Action::SaveAttachment { item, index, path } => {
                 if self.state.preview
                     || !self
                         .state
                         .message(&item)
-                        .is_some_and(|message| message.attachment.is_some())
+                        .is_some_and(|message| index < message.attachments.len())
                 {
                     return vec![];
                 }
@@ -489,8 +603,50 @@ impl Application {
                 vec![Effect::Backend(Command::SaveAttachment {
                     room,
                     item,
+                    index,
                     path,
                 })]
+            }
+            Action::ViewImage { item, index } => {
+                if !self
+                    .state
+                    .message(&item)
+                    .and_then(|message| message.attachments.get(index))
+                    .is_some_and(|attachment| attachment.image)
+                {
+                    return vec![];
+                }
+                self.state.viewer = Some(Viewer {
+                    item,
+                    index,
+                    pictures: HashMap::new(),
+                });
+                self.load_image()
+            }
+            Action::StepImage(step) => {
+                let Some(viewer) = &self.state.viewer else {
+                    return vec![];
+                };
+                let images: Vec<usize> = self
+                    .state
+                    .message(&viewer.item)
+                    .into_iter()
+                    .flat_map(|message| message.attachments.iter().enumerate())
+                    .filter(|(_, attachment)| attachment.image)
+                    .map(|(index, _)| index)
+                    .collect();
+                let Some(at) = images.iter().position(|index| *index == viewer.index) else {
+                    return vec![];
+                };
+                let next = images[(at as isize + step).rem_euclid(images.len() as isize) as usize];
+                if let Some(viewer) = &mut self.state.viewer {
+                    viewer.index = next;
+                }
+                self.load_image()
+            }
+            Action::CloseImage => {
+                self.state.viewer = None;
+                vec![]
             }
             Action::DismissNotice => {
                 self.state.notice = None;
@@ -633,7 +789,7 @@ impl Application {
         }
     }
 
-    pub fn apply(&mut self, event: Event) -> Vec<Effect> {
+    fn apply_event(&mut self, event: Event) -> Vec<Effect> {
         match event {
             Event::Voice(state) => self.state.voice = state,
             Event::Connected {
@@ -652,10 +808,41 @@ impl Application {
                 self.matrix_servers = index.servers;
                 return self.show_lists();
             }
+            Event::Image {
+                room,
+                item,
+                index,
+                picture,
+            } => {
+                if self.state.selected.as_ref() == Some(&room)
+                    && let Some(viewer) = &mut self.state.viewer
+                    && viewer.item == item
+                {
+                    viewer.pictures.insert(index, Some(picture));
+                }
+            }
+            Event::Picture { url, picture } => {
+                self.state.pictures.insert(url, picture);
+            }
             #[cfg(feature = "discord")]
             Event::Discord(snapshot) => {
                 self.state.discord_online =
                     snapshot.status == talk_discord::service::Status::Online;
+                // Without Matrix, the account is Discord's.
+                #[cfg(not(feature = "matrix"))]
+                {
+                    use talk_discord::service::Status;
+                    self.state.online = self.state.discord_online;
+                    if let Some(account) = &snapshot.account {
+                        self.state.account_name = Some(account.name.clone());
+                        self.state.account_avatar = Some(account.avatar.clone());
+                    }
+                    self.state.account_status = Some(match &snapshot.status {
+                        Status::Online => "Online".into(),
+                        Status::Connecting => "Connecting to Discord...".into(),
+                        Status::Offline(reason) => reason.clone(),
+                    });
+                }
                 self.discord = Some(snapshot);
                 let mut effects = self.list_discord();
                 effects.extend(self.mark_discord_read());
@@ -763,6 +950,8 @@ impl Application {
     /// Call when the backend could not accept an effect's command.
     pub fn backend_failed(&mut self, command: &Command) {
         match command {
+            // A missing picture leaves an initial; it says nothing new.
+            Command::Pictures(_) => return,
             Command::Voice(_) => {
                 self.state.voice.error =
                     Some("Voice is unavailable. Reconnect to Matrix and retry.".into());
@@ -827,6 +1016,7 @@ impl Application {
             self.state.selected = None;
             self.state.confirm_delete = None;
             self.state.forwarding = None;
+            self.state.viewer = None;
             self.state.room_ready = false;
             self.state.loading_history = false;
             self.state.notice = None;
@@ -914,6 +1104,7 @@ impl Application {
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
         self.state.forwarding = None;
+        self.state.viewer = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
         self.state.notice = None;
@@ -1035,7 +1226,7 @@ impl Application {
                 own: true,
                 body: message.body,
                 formatted: message.formatted,
-                attachment: message.attachment,
+                attachments: message.attachments,
                 ..sample_actions()
             });
             if target == source {
@@ -1147,6 +1338,7 @@ impl Application {
                 ],
                 discord: false,
                 muted: false,
+                icon: None,
             },
             ChatServer {
                 id: "coop".into(),
@@ -1158,6 +1350,7 @@ impl Application {
                 ],
                 discord: false,
                 muted: false,
+                icon: None,
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());
@@ -1331,6 +1524,8 @@ impl Application {
                             speaking: false,
                             connected: true,
                             problem: None,
+                            avatar: None,
+                            streaming: false,
                         }],
                         ..self.preview_voice()
                     };
@@ -1401,6 +1596,11 @@ fn preview_members(room: &str) -> Vec<ChatMember> {
             id: format!("@{}:preview.local", name.to_lowercase()),
             name: name.into(),
             role,
+            avatar: None,
+            group: None,
+            presence: None,
+            color: None,
+            activity: None,
         })
         .collect();
     chat::sort_members(&mut members);
@@ -1462,6 +1662,7 @@ mod tests {
                 ],
                 discord: false,
                 muted: false,
+                icon: None,
             }],
         }));
         app.apply(Event::Timeline {
@@ -1529,6 +1730,11 @@ mod tests {
             id: "@bob:test".into(),
             name: "Bob".into(),
             role: Role::Member,
+            avatar: None,
+            group: None,
+            presence: None,
+            color: None,
+            activity: None,
         };
         app.apply(Event::Members {
             room: "games".into(),
@@ -2174,6 +2380,151 @@ mod tests {
             effects.as_slice(),
             [Effect::Backend(Command::Voice(voice::Command::Join(id)))] if id == "discord:10:11"
         ));
+    }
+
+    #[test]
+    fn the_viewer_steps_through_a_messages_images() {
+        let mut app = connected();
+        let file = |name: &str, image: bool| chat::Attachment {
+            name: name.into(),
+            size: None,
+            image,
+            dimensions: None,
+            preview: None,
+            preview_failed: false,
+        };
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![ChatMessage {
+                id: "m".into(),
+                item: "e:m".into(),
+                attachments: vec![
+                    file("a.png", true),
+                    file("notes.txt", false),
+                    file("b.png", true),
+                ],
+                ..Default::default()
+            }],
+        });
+        let viewed = |effects: Vec<Effect>| -> Vec<usize> {
+            effects
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Backend(Command::ViewImage { index, .. }) => Some(index),
+                    _ => None,
+                })
+                .collect()
+        };
+        let view = |index| Action::ViewImage {
+            item: "e:m".into(),
+            index,
+        };
+        assert!(
+            viewed(app.dispatch(view(1))).is_empty(),
+            "a file isn't an image"
+        );
+        assert!(app.state.viewer.is_none());
+        assert_eq!(viewed(app.dispatch(view(0))), [0]);
+        assert_eq!(
+            viewed(app.dispatch(Action::StepImage(1))),
+            [2],
+            "the file is skipped"
+        );
+        assert!(
+            viewed(app.dispatch(Action::StepImage(1))).is_empty(),
+            "back to the first, which is already loading"
+        );
+        assert_eq!(
+            app.state.viewer.as_ref().map(|viewer| viewer.index),
+            Some(0)
+        );
+        app.dispatch(Action::StepImage(-1));
+        assert_eq!(
+            app.state.viewer.as_ref().map(|viewer| viewer.index),
+            Some(2),
+            "and around backwards"
+        );
+        app.apply(Event::Image {
+            room: "dm".into(),
+            item: "e:m".into(),
+            index: 2,
+            picture: Err("gone"),
+        });
+        assert_eq!(
+            app.state.viewer.as_ref().unwrap().pictures[&2],
+            Some(Err("gone"))
+        );
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert!(app.state.viewer.is_none(), "another room closes it");
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn asks_once_for_the_pictures_on_screen() {
+        use talk_discord::{
+            ready::{Channel, Server},
+            service::{Snapshot, Status, VoiceMember},
+        };
+        let snapshot = |member: &str| Snapshot {
+            status: Status::Online,
+            servers: vec![Server {
+                id: "10".into(),
+                name: "Test".into(),
+                icon: Some("icon.png".into()),
+                voice_channels: vec![Channel {
+                    id: "11".into(),
+                    name: "Lounge".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            voice: [(
+                "11".to_owned(),
+                vec![VoiceMember {
+                    user_id: member.into(),
+                    name: member.into(),
+                    avatar: format!("{member}.png"),
+                    muted: false,
+                    deafened: false,
+                    streaming: false,
+                }],
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let asked = |effects: Vec<Effect>| -> Vec<String> {
+            effects
+                .into_iter()
+                .flat_map(|effect| match effect {
+                    Effect::Backend(Command::Pictures(urls)) => urls,
+                    _ => vec![],
+                })
+                .collect()
+        };
+        let mut app = connected();
+        assert_eq!(
+            asked(app.apply(Event::Discord(snapshot("ann")))),
+            ["icon.png"],
+            "a voice channel's people show only in its server"
+        );
+        assert_eq!(
+            asked(app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())))),
+            ["ann.png"]
+        );
+        assert!(asked(app.apply(Event::Discord(snapshot("ann")))).is_empty());
+        assert_eq!(
+            asked(app.apply(Event::Discord(snapshot("bob")))),
+            ["bob.png"]
+        );
+        app.apply(Event::Picture {
+            url: "icon.png".into(),
+            picture: Arc::new(Picture {
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+            }),
+        });
+        assert!(app.state.pictures.contains_key("icon.png"));
     }
 
     #[test]

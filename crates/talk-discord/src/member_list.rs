@@ -1,0 +1,459 @@
+//! A channel's member list, as Discord's sidebar shows it: the people who can
+//! read the channel, under their highest hoisted role, then online, then
+//! offline. Discord sends the rows a client subscribed to in
+//! GUILD_MEMBER_LIST_UPDATE events, and keeps them current with operations
+//! on those rows.
+
+use std::collections::HashMap;
+
+use serde_json::Value;
+
+use crate::{message::Names, ready::Server};
+
+/// The rows Talk asks for, group headings included.
+pub const ROWS: usize = 100;
+
+/// One person in the list, ready to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedMember {
+    pub user_id: String,
+    pub name: String,
+    /// The address of the avatar Discord shows for them on this server.
+    pub avatar: String,
+    /// The heading they're listed under, with its size, such as `Mods — 2`.
+    pub group: String,
+    pub presence: Presence,
+    /// The RGB colour of their highest coloured role.
+    pub color: Option<u32>,
+    /// Their custom status, else what they're doing, as Discord shows it.
+    pub activity: Option<String>,
+}
+
+/// Whether someone is around, as their status dot shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Presence {
+    Online,
+    Idle,
+    DoNotDisturb,
+    /// Offline or invisible.
+    #[default]
+    Offline,
+}
+
+impl Presence {
+    fn parse(status: &Value) -> Self {
+        match status.as_str() {
+            Some("online") => Self::Online,
+            Some("idle") => Self::Idle,
+            Some("dnd") => Self::DoNotDisturb,
+            _ => Self::Offline,
+        }
+    }
+}
+
+/// What the list says about one member besides their name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Person {
+    roles: Vec<String>,
+    presence: Presence,
+    activity: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Row {
+    Group(String),
+    Member(String),
+    /// Discord invalidated it and hasn't sent it again.
+    Unknown,
+}
+
+pub struct MemberList {
+    guild: String,
+    channel: String,
+    /// Discord's id for the list, learned from the first full sync after
+    /// subscribing. Channels with the same readers share a list.
+    id: Option<String>,
+    rows: Vec<Row>,
+    /// Each group's size, which may exceed the rows Talk asked for.
+    counts: HashMap<String, u64>,
+    /// How many people can read the channel.
+    count: Option<u64>,
+    /// The listed members' roles and presence, by user id.
+    people: HashMap<String, Person>,
+}
+
+impl MemberList {
+    pub fn new(guild: String, channel: String) -> Self {
+        Self {
+            guild,
+            channel,
+            id: None,
+            rows: Vec::new(),
+            counts: HashMap::new(),
+            count: None,
+            people: HashMap::new(),
+        }
+    }
+
+    pub fn guild(&self) -> &str {
+        &self.guild
+    }
+
+    pub fn channel(&self) -> &str {
+        &self.channel
+    }
+
+    /// How many people can read the channel, once Discord has said.
+    pub fn count(&self) -> Option<u64> {
+        self.count
+    }
+
+    /// Whether Discord has sent the list yet.
+    pub fn synced(&self) -> bool {
+        self.id.is_some()
+    }
+
+    /// Applies one GUILD_MEMBER_LIST_UPDATE, learning the members it carries.
+    /// Returns whether this list changed. Updates to other lists, such as the
+    /// one of a channel shown before, are left out.
+    pub fn apply(&mut self, data: &Value, names: &mut Names) -> bool {
+        if data["guild_id"] != self.guild.as_str() {
+            return false;
+        }
+        let Some(id) = data["id"].as_str() else {
+            return false;
+        };
+        let ops = data["ops"].as_array().map_or(&[][..], Vec::as_slice);
+        match &self.id {
+            Some(known) if known != id => return false,
+            Some(_) => {}
+            None if ops.iter().any(|op| op["op"] == "SYNC") => self.id = Some(id.to_owned()),
+            None => return false,
+        }
+        if let Some(count) = data["member_count"].as_u64() {
+            self.count = Some(count);
+        }
+        self.counts = data["groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|group| Some((group["id"].as_str()?.to_owned(), group["count"].as_u64()?)))
+            .collect();
+        for op in ops {
+            let index = op["index"].as_u64().map(|index| index as usize);
+            let range = op["range"].as_array().and_then(|range| {
+                Some((
+                    range.first()?.as_u64()? as usize,
+                    range.get(1)?.as_u64()? as usize,
+                ))
+            });
+            match (op["op"].as_str(), index, range) {
+                (Some("SYNC"), _, Some((start, end))) => {
+                    let items: Vec<Row> = op["items"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|item| row(&self.guild, item, names, &mut self.people))
+                        .collect();
+                    // Fewer items than asked for: the list ends there.
+                    let ended = items.len() <= end.saturating_sub(start);
+                    if self.rows.len() < start {
+                        self.rows.resize(start, Row::Unknown);
+                    }
+                    let after = start + items.len();
+                    let tail = if ended || self.rows.len() <= after {
+                        Vec::new()
+                    } else {
+                        self.rows.split_off(after)
+                    };
+                    self.rows.truncate(start);
+                    self.rows.extend(items);
+                    self.rows.extend(tail);
+                }
+                (Some("INSERT"), Some(index), _) => {
+                    let row = row(&self.guild, &op["item"], names, &mut self.people);
+                    self.rows.insert(index.min(self.rows.len()), row);
+                }
+                (Some("UPDATE"), Some(index), _) => {
+                    let row = row(&self.guild, &op["item"], names, &mut self.people);
+                    if let Some(slot) = self.rows.get_mut(index) {
+                        *slot = row;
+                    }
+                }
+                (Some("DELETE"), Some(index), _) => {
+                    if index < self.rows.len() {
+                        self.rows.remove(index);
+                    }
+                }
+                (Some("INVALIDATE"), _, Some((start, end))) => {
+                    for row in self.rows.iter_mut().take(end + 1).skip(start) {
+                        *row = Row::Unknown;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.rows.truncate(ROWS);
+        let rows = &self.rows;
+        self.people.retain(|user, _| {
+            rows.iter()
+                .any(|row| matches!(row, Row::Member(listed) if listed == user))
+        });
+        true
+    }
+
+    /// Applies a PRESENCE_UPDATE to a listed member; returns whether it changed.
+    pub fn presence(&mut self, data: &Value) -> bool {
+        if data["guild_id"] != self.guild.as_str() {
+            return false;
+        }
+        let Some(person) = data["user"]["id"]
+            .as_str()
+            .and_then(|user| self.people.get_mut(user))
+        else {
+            return false;
+        };
+        let presence = Presence::parse(&data["status"]);
+        let activity = activity(&data["activities"]);
+        let changed = person.presence != presence || person.activity != activity;
+        person.presence = presence;
+        person.activity = activity;
+        changed
+    }
+
+    /// The members in the rows Talk has, in Discord's order.
+    pub fn members(&self, server: Option<&Server>, names: &Names) -> Vec<ListedMember> {
+        let mut members = Vec::new();
+        let mut group: Option<(&str, String)> = None;
+        for row in &self.rows {
+            match row {
+                Row::Group(id) => group = Some((id, self.heading(id, server))),
+                Row::Member(user) => {
+                    let person = self.people.get(user).cloned().unwrap_or_default();
+                    members.push(ListedMember {
+                        user_id: user.clone(),
+                        name: names
+                            .name(&self.guild, user)
+                            .unwrap_or("Discord user")
+                            .to_owned(),
+                        avatar: names.avatar(Some(&self.guild), user),
+                        group: group
+                            .as_ref()
+                            .map(|(_, heading)| heading.clone())
+                            .unwrap_or_default(),
+                        presence: person.presence,
+                        color: server.and_then(|server| server.color(&person.roles)),
+                        activity: person.activity,
+                    });
+                }
+                Row::Unknown => {}
+            }
+        }
+        members
+    }
+
+    fn heading(&self, id: &str, server: Option<&Server>) -> String {
+        let name = match id {
+            "online" => "Online",
+            "offline" => "Offline",
+            role => server
+                .and_then(|server| server.role_names.get(role))
+                .map_or("Members", String::as_str),
+        };
+        match self.counts.get(id) {
+            Some(count) => format!("{name} — {count}"),
+            None => name.to_owned(),
+        }
+    }
+}
+
+/// One row from an item: a group heading, or a member, whose name, roles and
+/// presence it learns.
+fn row(guild: &str, item: &Value, names: &mut Names, people: &mut HashMap<String, Person>) -> Row {
+    if let Some(group) = item["group"]["id"].as_str() {
+        return Row::Group(group.to_owned());
+    }
+    let member = &item["member"];
+    let Some(user) = member["user"]["id"].as_str() else {
+        return Row::Unknown;
+    };
+    names.learn_member(guild, member);
+    let presence = &member["presence"];
+    people.insert(
+        user.to_owned(),
+        Person {
+            roles: member["roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|role| role.as_str().map(str::to_owned))
+                .collect(),
+            presence: Presence::parse(&presence["status"]),
+            activity: activity(&presence["activities"]),
+        },
+    );
+    Row::Member(user.to_owned())
+}
+
+/// What Discord shows under a member's name: their custom status, else what
+/// they're playing, streaming, listening to, watching or competing in.
+pub fn activity(activities: &Value) -> Option<String> {
+    const CUSTOM: u64 = 4;
+    let activities = activities.as_array()?;
+    if let Some(custom) = activities
+        .iter()
+        .find(|activity| activity["type"] == CUSTOM)
+    {
+        // A custom emoji is an image Talk doesn't fetch; a Unicode one is text.
+        let emoji = &custom["emoji"];
+        let emoji = emoji["id"]
+            .is_null()
+            .then(|| emoji["name"].as_str())
+            .flatten();
+        let text: Vec<&str> = [emoji, custom["state"].as_str()]
+            .into_iter()
+            .flatten()
+            .filter(|part| !part.is_empty())
+            .collect();
+        if !text.is_empty() {
+            return Some(text.join(" "));
+        }
+    }
+    activities.iter().find_map(|activity| {
+        let name = activity["name"].as_str()?;
+        Some(match activity["type"].as_u64()? {
+            0 => format!("Playing {name}"),
+            1 => format!("Streaming {}", activity["details"].as_str().unwrap_or(name)),
+            2 => format!("Listening to {name}"),
+            3 => format!("Watching {name}"),
+            5 => format!("Competing in {name}"),
+            _ => return None,
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn member(id: &str, name: &str) -> Value {
+        json!({"member": {"user": {"id": id, "username": name}, "roles": [], "nick": null}})
+    }
+
+    #[test]
+    fn shows_custom_status_before_activities() {
+        assert_eq!(
+            activity(&json!([
+                {"type": 0, "name": "Factorio"},
+                {"type": 4, "name": "Custom Status", "state": "brb", "emoji": {"name": "☕", "id": null}},
+            ])),
+            Some("☕ brb".into())
+        );
+        assert_eq!(
+            activity(&json!([{"type": 4, "state": "hi", "emoji": {"name": "pog", "id": "5"}}])),
+            Some("hi".into()),
+            "custom emoji are left out"
+        );
+        assert_eq!(
+            activity(&json!([{"type": 2, "name": "Spotify"}])),
+            Some("Listening to Spotify".into())
+        );
+        assert_eq!(activity(&json!([])), None);
+    }
+
+    #[test]
+    fn follows_syncs_and_row_operations() {
+        let mut names = Names::default();
+        let mut list = MemberList::new("10".into(), "11".into());
+        let server = Server {
+            id: "10".into(),
+            role_names: HashMap::from([("20".into(), "Mods".into())]),
+            role_colors: HashMap::from([("20".into(), (1, 0x3498db))]),
+            ..Default::default()
+        };
+        assert!(
+            !list.apply(
+                &json!({"guild_id": "10", "id": "other", "ops": [{"op": "UPDATE", "index": 0, "item": member("9", "x")}]}),
+                &mut names,
+            ),
+            "an update before the sync belongs to another list"
+        );
+        assert!(list.apply(
+            &json!({
+                "guild_id": "10", "id": "everyone", "member_count": 3,
+                "groups": [{"id": "20", "count": 1}, {"id": "online", "count": 1}, {"id": "offline", "count": 1}],
+                "ops": [{"op": "SYNC", "range": [0, 99], "items": [
+                    {"group": {"id": "20", "count": 1}},
+                    {"member": {"user": {"id": "1", "username": "ann"}, "roles": ["20"],
+                                "presence": {"status": "dnd", "activities": [{"type": 0, "name": "Chess"}]}}},
+                    {"group": {"id": "online", "count": 1}}, member("2", "bob"),
+                    {"group": {"id": "offline", "count": 1}}, member("3", "cat"),
+                ]}],
+            }),
+            &mut names,
+        ));
+        assert_eq!(list.count(), Some(3));
+        let members = list.members(Some(&server), &names);
+        let shown: Vec<_> = members
+            .iter()
+            .map(|member| (member.name.as_str(), member.group.as_str(), member.presence))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("ann", "Mods — 1", Presence::DoNotDisturb),
+                ("bob", "Online — 1", Presence::Offline),
+                ("cat", "Offline — 1", Presence::Offline)
+            ]
+        );
+        assert_eq!(members[0].color, Some(0x3498db));
+        assert_eq!(members[0].activity.as_deref(), Some("Playing Chess"));
+        assert_eq!(members[1].color, None);
+        assert!(list.presence(
+            &json!({"guild_id": "10", "user": {"id": "2"}, "status": "idle", "activities": []})
+        ));
+        assert_eq!(
+            list.members(Some(&server), &names)[1].presence,
+            Presence::Idle
+        );
+        assert!(members[0].avatar.contains("/embed/avatars/"));
+
+        // Cat comes online, above Bob; the empty offline group goes.
+        assert!(list.apply(
+            &json!({
+                "guild_id": "10", "id": "everyone",
+                "groups": [{"id": "20", "count": 1}, {"id": "online", "count": 2}],
+                "ops": [
+                    {"op": "DELETE", "index": 5},
+                    {"op": "DELETE", "index": 4},
+                    {"op": "INSERT", "index": 3, "item": member("3", "cat")},
+                    {"op": "UPDATE", "index": 2, "item": {"group": {"id": "online", "count": 2}}},
+                ],
+            }),
+            &mut names,
+        ));
+        let names_shown: Vec<_> = list
+            .members(Some(&server), &names)
+            .into_iter()
+            .map(|member| (member.name, member.group))
+            .collect();
+        assert_eq!(
+            names_shown,
+            [
+                ("ann".to_owned(), "Mods — 1".to_owned()),
+                ("cat".to_owned(), "Online — 2".to_owned()),
+                ("bob".to_owned(), "Online — 2".to_owned())
+            ]
+        );
+        assert!(
+            !list.apply(
+                &json!({"guild_id": "10", "id": "123", "ops": [{"op": "SYNC", "range": [0, 99], "items": []}]}),
+                &mut names,
+            ),
+            "another channel's list is left out"
+        );
+        assert_eq!(list.members(None, &names).len(), 3);
+    }
+}

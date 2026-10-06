@@ -15,7 +15,7 @@ use slint::{
 use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, Delivery, Event, Picture, Role},
+    chat::{ChatMessage, Delivery, Event, Picture, Presence, Role},
     discord, links,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
@@ -359,6 +359,12 @@ struct Adapter {
     messages: Arc<Vec<ChatMessage>>,
     /// Rows already built for unchanged messages, so the list keeps their state.
     rows: HashMap<String, (ChatMessage, MessageRow)>,
+    /// Server icons and avatars already handed to Slint, by address.
+    pictures: HashMap<String, slint::Image>,
+    /// How many pictures had arrived when the message rows were last built.
+    pictures_seen: usize,
+    /// The viewer's image, converted for Slint while it shows.
+    viewer_image: Option<(Arc<Picture>, slint::Image)>,
     /// One open or save dialog at a time; dropping it cancels the dialog's task.
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
@@ -405,6 +411,9 @@ impl Adapter {
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
                 rows: HashMap::new(),
+                pictures: HashMap::new(),
+                pictures_seen: 0,
+                viewer_image: None,
                 dialog: None,
                 meter: None,
             })
@@ -528,7 +537,70 @@ impl Adapter {
         }
     }
 
+    /// The image viewer: the full image once it arrives, the preview until then.
+    fn show_viewer(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        let viewing = state.viewer.as_ref().and_then(|viewer| {
+            let message = state.message(&viewer.item)?;
+            Some((viewer, message, message.attachments.get(viewer.index)?))
+        });
+        window.set_viewer_open(viewing.is_some());
+        let Some((viewer, message, attachment)) = viewing else {
+            self.viewer_image = None;
+            return;
+        };
+        let loaded = viewer.pictures.get(&viewer.index);
+        let full = match loaded {
+            Some(Some(Ok(picture))) => Some(picture),
+            _ => None,
+        };
+        window.set_viewer_note(
+            match loaded {
+                Some(Some(Err(error))) => error,
+                Some(None) => "Loading the full image...",
+                _ => "",
+            }
+            .into(),
+        );
+        // The full image's size from the start, so it doesn't jump on arrival.
+        let (width, height) = match (full, attachment.dimensions, &attachment.preview) {
+            (Some(full), _, _) => (full.width, full.height),
+            (None, Some((width, height)), _) => fit(width, height),
+            (None, None, Some(preview)) => (preview.width, preview.height),
+            _ => (1, 1),
+        };
+        window.set_viewer_width(width as i32);
+        window.set_viewer_height(height as i32);
+        let shown = full.or(attachment.preview.as_ref());
+        let image = match (shown, &self.viewer_image) {
+            (Some(shown), Some((cached, image))) if Arc::ptr_eq(shown, cached) => image.clone(),
+            (Some(shown), _) => {
+                let image = picture(shown);
+                self.viewer_image = Some((shown.clone(), image.clone()));
+                image
+            }
+            (None, _) => slint::Image::default(),
+        };
+        window.set_viewer_image(image);
+        window.set_viewer_name(attachment.name.clone().into());
+        window.set_viewer_item(viewer.item.clone().into());
+        window.set_viewer_index(viewer.index as i32);
+        let images: Vec<usize> = message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.image)
+            .map(|(index, _)| index)
+            .collect();
+        let place = images.iter().position(|index| *index == viewer.index);
+        window.set_viewer_position(match place {
+            Some(place) if images.len() > 1 => format!("{} / {}", place + 1, images.len()).into(),
+            _ => SharedString::default(),
+        });
+    }
+
     fn refresh(&mut self, window: &TalkWindow) {
+        self.show_viewer(window);
         let state = &self.app.state;
         let reset = self.reset_version != state.reset_version;
         let selection_changed = self.selection_version != state.selection_version;
@@ -596,6 +668,7 @@ impl Adapter {
                     id: server.id.clone().into(),
                     name: server.name.clone().into(),
                     initial: initials(&server.name),
+                    picture: cached_picture(&mut self.pictures, state, server.icon.as_deref()),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
                     unread: state.rooms.iter().any(|room| {
                         (room.mentions > 0 || (room.unread > 0 && !server.muted))
@@ -660,11 +733,18 @@ impl Adapter {
                             .people
                             .iter()
                             .map(|person| PersonRow {
+                                id: person.id.clone().into(),
                                 name: person.name.clone().into(),
                                 initial: initial(&person.name),
                                 tint: tint(&person.id),
+                                picture: cached_picture(
+                                    &mut self.pictures,
+                                    state,
+                                    person.avatar.as_deref(),
+                                ),
                                 muted: person.muted,
                                 deafened: person.deafened,
+                                live: person.streaming,
                                 connected: true,
                                 ..Default::default()
                             })
@@ -680,13 +760,24 @@ impl Adapter {
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
         update_model(&self.models.rooms, rows);
         let account = state.account.as_deref().unwrap_or("Preview");
+        let account_name = state
+            .account_name
+            .as_deref()
+            .unwrap_or_else(|| display_part(account));
         window.set_account(account.into());
-        window.set_account_name(display_part(account).into());
-        window.set_account_initial(initial(display_part(account)));
-        window.set_account_tint(tint(display_part(account)));
+        window.set_account_name(account_name.into());
+        window.set_account_initial(initial(account_name));
+        window.set_account_tint(tint(account_name));
+        window.set_account_picture(cached_picture(
+            &mut self.pictures,
+            state,
+            state.account_avatar.as_deref(),
+        ));
         window.set_account_status(
             if state.preview {
                 "Local only"
+            } else if let Some(status) = &state.account_status {
+                status
             } else if state.online {
                 "Online"
             } else {
@@ -744,7 +835,28 @@ impl Adapter {
                     name: member.name.clone().into(),
                     initial: initial(&member.name),
                     tint: tint(&member.name),
-                    heading: if index == 0 || members[index - 1].role != member.role {
+                    picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                    presence: match member.presence {
+                        Some(Presence::Online) => "online",
+                        Some(Presence::Idle) => "idle",
+                        Some(Presence::DoNotDisturb) => "dnd",
+                        Some(Presence::Offline) => "offline",
+                        None => "",
+                    }
+                    .into(),
+                    color: member.color.map_or_else(slint::Color::default, |rgb| {
+                        slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+                    }),
+                    has_color: member.color.is_some(),
+                    activity: member.activity.clone().unwrap_or_default().into(),
+                    // Discord names its groups; Matrix members group by role.
+                    heading: if let Some(group) = &member.group {
+                        if index == 0 || members[index - 1].group.as_ref() != Some(group) {
+                            group.to_uppercase().into()
+                        } else {
+                            SharedString::default()
+                        }
+                    } else if index == 0 || members[index - 1].role != member.role {
                         let count = members
                             .iter()
                             .filter(|other| other.role == member.role)
@@ -786,7 +898,7 @@ impl Adapter {
         window.set_forward_preview(
             forwarding
                 .and_then(|forwarding| state.message(&forwarding.item))
-                .map(|message| match &message.attachment {
+                .map(|message| match message.attachments.first() {
                     Some(attachment) if message.body.is_empty() => attachment.name.clone(),
                     _ => talk_core::chat::plain_snippet(&message.body),
                 })
@@ -878,7 +990,10 @@ impl Adapter {
             }
             .into(),
         );
-        if messages_changed || selection_changed || reset {
+        // Avatars that arrived since show on rows built before them.
+        let pictures_arrived = self.pictures_seen != state.pictures.len();
+        self.pictures_seen = state.pictures.len();
+        if messages_changed || selection_changed || reset || pictures_arrived {
             if selection_changed || reset {
                 window.set_react_item(SharedString::default());
                 window.set_active_item(SharedString::default());
@@ -899,6 +1014,8 @@ impl Adapter {
                     let new_day = !day.is_empty()
                         && before.is_none_or(|before| self::day(before.timestamp) != day);
                     row.first = new_day || before.is_none_or(|before| !continues(before, message));
+                    row.picture =
+                        cached_picture(&mut self.pictures, state, message.avatar.as_deref());
                     row.day = if new_day {
                         day.into()
                     } else {
@@ -934,6 +1051,54 @@ impl Adapter {
         ));
         window.set_voice_leaving(voice.phase == Phase::Leaving);
         window.set_voice_here(voice_here);
+        window.set_can_share(
+            !state.preview
+                && voice.phase == Phase::Connected
+                && voice
+                    .room
+                    .as_deref()
+                    .is_some_and(talk_core::discord::is_discord),
+        );
+        window.set_sharing(voice.sharing.is_some());
+        window.set_share_resolution(match voice.quality.resolution {
+            voice::Resolution::P720 => 0,
+            voice::Resolution::P1080 => 1,
+            voice::Resolution::Source => 2,
+        });
+        window.set_share_fps(voice.quality.fps as i32);
+        window.set_share_live(
+            voice
+                .sharing
+                .as_ref()
+                .is_some_and(|sharing| sharing.phase == voice::SharePhase::Live),
+        );
+        window.set_share_status(
+            match voice.sharing.as_ref().map(|sharing| sharing.phase) {
+                Some(voice::SharePhase::Choosing) => "Choose what to share",
+                Some(voice::SharePhase::Starting) => "Starting your stream...",
+                Some(voice::SharePhase::Live) => "Live",
+                None => "",
+            }
+            .into(),
+        );
+        if voice.sharing.is_none() {
+            window.set_share_frame(slint::Image::default());
+        }
+        window.set_watching(voice.watching.is_some());
+        match &voice.watching {
+            Some(watching) => {
+                window.set_watch_title(format!("{}'s screen", watching.name).into());
+                window.set_watch_status(
+                    if watching.frames.is_none() {
+                        format!("Connecting to {}'s stream...", watching.name)
+                    } else {
+                        format!("Waiting for {}'s picture...", watching.name)
+                    }
+                    .into(),
+                );
+            }
+            None => window.set_watch_frame(slint::Image::default()),
+        }
         window.set_voice_channel(
             voice
                 .room
@@ -1004,6 +1169,8 @@ impl Adapter {
                     .participants
                     .iter()
                     .map(|person| PersonRow {
+                        id: person.id.clone().into(),
+                        local: person.local,
                         name: if person.local {
                             "You".into()
                         } else {
@@ -1035,6 +1202,12 @@ impl Adapter {
                         .into(),
                         muted: person.muted,
                         deafened: false,
+                        live: person.streaming,
+                        picture: cached_picture(
+                            &mut self.pictures,
+                            state,
+                            person.avatar.as_deref(),
+                        ),
                     })
                     .collect()
             } else {
@@ -1144,6 +1317,31 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind!(on_cancel_compose, Action::CancelCompose);
     bind!(on_close_forward, Action::CloseForward);
     bind!(on_dismiss_notice, Action::DismissNotice);
+    bind!(on_close_image, Action::CloseImage);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_view_image(move |item, index| {
+            if let Some(window) = weak.upgrade() {
+                let action = Action::ViewImage {
+                    item: item.into(),
+                    index: usize::try_from(index).unwrap_or_default(),
+                };
+                adapter.borrow_mut().action(&window, action);
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_step_image(move |step| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::StepImage(step as isize));
+            }
+        });
+    }
     macro_rules! bind_item {
         ($callback:ident, $action:expr) => {{
             let adapter = adapter.clone();
@@ -1249,14 +1447,15 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         });
     });
     let state = adapter.clone();
-    window.on_save_attachment(move |item| {
+    window.on_save_attachment(move |item, index| {
         let item = item.to_string();
+        let index = usize::try_from(index).unwrap_or_default();
         let name = state
             .borrow()
             .app
             .state
             .message(&item)
-            .and_then(|message| message.attachment.as_ref())
+            .and_then(|message| message.attachments.get(index))
             .map(|attachment| attachment.name.clone())
             .unwrap_or_default();
         let weak = Rc::downgrade(&state);
@@ -1278,6 +1477,7 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                         &window,
                         Action::SaveAttachment {
                             item,
+                            index,
                             path: file.path().to_owned(),
                         },
                     );
@@ -1370,6 +1570,88 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
             state
                 .borrow_mut()
                 .action(&window, Action::Voice(voice::Command::Mute(!muted)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_toggle_share(move || {
+        if let Some(window) = weak.upgrade() {
+            let command = {
+                let state = state.borrow();
+                let voice = &state.app.state.voice;
+                if voice.sharing.is_some() {
+                    voice::Command::StopLive
+                } else {
+                    voice::Command::GoLive(voice.quality)
+                }
+            };
+            state.borrow_mut().action(&window, Action::Voice(command));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_go_live(move |resolution, fps| {
+        if let Some(window) = weak.upgrade() {
+            let resolution = match resolution {
+                0 => voice::Resolution::P720,
+                2 => voice::Resolution::Source,
+                _ => voice::Resolution::P1080,
+            };
+            let quality = voice::StreamQuality {
+                resolution,
+                fps: fps.clamp(1, 60) as u32,
+            };
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::GoLive(quality)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_watch_stream(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::Watch(id.into())));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_stop_watching(move || {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::StopWatching));
+        }
+    });
+    // Frames skip the application state, which would redraw far more than the pictures.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_stream_tick(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let adapter = state.borrow();
+        let voice = &adapter.app.state.voice;
+        let image = |width, height, pixels: &[u8]| {
+            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                pixels, width, height,
+            ))
+        };
+        if let Some(frame) = voice
+            .sharing
+            .as_ref()
+            .and_then(|sharing| sharing.frames.take(image))
+        {
+            window.set_share_frame(frame);
+        }
+        if let Some(frame) = voice
+            .watching
+            .as_ref()
+            .and_then(|watching| watching.frames.as_ref())
+            .and_then(|frames| frames.take(image))
+        {
+            window.set_watch_frame(frame);
         }
     });
     let state = adapter.clone();
@@ -1578,6 +1860,40 @@ fn file_size(bytes: u64) -> String {
     }
 }
 
+/// The picture at `url` once it has arrived, converted for Slint only once.
+fn cached_picture(
+    cache: &mut HashMap<String, slint::Image>,
+    state: &talk_core::application::AppState,
+    url: Option<&str>,
+) -> slint::Image {
+    let Some(url) = url else {
+        return slint::Image::default();
+    };
+    if let Some(image) = cache.get(url) {
+        return image.clone();
+    }
+    let Some(arrived) = state.pictures.get(url) else {
+        return slint::Image::default();
+    };
+    let image = picture(arrived);
+    cache.insert(url.to_owned(), image.clone());
+    image
+}
+
+/// A full image's size once shrunk to the viewer's largest.
+fn fit(width: u32, height: u32) -> (u32, u32) {
+    use talk_core::chat::{VIEW_HEIGHT, VIEW_WIDTH};
+    let scale = f64::min(
+        1.0,
+        f64::min(
+            f64::from(VIEW_WIDTH) / f64::from(width.max(1)),
+            f64::from(VIEW_HEIGHT) / f64::from(height.max(1)),
+        ),
+    );
+    let side = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
+    (side(width), side(height))
+}
+
 fn picture(picture: &Picture) -> slint::Image {
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
         &picture.rgba,
@@ -1585,6 +1901,49 @@ fn picture(picture: &Picture) -> slint::Image {
         picture.height,
     );
     slint::Image::from_rgba8(buffer)
+}
+
+/// A message's previews laid out: one at its own size, several as square
+/// tiles two to a row, together as wide as one preview.
+fn gallery(
+    previews: &[(usize, &talk_core::chat::Attachment, &Picture)],
+) -> (Vec<ImageCell>, i32, i32) {
+    const TILE: i32 = 178;
+    const GAP: i32 = 4;
+    let cell =
+        |index: usize, attachment: &talk_core::chat::Attachment, preview: &Picture| ImageCell {
+            index: index as i32,
+            name: attachment.name.clone().into(),
+            image: picture(preview),
+            ..Default::default()
+        };
+    match previews {
+        [] => (vec![], 0, 0),
+        [(index, attachment, preview)] => {
+            let (width, height) = (preview.width as i32, preview.height as i32);
+            let image = ImageCell {
+                width,
+                height,
+                ..cell(*index, attachment, preview)
+            };
+            (vec![image], width, height)
+        }
+        _ => {
+            let cells = previews
+                .iter()
+                .enumerate()
+                .map(|(place, (index, attachment, preview))| ImageCell {
+                    x: (place % 2) as i32 * (TILE + GAP),
+                    y: (place / 2) as i32 * (TILE + GAP),
+                    width: TILE,
+                    height: TILE,
+                    ..cell(*index, attachment, preview)
+                })
+                .collect();
+            let rows = previews.len().div_ceil(2) as i32;
+            (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
+        }
+    }
 }
 
 fn message_row(message: &ChatMessage) -> MessageRow {
@@ -1607,17 +1966,34 @@ fn message_row(message: &ChatMessage) -> MessageRow {
             None => (false, slint::StyledText::default()),
         }
     };
-    let attachment = message.attachment.as_ref();
-    let preview = attachment.and_then(|attachment| attachment.preview.as_deref());
-    let detail = attachment.map(|attachment| {
-        let size = attachment.size.map(file_size);
-        match (attachment.image, attachment.preview_failed, size) {
-            (true, true, Some(size)) => format!("{size} · Preview unavailable"),
-            (true, true, None) => "Preview unavailable".into(),
-            (_, _, Some(size)) => size,
-            _ => String::new(),
-        }
-    });
+    // An image with a preview shows in the gallery; any other attachment shows a file card.
+    let previews: Vec<(usize, &talk_core::chat::Attachment, &Picture)> = message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, attachment)| Some((index, attachment, attachment.preview.as_deref()?)))
+        .collect();
+    let (images, gallery_width, gallery_height) = gallery(&previews);
+    let files: Vec<FileCell> = message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, attachment)| attachment.preview.is_none())
+        .map(|(index, attachment)| {
+            let size = attachment.size.map(file_size);
+            let detail = match (attachment.image, attachment.preview_failed, size) {
+                (true, true, Some(size)) => format!("{size} · Preview unavailable"),
+                (true, true, None) => "Preview unavailable".into(),
+                (_, _, Some(size)) => size,
+                _ => String::new(),
+            };
+            FileCell {
+                index: index as i32,
+                name: attachment.name.clone().into(),
+                detail: detail.into(),
+            }
+        })
+        .collect();
     let (delivery, can_retry, can_cancel) = match message.delivery {
         Delivery::Sent => ("", false, false),
         Delivery::Sending => ("Sending...", false, true),
@@ -1639,6 +2015,8 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         author: message.author.clone().into(),
         initial: initial(&message.author),
         tint: tint(&message.author),
+        // Set from the picture cache when the timeline is built.
+        picture: slint::Image::default(),
         body: message.body.clone().into(),
         time: message.time.clone().into(),
         // The gutter beside a grouped message shows only the clock time.
@@ -1678,17 +2056,10 @@ fn message_row(message: &ChatMessage) -> MessageRow {
                 })
                 .collect::<Vec<_>>(),
         )),
-        // An image with a preview shows the picture; any other attachment shows a file card.
-        has_attachment: attachment.is_some(),
-        attachment: attachment
-            .map(|attachment| attachment.name.clone())
-            .unwrap_or_default()
-            .into(),
-        attachment_detail: detail.unwrap_or_default().into(),
-        has_image: preview.is_some(),
-        image: preview.map(picture).unwrap_or_default(),
-        image_width: preview.map_or(0, |preview| preview.width as i32),
-        image_height: preview.map_or(0, |preview| preview.height as i32),
+        images: ModelRc::new(VecModel::from(images)),
+        gallery_width,
+        gallery_height,
+        files: ModelRc::new(VecModel::from(files)),
         delivery: delivery.into(),
         delivery_failed: message.delivery == Delivery::Failed,
         can_retry,

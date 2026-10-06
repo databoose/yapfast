@@ -3,12 +3,31 @@
 //! list, timeline, voice dock and the one-call rule cover them. The ids are
 //! known in every build; listing needs the `discord` feature.
 #[cfg(feature = "discord")]
-use talk_discord::{ready::Access, service::Snapshot};
+use std::sync::Arc;
 
 #[cfg(feature = "discord")]
-use crate::chat::{ChatRoom, ChatServer, VoicePerson};
+use talk_discord::{
+    ready::Access,
+    service::{Discord, Snapshot},
+};
+#[cfg(feature = "discord")]
+use tokio::{
+    sync::{Semaphore, mpsc::UnboundedSender},
+    task::JoinSet,
+};
+
+#[cfg(feature = "discord")]
+use crate::chat::{self, ChatRoom, ChatServer, Event, VoicePerson};
 
 const PREFIX: &str = "discord:";
+/// Icons and avatars are small; anything larger isn't one.
+#[cfg(feature = "discord")]
+const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
+/// The size Discord serves them at; a larger one is shrunk to it.
+#[cfg(feature = "discord")]
+const PICTURE_SIZE: u32 = 128;
+#[cfg(feature = "discord")]
+const PARALLEL_DOWNLOADS: usize = 4;
 
 pub fn server_id(guild: &str) -> String {
     format!("{PREFIX}{guild}")
@@ -84,8 +103,10 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                         .map(|member| VoicePerson {
                             id: member.user_id.clone(),
                             name: member.name.clone(),
+                            avatar: Some(member.avatar.clone()),
                             muted: member.muted,
                             deafened: member.deafened,
+                            streaming: member.streaming,
                         })
                         .collect(),
                 }
@@ -97,7 +118,12 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     voice: false,
                     // Discord messages aren't end-to-end encrypted.
                     encrypted: false,
-                    members: 0,
+                    // Known for the channel whose member list is on screen.
+                    members: snapshot
+                        .listed
+                        .as_ref()
+                        .filter(|(listed, _)| *listed == channel.id)
+                        .map_or(0, |(_, count)| *count),
                     unread: u64::from(channel.unread),
                     mentions: channel.mentions,
                     locked: channel.access == Access::Hidden,
@@ -114,9 +140,67 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
             channels,
             discord: true,
             muted: server.muted,
+            icon: server.icon.clone(),
         });
     }
     (rooms, servers)
+}
+
+/// Downloads server icons and avatars, and reports each as [`Event::Picture`].
+/// Dropping it cancels the downloads.
+#[cfg(feature = "discord")]
+pub(crate) struct Pictures {
+    slots: Arc<Semaphore>,
+    tasks: JoinSet<()>,
+}
+
+#[cfg(feature = "discord")]
+impl Pictures {
+    pub(crate) fn new() -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(PARALLEL_DOWNLOADS)),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    /// Starts downloading `urls`, a few at a time. A picture that fails is
+    /// logged and left out; its initial shows instead.
+    pub(crate) fn fetch(
+        &mut self,
+        discord: &Discord,
+        urls: Vec<String>,
+        events: &UnboundedSender<Event>,
+    ) {
+        while self.tasks.try_join_next().is_some() {}
+        for url in urls {
+            let (discord, events, slots) = (discord.clone(), events.clone(), self.slots.clone());
+            self.tasks.spawn(async move {
+                let Ok(_slot) = slots.acquire().await else {
+                    return;
+                };
+                let data = match discord.download(&url, MAX_PICTURE_BYTES).await {
+                    Ok(data) => data,
+                    Err(error) => {
+                        tracing::debug!(%error, %url, "could not download a Discord picture");
+                        return;
+                    }
+                };
+                let decoded = tokio::task::spawn_blocking(move || {
+                    chat::decode_picture(&data, PICTURE_SIZE, PICTURE_SIZE)
+                })
+                .await;
+                match decoded {
+                    Ok(Some(picture)) => {
+                        let _ = events.send(Event::Picture {
+                            url,
+                            picture: Arc::new(picture),
+                        });
+                    }
+                    _ => tracing::debug!(%url, "could not decode a Discord picture"),
+                }
+            });
+        }
+    }
 }
 
 #[cfg(all(test, feature = "discord"))]
@@ -196,6 +280,7 @@ mod tests {
                     channel("12", Access::Locked),
                     channel("13", Access::Hidden),
                 ],
+                icon: Some("icon.png".into()),
                 ..Default::default()
             }],
             voice: [(
@@ -203,20 +288,33 @@ mod tests {
                 vec![talk_discord::service::VoiceMember {
                     user_id: "2".into(),
                     name: "Ann".into(),
+                    avatar: "ann.png".into(),
                     muted: true,
                     deafened: false,
+                    streaming: true,
                 }],
             )]
             .into(),
             ..Default::default()
         };
+        let snapshot = Snapshot {
+            listed: Some(("21".into(), 4)),
+            ..snapshot
+        };
         let (rooms, servers) = index(&snapshot, false);
+        assert_eq!(
+            (rooms[0].members, rooms[1].members),
+            (4, 0),
+            "a listed text channel counts its readers"
+        );
         assert_eq!(rooms[0].id, "discord:10:21");
         assert_eq!(
             rooms[2].people[0].name, "Ann",
             "who is in voice shows without joining"
         );
         assert!(rooms[2].people[0].muted && rooms[3].people.is_empty());
+        assert!(rooms[2].people[0].streaming, "who is live shows");
+        assert_eq!(rooms[2].people[0].avatar.as_deref(), Some("ann.png"));
         assert!(rooms.iter().all(|room| room.category.is_empty()));
         assert!(!rooms[0].voice && !rooms[0].encrypted && !rooms[0].read_only);
         assert!(rooms[1].read_only && !rooms[1].locked);
@@ -225,6 +323,7 @@ mod tests {
         assert!(rooms[3].locked);
         assert_eq!(rooms.len(), 4, "hidden channels stay hidden");
         assert_eq!(servers[0].id, "discord:10");
+        assert_eq!(servers[0].icon.as_deref(), Some("icon.png"));
         assert_eq!(
             servers[0].channels,
             [

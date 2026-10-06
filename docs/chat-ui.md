@@ -40,7 +40,11 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   grouped under ADMINS, MODERATORS and MEMBERS by Matrix power level (100 and
   50), each by name. The first view fetches the full list from the homeserver,
   since sync loads members lazily, and membership changes refresh it. Voice
-  channels and one-to-one DMs have no member list.
+  channels and one-to-one DMs have no member list. A Discord text channel
+  lists whoever can read it, grouped as in Discord: under hoisted roles, then
+  ONLINE and OFFLINE, with counts, avatars, status dots, role colours and
+  custom statuses. Talk subscribes to the list's
+  first 100 rows while the channel is open, and Discord keeps them current.
 - Read live text messages and load history in batches of 30.
 - Recover encryption keys or recheck verification performed in another client.
 - Send only from a cross-signed device into a joined encrypted room. Existing
@@ -71,7 +75,14 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   through its send queue, up to 50 MB. Images show a decoded preview of up to
   360×270, decoded with dimension and memory limits, with a save button over the
   picture on hover. Other files show a card with a save button. Saving writes the
-  decrypted file where you choose.
+  decrypted file where you choose. A Discord message with several images shows
+  them as square tiles, two to a row.
+- Click an image to see it large over the window. It opens at the image's full
+  proportions with the preview, then sharpens when Talk has downloaded it at up
+  to 1920×1200. The left and right arrow keys or the side buttons step through
+  the message's other images, a counter shows which one it is, and Escape, the
+  close button or a click outside the image closes it. It can save the image
+  too.
 - Send through the SDK's persistent send queue. A message appears at once with
   "Sending...". After a connection problem it shows "Not sent yet" and goes out
   by itself when sync recovers. Sync now uses the SDK's offline mode, which keeps

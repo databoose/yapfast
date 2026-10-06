@@ -6,6 +6,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     num::NonZeroU64,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow, bail};
@@ -57,12 +58,14 @@ impl Call {
         let handler = Handler {
             listener,
             speakers: Mutex::default(),
+            rtcp_logged: Mutex::default(),
         };
         let handler = Arc::new(handler);
         for event in [
             CoreEvent::DriverDisconnect,
             CoreEvent::SpeakingStateUpdate,
             CoreEvent::VoiceTick,
+            CoreEvent::RtcpPacket,
         ] {
             driver.add_global_event(Event::Core(event), Shared(handler.clone()));
         }
@@ -101,6 +104,9 @@ struct Handler {
     listener: Arc<dyn Listener>,
     /// Discord user id per RTP source, learned from speaking updates.
     speakers: Mutex<HashMap<u32, u64>>,
+    /// When the voice server's RTCP was last logged: what it reports about
+    /// a working sender, to compare with a Go Live stream's.
+    rtcp_logged: Mutex<Option<Instant>>,
 }
 
 struct Shared(Arc<Handler>);
@@ -130,6 +136,17 @@ impl EventHandler for Shared {
                     .collect();
                 drop(speakers);
                 handler.listener.tick(&voices);
+            }
+            EventContext::RtcpPacket(rtcp) => {
+                let mut logged = handler.rtcp_logged.lock().unwrap();
+                if logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(5)) {
+                    *logged = Some(Instant::now());
+                    let end = rtcp.packet.len().saturating_sub(rtcp.payload_end_pad);
+                    tracing::debug!(
+                        rtcp = ?crate::rtp::rtcp_kinds(&rtcp.packet[..end]),
+                        "the voice server sent RTCP"
+                    );
+                }
             }
             EventContext::DriverDisconnect(data) => {
                 let requested = matches!(

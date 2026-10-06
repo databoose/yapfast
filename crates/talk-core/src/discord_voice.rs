@@ -1,18 +1,189 @@
 //! Discord voice: a call through songbird with Talk's own audio, from asking
 //! Discord to join until leaving.
-use std::{path::Path, time::Duration};
+use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::{Result, bail, ensure};
 use talk_discord::{
-    service::{Discord, Status},
+    service::{Discord, Live, Status},
+    stream::{self, StreamServer},
     voice::{Call as DiscordCall, live_microphone},
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::{
     discord_audio::{self, Capture, Hearing, Speakers},
-    voice::{Chosen, Command, Participant, Phase, State, devices},
+    stream_worker::{self, Report, Worker},
+    voice::{
+        Chosen, Command, Participant, Phase, SharePhase, Sharing, State, StreamQuality, Watching,
+        devices,
+    },
 };
+
+/// Going live: the worker capturing the screen, then the stream Discord
+/// started for it.
+struct Share {
+    worker: Worker,
+    reports: mpsc::UnboundedReceiver<Report>,
+    /// The stream's key once Discord was asked to start it, so stopping ends
+    /// it even before Discord answers.
+    key: Option<String>,
+    /// Uploading the stream's latest preview.
+    preview: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Share {
+    /// Starts the worker; Discord hears of the stream once there's something
+    /// to show, so a cancelled dialog shares nothing.
+    fn start(state: &mut State, quality: StreamQuality) -> Result<Self> {
+        // Tests and screenshots share colour bars instead of a screen.
+        let source = if std::env::var_os("TALK_STREAM_TEST_PATTERN").is_some() {
+            stream_worker::Source::TestPattern
+        } else {
+            stream_worker::Source::Screen
+        };
+        let (worker, frames, reports) = Worker::share(source, quality)?;
+        state.sharing = Some(Sharing {
+            phase: SharePhase::Choosing,
+            frames: Arc::new(frames),
+        });
+        Ok(Self {
+            worker,
+            reports,
+            key: None,
+            preview: None,
+        })
+    }
+
+    /// Uploads a preview of the stream, in place of one still uploading.
+    /// A failed upload is tried again a minute later, as Discord's client
+    /// does, up to three times.
+    fn show_preview(&mut self, discord: &Discord, thumbnail: String) {
+        let Some(key) = self.key.clone() else { return };
+        if let Some(older) = self.preview.take() {
+            older.abort();
+        }
+        let discord = discord.clone();
+        self.preview = Some(tokio::spawn(async move {
+            for attempt in 1..=3 {
+                if attempt > 1 {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+                match discord.stream_preview(&key, &thumbnail).await {
+                    Ok(()) => {
+                        tracing::debug!("uploaded the stream's preview");
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            attempt,
+                            "could not upload the stream's preview"
+                        )
+                    }
+                }
+            }
+        }));
+    }
+
+    /// Ends the stream on Discord, and the worker with it.
+    fn stop(self, discord: &Discord, state: &mut State) {
+        if let Some(preview) = &self.preview {
+            preview.abort();
+        }
+        if let Some(key) = &self.key {
+            discord.end_stream(key);
+        }
+        drop(self.worker);
+        state.sharing = None;
+    }
+}
+
+/// The next report from the share's worker, or never without a share.
+async fn next_report(share: &mut Option<Share>) -> Option<Report> {
+    match share {
+        Some(share) => share.reports.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Asking Discord to start the stream, once frames flow.
+type Starting = Option<Pin<Box<dyn Future<Output = Result<StreamServer>>>>>;
+
+/// Discord's answer to going live, or never while it isn't asked.
+async fn started(starting: &mut Starting) -> Result<StreamServer> {
+    match starting {
+        Some(starting) => starting.await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Watching someone's stream: Discord's answer, then a worker showing it.
+struct Watch {
+    key: String,
+    opening: Starting,
+    worker: Option<(Worker, mpsc::UnboundedReceiver<Report>)>,
+}
+
+impl Watch {
+    /// Plays the stream's sound, or not, as being deafened changes.
+    fn hear(watch: &mut Option<Self>, hearing: bool) {
+        if let Some((worker, _)) = watch.as_mut().and_then(|watch| watch.worker.as_mut())
+            && let Err(error) = worker.hear(hearing)
+        {
+            tracing::warn!(
+                error = format!("{error:#}"),
+                "could not tell the stream worker"
+            );
+        }
+    }
+
+    fn start(discord: &Discord, guild: &str, channel: &str, user: &str, state: &mut State) -> Self {
+        let key = stream::guild_key(guild, channel, user);
+        let name = state
+            .participants
+            .iter()
+            .find(|person| person.id == user)
+            .map_or_else(|| "Someone".into(), |person| person.user.clone());
+        state.watching = Some(Box::new(Watching {
+            user: user.to_owned(),
+            name,
+            opening: true,
+            frames: None,
+        }));
+        let (discord, asked) = (discord.clone(), key.clone());
+        Self {
+            key,
+            opening: Some(Box::pin(async move { discord.watch(&asked).await })),
+            worker: None,
+        }
+    }
+
+    /// Stops watching on Discord, and the worker with it.
+    fn stop(self, discord: &Discord, state: &mut State) {
+        discord.end_stream(&self.key);
+        drop(self.worker);
+        state.watching = None;
+    }
+}
+
+enum WatchEvent {
+    Opened(Result<StreamServer>),
+    Report(Option<Report>),
+}
+
+/// Discord's answer, then the worker's reports; never without a watch.
+async fn watch_event(watch: &mut Option<Watch>) -> WatchEvent {
+    let Some(watch) = watch else {
+        return std::future::pending().await;
+    };
+    if let Some(opening) = watch.opening.as_mut() {
+        return WatchEvent::Opened(opening.await);
+    }
+    match watch.worker.as_mut() {
+        Some((_, reports)) => WatchEvent::Report(reports.recv().await),
+        None => std::future::pending().await,
+    }
+}
 
 /// A Discord voice call, from asking Discord to join until leaving. Commands
 /// stay responsive throughout, as in a Matrix call.
@@ -83,6 +254,10 @@ pub(crate) async fn call(
     let track = call.play(input);
     let _ = track.pause();
     let mut capture: Option<Capture> = None;
+    let mut share: Option<Share> = None;
+    let mut starting: Starting = None;
+    let mut watch: Option<Watch> = None;
+    let mut live = discord.live();
 
     let result = async {
         let mut speakers = Some(open_discord_speakers(state, &played, &hearing)?);
@@ -118,6 +293,7 @@ pub(crate) async fn call(
                             if state.deafened {
                                 state.deafened = false;
                                 hearing.set_deafened(false);
+                                Watch::hear(&mut watch, true);
                             }
                             match open_discord_microphone(state, &reverse, &microphone, &track) {
                                 Ok(opened) => {
@@ -138,6 +314,7 @@ pub(crate) async fn call(
                             }
                             state.deafened = deafened;
                             hearing.set_deafened(deafened);
+                            Watch::hear(&mut watch, !deafened);
                         }
                         Some(Command::Devices) => { let _ = devices(state); }
                         Some(Command::Microphone(id)) => {
@@ -162,10 +339,170 @@ pub(crate) async fn call(
                                 Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                             }
                         }
+                        Some(Command::GoLive(quality)) => {
+                            if share.is_none() {
+                                state.quality = quality;
+                                Chosen::write(remembered, state);
+                                match Share::start(state, quality) {
+                                    Ok(started) => {
+                                        share = Some(started);
+                                        state.error = None;
+                                    }
+                                    Err(error) => state.error = Some(format!("{error:#}")),
+                                }
+                            }
+                        }
+                        Some(Command::StopLive) => {
+                            if let Some(stopped) = share.take() {
+                                stopped.stop(discord, state);
+                            }
+                            starting = None;
+                        }
+                        Some(Command::Watch(user)) => {
+                            let watching = state.watching.as_ref().is_some_and(|watching| watching.user == user);
+                            if user != me && !watching {
+                                if let Some(stopped) = watch.take() {
+                                    stopped.stop(discord, state);
+                                }
+                                state.error = None;
+                                watch = Some(Watch::start(discord, guild, channel, &user, state));
+                            }
+                        }
+                        Some(Command::StopWatching) => {
+                            if let Some(stopped) = watch.take() {
+                                stopped.stop(discord, state);
+                            }
+                        }
                         Some(Command::LeaveStale) => {}
                     }
                     discord.set_self(guild, channel, state.muted, state.deafened);
                     snapshots.send_replace(state.clone());
+                }
+                report = next_report(&mut share) => {
+                    match report {
+                        Some(Report::Ready) => {
+                            if let Some(sharing) = &state.sharing {
+                                sharing.frames.unlink();
+                            }
+                        }
+                        Some(Report::Sharing { .. }) => {
+                            if let Some(sharing) = state.sharing.as_mut()
+                                && sharing.phase == SharePhase::Choosing
+                            {
+                                sharing.phase = SharePhase::Starting;
+                                if let Some(going) = share.as_mut() {
+                                    going.key = Some(stream::guild_key(guild, channel, &me));
+                                }
+                                let (discord, guild, channel) = (discord.clone(), guild.to_owned(), channel.to_owned());
+                                starting = Some(Box::pin(async move { discord.go_live(&guild, &channel).await }));
+                            }
+                        }
+                        Some(Report::Streaming) => {
+                            if let Some(sharing) = state.sharing.as_mut() {
+                                sharing.phase = SharePhase::Live;
+                            }
+                        }
+                        Some(Report::Preview { thumbnail }) => {
+                            if let Some(going) = share.as_mut() {
+                                going.show_preview(discord, thumbnail);
+                            }
+                        }
+                        Some(Report::Ended { error }) => {
+                            if let Some(stopped) = share.take() {
+                                stopped.stop(discord, state);
+                            }
+                            starting = None;
+                            state.error = error;
+                        }
+                        // The reports end with Ended, so this is a worker gone quietly.
+                        None => {
+                            if let Some(stopped) = share.take() {
+                                stopped.stop(discord, state);
+                            }
+                            starting = None;
+                        }
+                    }
+                    snapshots.send_replace(state.clone());
+                }
+                result = started(&mut starting) => {
+                    starting = None;
+                    match result {
+                        // The worker sends the video there, then reports it streaming.
+                        Ok(server) => {
+                            if let Some(going) = share.as_mut()
+                                && let Err(error) = going.worker.send(&server)
+                                && let Some(stopped) = share.take()
+                            {
+                                stopped.stop(discord, state);
+                                state.error = Some(error.to_string());
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(stopped) = share.take() {
+                                stopped.stop(discord, state);
+                            }
+                            state.error = Some(error.to_string());
+                        }
+                    }
+                    snapshots.send_replace(state.clone());
+                }
+                event = watch_event(&mut watch) => {
+                    let mut stop = None;
+                    match event {
+                        WatchEvent::Opened(Ok(server)) => {
+                            if let Some(watching) = watch.as_mut() {
+                                watching.opening = None;
+                                match Worker::watch(&server, state.speaker.clone(), state.deafened) {
+                                    Ok((worker, frames, reports)) => {
+                                        watching.worker = Some((worker, reports));
+                                        if let Some(shown) = state.watching.as_mut() {
+                                            shown.frames = Some(Arc::new(frames));
+                                        }
+                                    }
+                                    Err(error) => stop = Some(Some(format!("{error:#}"))),
+                                }
+                            }
+                        }
+                        WatchEvent::Opened(Err(error)) => stop = Some(Some(error.to_string())),
+                        WatchEvent::Report(Some(Report::Ready)) => {
+                            if let Some(frames) = state.watching.as_ref().and_then(|watching| watching.frames.as_ref()) {
+                                frames.unlink();
+                            }
+                        }
+                        WatchEvent::Report(Some(Report::Streaming)) => {
+                            if let Some(watching) = state.watching.as_mut() {
+                                watching.opening = false;
+                            }
+                        }
+                        WatchEvent::Report(Some(Report::Ended { error })) => stop = Some(error),
+                        WatchEvent::Report(Some(Report::Sharing { .. } | Report::Preview { .. })) => {}
+                        WatchEvent::Report(None) => stop = Some(None),
+                    }
+                    if let Some(error) = stop
+                        && let Some(stopped) = watch.take()
+                    {
+                        stopped.stop(discord, state);
+                        state.error = error;
+                    }
+                    snapshots.send_replace(state.clone());
+                }
+                Ok(Live::StreamEnded { stream_key, reason }) = live.recv() => {
+                    // The streamer stopped, or Discord ended watching.
+                    if watch.as_ref().is_some_and(|watch| watch.key == stream_key)
+                        && let Some(stopped) = watch.take()
+                    {
+                        stopped.stop(discord, state);
+                        snapshots.send_replace(state.clone());
+                    }
+                    if share.as_ref().is_some_and(|share| share.key.as_ref() == Some(&stream_key))
+                        && let Some(stopped) = share.take()
+                    {
+                        stopped.stop(discord, state);
+                        if reason.as_deref() != Some("user_requested") {
+                            state.error = Some("Discord ended your stream.".into());
+                        }
+                        snapshots.send_replace(state.clone());
+                    }
                 }
                 Some(reason) = endings.recv() => {
                     tracing::warn!(%reason, "Discord voice disconnected");
@@ -183,6 +520,12 @@ pub(crate) async fn call(
         Ok(())
     }
     .await;
+    if let Some(stopped) = share.take() {
+        stopped.stop(discord, state);
+    }
+    if let Some(stopped) = watch.take() {
+        stopped.stop(discord, state);
+    }
     state.phase = Phase::Leaving;
     snapshots.send_replace(state.clone());
     drop(capture);
@@ -262,6 +605,8 @@ fn discord_participants(
                 },
                 connected: true,
                 problem: None,
+                avatar: Some(member.avatar.clone()),
+                streaming: member.streaming,
             }
         })
         .collect();

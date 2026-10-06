@@ -55,8 +55,12 @@ pub struct Attachment {
     pub size: Option<u64>,
     pub url: String,
     pub image: bool,
+    /// The image's width and height.
+    pub dimensions: Option<(u32, u32)>,
     /// The image scaled down by Discord's media proxy, for previews.
     pub preview_url: Option<String>,
+    /// The image scaled down to fit the viewer, by the same proxy.
+    pub view_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,7 +206,18 @@ pub fn parse(value: &Value) -> Option<Message> {
                 size: attachment["size"].as_u64(),
                 url: attachment["url"].as_str()?.into(),
                 image,
-                preview_url: image.then(|| preview_url(attachment)).flatten(),
+                dimensions: image
+                    .then(|| {
+                        let side = |name: &str| u32::try_from(attachment[name].as_u64()?).ok();
+                        Some((side("width")?, side("height")?))
+                    })
+                    .flatten(),
+                preview_url: image
+                    .then(|| scaled_url(attachment, PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                    .flatten(),
+                view_url: image
+                    .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT))
+                    .flatten(),
             })
         })
         .collect();
@@ -262,9 +277,14 @@ pub fn parse(value: &Value) -> Option<Message> {
 pub const PREVIEW_WIDTH: u64 = 360;
 pub const PREVIEW_HEIGHT: u64 = 270;
 
-/// Asks Discord's media proxy for the image fitted into the preview size, as
-/// the official client does, so a phone photo doesn't download in full.
-fn preview_url(attachment: &Value) -> Option<String> {
+/// The image viewer's largest size.
+pub const VIEW_WIDTH: u64 = 1920;
+pub const VIEW_HEIGHT: u64 = 1200;
+
+/// Asks Discord's media proxy for the image fitted into `max_width` by
+/// `max_height` and never enlarged, as the official client does, so a phone
+/// photo doesn't download in full.
+fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) -> Option<String> {
     let url = attachment["proxy_url"].as_str()?;
     let (width, height) = (
         attachment["width"].as_u64()?,
@@ -276,8 +296,8 @@ fn preview_url(attachment: &Value) -> Option<String> {
     let scale = f64::min(
         1.0,
         f64::min(
-            PREVIEW_WIDTH as f64 / width as f64,
-            PREVIEW_HEIGHT as f64 / height as f64,
+            max_width as f64 / width as f64,
+            max_height as f64 / height as f64,
         ),
     );
     let fit = |side: u64| ((side as f64 * scale).round() as u64).max(1);
@@ -316,12 +336,29 @@ pub struct Names {
     nicknames: HashMap<(String, String), String>,
     /// Members whose server profile is known, with or without a nickname.
     members: HashSet<(String, String)>,
+    /// Avatar hashes by user id, of those who set one.
+    avatars: HashMap<String, String>,
+    /// Server avatar hashes by server and user id.
+    member_avatars: HashMap<(String, String), String>,
 }
 
 impl Names {
     pub fn learn_user(&mut self, user: &Value) {
-        if let (Some(id), Some(name)) = (user["id"].as_str(), ready::display_name(user)) {
+        let Some(id) = user["id"].as_str() else {
+            return;
+        };
+        if let Some(name) = ready::display_name(user) {
             self.users.insert(id.to_owned(), name.to_owned());
+        }
+        // Partial user objects leave the avatar out; null removes it.
+        match user.get("avatar") {
+            Some(Value::String(hash)) => {
+                self.avatars.insert(id.to_owned(), hash.clone());
+            }
+            Some(Value::Null) => {
+                self.avatars.remove(id);
+            }
+            _ => {}
         }
     }
 
@@ -341,6 +378,14 @@ impl Names {
             }
             None => {
                 self.nicknames.remove(&key);
+            }
+        }
+        match member["avatar"].as_str() {
+            Some(hash) => {
+                self.member_avatars.insert(key.clone(), hash.to_owned());
+            }
+            None => {
+                self.member_avatars.remove(&key);
             }
         }
         self.members.insert(key);
@@ -368,11 +413,29 @@ impl Names {
         self.members.contains(&(guild.to_owned(), user.to_owned()))
     }
 
+    /// A user's display name or username, outside any server.
+    pub fn user_name(&self, user: &str) -> Option<&str> {
+        self.users.get(user).map(String::as_str)
+    }
+
     pub fn name(&self, guild: &str, user: &str) -> Option<&str> {
         self.nicknames
             .get(&(guild.to_owned(), user.to_owned()))
             .or_else(|| self.users.get(user))
             .map(String::as_str)
+    }
+
+    /// The address of the avatar Discord shows for a user: their server
+    /// avatar in `guild`, else their own, else a default one.
+    pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
+        if let Some(guild) = guild
+            && let Some(hash) = self
+                .member_avatars
+                .get(&(guild.to_owned(), user.to_owned()))
+        {
+            return ready::member_avatar(guild, user, hash);
+        }
+        ready::avatar(user, self.avatars.get(user).map(String::as_str))
     }
 
     /// Discord Markdown for Talk: mentions, custom emoji and timestamps
@@ -490,6 +553,11 @@ mod tests {
             message.attachments[0].preview_url.as_deref(),
             Some("https://media/cat.png?ex=1&format=webp&width=360&height=135")
         );
+        assert_eq!(
+            message.attachments[0].view_url.as_deref(),
+            Some("https://media/cat.png?ex=1&format=webp&width=1440&height=540"),
+            "a small image isn't enlarged"
+        );
         assert_eq!(message.reactions[1].key, ":pog:");
         assert_eq!(message.reactions[1].emoji, "pog:5");
         assert_eq!(message.timestamp(), 1_730_014_552);
@@ -509,6 +577,33 @@ mod tests {
             &json!({"id": "1", "type": 19, "author": {"id": "1"}, "referenced_message": null}),
         );
         assert_eq!(deleted.unwrap().reply, Some(Reply::Deleted));
+    }
+
+    #[test]
+    fn prefers_server_avatars() {
+        let mut names = Names::default();
+        names.learn_user(&json!({"id": "2", "username": "ann", "avatar": "abc"}));
+        names.learn_member("10", &json!({"user_id": "2", "avatar": "def"}));
+        assert!(
+            names
+                .avatar(None, "2")
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
+        assert!(
+            names
+                .avatar(Some("10"), "2")
+                .ends_with("/guilds/10/users/2/avatars/def.png?size=128")
+        );
+        assert!(
+            names
+                .avatar(Some("11"), "2")
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
+        // A mention without the avatar keeps it; null removes it.
+        names.learn_user(&json!({"id": "2", "username": "ann"}));
+        assert!(names.avatar(None, "2").contains("/avatars/2/"));
+        names.learn_user(&json!({"id": "2", "username": "ann", "avatar": null}));
+        assert!(names.avatar(None, "2").contains("/embed/avatars/"));
     }
 
     #[test]

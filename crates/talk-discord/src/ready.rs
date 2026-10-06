@@ -6,6 +6,12 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::client;
+
+/// Discord serves pictures in powers of two; this covers the 80px avatar in a
+/// call. Larger ones would cost memory for every person shown.
+const PICTURE_SIZE: u32 = 128;
+
 const GUILD_TEXT: u64 = 0;
 const GUILD_VOICE: u64 = 2;
 const GUILD_CATEGORY: u64 = 4;
@@ -21,6 +27,8 @@ const CONNECT: u64 = 1 << 20;
 pub struct Server {
     pub id: String,
     pub name: String,
+    /// The address of the server's icon, if it has one.
+    pub icon: Option<String>,
     /// Text and announcement channels, in Discord's order.
     pub text_channels: Vec<Channel>,
     pub voice_channels: Vec<Channel>,
@@ -32,6 +40,8 @@ pub struct Server {
     pub roles: HashMap<String, u64>,
     /// Role names by id, for mentions.
     pub role_names: HashMap<String, String>,
+    /// The position and RGB colour of each coloured role, by id.
+    pub role_colors: HashMap<String, (i64, u32)>,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -253,8 +263,34 @@ impl Server {
             if let Some(name) = value["name"].as_str() {
                 self.role_names.insert(id.clone(), name.to_owned());
             }
+            match value["color"].as_u64().filter(|color| *color != 0) {
+                Some(color) => {
+                    let position = value["position"].as_i64().unwrap_or_default();
+                    self.role_colors
+                        .insert(id.clone(), (position, color as u32));
+                }
+                None => {
+                    self.role_colors.remove(&id);
+                }
+            }
             self.roles.insert(id, permissions);
         }
+    }
+
+    /// Removes a deleted role.
+    pub fn remove_role(&mut self, id: &str) {
+        self.roles.remove(id);
+        self.role_names.remove(id);
+        self.role_colors.remove(id);
+    }
+
+    /// The colour Discord gives a member's name: their highest coloured role's.
+    pub fn color(&self, roles: &[String]) -> Option<u32> {
+        roles
+            .iter()
+            .filter_map(|role| self.role_colors.get(role))
+            .max_by_key(|(position, _)| *position)
+            .map(|(_, color)| *color)
     }
 }
 
@@ -295,9 +331,14 @@ pub fn server(guild: &Value) -> Option<Server> {
         .as_str()
         .or_else(|| guild["properties"]["owner_id"].as_str())
         .map(str::to_owned);
+    let icon = guild["icon"]
+        .as_str()
+        .or_else(|| guild["properties"]["icon"].as_str())
+        .map(|hash| server_icon(&id, hash));
     let mut server = Server {
         id,
         name,
+        icon,
         owner_id,
         ..Default::default()
     };
@@ -348,6 +389,35 @@ pub fn display_name(user: &Value) -> Option<&str> {
         .or_else(|| user["username"].as_str())
 }
 
+/// Discord's CDN, or the test server.
+fn cdn() -> &'static str {
+    client::test_server().unwrap_or("https://cdn.discordapp.com")
+}
+
+pub fn server_icon(guild: &str, hash: &str) -> String {
+    format!("{}/icons/{guild}/{hash}.png?size={PICTURE_SIZE}", cdn())
+}
+
+/// A user's avatar. Without one, Discord shows one of its default avatars,
+/// picked from the account's id.
+pub fn avatar(user: &str, hash: Option<&str>) -> String {
+    match hash {
+        Some(hash) => format!("{}/avatars/{user}/{hash}.png?size={PICTURE_SIZE}", cdn()),
+        None => {
+            let index = user.parse::<u64>().map_or(0, |id| (id >> 22) % 6);
+            format!("{}/embed/avatars/{index}.png", cdn())
+        }
+    }
+}
+
+/// The avatar a member set for one server, which Discord shows there instead.
+pub fn member_avatar(guild: &str, user: &str, hash: &str) -> String {
+    format!(
+        "{}/guilds/{guild}/users/{user}/avatars/{hash}.png?size={PICTURE_SIZE}",
+        cdn()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -360,7 +430,7 @@ mod tests {
             "user": {"id": "1"},
             "guilds": [{
                 "id": "10",
-                "properties": {"name": "Test"},
+                "properties": {"name": "Test", "icon": "abc"},
                 "channels": [
                     {"id": "12", "name": "Second", "type": 2, "position": 2},
                     {"id": "11", "name": "general", "type": 0, "position": 0},
@@ -371,6 +441,10 @@ mod tests {
         assert_eq!(user_id(&ready), Some("1"));
         let servers = servers(&ready);
         assert_eq!(servers[0].name, "Test");
+        assert_eq!(
+            servers[0].icon.as_deref(),
+            Some("https://cdn.discordapp.com/icons/10/abc.png?size=128")
+        );
         let names: Vec<_> = servers[0]
             .voice_channels
             .iter()
@@ -435,6 +509,19 @@ mod tests {
             server.access(&staff, "1", &["30".into()]),
             Access::Join,
             "administrators too"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_default_avatars() {
+        assert_eq!(
+            avatar("1", Some("abc")),
+            "https://cdn.discordapp.com/avatars/1/abc.png?size=128"
+        );
+        // (1400000000000000200 >> 22) % 6 == 2
+        assert_eq!(
+            avatar("1400000000000000200", None),
+            "https://cdn.discordapp.com/embed/avatars/2.png"
         );
     }
 

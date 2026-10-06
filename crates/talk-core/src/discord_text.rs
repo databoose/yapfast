@@ -9,6 +9,7 @@ use std::{
 
 use talk_discord::{
     api::PAGE,
+    member_list::{ListedMember, Presence as DiscordPresence},
     message::{Message, Reply as DiscordReply},
     service::{Discord, Live, Snapshot, Status},
 };
@@ -23,8 +24,8 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMessage, Command, Delivery, Event, MAX_PREVIEW_DOWNLOAD_BYTES, Picture,
-        Reaction, Reply, decode_preview, plain_snippet,
+        Attachment, ChatMember, ChatMessage, Command, Delivery, Event, MAX_PREVIEW_DOWNLOAD_BYTES,
+        Picture, Presence, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
     discord,
 };
@@ -62,6 +63,12 @@ pub enum Done {
         room: String,
         url: String,
         picture: Option<Arc<Picture>>,
+    },
+    Image {
+        room: String,
+        item: String,
+        index: usize,
+        picture: Result<Arc<Picture>, &'static str>,
     },
     Saved {
         room: String,
@@ -109,7 +116,7 @@ impl OpenChannel {
     /// Opens a channel and starts loading its latest messages.
     pub fn open(discord: &Discord, room: &str, done: &UnboundedSender<Done>) -> Option<Self> {
         let mut open = Self::new(room)?;
-        discord.view(&open.guild);
+        discord.view(&open.guild, Some(&open.channel));
         open.load(discord, done, None);
         Some(open)
     }
@@ -479,16 +486,22 @@ impl OpenChannel {
         self.pictures.insert(url, picture);
     }
 
+    /// A sent message's attachment at `index`.
+    fn attachment(&self, item: &str, index: usize) -> Option<&talk_discord::message::Attachment> {
+        sent_id(item)
+            .and_then(|id| self.messages.get(&id.parse().unwrap_or_default()))
+            .and_then(|message| message.attachments.get(index))
+    }
+
     pub fn save(
         &mut self,
         discord: &Discord,
         done: &UnboundedSender<Done>,
         item: &str,
+        index: usize,
         path: PathBuf,
     ) {
-        let attachment = sent_id(item)
-            .and_then(|id| self.messages.get(&id.parse().unwrap_or_default()))
-            .and_then(|message| message.attachments.first());
+        let attachment = self.attachment(item, index);
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -514,6 +527,48 @@ impl OpenChannel {
         });
     }
 
+    /// Downloads an image attachment at viewing size, through Discord's media
+    /// proxy, and decodes it for the viewer.
+    pub fn view_image(
+        &mut self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+        item: String,
+        index: usize,
+    ) {
+        let room = self.room.clone();
+        let Some(url) = self
+            .attachment(&item, index)
+            .and_then(|attachment| attachment.view_url.clone())
+        else {
+            let _ = done.send(Done::Image {
+                room,
+                item,
+                index,
+                picture: Err("This image is no longer available."),
+            });
+            return;
+        };
+        let (discord, done) = (discord.clone(), done.clone());
+        self.tasks.spawn(async move {
+            let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
+                Ok(data) => tokio::task::spawn_blocking(move || decode_view(&data))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(Arc::new)
+                    .ok_or("Talk can't show this image. Save it to open it elsewhere."),
+                Err(_) => Err("Talk couldn't download this image from Discord. Try again."),
+            };
+            let _ = done.send(Done::Image {
+                room,
+                item,
+                index,
+                picture,
+            });
+        });
+    }
+
     /// The channel as Talk's timeline. Starts downloading image previews it lacks.
     pub fn publish(&mut self, discord: &Discord, done: &UnboundedSender<Done>) -> Vec<ChatMessage> {
         let snapshot = discord.snapshots().borrow().clone();
@@ -536,12 +591,14 @@ impl OpenChannel {
                 .as_ref()
                 .is_some_and(|nonce| self.sent.contains(nonce));
             let author = name(&message.author_id, &message.author);
-            let mut body = match message.system {
+            let body = match message.system {
                 Some(system) => format!("{author} {system}"),
                 None => discord.render(server, &message.content),
             };
-            let attachment =
-                message.attachments.first().map(|attachment| {
+            let attachments = message
+                .attachments
+                .iter()
+                .map(|attachment| {
                     let preview = attachment.preview_url.as_ref().and_then(|url| {
                         match self.pictures.get(url) {
                             Some(picture) => Some(picture.clone()),
@@ -555,21 +612,12 @@ impl OpenChannel {
                         name: attachment.name.clone(),
                         size: attachment.size,
                         image: attachment.preview_url.is_some(),
+                        dimensions: attachment.dimensions,
                         preview_failed: matches!(preview, Some(None)),
                         preview: preview.flatten(),
                     }
-                });
-            if message.attachments.len() > 1 {
-                let more = message.attachments.len() - 1;
-                if !body.is_empty() {
-                    body.push('\n');
-                }
-                body.push_str(&format!(
-                    "*{more} more {}, open the message in Discord to see {}.*",
-                    if more == 1 { "file" } else { "files" },
-                    if more == 1 { "it" } else { "them" }
-                ));
-            }
+                })
+                .collect();
             let reply = message.reply.as_ref().map(|reply| match reply {
                 DiscordReply::Message {
                     author_id,
@@ -594,6 +642,7 @@ impl OpenChannel {
                 item: format!("d:{}", message.id),
                 author,
                 sender: format!("discord:{}", message.author_id),
+                avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
                 body,
                 formatted: ordinary,
                 time: format!(
@@ -616,7 +665,7 @@ impl OpenChannel {
                         mine: reaction.me,
                     })
                     .collect(),
-                attachment,
+                attachments,
                 can_reply: ordinary,
                 can_edit: own && message.editable,
                 can_delete: own,
@@ -625,12 +674,14 @@ impl OpenChannel {
             });
         }
         let me_name = name(&me, "You");
+        let me_avatar = discord.avatar(Some(&self.guild), &me);
         for pending in &self.pending {
             rows.push(ChatMessage {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
                 author: me_name.clone(),
                 sender: format!("discord:{me}"),
+                avatar: Some(me_avatar.clone()),
                 body: pending.body.clone(),
                 formatted: true,
                 own: true,
@@ -646,13 +697,18 @@ impl OpenChannel {
                         body: plain_snippet(&discord.render(server, &original.content)),
                     })
                 }),
-                attachment: pending.file.as_ref().map(|file| Attachment {
-                    name: file.name.clone(),
-                    size: Some(file.size),
-                    image: false,
-                    preview: None,
-                    preview_failed: false,
-                }),
+                attachments: pending
+                    .file
+                    .iter()
+                    .map(|file| Attachment {
+                        name: file.name.clone(),
+                        size: Some(file.size),
+                        image: false,
+                        dimensions: None,
+                        preview: None,
+                        preview_failed: false,
+                    })
+                    .collect(),
                 ..Default::default()
             });
         }
@@ -700,6 +756,7 @@ pub(crate) struct Chat {
     open: Option<OpenChannel>,
     done: UnboundedSender<Done>,
     finished: UnboundedReceiver<Done>,
+    pictures: discord::Pictures,
 }
 
 impl Chat {
@@ -717,6 +774,7 @@ impl Chat {
             open: None,
             done,
             finished,
+            pictures: discord::Pictures::new(),
         })
     }
 
@@ -729,6 +787,10 @@ impl Chat {
         command: Command,
         events: &UnboundedSender<Event>,
     ) -> Option<Command> {
+        if let Command::Pictures(urls) = command {
+            self.pictures.fetch(&self.discord, urls, events);
+            return None;
+        }
         self::command(
             command,
             Some(&self.discord),
@@ -834,6 +896,7 @@ pub fn command(
         | Command::Cancel { room, .. }
         | Command::Attach { room, .. }
         | Command::SaveAttachment { room, .. }
+        | Command::ViewImage { room, .. }
         | Command::Earlier(room) => room.clone(),
         Command::Forward { room, target, .. }
             if discord::is_discord(room) || discord::is_discord(target) =>
@@ -858,13 +921,8 @@ pub fn command(
     };
     if let Command::Open(_) = command {
         match OpenChannel::open(discord, &room, done) {
-            Some(channel) => {
-                *open = Some(channel);
-                let _ = events.send(Event::Members {
-                    room,
-                    members: Err("Talk doesn't list Discord members yet."),
-                });
-            }
+            // The member list follows as Live::Members.
+            Some(channel) => *open = Some(channel),
             None => {
                 let _ = events.send(Event::RoomError {
                     room,
@@ -932,7 +990,10 @@ pub fn command(
             publish(channel, discord, done, events);
             let _ = events.send(Event::AttachResult { room, result });
         }
-        Command::SaveAttachment { item, path, .. } => channel.save(discord, done, &item, path),
+        Command::SaveAttachment {
+            item, index, path, ..
+        } => channel.save(discord, done, &item, index, path),
+        Command::ViewImage { item, index, .. } => channel.view_image(discord, done, item, index),
         Command::Earlier(room) if !channel.earlier(discord, done) => {
             let _ = events.send(Event::HistoryLoaded(room));
         }
@@ -955,6 +1016,7 @@ pub fn finished(
         | Done::Edited { room, .. }
         | Done::Deleted { room, .. }
         | Done::Picture { room, .. }
+        | Done::Image { room, .. }
         | Done::Saved { room, .. }
         | Done::Failed { room, .. } => room.clone(),
     };
@@ -976,6 +1038,22 @@ pub fn finished(
         }
         (Done::Saved { name, result, .. }, _) => {
             let _ = events.send(Event::Saved { room, name, result });
+        }
+        (
+            Done::Image {
+                item,
+                index,
+                picture,
+                ..
+            },
+            _,
+        ) => {
+            let _ = events.send(Event::Image {
+                room,
+                item,
+                index,
+                picture,
+            });
         }
         (Done::History { older, result, .. }, channel) => {
             match (result, channel) {
@@ -1042,12 +1120,41 @@ pub fn live(
         return;
     };
     match event {
+        Ok(Live::Members {
+            channel: id,
+            members,
+        }) => {
+            if id == channel.channel {
+                let _ = events.send(Event::Members {
+                    room: channel.room.clone(),
+                    members: Ok(members.into_iter().map(chat_member).collect()),
+                });
+            }
+        }
         Ok(event) => {
             if channel.live(&event) {
                 publish(channel, discord, done, events);
             }
         }
         Err(_) => channel.refresh(discord, done),
+    }
+}
+
+fn chat_member(member: ListedMember) -> ChatMember {
+    ChatMember {
+        id: member.user_id,
+        name: member.name,
+        role: Role::Member,
+        avatar: Some(member.avatar),
+        group: Some(member.group),
+        presence: Some(match member.presence {
+            DiscordPresence::Online => Presence::Online,
+            DiscordPresence::Idle => Presence::Idle,
+            DiscordPresence::DoNotDisturb => Presence::DoNotDisturb,
+            DiscordPresence::Offline => Presence::Offline,
+        }),
+        color: member.color,
+        activity: member.activity,
     }
 }
 

@@ -368,6 +368,8 @@ async fn connected(
                     speaking: speaking.contains(&person.member_id),
                     connected,
                     problem: problem.map(str::to_owned),
+                    avatar: None,
+                    streaming: false,
                 }
             }).collect();
             state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));
@@ -411,7 +413,8 @@ async fn connected(
                             Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                         }
                     }
-                    Some(Command::LeaveStale) => {}
+                    Some(Command::GoLive(_)) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
+                    Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale) => {}
                 },
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
                 // Device trust can change while connected, for example after

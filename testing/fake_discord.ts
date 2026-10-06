@@ -5,9 +5,16 @@
 // then start Talk with TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400.
 // `--extra N` sets how many history messages follow the four fixture ones
 // (default 56, 60 in all). POST /_control/chat-start makes Bob post in
-// #general every 2 s; POST /_control/chat-stop stops him. Voice media isn't
-// faked: joining voice shows Alice in the channel but never connects.
+// #general every 2 s; POST /_control/chat-stop stops him. POST
+// /_control/gallery makes him post three photos in one message. Joining voice
+// connects to a voice server here that answers the handshake without DAVE and
+// drops the audio. A Go Live stream's video is decrypted and its VP8 frames
+// counted; GET /_control/video lists what each stream received. Watching
+// Bob's stream gets testing/fixtures' recording once the viewer asks for video
+// with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
 
+import { createCipheriv, createDecipheriv } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { deflateSync } from "node:zlib";
 import type { ServerWebSocket } from "bun";
@@ -33,12 +40,13 @@ const LOUNGE = "1400000000000000103";
 const MODS = "1400000000000000110";
 const ALICE = "1400000000000000001";
 
-type User = { id: string; username: string; global_name: string };
+// Dave has no avatar, so he gets a default one; Carol set another for the server.
+type User = { id: string; username: string; global_name: string; avatar: string | null };
 const users: Record<string, User> = {
-  alice: { id: ALICE, username: "alice", global_name: "Alice" },
-  bob: { id: "1400000000000000002", username: "bob", global_name: "Bob" },
-  carol: { id: "1400000000000000003", username: "carol", global_name: "Carol" },
-  dave: { id: "1400000000000000004", username: "dave", global_name: "Dave" },
+  alice: { id: ALICE, username: "alice", global_name: "Alice", avatar: "alice1" },
+  bob: { id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: "bob1" },
+  carol: { id: "1400000000000000003", username: "carol", global_name: "Carol", avatar: "carol1" },
+  dave: { id: "1400000000000000004", username: "dave", global_name: "Dave", avatar: null },
 };
 const userById = new Map(Object.values(users).map((user) => [user.id, user]));
 
@@ -64,7 +72,6 @@ function wireUser(user: User) {
   return {
     ...user,
     discriminator: "0",
-    avatar: null,
     public_flags: 0,
     avatar_decoration_data: null,
   };
@@ -76,7 +83,7 @@ function member(user: User, roles: string[] = []) {
     user_id: user.id,
     roles,
     nick: null,
-    avatar: null,
+    avatar: user.id === users.carol.id ? "carol-server" : null,
     joined_at: JOINED_AT,
     premium_since: null,
     deaf: false,
@@ -112,14 +119,26 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
 
 /** The Matrix fixture's sunset.png gradient, drawn at any size. */
 function sunset(width: number, height: number): Uint8Array {
+  return png(width, height, (x, y) => {
+    const sx = Math.floor((x * 800) / width);
+    const sy = Math.floor((y * 500) / height);
+    return [Math.floor(sx / 4) & 255, Math.floor(sy / 3) & 255, 160, 255];
+  });
+}
+
+/** An avatar or server icon: two tones split diagonally, picked from its path. */
+function picture(path: string): Uint8Array {
+  const hue = crc32(new TextEncoder().encode(path));
+  const light = [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160));
+  const dark = light.map((c) => c >> 1);
+  return png(128, 128, (x, y) => [...(x + y < 128 ? light : dark), 255]);
+}
+
+function png(width: number, height: number, pixel: (x: number, y: number) => number[]): Uint8Array {
   const raw = new Uint8Array((width * 4 + 1) * height);
   for (let y = 0; y < height; y++) {
     const row = y * (width * 4 + 1);
-    const sy = Math.floor((y * 500) / height);
-    for (let x = 0; x < width; x++) {
-      const sx = Math.floor((x * 800) / width);
-      raw.set([Math.floor(sx / 4) & 255, Math.floor(sy / 3) & 255, 160, 255], row + 1 + x * 4);
-    }
+    for (let x = 0; x < width; x++) raw.set(pixel(x, y), row + 1 + x * 4);
   }
   const header = new Uint8Array(13);
   const view = new DataView(header.buffer);
@@ -349,12 +368,22 @@ const readStates = new Map<string, { last: string; mentions: number }>([
 
 // --- Voice ------------------------------------------------------------------
 
-type VoiceState = { channel: string; self_mute: boolean; self_deaf: boolean; session: string };
+// Bob shares his screen with Go Live.
+type VoiceState = { channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean };
 const voice = new Map<string, VoiceState>([
-  [users.bob.id, { channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob" }],
+  [users.bob.id, { channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
   [users.carol.id, { channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
   [users.dave.id, { channel: LOUNGE, self_mute: true, self_deaf: true, session: "voice-dave" }],
 ]);
+
+// Go Live streams by stream key; Bob's is running from the start.
+type Stream = { viewers: Set<string>; paused: boolean };
+const streamKey = (channel: string, user: string) => `guild:${GUILD}:${channel}:${user}`;
+const streams = new Map<string, Stream>([[streamKey(LOUNGE, users.bob.id), { viewers: new Set(), paused: false }]]);
+
+function wireStream(key: string, stream: Stream) {
+  return { stream_key: key, rtc_server_id: "fake-rtc", region: "fake", viewer_ids: [...stream.viewers], paused: stream.paused };
+}
 
 function wireVoiceState(userId: string, state: VoiceState | undefined) {
   return {
@@ -365,7 +394,7 @@ function wireVoiceState(userId: string, state: VoiceState | undefined) {
     self_mute: state?.self_mute ?? false,
     self_deaf: state?.self_deaf ?? false,
     self_video: false,
-    self_stream: false,
+    self_stream: state?.self_stream ?? false,
     mute: false,
     deaf: false,
     suppress: false,
@@ -375,7 +404,19 @@ function wireVoiceState(userId: string, state: VoiceState | undefined) {
 
 // --- Gateway ----------------------------------------------------------------
 
-type Socket = ServerWebSocket<{ sequence: number; identified: boolean; session: string; origin: string }>;
+type SocketData = {
+  sequence: number;
+  identified: boolean;
+  session: string;
+  origin: string;
+  voice?: boolean;
+  /** A stream connection: its key, from the token it identified with. */
+  stream?: string;
+  ssrc?: number;
+  /** A viewer's stream, which starts once it asks for video with op 15. */
+  waiting?: { key: Buffer; ssrc: number };
+};
+type Socket = ServerWebSocket<SocketData>;
 const sockets = new Set<Socket>();
 let sessions = 0;
 
@@ -407,7 +448,7 @@ function guild() {
     id: GUILD,
     name: "Server",
     owner_id: users.bob.id,
-    icon: null,
+    icon: "server1",
     banner: null,
     splash: null,
     description: null,
@@ -557,6 +598,52 @@ function readySupplemental() {
   };
 }
 
+// Who is around and what they're doing, as their presence says.
+const presences: Record<string, { status: string; activities: unknown[] }> = {
+  [users.alice.id]: { status: "online", activities: [] },
+  [users.bob.id]: { status: "dnd", activities: [{ type: 0, name: "Factorio" }] },
+  [users.carol.id]: {
+    status: "idle",
+    activities: [{ type: 4, name: "Custom Status", state: "back later", emoji: { name: "🌙", id: null } }],
+  },
+  [users.dave.id]: { status: "offline", activities: [] },
+};
+
+// The member list of a channel everyone reads, as Discord groups it: Bob under
+// the hoisted Mods role, then who is online, then Dave, who isn't.
+function memberList() {
+  const offline = (user: User) => presences[user.id]!.status === "offline";
+  const mods = [users.bob];
+  const others = Object.values(users).filter((user) => !mods.includes(user));
+  const groups = [
+    { id: MODS, count: mods.length },
+    { id: "online", count: others.filter((user) => !offline(user)).length },
+    { id: "offline", count: others.filter(offline).length },
+  ];
+  const row = (user: User) => ({
+    member: {
+      ...member(user, mods.includes(user) ? [MODS] : []),
+      presence: { user: { id: user.id }, client_status: {}, ...presences[user.id] },
+    },
+  });
+  const items = [
+    { group: groups[0] },
+    ...mods.map(row),
+    { group: groups[1] },
+    ...others.filter((user) => !offline(user)).map(row),
+    { group: groups[2] },
+    ...others.filter(offline).map(row),
+  ];
+  return {
+    guild_id: GUILD,
+    id: "everyone",
+    member_count: Object.keys(users).length,
+    online_count: groups[0]!.count + groups[1]!.count,
+    groups,
+    ops: [{ op: "SYNC", range: [0, 99], items }],
+  };
+}
+
 function gatewayMessage(ws: Socket, text: string) {
   let payload: { op?: number; d?: any };
   try {
@@ -585,17 +672,70 @@ function gatewayMessage(ws: Socket, text: string) {
     case 4: {
       // Voice state: Alice shows in the channel; no voice server is assigned.
       const channel: string | null = d.channel_id ?? null;
+      const before = voice.get(ALICE);
+      if (before && before.channel !== channel) endStream(streamKey(before.channel, ALICE), "user_requested");
       if (channel) {
         voice.set(ALICE, {
           channel,
           self_mute: !!d.self_mute,
           self_deaf: !!d.self_deaf,
           session: ws.data.session,
+          self_stream: before?.channel === channel && before.self_stream,
         });
       } else {
         voice.delete(ALICE);
       }
       dispatch("VOICE_STATE_UPDATE", { ...wireVoiceState(ALICE, voice.get(ALICE)), member: member(users.alice) });
+      if (channel && before?.channel !== channel) {
+        send(ws, 0, { guild_id: GUILD, token: VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
+      }
+      break;
+    }
+    case 18: {
+      // Go Live: only into the voice channel Alice is in.
+      const key = streamKey(d.channel_id, ALICE);
+      const state = voice.get(ALICE);
+      if (d.guild_id !== GUILD || state?.channel !== d.channel_id) {
+        send(ws, 0, { stream_key: key, unavailable: false, reason: "unauthorized" }, "STREAM_DELETE");
+        break;
+      }
+      // A new stream starts paused until its streamer unpauses it with op 22.
+      const stream = { viewers: new Set<string>(), paused: true };
+      streams.set(key, stream);
+      state.self_stream = true;
+      dispatch("VOICE_STATE_UPDATE", { ...wireVoiceState(ALICE, state), member: member(users.alice) });
+      send(ws, 0, wireStream(key, stream), "STREAM_CREATE");
+      send(ws, 0, streamServer(ws, key), "STREAM_SERVER_UPDATE");
+      break;
+    }
+    case 19: // Stop streaming or watching
+      if (d.stream_key?.endsWith(`:${ALICE}`)) {
+        endStream(d.stream_key, "user_requested");
+      } else {
+        const stream = streams.get(d.stream_key);
+        if (stream?.viewers.delete(ALICE)) send(ws, 0, { stream_key: d.stream_key, unavailable: false, reason: "user_requested" }, "STREAM_DELETE");
+      }
+      break;
+    case 20: {
+      // Watch: a running stream in the voice channel Alice is in.
+      const key: string = d.stream_key ?? "";
+      const stream = streams.get(key);
+      const [, , channel] = key.split(":");
+      if (!stream || voice.get(ALICE)?.channel !== channel) {
+        send(ws, 0, { stream_key: key, unavailable: true, reason: "unauthorized" }, "STREAM_DELETE");
+        break;
+      }
+      stream.viewers.add(ALICE);
+      send(ws, 0, wireStream(key, stream), "STREAM_CREATE");
+      send(ws, 0, streamServer(ws, key), "STREAM_SERVER_UPDATE");
+      break;
+    }
+    case 22: {
+      const stream = streams.get(d.stream_key);
+      if (stream) {
+        stream.paused = !!d.paused;
+        dispatch("STREAM_UPDATE", wireStream(d.stream_key, stream));
+      }
       break;
     }
     case 6: // Resume: not kept, so start over as Discord does.
@@ -614,10 +754,564 @@ function gatewayMessage(ws: Socket, text: string) {
       });
       break;
     }
-    case 37: // Guild subscriptions: everything is sent anyway.
+    case 37: {
+      // Guild subscriptions: messages are sent anyway; a channel's member
+      // list is sent when asked for.
+      for (const [guildId, subscription] of Object.entries<any>(d.subscriptions ?? {})) {
+        if (guildId === GUILD && Object.keys(subscription.channels ?? {}).length > 0) {
+          send(ws, 0, memberList(), "GUILD_MEMBER_LIST_UPDATE");
+        }
+      }
       break;
+    }
     default:
       console.error(`gateway: unhandled op ${payload.op}`);
+  }
+}
+
+/** Where a stream is served: the voice server, which carries no video. */
+function streamServer(ws: Socket, key: string) {
+  return { stream_key: key, guild_id: null, endpoint: voiceEndpoint(ws), token: `stream-token-${key}` };
+}
+
+function endStream(key: string, reason: string) {
+  if (!streams.delete(key)) return;
+  const user = key.split(":")[3]!;
+  const state = voice.get(user);
+  if (state) {
+    state.self_stream = false;
+    dispatch("VOICE_STATE_UPDATE", { ...wireVoiceState(user, state), member: member(userById.get(user)!) });
+  }
+  dispatch("STREAM_DELETE", { stream_key: key, unavailable: false, reason });
+}
+
+// --- Voice server -------------------------------------------------------------
+// Discord's voice gateway, version 8, and UDP address discovery. The session
+// has no DAVE and its audio is dropped, which is enough for Talk to connect.
+
+const VOICE_TOKEN = "fake-voice-token";
+const voiceEndpoint = (ws: Socket) => `${ws.data.origin.replace(/^http/, "ws")}/voice`;
+let ssrcs = 100;
+
+/** What a stream connection sent, by its video SSRC. */
+type Received = {
+  stream: string;
+  key: Buffer;
+  mode: string;
+  /** The video codec the streamer offered to encode, and its payload type. */
+  codec: string;
+  payloadType: number;
+  announced: unknown;
+  packets: number;
+  undecryptable: number;
+  /** Packets dropped as Discord drops them: without the stream id op 12
+   * declared, or with a malformed transport sequence number. */
+  unattached: number;
+  frames: number;
+  keyframes: number;
+  width: number;
+  height: number;
+  /** RTCP sender reports, and the packet count the last one gave. */
+  senderReports: number;
+  reportedPackets: number;
+  /** The stream's sound: Opus packets on its audio SSRC, those that didn't
+   * open or weren't Opus, sender reports, and op 5's speaking value. */
+  audioPackets: number;
+  audioUndecryptable: number;
+  audioSenderReports: number;
+  speaking: number | null;
+  /** The streamer's audio SSRC; video and RTX follow it. */
+  ssrc: number;
+  rtcpCounter: number;
+  /** The video packet the fake reported lost, and the resends that came. */
+  nacked: number | null;
+  retransmitted: number;
+  badRetransmissions: number;
+};
+const received = new Map<number, Received>();
+/** The same records, by the stream's audio SSRC. */
+const receivedAudio = new Map<number, Received>();
+/** And by its RTX SSRC. */
+const receivedRtx = new Map<number, Received>();
+/** Previews streamers uploaded: their size, and whether they were JPEGs. */
+const previews: { stream: string; bytes: number; jpeg: boolean }[] = [];
+
+// --- Watching: Bob's recorded stream --------------------------------------------
+
+type Recorded = { data: Buffer; keyframe: boolean }[];
+const fixtures = new URL("./fixtures/", import.meta.url);
+
+/** VP8 frames from an IVF file: a 32-byte header, then sized frames. */
+function ivf(file: Buffer): Recorded {
+  const frames: Recorded = [];
+  for (let at = file.readUInt16LE(6); at + 12 <= file.length; ) {
+    const size = file.readUInt32LE(at);
+    const data = file.subarray(at + 12, at + 12 + size);
+    frames.push({ data, keyframe: (data[0]! & 1) === 0 });
+    at += 12 + size;
+  }
+  return frames;
+}
+
+/** H264 access units from an Annex B stream with access unit delimiters, as lists of NAL units. */
+function annexB(file: Buffer): { units: Buffer[]; keyframe: boolean }[] {
+  const starts: number[] = [];
+  for (let at = 0; at + 3 <= file.length; at++) {
+    if (file[at] === 0 && file[at + 1] === 0 && file[at + 2] === 1) starts.push(at + 3);
+  }
+  const units = starts.map((start, index) => {
+    let end = index + 1 < starts.length ? starts[index + 1]! - 3 : file.length;
+    if (file[end - 1] === 0) end--;
+    return file.subarray(start, end);
+  });
+  const frames: { units: Buffer[]; keyframe: boolean }[] = [];
+  for (const unit of units) {
+    const type = unit[0]! & 0x1f;
+    if (type === 9 || frames.length === 0) frames.push({ units: [], keyframe: false });
+    if (type === 9) continue;
+    frames.at(-1)!.units.push(unit);
+    if (type === 5) frames.at(-1)!.keyframe = true;
+  }
+  return frames.filter((frame) => frame.units.length > 0);
+}
+
+const recordings = {
+  vp8: ivf(readFileSync(new URL("stream-vp8.ivf", fixtures))),
+  h264: annexB(readFileSync(new URL("stream-h264.h264", fixtures))),
+};
+let streamCodec: "vp8" | "h264" = "vp8";
+
+/** A viewer of Bob's stream and what it was sent. */
+type Watcher = {
+  stream: string; codec: string; framesSent: number; soundsSent: number; keyframeRequests: number; timer?: Timer;
+  /** Sends Bob's packet with this sequence number again, as RTX. */
+  resend?: (sequence: number) => void;
+};
+const watchers = new Map<number, Watcher>();
+/** Each viewer's transport key, by its SSRC, to read its RTCP. */
+const viewerKeys = new Map<number, Buffer>();
+/** What viewers' connections went through: a packet lost on the way and
+ * one overtaken per stream watched, and what the viewers did about it. */
+const repairs = { dropped: 0, reordered: 0, nacks: 0, resent: 0, receiverReports: 0 };
+/** Where each voice connection's UDP comes from, by its SSRC. */
+const peers = new Map<number, { address: string; port: number }>();
+const PLAYOUT_DELAY = Buffer.from([0xbe, 0xde, 0x00, 0x01, 0x52, 0x00, 0x00, 0x00]);
+/** 20 ms of Opus silence. */
+const OPUS_SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
+
+/** Seals an RTP packet as "rtpsize" AES-GCM: header and extension preamble in the clear. */
+function sealRtp(packet: Buffer, key: Buffer, counter: number, clear = 16): Buffer {
+  const nonce = Buffer.alloc(12);
+  nonce.writeUInt32BE(counter >>> 0, 0);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  cipher.setAAD(packet.subarray(0, clear));
+  const sealed = Buffer.concat([cipher.update(packet.subarray(clear)), cipher.final()]);
+  return Buffer.concat([packet.subarray(0, clear), sealed, cipher.getAuthTag(), nonce.subarray(0, 4)]);
+}
+
+/** Streams the recording to a viewer at 10 frames a second until it disconnects. */
+function streamTo(ws: Socket, key: Buffer, ssrc: number) {
+  const watcher = watchers.get(ws.data.ssrc!)!;
+  let frame = 0;
+  let sequence = 1000;
+  let soundSequence = 7000;
+  let rtxSequence = 3000;
+  let counter = 1;
+  let picture = 0;
+  const packet = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number, from: number, number: number) => {
+    const header = Buffer.alloc(12);
+    header[0] = 0x90;
+    header[1] = (marker ? 0x80 : 0) | payloadType;
+    header.writeUInt16BE(number & 0xffff, 2);
+    header.writeUInt32BE(timestamp >>> 0, 4);
+    header.writeUInt32BE(from, 8);
+    return sealRtp(Buffer.concat([header, PLAYOUT_DELAY, payload]), key, counter++);
+  };
+  // What was sent lately, to resend when the viewer asks.
+  const history = new Map<number, { payload: Buffer; marker: boolean; timestamp: number; payloadType: number }>();
+  let overtaken: Buffer | undefined;
+  const send = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number) => {
+    const number = sequence++ & 0xffff;
+    history.set(number, { payload, marker, timestamp, payloadType });
+    history.delete((number - 1024) & 0xffff);
+    const sealed = packet(payload, marker, timestamp, payloadType, ssrc, number);
+    // As on the internet: one packet lost on the way, and one overtaken.
+    if (number === 1003) return void repairs.dropped++;
+    if (number === 1008) return void (overtaken = sealed);
+    toViewer(sealed);
+    if (overtaken) {
+      toViewer(overtaken);
+      overtaken = undefined;
+      repairs.reordered++;
+    }
+  };
+  // RFC 4588: on the RTX SSRC, the original sequence number first.
+  watcher.resend = (number) => {
+    const sent = history.get(number);
+    if (!sent) return;
+    const original = Buffer.alloc(2);
+    original.writeUInt16BE(number);
+    const rtx = sent.payloadType === 101 ? 102 : 106;
+    toViewer(packet(Buffer.concat([original, sent.payload]), sent.marker, sent.timestamp, rtx, ssrc + 1, rtxSequence++));
+    repairs.resent++;
+  };
+  // A viewer that went away refuses packets until its connection closes.
+  const toViewer = (packet: Buffer) => {
+    const peer = peers.get(ws.data.ssrc!);
+    try {
+      if (peer) udp.send(packet, peer.port, peer.address);
+    } catch {}
+  };
+  watcher.timer = setInterval(() => {
+    const timestamp = frame * 9000;
+    if (watcher.codec === "vp8") {
+      const { data } = recordings.vp8[frame % recordings.vp8.length]!;
+      for (let at = 0; at < data.length; at += 1100) {
+        const descriptor = Buffer.from([at === 0 ? 0x90 : 0x80, 0x80, 0x80 | (picture >> 8), picture & 0xff]);
+        send(Buffer.concat([descriptor, data.subarray(at, at + 1100)]), at + 1100 >= data.length, timestamp, 105);
+      }
+      picture = (picture + 1) & 0x7fff;
+    } else {
+      const { units } = recordings.h264[frame % recordings.h264.length]!;
+      units.forEach((unit, index) => {
+        const last = index === units.length - 1;
+        if (unit.length <= 1100) return send(unit, last, timestamp, 101);
+        for (let at = 1; at < unit.length; at += 1100) {
+          const start = at === 1 ? 0x80 : 0;
+          const end = at + 1100 >= unit.length ? 0x40 : 0;
+          const fragment = Buffer.from([(unit[0]! & 0xe0) | 28, start | end | (unit[0]! & 0x1f)]);
+          send(Buffer.concat([fragment, unit.subarray(at, at + 1100)]), last && end !== 0, timestamp, 101);
+        }
+      });
+    }
+    watcher.framesSent++;
+    // 100 ms of sound from Bob's audio SSRC, just before his video's: five
+    // Opus frames of silence, plain RTP as a call's audio goes.
+    for (let index = 0; index < 5; index++) {
+      const header = Buffer.alloc(12);
+      header[0] = 0x80;
+      header[1] = 120;
+      header.writeUInt16BE(soundSequence++ & 0xffff, 2);
+      header.writeUInt32BE((frame * 5 + index) * 960, 4);
+      header.writeUInt32BE(ssrc - 1, 8);
+      toViewer(sealRtp(Buffer.concat([header, OPUS_SILENCE]), key, counter++, 12));
+      watcher.soundsSent++;
+    }
+    frame++;
+  }, 100);
+}
+
+/** Opens an "rtpsize" AES-GCM packet: the header is authenticated, the rest encrypted. */
+function openRtp(packet: Buffer, key: Buffer, rtcp = false): Buffer | undefined {
+  // RTCP keeps its header and sender SSRC in the clear.
+  const clear = rtcp ? 8 : 12 + (packet[0]! & 0x0f) * 4 + (packet[0]! & 0x10 ? 4 : 0);
+  if (packet.length < clear + 20) return undefined;
+  const nonce = Buffer.alloc(12);
+  packet.copy(nonce, 0, packet.length - 4);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+  decipher.setAAD(packet.subarray(0, clear));
+  decipher.setAuthTag(packet.subarray(packet.length - 20, packet.length - 4));
+  try {
+    return Buffer.concat([packet.subarray(0, clear), decipher.update(packet.subarray(clear, packet.length - 20)), decipher.final()]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A decrypted RTP packet's one-byte extensions by id, and where its payload starts. */
+function rtpExtensions(plain: Buffer): { extensions: Map<number, Buffer>; at: number } {
+  let at = 12 + (plain[0]! & 0x0f) * 4;
+  const extensions = new Map<number, Buffer>();
+  if (plain[0]! & 0x10) {
+    const end = at + 4 + plain.readUInt16BE(at + 2) * 4;
+    // One-byte elements: id and length minus one, then the value; zeros pad.
+    for (let element = at + 4; element < end; ) {
+      const id = plain[element]! >> 4;
+      if (id === 0) {
+        element++;
+        continue;
+      }
+      const length = (plain[element]! & 0x0f) + 1;
+      extensions.set(id, plain.subarray(element + 1, element + 1 + length));
+      element += 1 + length;
+    }
+    at = end;
+  }
+  return { extensions, at };
+}
+
+/** Sends the streamer a generic NACK (RTCP 205, format 1) for one video packet. */
+function nack(stream: Received, sequence: number) {
+  const peer = peers.get(stream.ssrc);
+  if (!peer) return;
+  stream.nacked = sequence;
+  const packet = Buffer.alloc(16);
+  packet[0] = 0x81;
+  packet[1] = 205;
+  packet.writeUInt16BE(3, 2);
+  packet.writeUInt32BE(1, 4);
+  packet.writeUInt32BE(stream.ssrc + 1, 8);
+  packet.writeUInt16BE(sequence, 12);
+  udp.send(sealRtp(packet, stream.key, stream.rtcpCounter++, 8), peer.port, peer.address);
+}
+
+/** Checks a resent packet: the RTX payload type, the NACKed sequence number
+ * before the payload, and the repaired stream id in place of the stream id. */
+function receiveRtx(stream: Received, packet: Buffer) {
+  const plain = openRtp(packet, stream.key);
+  const { extensions, at } = plain ? rtpExtensions(plain) : { extensions: new Map<number, Buffer>(), at: 0 };
+  const good =
+    plain &&
+    (plain[1]! & 0x7f) === stream.payloadType + 1 &&
+    extensions.get(12)?.toString() === "100" &&
+    !extensions.has(11) &&
+    plain.readUInt16BE(at) === stream.nacked;
+  if (good) stream.retransmitted++;
+  else stream.badRetransmissions++;
+}
+
+/** Counts a packet of a stream's sound: Opus, payload type 120. */
+function receiveAudio(stream: Received, packet: Buffer) {
+  stream.audioPackets++;
+  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== 120) stream.audioUndecryptable++;
+}
+
+/** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
+function receiveVideo(packet: Buffer) {
+  const stream = received.get(packet.readUInt32BE(8));
+  if (!stream) return;
+  stream.packets++;
+  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== stream.payloadType) {
+    stream.undecryptable++;
+    return;
+  }
+  const { extensions, at } = rtpExtensions(plain);
+  const transportSequence = extensions.get(5);
+  if (extensions.get(11)?.toString() !== "100" || (transportSequence && transportSequence.length !== 2)) {
+    stream.unattached++;
+    return;
+  }
+  // Report the first packet lost, as a viewer would, to see it resent.
+  if (stream.nacked === null) nack(stream, plain.readUInt16BE(2));
+  const payload = plain.subarray(at);
+  const size = stream.codec === "H264" ? h264Keyframe(payload) : vp8Keyframe(payload);
+  if (size) {
+    stream.keyframes++;
+    [stream.width, stream.height] = size;
+  }
+  if (plain[1]! & 0x80) stream.frames++;
+}
+
+/** The size a VP8 keyframe's first packet gives. */
+function vp8Keyframe(payload: Buffer): [number, number] | undefined {
+  let at = 0;
+  const descriptor = payload[at++]!;
+  if (descriptor & 0x80) {
+    const extended = payload[at++]!;
+    if (extended & 0x80) at += payload[at]! & 0x80 ? 2 : 1;
+    if (extended & 0x40) at++;
+    if (extended & 0x30) at++;
+  }
+  const frame = payload.subarray(at);
+  const start = descriptor & 0x10 && (descriptor & 0x07) === 0;
+  if (start && (frame[0]! & 1) === 0 && frame[3] === 0x9d && frame[4] === 0x01 && frame[5] === 0x2a)
+    return [frame.readUInt16LE(6) & 0x3fff, frame.readUInt16LE(8) & 0x3fff];
+}
+
+/** The size an H264 packet's sequence parameter set gives: whole, or first in a STAP-A. */
+function h264Keyframe(payload: Buffer): [number, number] | undefined {
+  const type = payload[0]! & 0x1f;
+  if (type === 7) return spsSize(payload);
+  if (type === 24 && (payload[3]! & 0x1f) === 7) return spsSize(payload.subarray(3, 3 + payload.readUInt16BE(1)));
+}
+
+/** Reads the picture size from an SPS (H.264 7.3.2.1.1), as baseline encoders write it. */
+function spsSize(nal: Buffer): [number, number] | undefined {
+  // Undo emulation prevention: 0 0 3 stands for 0 0.
+  const bytes: number[] = [];
+  for (let i = 1; i < nal.length; i++) {
+    if (i >= 3 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0) continue;
+    bytes.push(nal[i]!);
+  }
+  let bit = 0;
+  const read = (count: number) => {
+    let value = 0;
+    for (let i = 0; i < count; i++, bit++) value = (value << 1) | ((bytes[bit >> 3]! >> (7 - (bit & 7))) & 1);
+    return value;
+  };
+  const golomb = () => {
+    let zeros = 0;
+    while (read(1) === 0 && zeros < 32) zeros++;
+    return (1 << zeros) - 1 + read(zeros);
+  };
+  const profile = read(8);
+  read(16); // constraint flags and level
+  golomb(); // seq_parameter_set_id
+  if ([100, 110, 122, 244, 44, 83, 86, 118, 128].includes(profile)) return undefined;
+  golomb(); // log2_max_frame_num_minus4
+  const order = golomb();
+  if (order === 0) golomb();
+  else if (order === 1) return undefined;
+  golomb(); // max_num_ref_frames
+  read(1);
+  const width = golomb() + 1;
+  const height = golomb() + 1;
+  const frameOnly = read(1);
+  if (!frameOnly) read(1);
+  read(1); // direct_8x8_inference_flag
+  const crop = read(1) ? [golomb(), golomb(), golomb(), golomb()] : [0, 0, 0, 0];
+  return [width * 16 - 2 * (crop[0]! + crop[1]!), (2 - frameOnly) * height * 16 - 2 * (crop[2]! + crop[3]!)];
+}
+
+const udp = await Bun.udpSocket({
+  hostname: args.host,
+  socket: {
+    data(socket, data, port, address) {
+      // IP discovery: type 1, length 70, SSRC, then the answer fills in the address.
+      if (data.length !== 74 || data.readUInt16BE(0) !== 1) {
+        if (data.length > 12 && (data[0]! & 0xc0) === 0x80 && !(data[1]! >= 192 && data[1]! <= 223)) {
+          const ssrc = data.readUInt32BE(8);
+          const sound = receivedAudio.get(ssrc);
+          const resent = receivedRtx.get(ssrc);
+          if (sound) receiveAudio(sound, data);
+          else if (resent) receiveRtx(resent, data);
+          else receiveVideo(data);
+        }
+        // A streamer's RTCP sender report, from its video or audio SSRC.
+        if (data.length >= 8 && data[1] === 200) {
+          const sender = data.readUInt32BE(4);
+          const stream = received.get(sender) ?? receivedAudio.get(sender);
+          const report = stream && openRtp(data, stream.key, true);
+          if (stream && report && report.length >= 28) {
+            if (received.has(sender)) {
+              stream.senderReports++;
+              stream.reportedPackets = report.readUInt32BE(20);
+            } else {
+              stream.audioSenderReports++;
+            }
+          }
+        }
+        // RTCP feedback with a picture loss indication, from a viewer's SSRC.
+        if (data.length >= 8 && data[1] === 206 && (data[0]! & 0x1f) === 1) {
+          const watcher = watchers.get(data.readUInt32BE(4));
+          if (watcher) watcher.keyframeRequests++;
+        }
+        // A viewer's generic NACK: the packets it asks for again.
+        const asking = data.length >= 8 && data[1] === 205 && (data[0]! & 0x1f) === 1 ? watchers.get(data.readUInt32BE(4)) : undefined;
+        const viewer = asking && viewerKeys.get(data.readUInt32BE(4));
+        const nack = asking && viewer && openRtp(data, viewer, true);
+        if (asking && nack) {
+          repairs.nacks++;
+          for (let at = 12; at + 4 <= nack.length; at += 4) {
+            const first = nack.readUInt16BE(at);
+            const mask = nack.readUInt16BE(at + 2);
+            asking.resend?.(first);
+            for (let bit = 0; bit < 16; bit++) if (mask & (1 << bit)) asking.resend?.((first + bit + 1) & 0xffff);
+          }
+        }
+        if (data.length >= 8 && data[1] === 201 && watchers.has(data.readUInt32BE(4))) repairs.receiverReports++;
+        return;
+      }
+      peers.set(data.readUInt32BE(4), { address, port });
+      const answer = Buffer.alloc(74);
+      answer.writeUInt16BE(2, 0);
+      answer.writeUInt16BE(70, 2);
+      answer.writeUInt32BE(data.readUInt32BE(4), 4);
+      answer.write(address, 8, "ascii");
+      answer.writeUInt16BE(port, 72);
+      socket.send(answer, port, address);
+    },
+  },
+});
+
+function voiceMessage(ws: Socket, text: string) {
+  let payload: { op?: number; d?: any };
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return;
+  }
+  const d = payload.d ?? {};
+  const reply = (op: number, data: unknown) => ws.send(JSON.stringify({ op, d: data }));
+  switch (payload.op) {
+    case 0: // Identify
+      if (d.token !== VOICE_TOKEN && !String(d.token).startsWith("stream-token-")) {
+        ws.close(4004, "Authentication failed.");
+        return;
+      }
+      ws.data.ssrc = ssrcs += 3;
+      if (String(d.token).startsWith("stream-token-")) ws.data.stream = String(d.token).slice("stream-token-".length);
+      reply(2, {
+        ssrc: ws.data.ssrc,
+        ip: args.host,
+        port: udp.port,
+        modes: ["aead_aes256_gcm_rtpsize", "aead_xchacha20_poly1305_rtpsize"],
+        ...(d.video
+          ? { streams: [{ type: "video", rid: "100", ssrc: ws.data.ssrc + 1, rtx_ssrc: ws.data.ssrc + 2, active: false, quality: 100 }] }
+          : {}),
+      });
+      break;
+    case 1: {
+      // Select protocol
+      const key = Buffer.from(crypto.getRandomValues(new Uint8Array(32)));
+      // A streamer gets the video codec it offered to encode, by priority.
+      const offered = ((d.codecs ?? []) as { name: string; type: string; priority: number; payload_type: number; encode?: boolean }[])
+        .filter((codec) => codec.type === "video" && codec.encode !== false)
+        .sort((a, b) => a.priority - b.priority)[0];
+      if (ws.data.stream && ws.data.ssrc) {
+        const record: Received = {
+          stream: ws.data.stream, key, mode: d.data?.mode, announced: null,
+          codec: offered?.name ?? "VP8", payloadType: offered?.payload_type ?? 105,
+          packets: 0, undecryptable: 0, unattached: 0, frames: 0, keyframes: 0, width: 0, height: 0,
+          senderReports: 0, reportedPackets: 0,
+          audioPackets: 0, audioUndecryptable: 0, audioSenderReports: 0, speaking: null,
+          ssrc: ws.data.ssrc, rtcpCounter: 1, nacked: null, retransmitted: 0, badRetransmissions: 0,
+        };
+        received.set(ws.data.ssrc + 1, record);
+        receivedAudio.set(ws.data.ssrc, record);
+        receivedRtx.set(ws.data.ssrc + 2, record);
+      }
+      const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
+      const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
+      reply(4, { mode: d.data?.mode, secret_key: [...key], dave_protocol_version: 0, audio_codec: "opus", video_codec: codec.toUpperCase() });
+      if (watching && ws.data.ssrc) {
+        // Bob's SSRCs, as Discord announces another client's video.
+        const bob = 5000;
+        reply(12, {
+          user_id: users.bob.id, audio_ssrc: bob, video_ssrc: bob + 1, rtx_ssrc: bob + 2,
+          streams: [{ type: "video", rid: "100", ssrc: bob + 1, rtx_ssrc: bob + 2, active: true, quality: 100 }],
+        });
+        watchers.set(ws.data.ssrc, { stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0 });
+        viewerKeys.set(ws.data.ssrc, key);
+        ws.data.waiting = { key, ssrc: bob + 1 };
+      }
+      break;
+    }
+    case 15: { // Media sink wants: Discord forwards video only to those who ask.
+      const waiting = ws.data.waiting;
+      if (waiting && Number(d.any) > 0) {
+        ws.data.waiting = undefined;
+        streamTo(ws, waiting.key, waiting.ssrc);
+      }
+      break;
+    }
+    case 5: { // Speaking: a stream's sound is marked as soundshare.
+      const stream = ws.data.ssrc ? receivedAudio.get(ws.data.ssrc) : undefined;
+      if (stream) stream.speaking = Number(d.speaking);
+      break;
+    }
+    case 12: { // Video attributes
+      const stream = received.get(d.video_ssrc);
+      if (stream) stream.announced = d.streams?.[0]?.max_resolution ?? null;
+      break;
+    }
+    case 3: // Heartbeat
+      reply(6, d);
+      break;
+    default: // Speaking and client details need no answer.
+      break;
   }
 }
 
@@ -638,6 +1332,18 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   const url = new URL(req.url);
   const method = req.method;
   let m: RegExpMatchArray | null;
+
+  // A live stream's preview, from its streamer: a JPEG as a data URI.
+  if (method === "POST" && (m = path.match(/^\/streams\/([^/]+)\/preview$/))) {
+    const stream = decodeURIComponent(m[1]!);
+    if (!stream.endsWith(`:${ALICE}`)) return json({ message: "Missing Access", code: 50001 }, 403);
+    const body: any = await req.json();
+    const prefix = "data:image/jpeg;base64,";
+    const thumbnail = String(body.thumbnail ?? "");
+    const jpeg = thumbnail.startsWith(prefix) ? Buffer.from(thumbnail.slice(prefix.length), "base64") : Buffer.alloc(0);
+    previews.push({ stream, bytes: jpeg.length, jpeg: jpeg[0] === 0xff && jpeg[1] === 0xd8 });
+    return new Response(null, { status: 204 });
+  }
 
   if (method === "GET" && path === "/users/@me") {
     return json({ ...wireUser(users.alice), email: "alice@example.org", verified: true });
@@ -796,7 +1502,7 @@ function chatTick(origin: string) {
   dispatch("MESSAGE_CREATE", dispatched(message, origin));
 }
 
-const server = Bun.serve<{ sequence: number; identified: boolean; session: string; origin: string }>({
+const server = Bun.serve<SocketData>({
   hostname: args.host,
   port: Number(args.port),
   async fetch(req, server) {
@@ -813,12 +1519,22 @@ const server = Bun.serve<{ sequence: number; identified: boolean; session: strin
       }
       return new Response("upgrade failed", { status: 400 });
     }
+    if (path === "/voice/" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      if (server.upgrade(req, { data: { sequence: 0, identified: false, session: "", origin, voice: true } })) {
+        return undefined;
+      }
+      return new Response("upgrade failed", { status: 400 });
+    }
     if (path.startsWith("/api/v9/")) return api(req, path.slice("/api/v9".length), origin);
     if (req.method === "GET" && path.startsWith("/attachments/")) {
       return serveFile(path.slice("/attachments/".length), url);
     }
     if (req.method === "GET" && path.startsWith("/media/attachments/")) {
       return serveFile(path.slice("/media/attachments/".length), url);
+    }
+    // Discord's CDN: server icons and avatars.
+    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/avatars)\/[^/]+\.png$/.test(path)) {
+      return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
     if (req.method === "PUT" && path.startsWith("/_upload/")) {
       const upload = uploads.get(decodeURIComponent(path.slice("/_upload/".length)));
@@ -827,10 +1543,39 @@ const server = Bun.serve<{ sequence: number; identified: boolean; session: strin
       return new Response(null, { status: 200 });
     }
     if (path === "/_control/health") return new Response("ok\n");
+    if (path === "/_control/video") {
+      return json({
+        received: [...received.values()].map(({ key: _, ...stream }) => stream),
+        watchers: [...watchers.values()].map(({ timer: _, resend: _resend, ...watcher }) => watcher),
+        repairs,
+        previews,
+      });
+    }
+    if (req.method === "POST" && path === "/_control/stream-codec") {
+      const codec = (await req.text()).trim();
+      if (codec !== "vp8" && codec !== "h264") return new Response("vp8 or h264\n", { status: 400 });
+      streamCodec = codec;
+      return new Response(`streams are ${codec}\n`);
+    }
     if (req.method === "POST" && path === "/_control/chat-start") {
       clearInterval(chat);
       chat = setInterval(() => chatTick(origin), CHAT_INTERVAL);
       return new Response("chat started\n");
+    }
+    if (req.method === "POST" && path === "/_control/gallery") {
+      const now = Date.now();
+      const shades: [string, number, number, number[]][] = [
+        ["dawn.png", 1600, 1000, [240, 160, 90]],
+        ["noon.png", 1000, 1600, [90, 170, 230]],
+        ["dusk.png", 1200, 1200, [140, 90, 200]],
+      ];
+      const files = shades.map(([filename, width, height, [r, g, b]], index) => {
+        const draw = (w: number, h: number) => png(w, h, (x, y) => [(r! * (w - x)) / w, (g! * (h - y)) / h, b!, 255].map(Math.round));
+        return addFile({ id: snowflake(now, 10 + index), channel: GENERAL, filename, contentType: "image/png", data: draw(width, height), width, height, draw });
+      });
+      const message = post(GENERAL, users.bob, "Three from today", now, { files });
+      dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      return new Response("gallery posted\n");
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);
@@ -841,6 +1586,10 @@ const server = Bun.serve<{ sequence: number; identified: boolean; session: strin
   },
   websocket: {
     open(ws) {
+      if (ws.data.voice) {
+        ws.send(JSON.stringify({ op: 8, d: { heartbeat_interval: 13_750 } }));
+        return;
+      }
       sockets.add(ws);
       ws.send(
         JSON.stringify({
@@ -852,9 +1601,14 @@ const server = Bun.serve<{ sequence: number; identified: boolean; session: strin
       );
     },
     message(ws, message) {
+      if (ws.data.voice) {
+        if (typeof message === "string") voiceMessage(ws, message);
+        return;
+      }
       gatewayMessage(ws, typeof message === "string" ? message : new TextDecoder().decode(message));
     },
     close(ws) {
+      if (ws.data.voice && ws.data.ssrc) clearInterval(watchers.get(ws.data.ssrc)?.timer);
       sockets.delete(ws);
     },
   },
