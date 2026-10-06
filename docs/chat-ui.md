@@ -75,7 +75,14 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   through its send queue, up to 50 MB. Images show a decoded preview of up to
   360×270, decoded with dimension and memory limits, with a save button over the
   picture on hover. Other files show a card with a save button. Saving writes the
-  decrypted file where you choose.
+  decrypted file where you choose. A Discord message with several images shows
+  them as square tiles, two to a row.
+- Click an image to see it large over the window. It opens at the image's full
+  proportions with the preview, then sharpens when Talk has downloaded it at up
+  to 1920×1200. The left and right arrow keys or the side buttons step through
+  the message's other images, a counter shows which one it is, and Escape, the
+  close button or a click outside the image closes it. It can save the image
+  too.
 - Send through the SDK's persistent send queue. A message appears at once with
   "Sending...". After a connection problem it shows "Not sent yet" and goes out
   by itself when sync recovers. Sync now uses the SDK's offline mode, which keeps

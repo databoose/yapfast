@@ -14,6 +14,10 @@ pub const MAX_MESSAGE_BYTES: usize = 16_000;
 pub(crate) const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 pub(crate) const PREVIEW_WIDTH: u32 = 360;
 pub(crate) const PREVIEW_HEIGHT: u32 = 270;
+/// The image viewer shows pictures up to this size, so a full-size photo
+/// costs at most about 9 MiB while it's open.
+pub const VIEW_WIDTH: u32 = 1920;
+pub const VIEW_HEIGHT: u32 = 1200;
 
 #[derive(Clone)]
 pub struct ChatRoom {
@@ -139,6 +143,8 @@ pub struct Attachment {
     pub name: String,
     pub size: Option<u64>,
     pub image: bool,
+    /// The full image's width and height, when the sender said.
+    pub dimensions: Option<(u32, u32)>,
     pub preview: Option<Arc<Picture>>,
     /// The preview could not be downloaded or decoded; the file can still be saved.
     pub preview_failed: bool,
@@ -167,7 +173,9 @@ pub struct ChatMessage {
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,
-    pub attachment: Option<Attachment>,
+    /// Files and images, in the order the sender attached them. Matrix
+    /// messages carry at most one.
+    pub attachments: Vec<Attachment>,
     pub can_reply: bool,
     pub can_edit: bool,
     pub can_delete: bool,
@@ -227,10 +235,19 @@ pub enum Command {
         room: String,
         path: PathBuf,
     },
+    /// Save the attachment at `index` in an item's attachments.
     SaveAttachment {
         room: String,
         item: String,
+        index: usize,
         path: PathBuf,
+    },
+    /// Download an image attachment at viewing size; it arrives as
+    /// [`Event::Image`].
+    ViewImage {
+        room: String,
+        item: String,
+        index: usize,
     },
     /// Store a room's composer text in the encrypted session store; empty text clears it.
     SaveDraft {
@@ -257,6 +274,13 @@ pub enum Event {
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(talk_discord::service::Snapshot),
+    /// An image [`Command::ViewImage`] asked for, or why it can't show.
+    Image {
+        room: String,
+        item: String,
+        index: usize,
+        picture: Result<Arc<Picture>, &'static str>,
+    },
     /// A picture [`Command::Pictures`] asked for, decoded.
     Picture {
         url: String,
@@ -333,6 +357,11 @@ pub fn sort_members(members: &mut [ChatMember]) {
 /// Decode an image with dimension and allocation limits, then shrink it for the timeline.
 pub(crate) fn decode_preview(data: &[u8]) -> Option<Picture> {
     decode_picture(data, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+}
+
+/// Decode an image for the viewer, shrunk to fit a large window.
+pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
+    decode_picture(data, VIEW_WIDTH, VIEW_HEIGHT)
 }
 
 /// Decode an image with dimension and allocation limits, shrunk to fit `width` by `height`.

@@ -33,6 +33,17 @@ pub struct Forwarding {
     pub sent: Vec<String>,
 }
 
+/// An image attachment shown large, and the message's other images to step to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Viewer {
+    pub item: String,
+    /// The attachment shown, by its place in the message.
+    pub index: usize,
+    /// Images at viewing size by attachment: `None` while one downloads,
+    /// else the image or why it can't show.
+    pub pictures: HashMap<usize, Option<Result<Arc<Picture>, &'static str>>>,
+}
+
 /// What the composer's next send does in a room, besides sending a new message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Compose {
@@ -85,6 +96,8 @@ pub struct AppState {
     pub attaching: bool,
     /// The selected room's message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
+    /// The image viewer, open over the selected room.
+    pub viewer: Option<Viewer>,
     /// Changes when selecting a room, including selecting the same room to retry opening it.
     pub selection_version: u64,
     /// Changes after logout so adapters can clear their inputs and focus sign-in.
@@ -208,10 +221,20 @@ pub enum Action {
     Retry(String),
     CancelSend(String),
     Attach(PathBuf),
+    /// Save the attachment at `index` of an item.
     SaveAttachment {
         item: String,
+        index: usize,
         path: PathBuf,
     },
+    /// Show an item's image attachment large.
+    ViewImage {
+        item: String,
+        index: usize,
+    },
+    /// Show the message's next image, or with -1 its previous one, wrapping around.
+    StepImage(isize),
+    CloseImage,
     DismissNotice,
     Earlier,
     Login {
@@ -274,6 +297,23 @@ impl Application {
         let mut effects = self.apply_event(event);
         effects.extend(self.request_pictures());
         effects
+    }
+
+    /// Downloads the viewer's image at viewing size, unless it has it or is
+    /// getting it. The preview shows until it arrives.
+    fn load_image(&mut self) -> Vec<Effect> {
+        let (Some(viewer), Some(room)) = (&mut self.state.viewer, &self.state.selected) else {
+            return vec![];
+        };
+        if self.state.preview || viewer.pictures.contains_key(&viewer.index) {
+            return vec![];
+        }
+        viewer.pictures.insert(viewer.index, None);
+        vec![Effect::Backend(Command::ViewImage {
+            room: room.clone(),
+            item: viewer.item.clone(),
+            index: viewer.index,
+        })]
     }
 
     /// Asks for the server icons and avatars on screen that weren't asked
@@ -550,12 +590,12 @@ impl Application {
                 let room = self.state.selected.clone().expect("selected room exists");
                 vec![Effect::Backend(Command::Attach { room, path })]
             }
-            Action::SaveAttachment { item, path } => {
+            Action::SaveAttachment { item, index, path } => {
                 if self.state.preview
                     || !self
                         .state
                         .message(&item)
-                        .is_some_and(|message| message.attachment.is_some())
+                        .is_some_and(|message| index < message.attachments.len())
                 {
                     return vec![];
                 }
@@ -563,8 +603,50 @@ impl Application {
                 vec![Effect::Backend(Command::SaveAttachment {
                     room,
                     item,
+                    index,
                     path,
                 })]
+            }
+            Action::ViewImage { item, index } => {
+                if !self
+                    .state
+                    .message(&item)
+                    .and_then(|message| message.attachments.get(index))
+                    .is_some_and(|attachment| attachment.image)
+                {
+                    return vec![];
+                }
+                self.state.viewer = Some(Viewer {
+                    item,
+                    index,
+                    pictures: HashMap::new(),
+                });
+                self.load_image()
+            }
+            Action::StepImage(step) => {
+                let Some(viewer) = &self.state.viewer else {
+                    return vec![];
+                };
+                let images: Vec<usize> = self
+                    .state
+                    .message(&viewer.item)
+                    .into_iter()
+                    .flat_map(|message| message.attachments.iter().enumerate())
+                    .filter(|(_, attachment)| attachment.image)
+                    .map(|(index, _)| index)
+                    .collect();
+                let Some(at) = images.iter().position(|index| *index == viewer.index) else {
+                    return vec![];
+                };
+                let next = images[(at as isize + step).rem_euclid(images.len() as isize) as usize];
+                if let Some(viewer) = &mut self.state.viewer {
+                    viewer.index = next;
+                }
+                self.load_image()
+            }
+            Action::CloseImage => {
+                self.state.viewer = None;
+                vec![]
             }
             Action::DismissNotice => {
                 self.state.notice = None;
@@ -725,6 +807,19 @@ impl Application {
                 self.matrix_rooms = index.rooms;
                 self.matrix_servers = index.servers;
                 return self.show_lists();
+            }
+            Event::Image {
+                room,
+                item,
+                index,
+                picture,
+            } => {
+                if self.state.selected.as_ref() == Some(&room)
+                    && let Some(viewer) = &mut self.state.viewer
+                    && viewer.item == item
+                {
+                    viewer.pictures.insert(index, Some(picture));
+                }
             }
             Event::Picture { url, picture } => {
                 self.state.pictures.insert(url, picture);
@@ -921,6 +1016,7 @@ impl Application {
             self.state.selected = None;
             self.state.confirm_delete = None;
             self.state.forwarding = None;
+            self.state.viewer = None;
             self.state.room_ready = false;
             self.state.loading_history = false;
             self.state.notice = None;
@@ -1008,6 +1104,7 @@ impl Application {
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
         self.state.forwarding = None;
+        self.state.viewer = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
         self.state.notice = None;
@@ -1129,7 +1226,7 @@ impl Application {
                 own: true,
                 body: message.body,
                 formatted: message.formatted,
-                attachment: message.attachment,
+                attachments: message.attachments,
                 ..sample_actions()
             });
             if target == source {
@@ -2282,6 +2379,82 @@ mod tests {
             effects.as_slice(),
             [Effect::Backend(Command::Voice(voice::Command::Join(id)))] if id == "discord:10:11"
         ));
+    }
+
+    #[test]
+    fn the_viewer_steps_through_a_messages_images() {
+        let mut app = connected();
+        let file = |name: &str, image: bool| chat::Attachment {
+            name: name.into(),
+            size: None,
+            image,
+            dimensions: None,
+            preview: None,
+            preview_failed: false,
+        };
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![ChatMessage {
+                id: "m".into(),
+                item: "e:m".into(),
+                attachments: vec![
+                    file("a.png", true),
+                    file("notes.txt", false),
+                    file("b.png", true),
+                ],
+                ..Default::default()
+            }],
+        });
+        let viewed = |effects: Vec<Effect>| -> Vec<usize> {
+            effects
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Backend(Command::ViewImage { index, .. }) => Some(index),
+                    _ => None,
+                })
+                .collect()
+        };
+        let view = |index| Action::ViewImage {
+            item: "e:m".into(),
+            index,
+        };
+        assert!(
+            viewed(app.dispatch(view(1))).is_empty(),
+            "a file isn't an image"
+        );
+        assert!(app.state.viewer.is_none());
+        assert_eq!(viewed(app.dispatch(view(0))), [0]);
+        assert_eq!(
+            viewed(app.dispatch(Action::StepImage(1))),
+            [2],
+            "the file is skipped"
+        );
+        assert!(
+            viewed(app.dispatch(Action::StepImage(1))).is_empty(),
+            "back to the first, which is already loading"
+        );
+        assert_eq!(
+            app.state.viewer.as_ref().map(|viewer| viewer.index),
+            Some(0)
+        );
+        app.dispatch(Action::StepImage(-1));
+        assert_eq!(
+            app.state.viewer.as_ref().map(|viewer| viewer.index),
+            Some(2),
+            "and around backwards"
+        );
+        app.apply(Event::Image {
+            room: "dm".into(),
+            item: "e:m".into(),
+            index: 2,
+            picture: Err("gone"),
+        });
+        assert_eq!(
+            app.state.viewer.as_ref().unwrap().pictures[&2],
+            Some(Err("gone"))
+        );
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert!(app.state.viewer.is_none(), "another room closes it");
     }
 
     #[test]

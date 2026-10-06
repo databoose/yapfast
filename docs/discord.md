@@ -22,7 +22,7 @@ reactions arrive live. Opening a channel subscribes to its server, as the web
 client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes, reacts and sends files
 through Discord's cloud uploads. Mentions, custom emoji and timestamps show as
-text, the first attachment shows with a preview scaled by Discord's media
+text, every attachment shows, images with previews scaled by Discord's media
 proxy, and channels the account can't send in are read-only. Talk keeps only
 the open channel's messages, in memory.
 

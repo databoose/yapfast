@@ -5,7 +5,8 @@
 // then start Talk with TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400.
 // `--extra N` sets how many history messages follow the four fixture ones
 // (default 56, 60 in all). POST /_control/chat-start makes Bob post in
-// #general every 2 s; POST /_control/chat-stop stops him. Voice media isn't
+// #general every 2 s; POST /_control/chat-stop stops him. POST
+// /_control/gallery makes him post three photos in one message. Voice media isn't
 // faked: joining voice shows Alice in the channel but never connects.
 
 import { parseArgs } from "node:util";
@@ -901,6 +902,21 @@ const server = Bun.serve<{ sequence: number; identified: boolean; session: strin
       clearInterval(chat);
       chat = setInterval(() => chatTick(origin), CHAT_INTERVAL);
       return new Response("chat started\n");
+    }
+    if (req.method === "POST" && path === "/_control/gallery") {
+      const now = Date.now();
+      const shades: [string, number, number, number[]][] = [
+        ["dawn.png", 1600, 1000, [240, 160, 90]],
+        ["noon.png", 1000, 1600, [90, 170, 230]],
+        ["dusk.png", 1200, 1200, [140, 90, 200]],
+      ];
+      const files = shades.map(([filename, width, height, [r, g, b]], index) => {
+        const draw = (w: number, h: number) => png(w, h, (x, y) => [(r! * (w - x)) / w, (g! * (h - y)) / h, b!, 255].map(Math.round));
+        return addFile({ id: snowflake(now, 10 + index), channel: GENERAL, filename, contentType: "image/png", data: draw(width, height), width, height, draw });
+      });
+      const message = post(GENERAL, users.bob, "Three from today", now, { files });
+      dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      return new Response("gallery posted\n");
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

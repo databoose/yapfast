@@ -363,6 +363,8 @@ struct Adapter {
     pictures: HashMap<String, slint::Image>,
     /// How many pictures had arrived when the message rows were last built.
     pictures_seen: usize,
+    /// The viewer's image, converted for Slint while it shows.
+    viewer_image: Option<(Arc<Picture>, slint::Image)>,
     /// One open or save dialog at a time; dropping it cancels the dialog's task.
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
@@ -411,6 +413,7 @@ impl Adapter {
                 rows: HashMap::new(),
                 pictures: HashMap::new(),
                 pictures_seen: 0,
+                viewer_image: None,
                 dialog: None,
                 meter: None,
             })
@@ -534,7 +537,70 @@ impl Adapter {
         }
     }
 
+    /// The image viewer: the full image once it arrives, the preview until then.
+    fn show_viewer(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        let viewing = state.viewer.as_ref().and_then(|viewer| {
+            let message = state.message(&viewer.item)?;
+            Some((viewer, message, message.attachments.get(viewer.index)?))
+        });
+        window.set_viewer_open(viewing.is_some());
+        let Some((viewer, message, attachment)) = viewing else {
+            self.viewer_image = None;
+            return;
+        };
+        let loaded = viewer.pictures.get(&viewer.index);
+        let full = match loaded {
+            Some(Some(Ok(picture))) => Some(picture),
+            _ => None,
+        };
+        window.set_viewer_note(
+            match loaded {
+                Some(Some(Err(error))) => error,
+                Some(None) => "Loading the full image...",
+                _ => "",
+            }
+            .into(),
+        );
+        // The full image's size from the start, so it doesn't jump on arrival.
+        let (width, height) = match (full, attachment.dimensions, &attachment.preview) {
+            (Some(full), _, _) => (full.width, full.height),
+            (None, Some((width, height)), _) => fit(width, height),
+            (None, None, Some(preview)) => (preview.width, preview.height),
+            _ => (1, 1),
+        };
+        window.set_viewer_width(width as i32);
+        window.set_viewer_height(height as i32);
+        let shown = full.or(attachment.preview.as_ref());
+        let image = match (shown, &self.viewer_image) {
+            (Some(shown), Some((cached, image))) if Arc::ptr_eq(shown, cached) => image.clone(),
+            (Some(shown), _) => {
+                let image = picture(shown);
+                self.viewer_image = Some((shown.clone(), image.clone()));
+                image
+            }
+            (None, _) => slint::Image::default(),
+        };
+        window.set_viewer_image(image);
+        window.set_viewer_name(attachment.name.clone().into());
+        window.set_viewer_item(viewer.item.clone().into());
+        window.set_viewer_index(viewer.index as i32);
+        let images: Vec<usize> = message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.image)
+            .map(|(index, _)| index)
+            .collect();
+        let place = images.iter().position(|index| *index == viewer.index);
+        window.set_viewer_position(match place {
+            Some(place) if images.len() > 1 => format!("{} / {}", place + 1, images.len()).into(),
+            _ => SharedString::default(),
+        });
+    }
+
     fn refresh(&mut self, window: &TalkWindow) {
+        self.show_viewer(window);
         let state = &self.app.state;
         let reset = self.reset_version != state.reset_version;
         let selection_changed = self.selection_version != state.selection_version;
@@ -830,7 +896,7 @@ impl Adapter {
         window.set_forward_preview(
             forwarding
                 .and_then(|forwarding| state.message(&forwarding.item))
-                .map(|message| match &message.attachment {
+                .map(|message| match message.attachments.first() {
                     Some(attachment) if message.body.is_empty() => attachment.name.clone(),
                     _ => talk_core::chat::plain_snippet(&message.body),
                 })
@@ -1198,6 +1264,31 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind!(on_cancel_compose, Action::CancelCompose);
     bind!(on_close_forward, Action::CloseForward);
     bind!(on_dismiss_notice, Action::DismissNotice);
+    bind!(on_close_image, Action::CloseImage);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_view_image(move |item, index| {
+            if let Some(window) = weak.upgrade() {
+                let action = Action::ViewImage {
+                    item: item.into(),
+                    index: usize::try_from(index).unwrap_or_default(),
+                };
+                adapter.borrow_mut().action(&window, action);
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_step_image(move |step| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::StepImage(step as isize));
+            }
+        });
+    }
     macro_rules! bind_item {
         ($callback:ident, $action:expr) => {{
             let adapter = adapter.clone();
@@ -1303,14 +1394,15 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         });
     });
     let state = adapter.clone();
-    window.on_save_attachment(move |item| {
+    window.on_save_attachment(move |item, index| {
         let item = item.to_string();
+        let index = usize::try_from(index).unwrap_or_default();
         let name = state
             .borrow()
             .app
             .state
             .message(&item)
-            .and_then(|message| message.attachment.as_ref())
+            .and_then(|message| message.attachments.get(index))
             .map(|attachment| attachment.name.clone())
             .unwrap_or_default();
         let weak = Rc::downgrade(&state);
@@ -1332,6 +1424,7 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                         &window,
                         Action::SaveAttachment {
                             item,
+                            index,
                             path: file.path().to_owned(),
                         },
                     );
@@ -1652,6 +1745,20 @@ fn cached_picture(
     image
 }
 
+/// A full image's size once shrunk to the viewer's largest.
+fn fit(width: u32, height: u32) -> (u32, u32) {
+    use talk_core::chat::{VIEW_HEIGHT, VIEW_WIDTH};
+    let scale = f64::min(
+        1.0,
+        f64::min(
+            f64::from(VIEW_WIDTH) / f64::from(width.max(1)),
+            f64::from(VIEW_HEIGHT) / f64::from(height.max(1)),
+        ),
+    );
+    let side = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
+    (side(width), side(height))
+}
+
 fn picture(picture: &Picture) -> slint::Image {
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
         &picture.rgba,
@@ -1659,6 +1766,49 @@ fn picture(picture: &Picture) -> slint::Image {
         picture.height,
     );
     slint::Image::from_rgba8(buffer)
+}
+
+/// A message's previews laid out: one at its own size, several as square
+/// tiles two to a row, together as wide as one preview.
+fn gallery(
+    previews: &[(usize, &talk_core::chat::Attachment, &Picture)],
+) -> (Vec<ImageCell>, i32, i32) {
+    const TILE: i32 = 178;
+    const GAP: i32 = 4;
+    let cell =
+        |index: usize, attachment: &talk_core::chat::Attachment, preview: &Picture| ImageCell {
+            index: index as i32,
+            name: attachment.name.clone().into(),
+            image: picture(preview),
+            ..Default::default()
+        };
+    match previews {
+        [] => (vec![], 0, 0),
+        [(index, attachment, preview)] => {
+            let (width, height) = (preview.width as i32, preview.height as i32);
+            let image = ImageCell {
+                width,
+                height,
+                ..cell(*index, attachment, preview)
+            };
+            (vec![image], width, height)
+        }
+        _ => {
+            let cells = previews
+                .iter()
+                .enumerate()
+                .map(|(place, (index, attachment, preview))| ImageCell {
+                    x: (place % 2) as i32 * (TILE + GAP),
+                    y: (place / 2) as i32 * (TILE + GAP),
+                    width: TILE,
+                    height: TILE,
+                    ..cell(*index, attachment, preview)
+                })
+                .collect();
+            let rows = previews.len().div_ceil(2) as i32;
+            (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
+        }
+    }
 }
 
 fn message_row(message: &ChatMessage) -> MessageRow {
@@ -1681,17 +1831,34 @@ fn message_row(message: &ChatMessage) -> MessageRow {
             None => (false, slint::StyledText::default()),
         }
     };
-    let attachment = message.attachment.as_ref();
-    let preview = attachment.and_then(|attachment| attachment.preview.as_deref());
-    let detail = attachment.map(|attachment| {
-        let size = attachment.size.map(file_size);
-        match (attachment.image, attachment.preview_failed, size) {
-            (true, true, Some(size)) => format!("{size} · Preview unavailable"),
-            (true, true, None) => "Preview unavailable".into(),
-            (_, _, Some(size)) => size,
-            _ => String::new(),
-        }
-    });
+    // An image with a preview shows in the gallery; any other attachment shows a file card.
+    let previews: Vec<(usize, &talk_core::chat::Attachment, &Picture)> = message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, attachment)| Some((index, attachment, attachment.preview.as_deref()?)))
+        .collect();
+    let (images, gallery_width, gallery_height) = gallery(&previews);
+    let files: Vec<FileCell> = message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, attachment)| attachment.preview.is_none())
+        .map(|(index, attachment)| {
+            let size = attachment.size.map(file_size);
+            let detail = match (attachment.image, attachment.preview_failed, size) {
+                (true, true, Some(size)) => format!("{size} · Preview unavailable"),
+                (true, true, None) => "Preview unavailable".into(),
+                (_, _, Some(size)) => size,
+                _ => String::new(),
+            };
+            FileCell {
+                index: index as i32,
+                name: attachment.name.clone().into(),
+                detail: detail.into(),
+            }
+        })
+        .collect();
     let (delivery, can_retry, can_cancel) = match message.delivery {
         Delivery::Sent => ("", false, false),
         Delivery::Sending => ("Sending...", false, true),
@@ -1754,17 +1921,10 @@ fn message_row(message: &ChatMessage) -> MessageRow {
                 })
                 .collect::<Vec<_>>(),
         )),
-        // An image with a preview shows the picture; any other attachment shows a file card.
-        has_attachment: attachment.is_some(),
-        attachment: attachment
-            .map(|attachment| attachment.name.clone())
-            .unwrap_or_default()
-            .into(),
-        attachment_detail: detail.unwrap_or_default().into(),
-        has_image: preview.is_some(),
-        image: preview.map(picture).unwrap_or_default(),
-        image_width: preview.map_or(0, |preview| preview.width as i32),
-        image_height: preview.map_or(0, |preview| preview.height as i32),
+        images: ModelRc::new(VecModel::from(images)),
+        gallery_width,
+        gallery_height,
+        files: ModelRc::new(VecModel::from(files)),
         delivery: delivery.into(),
         delivery_failed: message.delivery == Delivery::Failed,
         can_retry,

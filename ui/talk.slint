@@ -783,6 +783,11 @@ export struct RoomRow {
     people: [PersonRow],
 }
 export struct ReactionChip { key: string, count: int, mine: bool }
+/// An image in a message's gallery, placed in pixels; `index` is its place
+/// among the message's attachments.
+export struct ImageCell { index: int, name: string, image: image, x: int, y: int, width: int, height: int }
+/// A file, or an image without a preview, as a card.
+export struct FileCell { index: int, name: string, detail: string }
 export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
     /// Starts a group: shows the avatar and author. Later messages from the same person follow compactly.
@@ -792,8 +797,10 @@ export struct MessageRow {
     formatted: bool, styled: styled-text, edited: bool, deleted: bool,
     reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, has-reply: bool,
     reactions: [ReactionChip],
-    attachment: string, attachment-detail: string, has-attachment: bool,
-    image: image, has-image: bool, image-width: int, image-height: int,
+    /// Images with previews, laid out in a gallery of this size; other
+    /// attachments show as file cards.
+    images: [ImageCell], gallery-width: int, gallery-height: int,
+    files: [FileCell],
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
     can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
 }
@@ -883,6 +890,18 @@ export component TalkWindow inherits Window {
     in-out property <string> emoji-query;
     /// The forward dialog, open while Talk forwards a message of the open room.
     in property <bool> forward-open;
+    /// The image viewer: the image, its full size in pixels, and what to say about it.
+    in property <bool> viewer-open;
+    in property <image> viewer-image;
+    in property <int> viewer-width;
+    in property <int> viewer-height;
+    in property <string> viewer-name;
+    /// Such as "2 / 3"; empty for a message's only image.
+    in property <string> viewer-position;
+    /// While the full image loads, or why it can't show.
+    in property <string> viewer-note;
+    in property <string> viewer-item;
+    in property <int> viewer-index;
     in property <string> forward-preview;
     in property <[ForwardRow]> forward-targets;
     in-out property <string> forward-query;
@@ -969,7 +988,10 @@ export component TalkWindow inherits Window {
     callback retry(string);
     callback cancel-send(string);
     callback attach;
-    callback save-attachment(string);
+    callback save-attachment(string, int);
+    callback view-image(string, int);
+    callback step-image(int);
+    callback close-image();
     callback cancel-compose;
     callback dismiss-notice;
     // The sidebar's width, chosen by dragging its edge; Talk stores it on release.
@@ -1863,22 +1885,31 @@ export component TalkWindow inherits Window {
                                                     }
                                                     if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
                                                     // Fixed-size children sit beside a spacer, so they do not cap the column's width.
-                                                    if message.has-image: HorizontalLayout {
+                                                    // Clicking an image opens it large.
+                                                    if message.images.length > 0: HorizontalLayout {
                                                         padding-top: 4px;
                                                         Rectangle {
-                                                            width: message.image-width * 1px; height: message.image-height * 1px; border-radius: 8px; clip: true; background: Theme.sunken;
-                                                            Image { source: message.image; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: message.attachment; }
-                                                            if root.active-item == message.item && !root.preview && message.delivery == "": Rectangle {
-                                                                x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
-                                                                IconButton {
-                                                                    icon: @image-url("icons/download.svg"); label: "Save " + message.attachment; tint: Theme.text;
-                                                                    clicked => { root.save-attachment(message.item); }
+                                                            width: message.gallery-width * 1px; height: message.gallery-height * 1px;
+                                                            for cell in message.images: Rectangle {
+                                                                x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
+                                                                border-radius: 8px; clip: true; background: Theme.sunken;
+                                                                Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
+                                                                TouchArea {
+                                                                    mouse-cursor: MouseCursor.pointer;
+                                                                    clicked => { root.view-image(message.item, cell.index); }
+                                                                }
+                                                                if root.active-item == message.item && !root.preview && message.delivery == "": Rectangle {
+                                                                    x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
+                                                                    IconButton {
+                                                                        icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: Theme.text;
+                                                                        clicked => { root.save-attachment(message.item, cell.index); }
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                         Rectangle { horizontal-stretch: 1; }
                                                     }
-                                                    if message.has-attachment && !message.has-image: HorizontalLayout {
+                                                    for file in message.files: HorizontalLayout {
                                                         padding-top: 4px;
                                                         Rectangle {
                                                             min-height: file-card.preferred-height; max-width: 432px; horizontal-stretch: 100;
@@ -1888,13 +1919,13 @@ export component TalkWindow inherits Window {
                                                                 Image { source: @image-url("icons/file.svg"); width: 30px; image-fit: contain; colorize: Theme.accent; }
                                                                 VerticalLayout {
                                                                     alignment: center; horizontal-stretch: 1;
-                                                                    Text { text: message.attachment; color: Theme.text; font-weight: 500; overflow: elide; }
-                                                                    if message.attachment-detail != "": Label { text: message.attachment-detail; }
+                                                                    Text { text: file.name; color: Theme.text; font-weight: 500; overflow: elide; }
+                                                                    if file.detail != "": Label { text: file.detail; }
                                                                 }
                                                                 IconButton {
-                                                                    icon: @image-url("icons/download.svg"); label: "Save " + message.attachment;
+                                                                    icon: @image-url("icons/download.svg"); label: "Save " + file.name;
                                                                     enabled: !root.preview && message.delivery == "";
-                                                                    clicked => { root.save-attachment(message.item); }
+                                                                    clicked => { root.save-attachment(message.item, file.index); }
                                                                 }
                                                             }
                                                         }
@@ -2140,6 +2171,73 @@ export component TalkWindow inherits Window {
                         ActionButton { text: "Switch channel"; primary: true; clicked => { if root.switching { root.confirm-switch(); } } }
                     }
                 }
+            }
+        }
+    }
+    // An image shown large over everything. Arrow keys or the side buttons
+    // step through the message's images; Escape, the close button or a click
+    // outside the image closes it.
+    if root.viewer-open: Rectangle {
+        background: #000000e6;
+        accessible-role: groupbox;
+        accessible-label: "Image viewer";
+        TouchArea { clicked => { root.close-image(); } }
+        viewer-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-image(); return accept; }
+                if event.text == Key.LeftArrow && root.viewer-position != "" { root.step-image(-1); return accept; }
+                if event.text == Key.RightArrow && root.viewer-position != "" { root.step-image(1); return accept; }
+                return reject;
+            }
+            // Shown at full size, shrunk to fit beside the bars and arrows.
+            property <length> room-width: root.width - 160px;
+            property <length> room-height: root.height - 128px;
+            property <length> natural-width: max(1, root.viewer-width) * 1px;
+            property <length> natural-height: max(1, root.viewer-height) * 1px;
+            property <float> scale: min(1, min(self.room-width / self.natural-width, self.room-height / self.natural-height));
+            Image {
+                width: viewer-keys.natural-width * viewer-keys.scale; height: viewer-keys.natural-height * viewer-keys.scale;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                source: root.viewer-image; image-fit: contain;
+                accessible-role: image; accessible-label: root.viewer-name;
+                TouchArea { }
+            }
+            HorizontalLayout {
+                y: 0px; height: 64px; padding-left: 20px; padding-right: 12px; spacing: 8px;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 1;
+                    Text { text: root.viewer-name; color: #ffffff; font-size: 15px; font-weight: 700; overflow: elide; }
+                    if root.viewer-position != "": Text { text: root.viewer-position; color: #ffffffb3; font-size: 13px; }
+                }
+                if !root.preview: Middle {
+                    IconButton {
+                        icon: @image-url("icons/download.svg"); label: "Save " + root.viewer-name; tint: #ffffff;
+                        clicked => { root.save-attachment(root.viewer-item, root.viewer-index); }
+                    }
+                }
+                Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; tint: #ffffff; clicked => { root.close-image(); } } }
+            }
+            if root.viewer-position != "": Rectangle {
+                x: 20px; y: (parent.height - self.height) / 2; width: 48px; height: 48px; border-radius: 24px;
+                background: previous-touch.has-hover ? #ffffff33 : #ffffff1a;
+                Image { source: @image-url("icons/chevron-left.svg"); width: 28px; height: 28px; colorize: #ffffff; }
+                previous-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.step-image(-1); } }
+                accessible-role: button; accessible-label: "Previous image";
+                accessible-action-default => { root.step-image(-1); }
+            }
+            if root.viewer-position != "": Rectangle {
+                x: parent.width - self.width - 20px; y: (parent.height - self.height) / 2; width: 48px; height: 48px; border-radius: 24px;
+                background: next-touch.has-hover ? #ffffff33 : #ffffff1a;
+                Image { source: @image-url("icons/chevron-right.svg"); width: 28px; height: 28px; colorize: #ffffff; }
+                next-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.step-image(1); } }
+                accessible-role: button; accessible-label: "Next image";
+                accessible-action-default => { root.step-image(1); }
+            }
+            if root.viewer-note != "": Rectangle {
+                x: (parent.width - self.width) / 2; y: parent.height - self.height - 20px;
+                width: viewer-note-text.preferred-width + 24px; height: 32px; border-radius: 6px; background: #000000b3;
+                viewer-note-text := Text { text: root.viewer-note; color: #ffffffd9; font-size: 13px; }
             }
         }
     }

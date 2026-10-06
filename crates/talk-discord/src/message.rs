@@ -55,8 +55,12 @@ pub struct Attachment {
     pub size: Option<u64>,
     pub url: String,
     pub image: bool,
+    /// The image's width and height.
+    pub dimensions: Option<(u32, u32)>,
     /// The image scaled down by Discord's media proxy, for previews.
     pub preview_url: Option<String>,
+    /// The image scaled down to fit the viewer, by the same proxy.
+    pub view_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,7 +206,18 @@ pub fn parse(value: &Value) -> Option<Message> {
                 size: attachment["size"].as_u64(),
                 url: attachment["url"].as_str()?.into(),
                 image,
-                preview_url: image.then(|| preview_url(attachment)).flatten(),
+                dimensions: image
+                    .then(|| {
+                        let side = |name: &str| u32::try_from(attachment[name].as_u64()?).ok();
+                        Some((side("width")?, side("height")?))
+                    })
+                    .flatten(),
+                preview_url: image
+                    .then(|| scaled_url(attachment, PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                    .flatten(),
+                view_url: image
+                    .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT))
+                    .flatten(),
             })
         })
         .collect();
@@ -262,9 +277,14 @@ pub fn parse(value: &Value) -> Option<Message> {
 pub const PREVIEW_WIDTH: u64 = 360;
 pub const PREVIEW_HEIGHT: u64 = 270;
 
-/// Asks Discord's media proxy for the image fitted into the preview size, as
-/// the official client does, so a phone photo doesn't download in full.
-fn preview_url(attachment: &Value) -> Option<String> {
+/// The image viewer's largest size.
+pub const VIEW_WIDTH: u64 = 1920;
+pub const VIEW_HEIGHT: u64 = 1200;
+
+/// Asks Discord's media proxy for the image fitted into `max_width` by
+/// `max_height` and never enlarged, as the official client does, so a phone
+/// photo doesn't download in full.
+fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) -> Option<String> {
     let url = attachment["proxy_url"].as_str()?;
     let (width, height) = (
         attachment["width"].as_u64()?,
@@ -276,8 +296,8 @@ fn preview_url(attachment: &Value) -> Option<String> {
     let scale = f64::min(
         1.0,
         f64::min(
-            PREVIEW_WIDTH as f64 / width as f64,
-            PREVIEW_HEIGHT as f64 / height as f64,
+            max_width as f64 / width as f64,
+            max_height as f64 / height as f64,
         ),
     );
     let fit = |side: u64| ((side as f64 * scale).round() as u64).max(1);
@@ -532,6 +552,11 @@ mod tests {
         assert_eq!(
             message.attachments[0].preview_url.as_deref(),
             Some("https://media/cat.png?ex=1&format=webp&width=360&height=135")
+        );
+        assert_eq!(
+            message.attachments[0].view_url.as_deref(),
+            Some("https://media/cat.png?ex=1&format=webp&width=1440&height=540"),
+            "a small image isn't enlarged"
         );
         assert_eq!(message.reactions[1].key, ":pog:");
         assert_eq!(message.reactions[1].emoji, "pog:5");

@@ -53,7 +53,7 @@ use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Delivery, Event,
         MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Picture, Reaction, Reply, Role, RoomIndex,
-        Start, decode_preview, plain_snippet, sort_members,
+        Start, decode_preview, decode_view, plain_snippet, sort_members,
     },
     session::Session,
     voice,
@@ -494,13 +494,19 @@ impl Matrix {
                 let result = attach(session, open.as_ref(), &room, &path).await;
                 let _ = events.send(Event::AttachResult { room, result });
             }
-            Command::SaveAttachment { room, item, path } => {
+            // Matrix messages carry one attachment.
+            Command::SaveAttachment {
+                room, item, path, ..
+            } => {
                 let name = path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let result = save_attachment(client, open.as_ref(), &room, &item, &path).await;
                 let _ = events.send(Event::Saved { room, name, result });
+            }
+            Command::ViewImage { room, item, index } => {
+                view_image(client, open, room, item, index, events).await;
             }
             Command::SaveDraft { room, body } => {
                 if let Ok(id) = OwnedRoomId::try_from(room)
@@ -998,6 +1004,78 @@ fn attachment_source(item: &EventTimelineItem) -> Option<(MediaSource, String)> 
     }
 }
 
+/// The full-size source of an item's image.
+fn image_source(item: &EventTimelineItem) -> Option<MediaSource> {
+    let TimelineItemContent::MsgLike(content) = item.content() else {
+        return None;
+    };
+    let MsgLikeKind::Message(message) = &content.kind else {
+        return None;
+    };
+    match message.msgtype() {
+        MessageType::Image(content) => Some(content.source.clone()),
+        _ => None,
+    }
+}
+
+/// Downloads an item's image and decodes it for the viewer, in the open
+/// room's tasks, so closing the room cancels it.
+async fn view_image(
+    client: &Client,
+    open: &mut Option<OpenRoom>,
+    room: String,
+    item: String,
+    index: usize,
+    events: &UnboundedSender<Event>,
+) {
+    let source = match (active_timeline(open.as_ref(), &room), parse_item(&item)) {
+        (Some(timeline), Some(id)) if index == 0 => timeline
+            .items()
+            .await
+            .iter()
+            .filter_map(|item| item.as_event())
+            .find(|event| event.identifier() == id)
+            .and_then(image_source),
+        _ => None,
+    };
+    let (Some(open), Some(source)) = (open.as_mut(), source) else {
+        let _ = events.send(Event::Image {
+            room,
+            item,
+            index,
+            picture: Err("This image is no longer available."),
+        });
+        return;
+    };
+    let (client, events) = (client.clone(), events.clone());
+    open.tasks.spawn(async move {
+        let request = MediaRequestParameters {
+            source,
+            format: MediaFormat::File,
+        };
+        let picture = match client.media().get_media_content(&request, true).await {
+            Ok(data) if data.len() <= MAX_PREVIEW_DOWNLOAD_BYTES => {
+                tokio::task::spawn_blocking(move || decode_view(&data))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(Arc::new)
+                    .ok_or("Talk can't show this image. Save it to open it elsewhere.")
+            }
+            Ok(_) => Err("This image is too large to show here. Save it to open it elsewhere."),
+            Err(_) => {
+                Err("Talk couldn't download this image. Check your connection and try again.")
+            }
+        };
+        let _ = events.send(Event::Image {
+            room,
+            item,
+            index,
+            picture,
+        });
+    });
+}
+
 async fn save_attachment(
     client: &Client,
     open: Option<&OpenRoom>,
@@ -1163,17 +1241,22 @@ async fn publish_timeline(
                                 let _ = media.send((room, key, picture));
                             });
                         }
-                        message.attachment = Some(Attachment {
+                        let dimensions = content.info.as_ref().and_then(|info| {
+                            let side = |side: Option<UInt>| u32::try_from(u64::from(side?)).ok();
+                            Some((side(info.width)?, side(info.height)?))
+                        });
+                        message.attachments = vec![Attachment {
                             name: content.filename().into(),
                             size,
                             image: true,
+                            dimensions,
                             preview_failed: matches!(cached, Some(None)),
                             preview: cached.flatten(),
-                        });
+                        }];
                     }
                     MessageType::File(content) => {
                         message.body = content.caption().unwrap_or_default().into();
-                        message.attachment = Some(Attachment {
+                        message.attachments = vec![Attachment {
                             name: content.filename().into(),
                             size: content
                                 .info
@@ -1181,13 +1264,14 @@ async fn publish_timeline(
                                 .and_then(|info| info.size)
                                 .map(u64::from),
                             image: false,
+                            dimensions: None,
                             preview: None,
                             preview_failed: false,
-                        });
+                        }];
                     }
                     MessageType::Video(content) => {
                         message.body = content.caption().unwrap_or_default().into();
-                        message.attachment = Some(Attachment {
+                        message.attachments = vec![Attachment {
                             name: content.filename().into(),
                             size: content
                                 .info
@@ -1195,13 +1279,14 @@ async fn publish_timeline(
                                 .and_then(|info| info.size)
                                 .map(u64::from),
                             image: false,
+                            dimensions: None,
                             preview: None,
                             preview_failed: false,
-                        });
+                        }];
                     }
                     MessageType::Audio(content) => {
                         message.body = content.caption().unwrap_or_default().into();
-                        message.attachment = Some(Attachment {
+                        message.attachments = vec![Attachment {
                             name: content.filename().into(),
                             size: content
                                 .info
@@ -1209,9 +1294,10 @@ async fn publish_timeline(
                                 .and_then(|info| info.size)
                                 .map(u64::from),
                             image: false,
+                            dimensions: None,
                             preview: None,
                             preview_failed: false,
-                        });
+                        }];
                     }
                     _ => message.body = text.body().to_owned(),
                 }
@@ -2019,11 +2105,11 @@ mod tests {
                 messages.iter().any(|m| {
                     m.delivery == Delivery::Sent
                         && m.item.starts_with("e:")
-                        && m.attachment.as_ref().is_some_and(|a| a.preview.is_some())
+                        && m.attachments.first().is_some_and(|a| a.preview.is_some())
                 })
             })
             .await;
-            let sent = messages.iter().find(|m| m.attachment.is_some()).unwrap();
+            let sent = messages.iter().find(|m| !m.attachments.is_empty()).unwrap();
             let reply = messages
                 .iter()
                 .find(|m| m.body == "plain reply")
@@ -2031,7 +2117,7 @@ mod tests {
                 .item
                 .clone();
             assert!(reply.starts_with("e:"));
-            let attachment = sent.attachment.as_ref().unwrap();
+            let attachment = sent.attachments.first().unwrap();
             let preview = attachment.preview.as_ref().unwrap();
             assert!(attachment.image && attachment.name == "square.png");
             assert!(preview.width <= PREVIEW_WIDTH && preview.height <= PREVIEW_HEIGHT);
@@ -2041,6 +2127,7 @@ mod tests {
                 .send(Command::SaveAttachment {
                     room: room.clone(),
                     item: sent.item.clone(),
+                    index: 0,
                     path: saved.clone(),
                 })
                 .unwrap();
@@ -2097,7 +2184,7 @@ mod tests {
                     m.body == "plain reply" && m.reply.is_none() && m.delivery == Delivery::Sent
                 }) && messages.iter().any(|m| {
                     m.delivery == Delivery::Sent
-                        && m.attachment.as_ref().is_some_and(|a| {
+                        && m.attachments.first().is_some_and(|a| {
                             a.preview
                                 .as_ref()
                                 .is_some_and(|p| p.rgba[..4] == [200, 40, 40, 255])
@@ -2121,7 +2208,7 @@ mod tests {
             timeline_where(&mut events, |messages| {
                 messages.iter().any(|m| {
                     m.delivery == Delivery::Sent
-                        && m.attachment.as_ref().is_some_and(|a| {
+                        && m.attachments.first().is_some_and(|a| {
                             !a.image && a.name == "notes.txt" && a.size == Some(15)
                         })
                 })
@@ -2428,7 +2515,7 @@ mod tests {
                 .unwrap();
             timeline_where(&mut events, |messages| {
                 messages.iter().any(|m| {
-                    m.delivery == Delivery::Sent && m.attachment.as_ref().is_some_and(|a| a.image)
+                    m.delivery == Delivery::Sent && m.attachments.first().is_some_and(|a| a.image)
                 })
             })
             .await;
@@ -2442,7 +2529,7 @@ mod tests {
                 .unwrap();
             timeline_where(&mut events, |messages| {
                 messages.iter().any(|m| {
-                    m.delivery == Delivery::Sent && m.attachment.as_ref().is_some_and(|a| !a.image)
+                    m.delivery == Delivery::Sent && m.attachments.first().is_some_and(|a| !a.image)
                 })
             })
             .await;

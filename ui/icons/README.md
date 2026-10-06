@@ -6,5 +6,5 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
 - check, chevron-down, circle-plus, copy, download, file, headphone-off, history, lock, log-out, pencil,
   phone-off, refresh-cw, reply, send-horizontal, smile-plus, trash-2,
   triangle-alert, users and x come unmodified from lucide-static 1.51.0.
-- ellipsis, forward and search follow lucide-static 1.51.0's paths in the same
-  wrapper.
+- chevron-left, chevron-right, ellipsis, forward and search follow
+  lucide-static 1.51.0's paths in the same wrapper.
