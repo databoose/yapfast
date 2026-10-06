@@ -1060,6 +1060,12 @@ impl Adapter {
                     .is_some_and(talk_core::discord::is_discord),
         );
         window.set_sharing(voice.sharing.is_some());
+        window.set_share_resolution(match voice.quality.resolution {
+            voice::Resolution::P720 => 0,
+            voice::Resolution::P1080 => 1,
+            voice::Resolution::Source => 2,
+        });
+        window.set_share_fps(voice.quality.fps as i32);
         window.set_share_live(
             voice
                 .sharing
@@ -1570,13 +1576,34 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     let weak = window.as_weak();
     window.on_toggle_share(move || {
         if let Some(window) = weak.upgrade() {
-            let sharing = state.borrow().app.state.voice.sharing.is_some();
-            let command = if sharing {
-                voice::Command::StopLive
-            } else {
-                voice::Command::GoLive
+            let command = {
+                let state = state.borrow();
+                let voice = &state.app.state.voice;
+                if voice.sharing.is_some() {
+                    voice::Command::StopLive
+                } else {
+                    voice::Command::GoLive(voice.quality)
+                }
             };
             state.borrow_mut().action(&window, Action::Voice(command));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_go_live(move |resolution, fps| {
+        if let Some(window) = weak.upgrade() {
+            let resolution = match resolution {
+                0 => voice::Resolution::P720,
+                2 => voice::Resolution::Source,
+                _ => voice::Resolution::P1080,
+            };
+            let quality = voice::StreamQuality {
+                resolution,
+                fps: fps.clamp(1, 60) as u32,
+            };
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::GoLive(quality)));
         }
     });
     let state = adapter.clone();

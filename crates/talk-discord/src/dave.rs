@@ -103,6 +103,16 @@ impl Dave {
     /// marker pass through, as songbird's audio does; encrypted frames that
     /// can't be decrypted yet are dropped.
     pub fn decrypt(&mut self, sender: u64, frame: Vec<u8>) -> Option<Vec<u8>> {
+        self.decrypt_media(sender, MediaType::VIDEO, frame)
+    }
+
+    /// Decrypts a received Opus frame from `sender`, as [`Self::decrypt`]
+    /// does video.
+    pub fn decrypt_opus(&mut self, sender: u64, frame: Vec<u8>) -> Option<Vec<u8>> {
+        self.decrypt_media(sender, MediaType::AUDIO, frame)
+    }
+
+    fn decrypt_media(&mut self, sender: u64, media: MediaType, frame: Vec<u8>) -> Option<Vec<u8>> {
         // https://daveprotocol.com/#protocol-frame-check: a tag, a size
         // byte and the magic marker at least.
         if self.version == 0 || frame.len() < 11 || !frame.ends_with(&[0xfa, 0xfa]) {
@@ -112,7 +122,7 @@ impl Dave {
             self.unreadable = Some("not in the group yet".to_owned());
             return None;
         };
-        match session.decrypt(sender, MediaType::VIDEO, &frame) {
+        match session.decrypt(sender, media, &frame) {
             Ok(decrypted) => Some(decrypted),
             Err(error) => {
                 self.unreadable = Some(format!("{error:?}"));

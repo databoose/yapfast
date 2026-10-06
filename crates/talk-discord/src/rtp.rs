@@ -343,7 +343,8 @@ pub struct Assembler {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Pushed {
     pub frame: Option<Assembled>,
-    /// A frame was lost, so the sender should send a keyframe.
+    /// A frame was lost, or none came yet to decode from, so the sender
+    /// should send a keyframe.
     pub lost: bool,
 }
 
@@ -364,10 +365,24 @@ impl Assembler {
         self.codec
     }
 
+    /// Drops frames until the next keyframe, as after one the decoder never
+    /// got.
+    pub fn wait_for_keyframe(&mut self) {
+        self.waiting = true;
+    }
+
     pub fn push(&mut self, packet: &Packet) -> Pushed {
         let gap = self
             .expected
             .is_some_and(|expected| expected != packet.sequence);
+        if packet.payload.is_empty() {
+            // Padding, sent to probe the path: no part of a frame, but a gap
+            // before it still counts against the next packet.
+            if !gap {
+                self.expected = Some(packet.sequence.wrapping_add(1));
+            }
+            return Pushed::default();
+        }
         self.expected = Some(packet.sequence.wrapping_add(1));
         let mut lost = false;
         if self.timestamp != Some(packet.timestamp) {
@@ -398,7 +413,10 @@ impl Assembler {
             };
         }
         if self.waiting && !self.keyframe {
-            return Pushed { frame: None, lost };
+            return Pushed {
+                frame: None,
+                lost: true,
+            };
         }
         self.waiting = false;
         Pushed {
@@ -815,6 +833,278 @@ pub fn is_rtcp(packet: &[u8]) -> bool {
     packet.get(1).is_some_and(|kind| (192..=223).contains(kind))
 }
 
+/// A generic NACK (RTCP 205, format 1) from `sender` asking for `media`'s
+/// packets `lost` again, in the order given: each entry names one, and a
+/// bitmask the 16 after it.
+pub fn nack(sender: u32, media: u32, lost: &[u16]) -> Vec<u8> {
+    let mut entries: Vec<(u16, u16)> = vec![];
+    for &sequence in lost {
+        match entries.last_mut() {
+            Some((first, mask)) if (1..=16).contains(&sequence.wrapping_sub(*first)) => {
+                *mask |= 1 << (sequence.wrapping_sub(*first) - 1);
+            }
+            _ => entries.push((sequence, 0)),
+        }
+    }
+    let words = 2 + entries.len() as u16;
+    let mut packet = vec![0x81, 205];
+    packet.extend_from_slice(&words.to_be_bytes());
+    packet.extend_from_slice(&sender.to_be_bytes());
+    packet.extend_from_slice(&media.to_be_bytes());
+    for (first, mask) in entries {
+        packet.extend_from_slice(&first.to_be_bytes());
+        packet.extend_from_slice(&mask.to_be_bytes());
+    }
+    packet
+}
+
+/// A received video packet, kept until those before it arrive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub payload_type: u8,
+    pub marker: bool,
+    pub sequence: u16,
+    pub timestamp: u32,
+    pub ssrc: u32,
+    pub payload: Vec<u8>,
+}
+
+impl Held {
+    pub fn new(packet: &Packet) -> Self {
+        Self {
+            payload_type: packet.payload_type,
+            marker: packet.marker,
+            sequence: packet.sequence,
+            timestamp: packet.timestamp,
+            ssrc: packet.ssrc,
+            payload: packet.payload.to_vec(),
+        }
+    }
+
+    pub fn packet(&self) -> Packet<'_> {
+        Packet {
+            payload_type: self.payload_type,
+            marker: self.marker,
+            sequence: self.sequence,
+            timestamp: self.timestamp,
+            ssrc: self.ssrc,
+            payload: &self.payload,
+        }
+    }
+
+    /// The packet a retransmission on `media`'s RTX SSRC carries (RFC 4588):
+    /// its sequence number, then its payload. None for padding, which a
+    /// server sends there to probe the path.
+    pub fn unwrap_rtx(packet: &Packet, media: u32) -> Option<Self> {
+        let (sequence, payload) = packet.payload.split_first_chunk::<2>()?;
+        if payload.is_empty() {
+            return None;
+        }
+        let payload_type = match packet.payload_type {
+            H264_RTX => H264,
+            VP8_RTX => VP8,
+            other => other,
+        };
+        Some(Self {
+            payload_type,
+            marker: packet.marker,
+            sequence: u16::from_be_bytes(*sequence),
+            timestamp: packet.timestamp,
+            ssrc: media,
+            payload: payload.to_vec(),
+        })
+    }
+}
+
+/// How long a missing packet is waited for, how often it's asked for again,
+/// and how many times, before the frames after it go to the assembler
+/// without it. Discord's servers are a few tens of milliseconds away.
+const GIVE_UP: std::time::Duration = std::time::Duration::from_millis(300);
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_millis(80);
+const ASKS: u32 = 3;
+/// Packets held at most while one is missing, about a second at 9 Mbit/s.
+const HELD: usize = 1000;
+
+/// Puts one SSRC's packets back in sequence for the assembler, as they can
+/// arrive out of order, and asks for missing ones again (NACK), as Discord's
+/// client does, rather than losing every frame until the next keyframe.
+#[derive(Default)]
+pub struct Reorder {
+    /// The extended sequence number of the next packet to hand on.
+    next: Option<u64>,
+    highest: Option<u64>,
+    held: std::collections::BTreeMap<u64, Held>,
+    missing: std::collections::BTreeMap<u64, Missing>,
+    /// For receiver reports: the first extended sequence number, and the
+    /// packets received since.
+    first: Option<u64>,
+    received: u64,
+}
+
+struct Missing {
+    since: std::time::Instant,
+    asked: Option<std::time::Instant>,
+    asks: u32,
+}
+
+/// What a packet was to the reorder buffer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Arrival {
+    New,
+    /// One it was waiting for, probably resent.
+    Recovered,
+    /// A duplicate, or too late: the packets after it went on without it.
+    Late,
+}
+
+impl Reorder {
+    /// `sequence` extended to 64 bits, nearest the highest seen so far.
+    fn extend(&self, sequence: u16) -> u64 {
+        match self.highest {
+            None => (1 << 32) + u64::from(sequence),
+            Some(highest) => {
+                let step = sequence.wrapping_sub(highest as u16) as i16;
+                highest.wrapping_add_signed(i64::from(step))
+            }
+        }
+    }
+
+    pub fn insert(&mut self, packet: Held, now: std::time::Instant) -> Arrival {
+        let sequence = self.extend(packet.sequence);
+        let next = *self.next.get_or_insert(sequence);
+        self.first.get_or_insert(sequence);
+        if sequence < next || self.held.contains_key(&sequence) {
+            return Arrival::Late;
+        }
+        self.received += 1;
+        let recovered = self.missing.remove(&sequence).is_some();
+        match self.highest {
+            // Far ahead: the sender started again, so start with it.
+            Some(highest) if sequence > highest + HELD as u64 => {
+                self.held.clear();
+                self.missing.clear();
+                self.next = Some(sequence);
+            }
+            Some(highest) if sequence > highest + 1 => {
+                for gap in highest + 1..sequence {
+                    self.missing.insert(
+                        gap,
+                        Missing {
+                            since: now,
+                            asked: None,
+                            asks: 0,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+        if self.highest.is_none_or(|highest| sequence > highest) {
+            self.highest = Some(sequence);
+        }
+        self.held.insert(sequence, packet);
+        if recovered {
+            Arrival::Recovered
+        } else {
+            Arrival::New
+        }
+    }
+
+    /// The packets ready in sequence, and how many were given up on.
+    pub fn ready(&mut self, now: std::time::Instant) -> (Vec<Held>, u64) {
+        let mut ready = vec![];
+        let mut skipped = 0;
+        while let Some(next) = self.next {
+            if let Some(packet) = self.held.remove(&next) {
+                ready.push(packet);
+                self.next = Some(next + 1);
+                continue;
+            }
+            let Some(&after) = self.held.keys().next() else {
+                break;
+            };
+            let waited = self
+                .missing
+                .get(&next)
+                .is_none_or(|missing| now.duration_since(missing.since) >= GIVE_UP);
+            if !waited && self.held.len() < HELD {
+                break;
+            }
+            skipped += after - next;
+            self.missing.retain(|&sequence, _| sequence > after);
+            self.next = Some(after);
+        }
+        (ready, skipped)
+    }
+
+    /// The missing packets to ask for now: newly missed ones, and those
+    /// still missing a while after the last ask.
+    pub fn to_ask(&mut self, now: std::time::Instant) -> Vec<u16> {
+        let mut asking = vec![];
+        for (&sequence, missing) in &mut self.missing {
+            let due = missing
+                .asked
+                .is_none_or(|asked| now.duration_since(asked) >= ASK_AGAIN);
+            if missing.asks < ASKS && due {
+                missing.asked = Some(now);
+                missing.asks += 1;
+                asking.push(sequence as u16);
+            }
+        }
+        asking
+    }
+
+    /// The highest extended sequence number received, and the packets
+    /// expected so far that never came, for a receiver report.
+    pub fn counts(&self) -> Option<(u32, u32)> {
+        let (first, highest) = (self.first?, self.highest?);
+        let expected = highest + 1 - first;
+        Some((
+            highest as u32,
+            expected.saturating_sub(self.received) as u32,
+        ))
+    }
+}
+
+/// An RTCP receiver report from `sender` about `media`: the highest
+/// sequence number received, extended, packets lost, the fraction lost
+/// since the last report (out of 256), and the last sender report heard
+/// (the middle of its NTP time) with the delay since, in 1/65536 s.
+pub fn receiver_report(
+    sender: u32,
+    media: u32,
+    (highest, lost, fraction): (u32, u32, u8),
+    (last_report, delay): (u32, u32),
+) -> Vec<u8> {
+    let mut packet = vec![0x81, 201, 0, 7];
+    packet.extend_from_slice(&sender.to_be_bytes());
+    packet.extend_from_slice(&media.to_be_bytes());
+    packet.extend_from_slice(&((u32::from(fraction) << 24) | lost.min(0x7f_ffff)).to_be_bytes());
+    for word in [highest, 0, last_report, delay] {
+        packet.extend_from_slice(&word.to_be_bytes());
+    }
+    packet
+}
+
+/// The sender reports in a decrypted compound RTCP packet: each sender's
+/// SSRC and the middle 32 bits of its NTP time, which a receiver report
+/// echoes.
+pub fn sender_reports(mut rtcp: &[u8]) -> Vec<(u32, u32)> {
+    let mut reports = vec![];
+    while rtcp.len() >= 4 {
+        let length = (usize::from(u16::from_be_bytes([rtcp[2], rtcp[3]])) + 1) * 4;
+        if rtcp[1] == 200
+            && let Some(header) = rtcp.get(4..16)
+        {
+            let sender = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+            let middle = u32::from_be_bytes([header[6], header[7], header[8], header[9]]);
+            reports.push((sender, middle));
+        }
+        rtcp = rtcp.get(length..).unwrap_or_default();
+    }
+    reports
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,6 +1226,131 @@ mod tests {
             .last()
             .unwrap();
         assert_eq!(last.frame.map(|frame| frame.keyframe), Some(true));
+    }
+
+    #[test]
+    fn asks_for_a_keyframe_until_one_comes() {
+        let mut packetizer = Packetizer::new(5, Codec::Vp8);
+        let mut assembler = Assembler::new(Codec::Vp8);
+        let delta = vec![0x11; 500];
+        let pushed = packetizer
+            .packets(&delta, 0)
+            .iter()
+            .map(|sent| assembler.push(&parse(sent).unwrap()))
+            .last()
+            .unwrap();
+        assert!(pushed.lost, "nothing to decode yet");
+        // Padding between frames isn't a loss.
+        let padding = Packet {
+            payload_type: VP8,
+            marker: false,
+            sequence: packetizer.sequence,
+            timestamp: 0,
+            ssrc: 5,
+            payload: &[],
+        };
+        packetizer.sequence = packetizer.sequence.wrapping_add(1);
+        assert_eq!(assembler.push(&padding), Pushed::default());
+        let keyframe = vec![0x10; 500];
+        let pushed = packetizer
+            .packets(&keyframe, 3000)
+            .iter()
+            .map(|sent| assembler.push(&parse(sent).unwrap()))
+            .last()
+            .unwrap();
+        assert_eq!(pushed.frame.map(|frame| frame.data), Some(keyframe));
+        assembler.wait_for_keyframe();
+        let pushed = packetizer
+            .packets(&delta, 6000)
+            .iter()
+            .map(|sent| assembler.push(&parse(sent).unwrap()))
+            .last()
+            .unwrap();
+        assert!(
+            pushed.frame.is_none() && pushed.lost,
+            "the decoder missed a frame"
+        );
+    }
+
+    #[test]
+    fn puts_packets_back_in_order_and_asks_for_lost_ones() {
+        let start = std::time::Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let held = |sequence: u16| Held {
+            payload_type: VP8,
+            marker: false,
+            sequence,
+            timestamp: 0,
+            ssrc: 5,
+            payload: vec![sequence as u8],
+        };
+        let sequences =
+            |ready: Vec<Held>| -> Vec<u16> { ready.iter().map(|held| held.sequence).collect() };
+        let mut reorder = Reorder::default();
+        // Across the wrap: 65534, 65535, then 1 before 0.
+        for sequence in [65534, 65535, 1] {
+            assert_eq!(reorder.insert(held(sequence), at(0)), Arrival::New);
+        }
+        assert_eq!(sequences(reorder.ready(at(0)).0), [65534, 65535]);
+        assert_eq!(reorder.to_ask(at(0)), [0], "asked for at once");
+        assert!(reorder.to_ask(at(10)).is_empty(), "not again so soon");
+        assert_eq!(reorder.insert(held(0), at(20)), Arrival::Recovered);
+        assert_eq!(sequences(reorder.ready(at(20)).0), [0, 1]);
+        assert_eq!(reorder.insert(held(0), at(30)), Arrival::Late);
+
+        // 2 and 3 never come: asked for three times, then given up on.
+        reorder.insert(held(4), at(100));
+        assert_eq!(reorder.to_ask(at(100)), [2, 3]);
+        assert_eq!(reorder.to_ask(at(180)), [2, 3]);
+        assert_eq!(reorder.to_ask(at(260)), [2, 3]);
+        assert!(reorder.to_ask(at(340)).is_empty());
+        assert_eq!(reorder.ready(at(399)), (vec![], 0));
+        let (ready, skipped) = reorder.ready(at(400));
+        assert_eq!((sequences(ready), skipped), (vec![4], 2));
+        assert_eq!(reorder.insert(held(3), at(410)), Arrival::Late);
+        assert_eq!(reorder.counts(), Some((65536 + 4, 2)), "one wrap, two lost");
+    }
+
+    #[test]
+    fn unwraps_resent_packets() {
+        let mut packetizer = Packetizer::new(5, Codec::H264);
+        let frame = [&[0, 0, 0, 1, 0x41][..], &[7; 20]].concat();
+        let original = packetizer.packets(&frame, 3000).remove(0);
+        let again = packetizer.retransmit(&original, 6).unwrap();
+        let resent = parse(&again).unwrap();
+        assert_eq!(resent.ssrc, 6);
+        let unwrapped = Held::unwrap_rtx(&resent, 5).unwrap();
+        let original = parse(&original).unwrap();
+        assert_eq!(unwrapped, Held::new(&original));
+        let padding = Packet {
+            payload: &[],
+            ..resent
+        };
+        assert_eq!(Held::unwrap_rtx(&padding, 5), None);
+    }
+
+    #[test]
+    fn writes_nacks_and_receiver_reports_that_read_back() {
+        let lost = [65530, 65531, 65535, 4, 40];
+        let packet = nack(1, 2, &lost);
+        assert_eq!(
+            packet.len(),
+            12 + 2 * 4,
+            "65531 to 4 ride on 65530's bitmask"
+        );
+        assert_eq!(nacked(&packet, 2), lost);
+        assert!(nacked(&packet, 3).is_empty());
+        let report = receiver_report(1, 2, (70000, 3, 25), (0x1234_5678, 655));
+        assert_eq!(report.len(), 32);
+        let described = &rtcp_kinds(&report)[0];
+        assert_eq!(described.0, "201/1");
+        assert_eq!(
+            described.1,
+            "from 1: ssrc 2 lost 25/256 total 3 highest 70000 jitter 0 lsr 305419896 dlsr 655"
+        );
+        let sent = sender_report(9, std::time::SystemTime::UNIX_EPOCH, 0, 0, 0);
+        // 1970 in NTP time: 2208988800 seconds, no fraction.
+        assert_eq!(sender_reports(&sent), [(9, (2_208_988_800u32 << 16))]);
     }
 
     #[test]

@@ -73,12 +73,15 @@ fn recording(codec: Codec) -> Vec<Vec<u8>> {
     }
 }
 
-/// Watches Bob's stream until `count` frames arrive.
+/// Watches Bob's stream until `count` frames arrive, and checks his sound
+/// came too: the fake sends Opus silence.
 fn watch_frames(
     watched: &talk_discord::stream::StreamServer,
     count: usize,
 ) -> Vec<(Codec, Vec<u8>, bool)> {
-    let receiver = StreamReceiver::start(watched.clone()).unwrap();
+    let mut receiver = StreamReceiver::start(watched.clone()).unwrap();
+    let sounds = receiver.take_sounds().unwrap();
+    assert!(receiver.take_sounds().is_none(), "one player");
     let deadline = std::time::Instant::now() + WAIT;
     let mut frames = vec![];
     while frames.len() < count {
@@ -93,6 +96,9 @@ fn watch_frames(
         }
     }
     assert_eq!(receiver.link(), Link::Connected);
+    let heard: Vec<Vec<u8>> = sounds.try_iter().collect();
+    assert!(heard.len() >= 5, "only {} sounds arrived", heard.len());
+    assert!(heard.iter().all(|sound| sound == &[0xf8, 0xff, 0xfe]));
     frames
 }
 
@@ -348,7 +354,8 @@ async fn talks_to_the_fake_server() {
     assert!(!watched.session_id.is_empty() && !watched.endpoint.is_empty());
 
     // Bob's video arrives whole: the recording's frames, in order, from the
-    // first keyframe, in VP8 and then in H264.
+    // first keyframe, in VP8 and then in H264, though the fake loses one
+    // packet on the way and delivers another late.
     for (codec, name) in [(Codec::Vp8, "vp8"), (Codec::H264, "h264")] {
         stream_codec(server, name);
         let watched = watched.clone();
@@ -362,6 +369,20 @@ async fn talks_to_the_fake_server() {
             assert!(data == &expected[index], "{name} frame {index} differs");
         }
     }
+    let body = discord
+        .download(&format!("{server}/_control/video"), 1 << 16)
+        .await
+        .unwrap();
+    let repairs = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["repairs"].clone();
+    assert_eq!(
+        (repairs["dropped"].as_u64(), repairs["reordered"].as_u64()),
+        (Some(2), Some(2))
+    );
+    assert!(
+        repairs["nacks"].as_u64() >= Some(2) && repairs["resent"].as_u64() >= Some(2),
+        "the lost packets were asked for and resent: {repairs}"
+    );
+    assert!(repairs["receiverReports"].as_u64() >= Some(1), "{repairs}");
     stream_codec(server, "vp8");
     discord.end_stream(&bob_stream);
     let reason = live_where(&mut live, |event| match event {
@@ -459,6 +480,27 @@ async fn talks_to_the_fake_server() {
         "one report in the first second"
     );
     assert_eq!(video["speaking"], 2, "the sound is marked as soundshare");
+    // The stream's preview: a JPEG's start and end, as a data URI.
+    discord
+        .stream_preview(&mine.stream_key, "data:image/jpeg;base64,/9j/2Q==")
+        .await
+        .unwrap();
+    assert!(
+        discord
+            .stream_preview(&bob_stream, "data:image/jpeg;base64,/9j/2Q==")
+            .await
+            .is_err(),
+        "only the streamer shows a preview"
+    );
+    let body = discord
+        .download(&format!("{server}/_control/video"), 1 << 16)
+        .await
+        .unwrap();
+    let previews: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        previews["previews"],
+        serde_json::json!([{"stream": mine.stream_key, "bytes": 4, "jpeg": true}])
+    );
     assert_eq!(video["senderReports"], 1, "one report in the first second");
     assert!(video["reportedPackets"].as_u64() >= Some(1));
     assert_eq!(

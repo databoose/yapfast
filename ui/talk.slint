@@ -960,6 +960,10 @@ export component TalkWindow inherits Window {
     in property <bool> can-share;
     in property <bool> sharing;
     in property <bool> share-live;
+    /// The quality chosen last time: 0 for 720p, 1 for 1080p, 2 for the
+    /// screen's own size, and frames a second.
+    in property <int> share-resolution: 1;
+    in property <int> share-fps: 30;
     in property <string> share-status;
     /// The newest preview of what's shared, refreshed by stream-tick while sharing.
     in-out property <image> share-frame;
@@ -1001,6 +1005,8 @@ export component TalkWindow inherits Window {
     callback toggle-mute;
     callback toggle-deafen;
     callback toggle-share;
+    /// Share the screen at this resolution, as in share-resolution, and frame rate.
+    callback go-live(int, int);
     callback stream-tick;
     /// Watch the participant with this id's stream.
     callback watch-stream(string);
@@ -1146,6 +1152,51 @@ export component TalkWindow inherits Window {
             empty: "No speakers found. Connect one, then reopen this menu.";
             select(index) => { root.select-speaker(index); }
             settings => { root.open-settings(); }
+        }
+    }
+    // The quality picked in the share menu, from the last choice each time it opens.
+    property <int> pick-resolution;
+    property <int> pick-fps;
+    function open-share-menu(x: length, y: length) {
+        root.menu-x = x; root.menu-y = y;
+        root.pick-resolution = root.share-resolution;
+        root.pick-fps = root.share-fps;
+        share-menu.show();
+    }
+    share-menu := PopupWindow {
+        x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
+        y: max(8px, root.menu-y - self.height - 6px);
+        width: 240px;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            VerticalLayout {
+                padding: 6px; spacing: 2px;
+                HorizontalLayout {
+                    padding-left: 8px; padding-top: 4px; padding-bottom: 4px;
+                    Text { text: "RESOLUTION"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                }
+                for choice[index] in ["720p", "1080p", "Source"]: MenuItem {
+                    text: choice; checked: index == root.pick-resolution;
+                    clicked => { root.pick-resolution = index; }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; padding-top: 8px; padding-bottom: 4px;
+                    Text { text: "FRAME RATE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                }
+                for fps in [15, 30, 60]: MenuItem {
+                    text: fps + " fps"; checked: fps == root.pick-fps;
+                    clicked => { root.pick-fps = fps; }
+                }
+                HorizontalLayout {
+                    padding: 4px; padding-top: 8px;
+                    ActionButton {
+                        text: "Go Live"; icon: @image-url("icons/screen-share.svg"); primary: true; horizontal-stretch: 1;
+                        clicked => { root.go-live(root.pick-resolution, root.pick-fps); share-menu.close(); }
+                    }
+                }
+            }
         }
     }
     settings-popup := PopupWindow {
@@ -1894,7 +1945,13 @@ export component TalkWindow inherits Window {
                                         label: root.sharing ? "Stop sharing" : "Share your screen"; tint: Theme.text;
                                         enabled: root.voice-ready;
                                         fill: root.sharing ? Theme.live.with-alpha(0.22) : Theme.raised;
-                                        clicked => { root.toggle-share(); }
+                                        clicked => {
+                                            if root.sharing {
+                                                root.toggle-share();
+                                            } else {
+                                                root.open-share-menu(self.absolute-position.x, self.absolute-position.y);
+                                            }
+                                        }
                                     }
                                     Rectangle {
                                         width: 76px; height: 52px; border-radius: 26px;

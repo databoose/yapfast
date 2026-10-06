@@ -196,6 +196,15 @@ impl Api {
         self.empty(self.request(method, &path)).await
     }
 
+    /// Shows `thumbnail`, a JPEG as a data URI, as the preview of this
+    /// account's live stream, as Discord's client does every few minutes.
+    pub async fn stream_preview(&self, stream_key: &str, thumbnail: &str) -> Result<()> {
+        let path = format!("/streams/{stream_key}/preview");
+        let body = json!({"thumbnail": thumbnail});
+        self.empty(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
     /// Downloads a file from Discord's CDN, or the test server, refusing
     /// anything over `limit` bytes.
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {

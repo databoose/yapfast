@@ -413,7 +413,7 @@ async fn connected(
                             Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                         }
                     }
-                    Some(Command::GoLive) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
+                    Some(Command::GoLive(_)) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
                     Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale) => {}
                 },
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },

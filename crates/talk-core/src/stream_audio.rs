@@ -1,6 +1,7 @@
-//! Go Live's sound: what every other application plays, mixed into 20 ms
-//! Opus frames for the stream. Talk's own sound is left out, so viewers
-//! never hear the call echoed back, as Discord's client and Vesktop do.
+//! Go Live's sound. Sharing: what every other application plays, mixed
+//! into 20 ms Opus frames for the stream. Talk's own sound is left out, so
+//! viewers never hear the call echoed back, as Discord's client and Vesktop
+//! do. Watching: the streamer's Opus, decoded and played ([`Player`]).
 //!
 //! On Linux, PulseAudio, or PipeWire's PulseAudio server, monitors each
 //! application's playback stream on its own (`pa_stream_set_monitor_stream`,
@@ -35,9 +36,14 @@ const BACKLOG: usize = FRAME * 10;
 /// What Discord's client gives a stream's sound.
 const BITRATE: i32 = 64_000;
 
-/// Whether an application, by its name or program, is a Discord client,
-/// whose sound is a call: Discord's own and the clients built on it.
+/// Whether an application, by its name or program, is Talk or a Discord
+/// client, whose sound is a call or a stream: Talk's other workers, such as
+/// one playing a watched stream, and Discord's own client and those built
+/// on it.
 fn is_discord_client(name: &str) -> bool {
+    if name == "Talk" {
+        return true;
+    }
     let name = name.to_lowercase();
     [
         "discord", "vesktop", "equibop", "webcord", "legcord", "armcord",
@@ -160,12 +166,54 @@ impl Drop for Capture {
     }
 }
 
+/// Plays a watched stream's sound until its Opus frames end or it's
+/// dropped, on the speakers the call uses.
+pub struct Player {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Player {
+    /// Plays `sounds` on `speakers`, or the default output, while `hearing`
+    /// is set: being deafened silences streams too.
+    pub fn start(
+        sounds: std::sync::mpsc::Receiver<Vec<u8>>,
+        speakers: Option<String>,
+        hearing: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = platform::play(sounds, speakers, hearing, stop.clone())?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 mod platform {
     use super::*;
 
     pub fn start(_inputs: Inputs, _stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
         anyhow::bail!("Talk shares sound on Linux only for now")
+    }
+
+    pub fn play(
+        _sounds: std::sync::mpsc::Receiver<Vec<u8>>,
+        _speakers: Option<String>,
+        _hearing: Arc<AtomicBool>,
+        _stop: Arc<AtomicBool>,
+    ) -> Result<JoinHandle<()>> {
+        anyhow::bail!("Talk plays streams' sound on Linux only for now")
     }
 }
 
@@ -212,6 +260,100 @@ mod platform {
     }
 
     type Changes = Rc<RefCell<Vec<Change>>>;
+
+    pub fn play(
+        sounds: mpsc::Receiver<Vec<u8>>,
+        speakers: Option<String>,
+        hearing: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+    ) -> Result<JoinHandle<()>> {
+        use libpulse_binding::stream::Direction;
+        use libpulse_simple_binding::Simple;
+        let (ready, started) = mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name("talk-stream-player".into())
+            .spawn(move || {
+                let spec = Spec {
+                    format: Format::S16le,
+                    channels: CHANNELS as u8,
+                    rate: RATE,
+                };
+                // About 100 ms queued, which rides out the network's jitter.
+                let attributes = BufferAttr {
+                    maxlength: u32::MAX,
+                    tlength: (FRAME * 5 * 2) as u32,
+                    prebuf: u32::MAX,
+                    minreq: u32::MAX,
+                    fragsize: u32::MAX,
+                };
+                let open = |device: Option<&str>| {
+                    Simple::new(
+                        None,
+                        "Talk",
+                        Direction::Playback,
+                        device,
+                        "Stream sound",
+                        &spec,
+                        None,
+                        Some(&attributes),
+                    )
+                };
+                let output = match open(speakers.as_deref()) {
+                    Err(error) if speakers.is_some() => {
+                        tracing::warn!(%error, "playing the stream's sound on the default speakers");
+                        open(None)
+                    }
+                    opened => opened,
+                };
+                let output = match output {
+                    Ok(output) => {
+                        let _ = ready.send(Ok(()));
+                        output
+                    }
+                    Err(error) => {
+                        let _ = ready.send(Err(anyhow::anyhow!("could not open the speakers: {error}")));
+                        return;
+                    }
+                };
+                let mut decoder = match opus2::Decoder::new(RATE, opus2::Channels::Stereo) {
+                    Ok(decoder) => decoder,
+                    Err(error) => {
+                        tracing::warn!(%error, "could not start the Opus decoder");
+                        return;
+                    }
+                };
+                // Opus's longest frame, 120 ms.
+                let mut pcm = vec![0i16; RATE as usize / 1000 * 120 * CHANNELS];
+                while !stop.load(Ordering::Relaxed) {
+                    let opus = match sounds.recv_timeout(Duration::from_millis(100)) {
+                        Ok(opus) => opus,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    if !hearing.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    match decoder.decode(&opus, &mut pcm, false) {
+                        Ok(samples) => {
+                            let bytes: Vec<u8> = pcm[..samples * CHANNELS]
+                                .iter()
+                                .flat_map(|sample| sample.to_le_bytes())
+                                .collect();
+                            if let Err(error) = output.write(&bytes) {
+                                tracing::warn!(%error, "stopped playing the stream's sound");
+                                break;
+                            }
+                        }
+                        Err(error) => tracing::debug!(%error, "a stream sound frame didn't decode"),
+                    }
+                }
+            })
+            .context("could not start playing the stream's sound")?;
+        started
+            .recv()
+            .context("the stream's sound stopped before it started")??;
+        Ok(thread)
+    }
 
     pub fn start(inputs: Inputs, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
         let (ready, started) = mpsc::sync_channel(1);
@@ -603,6 +745,7 @@ mod tests {
     #[test]
     fn leaves_out_other_discord_clients() {
         for client in [
+            "Talk",
             "Discord",
             "DiscordCanary",
             ".Discord-wrapped",
@@ -613,9 +756,33 @@ mod tests {
         ] {
             assert!(is_discord_client(client), "{client}");
         }
-        for other in ["Firefox", "mpv", "electron", "Spotify", "steam"] {
+        for other in [
+            "Firefox",
+            "mpv",
+            "electron",
+            "Spotify",
+            "steam",
+            "talkative",
+        ] {
             assert!(!is_discord_client(other), "{other}");
         }
+    }
+
+    /// Plays 400 ms of Opus silence on the default speakers, then ends with
+    /// the sound.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn plays_a_streams_sound_until_it_ends() {
+        let (sounds, heard) = std::sync::mpsc::sync_channel(32);
+        for _ in 0..20 {
+            sounds.send(vec![0xf8, 0xff, 0xfe]).unwrap();
+        }
+        drop(sounds);
+        let started = Instant::now();
+        let mut player = Player::start(heard, None, Arc::new(AtomicBool::new(true))).unwrap();
+        player.thread.take().unwrap().join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

@@ -40,13 +40,14 @@ use crate::{
     encode::{self, Encoder},
     frames::{Frames, Writer},
     stream_audio,
+    voice::{Resolution, StreamQuality},
 };
 
 /// The argument that starts Talk as a stream worker.
 pub const ARGUMENT: &str = "--stream-worker";
 
-/// The largest frame shared. Discord's own client trials 1080p at 30 fps
-/// for accounts without Nitro, up to 5 Mbit/s (its "frontier tuning"
+/// The largest frame shared at 1080p. Discord's own client trials 1080p at
+/// 30 fps for accounts without Nitro, up to 5 Mbit/s (its "frontier tuning"
 /// experiment); larger screens are scaled down to it.
 pub const SHARE_WIDTH: u32 = 1920;
 pub const SHARE_HEIGHT: u32 = 1080;
@@ -57,7 +58,11 @@ pub const PREVIEW_HEIGHT: u32 = 720;
 /// scaled down to it.
 pub const WATCH_WIDTH: u32 = 1920;
 pub const WATCH_HEIGHT: u32 = 1080;
-const FPS: u32 = 30;
+/// The largest preview Discord shows of a stream, and how often its client
+/// sends a new one.
+const THUMBNAIL_WIDTH: u32 = 512;
+const THUMBNAIL_HEIGHT: u32 = 288;
+const THUMBNAIL_EVERY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +83,13 @@ pub enum Job {
         frames: PathBuf,
         width: u32,
         height: u32,
+        /// Where the stream's sound plays: the call's speakers, or the
+        /// default output.
+        #[serde(default)]
+        speakers: Option<String>,
+        /// Deafened in the call, so the stream's sound stays quiet.
+        #[serde(default)]
+        deafened: bool,
     },
 }
 
@@ -96,6 +108,8 @@ pub enum Source {
 pub enum Control {
     /// Send the video to the server Discord started the stream on.
     Send(StreamServer),
+    /// Play a watched stream's sound, or not, as being deafened changes.
+    Hear(bool),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +122,10 @@ pub enum Report {
     /// Sharing: the video reaches the stream server. Watching: the first
     /// picture is on screen.
     Streaming,
+    /// Sharing: a preview of the stream for Discord to show, a JPEG as a
+    /// data URI. The first comes once a picture isn't black, then one every
+    /// 5 minutes, as Discord's client sends them.
+    Preview { thumbnail: String },
     /// The job ended: without an error when it was told to stop.
     Ended { error: Option<String> },
 }
@@ -173,6 +191,8 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 fps,
                 started: Instant::now(),
                 streaming: false,
+                preview_due: None,
+                thumbnail: None,
             };
             report(Report::Ready);
             match source {
@@ -185,10 +205,18 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             frames,
             width,
             height,
+            speakers,
+            deafened,
         } => {
             let writer = Writer::open(&frames)?;
             report(Report::Ready);
-            watch(server, writer, (width, height), &stop, report)
+            let hearing = Arc::new(AtomicBool::new(!deafened));
+            let sound = Sound {
+                speakers,
+                hearing,
+                controls: received,
+            };
+            watch(server, writer, (width, height), sound, &stop, report)
         }
     });
     report(Report::Ended {
@@ -208,6 +236,10 @@ struct Sink {
     fps: u32,
     started: Instant,
     streaming: bool,
+    /// When the stream's next preview is due: from when it starts.
+    preview_due: Option<Instant>,
+    /// A preview made but not reported yet.
+    thumbnail: Option<String>,
 }
 
 struct Video {
@@ -233,11 +265,23 @@ impl Sink {
     fn frame(&mut self, picture: &mut I420Buffer) -> Result<()> {
         let (width, height) = (picture.width(), picture.height());
         let preview = fit(width, height, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-        let smaller =
+        let mut smaller =
             (preview != (width, height)).then(|| picture.scale(preview.0 as i32, preview.1 as i32));
-        let shown = smaller.as_ref().unwrap_or(picture);
+        let shown = match smaller.as_mut() {
+            Some(smaller) => smaller,
+            None => &mut *picture,
+        };
         self.writer
             .write(preview.0, preview.1, |pixels| to_rgba(shown, pixels));
+        if self.preview_due.is_some_and(|due| due <= Instant::now()) && !is_black(shown) {
+            match thumbnail(shown) {
+                Ok(thumbnail) => self.thumbnail = Some(thumbnail),
+                Err(error) => {
+                    tracing::warn!(error = format!("{error:#}"), "could not make a preview")
+                }
+            }
+            self.preview_due = Some(Instant::now() + THUMBNAIL_EVERY);
+        }
         if let Ok(Control::Send(server)) = self.controls.try_recv() {
             let sender = StreamSender::start(server, width, height, self.fps)?;
             let sound = if self.sound {
@@ -303,30 +347,93 @@ impl Sink {
         match self.video.as_ref().map(|video| video.sender.link()) {
             Some(Link::Connected) if !self.streaming => {
                 self.streaming = true;
+                self.preview_due = Some(Instant::now());
                 report(Report::Streaming);
             }
             Some(Link::Ended(reason)) => bail!("Lost the stream connection: {reason}"),
             _ => {}
         }
+        if let Some(thumbnail) = self.thumbnail.take() {
+            report(Report::Preview { thumbnail });
+        }
         Ok(())
     }
 }
 
+/// Whether a picture is black, as a screen is before what's shared draws:
+/// Discord's client waits for one that isn't before sending a preview.
+fn is_black(picture: &I420Buffer) -> bool {
+    let (y, _, _) = picture.data();
+    // Black's luma is 16; some of a picture of anything is brighter.
+    y.iter().step_by(7).all(|&luma| luma <= 24)
+}
+
+/// A preview of a picture as Discord's client makes one: scaled down to fit
+/// 512 by 288, a JPEG as a data URI.
+fn thumbnail(picture: &mut I420Buffer) -> Result<String> {
+    use base64::Engine;
+    use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
+    let (width, height) = fit(
+        picture.width(),
+        picture.height(),
+        THUMBNAIL_WIDTH,
+        THUMBNAIL_HEIGHT,
+    );
+    let small = picture.scale(width as i32, height as i32);
+    let mut rgba = vec![0; (width * height * 4) as usize];
+    to_rgba(&small, &mut rgba);
+    let rgb: Vec<u8> = rgba
+        .chunks_exact(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    let mut jpeg = vec![];
+    JpegEncoder::new_with_quality(&mut jpeg, 92).encode(
+        &rgb,
+        width,
+        height,
+        ExtendedColorType::Rgb8,
+    )?;
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(jpeg)
+    ))
+}
+
+/// How a watched stream's sound plays, and Talk's word on hearing it.
+struct Sound {
+    speakers: Option<String>,
+    hearing: Arc<AtomicBool>,
+    controls: channel::Receiver<Control>,
+}
+
 /// Shows someone's stream: whole frames from the connection, decoded, then
-/// scaled down if they don't fit.
+/// scaled down if they don't fit, and plays its sound.
 fn watch(
     server: StreamServer,
     mut writer: Writer,
     (max_width, max_height): (u32, u32),
+    sound: Sound,
     stop: &AtomicBool,
     report: &mut dyn FnMut(Report),
 ) -> Result<()> {
-    let receiver = StreamReceiver::start(server)?;
+    let mut receiver = StreamReceiver::start(server)?;
+    let _player = receiver.take_sounds().and_then(|sounds| {
+        stream_audio::Player::start(sounds, sound.speakers, sound.hearing.clone())
+            .inspect_err(|error| {
+                tracing::warn!(error = format!("{error:#}"), "watching without sound")
+            })
+            .ok()
+    });
     let mut decoder: Option<Decoder> = None;
     let mut rgba = vec![];
     let mut shown = false;
     let mut failures = 0u64;
     while !stop.load(Ordering::Relaxed) {
+        while let Ok(control) = sound.controls.try_recv() {
+            if let Control::Hear(hearing) = control {
+                sound.hearing.store(hearing, Ordering::Relaxed);
+            }
+        }
         if let Link::Ended(reason) = receiver.link() {
             bail!("Lost the stream: {reason}");
         }
@@ -433,6 +540,16 @@ fn test_pattern(
         frame += 1;
     }
     Ok(())
+}
+
+/// The largest frame shared at `resolution`; screens of another shape fit
+/// inside it.
+fn bounds(resolution: Resolution) -> (u32, u32) {
+    match resolution {
+        Resolution::P720 => (1280, 720),
+        Resolution::P1080 => (SHARE_WIDTH, SHARE_HEIGHT),
+        Resolution::Source => (3840, 2160),
+    }
 }
 
 /// The size `width` by `height` takes when scaled down to fit `max_width`
@@ -640,14 +757,18 @@ pub struct Worker {
 
 impl Worker {
     /// Starts sharing `source`, with frames for the UI in a new [`Frames`].
-    pub fn share(source: Source) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
+    pub fn share(
+        source: Source,
+        quality: StreamQuality,
+    ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT)?;
+        let (width, height) = bounds(quality.resolution);
         let job = Job::Share {
             source,
             frames: frames.path().context("the video frames file has no name")?,
-            width: SHARE_WIDTH,
-            height: SHARE_HEIGHT,
-            fps: FPS,
+            width,
+            height,
+            fps: quality.fps,
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -655,21 +776,36 @@ impl Worker {
 
     /// Starts watching the stream at `server`, with pictures for the UI in a
     /// new [`Frames`].
-    pub fn watch(server: &StreamServer) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
+    pub fn watch(
+        server: &StreamServer,
+        speakers: Option<String>,
+        deafened: bool,
+    ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
         let frames = Frames::create(WATCH_WIDTH, WATCH_HEIGHT)?;
         let job = Job::Watch {
             server: server.clone(),
             frames: frames.path().context("the video frames file has no name")?,
             width: WATCH_WIDTH,
             height: WATCH_HEIGHT,
+            speakers,
+            deafened,
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
     }
 
+    /// Tells a watching worker whether to play the stream's sound.
+    pub fn hear(&mut self, hearing: bool) -> Result<()> {
+        self.control(&Control::Hear(hearing))
+    }
+
     /// Hands the worker the server Discord started the stream on.
     pub fn send(&mut self, server: &StreamServer) -> Result<()> {
-        let line = serde_json::to_string(&Control::Send(server.clone()))?;
+        self.control(&Control::Send(server.clone()))
+    }
+
+    fn control(&mut self, control: &Control) -> Result<()> {
+        let line = serde_json::to_string(control)?;
         let stdin = self
             .stdin
             .as_mut()
@@ -787,6 +923,8 @@ mod tests {
             fps: 30,
             started: Instant::now(),
             streaming: false,
+            preview_due: None,
+            thumbnail: None,
         };
         // A 1080p picture, mid-grey: luma and chroma halfway.
         let mut picture = I420Buffer::new(SHARE_WIDTH, SHARE_HEIGHT);
@@ -804,6 +942,46 @@ mod tests {
             "{first:?}"
         );
         assert_eq!(first[3], 255);
+    }
+
+    #[test]
+    fn previews_a_stream_once_its_picture_shows() {
+        let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+        let (_controls, received) = channel::channel();
+        let mut sink = Sink {
+            writer: Writer::open(&frames.path().unwrap()).unwrap(),
+            controls: received,
+            sound: false,
+            video: None,
+            fps: 30,
+            started: Instant::now(),
+            streaming: false,
+            preview_due: Some(Instant::now()),
+            thumbnail: None,
+        };
+        let mut picture = I420Buffer::new(SHARE_WIDTH, SHARE_HEIGHT);
+        let (y, u, v) = picture.data_mut();
+        y.fill(16);
+        u.fill(128);
+        v.fill(128);
+        sink.frame(&mut picture).unwrap();
+        assert_eq!(sink.thumbnail, None, "not while the screen is black");
+        picture.data_mut().0.fill(126);
+        sink.frame(&mut picture).unwrap();
+        let thumbnail = sink.thumbnail.take().expect("a preview");
+        let jpeg = thumbnail
+            .strip_prefix("data:image/jpeg;base64,")
+            .map(|data| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap()
+            })
+            .unwrap();
+        let shown = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((shown.width(), shown.height()), (512, 288));
+        sink.frame(&mut picture).unwrap();
+        assert_eq!(sink.thumbnail, None, "the next one comes minutes later");
     }
 
     #[test]

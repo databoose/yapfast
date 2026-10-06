@@ -170,8 +170,13 @@ number before the payload (RFC 4588), and the repaired stream id (extension
 12) in place of the stream id. The fake server reports one packet lost and
 checks what comes back. An RTCP sender report goes out every second.
 
-Talk shares up to 1080p at 30 fps, at the bitrates Discord's client uses:
-at most 3.5 Mbit/s up to 720p and 9 Mbit/s above, the cap op 12 announces.
+Before sharing, the share button's menu picks a resolution and a frame rate,
+as Discord's client asks for them: 720p, 1080p or the screen's own size (up to
+4K), at 15, 30 or 60 fps. Talk remembers the choice beside the chosen audio
+devices (`devices.json`), and starts at 1080p30. Larger screens, and those of
+another shape, are scaled down to fit. Talk sends them at the bitrates
+Discord's client uses: at most 3.5 Mbit/s up to 720p and 9 Mbit/s above, the
+cap op 12 announces, with the frame rate as its `max_framerate`.
 Like Discord's client it also follows the server's bandwidth estimate
 (REMB): when that drops below the cap, the encoder aims for the estimate
 instead, though never below 500 kbit/s, and it changes only when the two
@@ -180,6 +185,16 @@ differ by more than a tenth. Discord's client allows accounts without Nitro
 "2026-05-frontier-tuning" experiment). The worker converts captured
 frames to I420 with libyuv, scales them with libyuv's filtering scaler, and
 encodes those; the preview is the same picture scaled down to 720p.
+
+Discord shows a still of each stream, in the call and to people outside it.
+Like Discord's client, Talk makes one once the stream connects and the
+picture isn't black any more (a screen is black until what's shared draws),
+then every 5 minutes: the picture scaled down to fit 512 by 288, a JPEG at
+quality 92. The worker reports it as a data URI, and Talk uploads it with
+`POST /streams/{stream key}/preview`. A failed upload is tried again a minute
+later, up to three times; a newer still replaces an upload not done yet, and
+stopping the share cancels it. The fake server takes previews of Alice's
+stream only, and lists them at `/_control/video`.
 
 A shared screen carries the sound every other application plays, as Discord's
 client and Vesktop share it; Talk's own sound stays out, so viewers never hear
@@ -230,14 +245,30 @@ Watching works the same way in reverse. Clicking someone's LIVE badge, or
 their tile in the call, sends op 20 and starts a worker with a watch job. The
 worker connects as a viewer, offers H264 and VP8 for decoding only, and asks
 for video with op 15. It learns the streamer's SSRCs and codec from op 12 and
-op 14, then puts RTP packets back together into frames
-(`talk_discord::rtp::Assembler`: VP8 descriptors, and H264 single units, STAP-A
-and FU-A as Annex B). A frame with a gap is dropped, and so is everything after
-it until the next keyframe. The connection then asks for one with a picture
-loss indication, at most every 500 ms. The worker decodes with libvpx or with
-the FFmpeg H264 decoder in libwebrtc's archive (`native/decode.c`) and writes
-RGBA at up to 1080p into the shared frames. Watching is possible only in the
-call you're in. Stream audio isn't played yet. Watching a stream from Discord's
+op 14, then puts RTP packets back in order (`rtp::Reorder`) and together
+into frames (`rtp::Assembler`: VP8 descriptors, and H264 single units,
+STAP-A and FU-A as Annex B). As Discord's client does, it asks for a missing
+packet again at once with a generic NACK, again every 80 ms up to three
+times, and takes the resend from the streamer's RTX SSRC (RFC 4588); padding
+there, which probes the path, is dropped. Packets after a gap wait for it at
+most 300 ms. A frame still missing a packet is dropped, and so is everything
+after it until the next keyframe. So are frames while none has come yet,
+and after one the decoder was too far behind to take. The connection asks
+for a keyframe with a picture loss indication, at most every 500 ms. It
+sends a receiver report every second (packets lost, the highest received,
+and the streamer's last sender report echoed). With `TALK_LOG=debug` it logs
+what it received every 5 s (`stream received`): packets out of order,
+resent, recovered, given up on, and keyframes asked for. The fake server
+loses one packet of each stream it sends a viewer and delivers another late,
+and resends what's asked for. The worker decodes with
+libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
+(`native/decode.c`) and writes RGBA at up to 1080p into the shared frames.
+Watching is possible only in the call you're in. The stream's sound, Opus on
+the streamer's audio SSRC, is DAVE-decrypted as audio and played by the worker
+through PulseAudio on the call's speakers (`stream_audio::Player`), about 100
+ms queued; being deafened silences it, which Talk tells the worker with a
+`hear` control. Talk's workers play as "Talk", which sharing leaves out, so a
+stream you watch never reaches one you share. Watching a stream from Discord's
 own client works: H264 with DAVE, confirmed by hand.
 
 The fake server checks the transport, packetization, sender reports and frames
@@ -438,5 +469,4 @@ material only, under the borrowing rules in the
 5. Mirroring into Matrix.
 
 Screen sharing and watching streams in Discord calls (Go Live) came early.
-Next for it: the preview image Discord shows of a stream, and playing a
-watched stream's sound. Camera video follows after the beta.
+Camera video follows after the beta.

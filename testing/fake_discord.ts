@@ -833,6 +833,8 @@ const received = new Map<number, Received>();
 const receivedAudio = new Map<number, Received>();
 /** And by its RTX SSRC. */
 const receivedRtx = new Map<number, Received>();
+/** Previews streamers uploaded: their size, and whether they were JPEGs. */
+const previews: { stream: string; bytes: number; jpeg: boolean }[] = [];
 
 // --- Watching: Bob's recorded stream --------------------------------------------
 
@@ -880,11 +882,22 @@ const recordings = {
 let streamCodec: "vp8" | "h264" = "vp8";
 
 /** A viewer of Bob's stream and what it was sent. */
-type Watcher = { stream: string; codec: string; framesSent: number; keyframeRequests: number; timer?: Timer };
+type Watcher = {
+  stream: string; codec: string; framesSent: number; soundsSent: number; keyframeRequests: number; timer?: Timer;
+  /** Sends Bob's packet with this sequence number again, as RTX. */
+  resend?: (sequence: number) => void;
+};
 const watchers = new Map<number, Watcher>();
+/** Each viewer's transport key, by its SSRC, to read its RTCP. */
+const viewerKeys = new Map<number, Buffer>();
+/** What viewers' connections went through: a packet lost on the way and
+ * one overtaken per stream watched, and what the viewers did about it. */
+const repairs = { dropped: 0, reordered: 0, nacks: 0, resent: 0, receiverReports: 0 };
 /** Where each voice connection's UDP comes from, by its SSRC. */
 const peers = new Map<number, { address: string; port: number }>();
 const PLAYOUT_DELAY = Buffer.from([0xbe, 0xde, 0x00, 0x01, 0x52, 0x00, 0x00, 0x00]);
+/** 20 ms of Opus silence. */
+const OPUS_SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
 
 /** Seals an RTP packet as "rtpsize" AES-GCM: header and extension preamble in the clear. */
 function sealRtp(packet: Buffer, key: Buffer, counter: number, clear = 16): Buffer {
@@ -901,17 +914,53 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
   const watcher = watchers.get(ws.data.ssrc!)!;
   let frame = 0;
   let sequence = 1000;
+  let soundSequence = 7000;
+  let rtxSequence = 3000;
   let counter = 1;
   let picture = 0;
-  const send = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number) => {
+  const packet = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number, from: number, number: number) => {
     const header = Buffer.alloc(12);
     header[0] = 0x90;
     header[1] = (marker ? 0x80 : 0) | payloadType;
-    header.writeUInt16BE(sequence++ & 0xffff, 2);
+    header.writeUInt16BE(number & 0xffff, 2);
     header.writeUInt32BE(timestamp >>> 0, 4);
-    header.writeUInt32BE(ssrc, 8);
+    header.writeUInt32BE(from, 8);
+    return sealRtp(Buffer.concat([header, PLAYOUT_DELAY, payload]), key, counter++);
+  };
+  // What was sent lately, to resend when the viewer asks.
+  const history = new Map<number, { payload: Buffer; marker: boolean; timestamp: number; payloadType: number }>();
+  let overtaken: Buffer | undefined;
+  const send = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number) => {
+    const number = sequence++ & 0xffff;
+    history.set(number, { payload, marker, timestamp, payloadType });
+    history.delete((number - 1024) & 0xffff);
+    const sealed = packet(payload, marker, timestamp, payloadType, ssrc, number);
+    // As on the internet: one packet lost on the way, and one overtaken.
+    if (number === 1003) return void repairs.dropped++;
+    if (number === 1008) return void (overtaken = sealed);
+    toViewer(sealed);
+    if (overtaken) {
+      toViewer(overtaken);
+      overtaken = undefined;
+      repairs.reordered++;
+    }
+  };
+  // RFC 4588: on the RTX SSRC, the original sequence number first.
+  watcher.resend = (number) => {
+    const sent = history.get(number);
+    if (!sent) return;
+    const original = Buffer.alloc(2);
+    original.writeUInt16BE(number);
+    const rtx = sent.payloadType === 101 ? 102 : 106;
+    toViewer(packet(Buffer.concat([original, sent.payload]), sent.marker, sent.timestamp, rtx, ssrc + 1, rtxSequence++));
+    repairs.resent++;
+  };
+  // A viewer that went away refuses packets until its connection closes.
+  const toViewer = (packet: Buffer) => {
     const peer = peers.get(ws.data.ssrc!);
-    if (peer) udp.send(sealRtp(Buffer.concat([header, PLAYOUT_DELAY, payload]), key, counter++), peer.port, peer.address);
+    try {
+      if (peer) udp.send(packet, peer.port, peer.address);
+    } catch {}
   };
   watcher.timer = setInterval(() => {
     const timestamp = frame * 9000;
@@ -936,6 +985,18 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
       });
     }
     watcher.framesSent++;
+    // 100 ms of sound from Bob's audio SSRC, just before his video's: five
+    // Opus frames of silence, plain RTP as a call's audio goes.
+    for (let index = 0; index < 5; index++) {
+      const header = Buffer.alloc(12);
+      header[0] = 0x80;
+      header[1] = 120;
+      header.writeUInt16BE(soundSequence++ & 0xffff, 2);
+      header.writeUInt32BE((frame * 5 + index) * 960, 4);
+      header.writeUInt32BE(ssrc - 1, 8);
+      toViewer(sealRtp(Buffer.concat([header, OPUS_SILENCE]), key, counter++, 12));
+      watcher.soundsSent++;
+    }
     frame++;
   }, 100);
 }
@@ -1137,6 +1198,20 @@ const udp = await Bun.udpSocket({
           const watcher = watchers.get(data.readUInt32BE(4));
           if (watcher) watcher.keyframeRequests++;
         }
+        // A viewer's generic NACK: the packets it asks for again.
+        const asking = data.length >= 8 && data[1] === 205 && (data[0]! & 0x1f) === 1 ? watchers.get(data.readUInt32BE(4)) : undefined;
+        const viewer = asking && viewerKeys.get(data.readUInt32BE(4));
+        const nack = asking && viewer && openRtp(data, viewer, true);
+        if (asking && nack) {
+          repairs.nacks++;
+          for (let at = 12; at + 4 <= nack.length; at += 4) {
+            const first = nack.readUInt16BE(at);
+            const mask = nack.readUInt16BE(at + 2);
+            asking.resend?.(first);
+            for (let bit = 0; bit < 16; bit++) if (mask & (1 << bit)) asking.resend?.((first + bit + 1) & 0xffff);
+          }
+        }
+        if (data.length >= 8 && data[1] === 201 && watchers.has(data.readUInt32BE(4))) repairs.receiverReports++;
         return;
       }
       peers.set(data.readUInt32BE(4), { address, port });
@@ -1208,7 +1283,8 @@ function voiceMessage(ws: Socket, text: string) {
           user_id: users.bob.id, audio_ssrc: bob, video_ssrc: bob + 1, rtx_ssrc: bob + 2,
           streams: [{ type: "video", rid: "100", ssrc: bob + 1, rtx_ssrc: bob + 2, active: true, quality: 100 }],
         });
-        watchers.set(ws.data.ssrc, { stream: ws.data.stream!, codec, framesSent: 0, keyframeRequests: 0 });
+        watchers.set(ws.data.ssrc, { stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0 });
+        viewerKeys.set(ws.data.ssrc, key);
         ws.data.waiting = { key, ssrc: bob + 1 };
       }
       break;
@@ -1256,6 +1332,18 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   const url = new URL(req.url);
   const method = req.method;
   let m: RegExpMatchArray | null;
+
+  // A live stream's preview, from its streamer: a JPEG as a data URI.
+  if (method === "POST" && (m = path.match(/^\/streams\/([^/]+)\/preview$/))) {
+    const stream = decodeURIComponent(m[1]!);
+    if (!stream.endsWith(`:${ALICE}`)) return json({ message: "Missing Access", code: 50001 }, 403);
+    const body: any = await req.json();
+    const prefix = "data:image/jpeg;base64,";
+    const thumbnail = String(body.thumbnail ?? "");
+    const jpeg = thumbnail.startsWith(prefix) ? Buffer.from(thumbnail.slice(prefix.length), "base64") : Buffer.alloc(0);
+    previews.push({ stream, bytes: jpeg.length, jpeg: jpeg[0] === 0xff && jpeg[1] === 0xd8 });
+    return new Response(null, { status: 204 });
+  }
 
   if (method === "GET" && path === "/users/@me") {
     return json({ ...wireUser(users.alice), email: "alice@example.org", verified: true });
@@ -1458,7 +1546,9 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/video") {
       return json({
         received: [...received.values()].map(({ key: _, ...stream }) => stream),
-        watchers: [...watchers.values()].map(({ timer: _, ...watcher }) => watcher),
+        watchers: [...watchers.values()].map(({ timer: _, resend: _resend, ...watcher }) => watcher),
+        repairs,
+        previews,
       });
     }
     if (req.method === "POST" && path === "/_control/stream-codec") {

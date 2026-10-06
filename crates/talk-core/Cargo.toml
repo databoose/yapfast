@@ -10,10 +10,12 @@ default = ["matrix", "discord"]
 # Matrix: sign-in, encrypted rooms and MatrixRTC voice.
 matrix = ["dep:keyring", "dep:matrix-sdk", "dep:matrix-sdk-ui", "dep:matrix-sdk-crypto", "dep:matrix-rtc-livekit", "dep:matrix-rtc-core", "dep:matrix-rtc-media", "dep:mime", "dep:url"]
 # Discord through the account linked on this device; see docs/discord.md.
-discord = ["dep:talk-discord", "dep:opus2", "dep:rand"]
+discord = ["dep:talk-discord", "dep:opus2", "dep:rand", "dep:base64"]
 
 [dependencies]
 anyhow.workspace = true
+# A Go Live stream's preview goes to Discord as a data URI.
+base64 = { version = "0.22", optional = true }
 directories.workspace = true
 futures-util.workspace = true
 # Decode received images with bounded dimensions before the UI sees them.

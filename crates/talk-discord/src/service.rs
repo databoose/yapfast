@@ -306,6 +306,12 @@ impl Discord {
         self.api.react(channel, id, emoji, add).await
     }
 
+    /// Uploads the preview Discord shows of this account's live stream: a
+    /// JPEG as a data URI.
+    pub async fn stream_preview(&self, stream_key: &str, thumbnail: &str) -> Result<()> {
+        self.api.stream_preview(stream_key, thumbnail).await
+    }
+
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
         self.api.download(url, limit).await
     }
