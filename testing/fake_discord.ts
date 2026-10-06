@@ -814,8 +814,16 @@ type Received = {
   /** RTCP sender reports, and the packet count the last one gave. */
   senderReports: number;
   reportedPackets: number;
+  /** The stream's sound: Opus packets on its audio SSRC, those that didn't
+   * open or weren't Opus, sender reports, and op 5's speaking value. */
+  audioPackets: number;
+  audioUndecryptable: number;
+  audioSenderReports: number;
+  speaking: number | null;
 };
 const received = new Map<number, Received>();
+/** The same records, by the stream's audio SSRC. */
+const receivedAudio = new Map<number, Received>();
 
 // --- Watching: Bob's recorded stream --------------------------------------------
 
@@ -941,6 +949,13 @@ function openRtp(packet: Buffer, key: Buffer, rtcp = false): Buffer | undefined 
   }
 }
 
+/** Counts a packet of a stream's sound: Opus, payload type 120. */
+function receiveAudio(stream: Received, packet: Buffer) {
+  stream.audioPackets++;
+  const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== 120) stream.audioUndecryptable++;
+}
+
 /** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
 function receiveVideo(packet: Buffer) {
   const stream = received.get(packet.readUInt32BE(8));
@@ -1049,14 +1064,23 @@ const udp = await Bun.udpSocket({
     data(socket, data, port, address) {
       // IP discovery: type 1, length 70, SSRC, then the answer fills in the address.
       if (data.length !== 74 || data.readUInt16BE(0) !== 1) {
-        if (data.length > 12 && (data[0]! & 0xc0) === 0x80 && !(data[1]! >= 192 && data[1]! <= 223)) receiveVideo(data);
-        // A streamer's RTCP sender report, from its video SSRC.
+        if (data.length > 12 && (data[0]! & 0xc0) === 0x80 && !(data[1]! >= 192 && data[1]! <= 223)) {
+          const sound = receivedAudio.get(data.readUInt32BE(8));
+          if (sound) receiveAudio(sound, data);
+          else receiveVideo(data);
+        }
+        // A streamer's RTCP sender report, from its video or audio SSRC.
         if (data.length >= 8 && data[1] === 200) {
-          const stream = received.get(data.readUInt32BE(4));
+          const sender = data.readUInt32BE(4);
+          const stream = received.get(sender) ?? receivedAudio.get(sender);
           const report = stream && openRtp(data, stream.key, true);
           if (stream && report && report.length >= 28) {
-            stream.senderReports++;
-            stream.reportedPackets = report.readUInt32BE(20);
+            if (received.has(sender)) {
+              stream.senderReports++;
+              stream.reportedPackets = report.readUInt32BE(20);
+            } else {
+              stream.audioSenderReports++;
+            }
           }
         }
         // RTCP feedback with a picture loss indication, from a viewer's SSRC.
@@ -1113,12 +1137,15 @@ function voiceMessage(ws: Socket, text: string) {
         .filter((codec) => codec.type === "video" && codec.encode !== false)
         .sort((a, b) => a.priority - b.priority)[0];
       if (ws.data.stream && ws.data.ssrc) {
-        received.set(ws.data.ssrc + 1, {
+        const record: Received = {
           stream: ws.data.stream, key, mode: d.data?.mode, announced: null,
           codec: offered?.name ?? "VP8", payloadType: offered?.payload_type ?? 105,
           packets: 0, undecryptable: 0, unattached: 0, frames: 0, keyframes: 0, width: 0, height: 0,
           senderReports: 0, reportedPackets: 0,
-        });
+          audioPackets: 0, audioUndecryptable: 0, audioSenderReports: 0, speaking: null,
+        };
+        received.set(ws.data.ssrc + 1, record);
+        receivedAudio.set(ws.data.ssrc, record);
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
       const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
@@ -1141,6 +1168,11 @@ function voiceMessage(ws: Socket, text: string) {
         ws.data.waiting = undefined;
         streamTo(ws, waiting.key, waiting.ssrc);
       }
+      break;
+    }
+    case 5: { // Speaking: a stream's sound is marked as soundshare.
+      const stream = ws.data.ssrc ? receivedAudio.get(ws.data.ssrc) : undefined;
+      if (stream) stream.speaking = Number(d.speaking);
       break;
     }
     case 12: { // Video attributes

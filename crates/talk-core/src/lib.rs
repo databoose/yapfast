@@ -38,6 +38,8 @@ pub mod runtime;
 #[cfg(feature = "matrix")]
 pub mod session;
 #[cfg(feature = "discord")]
+pub mod stream_audio;
+#[cfg(feature = "discord")]
 pub mod stream_worker;
 pub mod voice;
 #[cfg(feature = "matrix")]

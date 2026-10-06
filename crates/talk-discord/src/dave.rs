@@ -84,6 +84,21 @@ impl Dave {
         frame.to_vec()
     }
 
+    /// End-to-end encrypts an Opus frame once the group is ready, as
+    /// [`Self::encrypt`] does video.
+    pub fn encrypt_opus(&mut self, frame: &[u8]) -> Vec<u8> {
+        if self.version != 0
+            && let Some(session) = self.session.as_mut()
+            && session.is_ready()
+        {
+            match session.encrypt_opus(frame) {
+                Ok(encrypted) => return encrypted.into_owned(),
+                Err(error) => tracing::warn!(?error, "could not end-to-end encrypt sound"),
+            }
+        }
+        frame.to_vec()
+    }
+
     /// Decrypts a received frame from `sender`. Frames without DAVE's
     /// marker pass through, as songbird's audio does; encrypted frames that
     /// can't be decrypted yet are dropped.

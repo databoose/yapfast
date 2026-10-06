@@ -39,6 +39,7 @@ use crate::{
     decode::Decoder,
     encode::{self, Encoder},
     frames::{Frames, Writer},
+    stream_audio,
 };
 
 /// The argument that starts Talk as a stream worker.
@@ -167,6 +168,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             let sink = Sink {
                 writer: Writer::open(&frames)?,
                 controls: received,
+                sound: source == Source::Screen,
                 video: None,
                 fps,
                 started: Instant::now(),
@@ -199,6 +201,9 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
 struct Sink {
     writer: Writer,
     controls: channel::Receiver<Control>,
+    /// Whether to share other applications' sound too: not for the test
+    /// pattern.
+    sound: bool,
     video: Option<Video>,
     fps: u32,
     started: Instant,
@@ -208,6 +213,8 @@ struct Sink {
 struct Video {
     sender: StreamSender,
     encoder: Encoder,
+    /// Other applications' sound, while sharing a screen.
+    _sound: Option<stream_audio::Capture>,
 }
 
 /// The kbit/s to aim for, as Discord's client does: its cap for frames of
@@ -233,6 +240,15 @@ impl Sink {
             .write(preview.0, preview.1, |pixels| to_rgba(shown, pixels));
         if let Ok(Control::Send(server)) = self.controls.try_recv() {
             let sender = StreamSender::start(server, width, height, self.fps)?;
+            let sound = if self.sound {
+                stream_audio::Capture::start(sender.sound())
+                    .inspect_err(|error| {
+                        tracing::warn!(error = format!("{error:#}"), "sharing without sound")
+                    })
+                    .ok()
+            } else {
+                None
+            };
             let encoder = Encoder::new(
                 stream_connection::SEND_CODEC,
                 width,
@@ -240,7 +256,11 @@ impl Sink {
                 self.fps,
                 kbps(height, None),
             )?;
-            self.video = Some(Video { sender, encoder });
+            self.video = Some(Video {
+                sender,
+                encoder,
+                _sound: sound,
+            });
         }
         let Some(video) = self.video.as_mut() else {
             return Ok(());
@@ -762,6 +782,7 @@ mod tests {
         let mut sink = Sink {
             writer: Writer::open(&frames.path().unwrap()).unwrap(),
             controls: received,
+            sound: false,
             video: None,
             fps: 30,
             started: Instant::now(),

@@ -55,6 +55,10 @@ pub fn max_bitrate(height: u32) -> u32 {
     if height > 720 { 9_000_000 } else { 3_500_000 }
 }
 
+/// Op 5's speaking flags for a stream's sound: shared sound, not a
+/// microphone, as Discord's client marks it.
+const SOUNDSHARE: u8 = 2;
+
 /// The codec Talk streams in, as every other Go Live sender known to work
 /// does.
 pub const SEND_CODEC: Codec = Codec::H264;
@@ -65,6 +69,24 @@ pub struct Frame {
     pub data: Vec<u8>,
     pub timestamp: u32,
     pub keyframe: bool,
+}
+
+/// One Opus frame of the stream's sound: 20 ms of stereo at 48 kHz, with
+/// `timestamp` in samples.
+pub struct Sound {
+    pub opus: Vec<u8>,
+    pub timestamp: u32,
+}
+
+/// Queues the stream's sound, from a thread of the sender's own.
+#[derive(Clone)]
+pub struct SoundSender(mpsc::Sender<Sound>);
+
+impl SoundSender {
+    /// Queues a frame of sound, dropping it if the network can't keep up.
+    pub fn send(&self, sound: Sound) {
+        let _ = self.0.try_send(sound);
+    }
 }
 
 /// One whole frame received, decrypted and ready to decode.
@@ -146,6 +168,7 @@ fn ids(server: &StreamServer) -> Result<(u64, u64, u64)> {
 /// Sends frames on a thread of its own; dropping it ends the connection.
 pub struct StreamSender {
     frames: mpsc::Sender<Frame>,
+    sounds: mpsc::Sender<Sound>,
     shared: Arc<Shared>,
 }
 
@@ -156,10 +179,23 @@ impl StreamSender {
         let shared = Shared::new((width, height));
         // A few frames of slack; beyond that the network can't keep up.
         let (frames, receiver) = mpsc::channel(4);
+        // 160 ms of sound.
+        let (sounds, heard) = mpsc::channel(8);
         spawn("talk-stream-send", shared.clone(), move |shared| {
-            Box::pin(async move { send(&server, user, channel, fps, &shared, receiver).await })
+            Box::pin(
+                async move { send(&server, user, channel, fps, &shared, receiver, heard).await },
+            )
         })?;
-        Ok(Self { frames, shared })
+        Ok(Self {
+            frames,
+            sounds,
+            shared,
+        })
+    }
+
+    /// Where the stream's sound goes.
+    pub fn sound(&self) -> SoundSender {
+        SoundSender(self.sounds.clone())
     }
 
     /// Queues a frame. A full queue drops it and asks for a keyframe, so
@@ -637,6 +673,7 @@ async fn send(
     fps: u32,
     shared: &Shared,
     mut frames: mpsc::Receiver<Frame>,
+    mut sounds: mpsc::Receiver<Sound>,
 ) -> Result<()> {
     let mut connection = Connection::open(server, user, channel, Role::Send).await?;
     let (ssrc, video, rtx) = (connection.ssrc, connection.video, connection.rtx);
@@ -650,7 +687,7 @@ async fn send(
     send_json(
         &mut connection.ws,
         5,
-        json!({"speaking": 1, "delay": 0, "ssrc": ssrc}),
+        json!({"speaking": SOUNDSHARE, "delay": 0, "ssrc": ssrc}),
     )
     .await?;
     *lock(&shared.link) = Link::Connected;
@@ -671,6 +708,10 @@ async fn send(
     let mut encrypted = None;
     let mut sent = Sent::default();
     let mut log = tokio::time::interval_at(Instant::now() + LOG_EVERY, LOG_EVERY);
+    // The sound's RTP numbering and sender report counts, on the audio SSRC.
+    let mut sound_sequence: u16 = rand::random();
+    let (mut sound_packets, mut sound_octets) = (0u32, 0u32);
+    let mut sound_reported = Instant::now() - SENDER_REPORTS;
     loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -732,8 +773,32 @@ async fn send(
                     // the server doesn't pass it on to late viewers.
                     if op == 11 {
                         send_json(&mut connection.ws, 12, video_attributes(ssrc, video, rtx, size, fps)).await?;
-                        send_json(&mut connection.ws, 5, json!({"speaking": 1, "delay": 0, "ssrc": ssrc})).await?;
+                        send_json(&mut connection.ws, 5, json!({"speaking": SOUNDSHARE, "delay": 0, "ssrc": ssrc})).await?;
                     }
+                }
+            }
+            Some(sound) = sounds.recv() => {
+                let payload = connection.dave.encrypt_opus(&sound.opus);
+                let mut packet =
+                    rtp::opus_packet(ssrc, sound_sequence, sound.timestamp, sound_packets == 0, &payload);
+                sound_sequence = sound_sequence.wrapping_add(1);
+                sound_packets = sound_packets.wrapping_add(1);
+                sound_octets = sound_octets.wrapping_add(payload.len() as u32);
+                let clear = rtp::rtp_clear_len(&packet).unwrap_or(packet.len());
+                connection.transport.seal(&mut packet, clear)?;
+                connection.udp.send(&packet).await?;
+                sent.sounds += 1;
+                if sound_reported.elapsed() >= SENDER_REPORTS {
+                    sound_reported = Instant::now();
+                    let mut report = rtp::sender_report(
+                        ssrc,
+                        std::time::SystemTime::now(),
+                        sound.timestamp,
+                        sound_packets,
+                        sound_octets,
+                    );
+                    connection.transport.seal(&mut report, rtp::RTCP_CLEAR)?;
+                    connection.udp.send(&report).await?;
                 }
             }
             received = connection.udp.recv(&mut datagram) => {
@@ -773,6 +838,8 @@ async fn send(
 struct Sent {
     frames: u32,
     keyframes: u32,
+    /// Opus frames of the stream's sound.
+    sounds: u32,
     /// RTCP by packet type and feedback format, as `type/format`.
     rtcp: std::collections::BTreeMap<String, u32>,
     /// What the last of each kind said.

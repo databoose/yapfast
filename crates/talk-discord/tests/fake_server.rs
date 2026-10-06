@@ -10,7 +10,7 @@ use talk_discord::{
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
     stream,
-    stream_connection::{Frame, Link, SEND_CODEC, StreamReceiver, StreamSender},
+    stream_connection::{Frame, Link, SEND_CODEC, Sound, StreamReceiver, StreamSender},
     token,
     voice::{Call, Listener},
 };
@@ -408,11 +408,17 @@ async fn talks_to_the_fake_server() {
         sender.take_keyframe_request(),
         "the stream starts with a keyframe"
     );
+    let sound = sender.sound();
     for (index, data) in recording(SEND_CODEC).into_iter().take(5).enumerate() {
         sender.send(Frame {
             data,
             timestamp: index as u32 * 3000,
             keyframe: index == 0,
+        });
+        // Opus's 20 ms of silence.
+        sound.send(Sound {
+            opus: vec![0xf8, 0xff, 0xfe],
+            timestamp: index as u32 * 960,
         });
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
@@ -427,7 +433,11 @@ async fn talks_to_the_fake_server() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|found| found["stream"] == mine.stream_key.as_str() && found["frames"] == 5)
+                .find(|found| {
+                    found["stream"] == mine.stream_key.as_str()
+                        && found["frames"] == 5
+                        && found["audioPackets"] == 5
+                })
             {
                 return found.clone();
             }
@@ -438,6 +448,12 @@ async fn talks_to_the_fake_server() {
     .expect("the fake didn't get five frames");
     assert_eq!(video["undecryptable"], 0);
     assert_eq!(video["unattached"], 0, "every packet names its stream");
+    assert_eq!(video["audioUndecryptable"], 0);
+    assert_eq!(
+        video["audioSenderReports"], 1,
+        "one report in the first second"
+    );
+    assert_eq!(video["speaking"], 2, "the sound is marked as soundshare");
     assert_eq!(video["senderReports"], 1, "one report in the first second");
     assert!(video["reportedPackets"].as_u64() >= Some(1));
     assert_eq!(
