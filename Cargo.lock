@@ -9223,6 +9223,7 @@ dependencies = [
  "rustls 0.23.45",
  "serde",
  "serde_json",
+ "talk-discord",
  "tempfile",
  "tokio",
  "tracing",

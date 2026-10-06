@@ -33,6 +33,34 @@ const INVALID_SESSION: u64 = 9;
 const HELLO: u64 = 10;
 const HEARTBEAT_ACK: u64 = 11;
 
+/// Discord closed the gateway, with its close code.
+#[derive(Debug)]
+pub struct Closed {
+    pub code: u16,
+    pub reason: String,
+}
+
+impl Closed {
+    /// Close codes after which reconnecting with the same token can't help.
+    pub fn is_final(&self) -> bool {
+        // Authentication failed, invalid shard, sharding required, invalid
+        // API version, invalid intents, disallowed intents.
+        matches!(self.code, 4004 | 4010 | 4011 | 4012 | 4013 | 4014)
+    }
+}
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Discord closed the gateway: {} {}",
+            self.code, self.reason
+        )
+    }
+}
+
+impl std::error::Error for Closed {}
+
 pub struct Dispatch {
     pub name: String,
     pub data: Value,
@@ -111,18 +139,22 @@ impl Gateway {
     }
 
     /// Join a voice channel, or leave voice with `channel_id` set to `None`.
+    /// Sending it again in the same channel only changes the mute and deafen
+    /// state others see.
     pub async fn update_voice_state(
         &mut self,
         guild_id: Option<&str>,
         channel_id: Option<&str>,
+        self_mute: bool,
+        self_deaf: bool,
     ) -> Result<()> {
         self.send(
             VOICE_STATE_UPDATE,
             json!({
                 "guild_id": guild_id,
                 "channel_id": channel_id,
-                "self_mute": false,
-                "self_deaf": false,
+                "self_mute": self_mute,
+                "self_deaf": self_deaf,
                 "self_video": false,
             }),
         )
@@ -179,7 +211,11 @@ impl Gateway {
                     let (code, reason) = frame
                         .map(|frame| (frame.code, frame.reason.to_string()))
                         .unwrap_or((CloseCode::Status, String::new()));
-                    bail!("Discord closed the gateway: {} {reason}", u16::from(code));
+                    return Err(Closed {
+                        code: u16::from(code),
+                        reason,
+                    }
+                    .into());
                 }
                 _ => {}
             }

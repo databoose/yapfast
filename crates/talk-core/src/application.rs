@@ -5,6 +5,7 @@ use crate::{
     chat::{
         self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Reaction, Reply, Role,
     },
+    discord,
     voice::{self, Phase},
 };
 
@@ -42,6 +43,10 @@ pub enum Compose {
 #[derive(Default)]
 pub struct AppState {
     pub voice: voice::State,
+    /// Discord is linked on this device and connected.
+    pub discord_online: bool,
+    /// Whether Discord channels hidden from this account are listed, locked.
+    pub show_hidden_channels: bool,
     pub switch_voice: Option<String>,
     pub account: Option<String>,
     pub preview: bool,
@@ -143,8 +148,13 @@ impl AppState {
             && self.rooms.iter().any(|room| {
                 room.id == id
                     && room.voice
-                    && (self.preview
-                        || (self.trusted && self.online && room.encrypted && !self.busy))
+                    && !room.locked
+                    && if discord::is_discord(id) {
+                        self.discord_online && !self.busy
+                    } else {
+                        self.preview
+                            || (self.trusted && self.online && room.encrypted && !self.busy)
+                    }
             })
     }
 }
@@ -194,6 +204,8 @@ pub enum Action {
     CancelVoiceSwitch,
     DismissVoiceError,
     Voice(voice::Command),
+    /// List Discord channels this account can't see, locked.
+    ShowHiddenChannels(bool),
 }
 
 /// An adapter executes these effects with the shared backend, then applies its events.
@@ -208,6 +220,12 @@ pub enum Effect {
 #[derive(Default)]
 pub struct Application {
     pub state: AppState,
+    /// The lists from Matrix and from Discord; `state` shows both.
+    matrix_rooms: Vec<ChatRoom>,
+    matrix_servers: Vec<ChatServer>,
+    discord_rooms: Vec<ChatRoom>,
+    discord_servers: Vec<ChatServer>,
+    discord: Option<talk_discord::service::Snapshot>,
     last_selected: HashMap<Navigation, String>,
     samples: HashMap<String, Vec<ChatMessage>>,
     /// How often this device added each reaction.
@@ -582,6 +600,13 @@ impl Application {
                 self.state.voice.error = None;
                 vec![]
             }
+            Action::ShowHiddenChannels(shown) => {
+                if self.state.show_hidden_channels == shown {
+                    return vec![];
+                }
+                self.state.show_hidden_channels = shown;
+                self.list_discord()
+            }
             Action::Voice(voice::Command::Join(id)) => self.dispatch(Action::RequestJoinVoice(id)),
             Action::Voice(command) => self.voice_command(command),
         }
@@ -602,18 +627,15 @@ impl Application {
                 self.state.notice = None;
             }
             Event::Rooms(index) => {
-                self.state.rooms = index.rooms;
-                self.state.servers = index.servers;
-                if let Navigation::Server(id) = &self.state.navigation
-                    && !self.state.servers.iter().any(|server| &server.id == id)
-                {
-                    self.state.navigation = Navigation::DirectMessages;
-                }
-                if !self.state.rooms.iter().any(|room| {
-                    Some(&room.id) == self.state.selected.as_ref() && self.state.in_scope(room)
-                }) {
-                    return self.restore_selection();
-                }
+                self.matrix_rooms = index.rooms;
+                self.matrix_servers = index.servers;
+                return self.show_lists();
+            }
+            Event::Discord(snapshot) => {
+                self.state.discord_online =
+                    snapshot.status == talk_discord::service::Status::Online;
+                self.discord = Some(snapshot);
+                return self.list_discord();
             }
             Event::Timeline { room, messages } => {
                 if self.state.selected.as_ref() == Some(&room) {
@@ -792,6 +814,45 @@ impl Application {
                 vec![Effect::Backend(Command::CloseRoom)]
             }
         }
+    }
+
+    fn list_discord(&mut self) -> Vec<Effect> {
+        if let Some(snapshot) = &self.discord {
+            (self.discord_rooms, self.discord_servers) =
+                discord::index(snapshot, self.state.show_hidden_channels);
+        }
+        self.show_lists()
+    }
+
+    /// Shows the Matrix and Discord lists together, leaving a server or
+    /// conversation that disappeared.
+    fn show_lists(&mut self) -> Vec<Effect> {
+        self.state.rooms = self
+            .matrix_rooms
+            .iter()
+            .chain(&self.discord_rooms)
+            .cloned()
+            .collect();
+        self.state.servers = self
+            .matrix_servers
+            .iter()
+            .chain(&self.discord_servers)
+            .cloned()
+            .collect();
+        if let Navigation::Server(id) = &self.state.navigation
+            && !self.state.servers.iter().any(|server| &server.id == id)
+        {
+            self.state.navigation = Navigation::DirectMessages;
+        }
+        if !self
+            .state
+            .rooms
+            .iter()
+            .any(|room| Some(&room.id) == self.state.selected.as_ref() && self.state.in_scope(room))
+        {
+            return self.restore_selection();
+        }
+        vec![]
     }
 
     fn select(&mut self, id: String) -> Vec<Effect> {
@@ -1040,6 +1101,7 @@ impl Application {
                     "weekend".into(),
                     "lounge".into(),
                 ],
+                discord: false,
             },
             ChatServer {
                 id: "coop".into(),
@@ -1049,6 +1111,7 @@ impl Application {
                     "looking-for-group".into(),
                     "party-voice".into(),
                 ],
+                discord: false,
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());
@@ -1262,6 +1325,7 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         members,
         unread: 0,
         mentions: 0,
+        locked: false,
     }
 }
 
@@ -1347,6 +1411,7 @@ mod tests {
                     "lounge".into(),
                     "party-voice".into(),
                 ],
+                discord: false,
             }],
         }));
         app.apply(Event::Timeline {
@@ -2001,5 +2066,62 @@ mod tests {
         }));
         assert!(app.dispatch(Action::Recover("key".into())).is_empty());
         assert!(!app.state.busy);
+    }
+
+    #[test]
+    fn discord_channels_join_unless_locked_and_hidden_ones_show_on_request() {
+        use talk_discord::{
+            ready::{Access, Channel, Server},
+            service::{Snapshot, Status},
+        };
+        let mut app = connected();
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            servers: vec![Server {
+                id: "10".into(),
+                name: "Test".into(),
+                voice_channels: vec![
+                    Channel {
+                        id: "11".into(),
+                        name: "Lounge".into(),
+                        ..Default::default()
+                    },
+                    Channel {
+                        id: "12".into(),
+                        name: "Staff".into(),
+                        access: Access::Hidden,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        assert!(app.state.servers.iter().any(|server| server.discord));
+        assert!(app.state.can_join_voice("discord:10:11"));
+        assert!(
+            !app.state
+                .rooms
+                .iter()
+                .any(|room| room.id == "discord:10:12")
+        );
+
+        app.dispatch(Action::ShowHiddenChannels(true));
+        assert!(
+            app.state
+                .rooms
+                .iter()
+                .any(|room| room.id == "discord:10:12" && room.locked)
+        );
+        assert!(!app.state.can_join_voice("discord:10:12"));
+        assert!(
+            app.dispatch(Action::RequestJoinVoice("discord:10:12".into()))
+                .is_empty()
+        );
+        let effects = app.dispatch(Action::RequestJoinVoice("discord:10:11".into()));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::Voice(voice::Command::Join(id)))] if id == "discord:10:11"
+        ));
     }
 }

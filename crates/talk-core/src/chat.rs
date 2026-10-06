@@ -67,6 +67,9 @@ pub struct ChatRoom {
     pub members: u64,
     pub unread: u64,
     pub mentions: u64,
+    /// Listed, but this account may not join it, such as a Discord channel
+    /// its roles keep it out of.
+    pub locked: bool,
 }
 
 #[derive(Clone)]
@@ -74,6 +77,8 @@ pub struct ChatServer {
     pub id: String,
     pub name: String,
     pub channels: Vec<String>,
+    /// A Discord server, reached through the linked Discord account.
+    pub discord: bool,
 }
 
 /// A room's standing from its power levels: Matrix's admin is 100 and moderator 50.
@@ -240,6 +245,8 @@ pub enum Command {
 
 pub enum Event {
     Voice(voice::State),
+    /// Discord's servers, voice channels and who is in them.
+    Discord(talk_discord::service::Snapshot),
     Connected {
         user: String,
         trusted: bool,
@@ -340,16 +347,26 @@ pub async fn run(
             return;
         }
     };
-    let mut voice =
-        match voice::Controller::start_remembering(session.lease(), Some(remembered.clone())) {
-            Ok(controller) => controller,
-            Err(_) => {
-                let _ = events.send(Event::Error(
-                    "Could not start the voice worker. Restart Talk and retry.".into(),
-                ));
-                return;
-            }
-        };
+    // Discord connects when this device has a linked account; see docs/discord.md.
+    let discord = talk_discord::token::load()
+        .ok()
+        .map(talk_discord::service::Discord::start);
+    let mut discord_states = discord
+        .as_ref()
+        .map(talk_discord::service::Discord::snapshots);
+    let mut voice = match voice::Controller::start_remembering(
+        session.lease(),
+        Some(remembered.clone()),
+        discord.clone(),
+    ) {
+        Ok(controller) => controller,
+        Err(_) => {
+            let _ = events.send(Event::Error(
+                "Could not start the voice worker. Restart Talk and retry.".into(),
+            ));
+            return;
+        }
+    };
     let client = session.client.clone();
     let mut trusted = session.device_is_trusted().await.unwrap_or(false);
     let _ = events.send(Event::Connected {
@@ -546,7 +563,7 @@ pub async fn run(
                         match session.logout().await {
                             Ok(()) => { let _ = events.send(Event::LoggedOut); break; }
                             Err(_) => {
-                                if let Ok(controller) = voice::Controller::start_remembering(session.lease(), Some(remembered.clone())) { voice = controller; }
+                                if let Ok(controller) = voice::Controller::start_remembering(session.lease(), Some(remembered.clone()), discord.clone()) { voice = controller; }
                                 let _ = events.send(Event::Voice(voice::State::default()));
                                 let _ = events.send(Event::Error("Sign-out failed. Your session is kept. Check the connection and try again.".into())); restart_sync = true;
                             }
@@ -557,6 +574,7 @@ pub async fn run(
             changed = voice.states.changed(), if voice.states.has_changed().is_ok() => {
                 if changed.is_ok() { let _ = events.send(Event::Voice(voice.states.borrow_and_update().clone())); }
             }
+            Some(snapshot) = discord_changed(&mut discord_states) => { let _ = events.send(Event::Discord(snapshot)); }
             Some(_) = rooms_stream.next() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
             Ok(_) = room_info.recv() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
             Some(_) = space_changes.recv() => { let _ = events.send(Event::Rooms(room_index(&client).await)); }
@@ -670,6 +688,21 @@ pub fn sort_members(members: &mut [ChatMember]) {
     });
 }
 
+/// The next Discord snapshot, or never without a linked account or after the
+/// connection is gone.
+async fn discord_changed(
+    states: &mut Option<tokio::sync::watch::Receiver<talk_discord::service::Snapshot>>,
+) -> Option<talk_discord::service::Snapshot> {
+    let Some(receiver) = states else {
+        return std::future::pending().await;
+    };
+    if receiver.changed().await.is_err() {
+        *states = None;
+        return None;
+    }
+    Some(receiver.borrow_and_update().clone())
+}
+
 async fn room_index(client: &Client) -> RoomIndex {
     let mut result = Vec::new();
     let mut servers = Vec::new();
@@ -700,6 +733,7 @@ async fn room_index(client: &Client) -> RoomIndex {
                 .map(|name| name.to_string())
                 .unwrap_or_else(|| space.room_id().to_string()),
             channels: Vec::new(),
+            discord: false,
         });
     }
     for room in client
@@ -722,6 +756,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             // is unread rather than how much; encrypted mentions are found the same way.
             unread: room.num_unread_messages(),
             mentions: room.num_unread_mentions(),
+            locked: false,
         });
     }
     result.sort_by(|a, b| {

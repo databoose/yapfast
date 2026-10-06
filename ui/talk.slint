@@ -1,4 +1,4 @@
-import { ComboBox, ScrollView, ListView, Palette } from "std-widgets.slint";
+import { ComboBox, ScrollView, ListView, Palette, Switch } from "std-widgets.slint";
 import "fonts/Satoshi-Regular.ttf";
 import "fonts/Satoshi-Italic.ttf";
 import "fonts/Satoshi-Medium.ttf";
@@ -334,6 +334,8 @@ component RailItem inherits Rectangle {
     in property <image> icon;
     in property <bool> selected;
     in property <bool> unread;
+    /// Marks a Discord server.
+    in property <bool> discord;
     callback clicked;
     width: 72px; height: 48px;
     accessible-role: button;
@@ -362,6 +364,16 @@ component RailItem inherits Rectangle {
         if root.icon.width == 0: Text {
             text: root.initial; font-size: 17px; font-weight: 700;
             color: root.lit ? Theme.on-accent : Theme.text;
+        }
+    }
+    // Discord's blurple, on a ring of the rail's colour so it reads as a tag.
+    if root.discord: Rectangle {
+        x: 12px + 48px - 14px; y: (parent.height + 48px) / 2 - 14px;
+        width: 18px; height: 18px; border-radius: 9px;
+        background: Theme.rail;
+        Rectangle {
+            width: 12px; height: 12px; border-radius: 6px;
+            background: #5865f2;
         }
     }
     focus := FocusScope {
@@ -399,6 +411,8 @@ component ChannelRow inherits Rectangle {
     in property <bool> selected;
     in property <bool> unread;
     in property <string> badge;
+    /// A channel this account may not join: drawn faint.
+    in property <bool> locked;
     callback clicked;
     height: root.person ? 42px : 34px;
     border-radius: 6px;
@@ -410,7 +424,7 @@ component ChannelRow inherits Rectangle {
     accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
     forward-focus: focus;
-    property <color> ink: root.selected || root.unread ? Theme.text : pointer.has-hover ? Theme.secondary : Theme.muted;
+    property <color> ink: root.locked ? (root.selected ? Theme.muted : Theme.faint) : root.selected || root.unread ? Theme.text : pointer.has-hover ? Theme.secondary : Theme.muted;
     // Unread activity is marked at the sidebar's edge, as on the server rail.
     if root.unread && !root.selected: Rectangle {
         x: -8px; y: (parent.height - self.height) / 2; width: 4px; height: 8px;
@@ -694,10 +708,12 @@ component Banner inherits Rectangle {
     }
 }
 
-export struct ServerRow { id: string, name: string, initial: string, selected: bool, unread: bool }
+export struct ServerRow { id: string, name: string, initial: string, selected: bool, unread: bool, discord: bool }
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
+    /// Listed but not open to join, such as a Discord channel the account's roles keep it out of.
+    locked: bool,
 }
 export struct ReactionChip { key: string, count: int, mine: bool }
 export struct MessageRow {
@@ -768,6 +784,10 @@ export component TalkWindow inherits Window {
     /// Whether the member list is wanted beside the conversation; Talk stores it.
     in-out property <bool> member-list: true;
     callback member-list-toggled(bool);
+    /// A Discord account is linked, so its settings show.
+    in property <bool> discord-linked;
+    in-out property <bool> show-hidden-channels;
+    callback show-hidden-channels-toggled(bool);
     in property <bool> room-selected;
     in property <bool> room-ready;
     in property <bool> room-encrypted;
@@ -1023,6 +1043,17 @@ export component TalkWindow inherits Window {
                 HorizontalLayout {
                     ActionButton { text: "Refresh devices"; icon: @image-url("icons/refresh-cw.svg"); ghost: true; small: true; clicked => { root.refresh-devices(); } }
                     Rectangle { horizontal-stretch: 1; }
+                }
+                if root.discord-linked: VerticalLayout {
+                    spacing: 10px;
+                    Rectangle { height: 1px; background: Theme.line; }
+                    Text { text: "DISCORD"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                    Switch {
+                        text: "Show channels you can't access";
+                        checked: root.show-hidden-channels;
+                        toggled => { root.show-hidden-channels = self.checked; root.show-hidden-channels-toggled(self.checked); }
+                    }
+                    Label { text: "They appear locked. Server admins hid them on purpose."; }
                 }
                 Rectangle { height: 1px; background: Theme.line; }
                 HorizontalLayout {
@@ -1290,8 +1321,9 @@ export component TalkWindow inherits Window {
                                     spacing: 8px;
                                     for server in root.servers: RailItem {
                                         initial: server.initial;
-                                        label: server.name + (server.unread ? ", unread" : ""); tip: server.name;
-                                        selected: server.selected; unread: server.unread;
+                                        label: server.name + (server.discord ? ", Discord" : "") + (server.unread ? ", unread" : "");
+                                        tip: server.discord ? server.name + " (Discord)" : server.name;
+                                        selected: server.selected; unread: server.unread; discord: server.discord;
                                         clicked => { root.navigate-server(server.id); }
                                     }
                                     Rectangle { vertical-stretch: 1; }
@@ -1331,9 +1363,9 @@ export component TalkWindow inherits Window {
                                         }
                                         ChannelRow {
                                             text: room.name;
-                                            label: room.name + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                                            label: room.name + (room.locked ? ", locked" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                                             icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
-                                            selected: room.selected; unread: room.unread; badge: room.badge;
+                                            selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                                             clicked => { root.select-room(room.id); }
                                         }
                                         // Talk knows the participants of its own call only.

@@ -1,12 +1,19 @@
 # Discord in Talk
 
-Status: decisions recorded 2026-10-06. Step 1 of the [order of work](#order-of-work)
-is in progress. `talk-discord-probe` in `crates/talk-discord` joined a server
-voice channel as a user account on 2026-10-06, with DAVE: a listener in the
-official client heard its audio, and the probe recorded that listener's speech
-cleanly. That needed a fix to songbird's DAVE receive path, described in
-`vendor/songbird/README.talk.md`. The probe takes a token pasted from the
-browser for now; QR linking, DM calls and the audio path below are still open.
+Status: decisions recorded 2026-10-06. Step 2 of the [order of work](#order-of-work)
+works on Linux. Talk lists the linked account's Discord servers in the rail
+with a Discord badge and their voice channels. Channels the account's roles
+and channel overwrites keep it out of show greyed out with a lock, as in
+Discord; channels hidden from it appear the same way only with the "Show
+channels you can't access" setting, which is off by default. Clicking a
+voice channel joins through the same voice dock and one-call rule as Matrix
+voice. Calls start muted, mute and deafen show in Discord, and a voice gate
+sends audio only during speech. The
+owner and a friend talked through it on 2026-10-06. Audio uses PulseAudio and
+libwebrtc's processing module, so Windows needs its own audio backend. The
+token still comes from the browser through `talk-discord-probe store-token`;
+QR linking and DM calls are still open. songbird's DAVE receive fix is
+described in `vendor/songbird/README.talk.md`.
 
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,

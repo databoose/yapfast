@@ -7,6 +7,7 @@ use std::{
     io::{BufRead, Cursor, Write},
     path::Path,
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -14,9 +15,10 @@ use anyhow::{Context, Result, bail};
 use songbird::input::RawAdapter;
 use talk_discord::{
     api::Api,
-    gateway::Gateway,
-    ready, token,
-    voice::{CHANNELS, Call, SAMPLE_RATE},
+    ready::Access,
+    service::{Discord, Snapshot, Status},
+    token,
+    voice::{CHANNELS, Call, Listener, SAMPLE_RATE},
 };
 
 const USAGE: &str = "usage: talk-discord-probe <command>
@@ -72,87 +74,128 @@ async fn whoami() -> Result<()> {
 }
 
 async fn servers() -> Result<()> {
-    let (gateway, ready) = Gateway::connect(&token::load()?).await?;
-    gateway.close().await;
-    for server in ready::servers(&ready) {
+    let discord = Discord::start(token::load()?);
+    let snapshot = online(&discord).await?;
+    for server in &snapshot.servers {
         println!("{} ({})", server.name, server.id);
         for channel in &server.voice_channels {
-            println!("  voice: {} ({})", channel.name, channel.id);
+            let access = match channel.access {
+                Access::Join => "",
+                Access::Locked => ", locked",
+                Access::Hidden => ", hidden",
+            };
+            println!("  voice: {} ({}{access})", channel.name, channel.id);
         }
     }
     Ok(())
 }
 
+/// The first snapshot after connecting, with voice channels this account can join.
+async fn online(discord: &Discord) -> Result<Snapshot> {
+    let mut snapshots = discord.snapshots();
+    loop {
+        snapshots.changed().await?;
+        let snapshot = snapshots.borrow_and_update().clone();
+        match &snapshot.status {
+            Status::Online => return Ok(snapshot),
+            Status::Offline(reason) => bail!("{reason}"),
+            Status::Connecting => {}
+        }
+    }
+}
+
+/// Keeps each speaker's audio for the probe to save.
+#[derive(Default)]
+struct Recorder {
+    audio: Mutex<HashMap<u64, Vec<i16>>>,
+}
+
+impl Listener for Recorder {
+    fn tick(&self, voices: &[(u64, &[i16])]) {
+        let mut audio = self.audio.lock().unwrap();
+        for (user, samples) in voices {
+            audio.entry(*user).or_default().extend_from_slice(samples);
+        }
+    }
+
+    fn disconnected(&self, reason: &str) {
+        println!("Voice disconnected: {reason}");
+    }
+}
+
 async fn join(channel_id: &str, seconds: u64) -> Result<()> {
-    let (mut gateway, ready) = Gateway::connect(&token::load()?).await?;
-    let me = ready::user_id(&ready)
-        .context("READY has no user")?
-        .to_owned();
-    let (server, channel) = ready::servers(&ready)
-        .into_iter()
+    let discord = Discord::start(token::load()?);
+    let snapshot = online(&discord).await?;
+    let mut snapshots = discord.snapshots();
+    let (server, channel) = snapshot
+        .servers
+        .iter()
         .find_map(|server| {
             let channel = server.voice_channels.iter().find(|c| c.id == channel_id)?;
-            let name = channel.name.clone();
-            Some((server, name))
+            Some((server.clone(), channel.name.clone()))
         })
         .context("no voice channel with that id; run servers to list them")?;
     println!("Joining {channel} in {}...", server.name);
 
-    let mut call = Call::join(&mut gateway, &me, &server.id, channel_id).await?;
+    let voice_server = discord.join(&server.id, channel_id).await?;
+    let recorder = Arc::new(Recorder::default());
+    let mut call = Call::connect(&voice_server, &server.id, channel_id, recorder.clone()).await?;
+    // The probe talks: show it unmuted.
+    discord.set_self(&server.id, channel_id, false, false);
+    println!("Voice connected.");
     call.play(RawAdapter::new(Cursor::new(beeps(seconds)), SAMPLE_RATE, CHANNELS.into()).into());
     println!(
         "Playing a beep every second for {seconds} s. Speak in the channel; Ctrl+C ends early."
     );
 
-    // Keep the gateway alive and show who joins or leaves meanwhile.
-    let mut names = HashMap::new();
+    // Show who is in the channel as it changes.
+    let mut shown = Vec::new();
     let end = tokio::time::sleep(Duration::from_secs(seconds));
     tokio::pin!(end);
     loop {
+        let members: Vec<String> = snapshots
+            .borrow_and_update()
+            .voice
+            .get(channel_id)
+            .into_iter()
+            .flatten()
+            .map(|member| member.name.clone())
+            .collect();
+        if members != shown {
+            println!("In the channel: {}", members.join(", "));
+            shown = members;
+        }
         tokio::select! {
             () = &mut end => break,
             _ = tokio::signal::ctrl_c() => break,
-            event = gateway.next() => {
-                let event = event?;
-                if event.name != "VOICE_STATE_UPDATE" || event.data["user_id"] == me.as_str() {
-                    continue;
-                }
-                let user = event.data["user_id"].as_str().unwrap_or_default().to_owned();
-                let name = event.data["member"]["user"]["username"]
-                    .as_str()
-                    .unwrap_or(&user)
-                    .to_owned();
-                names.insert(user, name.clone());
-                if event.data["channel_id"] == channel_id {
-                    println!("{name} is in the channel.");
-                } else {
-                    println!("{name} left the channel.");
-                }
-            }
+            changed = snapshots.changed() => changed?,
         }
     }
 
     call.leave();
-    gateway.update_voice_state(Some(&server.id), None).await?;
-    gateway.close().await;
-    save_recordings(&call, &names)
+    discord.leave(&server.id);
+    // Let the leave reach Discord before the connection closes.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let names: HashMap<u64, String> = snapshots
+        .borrow()
+        .voice
+        .values()
+        .flatten()
+        .filter_map(|member| Some((member.user_id.parse().ok()?, member.name.clone())))
+        .collect();
+    save_recordings(&recorder, &names)
 }
 
 /// Write each speaker's audio to a WAV file and summarise it.
-fn save_recordings(call: &Call, names: &HashMap<String, String>) -> Result<()> {
-    let audio = call.received.audio.lock().unwrap();
-    let speakers = call.received.speakers.lock().unwrap();
+fn save_recordings(recorder: &Recorder, names: &HashMap<u64, String>) -> Result<()> {
+    let audio = recorder.audio.lock().unwrap();
     if audio.is_empty() {
         println!("Received no audio.");
         return Ok(());
     }
     fs::create_dir_all(RECORDINGS)?;
-    for (ssrc, samples) in audio.iter() {
-        let user = speakers.get(ssrc).map(u64::to_string);
-        let label = user
-            .as_ref()
-            .map(|user| names.get(user).cloned().unwrap_or_else(|| user.clone()))
-            .unwrap_or_else(|| format!("source-{ssrc}"));
+    for (user, samples) in audio.iter() {
+        let label = names.get(user).cloned().unwrap_or_else(|| user.to_string());
         let path = Path::new(RECORDINGS).join(format!("{label}.wav"));
         write_wav(&path, samples)?;
         let seconds = samples.len() as f64 / f64::from(SAMPLE_RATE) / f64::from(CHANNELS);

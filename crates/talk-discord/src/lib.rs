@@ -5,5 +5,6 @@ pub mod api;
 pub mod client;
 pub mod gateway;
 pub mod ready;
+pub mod service;
 pub mod token;
 pub mod voice;

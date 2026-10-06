@@ -7,6 +7,8 @@ pub mod backend;
 pub mod calls;
 pub mod chat;
 pub mod cli;
+pub mod discord;
+pub mod discord_audio;
 pub mod experiment;
 pub mod logging;
 pub mod meter;
@@ -27,6 +29,8 @@ pub async fn check_build() {
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     calls::check_native_build();
     let _ = matrix_sdk::Client::builder();
+    // Links songbird's libopus beside libwebrtc's; both must resolve.
+    let _ = talk_discord::voice::live_microphone();
 }
 
 /// Cargo runs library tests from the crate directory; retain workspace-local fixtures.
