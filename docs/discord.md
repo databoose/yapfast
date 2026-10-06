@@ -24,8 +24,19 @@ client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes, reacts and sends files
 through Discord's cloud uploads. Mentions, custom emoji and timestamps show as
 text, every attachment shows, images with previews scaled by Discord's media
-proxy, and channels the account can't send in are read-only. Talk keeps only
-the open channel's messages, in memory.
+proxy, and channels the account can't send in are read-only.
+
+Talk keeps the open channel's messages in memory, and those of the 16
+channels open before it, so going back to one shows it at once. A closed
+channel keeps its newest 100 messages and the previews of its newest 12
+images (a decoded preview is about 400 KB), and follows new messages, edits,
+deletions and reactions while it's kept. Opening it again loads the latest
+page in the background and fits it in: messages kept within the page's span
+that it lacks were deleted meanwhile, and when a full page starts after
+everything kept, more came than a page holds, so only the page stays. The
+UI keeps the same 16 channels' last timeline and member list, so going back
+shows them before the chat side answers, without "Loading messages...".
+Nothing is written to disk.
 
 Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
@@ -36,7 +47,9 @@ does: under hoisted roles, then online, then offline, with offline members
 faded. Each shows a status dot for online, idle or do not disturb, their name
 in their highest coloured role's colour, and their custom status or what
 they're playing below it. Talk shows the list's first 100 rows, headings
-included. A build without Matrix shows the Discord account's name, avatar and
+included. The member lists of the last 16 channels shown are kept too: going
+back to one shows its list at once, and Discord's fresh sync replaces it, even
+under another list id, as after the channel's readers changed. A build without Matrix shows the Discord account's name, avatar and
 connection in the bottom-left panel. Forwarding,
 typing, desktop notifications and DMs are still open.
 
@@ -102,9 +115,9 @@ Scope for the beta:
 - The same devices, push-to-talk, voice activation, noise suppression and echo
   cancellation as Talk calls.
 
-Video and watching screen shares come after the beta, together with video in
-Talk. The group uses screen sharing often, so this is the first thing to add
-after the beta.
+The group uses screen sharing often, so sharing a screen and watching
+streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
+Camera video comes after the beta, together with video in Talk.
 
 Since March 2026, Discord voice requires its end-to-end encryption, DAVE, and
 [rejects clients without it](https://support.discord.com/hc/en-us/articles/38749827197591-A-V-E2EE-Enforcement-for-Non-Stage-Voice-Calls).

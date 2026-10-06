@@ -1,5 +1,6 @@
-//! A Discord text channel in Talk's conversation view. Talk keeps only the
-//! open channel's loaded messages, in memory; history loads from Discord and
+//! A Discord text channel in Talk's conversation view. Talk keeps the open
+//! channel's loaded messages in memory, and those of channels open lately,
+//! so going back to one shows it at once; history loads from Discord and
 //! live changes arrive through the gateway. See docs/discord.md.
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -32,6 +33,11 @@ use crate::{
 
 /// Discord's message length limit without Nitro, in characters.
 pub const MAX_CHARS: usize = 2000;
+/// Channels kept after closing, and of each, the newest messages and image
+/// previews kept: a preview is about 400 KB decoded.
+const RECENT: usize = 16;
+const KEPT_MESSAGES: usize = 100;
+const KEPT_PREVIEWS: usize = 12;
 /// Saving a file holds it in memory first.
 const MAX_SAVE_BYTES: usize = 100 * 1024 * 1024;
 /// Sending a file holds it in memory too; Discord's own limit is often lower.
@@ -105,10 +111,13 @@ pub struct OpenChannel {
     sent: HashSet<String>,
     /// The channel's first message is loaded.
     complete: bool,
+    /// A page of messages arrived, so there's something to show.
+    loaded: bool,
     pictures: HashMap<String, Option<Arc<Picture>>>,
     requested: HashSet<String>,
-    // Dropping the set when the channel closes cancels its loading. What the
-    // person did, such as sending, finishes on its own.
+    // Loading goes on after the channel closes, and dropping the set when
+    // it leaves the recent channels cancels it. What the person did, such
+    // as sending, finishes on its own.
     tasks: JoinSet<()>,
 }
 
@@ -131,6 +140,7 @@ impl OpenChannel {
             pending: Vec::new(),
             sent: HashSet::new(),
             complete: false,
+            loaded: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
             tasks: JoinSet::new(),
@@ -175,12 +185,66 @@ impl OpenChannel {
     }
 
     pub fn loaded(&mut self, older: bool, messages: Vec<Message>) {
-        if messages.len() < PAGE && (older || self.messages.is_empty()) {
+        self.loaded = true;
+        if !older {
+            self.latest(&messages);
+        }
+        // A short page reaches the channel's first message.
+        if messages.len() < PAGE {
             self.complete = true;
         }
         for message in messages {
             self.insert(message);
         }
+    }
+
+    /// Fits the latest page to what's kept: messages kept within its span
+    /// that it lacks were deleted while the channel wasn't followed, and
+    /// kept ones older than a full page that starts after them leave a gap,
+    /// so they go.
+    fn latest(&mut self, page: &[Message]) {
+        let (Some(first), Some(last)) = (page.first(), page.last()) else {
+            self.messages.clear();
+            return;
+        };
+        let full = page.len() >= PAGE;
+        if full
+            && self
+                .messages
+                .keys()
+                .next_back()
+                .is_some_and(|&newest| newest < first.order())
+        {
+            self.messages.clear();
+            self.complete = false;
+            return;
+        }
+        let since = if full { first.order() } else { 0 };
+        let until = last.order();
+        let listed: HashSet<u64> = page.iter().map(Message::order).collect();
+        self.messages
+            .retain(|order, _| *order < since || *order > until || listed.contains(order));
+    }
+
+    /// Keeps less once the channel closes: its newest messages, and the
+    /// newest of their image previews.
+    fn shelve(&mut self) {
+        if self.messages.len() > KEPT_MESSAGES
+            && let Some(&oldest) = self.messages.keys().nth_back(KEPT_MESSAGES - 1)
+        {
+            self.messages = self.messages.split_off(&oldest);
+            self.complete = false;
+        }
+        let shown: HashSet<&String> = self
+            .messages
+            .values()
+            .rev()
+            .flat_map(|message| &message.attachments)
+            .filter_map(|attachment| attachment.preview_url.as_ref())
+            .take(KEPT_PREVIEWS)
+            .collect();
+        self.pictures.retain(|url, _| shown.contains(url));
+        self.requested.retain(|url| shown.contains(url));
     }
 
     fn insert(&mut self, message: Message) {
@@ -483,6 +547,10 @@ impl OpenChannel {
     }
 
     pub fn picture(&mut self, url: String, picture: Option<Arc<Picture>>) {
+        // One that finished after the channel closed and gave it up.
+        if !self.requested.contains(&url) {
+            return;
+        }
         self.pictures.insert(url, picture);
     }
 
@@ -738,6 +806,49 @@ impl OpenChannel {
     }
 }
 
+/// The open channel and those open lately, kept so going back to one shows
+/// it at once. Closed channels follow live events too, and the latest page
+/// loads again when one opens, for what they missed.
+#[derive(Default)]
+pub struct Channels {
+    open: Option<OpenChannel>,
+    /// Newest last.
+    recent: Vec<OpenChannel>,
+}
+
+impl Channels {
+    fn close(&mut self) {
+        if let Some(mut channel) = self.open.take() {
+            channel.shelve();
+            self.recent.push(channel);
+            if self.recent.len() > RECENT {
+                self.recent.remove(0);
+            }
+        }
+    }
+
+    fn reopen(&mut self, room: &str) -> Option<OpenChannel> {
+        let index = self
+            .recent
+            .iter()
+            .position(|channel| channel.room == room)?;
+        Some(self.recent.remove(index))
+    }
+
+    fn get_mut(&mut self, room: &str) -> Option<&mut OpenChannel> {
+        self.open
+            .iter_mut()
+            .chain(&mut self.recent)
+            .find(|channel| channel.room == room)
+    }
+
+    fn is_open(&self, room: &str) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|channel| channel.room == room)
+    }
+}
+
 /// What woke the Discord side of the chat actor.
 pub(crate) enum Wake {
     Snapshot(Option<Snapshot>),
@@ -753,7 +864,7 @@ pub(crate) struct Chat {
     states: Option<watch::Receiver<Snapshot>>,
     live: Option<broadcast::Receiver<Live>>,
     online: bool,
-    open: Option<OpenChannel>,
+    channels: Channels,
     done: UnboundedSender<Done>,
     finished: UnboundedReceiver<Done>,
     pictures: discord::Pictures,
@@ -771,7 +882,7 @@ impl Chat {
             live: Some(discord.live()),
             discord,
             online: false,
-            open: None,
+            channels: Channels::default(),
             done,
             finished,
             pictures: discord::Pictures::new(),
@@ -794,7 +905,7 @@ impl Chat {
         self::command(
             command,
             Some(&self.discord),
-            &mut self.open,
+            &mut self.channels,
             &self.done,
             events,
         )
@@ -816,7 +927,7 @@ impl Chat {
                 // Messages sent while disconnected arrive with the latest page.
                 if online
                     && !self.online
-                    && let Some(channel) = &mut self.open
+                    && let Some(channel) = &mut self.channels.open
                 {
                     channel.refresh(&self.discord, &self.done);
                 }
@@ -824,13 +935,13 @@ impl Chat {
                 let _ = events.send(Event::Discord(snapshot));
             }
             Wake::Live(Some(event)) => {
-                live(event, &self.discord, &mut self.open, &self.done, events);
+                live(event, &self.discord, &mut self.channels, &self.done, events);
             }
             Wake::Finished(done) => {
                 finished(
                     done,
                     Some(&self.discord),
-                    &mut self.open,
+                    &mut self.channels,
                     &self.done,
                     events,
                 );
@@ -873,12 +984,12 @@ async fn next_live(
 pub fn command(
     command: Command,
     discord: Option<&Discord>,
-    open: &mut Option<OpenChannel>,
+    channels: &mut Channels,
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
 ) -> Option<Command> {
     if matches!(command, Command::Open(_) | Command::CloseRoom) {
-        *open = None;
+        channels.close();
     }
     if let Command::MarkDiscordRead { room, sync } = &command {
         if let (Some(discord), Some((guild, channel))) = (discord, discord::parse_room(room)) {
@@ -920,9 +1031,19 @@ pub fn command(
         return None;
     };
     if let Command::Open(_) = command {
+        // Shown at once as it was kept, while the latest page loads.
+        if let Some(mut channel) = channels.reopen(&room) {
+            discord.view(&channel.guild, Some(&channel.channel));
+            channel.refresh(discord, done);
+            if channel.loaded {
+                publish(&mut channel, discord, done, events);
+            }
+            channels.open = Some(channel);
+            return None;
+        }
         match OpenChannel::open(discord, &room, done) {
             // The member list follows as Live::Members.
-            Some(channel) => *open = Some(channel),
+            Some(channel) => channels.open = Some(channel),
             None => {
                 let _ = events.send(Event::RoomError {
                     room,
@@ -932,7 +1053,11 @@ pub fn command(
         }
         return None;
     }
-    let Some(channel) = open.as_mut().filter(|channel| channel.room == room) else {
+    let Some(channel) = channels
+        .open
+        .as_mut()
+        .filter(|channel| channel.room == room)
+    else {
         let again = "Open this conversation again, then retry.";
         let _ = match command {
             Command::Send { room, body, .. } => events.send(Event::SendResult {
@@ -1006,7 +1131,7 @@ pub fn command(
 pub fn finished(
     finished: Done,
     discord: Option<&Discord>,
-    open: &mut Option<OpenChannel>,
+    channels: &mut Channels,
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
 ) {
@@ -1020,7 +1145,9 @@ pub fn finished(
         | Done::Saved { room, .. }
         | Done::Failed { room, .. } => room.clone(),
     };
-    let channel = open.as_mut().filter(|channel| channel.room == room);
+    let shown = channels.is_open(&room);
+    // Closed channels kept lately take what finished too.
+    let channel = channels.get_mut(&room);
     let mut changed = false;
     match (finished, channel) {
         (Done::Edited { item, result, .. }, channel) => {
@@ -1103,20 +1230,29 @@ pub fn finished(
             let _ = events.send(Event::RoomError { room, message });
         }
     }
-    if changed && let (Some(discord), Some(channel)) = (discord, open.as_mut()) {
+    if changed
+        && shown
+        && let (Some(discord), Some(channel)) = (discord, channels.open.as_mut())
+    {
         publish(channel, discord, done, events);
     }
 }
 
-/// Applies a gateway event to the open channel. Missed events reload it.
+/// Applies a gateway event to the open channel and those kept. Missed
+/// events reload the open one; the others load again when opened.
 pub fn live(
     event: Result<Live, RecvError>,
     discord: &Discord,
-    open: &mut Option<OpenChannel>,
+    channels: &mut Channels,
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
 ) {
-    let Some(channel) = open.as_mut() else {
+    if let Ok(event) = &event {
+        for kept in &mut channels.recent {
+            kept.live(event);
+        }
+    }
+    let Some(channel) = channels.open.as_mut() else {
         return;
     };
     match event {
@@ -1248,5 +1384,117 @@ mod tests {
         assert!(open.pending.is_empty());
         assert_eq!(sent_id("d:9"), Some("9"));
         assert_eq!(sent_id("n:101"), None);
+    }
+
+    fn ids(open: &OpenChannel) -> Vec<u64> {
+        open.messages.keys().copied().collect()
+    }
+
+    /// A page of messages with these snowflakes, oldest first.
+    fn page(ids: impl IntoIterator<Item = u64>) -> Vec<Message> {
+        ids.into_iter()
+            .map(|id| message(&id.to_string(), None))
+            .collect()
+    }
+
+    #[test]
+    fn the_latest_page_fits_what_was_kept() {
+        let mut open = OpenChannel::new("discord:10:11").unwrap();
+        // Two full pages kept: 1000 to 1099.
+        open.loaded(false, page(1050..1100));
+        open.loaded(true, page(1000..1050));
+        assert!(!open.complete);
+
+        // Since then 1060 was deleted, 1099 edited, and 1100 to 1109 came.
+        let mut latest = page((1060..1110).filter(|&id| id != 1060));
+        latest.insert(0, message("1059", None));
+        latest
+            .iter_mut()
+            .find(|message| message.id == "1099")
+            .unwrap()
+            .content = "edited".into();
+        open.loaded(false, latest);
+        assert_eq!(
+            ids(&open),
+            (1000..1110).filter(|&id| id != 1060).collect::<Vec<_>>()
+        );
+        assert_eq!(open.messages[&1099].content, "edited");
+
+        // A full page entirely newer than what's kept leaves a gap: only it stays.
+        open.loaded(false, page(2000..2050));
+        assert_eq!(ids(&open), (2000..2050).collect::<Vec<_>>());
+        assert!(!open.complete);
+
+        // A short page is the whole channel: what it lacks was deleted.
+        open.loaded(false, page([2010, 2049]));
+        assert_eq!(ids(&open), [2010, 2049]);
+        assert!(open.complete);
+        open.loaded(false, vec![]);
+        assert!(ids(&open).is_empty(), "every message deleted");
+    }
+
+    #[test]
+    fn closed_channels_keep_their_newest_messages_and_previews() {
+        let mut open = OpenChannel::new("discord:10:11").unwrap();
+        let with_image = |id: u64| Message {
+            attachments: vec![talk_discord::message::Attachment {
+                name: "a.png".into(),
+                size: None,
+                url: String::new(),
+                image: true,
+                dimensions: None,
+                preview_url: Some(format!("preview/{id}")),
+                view_url: None,
+            }],
+            ..message(&id.to_string(), None)
+        };
+        open.loaded(false, (100..150).map(with_image).collect());
+        open.loaded(true, page(50..100));
+        open.loaded(true, page(0..50));
+        for id in 100..150 {
+            let url = format!("preview/{id}");
+            open.requested.insert(url.clone());
+            open.picture(url, None);
+        }
+        open.shelve();
+        assert_eq!(ids(&open), (50..150).collect::<Vec<_>>());
+        assert!(!open.complete, "the oldest went, so they load again");
+        let mut kept: Vec<_> = open.pictures.keys().cloned().collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            (138..150)
+                .map(|id| format!("preview/{id}"))
+                .collect::<Vec<_>>()
+        );
+        open.picture("preview/120".into(), None);
+        assert_eq!(open.pictures.len(), 12, "a preview it gave up arrives late");
+    }
+
+    #[test]
+    fn closed_channels_follow_live_events_and_open_again() {
+        let mut channels = Channels::default();
+        let mut first = OpenChannel::new("discord:10:11").unwrap();
+        first.loaded(false, page([3, 5]));
+        channels.open = Some(first);
+        channels.close();
+        assert!(channels.open.is_none());
+        for kept in &mut channels.recent {
+            kept.live(&Live::Created(message("7", None)));
+        }
+        assert!(channels.get_mut("discord:10:11").is_some());
+        let again = channels.reopen("discord:10:11").unwrap();
+        assert_eq!(ids(&again), [3, 5, 7]);
+        assert!(again.loaded);
+        assert!(channels.reopen("discord:10:11").is_none(), "taken out");
+        for channel in 0..=RECENT as u64 {
+            channels.open = OpenChannel::new(&format!("discord:10:{channel}"));
+            channels.close();
+        }
+        assert_eq!(channels.recent.len(), RECENT);
+        assert!(
+            channels.get_mut("discord:10:0").is_none(),
+            "the oldest went"
+        );
     }
 }

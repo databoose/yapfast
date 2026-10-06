@@ -195,6 +195,7 @@ impl Discord {
                 api: api.clone(),
                 viewing: HashSet::new(),
                 listing: None,
+                lists: Vec::new(),
             },
         ));
         Ok(Self {
@@ -435,6 +436,42 @@ struct Shared {
     viewing: HashSet<String>,
     /// The server and channel whose member list is on screen.
     listing: Option<(String, String)>,
+    /// Member lists of channels shown lately, newest last, to show again at
+    /// once while Discord sends them afresh.
+    lists: Vec<MemberList>,
+}
+
+/// Member lists kept for channels shown again.
+const LISTS: usize = 16;
+
+impl Shared {
+    /// Keeps a member list Discord sent, for when its channel is shown again.
+    fn keep_list(&mut self, list: MemberList) {
+        if !list.synced() {
+            return;
+        }
+        self.lists.retain(|kept| kept.channel() != list.channel());
+        self.lists.push(list);
+        if self.lists.len() > LISTS {
+            self.lists.remove(0);
+        }
+    }
+
+    /// The member list kept for a channel, or an empty one.
+    fn take_list(&mut self, guild: &str, channel: &str) -> MemberList {
+        match self
+            .lists
+            .iter()
+            .position(|list| list.guild() == guild && list.channel() == channel)
+        {
+            Some(index) => {
+                let mut list = self.lists.remove(index);
+                list.revisit();
+                list
+            }
+            None => MemberList::new(guild.to_owned(), channel.to_owned()),
+        }
+    }
 }
 
 async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut shared: Shared) {
@@ -583,7 +620,7 @@ async fn connected_session(
     tracker.list = shared
         .listing
         .clone()
-        .map(|(guild, channel)| MemberList::new(guild, channel));
+        .map(|(guild, channel)| shared.take_list(&guild, &channel));
     for guild in &shared.viewing {
         let channel = tracker
             .list
@@ -634,7 +671,15 @@ async fn connected_session(
                         match channel {
                             Some(channel) if shared.listing.as_ref().is_none_or(|(g, c)| *g != guild || *c != channel) => {
                                 shared.listing = Some((guild.clone(), channel.clone()));
-                                tracker.list = Some(MemberList::new(guild.clone(), channel.clone()));
+                                let list = shared.take_list(&guild, &channel);
+                                if let Some(previous) = tracker.list.replace(list) {
+                                    shared.keep_list(previous);
+                                }
+                                // Shown at once from the cache, until Discord's sync.
+                                if tracker.list.as_ref().is_some_and(MemberList::synced) {
+                                    publish_members(&tracker, shared);
+                                }
+                                shared.snapshots.send_replace(tracker.snapshot());
                                 gateway.subscribe(&guild, Some(&channel)).await
                             }
                             // The same channel again: what Discord sent still stands.
