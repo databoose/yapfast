@@ -176,20 +176,23 @@ differ by more than a tenth. Discord's client allows accounts without Nitro
 frames to I420 with libyuv, scales them with libyuv's filtering scaler, and
 encodes those; the preview is the same picture scaled down to 720p.
 
-A shared screen carries the sound every other application plays, as
-Discord's client and Vesktop share it; Talk's own sound stays out, so viewers
-never hear the call echoed back (`stream_audio`). On Linux, PulseAudio or
-PipeWire's PulseAudio server monitors each application's playback stream on
-its own (`pa_stream_set_monitor_stream`, as pavucontrol's level meters do),
-and streams from Talk's processes are skipped by process id. The worker mixes
-them every 20 ms, waiting until an application has 40 ms queued and keeping
-at most 200 ms of each, and encodes Opus at 64 kbit/s, what Discord's client
-gives a stream's sound. Frames go out as plain Opus RTP on the stream's audio
-SSRC, DAVE-encrypted, with sender reports, and op 5 marks them as shared sound
-(speaking flag 2). Nothing is sent while no application plays. Other systems
-share video only for now, and so does the test pattern. Two ignored tests
-check the capture against the machine's sound server with a quiet tone:
-another process's is heard, and Talk's own is not.
+A shared screen carries the sound every other application plays, as Discord's
+client and Vesktop share it; Talk's own sound stays out, so viewers never hear
+the call echoed back (`stream_audio`). On Linux, PulseAudio or PipeWire's
+PulseAudio server monitors each application's playback stream on its own
+(`pa_stream_set_monitor_stream`, as pavucontrol's level meters do), and
+streams from Talk's processes are skipped by process id. So are other Discord
+clients' (Discord, Vesktop, Equibop, WebCord, Legcord, ArmCord, by application
+name or program): with one of them in the call too, its sound echoed the call
+back to the people in it. The worker mixes them every 20 ms, waiting until an
+application has 40 ms queued and keeping at most 200 ms of each, and encodes
+Opus at 64 kbit/s, what Discord's client gives a stream's sound. Frames go out
+as plain Opus RTP on the stream's audio SSRC, DAVE-encrypted, with sender
+reports, and op 5 marks them as shared sound (speaking flag 2). Nothing is
+sent while no application plays. Other systems share video only for now, and
+so does the test pattern. Two ignored tests check the capture against the
+machine's sound server with a quiet tone: another process's is heard, and
+Talk's own is not.
 
 Each video packet carries the one-byte extensions a Discord client sends: a
 transport-wide sequence number (id 5), playout delay (6), screen content

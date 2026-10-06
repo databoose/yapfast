@@ -5,7 +5,9 @@
 //! On Linux, PulseAudio, or PipeWire's PulseAudio server, monitors each
 //! application's playback stream on its own (`pa_stream_set_monitor_stream`,
 //! as pavucontrol's level meters do). Streams from Talk's processes are
-//! skipped by process id. Other systems share video only for now.
+//! skipped by process id, and so are other Discord clients': their sound is
+//! a call too, which a stream would echo back. Other systems share video
+//! only for now.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -32,6 +34,17 @@ const PRIMED: usize = FRAME * 2;
 const BACKLOG: usize = FRAME * 10;
 /// What Discord's client gives a stream's sound.
 const BITRATE: i32 = 64_000;
+
+/// Whether an application, by its name or program, is a Discord client,
+/// whose sound is a call: Discord's own and the clients built on it.
+fn is_discord_client(name: &str) -> bool {
+    let name = name.to_lowercase();
+    [
+        "discord", "vesktop", "equibop", "webcord", "legcord", "armcord",
+    ]
+    .iter()
+    .any(|client| name.contains(client))
+}
 
 /// One application's sound, waiting to be mixed.
 #[derive(Default)]
@@ -185,6 +198,8 @@ mod platform {
             input: u32,
             sink: u32,
             process: Option<u32>,
+            /// Another Discord client, playing a call.
+            call: bool,
         },
         /// The monitor source of the sink a stream plays on.
         Monitor {
@@ -299,8 +314,9 @@ mod platform {
                         input,
                         sink,
                         process,
+                        call,
                     } => {
-                        if process.is_some_and(|process| excluded.contains(&process)) {
+                        if call || process.is_some_and(|process| excluded.contains(&process)) {
                             continue;
                         }
                         if streams.get(&input).is_some_and(|(on, _)| *on == sink) {
@@ -359,6 +375,10 @@ mod platform {
                 .proplist
                 .get_str("application.process.id")
                 .and_then(|process| process.parse().ok()),
+            call: ["application.name", "application.process.binary"]
+                .into_iter()
+                .filter_map(|key| info.proplist.get_str(key))
+                .any(|name| is_discord_client(&name)),
         }
     }
 
@@ -578,6 +598,24 @@ mod tests {
         capture.join().unwrap();
         assert_eq!(ours, 0, "Talk's own playback was captured");
         eprintln!("monitored {others} other applications' streams");
+    }
+
+    #[test]
+    fn leaves_out_other_discord_clients() {
+        for client in [
+            "Discord",
+            "DiscordCanary",
+            ".Discord-wrapped",
+            "vesktop",
+            "Equibop",
+            "WebCord",
+            "legcord",
+        ] {
+            assert!(is_discord_client(client), "{client}");
+        }
+        for other in ["Firefox", "mpv", "electron", "Spotify", "steam"] {
+            assert!(!is_discord_client(other), "{other}");
+        }
     }
 
     #[test]
