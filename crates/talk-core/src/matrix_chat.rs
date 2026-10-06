@@ -52,8 +52,8 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Delivery, Event,
-        MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Picture, Reaction, Reply, Role, RoomIndex,
-        Start, decode_preview, decode_view, plain_snippet, sort_members,
+        MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Picture, Placement, Reaction, Reply, Role,
+        RoomIndex, Start, decode_preview, decode_view, plain_snippet, sort_members,
     },
     session::Session,
     voice,
@@ -1268,6 +1268,7 @@ async fn publish_timeline(
                             image: true,
                             dimensions,
                             preview_failed: matches!(cached, Some(None)),
+                            placement: Placement::Message,
                             preview: cached.flatten(),
                         }];
                     }
@@ -1284,6 +1285,7 @@ async fn publish_timeline(
                             dimensions: None,
                             preview: None,
                             preview_failed: false,
+                            placement: Placement::Message,
                         }];
                     }
                     MessageType::Video(content) => {
@@ -1299,6 +1301,7 @@ async fn publish_timeline(
                             dimensions: None,
                             preview: None,
                             preview_failed: false,
+                            placement: Placement::Message,
                         }];
                     }
                     MessageType::Audio(content) => {
@@ -1314,6 +1317,7 @@ async fn publish_timeline(
                             dimensions: None,
                             preview: None,
                             preview_failed: false,
+                            placement: Placement::Message,
                         }];
                     }
                     _ => message.body = text.body().to_owned(),

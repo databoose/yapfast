@@ -6,7 +6,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::ready::{self, Server};
+use crate::{
+    embed::{self, Embed},
+    ready::{self, Server},
+};
 
 /// Discord counts from the first second of 2015.
 const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
@@ -17,6 +20,9 @@ const MEMBER_JOIN: u64 = 7;
 const REPLY: u64 = 19;
 const CHAT_INPUT_COMMAND: u64 = 20;
 const CONTEXT_MENU_COMMAND: u64 = 23;
+
+/// The message flag that hides its embeds.
+const SUPPRESS_EMBEDS: u64 = 1 << 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Message {
@@ -33,7 +39,9 @@ pub struct Message {
     pub system: Option<&'static str>,
     pub edited: bool,
     pub reply: Option<Reply>,
+    /// Its files, then its embeds' pictures.
     pub attachments: Vec<Attachment>,
+    pub embeds: Vec<Embed>,
     pub reactions: Vec<Reaction>,
     /// Content can be edited by its author: an ordinary message or reply.
     pub editable: bool,
@@ -61,6 +69,21 @@ pub struct Attachment {
     pub preview_url: Option<String>,
     /// The image scaled down to fit the viewer, by the same proxy.
     pub view_url: Option<String>,
+    pub shown: Shown,
+}
+
+/// Where a message's picture shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shown {
+    /// With the message's attached files and images.
+    #[default]
+    Message,
+    /// Large, in the embed at this index.
+    Embed(usize),
+    /// Small, beside the text of the embed at this index.
+    Thumbnail(usize),
+    /// Large, as the poster of the video embed at this index.
+    Poster(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,9 +241,10 @@ pub fn parse(value: &Value) -> Option<Message> {
                 view_url: image
                     .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT))
                     .flatten(),
+                shown: Shown::Message,
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
     let reactions = value["reactions"]
         .as_array()
         .into_iter()
@@ -236,15 +260,16 @@ pub fn parse(value: &Value) -> Option<Message> {
         })
         .collect();
     let mut content = value["content"].as_str().unwrap_or_default().to_owned();
-    // Bots often post only embeds; show their text.
-    if content.is_empty() {
-        let embeds = value["embeds"].as_array().into_iter().flatten();
-        content = embeds
-            .flat_map(|embed| [&embed["title"], &embed["description"]])
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join("\n");
+    let embeds = if value["flags"].as_u64().unwrap_or_default() & SUPPRESS_EMBEDS == 0 {
+        embed::parse(&value["embeds"])
+    } else {
+        embed::parse(&Value::Null)
+    };
+    if embeds.hides.iter().any(|link| link == content.trim()) {
+        content.clear();
     }
+    let mut attachments = attachments;
+    attachments.extend(embeds.pictures);
     for sticker in value["sticker_items"].as_array().into_iter().flatten() {
         if let Some(name) = sticker["name"].as_str() {
             if !content.is_empty() {
@@ -268,6 +293,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         edited: value["edited_timestamp"].is_string(),
         reply,
         attachments,
+        embeds: embeds.embeds,
         reactions,
         editable: matches!(kind, DEFAULT | REPLY),
     })
@@ -284,7 +310,7 @@ pub const VIEW_HEIGHT: u64 = 1200;
 /// Asks Discord's media proxy for the image fitted into `max_width` by
 /// `max_height` and never enlarged, as the official client does, so a phone
 /// photo doesn't download in full.
-fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) -> Option<String> {
+pub(crate) fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) -> Option<String> {
     let url = attachment["proxy_url"].as_str()?;
     let (width, height) = (
         attachment["width"].as_u64()?,

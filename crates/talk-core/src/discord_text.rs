@@ -11,7 +11,7 @@ use std::{
 use talk_discord::{
     api::PAGE,
     member_list::{ListedMember, Presence as DiscordPresence},
-    message::{Message, Reply as DiscordReply},
+    message::{Message, Reply as DiscordReply, Shown},
     service::{Discord, Live, Snapshot, Status},
 };
 use tokio::{
@@ -25,9 +25,9 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, Command, Delivery, Event, MAX_PREVIEW_DOWNLOAD_BYTES,
-        Picture, Presence, Profile, ProfileRole, Reaction, Reply, Role, decode_preview,
-        decode_view, plain_snippet,
+        Attachment, ChatMember, ChatMessage, Command, Delivery, Embed, EmbedField, Event,
+        MAX_PREVIEW_DOWNLOAD_BYTES, Picture, Placement, Presence, Profile, ProfileRole, Reaction,
+        Reply, Role, decode_preview, decode_view, plain_snippet,
     },
     discord,
 };
@@ -680,12 +680,22 @@ impl OpenChannel {
                     Attachment {
                         name: attachment.name.clone(),
                         size: attachment.size,
-                        image: attachment.preview_url.is_some(),
+                        image: attachment.image && attachment.preview_url.is_some(),
                         dimensions: attachment.dimensions,
                         preview_failed: matches!(preview, Some(None)),
                         preview: preview.flatten(),
+                        placement: match attachment.shown {
+                            Shown::Message => Placement::Message,
+                            Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
+                            Shown::Thumbnail(index) => Placement::Thumbnail(index),
+                        },
                     }
                 })
+                .collect();
+            let embeds = message
+                .embeds
+                .iter()
+                .map(|embed| chat_embed(discord, server, embed))
                 .collect();
             let reply = message.reply.as_ref().map(|reply| match reply {
                 DiscordReply::Message {
@@ -736,6 +746,7 @@ impl OpenChannel {
                     })
                     .collect(),
                 attachments,
+                embeds,
                 can_reply: ordinary,
                 can_edit: own && message.editable,
                 can_delete: own,
@@ -779,6 +790,7 @@ impl OpenChannel {
                         dimensions: None,
                         preview: None,
                         preview_failed: false,
+                        placement: Placement::Message,
                     })
                     .collect(),
                 ..Default::default()
@@ -1374,6 +1386,38 @@ fn chat_profile(
     }
 }
 
+/// An embed as Talk shows it, its mentions written as names.
+fn chat_embed(
+    discord: &Discord,
+    server: Option<&talk_discord::ready::Server>,
+    embed: &talk_discord::embed::Embed,
+) -> Embed {
+    let text = |text: &Option<String>| text.clone().unwrap_or_default();
+    Embed {
+        color: embed.color,
+        provider: text(&embed.provider),
+        author: text(&embed.author),
+        title: text(&embed.title),
+        url: text(&embed.url),
+        description: embed
+            .description
+            .as_deref()
+            .map(|description| discord.render(server, description))
+            .unwrap_or_default(),
+        fields: embed
+            .fields
+            .iter()
+            .map(|field| EmbedField {
+                name: field.name.clone(),
+                value: discord.render(server, &field.value),
+                inline: field.inline,
+            })
+            .collect(),
+        footer: text(&embed.footer),
+        video: embed.video,
+    }
+}
+
 fn chat_member(member: ListedMember) -> ChatMember {
     ChatMember {
         id: member.user_id,
@@ -1543,6 +1587,7 @@ mod tests {
                 dimensions: None,
                 preview_url: Some(format!("preview/{id}")),
                 view_url: None,
+                shown: Shown::Message,
             }],
             ..message(&id.to_string(), None)
         };

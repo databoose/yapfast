@@ -19,6 +19,10 @@
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
 // banner and a server bio, Carol a banner colour, and the rest nothing more.
+// POST /_control/embeds makes Bob post an article link, whose preview arrives
+// a moment later in a MESSAGE_UPDATE as Discord's does, a YouTube link and a
+// GIF link, and a bot post a card with fields; their pictures come from
+// /external/, standing in for Discord's media proxy.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -267,6 +271,8 @@ type Message = {
   files: File[];
   reactions: Reaction[];
   edited?: number;
+  /** Its embeds, given the server's address for their pictures. */
+  embeds?: (origin: string) => unknown[];
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -324,7 +330,7 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     channel_id: message.channel,
     author: wireUser(message.author),
     attachments: message.files.map((file) => wireAttachment(file, origin)),
-    embeds: [],
+    embeds: message.embeds?.(origin) ?? [],
     mentions,
     mention_roles: [],
     pinned: false,
@@ -1624,6 +1630,116 @@ function serveFile(path: string, url: URL): Response {
   return new Response(data, { headers: { "content-type": file.contentType } });
 }
 
+// --- Embeds -----------------------------------------------------------------
+
+// A bot that posts cards; it shares no server member list with anyone.
+const statusBot: User = { id: "1400000000000000007", username: "statusbot", global_name: "Status Bot", avatar: null };
+
+/** An embed picture as Discord's proxy gives it: drawn here at any size. */
+function proxied(origin: string, name: string, width: number, height: number) {
+  return {
+    url: `https://example.com/${name}.png`,
+    proxy_url: `${origin}/external/${name}/${width}x${height}.png`,
+    width,
+    height,
+    content_type: "image/png",
+  };
+}
+
+// Serves /external/{name}/{width}x{height}.png at its size, or at the
+// width and height asked for, as the media proxy scales.
+function serveExternal(path: string, url: URL): Response | undefined {
+  const m = path.match(/^\/external\/([\w-]+)\/(\d+)x(\d+)\.png$/);
+  if (!m) return undefined;
+  let [width, height] = [Number(m[2]), Number(m[3])];
+  const [askedWidth, askedHeight] = [Number(url.searchParams.get("width")), Number(url.searchParams.get("height"))];
+  if (askedWidth > 0 && askedHeight > 0) [width, height] = [askedWidth, askedHeight];
+  if (width > 4096 || height > 4096) return notFound();
+  const key = `${path}@${width}x${height}`;
+  let data = scaled.get(key);
+  if (!data) {
+    const hue = crc32(new TextEncoder().encode(m[1]!));
+    const light = [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160));
+    const dark = light.map((c) => c >> 1);
+    data = png(width, height, (x, y) => [...((x / width) * 0.6 + (y / height) * 0.4 < 0.5 ? light : dark), 255]);
+    scaled.set(key, data);
+  }
+  return new Response(data, { headers: { "content-type": "image/png" } });
+}
+
+const ARTICLE = "https://example.com/news/bridges";
+function articleEmbed(origin: string) {
+  return {
+    type: "article",
+    url: ARTICLE,
+    title: "City opens its first bridge for bikes only",
+    description: "The 300-metre crossing links the old town to the station, and **cars** are kept off it for good.",
+    color: 0x2b6cb0,
+    provider: { name: "Example News" },
+    thumbnail: proxied(origin, "bridge", 1200, 630),
+  };
+}
+
+function postEmbeds(origin: string) {
+  const now = Date.now();
+  const article = post(GENERAL, users.bob, `Have you seen this? ${ARTICLE}`, now);
+  dispatch("MESSAGE_CREATE", dispatched(article, origin));
+  // Discord fetches the page after the message is sent, then updates it.
+  setTimeout(() => {
+    article.embeds = (origin) => [articleEmbed(origin)];
+    dispatch("MESSAGE_UPDATE", dispatched(article, origin));
+  }, 800);
+  const video = post(GENERAL, users.bob, "This one too https://www.youtube.com/watch?v=talk", now + 1, {
+    embeds: (origin) => [
+      {
+        type: "video",
+        url: "https://www.youtube.com/watch?v=talk",
+        title: "Building a bike bridge in 90 seconds",
+        description: "A time-lapse of the whole build.",
+        color: 0xff0000,
+        provider: { name: "YouTube", url: "https://www.youtube.com" },
+        author: { name: "Example City", url: "https://www.youtube.com/@example" },
+        thumbnail: proxied(origin, "timelapse", 1280, 720),
+        video: { url: "https://www.youtube.com/embed/talk", width: 1280, height: 720 },
+      },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(video, origin));
+  const gif = post(GENERAL, users.bob, "https://tenor.com/view/bike-gif-1", now + 2, {
+    embeds: (origin) => [
+      {
+        type: "gifv",
+        url: "https://tenor.com/view/bike-gif-1",
+        provider: { name: "Tenor", url: "https://tenor.co" },
+        thumbnail: proxied(origin, "bike-gif", 498, 280),
+        video: { url: "https://media.tenor.com/bike.mp4", width: 498, height: 280 },
+      },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(gif, origin));
+  const card = post(GENERAL, statusBot, "", now + 3, {
+    embeds: (origin) => [
+      {
+        type: "rich",
+        title: "Server status",
+        url: "https://status.example.com",
+        description: "Everything is running. Ask <@" + users.bob.id + "> if something looks off.",
+        color: 0x57f287,
+        fields: [
+          { name: "Uptime", value: "**99.98%**", inline: true },
+          { name: "Players", value: "42", inline: true },
+          { name: "Region", value: "Europe", inline: true },
+          { name: "Notes", value: "Maintenance on Sunday, see https://status.example.com/maintenance", inline: false },
+        ],
+        footer: { text: "Status Bot" },
+        timestamp: iso(now),
+        thumbnail: proxied(origin, "status", 256, 256),
+      },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(card, origin));
+}
+
 // --- Control ----------------------------------------------------------------
 
 let chat: ReturnType<typeof setInterval> | undefined;
@@ -1694,6 +1810,13 @@ const server = Bun.serve<SocketData>({
       clearInterval(chat);
       chat = setInterval(() => chatTick(origin), CHAT_INTERVAL);
       return new Response("chat started\n");
+    }
+    if (req.method === "GET" && path.startsWith("/external/")) {
+      return serveExternal(path, url) ?? notFound();
+    }
+    if (req.method === "POST" && path === "/_control/embeds") {
+      postEmbeds(origin);
+      return new Response("embeds posted\n");
     }
     if (req.method === "POST" && path === "/_control/gallery") {
       const now = Date.now();

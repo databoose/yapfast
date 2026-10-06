@@ -4,6 +4,7 @@
 pub mod api;
 pub mod client;
 mod dave;
+pub mod embed;
 pub mod gateway;
 pub mod member_list;
 pub mod message;

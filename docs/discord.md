@@ -343,6 +343,17 @@ and DM is visible without copying anything into Matrix.
   an avatar gets Discord's default avatar for their account.
 - Messages support text, replies, edits, deletions, reactions, mentions and
   attachments.
+- Link previews and bots' cards show from the embeds Discord adds to a
+  message: Discord's servers read the linked page's Open Graph tags, often a
+  moment after sending, and the preview arrives in a message update. A card
+  shows the site, author, title, description, fields and footer behind a bar
+  of its colour, with its picture large for articles and videos and small
+  beside the text otherwise. A video's picture opens the video in the
+  browser; other pictures open in the image viewer. A linked image or GIF
+  shows with the message's images, without its address when that's all the
+  message says. GIFs show their first frame. Pictures come through Discord's
+  media proxy (`images-ext-*.discordapp.net`), so Talk never contacts the
+  linked site, and embeds of a message marked to hide them don't show.
 - Notifications follow the person's Discord settings, including per-server mutes
   and "mentions only".
 - Reading a message in Talk marks it read on Discord, so the phone app agrees.

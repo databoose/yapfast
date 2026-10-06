@@ -15,7 +15,9 @@ use slint::{
 use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
-    chat::{ChatMessage, Delivery, Event, Picture, Presence, ProfileRole, Role},
+    chat::{
+        ChatMessage, Delivery, EmbedField, Event, Picture, Placement, Presence, ProfileRole, Role,
+    },
     discord, links,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
@@ -2122,6 +2124,50 @@ fn markdown(body: &str) -> slint::StyledText {
         .unwrap_or_else(|| slint::StyledText::from_plain_text(body))
 }
 
+/// An embed's title in bold, linking to its page when it has one.
+fn embed_title(title: &str, url: &str) -> slint::StyledText {
+    // Backslashes escape Markdown's punctuation, so the title shows as typed.
+    let escaped: String = title
+        .chars()
+        .flat_map(|c| {
+            let escape = c.is_ascii_punctuation().then_some('\\');
+            escape.into_iter().chain([c])
+        })
+        .collect();
+    let markdown = if url.is_empty() {
+        format!("**{escaped}**")
+    } else {
+        format!("**[{escaped}](<{url}>)**")
+    };
+    slint::StyledText::from_markdown(&markdown)
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(title))
+}
+
+/// An embed's fields in rows: up to three inline fields share one, and any
+/// other field takes a row of its own, as in Discord.
+fn field_rows(fields: &[EmbedField]) -> ModelRc<EmbedFieldRow> {
+    let mut rows: Vec<Vec<talk_ui::EmbedField>> = Vec::new();
+    let mut open = false;
+    for field in fields {
+        let cell = talk_ui::EmbedField {
+            name: field.name.clone().into(),
+            value: markdown(&field.value),
+        };
+        match rows.last_mut() {
+            Some(row) if open && field.inline && row.len() < 3 => row.push(cell),
+            _ => rows.push(vec![cell]),
+        }
+        open = field.inline;
+    }
+    ModelRc::new(VecModel::from(
+        rows.into_iter()
+            .map(|fields| EmbedFieldRow {
+                fields: ModelRc::new(VecModel::from(fields)),
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// Plain text with its web addresses linked; none when it has none.
 fn plain_with_links(body: &str) -> Option<slint::StyledText> {
     links::plain_with_links(body)
@@ -2145,19 +2191,59 @@ fn message_row(message: &ChatMessage) -> MessageRow {
             None => (false, slint::StyledText::default()),
         }
     };
-    // An image with a preview shows in the gallery; any other attachment shows a file card.
-    let previews: Vec<(usize, &talk_core::chat::Attachment, &Picture)> = message
-        .attachments
+    // An image with a preview shows in the gallery; any other attachment shows
+    // a file card. Embeds' pictures show in their cards.
+    let previews = |placement: Placement| -> Vec<(usize, &talk_core::chat::Attachment, &Picture)> {
+        message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.placement == placement)
+            .filter_map(|(index, attachment)| {
+                Some((index, attachment, attachment.preview.as_deref()?))
+            })
+            .collect()
+    };
+    let (images, gallery_width, gallery_height) = gallery(&previews(Placement::Message));
+    let embeds: Vec<EmbedCard> = message
+        .embeds
         .iter()
         .enumerate()
-        .filter_map(|(index, attachment)| Some((index, attachment, attachment.preview.as_deref()?)))
+        .map(|(index, embed)| {
+            let (images, gallery_width, gallery_height) =
+                gallery(&previews(Placement::Embed(index)));
+            let thumbnail = previews(Placement::Thumbnail(index)).into_iter().next();
+            EmbedCard {
+                color: role_color(embed.color),
+                has_color: embed.color.is_some(),
+                provider: embed.provider.clone().into(),
+                author: embed.author.clone().into(),
+                title: embed_title(&embed.title, &embed.url),
+                has_title: !embed.title.is_empty(),
+                url: embed.url.clone().into(),
+                description: markdown(&embed.description),
+                has_description: !embed.description.is_empty(),
+                field_rows: field_rows(&embed.fields),
+                footer: embed.footer.clone().into(),
+                thumbnail: thumbnail
+                    .map(|(_, _, preview)| picture(preview))
+                    .unwrap_or_default(),
+                thumbnail_index: thumbnail.map_or(-1, |(index, _, _)| index as i32),
+                has_thumbnail: thumbnail.is_some(),
+                images: ModelRc::new(VecModel::from(images)),
+                gallery_width,
+                gallery_height,
+                video: embed.video,
+            }
+        })
         .collect();
-    let (images, gallery_width, gallery_height) = gallery(&previews);
     let files: Vec<FileCell> = message
         .attachments
         .iter()
         .enumerate()
-        .filter(|(_, attachment)| attachment.preview.is_none())
+        .filter(|(_, attachment)| {
+            attachment.preview.is_none() && attachment.placement == Placement::Message
+        })
         .map(|(index, attachment)| {
             let size = attachment.size.map(file_size);
             let detail = match (attachment.image, attachment.preview_failed, size) {
@@ -2241,6 +2327,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         gallery_width,
         gallery_height,
         files: ModelRc::new(VecModel::from(files)),
+        embeds: ModelRc::new(VecModel::from(embeds)),
         delivery: delivery.into(),
         delivery_failed: message.delivery == Delivery::Failed,
         can_retry,
@@ -2299,6 +2386,36 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_fields_share_rows_three_inline_at_a_time() {
+        let field = |name: &str, inline| EmbedField {
+            name: name.into(),
+            value: String::new(),
+            inline,
+        };
+        let rows = field_rows(&[
+            field("a", true),
+            field("b", true),
+            field("c", true),
+            field("d", true),
+            field("e", false),
+            field("f", true),
+        ]);
+        let names: Vec<Vec<String>> = rows
+            .iter()
+            .map(|row| {
+                row.fields
+                    .iter()
+                    .map(|field| field.name.to_string())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [vec!["a", "b", "c"], vec!["d"], vec!["e"], vec!["f"]]
+        );
+    }
 
     #[test]
     fn pointer_input_reaches_navigation_buttons() {

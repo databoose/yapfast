@@ -2613,6 +2613,7 @@ mod tests {
             dimensions: None,
             preview: None,
             preview_failed: false,
+            placement: chat::Placement::Message,
         };
         app.apply(Event::Timeline {
             room: "dm".into(),

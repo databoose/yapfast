@@ -1016,6 +1016,22 @@ export struct ReactionChip { key: string, count: int, mine: bool }
 export struct ImageCell { index: int, name: string, image: image, x: int, y: int, width: int, height: int }
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
+/// An embed's field, and a row of them: inline fields share a row.
+export struct EmbedField { name: string, value: styled-text }
+export struct EmbedFieldRow { fields: [EmbedField] }
+/// A Discord link preview or bot card. `title` links to the page when
+/// there's one. A video's pictures are its poster, which opens `url`.
+export struct EmbedCard {
+    color: color, has-color: bool,
+    provider: string, author: string, title: styled-text, has-title: bool, url: string,
+    description: styled-text, has-description: bool,
+    field-rows: [EmbedFieldRow],
+    footer: string,
+    /// The small picture beside the text; `thumbnail-index` is its place among the message's attachments.
+    thumbnail: image, thumbnail-index: int, has-thumbnail: bool,
+    images: [ImageCell], gallery-width: int, gallery-height: int,
+    video: bool,
+}
 export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
     /// The author's Discord role colour, when they have one.
@@ -1031,6 +1047,7 @@ export struct MessageRow {
     /// attachments show as file cards.
     images: [ImageCell], gallery-width: int, gallery-height: int,
     files: [FileCell],
+    embeds: [EmbedCard],
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
     can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
 }
@@ -2367,6 +2384,80 @@ export component TalkWindow inherits Window {
                                                                     icon: @image-url("icons/download.svg"); label: "Save " + file.name;
                                                                     enabled: !root.preview && message.delivery == "";
                                                                     clicked => { root.save-attachment(message.item, file.index); }
+                                                                }
+                                                            }
+                                                        }
+                                                        Rectangle { horizontal-stretch: 1; }
+                                                    }
+                                                    // Link previews and bot cards, behind a bar of their colour.
+                                                    for embed in message.embeds: HorizontalLayout {
+                                                        padding-top: 4px;
+                                                        Rectangle {
+                                                            min-height: embed-body.preferred-height; max-width: 432px; horizontal-stretch: 100;
+                                                            background: Theme.sidebar; border-radius: 4px; clip: true;
+                                                            Rectangle { x: 0px; width: 4px; background: embed.has-color ? embed.color : Theme.edge; }
+                                                            embed-body := HorizontalLayout {
+                                                                padding: 12px; padding-left: 16px; padding-right: 16px; spacing: 16px;
+                                                                VerticalLayout {
+                                                                    spacing: 8px; horizontal-stretch: 1; alignment: start;
+                                                                    if embed.provider != "": Text { text: embed.provider; color: Theme.muted; font-size: 12px; overflow: elide; }
+                                                                    if embed.author != "": Text { text: embed.author; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
+                                                                    if embed.has-title: StyledText {
+                                                                        text: embed.title; default-color: Theme.text; link-color: Theme.link; default-font-size: 16px;
+                                                                        link-clicked(link) => { root.open-link(link); }
+                                                                    }
+                                                                    if embed.has-description: StyledText {
+                                                                        text: embed.description; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                                                                        link-clicked(link) => { root.open-link(link); }
+                                                                    }
+                                                                    for row in embed.field-rows: HorizontalLayout {
+                                                                        spacing: 8px;
+                                                                        for field in row.fields: VerticalLayout {
+                                                                            spacing: 2px; horizontal-stretch: 1;
+                                                                            Text { text: field.name; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
+                                                                            StyledText {
+                                                                                text: field.value; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                                                                                link-clicked(link) => { root.open-link(link); }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    // A video's poster opens the video; other pictures open in the viewer.
+                                                                    if embed.images.length > 0: HorizontalLayout {
+                                                                        Rectangle {
+                                                                            width: embed.gallery-width * 1px; height: embed.gallery-height * 1px;
+                                                                            for cell in embed.images: Rectangle {
+                                                                                x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
+                                                                                border-radius: 4px; clip: true; background: Theme.sunken;
+                                                                                Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
+                                                                                if embed.video: Rectangle {
+                                                                                    width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
+                                                                                    Path {
+                                                                                        width: 18px; height: 20px; x: 17px; y: 14px;
+                                                                                        commands: "M 0 0 L 18 10 L 0 20 Z"; fill: #ffffff;
+                                                                                    }
+                                                                                }
+                                                                                TouchArea {
+                                                                                    mouse-cursor: MouseCursor.pointer;
+                                                                                    clicked => {
+                                                                                        if embed.video { root.open-link(embed.url); } else { root.view-image(message.item, cell.index); }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        Rectangle { horizontal-stretch: 1; }
+                                                                    }
+                                                                    if embed.footer != "": Text { text: embed.footer; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                                                                }
+                                                                if embed.has-thumbnail: VerticalLayout {
+                                                                    alignment: start;
+                                                                    Rectangle {
+                                                                        width: 80px; height: 80px; border-radius: 4px; clip: true;
+                                                                        Image { source: embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; }
+                                                                        TouchArea {
+                                                                            mouse-cursor: MouseCursor.pointer;
+                                                                            clicked => { root.view-image(message.item, embed.thumbnail-index); }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }

@@ -197,6 +197,47 @@ pub struct Attachment {
     pub preview: Option<Arc<Picture>>,
     /// The preview could not be downloaded or decoded; the file can still be saved.
     pub preview_failed: bool,
+    pub placement: Placement,
+}
+
+/// Where an attachment's picture shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Placement {
+    /// With the message's files and images.
+    #[default]
+    Message,
+    /// Large, in the message's embed at this index.
+    Embed(usize),
+    /// Small, beside the text of the embed at this index.
+    Thumbnail(usize),
+}
+
+/// A Discord link preview or bot card. Empty texts are left out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Embed {
+    /// The RGB colour of the bar down its side.
+    pub color: Option<u32>,
+    /// The site, such as "YouTube".
+    pub provider: String,
+    pub author: String,
+    pub title: String,
+    /// Where the title leads.
+    pub url: String,
+    /// Markdown.
+    pub description: String,
+    pub fields: Vec<EmbedField>,
+    pub footer: String,
+    /// Its large picture is a video's poster, which opens `url`.
+    pub video: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedField {
+    pub name: String,
+    /// Markdown.
+    pub value: String,
+    /// Shares a row with the inline fields beside it.
+    pub inline: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -225,9 +266,10 @@ pub struct ChatMessage {
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,
-    /// Files and images, in the order the sender attached them. Matrix
-    /// messages carry at most one.
+    /// Files and images, in the order the sender attached them, then the
+    /// pictures of `embeds`. Matrix messages carry at most one.
     pub attachments: Vec<Attachment>,
+    pub embeds: Vec<Embed>,
     pub can_reply: bool,
     pub can_edit: bool,
     pub can_delete: bool,

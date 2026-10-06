@@ -233,16 +233,13 @@ impl Api {
             .await
     }
 
-    /// Downloads a file from Discord's CDN, or the test server, refusing
-    /// anything over `limit` bytes.
+    /// Downloads a file from Discord's CDN or media proxy, or the test
+    /// server, refusing anything over `limit` bytes.
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
         let test_file = client::test_server()
             .and_then(|server| url.strip_prefix(server))
             .is_some_and(|path| path.starts_with('/'));
-        if !url.starts_with("https://cdn.discordapp.com/")
-            && !url.starts_with("https://media.discordapp.net/")
-            && !test_file
-        {
+        if !discord_file(url) && !test_file {
             bail!("not a Discord file");
         }
         let mut response = self
@@ -329,11 +326,45 @@ fn encode(segment: &str) -> String {
     encoded
 }
 
+/// Whether `url` is on Discord's CDN or its media proxy, which serves
+/// embeds' pictures from `images-ext-1.discordapp.net` and the like.
+fn discord_file(url: &str) -> bool {
+    let Some(host) = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split_once('/'))
+        .map(|(host, _)| host)
+    else {
+        return false;
+    };
+    let proxy = host
+        .strip_prefix("images-ext-")
+        .and_then(|host| host.strip_suffix(".discordapp.net"))
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()));
+    proxy || host == "cdn.discordapp.com" || host == "media.discordapp.net"
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn encodes_emoji_for_paths() {
         assert_eq!(super::encode("👍"), "%F0%9F%91%8D");
         assert_eq!(super::encode("pog:5"), "pog%3A5");
+    }
+
+    #[test]
+    fn downloads_only_from_discord() {
+        assert!(super::discord_file(
+            "https://cdn.discordapp.com/attachments/1/2/a.png"
+        ));
+        assert!(super::discord_file(
+            "https://images-ext-2.discordapp.net/external/x/https/example.com/a.png"
+        ));
+        assert!(!super::discord_file(
+            "https://images-ext-.discordapp.net/a.png"
+        ));
+        assert!(!super::discord_file("https://example.com/a.png"));
+        assert!(!super::discord_file(
+            "https://cdn.discordapp.com.example.com/a.png"
+        ));
     }
 }

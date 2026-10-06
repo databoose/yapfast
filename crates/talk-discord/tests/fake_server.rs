@@ -7,6 +7,7 @@ use std::time::Duration;
 use talk_discord::{
     client,
     member_list::Presence,
+    message::Shown,
     ready::PRIVATE,
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
@@ -479,6 +480,41 @@ async fn talks_to_the_fake_server() {
     let own = discord.profile(PRIVATE, &bob).await.unwrap();
     assert!(own.bio.is_some_and(|bio| bio.starts_with("Plays bass")));
     assert!(own.roles.is_empty() && own.joined.is_none());
+
+    // Link previews: the article's arrives in an update, as Discord crawls
+    // the page after the message is sent. A GIF link shows as a picture,
+    // without its address.
+    control
+        .post(format!("{server}/_control/embeds"))
+        .send()
+        .await
+        .unwrap();
+    let article = live_where(&mut live, |event| match event {
+        Live::Updated(message) if !message.embeds.is_empty() => Some(message),
+        _ => None,
+    })
+    .await;
+    assert_eq!(article.embeds[0].provider.as_deref(), Some("Example News"));
+    assert_eq!(article.attachments[0].shown, Shown::Embed(0));
+    let latest = discord.history(&guild, &general, None).await.unwrap();
+    let [.., video, gif, card] = latest.as_slice() else {
+        panic!("the embeds were posted");
+    };
+    assert!(video.embeds[0].video);
+    assert_eq!(video.attachments[0].shown, Shown::Poster(0));
+    assert!(gif.content.is_empty() && gif.embeds.is_empty());
+    assert_eq!(gif.attachments[0].shown, Shown::Message);
+    assert_eq!(card.author, "Status Bot");
+    assert_eq!(card.embeds[0].fields.len(), 4);
+    // Pictures come from Discord's proxy; the linked site is never asked.
+    let preview = gif.attachments[0].preview_url.as_deref().unwrap();
+    assert!(!discord.download(preview, 1 << 20).await.unwrap().is_empty());
+    assert!(
+        discord
+            .download("https://example.com/bike.png", 1 << 20)
+            .await
+            .is_err()
+    );
 
     // Go Live: watching Bob needs the voice channel; then Alice joins the
     // call, watches him and shares her own screen.
