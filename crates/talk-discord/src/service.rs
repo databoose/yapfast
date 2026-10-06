@@ -34,6 +34,8 @@ pub enum Status {
 pub struct VoiceMember {
     pub user_id: String,
     pub name: String,
+    /// The address of the avatar Discord shows for them on this server.
+    pub avatar: String,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -258,6 +260,11 @@ impl Discord {
     /// A user's name in a server: their nickname, display name or username.
     pub fn name(&self, guild: &str, user: &str) -> Option<String> {
         self.read_names().name(guild, user).map(str::to_owned)
+    }
+
+    /// The address of a user's avatar, in a server or in DMs.
+    pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
+        self.read_names().avatar(guild, user)
     }
 
     /// Discord Markdown for Talk, with mentions, custom emoji and times as text.
@@ -646,6 +653,21 @@ impl Tracker {
                 }
                 true
             }
+            // Carries the server's own fields, without its channels or members.
+            "GUILD_UPDATE" => {
+                let (Some(update), Some(known)) = (
+                    ready::server(data),
+                    data["id"]
+                        .as_str()
+                        .and_then(|id| self.servers.iter_mut().find(|server| server.id == id)),
+                ) else {
+                    return false;
+                };
+                known.name = update.name;
+                known.icon = update.icon;
+                ready::sort_servers(&mut self.servers);
+                true
+            }
             "GUILD_DELETE" => {
                 let Some(id) = data["id"].as_str() else {
                     return false;
@@ -779,15 +801,11 @@ impl Tracker {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn name(&self, guild: &str, user: &str) -> String {
+    fn snapshot(&self) -> Snapshot {
         let names = self
             .names
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        names.name(guild, user).unwrap_or("Discord user").to_owned()
-    }
-
-    fn snapshot(&self) -> Snapshot {
         let mut voice: HashMap<String, Vec<VoiceMember>> = HashMap::new();
         for ((guild, user), entry) in &self.voice {
             voice
@@ -795,7 +813,8 @@ impl Tracker {
                 .or_default()
                 .push(VoiceMember {
                     user_id: user.clone(),
-                    name: self.name(guild, user),
+                    name: names.name(guild, user).unwrap_or("Discord user").to_owned(),
+                    avatar: names.avatar(Some(guild), user),
                     muted: entry.muted,
                     deafened: entry.deafened,
                 });
@@ -909,7 +928,7 @@ mod tests {
     fn tracks_voice_channels_and_names() {
         let ready = json!({
             "user": {"id": "1", "username": "me"},
-            "users": [{"id": "2", "username": "ann", "global_name": "Ann"}],
+            "users": [{"id": "2", "username": "ann", "global_name": "Ann", "avatar": "abc"}],
             "guilds": [{"id": "10", "properties": {"name": "Test"}, "channels": [
                 {"id": "11", "name": "Lounge", "type": 2, "position": 0},
             ]}],
@@ -928,6 +947,7 @@ mod tests {
         let lounge = &snapshot.voice["11"];
         assert_eq!(lounge.len(), 1);
         assert_eq!(lounge[0].name, "Annie");
+        assert!(lounge[0].avatar.ends_with("/avatars/2/abc.png?size=128"));
         assert!(lounge[0].muted);
 
         tracker.apply(
@@ -946,6 +966,20 @@ mod tests {
             .map(|channel| channel.name.as_str())
             .collect();
         assert_eq!(names, ["Lounge", "Games"]);
+
+        tracker.apply(
+            "GUILD_UPDATE",
+            &json!({"id": "10", "name": "Renamed", "icon": "ghi"}),
+        );
+        let server = &tracker.servers[0];
+        assert_eq!(server.name, "Renamed");
+        assert!(
+            server
+                .icon
+                .as_ref()
+                .is_some_and(|icon| icon.contains("/icons/10/ghi.png"))
+        );
+        assert_eq!(server.voice_channels.len(), 2, "the channels stay");
     }
 
     #[test]

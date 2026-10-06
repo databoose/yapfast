@@ -590,7 +590,7 @@ impl Matrix {
                 }
             }
             // The chat actor handles voice, and Discord takes its own commands first.
-            Command::Voice(_) | Command::MarkDiscordRead { .. } => {}
+            Command::Voice(_) | Command::MarkDiscordRead { .. } | Command::Pictures(_) => {}
         }
         true
     }
@@ -678,6 +678,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             channels: Vec::new(),
             discord: false,
             muted: false,
+            icon: None,
         });
     }
     for room in client

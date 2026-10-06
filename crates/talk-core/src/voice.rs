@@ -44,6 +44,8 @@ pub struct Participant {
     pub connected: bool,
     /// Why audio may not flow with this participant, if Talk can tell.
     pub problem: Option<String>,
+    /// The address of their avatar; see [`crate::chat::Command::Pictures`].
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug)]

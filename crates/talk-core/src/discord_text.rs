@@ -594,6 +594,7 @@ impl OpenChannel {
                 item: format!("d:{}", message.id),
                 author,
                 sender: format!("discord:{}", message.author_id),
+                avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
                 body,
                 formatted: ordinary,
                 time: format!(
@@ -625,12 +626,14 @@ impl OpenChannel {
             });
         }
         let me_name = name(&me, "You");
+        let me_avatar = discord.avatar(Some(&self.guild), &me);
         for pending in &self.pending {
             rows.push(ChatMessage {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
                 author: me_name.clone(),
                 sender: format!("discord:{me}"),
+                avatar: Some(me_avatar.clone()),
                 body: pending.body.clone(),
                 formatted: true,
                 own: true,
@@ -700,6 +703,7 @@ pub(crate) struct Chat {
     open: Option<OpenChannel>,
     done: UnboundedSender<Done>,
     finished: UnboundedReceiver<Done>,
+    pictures: discord::Pictures,
 }
 
 impl Chat {
@@ -717,6 +721,7 @@ impl Chat {
             open: None,
             done,
             finished,
+            pictures: discord::Pictures::new(),
         })
     }
 
@@ -729,6 +734,10 @@ impl Chat {
         command: Command,
         events: &UnboundedSender<Event>,
     ) -> Option<Command> {
+        if let Command::Pictures(urls) = command {
+            self.pictures.fetch(&self.discord, urls, events);
+            return None;
+        }
         self::command(
             command,
             Some(&self.discord),

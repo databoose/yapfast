@@ -41,6 +41,8 @@ pub struct ChatRoom {
 pub struct VoicePerson {
     pub id: String,
     pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -54,6 +56,8 @@ pub struct ChatServer {
     pub discord: bool,
     /// Its unread messages don't mark it in the rail; mentions still do.
     pub muted: bool,
+    /// The address of the server's icon; see [`Command::Pictures`].
+    pub icon: Option<String>,
 }
 
 /// A room's standing from its power levels: Matrix's admin is 100 and moderator 50.
@@ -129,6 +133,8 @@ pub struct ChatMessage {
     pub author: String,
     /// The author's Matrix user ID, which tells apart people sharing a display name.
     pub sender: String,
+    /// The address of the author's avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,
@@ -217,6 +223,9 @@ pub enum Command {
         room: String,
         sync: bool,
     },
+    /// Download server icons and avatars by address. Each that arrives comes
+    /// back as [`Event::Picture`]; one that fails doesn't.
+    Pictures(Vec<String>),
     Recover(String),
     RefreshTrust,
     RetrySync,
@@ -228,6 +237,11 @@ pub enum Event {
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(talk_discord::service::Snapshot),
+    /// A picture [`Command::Pictures`] asked for, decoded.
+    Picture {
+        url: String,
+        picture: Arc<Picture>,
+    },
     Connected {
         user: String,
         trusted: bool,
@@ -298,6 +312,11 @@ pub fn sort_members(members: &mut [ChatMember]) {
 
 /// Decode an image with dimension and allocation limits, then shrink it for the timeline.
 pub(crate) fn decode_preview(data: &[u8]) -> Option<Picture> {
+    decode_picture(data, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+}
+
+/// Decode an image with dimension and allocation limits, shrunk to fit `width` by `height`.
+pub(crate) fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -306,11 +325,7 @@ pub(crate) fn decode_preview(data: &[u8]) -> Option<Picture> {
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let picture = reader
-        .decode()
-        .ok()?
-        .thumbnail(PREVIEW_WIDTH, PREVIEW_HEIGHT)
-        .into_rgba8();
+    let picture = reader.decode().ok()?.thumbnail(width, height).into_rgba8();
     Some(Picture {
         width: picture.width(),
         height: picture.height(),
@@ -455,7 +470,7 @@ pub async fn run(
                         voice.command(command);
                     }
                     // Discord commands never reach Matrix.
-                    Command::MarkDiscordRead { .. } => {}
+                    Command::MarkDiscordRead { .. } | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
                     command => {
                         if !matrix.command(command, &mut voice, &events).await {

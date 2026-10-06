@@ -33,12 +33,13 @@ const LOUNGE = "1400000000000000103";
 const MODS = "1400000000000000110";
 const ALICE = "1400000000000000001";
 
-type User = { id: string; username: string; global_name: string };
+// Dave has no avatar, so he gets a default one; Carol set another for the server.
+type User = { id: string; username: string; global_name: string; avatar: string | null };
 const users: Record<string, User> = {
-  alice: { id: ALICE, username: "alice", global_name: "Alice" },
-  bob: { id: "1400000000000000002", username: "bob", global_name: "Bob" },
-  carol: { id: "1400000000000000003", username: "carol", global_name: "Carol" },
-  dave: { id: "1400000000000000004", username: "dave", global_name: "Dave" },
+  alice: { id: ALICE, username: "alice", global_name: "Alice", avatar: "alice1" },
+  bob: { id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: "bob1" },
+  carol: { id: "1400000000000000003", username: "carol", global_name: "Carol", avatar: "carol1" },
+  dave: { id: "1400000000000000004", username: "dave", global_name: "Dave", avatar: null },
 };
 const userById = new Map(Object.values(users).map((user) => [user.id, user]));
 
@@ -64,7 +65,6 @@ function wireUser(user: User) {
   return {
     ...user,
     discriminator: "0",
-    avatar: null,
     public_flags: 0,
     avatar_decoration_data: null,
   };
@@ -76,7 +76,7 @@ function member(user: User, roles: string[] = []) {
     user_id: user.id,
     roles,
     nick: null,
-    avatar: null,
+    avatar: user.id === users.carol.id ? "carol-server" : null,
     joined_at: JOINED_AT,
     premium_since: null,
     deaf: false,
@@ -112,14 +112,26 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
 
 /** The Matrix fixture's sunset.png gradient, drawn at any size. */
 function sunset(width: number, height: number): Uint8Array {
+  return png(width, height, (x, y) => {
+    const sx = Math.floor((x * 800) / width);
+    const sy = Math.floor((y * 500) / height);
+    return [Math.floor(sx / 4) & 255, Math.floor(sy / 3) & 255, 160, 255];
+  });
+}
+
+/** An avatar or server icon: two tones split diagonally, picked from its path. */
+function picture(path: string): Uint8Array {
+  const hue = crc32(new TextEncoder().encode(path));
+  const light = [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160));
+  const dark = light.map((c) => c >> 1);
+  return png(128, 128, (x, y) => [...(x + y < 128 ? light : dark), 255]);
+}
+
+function png(width: number, height: number, pixel: (x: number, y: number) => number[]): Uint8Array {
   const raw = new Uint8Array((width * 4 + 1) * height);
   for (let y = 0; y < height; y++) {
     const row = y * (width * 4 + 1);
-    const sy = Math.floor((y * 500) / height);
-    for (let x = 0; x < width; x++) {
-      const sx = Math.floor((x * 800) / width);
-      raw.set([Math.floor(sx / 4) & 255, Math.floor(sy / 3) & 255, 160, 255], row + 1 + x * 4);
-    }
+    for (let x = 0; x < width; x++) raw.set(pixel(x, y), row + 1 + x * 4);
   }
   const header = new Uint8Array(13);
   const view = new DataView(header.buffer);
@@ -407,7 +419,7 @@ function guild() {
     id: GUILD,
     name: "Server",
     owner_id: users.bob.id,
-    icon: null,
+    icon: "server1",
     banner: null,
     splash: null,
     description: null,
@@ -819,6 +831,10 @@ const server = Bun.serve<{ sequence: number; identified: boolean; session: strin
     }
     if (req.method === "GET" && path.startsWith("/media/attachments/")) {
       return serveFile(path.slice("/media/attachments/".length), url);
+    }
+    // Discord's CDN: server icons and avatars.
+    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/avatars)\/[^/]+\.png$/.test(path)) {
+      return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
     if (req.method === "PUT" && path.startsWith("/_upload/")) {
       const upload = uploads.get(decodeURIComponent(path.slice("/_upload/".length)));

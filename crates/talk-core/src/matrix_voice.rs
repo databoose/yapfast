@@ -368,6 +368,7 @@ async fn connected(
                     speaking: speaking.contains(&person.member_id),
                     connected,
                     problem: problem.map(str::to_owned),
+                    avatar: None,
                 }
             }).collect();
             state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));

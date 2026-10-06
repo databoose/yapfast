@@ -126,6 +126,13 @@ and DM is visible without copying anything into Matrix.
 
 - Discord servers appear in the server rail with a Discord badge, and Discord
   DMs appear in the DM list with the same badge.
+- Server icons and avatars come from Discord's CDN, which needs no login.
+  Talk asks for each one once it shows: in the rail, beside people in a
+  voice channel of the open server, in the call, or beside a message. A
+  member's server avatar wins over their own. Talk decodes them at 128px
+  before the UI sees them. Initials show until a picture arrives or when it
+  fails. A server without an icon keeps its initials, and a person without
+  an avatar gets Discord's default avatar for their account.
 - Messages support text, replies, edits, deletions, reactions, mentions and
   attachments.
 - Notifications follow the person's Discord settings, including per-server mutes

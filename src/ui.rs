@@ -359,6 +359,10 @@ struct Adapter {
     messages: Arc<Vec<ChatMessage>>,
     /// Rows already built for unchanged messages, so the list keeps their state.
     rows: HashMap<String, (ChatMessage, MessageRow)>,
+    /// Server icons and avatars already handed to Slint, by address.
+    pictures: HashMap<String, slint::Image>,
+    /// How many pictures had arrived when the message rows were last built.
+    pictures_seen: usize,
     /// One open or save dialog at a time; dropping it cancels the dialog's task.
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
@@ -405,6 +409,8 @@ impl Adapter {
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
                 rows: HashMap::new(),
+                pictures: HashMap::new(),
+                pictures_seen: 0,
                 dialog: None,
                 meter: None,
             })
@@ -596,6 +602,7 @@ impl Adapter {
                     id: server.id.clone().into(),
                     name: server.name.clone().into(),
                     initial: initials(&server.name),
+                    picture: cached_picture(&mut self.pictures, state, server.icon.as_deref()),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
                     unread: state.rooms.iter().any(|room| {
                         (room.mentions > 0 || (room.unread > 0 && !server.muted))
@@ -663,6 +670,11 @@ impl Adapter {
                                 name: person.name.clone().into(),
                                 initial: initial(&person.name),
                                 tint: tint(&person.id),
+                                picture: cached_picture(
+                                    &mut self.pictures,
+                                    state,
+                                    person.avatar.as_deref(),
+                                ),
                                 muted: person.muted,
                                 deafened: person.deafened,
                                 connected: true,
@@ -878,7 +890,10 @@ impl Adapter {
             }
             .into(),
         );
-        if messages_changed || selection_changed || reset {
+        // Avatars that arrived since show on rows built before them.
+        let pictures_arrived = self.pictures_seen != state.pictures.len();
+        self.pictures_seen = state.pictures.len();
+        if messages_changed || selection_changed || reset || pictures_arrived {
             if selection_changed || reset {
                 window.set_react_item(SharedString::default());
                 window.set_active_item(SharedString::default());
@@ -899,6 +914,8 @@ impl Adapter {
                     let new_day = !day.is_empty()
                         && before.is_none_or(|before| self::day(before.timestamp) != day);
                     row.first = new_day || before.is_none_or(|before| !continues(before, message));
+                    row.picture =
+                        cached_picture(&mut self.pictures, state, message.avatar.as_deref());
                     row.day = if new_day {
                         day.into()
                     } else {
@@ -1035,6 +1052,11 @@ impl Adapter {
                         .into(),
                         muted: person.muted,
                         deafened: false,
+                        picture: cached_picture(
+                            &mut self.pictures,
+                            state,
+                            person.avatar.as_deref(),
+                        ),
                     })
                     .collect()
             } else {
@@ -1578,6 +1600,26 @@ fn file_size(bytes: u64) -> String {
     }
 }
 
+/// The picture at `url` once it has arrived, converted for Slint only once.
+fn cached_picture(
+    cache: &mut HashMap<String, slint::Image>,
+    state: &talk_core::application::AppState,
+    url: Option<&str>,
+) -> slint::Image {
+    let Some(url) = url else {
+        return slint::Image::default();
+    };
+    if let Some(image) = cache.get(url) {
+        return image.clone();
+    }
+    let Some(arrived) = state.pictures.get(url) else {
+        return slint::Image::default();
+    };
+    let image = picture(arrived);
+    cache.insert(url.to_owned(), image.clone());
+    image
+}
+
 fn picture(picture: &Picture) -> slint::Image {
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
         &picture.rgba,
@@ -1639,6 +1681,8 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         author: message.author.clone().into(),
         initial: initial(&message.author),
         tint: tint(&message.author),
+        // Set from the picture cache when the timeline is built.
+        picture: slint::Image::default(),
         body: message.body.clone().into(),
         time: message.time.clone().into(),
         // The gutter beside a grouped message shows only the clock time.

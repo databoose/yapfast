@@ -316,12 +316,29 @@ pub struct Names {
     nicknames: HashMap<(String, String), String>,
     /// Members whose server profile is known, with or without a nickname.
     members: HashSet<(String, String)>,
+    /// Avatar hashes by user id, of those who set one.
+    avatars: HashMap<String, String>,
+    /// Server avatar hashes by server and user id.
+    member_avatars: HashMap<(String, String), String>,
 }
 
 impl Names {
     pub fn learn_user(&mut self, user: &Value) {
-        if let (Some(id), Some(name)) = (user["id"].as_str(), ready::display_name(user)) {
+        let Some(id) = user["id"].as_str() else {
+            return;
+        };
+        if let Some(name) = ready::display_name(user) {
             self.users.insert(id.to_owned(), name.to_owned());
+        }
+        // Partial user objects leave the avatar out; null removes it.
+        match user.get("avatar") {
+            Some(Value::String(hash)) => {
+                self.avatars.insert(id.to_owned(), hash.clone());
+            }
+            Some(Value::Null) => {
+                self.avatars.remove(id);
+            }
+            _ => {}
         }
     }
 
@@ -341,6 +358,14 @@ impl Names {
             }
             None => {
                 self.nicknames.remove(&key);
+            }
+        }
+        match member["avatar"].as_str() {
+            Some(hash) => {
+                self.member_avatars.insert(key.clone(), hash.to_owned());
+            }
+            None => {
+                self.member_avatars.remove(&key);
             }
         }
         self.members.insert(key);
@@ -373,6 +398,19 @@ impl Names {
             .get(&(guild.to_owned(), user.to_owned()))
             .or_else(|| self.users.get(user))
             .map(String::as_str)
+    }
+
+    /// The address of the avatar Discord shows for a user: their server
+    /// avatar in `guild`, else their own, else a default one.
+    pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
+        if let Some(guild) = guild
+            && let Some(hash) = self
+                .member_avatars
+                .get(&(guild.to_owned(), user.to_owned()))
+        {
+            return ready::member_avatar(guild, user, hash);
+        }
+        ready::avatar(user, self.avatars.get(user).map(String::as_str))
     }
 
     /// Discord Markdown for Talk: mentions, custom emoji and timestamps
@@ -509,6 +547,33 @@ mod tests {
             &json!({"id": "1", "type": 19, "author": {"id": "1"}, "referenced_message": null}),
         );
         assert_eq!(deleted.unwrap().reply, Some(Reply::Deleted));
+    }
+
+    #[test]
+    fn prefers_server_avatars() {
+        let mut names = Names::default();
+        names.learn_user(&json!({"id": "2", "username": "ann", "avatar": "abc"}));
+        names.learn_member("10", &json!({"user_id": "2", "avatar": "def"}));
+        assert!(
+            names
+                .avatar(None, "2")
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
+        assert!(
+            names
+                .avatar(Some("10"), "2")
+                .ends_with("/guilds/10/users/2/avatars/def.png?size=128")
+        );
+        assert!(
+            names
+                .avatar(Some("11"), "2")
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
+        // A mention without the avatar keeps it; null removes it.
+        names.learn_user(&json!({"id": "2", "username": "ann"}));
+        assert!(names.avatar(None, "2").contains("/avatars/2/"));
+        names.learn_user(&json!({"id": "2", "username": "ann", "avatar": null}));
+        assert!(names.avatar(None, "2").contains("/embed/avatars/"));
     }
 
     #[test]

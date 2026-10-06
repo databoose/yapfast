@@ -251,18 +251,25 @@ component DeviceToggle inherits Rectangle {
     }
 }
 
-// A round initial in the person's own tint, optionally ringed while they speak.
+// A person's picture, or a round initial in their own tint until it arrives;
+// optionally ringed while they speak.
 component Avatar inherits Rectangle {
     in property <string> initial;
     in property <color> tint: #6b7280;
+    in property <image> picture;
     in property <length> size: 40px;
     in property <bool> speaking;
     width: root.size; height: root.size;
     border-radius: root.size / 2;
-    background: root.tint;
-    Text {
+    background: root.picture.width > 0 ? transparent : root.tint;
+    if root.picture.width == 0: Text {
         text: root.initial; color: #ffffff; font-size: root.size * 0.42; font-weight: 700;
         horizontal-alignment: center; vertical-alignment: center;
+    }
+    if root.picture.width > 0: Rectangle {
+        width: root.size; height: root.size;
+        border-radius: root.size / 2; clip: true;
+        Image { source: root.picture; width: root.size; height: root.size; image-fit: cover; }
     }
     if root.speaking: Rectangle {
         x: -3px; y: -3px; width: root.size + 6px; height: root.size + 6px;
@@ -332,6 +339,8 @@ component RailItem inherits Rectangle {
     in property <string> tip: root.label;
     in property <string> initial;
     in property <image> icon;
+    /// The server's own icon, filling the item instead of the initial.
+    in property <image> picture;
     in property <bool> selected;
     in property <bool> unread;
     /// Marks a Discord server.
@@ -350,20 +359,29 @@ component RailItem inherits Rectangle {
         background: Theme.text;
         animate height { duration: 160ms; easing: ease-out; }
     }
-    Rectangle {
+    // A picture only changes shape when lit, as in Discord.
+    tile := Rectangle {
         x: 12px; width: 48px; height: 48px;
         border-radius: root.lit ? 16px : 24px;
-        background: root.lit ? Theme.accent : Theme.raised;
+        background: root.lit && root.picture.width == 0 ? Theme.accent : Theme.raised;
         animate border-radius, background { duration: 160ms; easing: ease-out; }
-        border-width: focus.has-focus ? 2px : 0px;
-        border-color: Theme.text;
+        clip: true;
+        if root.picture.width > 0: Image {
+            source: root.picture; width: 48px; height: 48px; image-fit: cover;
+        }
         if root.icon.width > 0: Image {
             source: root.icon; width: 24px; height: 24px;
             colorize: root.lit ? Theme.on-accent : Theme.text;
         }
-        if root.icon.width == 0: Text {
+        if root.icon.width == 0 && root.picture.width == 0: Text {
             text: root.initial; font-size: 17px; font-weight: 700;
             color: root.lit ? Theme.on-accent : Theme.text;
+        }
+        // The focus ring, drawn over the picture.
+        Rectangle {
+            width: 48px; height: 48px; border-radius: tile.border-radius;
+            border-width: focus.has-focus ? 2px : 0px;
+            border-color: Theme.text;
         }
     }
     // Discord's blurple, on a ring of the rail's colour so it reads as a tag.
@@ -708,8 +726,8 @@ component Banner inherits Rectangle {
     }
 }
 
-export struct ServerRow { id: string, name: string, initial: string, selected: bool, unread: bool, discord: bool }
-export struct PersonRow { name: string, status: string, muted: bool, deafened: bool, speaking: bool, connected: bool, initial: string, tint: color }
+export struct ServerRow { id: string, name: string, initial: string, picture: image, selected: bool, unread: bool, discord: bool }
+export struct PersonRow { name: string, status: string, muted: bool, deafened: bool, speaking: bool, connected: bool, initial: string, tint: color, picture: image }
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
@@ -720,7 +738,7 @@ export struct RoomRow {
 }
 export struct ReactionChip { key: string, count: int, mine: bool }
 export struct MessageRow {
-    id: string, item: string, author: string, initial: string, tint: color, body: string, time: string, short-time: string, own: bool,
+    id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
     /// Starts a group: shows the avatar and author. Later messages from the same person follow compactly.
     first: bool,
     /// A date divider above this message, when it starts a new day.
@@ -1333,7 +1351,7 @@ export component TalkWindow inherits Window {
                                 VerticalLayout {
                                     spacing: 8px;
                                     for server in root.servers: RailItem {
-                                        initial: server.initial;
+                                        initial: server.initial; picture: server.picture;
                                         label: server.name + (server.discord ? ", Discord" : "") + (server.unread ? ", unread" : "");
                                         tip: server.discord ? server.name + " (Discord)" : server.name;
                                         selected: server.selected; unread: server.unread; discord: server.discord;
@@ -1387,7 +1405,7 @@ export component TalkWindow inherits Window {
                                             padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                                             for person in room.people: HorizontalLayout {
                                                 height: 30px; spacing: 8px; padding-left: 4px; padding-right: 8px;
-                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; } }
+                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; } }
                                                 Text {
                                                     text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
                                                     vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
@@ -1406,7 +1424,7 @@ export component TalkWindow inherits Window {
                                             padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                                             for person in root.participants: HorizontalLayout {
                                                 height: 30px; spacing: 8px; padding-left: 4px; padding-right: 8px;
-                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; speaking: person.speaking; } }
+                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; speaking: person.speaking; } }
                                                 Text {
                                                     text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
                                                     color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
@@ -1642,7 +1660,7 @@ export component TalkWindow inherits Window {
                                         accessible-role: text;
                                         accessible-label: person.name + ", " + person.status;
                                         Avatar {
-                                            size: min(80px, parent.height * 0.45); initial: person.initial; tint: person.tint;
+                                            size: min(80px, parent.height * 0.45); initial: person.initial; tint: person.tint; picture: person.picture;
                                             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2 - 8px;
                                             opacity: person.connected ? 1 : 0.5;
                                         }
@@ -1763,7 +1781,7 @@ export component TalkWindow inherits Window {
                                                     }
                                                     if message.first: Avatar {
                                                         x: 0px; y: message.has-reply ? 24px : 2px;
-                                                        initial: message.initial; tint: message.tint;
+                                                        initial: message.initial; tint: message.tint; picture: message.picture;
                                                     }
                                                     if !message.first && root.active-item == message.item: Text {
                                                         x: 0px; y: 4px; width: 40px;

@@ -1,9 +1,14 @@
 //! Shared client behavior. UI adapters dispatch actions and render the resulting state.
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use crate::{
     chat::{
-        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Reaction, Reply, Role,
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Picture, Reaction,
+        Reply, Role,
     },
     discord,
     voice::{self, Phase},
@@ -59,6 +64,8 @@ pub struct AppState {
     pub notice: Option<String>,
     pub rooms: Vec<ChatRoom>,
     pub servers: Vec<ChatServer>,
+    /// Server icons and avatars that arrived, by address.
+    pub pictures: HashMap<String, Arc<Picture>>,
     pub navigation: Navigation,
     pub selected: Option<String>,
     pub room_ready: bool,
@@ -247,10 +254,63 @@ pub struct Application {
     samples: HashMap<String, Vec<ChatMessage>>,
     /// How often this device added each reaction.
     reaction_uses: HashMap<String, u32>,
+    /// Pictures asked for once; they aren't asked for again.
+    requested_pictures: HashSet<String>,
 }
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
+        let mut effects = self.dispatch_action(action);
+        effects.extend(self.request_pictures());
+        effects
+    }
+
+    pub fn apply(&mut self, event: Event) -> Vec<Effect> {
+        let mut effects = self.apply_event(event);
+        effects.extend(self.request_pictures());
+        effects
+    }
+
+    /// Asks for the server icons and avatars on screen that weren't asked
+    /// for before: the rail, the people in the listed voice channels, the
+    /// call and the open timeline.
+    fn request_pictures(&mut self) -> Option<Effect> {
+        let state = &self.state;
+        let shown = state
+            .servers
+            .iter()
+            .filter_map(|server| server.icon.as_deref())
+            .chain(
+                state
+                    .rooms
+                    .iter()
+                    .filter(|room| state.in_scope(room))
+                    .flat_map(|room| &room.people)
+                    .filter_map(|person| person.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .voice
+                    .participants
+                    .iter()
+                    .filter_map(|person| person.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.avatar.as_deref()),
+            );
+        let mut wanted = Vec::new();
+        for url in shown {
+            if self.requested_pictures.insert(url.to_owned()) {
+                wanted.push(url.to_owned());
+            }
+        }
+        (!wanted.is_empty()).then_some(Effect::Backend(Command::Pictures(wanted)))
+    }
+
+    fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
             Action::Navigate(navigation) => {
                 if self.state.navigation == navigation {
@@ -633,7 +693,7 @@ impl Application {
         }
     }
 
-    pub fn apply(&mut self, event: Event) -> Vec<Effect> {
+    fn apply_event(&mut self, event: Event) -> Vec<Effect> {
         match event {
             Event::Voice(state) => self.state.voice = state,
             Event::Connected {
@@ -651,6 +711,9 @@ impl Application {
                 self.matrix_rooms = index.rooms;
                 self.matrix_servers = index.servers;
                 return self.show_lists();
+            }
+            Event::Picture { url, picture } => {
+                self.state.pictures.insert(url, picture);
             }
             #[cfg(feature = "discord")]
             Event::Discord(snapshot) => {
@@ -763,6 +826,8 @@ impl Application {
     /// Call when the backend could not accept an effect's command.
     pub fn backend_failed(&mut self, command: &Command) {
         match command {
+            // A missing picture leaves an initial; it says nothing new.
+            Command::Pictures(_) => return,
             Command::Voice(_) => {
                 self.state.voice.error =
                     Some("Voice is unavailable. Reconnect to Matrix and retry.".into());
@@ -1147,6 +1212,7 @@ impl Application {
                 ],
                 discord: false,
                 muted: false,
+                icon: None,
             },
             ChatServer {
                 id: "coop".into(),
@@ -1158,6 +1224,7 @@ impl Application {
                 ],
                 discord: false,
                 muted: false,
+                icon: None,
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());
@@ -1331,6 +1398,7 @@ impl Application {
                             speaking: false,
                             connected: true,
                             problem: None,
+                            avatar: None,
                         }],
                         ..self.preview_voice()
                     };
@@ -1462,6 +1530,7 @@ mod tests {
                 ],
                 discord: false,
                 muted: false,
+                icon: None,
             }],
         }));
         app.apply(Event::Timeline {
@@ -2174,6 +2243,74 @@ mod tests {
             effects.as_slice(),
             [Effect::Backend(Command::Voice(voice::Command::Join(id)))] if id == "discord:10:11"
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn asks_once_for_the_pictures_on_screen() {
+        use talk_discord::{
+            ready::{Channel, Server},
+            service::{Snapshot, Status, VoiceMember},
+        };
+        let snapshot = |member: &str| Snapshot {
+            status: Status::Online,
+            servers: vec![Server {
+                id: "10".into(),
+                name: "Test".into(),
+                icon: Some("icon.png".into()),
+                voice_channels: vec![Channel {
+                    id: "11".into(),
+                    name: "Lounge".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            voice: [(
+                "11".to_owned(),
+                vec![VoiceMember {
+                    user_id: member.into(),
+                    name: member.into(),
+                    avatar: format!("{member}.png"),
+                    muted: false,
+                    deafened: false,
+                }],
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let asked = |effects: Vec<Effect>| -> Vec<String> {
+            effects
+                .into_iter()
+                .flat_map(|effect| match effect {
+                    Effect::Backend(Command::Pictures(urls)) => urls,
+                    _ => vec![],
+                })
+                .collect()
+        };
+        let mut app = connected();
+        assert_eq!(
+            asked(app.apply(Event::Discord(snapshot("ann")))),
+            ["icon.png"],
+            "a voice channel's people show only in its server"
+        );
+        assert_eq!(
+            asked(app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())))),
+            ["ann.png"]
+        );
+        assert!(asked(app.apply(Event::Discord(snapshot("ann")))).is_empty());
+        assert_eq!(
+            asked(app.apply(Event::Discord(snapshot("bob")))),
+            ["bob.png"]
+        );
+        app.apply(Event::Picture {
+            url: "icon.png".into(),
+            picture: Arc::new(Picture {
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+            }),
+        });
+        assert!(app.state.pictures.contains_key("icon.png"));
     }
 
     #[test]

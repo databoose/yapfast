@@ -262,6 +262,7 @@ fn discord_participants(
                 },
                 connected: true,
                 problem: None,
+                avatar: Some(member.avatar.clone()),
             }
         })
         .collect();
