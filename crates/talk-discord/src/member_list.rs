@@ -80,6 +80,9 @@ pub struct MemberList {
     count: Option<u64>,
     /// The listed members' roles and presence, by user id.
     people: HashMap<String, Person>,
+    /// Shown again from the cache: the next full sync replaces it, even
+    /// under another id, as when the channel's readers changed meanwhile.
+    resync: bool,
 }
 
 impl MemberList {
@@ -92,7 +95,14 @@ impl MemberList {
             counts: HashMap::new(),
             count: None,
             people: HashMap::new(),
+            resync: false,
         }
+    }
+
+    /// Takes the next full sync, whatever list it's for: this list is shown
+    /// again, and Discord sends its channel's list afresh.
+    pub fn revisit(&mut self) {
+        self.resync = true;
     }
 
     pub fn guild(&self) -> &str {
@@ -124,10 +134,15 @@ impl MemberList {
             return false;
         };
         let ops = data["ops"].as_array().map_or(&[][..], Vec::as_slice);
+        let sync = ops.iter().any(|op| op["op"] == "SYNC");
         match &self.id {
+            _ if self.resync && sync => {
+                self.id = Some(id.to_owned());
+                self.resync = false;
+            }
             Some(known) if known != id => return false,
             Some(_) => {}
-            None if ops.iter().any(|op| op["op"] == "SYNC") => self.id = Some(id.to_owned()),
+            None if sync => self.id = Some(id.to_owned()),
             None => return false,
         }
         if let Some(count) = data["member_count"].as_u64() {
@@ -455,5 +470,26 @@ mod tests {
             "another channel's list is left out"
         );
         assert_eq!(list.members(None, &names).len(), 3);
+
+        // Shown again later: the cached rows stay until Discord's sync,
+        // which replaces them even under another id.
+        list.revisit();
+        assert!(list.synced());
+        assert!(list.apply(
+            &json!({"guild_id": "10", "id": "readers-changed", "member_count": 1,
+            "groups": [{"id": "online", "count": 1}],
+            "ops": [{"op": "SYNC", "range": [0, 99], "items": [
+                {"group": {"id": "online", "count": 1}}, member("2", "bob"),
+            ]}]}),
+            &mut names,
+        ));
+        assert_eq!(list.members(None, &names).len(), 1);
+        assert!(
+            !list.apply(
+                &json!({"guild_id": "10", "id": "everyone", "ops": [{"op": "SYNC", "range": [0, 99], "items": []}]}),
+                &mut names,
+            ),
+            "only the first sync after showing it again"
+        );
     }
 }

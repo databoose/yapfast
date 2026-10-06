@@ -284,7 +284,21 @@ pub struct Application {
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
+    /// Discord channels shown lately, newest last: their timeline and
+    /// member list as they were left, shown again at once on going back
+    /// while the backend sends them afresh.
+    shown: Vec<Shown>,
 }
+
+struct Shown {
+    room: String,
+    messages: Arc<Vec<ChatMessage>>,
+    members: Option<Result<Vec<ChatMember>, &'static str>>,
+}
+
+/// Discord channels whose last view is kept, as many as the Discord side
+/// keeps loaded.
+const SHOWN: usize = 16;
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
@@ -1013,6 +1027,7 @@ impl Application {
         if let Some(id) = next {
             self.select(id)
         } else {
+            self.remember_view();
             self.state.selected = None;
             self.state.confirm_delete = None;
             self.state.forwarding = None;
@@ -1099,6 +1114,7 @@ impl Application {
             return vec![];
         };
         let voice_room = room.voice;
+        self.remember_view();
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
         self.state.selected = Some(id.clone());
@@ -1110,6 +1126,14 @@ impl Application {
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.state.members = None;
+        if !self.state.preview
+            && let Some(index) = self.shown.iter().position(|shown| shown.room == id)
+        {
+            let shown = self.shown.remove(index);
+            self.state.messages = shown.messages;
+            self.state.members = shown.members;
+            self.state.room_ready = true;
+        }
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
         if self.state.preview {
             if !voice_room {
@@ -1308,6 +1332,26 @@ impl Application {
         {
             change(message);
             self.state.messages = Arc::new(messages.clone());
+        }
+    }
+
+    /// Keeps the Discord channel on screen as it is, to show again at once.
+    fn remember_view(&mut self) {
+        let Some(room) = self.state.selected.clone() else {
+            return;
+        };
+        let text = self.state.selected_room().is_some_and(|room| !room.voice);
+        if !text || !self.state.room_ready || self.state.preview || !discord::is_discord(&room) {
+            return;
+        }
+        self.shown.retain(|shown| shown.room != room);
+        self.shown.push(Shown {
+            room,
+            messages: self.state.messages.clone(),
+            members: self.state.members.clone(),
+        });
+        if self.shown.len() > SHOWN {
+            self.shown.remove(0);
         }
     }
 
@@ -2582,13 +2626,31 @@ mod tests {
             "a read channel isn't marked again"
         );
 
+        app.apply(Event::Timeline {
+            room: "discord:10:21".into(),
+            messages: vec![ChatMessage {
+                item: "d:1".into(),
+                body: "kept".into(),
+                ..Default::default()
+            }],
+        });
+        app.apply(Event::Members {
+            room: "discord:10:21".into(),
+            members: Ok(vec![]),
+        });
         app.dispatch(Action::SelectRoom("discord:10:22".into()));
+        assert!(!app.state.room_ready, "a channel not shown before loads");
         app.apply(Event::Timeline {
             room: "discord:10:22".into(),
             messages: vec![],
         });
         assert!(!app.state.can_write(), "read-only channel");
+        // Back to general: shown as it was left at once, while the backend
+        // sends it afresh.
         app.dispatch(Action::SelectRoom("discord:10:21".into()));
+        assert!(app.state.room_ready);
+        assert_eq!(app.state.messages[0].body, "kept");
+        assert_eq!(app.state.members, Some(Ok(vec![])));
         app.apply(Event::Timeline {
             room: "discord:10:21".into(),
             messages: vec![],
