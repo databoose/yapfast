@@ -24,7 +24,8 @@ use talk_discord::{
 const USAGE: &str = "usage: talk-discord-probe <command>
   store-token              save the test account's token in the OS credential store
   whoami                   show which account the saved token belongs to
-  servers                  list servers and their voice channels
+  servers                  list servers and their text and voice channels
+  messages <channel>       print a text channel's latest messages
   join <channel> [seconds] join a voice channel, play beeps, record what others say
   forget-token             remove the saved token";
 const RECORDINGS: &str = "target/discord-probe";
@@ -46,6 +47,7 @@ async fn main() -> Result<()> {
         }
         Some("whoami") => whoami().await,
         Some("servers") => servers().await,
+        Some("messages") => messages(args.get(1).context(USAGE)?).await,
         Some("join") => {
             let channel = args.get(1).context(USAGE)?;
             let seconds = match args.get(2) {
@@ -74,17 +76,70 @@ async fn whoami() -> Result<()> {
 }
 
 async fn servers() -> Result<()> {
-    let discord = Discord::start(token::load()?);
-    let snapshot = online(&discord).await?;
+    let discord = Discord::start(token::load()?)?;
+    online(&discord).await?;
+    // Voice states arrive just after connecting, in READY_SUPPLEMENTAL.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snapshot = discord.snapshots().borrow().clone();
     for server in &snapshot.servers {
         println!("{} ({})", server.name, server.id);
-        for channel in &server.voice_channels {
+        let text = server.text_channels.iter().map(|channel| ("text", channel));
+        let voice = server
+            .voice_channels
+            .iter()
+            .map(|channel| ("voice", channel));
+        for (kind, channel) in text.chain(voice) {
             let access = match channel.access {
                 Access::Join => "",
+                Access::Locked if kind == "text" => ", read only",
                 Access::Locked => ", locked",
                 Access::Hidden => ", hidden",
             };
-            println!("  voice: {} ({}{access})", channel.name, channel.id);
+            let unread = match (channel.unread, channel.mentions, channel.muted) {
+                (_, mentions, _) if mentions > 0 => format!(", {mentions} mentions"),
+                (true, ..) => ", unread".into(),
+                (_, _, true) => ", muted".into(),
+                _ => String::new(),
+            };
+            println!(
+                "  {kind}: {} ({}{access}{unread})",
+                channel.name, channel.id
+            );
+            for member in snapshot.voice.get(&channel.id).into_iter().flatten() {
+                println!("    in voice: {}", member.name);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prints the latest page of a text channel as Talk would show it. It reads only.
+async fn messages(channel_id: &str) -> Result<()> {
+    let discord = Discord::start(token::load()?)?;
+    let snapshot = online(&discord).await?;
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.text_channels.iter().any(|c| c.id == channel_id))
+        .context("no text channel with that id; run servers to list them")?;
+    let messages = discord.history(&server.id, channel_id, None).await?;
+    // Give the member request a moment, so nicknames show.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for message in &messages {
+        let author = discord
+            .name(&server.id, &message.author_id)
+            .unwrap_or_else(|| message.author.clone());
+        let body = match message.system {
+            Some(system) => system.to_owned(),
+            None => discord.render(Some(server), &message.content),
+        };
+        let edited = if message.edited { " (edited)" } else { "" };
+        println!("{author}{edited}: {body}");
+        for attachment in &message.attachments {
+            println!("  [file] {} {:?}", attachment.name, attachment.size);
+        }
+        for reaction in &message.reactions {
+            println!("  [{}] {}", reaction.key, reaction.count);
         }
     }
     Ok(())
@@ -124,7 +179,7 @@ impl Listener for Recorder {
 }
 
 async fn join(channel_id: &str, seconds: u64) -> Result<()> {
-    let discord = Discord::start(token::load()?);
+    let discord = Discord::start(token::load()?)?;
     let snapshot = online(&discord).await?;
     let mut snapshots = discord.snapshots();
     let (server, channel) = snapshot

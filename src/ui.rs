@@ -16,6 +16,7 @@ use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
     chat::{ChatMessage, Delivery, Event, Picture, Role},
+    discord, links,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
     voice::{self, Phase},
@@ -267,6 +268,8 @@ struct Layout {
     reactions: HashMap<String, u32>,
     /// List Discord channels hidden from this account, locked.
     show_hidden_channels: bool,
+    /// Reading in Talk marks Discord channels read on Discord; on unless turned off.
+    sync_discord_reads: Option<bool>,
 }
 
 impl Layout {
@@ -381,6 +384,9 @@ impl Adapter {
         let mut app = Application::default();
         app.remember_reaction_uses(layout.reactions.clone());
         app.dispatch(Action::ShowHiddenChannels(layout.show_hidden_channels));
+        app.dispatch(Action::SyncDiscordReads(
+            layout.sync_discord_reads.unwrap_or(true),
+        ));
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,
@@ -564,6 +570,7 @@ impl Adapter {
         );
         window.set_discord_linked(state.servers.iter().any(|server| server.discord));
         window.set_show_hidden_channels(state.show_hidden_channels);
+        window.set_sync_discord_reads(state.sync_discord_reads);
         window.set_sidebar_title(match &state.navigation {
             Navigation::DirectMessages => "Direct messages".into(),
             Navigation::Server(id) => state
@@ -591,7 +598,9 @@ impl Adapter {
                     initial: initials(&server.name),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
                     unread: state.rooms.iter().any(|room| {
-                        room.unread > 0 && !room.direct && server.channels.contains(&room.id)
+                        (room.mentions > 0 || (room.unread > 0 && !server.muted))
+                            && !room.direct
+                            && server.channels.contains(&room.id)
                     }),
                     discord: server.discord,
                 })
@@ -599,21 +608,29 @@ impl Adapter {
         );
         let mut listed_text = false;
         let mut listed_voice = false;
+        let mut category: Option<&str> = None;
         let rows: Vec<_> = state
             .rooms
             .iter()
             .filter(|room| state.in_scope(room) && room.name.to_lowercase().contains(&query))
             .map(|room| {
                 let heading = if state.navigation == Navigation::DirectMessages {
-                    ""
+                    String::new()
+                } else if discord::is_discord(&room.id) {
+                    // Discord channels sit under their categories, as in Discord.
+                    if category.replace(&room.category) != Some(&room.category) {
+                        room.category.to_uppercase()
+                    } else {
+                        String::new()
+                    }
                 } else if room.voice && !listed_voice {
                     listed_voice = true;
-                    "VOICE CHANNELS"
+                    "VOICE CHANNELS".into()
                 } else if !room.voice && !listed_text {
                     listed_text = true;
-                    "TEXT CHANNELS"
+                    "TEXT CHANNELS".into()
                 } else {
-                    ""
+                    String::new()
                 };
                 RoomRow {
                     id: room.id.clone().into(),
@@ -636,6 +653,24 @@ impl Adapter {
                     initial: initial(&room.name),
                     tint: tint(&room.id),
                     locked: room.locked,
+                    people: if room.people.is_empty() {
+                        ModelRc::default()
+                    } else {
+                        let people: Vec<_> = room
+                            .people
+                            .iter()
+                            .map(|person| PersonRow {
+                                name: person.name.clone().into(),
+                                initial: initial(&person.name),
+                                tint: tint(&person.id),
+                                muted: person.muted,
+                                deafened: person.deafened,
+                                connected: true,
+                                ..Default::default()
+                            })
+                            .collect();
+                        ModelRc::new(VecModel::from(people))
+                    },
                 }
             })
             .collect();
@@ -797,10 +832,18 @@ impl Adapter {
         window.set_room_encrypted(room.is_some_and(|room| room.encrypted));
         window.set_room_ready(state.room_ready);
         window.set_draft(state.draft().into());
+        let discord_room = room.is_some_and(|room| discord::is_discord(&room.id));
+        // An unverified Matrix device can type; the hint says why it can't send.
         window.set_composer_enabled(
             state.room_ready
                 && !state.busy
-                && room.is_some_and(|room| !room.voice && (state.preview || room.encrypted)),
+                && room.is_some_and(|room| {
+                    if discord_room {
+                        state.writable(room)
+                    } else {
+                        !room.voice && (state.preview || room.encrypted)
+                    }
+                }),
         );
         window.set_can_send(state.can_send());
         window.set_can_attach(state.can_attach());
@@ -820,6 +863,12 @@ impl Adapter {
                 "Choose a DM or server channel to write a message."
             } else if state.preview {
                 "Enter to send locally."
+            } else if discord_room && room.is_some_and(|room| room.read_only || room.locked) {
+                "You can't send messages in this Discord channel."
+            } else if discord_room && !state.discord_online {
+                "Discord is disconnected. Talk is reconnecting."
+            } else if discord_room {
+                "Discord · not end-to-end encrypted. Enter to send."
             } else if !state.trusted {
                 "Sending is locked until this device is verified."
             } else if room.is_some_and(|room| room.encrypted) {
@@ -931,15 +980,18 @@ impl Adapter {
             }
             .into(),
         );
+        let present = room.map_or(&[][..], |room| room.people.as_slice());
         window.set_voice_description(
             if room.is_some_and(|room| room.locked) {
-                "Your roles on this Discord server don't let you join this channel."
+                "Your roles on this Discord server don't let you join this channel.".into()
             } else if voice_here && voice.participants.len() == 1 {
-                "You're here alone. Stay as long as you like; others can join later."
+                "You're here alone. Stay as long as you like; others can join later.".into()
             } else if voice_here {
-                "Voice stays connected while you browse other conversations."
+                "Voice stays connected while you browse other conversations.".into()
+            } else if !present.is_empty() {
+                format!("{} here. Join muted and hang out.", who_is_here(present))
             } else {
-                "Join muted and hang out. The channel stays here when empty."
+                "Join muted and hang out. The channel stays here when empty.".into()
             }
             .into(),
         );
@@ -982,6 +1034,7 @@ impl Adapter {
                         }
                         .into(),
                         muted: person.muted,
+                        deafened: false,
                     })
                     .collect()
             } else {
@@ -1157,6 +1210,24 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         adapter.layout.write(&adapter.root);
         if let Some(window) = weak.upgrade() {
             adapter.action(&window, Action::ShowHiddenChannels(shown));
+        }
+    });
+    window.on_open_link(|link| {
+        // Only web pages open; a message can't start other programs.
+        if links::openable(&link)
+            && let Err(error) = webbrowser::open(&link)
+        {
+            tracing::warn!(%error, "could not open a link");
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_sync_discord_reads_toggled(move |sync| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.sync_discord_reads = Some(sync);
+        adapter.layout.write(&adapter.root);
+        if let Some(window) = weak.upgrade() {
+            adapter.action(&window, Action::SyncDiscordReads(sync));
         }
     });
     let state = adapter.clone();
@@ -1380,6 +1451,18 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
 
 /// Only mentions get a number; plain unread activity is a dot, because sync
 /// does not deliver every message of a room that isn't open.
+/// "Ann is", "Ann and Bob are", or "Ann, Bob and 3 others are".
+fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
+    let names: Vec<&str> = people.iter().map(|person| person.name.as_str()).collect();
+    match names.as_slice() {
+        [one] => format!("{one} is"),
+        [first, second] => format!("{first} and {second} are"),
+        [first, second, third] => format!("{first}, {second} and {third} are"),
+        [first, second, rest @ ..] => format!("{first}, {second} and {} others are", rest.len()),
+        [] => String::new(),
+    }
+}
+
 fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
     match room.mentions {
         0 => SharedString::default(),
@@ -1505,12 +1588,24 @@ fn picture(picture: &Picture) -> slint::Image {
 }
 
 fn message_row(message: &ChatMessage) -> MessageRow {
-    // Slint's Markdown subset rejects some syntax, such as headings; show those as typed.
-    let styled = if message.formatted {
-        slint::StyledText::from_markdown(&message.body)
-            .unwrap_or_else(|_| slint::StyledText::from_plain_text(&message.body))
+    // Slint's Markdown subset rejects some syntax, such as headings; show
+    // those as typed, keeping their links. Plain text with web addresses is
+    // styled too, so the addresses can be clicked.
+    let as_plain = || {
+        links::plain_with_links(&message.body)
+            .and_then(|markdown| slint::StyledText::from_markdown(&markdown).ok())
+    };
+    let (formatted, styled) = if message.formatted {
+        let styled = slint::StyledText::from_markdown(&links::linkify(&message.body))
+            .ok()
+            .or_else(as_plain)
+            .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body));
+        (true, styled)
     } else {
-        slint::StyledText::default()
+        match as_plain() {
+            Some(styled) => (true, styled),
+            None => (false, slint::StyledText::default()),
+        }
     };
     let attachment = message.attachment.as_ref();
     let preview = attachment.and_then(|attachment| attachment.preview.as_deref());
@@ -1558,7 +1653,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         // Grouping depends on the neighbouring messages; refresh sets both.
         first: true,
         day: SharedString::default(),
-        formatted: message.formatted,
+        formatted,
         styled,
         edited: message.edited,
         deleted: message.deleted,
@@ -1935,6 +2030,98 @@ mod tests {
             !window.invoke_timeline_at_end(),
             "scrolling up leaves the latest message"
         );
+        window.hide().unwrap();
+    }
+
+    #[test]
+    fn scrolling_up_through_styled_messages_stays_up() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = TalkWindow::new().unwrap();
+        window.set_workspace(true);
+        window.set_room_selected(true);
+        window.set_room_ready(true);
+        let rows: Vec<MessageRow> = (0..200)
+            .map(|index| {
+                let body = match index % 4 {
+                    0 => format!("**Message** {index}"),
+                    1 => format!("Message {index} with https://example.com/{index} and words that wrap across the timeline at ordinary widths, and then *some* more"),
+                    2 => format!("line one {index}\nline two\nline three"),
+                    _ => format!("Message {index}"),
+                };
+                let mut row = message_row(&ChatMessage {
+                    id: format!("m{index}"),
+                    item: format!("i{index}"),
+                    author: "Bob".into(),
+                    body,
+                    formatted: true,
+                    ..Default::default()
+                });
+                row.first = index % 5 == 0;
+                row
+            })
+            .collect();
+        window.set_messages(ModelRc::new(VecModel::from(rows)));
+        window.show().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1120., 760.));
+        let settle = || {
+            for _ in 0..5 {
+                slint::platform::update_timers_and_animations();
+                let _ = window.invoke_timeline_extent();
+            }
+        };
+        settle();
+        window.invoke_scroll_to_latest();
+        settle();
+        assert!(
+            window.invoke_timeline_at_end(),
+            "starts at the latest message"
+        );
+        for step in 0..8 {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(700., 380.),
+                    delta_x: 0.,
+                    delta_y: 50.,
+                });
+            settle();
+            assert!(
+                !window.invoke_timeline_at_end() && window.invoke_timeline_below() > 0.,
+                "step {step} stays scrolled up"
+            );
+        }
+        // Scrolling back down resumes following, and later rows stay in view.
+        for _ in 0..40 {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(700., 380.),
+                    delta_x: 0.,
+                    delta_y: -200.,
+                });
+            settle();
+        }
+        assert!(
+            window.invoke_timeline_at_end(),
+            "back at the latest message"
+        );
+        let messages = window.get_messages();
+        let model = messages
+            .as_any()
+            .downcast_ref::<VecModel<MessageRow>>()
+            .unwrap();
+        model.push(message_row(&ChatMessage {
+            id: "new".into(),
+            item: "new".into(),
+            author: "Ann".into(),
+            body: "A *new* message with https://example.com\nand a second line".into(),
+            formatted: true,
+            ..Default::default()
+        }));
+        settle();
+        assert_eq!(window.invoke_timeline_below(), 0., "the new message shows");
         window.hide().unwrap();
     }
 

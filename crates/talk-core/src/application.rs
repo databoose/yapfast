@@ -47,6 +47,8 @@ pub struct AppState {
     pub discord_online: bool,
     /// Whether Discord channels hidden from this account are listed, locked.
     pub show_hidden_channels: bool,
+    /// Reading a Discord channel in Talk marks it read on Discord too.
+    pub sync_discord_reads: bool,
     pub switch_voice: Option<String>,
     pub account: Option<String>,
     pub preview: bool,
@@ -105,9 +107,20 @@ impl AppState {
     pub fn can_write(&self) -> bool {
         !self.busy
             && self.room_ready
-            && self.selected_room().is_some_and(|room| {
-                !room.voice && (self.preview || (self.trusted && room.encrypted))
-            })
+            && self.selected_room().is_some_and(|room| self.writable(room))
+    }
+
+    /// Whether this device can write to a conversation: an encrypted Matrix
+    /// room from a verified device, or a Discord channel that allows it while
+    /// Discord is connected.
+    pub fn writable(&self, room: &ChatRoom) -> bool {
+        if room.voice {
+            false
+        } else if discord::is_discord(&room.id) {
+            self.discord_online && !room.locked && !room.read_only
+        } else {
+            self.preview || (self.trusted && room.encrypted)
+        }
     }
 
     /// Text channels and group DMs list their members; voice channels and
@@ -138,9 +151,10 @@ impl AppState {
         self.can_write() && !self.preview && !self.attaching
     }
 
-    /// Whether a message can be forwarded into this conversation from this device.
+    /// Whether a message can be forwarded into this conversation from this
+    /// device. Forwarding doesn't cross into Discord yet.
     pub fn can_forward_to(&self, room: &ChatRoom) -> bool {
-        !self.busy && !room.voice && (self.preview || (self.trusted && room.encrypted))
+        !self.busy && !discord::is_discord(&room.id) && self.writable(room)
     }
 
     pub fn can_join_voice(&self, id: &str) -> bool {
@@ -206,6 +220,8 @@ pub enum Action {
     Voice(voice::Command),
     /// List Discord channels this account can't see, locked.
     ShowHiddenChannels(bool),
+    /// Mark Discord channels read on Discord when reading them in Talk.
+    SyncDiscordReads(bool),
 }
 
 /// An adapter executes these effects with the shared backend, then applies its events.
@@ -607,6 +623,10 @@ impl Application {
                 self.state.show_hidden_channels = shown;
                 self.list_discord()
             }
+            Action::SyncDiscordReads(sync) => {
+                self.state.sync_discord_reads = sync;
+                vec![]
+            }
             Action::Voice(voice::Command::Join(id)) => self.dispatch(Action::RequestJoinVoice(id)),
             Action::Voice(command) => self.voice_command(command),
         }
@@ -635,17 +655,20 @@ impl Application {
                 self.state.discord_online =
                     snapshot.status == talk_discord::service::Status::Online;
                 self.discord = Some(snapshot);
-                return self.list_discord();
+                let mut effects = self.list_discord();
+                effects.extend(self.mark_discord_read());
+                return effects;
             }
             Event::Timeline { room, messages } => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.room_ready = true;
                     self.state.messages = Arc::new(messages);
+                    return self.mark_discord_read();
                 }
             }
             Event::RoomError { room, message } => {
                 if self.state.selected.as_ref() == Some(&room) {
-                    self.state.notice = Some(message.into());
+                    self.state.notice = Some(message);
                 }
             }
             Event::Members { room, members } => {
@@ -687,7 +710,7 @@ impl Application {
                         }
                         self.state.notice = None;
                     }
-                    Err(error) => self.state.notice = Some(error.into()),
+                    Err(error) => self.state.notice = Some(error),
                 }
             }
             Event::Forwarded { room, result } => {
@@ -813,6 +836,24 @@ impl Application {
             } else {
                 vec![Effect::Backend(Command::CloseRoom)]
             }
+        }
+    }
+
+    /// Showing an unread Discord channel reads it, as Matrix rooms are read
+    /// in the backend.
+    fn mark_discord_read(&self) -> Vec<Effect> {
+        match self.state.selected_room() {
+            Some(room)
+                if self.state.room_ready
+                    && discord::is_discord(&room.id)
+                    && (room.unread > 0 || room.mentions > 0) =>
+            {
+                vec![Effect::Backend(Command::MarkDiscordRead {
+                    room: room.id.clone(),
+                    sync: self.state.sync_discord_reads,
+                })]
+            }
+            _ => vec![],
         }
     }
 
@@ -1102,6 +1143,7 @@ impl Application {
                     "lounge".into(),
                 ],
                 discord: false,
+                muted: false,
             },
             ChatServer {
                 id: "coop".into(),
@@ -1112,6 +1154,7 @@ impl Application {
                     "party-voice".into(),
                 ],
                 discord: false,
+                muted: false,
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());
@@ -1326,6 +1369,9 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         unread: 0,
         mentions: 0,
         locked: false,
+        read_only: false,
+        category: String::new(),
+        people: vec![],
     }
 }
 
@@ -1412,6 +1458,7 @@ mod tests {
                     "party-voice".into(),
                 ],
                 discord: false,
+                muted: false,
             }],
         }));
         app.apply(Event::Timeline {
@@ -1717,7 +1764,7 @@ mod tests {
         app.apply(Event::EditResult {
             room: "dm".into(),
             item: "e:$mine".into(),
-            result: Err("refused"),
+            result: Err("refused".into()),
         });
         assert_eq!(app.state.draft(), "Corrected");
         app.dispatch(Action::Send);
@@ -2123,5 +2170,77 @@ mod tests {
             effects.as_slice(),
             [Effect::Backend(Command::Voice(voice::Command::Join(id)))] if id == "discord:10:11"
         ));
+    }
+
+    #[test]
+    fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
+        use talk_discord::{
+            ready::{Access, Channel, Server},
+            service::{Snapshot, Status},
+        };
+        let snapshot = |unread: bool| Snapshot {
+            status: Status::Online,
+            servers: vec![Server {
+                id: "10".into(),
+                name: "Test".into(),
+                text_channels: vec![
+                    Channel {
+                        id: "21".into(),
+                        name: "general".into(),
+                        unread,
+                        ..Default::default()
+                    },
+                    Channel {
+                        id: "22".into(),
+                        name: "news".into(),
+                        access: Access::Locked,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut app = connected();
+        app.state.trusted = false;
+        app.dispatch(Action::SyncDiscordReads(true));
+        app.apply(Event::Discord(snapshot(true)));
+        app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+        let effects = app.dispatch(Action::SelectRoom("discord:10:21".into()));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::Open(id))] if id == "discord:10:21"
+        ));
+        let effects = app.apply(Event::Timeline {
+            room: "discord:10:21".into(),
+            messages: vec![],
+        });
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::MarkDiscordRead { room, sync: true })] if room == "discord:10:21"
+        ));
+        assert!(app.state.can_write(), "Discord doesn't need Matrix trust");
+        assert!(app.state.can_attach());
+        assert!(
+            app.apply(Event::Discord(snapshot(false))).is_empty(),
+            "a read channel isn't marked again"
+        );
+
+        app.dispatch(Action::SelectRoom("discord:10:22".into()));
+        app.apply(Event::Timeline {
+            room: "discord:10:22".into(),
+            messages: vec![],
+        });
+        assert!(!app.state.can_write(), "read-only channel");
+        app.dispatch(Action::SelectRoom("discord:10:21".into()));
+        app.apply(Event::Timeline {
+            room: "discord:10:21".into(),
+            messages: vec![],
+        });
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Offline("Reconnecting".into()),
+            ..snapshot(false)
+        }));
+        assert!(!app.state.can_write(), "sending waits for Discord");
     }
 }

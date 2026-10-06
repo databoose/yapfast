@@ -15,6 +15,24 @@ token still comes from the browser through `talk-discord-probe store-token`;
 QR linking and DM calls are still open. songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`.
 
+Server text channels from step 4 are in progress. They're listed under
+their Discord categories and open in Talk's timeline. History loads from
+Discord 50 messages at a time, and new messages, edits, deletions and
+reactions arrive live. Opening a channel subscribes to its server, as the web
+client does, because Discord sends large servers' messages only to
+subscribers. Talk sends, replies, edits, deletes, reacts and sends files
+through Discord's cloud uploads. Mentions, custom emoji and timestamps show as
+text, the first attachment shows with a preview scaled by Discord's media
+proxy, and channels the account can't send in are read-only. Talk keeps only
+the open channel's messages, in memory.
+
+Unread dots and mention counts follow Discord's read states, mutes and
+@everyone and role suppression, including passive updates from large servers.
+Showing an unread channel marks it read, and with the "Mark messages read on
+Discord" setting, on by default, acknowledges it on Discord within a second.
+Forwarding, member lists, typing, desktop notifications and DMs are still
+open.
+
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,
 shows their servers, channels and DMs, and sends and receives messages. This is
