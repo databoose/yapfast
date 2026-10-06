@@ -370,6 +370,12 @@ impl Discord {
         self.read_names().avatar(guild.and_then(server), user)
     }
 
+    /// The RGB colour of a member's name in a server: their highest coloured
+    /// role's, once their roles are known.
+    pub fn color(&self, server: &Server, user: &str) -> Option<u32> {
+        server.color(self.read_names().roles(&server.id, user))
+    }
+
     /// Discord Markdown for Talk, with mentions, custom emoji and times as text.
     pub fn render(&self, server: Option<&Server>, content: &str) -> String {
         self.read_names().render(server, content)

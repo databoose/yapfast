@@ -280,6 +280,11 @@ async fn talks_to_the_fake_server() {
         .unwrap();
     assert_eq!(message.author, "Bob");
     assert!(message.content.starts_with("Live Message 0"));
+    assert_eq!(
+        discord.color(&snapshot.servers[0], &message.author_id),
+        Some(0x3498db),
+        "Bob's name takes the Mods role's blue"
+    );
     snapshot_where(&discord, |snapshot| {
         snapshot.servers[0].text_channels[0].unread
     })

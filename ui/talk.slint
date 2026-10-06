@@ -827,6 +827,8 @@ export struct ImageCell { index: int, name: string, image: image, x: int, y: int
 export struct FileCell { index: int, name: string, detail: string }
 export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
+    /// The author's Discord role colour, when they have one.
+    color: color, has-color: bool,
     /// Starts a group: shows the avatar and author. Later messages from the same person follow compactly.
     first: bool,
     /// A date divider above this message, when it starts a new day.
@@ -2077,7 +2079,7 @@ export component TalkWindow inherits Window {
                                                     }
                                                     if message.first: HorizontalLayout {
                                                         spacing: 8px;
-                                                        Text { text: message.author; color: Theme.text; font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center; }
+                                                        Text { text: message.author; color: message.has-color ? message.color : Theme.text; font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center; }
                                                         Text { text: message.time; color: Theme.muted; font-size: 13px; font-weight: 500; wrap: no-wrap; vertical-alignment: center; }
                                                         Rectangle { horizontal-stretch: 1; }
                                                     }

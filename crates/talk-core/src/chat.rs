@@ -170,6 +170,9 @@ pub struct ChatMessage {
     pub sender: String,
     /// The address of the author's avatar; see [`Command::Pictures`].
     pub avatar: Option<String>,
+    /// The RGB colour of the author's name, from their highest coloured
+    /// Discord role.
+    pub color: Option<u32>,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,

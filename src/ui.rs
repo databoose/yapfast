@@ -886,9 +886,7 @@ impl Adapter {
                         None => "",
                     }
                     .into(),
-                    color: member.color.map_or_else(slint::Color::default, |rgb| {
-                        slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
-                    }),
+                    color: role_color(member.color),
                     has_color: member.color.is_some(),
                     activity: member.activity.clone().unwrap_or_default().into(),
                     // Discord names its groups; Matrix members group by role.
@@ -1992,6 +1990,13 @@ fn gallery(
     }
 }
 
+/// A Discord role's RGB colour for Slint.
+fn role_color(rgb: Option<u32>) -> slint::Color {
+    rgb.map_or_else(slint::Color::default, |rgb| {
+        slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    })
+}
+
 fn message_row(message: &ChatMessage) -> MessageRow {
     // Slint's Markdown subset rejects some syntax, such as headings; show
     // those as typed, keeping their links. Plain text with web addresses is
@@ -2059,6 +2064,8 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         id: message.id.clone().into(),
         item: message.item.clone().into(),
         author: message.author.clone().into(),
+        color: role_color(message.color),
+        has_color: message.color.is_some(),
         initial: initial(&message.author),
         tint: tint(&message.author),
         // Set from the picture cache when the timeline is built.

@@ -24,7 +24,10 @@ client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes, reacts and sends files
 through Discord's cloud uploads. Mentions, custom emoji and timestamps show as
 text, every attachment shows, images with previews scaled by Discord's media
-proxy, and channels the account can't send in are read-only.
+proxy, and channels the account can't send in are read-only. An author's
+name takes their highest coloured role's colour, once their roles are known:
+live messages carry them, and for history Talk asks Discord for the authors'
+member profiles.
 
 Talk keeps the open channel's messages in memory, and those of the 16
 channels open before it, so going back to one shows it at once. A closed

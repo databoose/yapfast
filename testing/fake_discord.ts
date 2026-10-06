@@ -92,7 +92,8 @@ function wireUser(user: User) {
   };
 }
 
-function member(user: User, roles: string[] = []) {
+// Bob is a Mod everywhere his member object goes, so his name takes its colour.
+function member(user: User, roles: string[] = user.id === users.bob.id ? [MODS] : []) {
   return {
     user: wireUser(user),
     user_id: user.id,
