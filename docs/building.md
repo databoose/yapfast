@@ -3,7 +3,10 @@
 ## Dependencies
 
 Talk pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
-the complete Rust graph. The Matrix SDK revision follows the pinned MatrixRTC
+the complete Rust graph. `vendor/i-slint-renderer-skia` is Slint's Skia
+renderer 1.18.1 with one change: glyphs use Skia's slight (vertical-only)
+hinting, because the default hinting spaces Satoshi's letters unevenly. Copy the
+matching release over it, and reapply that line, when upgrading Slint. The Matrix SDK revision follows the pinned MatrixRTC
 revision. Keep those two sources together when upgrading.
 
 LiveKit's Rust crates must stay on the mutually compatible versions in Cargo.lock.

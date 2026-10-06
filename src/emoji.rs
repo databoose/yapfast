@@ -1,0 +1,267 @@
+//! Emoji: the color font for reactions and message text, and the picker's grid.
+//!
+//! A Linux system can have several fonts named "Noto Color Emoji". Slint's Skia
+//! renderer draws nothing for the COLRv1 build, and fontconfig may prefer it to
+//! the bitmap (CBDT) build that it draws in color. Talk registers an installed
+//! bitmap emoji font under its own family name and uses that one.
+
+use std::sync::{Arc, OnceLock};
+
+use slint::{
+    ModelRc, SharedString, VecModel,
+    fontique_011::{fontique, shared_collection},
+};
+use talk_ui::{EmojiCell, EmojiRow};
+
+/// The family name Talk gives the bitmap emoji font it registers.
+const REGISTERED: &str = "Talk Color Emoji";
+
+/// The emoji font family to request. Call after selecting the Slint backend.
+pub fn family() -> &'static str {
+    static FAMILY: OnceLock<&'static str> = OnceLock::new();
+    FAMILY.get_or_init(|| {
+        if cfg!(windows) {
+            "Segoe UI Emoji"
+        } else if cfg!(target_os = "macos") {
+            "Apple Color Emoji"
+        } else if register_bitmap_font() {
+            REGISTERED
+        } else {
+            "Noto Color Emoji"
+        }
+    })
+}
+
+/// Emoji per row of the picker's grid.
+const COLUMNS: usize = 8;
+
+/// Windows 11 and the Noto Color Emoji builds Talk is tested with draw Unicode
+/// 15.0; newer emoji would show as empty boxes.
+const NEWEST: emojis::UnicodeVersion = emojis::UnicodeVersion::new(15, 0);
+
+/// An emoji and its name, such as "Thumbs up".
+pub fn cell(glyph: &str) -> EmojiCell {
+    let name = emojis::get(glyph).map_or(glyph, emojis::Emoji::name);
+    let mut chars = name.chars();
+    EmojiCell {
+        glyph: glyph.into(),
+        name: chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+            .unwrap_or_default()
+            .into(),
+    }
+}
+
+/// The picker's rows: with no query, frequently used emoji and then every
+/// category under its heading; otherwise the emoji whose name or shortcode
+/// contains the query.
+pub fn rows(query: &str, frequent: &[String]) -> Vec<EmojiRow> {
+    let query = query.trim().trim_matches(':').to_lowercase();
+    let available = || emojis::iter().filter(|emoji| emoji.unicode_version() <= NEWEST);
+    let mut rows = Vec::new();
+    let mut section = |heading: &str, glyphs: Vec<&str>| {
+        if glyphs.is_empty() {
+            return;
+        }
+        if !heading.is_empty() {
+            rows.push(EmojiRow {
+                heading: heading.into(),
+                cells: ModelRc::default(),
+            });
+        }
+        for chunk in glyphs.chunks(COLUMNS) {
+            rows.push(EmojiRow {
+                heading: SharedString::default(),
+                cells: ModelRc::new(VecModel::from(
+                    chunk.iter().map(|glyph| cell(glyph)).collect::<Vec<_>>(),
+                )),
+            });
+        }
+    };
+    if !query.is_empty() {
+        section(
+            "",
+            available()
+                .filter(|emoji| {
+                    emoji.name().contains(&query)
+                        || emoji.shortcodes().any(|code| code.contains(&query))
+                })
+                .map(emojis::Emoji::as_str)
+                .collect(),
+        );
+        return rows;
+    }
+    section(
+        "FREQUENTLY USED",
+        frequent.iter().map(String::as_str).collect(),
+    );
+    for group in emojis::Group::iter() {
+        let heading = match group {
+            emojis::Group::SmileysAndEmotion => "SMILEYS & EMOTION",
+            emojis::Group::PeopleAndBody => "PEOPLE & BODY",
+            emojis::Group::AnimalsAndNature => "ANIMALS & NATURE",
+            emojis::Group::FoodAndDrink => "FOOD & DRINK",
+            emojis::Group::TravelAndPlaces => "TRAVEL & PLACES",
+            emojis::Group::Activities => "ACTIVITIES",
+            emojis::Group::Objects => "OBJECTS",
+            emojis::Group::Symbols => "SYMBOLS",
+            emojis::Group::Flags => "FLAGS",
+        };
+        section(
+            heading,
+            group
+                .emojis()
+                .filter(|emoji| emoji.unicode_version() <= NEWEST)
+                .map(emojis::Emoji::as_str)
+                .collect(),
+        );
+    }
+    rows
+}
+
+/// Register the first installed emoji font with color bitmaps and no COLR
+/// table, and make text fall back to it for emoji.
+fn register_bitmap_font() -> bool {
+    let mut collection = shared_collection();
+    let mut names: Vec<String> = collection
+        .family_names()
+        .filter(|name| name.to_lowercase().contains("emoji"))
+        .map(str::to_owned)
+        .collect();
+    // Noto Color Emoji first, as the font Talk is designed and tested with.
+    names.sort_by_key(|name| name != "Noto Color Emoji");
+    for name in names {
+        let Some(family) = collection.family_by_name(&name) else {
+            continue;
+        };
+        for font in family.fonts() {
+            let fontique::SourceKind::Path(path) = font.source().kind() else {
+                continue;
+            };
+            let Ok(file) = std::fs::File::open(path) else {
+                continue;
+            };
+            // SAFETY: font files are installed read-only and not modified while
+            // Talk runs; the map is shared with the font collection for the
+            // process's lifetime.
+            let Ok(data) = (unsafe { memmap2::Mmap::map(&file) }) else {
+                continue;
+            };
+            if !has_color_bitmaps(&data, font.index()) {
+                continue;
+            }
+            let registered = collection.register_fonts(
+                fontique::Blob::new(Arc::new(data)),
+                Some(fontique::FontInfoOverride {
+                    family_name: Some(REGISTERED),
+                    ..Default::default()
+                }),
+            );
+            if let Some(&(id, _)) = registered.first() {
+                prefer_for_text(&mut collection, id);
+                tracing::info!(family = name, "registered a bitmap color emoji font");
+                return true;
+            }
+        }
+    }
+    tracing::warn!("no bitmap color emoji font found; emoji may not show");
+    false
+}
+
+/// Text falls back from Satoshi through the system's sans-serif and UI families
+/// before the generic emoji family. Fontconfig can list emoji fonts Slint can't
+/// draw there, and display fonts with a few monochrome emoji ahead of them. So
+/// `emoji` leads both lists, and their other emoji fonts are dropped. Symbols
+/// Satoshi lacks that have an emoji form, such as ♥, then show as color emoji.
+fn prefer_for_text(collection: &mut fontique::Collection, emoji: fontique::FamilyId) {
+    use fontique::GenericFamily;
+    for generic in [GenericFamily::SansSerif, GenericFamily::SystemUi] {
+        let families: Vec<_> = collection.generic_families(generic).collect();
+        let mut ordered = vec![emoji];
+        for family in families {
+            let is_emoji = collection
+                .family_name(family)
+                .is_some_and(|name| name.to_lowercase().contains("emoji"));
+            if !is_emoji {
+                ordered.push(family);
+            }
+        }
+        collection.set_generic_families(generic, ordered.into_iter());
+    }
+    collection.set_generic_families(GenericFamily::Emoji, std::iter::once(emoji));
+}
+
+/// Whether the font at `index` in an OpenType file or collection has CBDT or
+/// sbix color bitmaps and no COLR table.
+fn has_color_bitmaps(data: &[u8], index: u32) -> bool {
+    let u32_at = |offset: usize| {
+        data.get(offset..offset + 4)
+            .map(|bytes| u32::from_be_bytes(bytes.try_into().expect("four bytes")) as usize)
+    };
+    let directory = if data.starts_with(b"ttcf") {
+        match u32_at(12 + 4 * index as usize) {
+            Some(offset) => offset,
+            None => return false,
+        }
+    } else {
+        0
+    };
+    let Some(count) = data
+        .get(directory + 4..directory + 6)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]) as usize)
+    else {
+        return false;
+    };
+    let tags: Vec<&[u8]> = (0..count)
+        .filter_map(|table| {
+            let start = directory + 12 + 16 * table;
+            data.get(start..start + 4)
+        })
+        .collect();
+    tags.iter().any(|tag| matches!(*tag, b"CBDT" | b"sbix")) && !tags.contains(&&b"COLR"[..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slint::Model;
+
+    fn font(tags: &[&[u8; 4]]) -> Vec<u8> {
+        let mut data = vec![0, 1, 0, 0];
+        data.extend((tags.len() as u16).to_be_bytes());
+        data.extend([0; 6]);
+        for tag in tags {
+            data.extend(*tag);
+            data.extend([0; 12]);
+        }
+        data
+    }
+
+    #[test]
+    fn the_picker_lists_categories_or_matches_and_names_emoji() {
+        let all = rows("", &["🔥".into()]);
+        assert_eq!(all[0].heading, "FREQUENTLY USED");
+        assert_eq!(all[1].cells.row_count(), 1);
+        assert_eq!(all[2].heading, "SMILEYS & EMOTION");
+        assert!(all.iter().all(|row| row.cells.row_count() <= COLUMNS));
+        let found = rows(":pizza", &[]);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].heading.is_empty());
+        assert_eq!(found[0].cells.row_data(0).unwrap().glyph, "🍕");
+        assert!(rows("no such emoji", &[]).is_empty());
+        assert_eq!(cell("👍").name, "Thumbs up");
+    }
+
+    #[test]
+    fn only_bitmap_emoji_fonts_without_colr_qualify() {
+        assert!(has_color_bitmaps(&font(&[b"CBDT", b"CBLC", b"cmap"]), 0));
+        assert!(has_color_bitmaps(&font(&[b"sbix", b"cmap"]), 0));
+        assert!(!has_color_bitmaps(&font(&[b"COLR", b"CPAL", b"glyf"]), 0));
+        assert!(!has_color_bitmaps(&font(&[b"CBDT", b"COLR"]), 0));
+        assert!(!has_color_bitmaps(b"ttcf", 0));
+        let mut collection = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\0\x10".to_vec();
+        collection.extend(font(&[b"CBDT"]));
+        assert!(has_color_bitmaps(&collection, 0));
+    }
+}

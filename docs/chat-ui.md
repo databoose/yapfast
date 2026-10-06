@@ -48,10 +48,22 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Write Markdown. Messages with formatting render bold, italic, code and links;
   Slint's subset has no headings, so those show as typed. Formatted text isn't
   selectable, so every message has a Copy action.
-- Hover or click a message for its toolbar: Add reaction, Reply, Edit and Delete
-  for your own messages, and Copy text. The icons have tooltips and accessible
-  names. Reactions offer six quick emoji. Clicking an
-  existing reaction adds or removes yours. Delete asks for confirmation, then
+- Hover or click a message for its toolbar: your three most used reactions,
+  Add reaction, Edit on your own message or Reply on someone else's, and More.
+  More, or a right click on the message, opens a menu with your four most used
+  reactions, Add reaction, Edit, Reply, Forward, Copy text and Delete; Edit and
+  Delete appear on your own messages only. Until you have reacted, the most used
+  reactions are 👍, ❤️, 😂 and 🎉. Talk counts the reactions you add, not the
+  ones you remove, in `layout.json` on this computer. The icons have tooltips and
+  accessible names. Add reaction opens a picker with a search field, frequently
+  used emoji and every category of the `emojis` crate up to Unicode 15.0, which
+  Noto Color Emoji and Windows 11 draw; Enter picks the first match. Clicking an
+  existing reaction adds or removes yours.
+- Forward a sent message to any encrypted DM or channel from a dialog with a
+  search field; each conversation can receive it once per forward. Talk sends
+  the message's current content as a new message, without its reply quote. An
+  encrypted attachment keeps its uploaded file, and its key travels in the new
+  encrypted event. Delete asks for confirmation, then
   redacts the message for everyone. Replies quote the original; edits are marked
   "(edited)". Reply and edit modes show above the composer, with Cancel.
   Cancelling an edit restores the draft it replaced.
@@ -158,7 +170,13 @@ clearing on open all worked. The native file dialogs need an XDG portal, which
 the private desktop doesn't run, so Attach and Save were checked only through
 the integration test. Slint's Skia renderer drew nothing for the COLRv1 build
 of Noto Color Emoji; the CBDT build, which most distributions ship, rendered in
-color. Talk asks for "Noto Color Emoji" on Linux, "Segoe UI Emoji" on Windows.
+color. Fontconfig can prefer the COLRv1 build when both are installed, which
+left reactions blank. On Linux Talk now finds an installed emoji font with CBDT
+or sbix bitmaps and no COLR table, maps it and registers it with Slint as "Talk
+Color Emoji". That font also leads the sans-serif and UI fallback lists, ahead
+of display fonts that carry a few monochrome emoji, so emoji in message text
+draw in color too; symbols Satoshi lacks that have an emoji form, such as ♥,
+then show as emoji. Windows uses "Segoe UI Emoji".
 
 Linux native checks cover sign-in, restoration, device trust, encrypted sending,
 local preview input, Enter submission, room switching, draft retention, DM and

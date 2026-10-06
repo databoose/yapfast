@@ -2,6 +2,8 @@
 #![recursion_limit = "256"]
 
 #[cfg(feature = "desktop")]
+mod emoji;
+#[cfg(feature = "desktop")]
 mod graphics;
 #[cfg(feature = "desktop")]
 mod ui;

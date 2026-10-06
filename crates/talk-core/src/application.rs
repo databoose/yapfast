@@ -10,11 +10,21 @@ use crate::{
 
 const STOPPED: &str = "The connection has stopped. Restart Talk to restore your session.";
 
+/// Reactions offered before someone has used any, in order.
+pub const DEFAULT_REACTIONS: [&str; 4] = ["👍", "❤️", "😂", "🎉"];
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Navigation {
     #[default]
     DirectMessages,
     Server(String),
+}
+
+/// A message being forwarded, and the conversations it went to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Forwarding {
+    pub item: String,
+    pub sent: Vec<String>,
 }
 
 /// What the composer's next send does in a room, besides sending a new message.
@@ -54,6 +64,8 @@ pub struct AppState {
     pub confirm_delete: Option<String>,
     /// A file is being read and queued.
     pub attaching: bool,
+    /// The selected room's message being forwarded, while its dialog is open.
+    pub forwarding: Option<Forwarding>,
     /// Changes when selecting a room, including selecting the same room to retry opening it.
     pub selection_version: u64,
     /// Changes after logout so adapters can clear their inputs and focus sign-in.
@@ -121,6 +133,11 @@ impl AppState {
         self.can_write() && !self.preview && !self.attaching
     }
 
+    /// Whether a message can be forwarded into this conversation from this device.
+    pub fn can_forward_to(&self, room: &ChatRoom) -> bool {
+        !self.busy && !room.voice && (self.preview || (self.trusted && room.encrypted))
+    }
+
     pub fn can_join_voice(&self, id: &str) -> bool {
         !matches!(self.voice.phase, Phase::Joining | Phase::Leaving)
             && self.rooms.iter().any(|room| {
@@ -145,6 +162,11 @@ pub enum Action {
         key: String,
     },
     RequestDelete(String),
+    /// Open the forward dialog for a message of the selected room.
+    StartForward(String),
+    /// Forward that message into a conversation.
+    Forward(String),
+    CloseForward,
     ConfirmDelete,
     CancelDelete,
     Retry(String),
@@ -188,6 +210,8 @@ pub struct Application {
     pub state: AppState,
     last_selected: HashMap<Navigation, String>,
     samples: HashMap<String, Vec<ChatMessage>>,
+    /// How often this device added each reaction.
+    reaction_uses: HashMap<String, u32>,
 }
 
 impl Application {
@@ -300,6 +324,15 @@ impl Application {
                     return vec![];
                 }
                 let room = self.state.selected.clone().expect("selected room exists");
+                let adding = !self.state.message(&item).is_some_and(|message| {
+                    message
+                        .reactions
+                        .iter()
+                        .any(|reaction| reaction.key == key && reaction.mine)
+                });
+                if adding {
+                    *self.reaction_uses.entry(key.clone()).or_default() += 1;
+                }
                 if self.state.preview {
                     self.update_sample(&room, &item, |message| {
                         if let Some(index) = message
@@ -340,6 +373,21 @@ impl Application {
                 }
                 vec![]
             }
+            Action::StartForward(item) => {
+                if self.state.preview || self.state.trusted {
+                    self.state.forwarding = self
+                        .state
+                        .message(&item)
+                        .filter(|message| message.can_forward)
+                        .map(|_| Forwarding { item, sent: vec![] });
+                }
+                vec![]
+            }
+            Action::Forward(target) => self.forward(target),
+            Action::CloseForward => {
+                self.state.forwarding = None;
+                vec![]
+            }
             Action::CancelDelete => {
                 self.state.confirm_delete = None;
                 vec![]
@@ -371,6 +419,7 @@ impl Application {
                         message.can_edit = false;
                         message.can_delete = false;
                         message.can_react = false;
+                        message.can_forward = false;
                     });
                     vec![]
                 } else {
@@ -619,6 +668,14 @@ impl Application {
                     Err(error) => self.state.notice = Some(error.into()),
                 }
             }
+            Event::Forwarded { room, result } => {
+                if let Err(error) = result {
+                    if let Some(forwarding) = &mut self.state.forwarding {
+                        forwarding.sent.retain(|sent| sent != &room);
+                    }
+                    self.state.notice = Some(error.into());
+                }
+            }
             Event::AttachResult { room: _, result } => {
                 self.state.attaching = false;
                 self.state.notice = result.err().map(str::to_owned);
@@ -722,6 +779,7 @@ impl Application {
         } else {
             self.state.selected = None;
             self.state.confirm_delete = None;
+            self.state.forwarding = None;
             self.state.room_ready = false;
             self.state.loading_history = false;
             self.state.notice = None;
@@ -750,6 +808,7 @@ impl Application {
             .insert(self.state.navigation.clone(), id.clone());
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
+        self.state.forwarding = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
         self.state.notice = None;
@@ -838,6 +897,87 @@ impl Application {
         }
     }
 
+    fn forward(&mut self, target: String) -> Vec<Effect> {
+        let (Some(forwarding), Some(source)) =
+            (self.state.forwarding.clone(), self.state.selected.clone())
+        else {
+            return vec![];
+        };
+        let Some(message) = self.state.message(&forwarding.item).cloned() else {
+            return vec![];
+        };
+        if forwarding.sent.contains(&target)
+            || !self
+                .state
+                .rooms
+                .iter()
+                .any(|room| room.id == target && self.state.can_forward_to(room))
+        {
+            return vec![];
+        }
+        if let Some(forwarding) = &mut self.state.forwarding {
+            forwarding.sent.push(target.clone());
+        }
+        if self.state.preview {
+            let item = uuid::Uuid::new_v4().to_string();
+            let messages = self.samples.entry(target.clone()).or_default();
+            messages.push(ChatMessage {
+                id: item.clone(),
+                item,
+                author: "You".into(),
+                sender: "You".into(),
+                time: "Local preview".into(),
+                own: true,
+                body: message.body,
+                formatted: message.formatted,
+                attachment: message.attachment,
+                ..sample_actions()
+            });
+            if target == source {
+                self.state.messages = Arc::new(messages.clone());
+            }
+            return vec![];
+        }
+        vec![Effect::Backend(Command::Forward {
+            room: source,
+            item: forwarding.item,
+            target,
+        })]
+    }
+
+    /// The `count` reactions this device adds most, then the defaults.
+    pub fn frequent_reactions(&self, count: usize) -> Vec<String> {
+        let mut used: Vec<_> = self.reaction_uses.iter().collect();
+        used.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let mut frequent: Vec<String> = Vec::with_capacity(count);
+        for key in used
+            .into_iter()
+            .map(|(key, _)| key.as_str())
+            .chain(DEFAULT_REACTIONS)
+        {
+            if frequent.len() == count {
+                break;
+            }
+            if !frequent.iter().any(|known| known == key) {
+                frequent.push(key.to_owned());
+            }
+        }
+        frequent
+    }
+
+    /// How often this device added each reaction, for an adapter to keep across runs.
+    pub fn reaction_uses(&self) -> &HashMap<String, u32> {
+        &self.reaction_uses
+    }
+
+    /// Restore counts kept from [`Self::reaction_uses`], keeping any higher count.
+    pub fn remember_reaction_uses(&mut self, uses: HashMap<String, u32>) {
+        for (key, count) in uses {
+            let known = self.reaction_uses.entry(key).or_default();
+            *known = (*known).max(count);
+        }
+    }
+
     /// Leave reply or edit mode, restoring the draft an edit replaced.
     fn finish_compose(&mut self, room: &str) {
         if let Some(Compose::Edit { draft, .. }) = self.state.compose.remove(room) {
@@ -878,7 +1018,9 @@ impl Application {
     fn reset(&mut self) {
         let selection_version = self.state.selection_version.wrapping_add(1);
         let reset_version = self.state.reset_version.wrapping_add(1);
+        let reaction_uses = std::mem::take(&mut self.reaction_uses);
         *self = Self::default();
+        self.reaction_uses = reaction_uses;
         self.state.selection_version = selection_version;
         self.state.reset_version = reset_version;
     }
@@ -1159,6 +1301,7 @@ fn sample_actions() -> ChatMessage {
         can_edit: true,
         can_delete: true,
         can_react: true,
+        can_forward: true,
         ..Default::default()
     }
 }
@@ -1300,6 +1443,79 @@ mod tests {
             members.len() as u64,
             preview.state.selected_room().unwrap().members
         );
+    }
+
+    #[test]
+    fn frequent_reactions_follow_use_and_fill_with_defaults() {
+        let mut app = Application::default();
+        app.dispatch(Action::Preview);
+        assert_eq!(app.frequent_reactions(3), ["👍", "❤️", "😂"]);
+        let item = app.state.messages[0].item.clone();
+        for key in ["🔥", "🔥", "👀"] {
+            app.dispatch(Action::React {
+                item: item.clone(),
+                key: key.into(),
+            });
+            // Removing a reaction is not a use.
+            if key == "🔥" {
+                app.dispatch(Action::React {
+                    item: item.clone(),
+                    key: key.into(),
+                });
+            }
+        }
+        assert_eq!(app.frequent_reactions(4), ["🔥", "👀", "👍", "❤️"]);
+        app.dispatch(Action::Logout);
+        assert_eq!(
+            app.frequent_reactions(1),
+            ["🔥"],
+            "counts outlive the session"
+        );
+        let mut next = Application::default();
+        next.remember_reaction_uses(app.reaction_uses().clone());
+        assert_eq!(next.frequent_reactions(2), ["🔥", "👀"]);
+    }
+
+    #[test]
+    fn forwarding_sends_a_message_once_to_each_writable_conversation() {
+        let mut app = Application::default();
+        app.dispatch(Action::Preview);
+        let item = app.state.messages[1].item.clone();
+        app.dispatch(Action::StartForward(item.clone()));
+        assert!(app.dispatch(Action::Forward("games".into())).is_empty());
+        app.dispatch(Action::Forward("games".into()));
+        app.dispatch(Action::Forward("lounge".into()));
+        assert_eq!(app.state.forwarding.as_ref().unwrap().sent, ["games"]);
+        app.dispatch(Action::Forward("general".into()));
+        assert_eq!(
+            app.state.messages.last().unwrap().body,
+            app.state.messages[1].body
+        );
+        app.dispatch(Action::CloseForward);
+        app.dispatch(Action::SelectRoom("games".into()));
+        assert!(app.state.messages.last().unwrap().body.contains("co-op"));
+
+        let mut app = connected();
+        let mut sent = message("e:$bob", false);
+        sent.can_forward = true;
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![sent],
+        });
+        app.dispatch(Action::StartForward("e:$bob".into()));
+        assert!(matches!(
+            app.dispatch(Action::Forward("general".into())).as_slice(),
+            [Effect::Backend(Command::Forward { room, item, target })]
+                if room == "dm" && item == "e:$bob" && target == "general"
+        ));
+        app.apply(Event::Forwarded {
+            room: "general".into(),
+            result: Err("refused"),
+        });
+        assert!(app.state.forwarding.as_ref().unwrap().sent.is_empty());
+        assert_eq!(app.state.notice.as_deref(), Some("refused"));
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert!(app.state.forwarding.is_none());
     }
 
     #[test]

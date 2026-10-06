@@ -21,7 +21,7 @@ use talk_core::{
     voice::{self, Phase},
 };
 
-use crate::graphics;
+use crate::{emoji, graphics};
 use talk_ui::*;
 
 /// How the desktop window ended.
@@ -136,16 +136,7 @@ fn prepare(window: &TalkWindow) {
             .window()
             .set_size(slint::PhysicalSize::new(width, height));
     }
-    window.set_emoji_font(
-        if cfg!(windows) {
-            "Segoe UI Emoji"
-        } else if cfg!(target_os = "macos") {
-            "Apple Color Emoji"
-        } else {
-            "Noto Color Emoji"
-        }
-        .into(),
-    );
+    window.set_emoji_font(emoji::family().into());
 }
 
 /// A command file through which the private test compositor can hide, destroy
@@ -272,6 +263,8 @@ struct Layout {
     members_hidden: bool,
     /// Each server's last selected channel, by server ID.
     channels: HashMap<String, String>,
+    /// How often this device added each reaction, for the frequent reactions.
+    reactions: HashMap<String, u32>,
 }
 
 impl Layout {
@@ -309,6 +302,10 @@ struct Models {
     rooms: Rc<VecModel<RoomRow>>,
     messages: Rc<VecModel<MessageRow>>,
     roster: Rc<VecModel<MemberRow>>,
+    bar_reactions: Rc<VecModel<EmojiCell>>,
+    menu_reactions: Rc<VecModel<EmojiCell>>,
+    emoji_rows: Rc<VecModel<EmojiRow>>,
+    forward_targets: Rc<VecModel<ForwardRow>>,
     participants: Rc<VecModel<PersonRow>>,
     microphones: Rc<VecModel<SharedString>>,
     speakers: Rc<VecModel<SharedString>>,
@@ -320,6 +317,10 @@ impl Models {
         window.set_rooms(ModelRc::from(self.rooms.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
+        window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
+        window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
+        window.set_emoji_rows(ModelRc::from(self.emoji_rows.clone()));
+        window.set_forward_targets(ModelRc::from(self.forward_targets.clone()));
         window.set_participants(ModelRc::from(self.participants.clone()));
         window.set_microphones(ModelRc::from(self.microphones.clone()));
         window.set_speakers(ModelRc::from(self.speakers.clone()));
@@ -345,6 +346,8 @@ struct Adapter {
     weak: std::rc::Weak<RefCell<Self>>,
     window: slint::Weak<TalkWindow>,
     navigation: Navigation,
+    /// Whether the forward dialog was open at the last refresh.
+    forwarding: bool,
     selection_version: u64,
     reset_version: u64,
     messages: Arc<Vec<ChatMessage>>,
@@ -371,6 +374,8 @@ impl Adapter {
         models.attach(window);
         let layout = Layout::read(&root);
         layout.apply(window);
+        let mut app = Application::default();
+        app.remember_reaction_uses(layout.reactions.clone());
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,
@@ -378,12 +383,13 @@ impl Adapter {
                 runtime,
                 root,
                 layout,
-                app: Application::default(),
+                app,
                 models,
                 icons,
                 weak: weak.clone(),
                 window: window.as_weak(),
                 navigation: Navigation::default(),
+                forwarding: false,
                 selection_version: 0,
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
@@ -709,6 +715,73 @@ impl Adapter {
                 })
                 .collect(),
         );
+        update_model(
+            &self.models.bar_reactions,
+            self.app
+                .frequent_reactions(3)
+                .iter()
+                .map(|key| emoji::cell(key))
+                .collect(),
+        );
+        update_model(
+            &self.models.menu_reactions,
+            self.app
+                .frequent_reactions(4)
+                .iter()
+                .map(|key| emoji::cell(key))
+                .collect(),
+        );
+        let forwarding = state.forwarding.as_ref();
+        window.set_forward_open(forwarding.is_some());
+        if forwarding.is_some() != self.forwarding {
+            window.set_forward_query(SharedString::default());
+        }
+        let forward_query = window.get_forward_query().to_lowercase();
+        window.set_forward_preview(
+            forwarding
+                .and_then(|forwarding| state.message(&forwarding.item))
+                .map(|message| match &message.attachment {
+                    Some(attachment) if message.body.is_empty() => attachment.name.clone(),
+                    _ => talk_core::chat::plain_snippet(&message.body),
+                })
+                .unwrap_or_default()
+                .into(),
+        );
+        update_model(
+            &self.models.forward_targets,
+            forwarding.map_or_else(Vec::new, |forwarding| {
+                state
+                    .rooms
+                    .iter()
+                    .filter(|room| {
+                        state.can_forward_to(room)
+                            && room.name.to_lowercase().contains(&forward_query)
+                    })
+                    .map(|room| ForwardRow {
+                        id: room.id.clone().into(),
+                        name: room.name.clone().into(),
+                        place: if room.direct {
+                            "Direct message".into()
+                        } else {
+                            state
+                                .servers
+                                .iter()
+                                .find(|server| server.channels.contains(&room.id))
+                                .map_or("Channel".into(), |server| server.name.clone().into())
+                        },
+                        icon: if room.direct {
+                            self.icons.dm.clone()
+                        } else {
+                            self.icons.text.clone()
+                        },
+                        direct: room.direct,
+                        initial: initial(&room.name),
+                        tint: tint(&room.id),
+                        sent: forwarding.sent.contains(&room.id),
+                    })
+                    .collect()
+            }),
+        );
         window.set_voice_room(room.is_some_and(|room| room.voice));
         window.set_room_encrypted(room.is_some_and(|room| room.encrypted));
         window.set_room_ready(state.room_ready);
@@ -950,6 +1023,11 @@ impl Adapter {
         self.selection_version = state.selection_version;
         self.reset_version = state.reset_version;
         self.messages = state.messages.clone();
+        self.forwarding = state.forwarding.is_some();
+        if self.app.reaction_uses() != &self.layout.reactions {
+            self.layout.reactions = self.app.reaction_uses().clone();
+            self.layout.write(&self.root);
+        }
         if selection_changed && !state.preview && state.account.is_some() {
             let mut layout = self.layout.clone();
             layout.channels.extend(self.app.last_channels());
@@ -998,6 +1076,7 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind!(on_confirm_delete_message, Action::ConfirmDelete);
     bind!(on_cancel_delete, Action::CancelDelete);
     bind!(on_cancel_compose, Action::CancelCompose);
+    bind!(on_close_forward, Action::CloseForward);
     bind!(on_dismiss_notice, Action::DismissNotice);
     macro_rules! bind_item {
         ($callback:ident, $action:expr) => {{
@@ -1015,6 +1094,23 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind_item!(on_request_delete, Action::RequestDelete);
     bind_item!(on_retry, Action::Retry);
     bind_item!(on_cancel_send, Action::CancelSend);
+    bind_item!(on_start_forward, Action::StartForward);
+    bind_item!(on_forward_to, Action::Forward);
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_forward_search(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().refresh(&window);
+        }
+    });
+    let state = adapter.clone();
+    window.on_emoji_search(move |query| {
+        let adapter = state.borrow();
+        update_model(
+            &adapter.models.emoji_rows,
+            emoji::rows(&query, &adapter.app.frequent_reactions(16)),
+        );
+    });
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_react(move |item, key| {
@@ -1483,6 +1579,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         can_edit: message.can_edit,
         can_delete: message.can_delete,
         can_react: message.can_react,
+        can_forward: message.can_forward,
     }
 }
 
@@ -1716,6 +1813,50 @@ mod tests {
         assert!(window.get_members_available());
         assert_eq!(window.get_roster().row_count(), 3);
         window.hide().unwrap();
+    }
+
+    #[test]
+    fn forwarding_and_frequent_reactions_reach_the_window() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = tempfile::tempdir().unwrap();
+        let window = TalkWindow::new().unwrap();
+        let adapter = Adapter::new(
+            Arc::new(BackgroundRuntime::new().unwrap()),
+            directory.path().into(),
+            &window,
+        )
+        .unwrap();
+        bind_callbacks(&window, &adapter);
+        window.invoke_explore_preview();
+        let glyphs =
+            |model: ModelRc<EmojiCell>| model.iter().map(|cell| cell.glyph).collect::<Vec<_>>();
+        assert_eq!(glyphs(window.get_bar_reactions()), ["👍", "❤️", "😂"]);
+        let message = window.get_messages().row_data(0).unwrap();
+        window.invoke_react(message.item.clone(), "🍕".into());
+        assert_eq!(
+            glyphs(window.get_menu_reactions()),
+            ["🍕", "👍", "❤️", "😂"]
+        );
+        assert_eq!(Layout::read(directory.path()).reactions.get("🍕"), Some(&1));
+
+        window.invoke_start_forward(message.item.clone());
+        assert!(window.get_forward_open());
+        assert_eq!(window.get_forward_preview(), "Anyone around tonight?");
+        let targets = window.get_forward_targets();
+        assert!(
+            targets.iter().all(|target| target.id != "lounge"),
+            "voice is no target"
+        );
+        window.set_forward_query("gam".into());
+        window.invoke_forward_search();
+        assert_eq!(window.get_forward_targets().row_count(), 1);
+        window.invoke_forward_to("games".into());
+        assert!(window.get_forward_targets().row_data(0).unwrap().sent);
+        window.invoke_close_forward();
+        assert!(!window.get_forward_open());
+
+        window.invoke_emoji_search("pizza".into());
+        assert_eq!(window.get_emoji_rows().row_count(), 1);
     }
 
     #[test]

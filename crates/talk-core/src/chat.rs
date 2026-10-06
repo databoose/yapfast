@@ -21,7 +21,9 @@ use matrix_sdk::{
             room::{
                 MediaSource,
                 member::RoomMemberEventContent,
-                message::{MessageType, RoomMessageEventContentWithoutRelation},
+                message::{
+                    MessageType, RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
+                },
                 power_levels::UserPowerLevel,
             },
             space::child::SpaceChildEventContent,
@@ -164,6 +166,8 @@ pub struct ChatMessage {
     pub can_edit: bool,
     pub can_delete: bool,
     pub can_react: bool,
+    /// A sent message whose content can be sent again to another conversation.
+    pub can_forward: bool,
 }
 
 pub enum Start {
@@ -189,6 +193,12 @@ pub enum Command {
         room: String,
         item: String,
         body: String,
+    },
+    /// Send an item of the open room again, as a new message in `target`.
+    Forward {
+        room: String,
+        item: String,
+        target: String,
     },
     React {
         room: String,
@@ -262,6 +272,11 @@ pub enum Event {
         result: Result<(), &'static str>,
     },
     AttachResult {
+        room: String,
+        result: Result<(), &'static str>,
+    },
+    /// The send queue of `room` accepted or refused a forwarded message.
+    Forwarded {
         room: String,
         result: Result<(), &'static str>,
     },
@@ -448,6 +463,10 @@ pub async fn run(
                     Command::Edit { room, item, body } => {
                         let result = edit(&session, open.as_ref(), &room, &item, &body).await;
                         let _ = events.send(Event::EditResult { room, item, result });
+                    }
+                    Command::Forward { room, item, target } => {
+                        let result = forward(&session, open.as_ref(), &room, &item, &target).await;
+                        let _ = events.send(Event::Forwarded { room: target, result });
                     }
                     Command::React { room, item, key } => {
                         let result = match (active_timeline(open.as_ref(), &room), parse_item(&item)) {
@@ -833,6 +852,54 @@ async fn edit(
         )
         .await
         .map_err(|_| "This message can no longer be edited.")
+}
+
+/// Forward a message's current content, without its reply or edit relations,
+/// into another joined encrypted room. An attachment keeps its encrypted file,
+/// whose key travels inside the new, encrypted event.
+async fn forward(
+    session: &Session,
+    open: Option<&OpenRoom>,
+    room: &str,
+    item: &str,
+    target: &str,
+) -> Result<(), &'static str> {
+    if !session.device_is_trusted().await.unwrap_or(false) {
+        return Err(
+            "Verify this device before forwarding. Use your recovery key or another Matrix client.",
+        );
+    }
+    let timeline =
+        active_timeline(open, room).ok_or("Open this conversation again, then retry.")?;
+    let id = parse_item(item).ok_or("This message can't be forwarded.")?;
+    let content = timeline
+        .items()
+        .await
+        .iter()
+        .filter_map(|item| item.as_event())
+        .find(|event| event.identifier() == id)
+        .and_then(|event| match event.content() {
+            TimelineItemContent::MsgLike(content) => match &content.kind {
+                MsgLikeKind::Message(message) => Some(message.msgtype().clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .ok_or("This message can't be forwarded.")?;
+    let target = OwnedRoomId::try_from(target)
+        .ok()
+        .and_then(|id| timeline.room().client().get_room(&id))
+        .ok_or("That conversation is no longer joined.")?;
+    if target.state() != matrix_sdk::RoomState::Joined || !target.encryption_state().is_encrypted()
+    {
+        return Err("Forwarding is available only into joined, encrypted rooms.");
+    }
+    target
+        .send_queue()
+        .send(RoomMessageEventContent::new(content).into())
+        .await
+        .map(|_| ())
+        .map_err(|_| "Talk could not queue the forwarded message. Check your connection and retry.")
 }
 
 fn mime_for(path: &Path) -> mime::Mime {
@@ -1259,6 +1326,9 @@ async fn publish_timeline(
         message.can_edit = readable && event.is_editable();
         message.can_delete = !message.deleted && message.own;
         message.can_react = readable;
+        message.can_forward = readable
+            && matches!(content.kind, MsgLikeKind::Message(_))
+            && event.event_id().is_some();
         let seconds: u64 = event.timestamp().as_secs().into();
         message.time = format!("{:02}:{:02} UTC", seconds / 3600 % 24, seconds / 60 % 60);
         message.timestamp = seconds;
@@ -1857,6 +1927,7 @@ mod tests {
                 .unwrap();
             session.synchronize().await.unwrap();
             let encrypted = encrypted_room(&session, "Conversation features").await;
+            let other = encrypted_room(&session, "Forward target").await;
             session.synchronize().await.unwrap();
             drop(session);
             let room = encrypted.to_string();
@@ -2011,6 +2082,13 @@ mod tests {
             })
             .await;
             let sent = messages.iter().find(|m| m.attachment.is_some()).unwrap();
+            let reply = messages
+                .iter()
+                .find(|m| m.body == "plain reply")
+                .unwrap()
+                .item
+                .clone();
+            assert!(reply.starts_with("e:"));
             let attachment = sent.attachment.as_ref().unwrap();
             let preview = attachment.preview.as_ref().unwrap();
             assert!(attachment.image && attachment.name == "square.png");
@@ -2036,6 +2114,60 @@ mod tests {
                 std::fs::read(&saved).unwrap(),
                 std::fs::read(&picture).unwrap()
             );
+            // Forwarding sends the reply's text, without its quote, and the
+            // encrypted image again, into another room, where both decrypt. The
+            // deleted message can't be forwarded.
+            commands
+                .send(Command::Forward {
+                    room: room.clone(),
+                    item: original.item.clone(),
+                    target: other.to_string(),
+                })
+                .unwrap();
+            receive(&mut events, |event| match event {
+                Event::Forwarded { result, .. } => {
+                    assert_eq!(result, Err("This message can't be forwarded."));
+                    Some(())
+                }
+                _ => None,
+            })
+            .await;
+            for item in [&reply, &sent.item] {
+                commands
+                    .send(Command::Forward {
+                        room: room.clone(),
+                        item: item.clone(),
+                        target: other.to_string(),
+                    })
+                    .unwrap();
+                receive(&mut events, |event| match event {
+                    Event::Forwarded { room, result } if room == other.as_str() => {
+                        assert_eq!(result, Ok(()));
+                        Some(())
+                    }
+                    _ => None,
+                })
+                .await;
+            }
+            commands.send(Command::Open(other.to_string())).unwrap();
+            timeline_where(&mut events, |messages| {
+                messages.iter().any(|m| {
+                    m.body == "plain reply" && m.reply.is_none() && m.delivery == Delivery::Sent
+                }) && messages.iter().any(|m| {
+                    m.delivery == Delivery::Sent
+                        && m.attachment.as_ref().is_some_and(|a| {
+                            a.preview
+                                .as_ref()
+                                .is_some_and(|p| p.rgba[..4] == [200, 40, 40, 255])
+                        })
+                })
+            })
+            .await;
+            commands.send(Command::Open(room.clone())).unwrap();
+            timeline_where(&mut events, |messages| {
+                messages.iter().any(|m| m.item == sent.item)
+            })
+            .await;
             let file = root.path().join("notes.txt");
             std::fs::write(&file, "attachment text").unwrap();
             commands
