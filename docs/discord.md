@@ -115,9 +115,9 @@ Scope for the beta:
 - The same devices, push-to-talk, voice activation, noise suppression and echo
   cancellation as Talk calls.
 
-Video and watching screen shares come after the beta, together with video in
-Talk. The group uses screen sharing often, so this is the first thing to add
-after the beta.
+The group uses screen sharing often, so sharing a screen and watching
+streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
+Camera video comes after the beta, together with video in Talk.
 
 Since March 2026, Discord voice requires its end-to-end encryption, DAVE, and
 [rejects clients without it](https://support.discord.com/hc/en-us/articles/38749827197591-A-V-E2EE-Enforcement-for-Non-Stage-Voice-Calls).
