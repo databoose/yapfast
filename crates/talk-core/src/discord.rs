@@ -3,7 +3,7 @@
 //! list, timeline, voice dock and the one-call rule cover them.
 use talk_discord::{ready::Access, service::Snapshot};
 
-use crate::chat::{ChatRoom, ChatServer};
+use crate::chat::{ChatRoom, ChatServer, VoicePerson};
 
 const PREFIX: &str = "discord:";
 
@@ -72,6 +72,18 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     locked: channel.access != Access::Join,
                     read_only: false,
                     category,
+                    people: snapshot
+                        .voice
+                        .get(&channel.id)
+                        .into_iter()
+                        .flatten()
+                        .map(|member| VoicePerson {
+                            id: member.user_id.clone(),
+                            name: member.name.clone(),
+                            muted: member.muted,
+                            deafened: member.deafened,
+                        })
+                        .collect(),
                 }
             } else {
                 ChatRoom {
@@ -87,6 +99,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     locked: channel.access == Access::Hidden,
                     read_only: channel.access == Access::Locked,
                     category,
+                    people: vec![],
                 }
             });
             channels.push(id);
@@ -181,10 +194,25 @@ mod tests {
                 ],
                 ..Default::default()
             }],
+            voice: [(
+                "11".to_owned(),
+                vec![talk_discord::service::VoiceMember {
+                    user_id: "2".into(),
+                    name: "Ann".into(),
+                    muted: true,
+                    deafened: false,
+                }],
+            )]
+            .into(),
             ..Default::default()
         };
         let (rooms, servers) = index(&snapshot, false);
         assert_eq!(rooms[0].id, "discord:10:21");
+        assert_eq!(
+            rooms[2].people[0].name, "Ann",
+            "who is in voice shows without joining"
+        );
+        assert!(rooms[2].people[0].muted && rooms[3].people.is_empty());
         assert!(rooms.iter().all(|room| room.category.is_empty()));
         assert!(!rooms[0].voice && !rooms[0].encrypted && !rooms[0].read_only);
         assert!(rooms[1].read_only && !rooms[1].locked);

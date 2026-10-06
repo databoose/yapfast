@@ -709,11 +709,14 @@ component Banner inherits Rectangle {
 }
 
 export struct ServerRow { id: string, name: string, initial: string, selected: bool, unread: bool, discord: bool }
+export struct PersonRow { name: string, status: string, muted: bool, deafened: bool, speaking: bool, connected: bool, initial: string, tint: color }
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
     /// Listed but not open to join, such as a Discord channel the account's roles keep it out of.
     locked: bool,
+    /// Who is in a Discord voice channel, shown without joining it.
+    people: [PersonRow],
 }
 export struct ReactionChip { key: string, count: int, mine: bool }
 export struct MessageRow {
@@ -736,7 +739,6 @@ export struct ForwardRow {
     /// The message went there during this forward.
     sent: bool,
 }
-export struct PersonRow { name: string, status: string, muted: bool, speaking: bool, connected: bool, initial: string, tint: color }
 
 export component TalkWindow inherits Window {
     title: "Talk";
@@ -1379,7 +1381,27 @@ export component TalkWindow inherits Window {
                                             selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                                             clicked => { root.select-room(room.id); }
                                         }
-                                        // Talk knows the participants of its own call only.
+                                        // Discord reports who is in every voice channel; Matrix
+                                        // only shows the call Talk is in, below.
+                                        if room.voice && room.id != root.voice-channel && room.people.length > 0: VerticalLayout {
+                                            padding-left: 32px; padding-bottom: 4px; spacing: 0px;
+                                            for person in room.people: HorizontalLayout {
+                                                height: 30px; spacing: 8px; padding-left: 4px; padding-right: 8px;
+                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; } }
+                                                Text {
+                                                    text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
+                                                    vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                                                }
+                                                if person.muted && !person.deafened: Image {
+                                                    source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
+                                                    colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
+                                                }
+                                                if person.deafened: Image {
+                                                    source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
+                                                    colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
+                                                }
+                                            }
+                                        }
                                         if room.voice && room.id == root.voice-channel: VerticalLayout {
                                             padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                                             for person in root.participants: HorizontalLayout {

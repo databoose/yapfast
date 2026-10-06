@@ -77,7 +77,10 @@ async fn whoami() -> Result<()> {
 
 async fn servers() -> Result<()> {
     let discord = Discord::start(token::load()?)?;
-    let snapshot = online(&discord).await?;
+    online(&discord).await?;
+    // Voice states arrive just after connecting, in READY_SUPPLEMENTAL.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snapshot = discord.snapshots().borrow().clone();
     for server in &snapshot.servers {
         println!("{} ({})", server.name, server.id);
         let text = server.text_channels.iter().map(|channel| ("text", channel));
@@ -102,6 +105,9 @@ async fn servers() -> Result<()> {
                 "  {kind}: {} ({}{access}{unread})",
                 channel.name, channel.id
             );
+            for member in snapshot.voice.get(&channel.id).into_iter().flatten() {
+                println!("    in voice: {}", member.name);
+            }
         }
     }
     Ok(())

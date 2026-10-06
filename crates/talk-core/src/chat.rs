@@ -75,6 +75,16 @@ pub struct ChatRoom {
     pub read_only: bool,
     /// The Discord category the channel is listed under; empty for none.
     pub category: String,
+    /// Who is in a Discord voice channel, known without joining it.
+    pub people: Vec<VoicePerson>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VoicePerson {
+    pub id: String,
+    pub name: String,
+    pub muted: bool,
+    pub deafened: bool,
 }
 
 #[derive(Clone)]
@@ -793,6 +803,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             locked: false,
             read_only: false,
             category: String::new(),
+            people: vec![],
         });
     }
     result.sort_by(|a, b| {

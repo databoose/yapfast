@@ -653,6 +653,24 @@ impl Adapter {
                     initial: initial(&room.name),
                     tint: tint(&room.id),
                     locked: room.locked,
+                    people: if room.people.is_empty() {
+                        ModelRc::default()
+                    } else {
+                        let people: Vec<_> = room
+                            .people
+                            .iter()
+                            .map(|person| PersonRow {
+                                name: person.name.clone().into(),
+                                initial: initial(&person.name),
+                                tint: tint(&person.id),
+                                muted: person.muted,
+                                deafened: person.deafened,
+                                connected: true,
+                                ..Default::default()
+                            })
+                            .collect();
+                        ModelRc::new(VecModel::from(people))
+                    },
                 }
             })
             .collect();
@@ -962,15 +980,18 @@ impl Adapter {
             }
             .into(),
         );
+        let present = room.map_or(&[][..], |room| room.people.as_slice());
         window.set_voice_description(
             if room.is_some_and(|room| room.locked) {
-                "Your roles on this Discord server don't let you join this channel."
+                "Your roles on this Discord server don't let you join this channel.".into()
             } else if voice_here && voice.participants.len() == 1 {
-                "You're here alone. Stay as long as you like; others can join later."
+                "You're here alone. Stay as long as you like; others can join later.".into()
             } else if voice_here {
-                "Voice stays connected while you browse other conversations."
+                "Voice stays connected while you browse other conversations.".into()
+            } else if !present.is_empty() {
+                format!("{} here. Join muted and hang out.", who_is_here(present))
             } else {
-                "Join muted and hang out. The channel stays here when empty."
+                "Join muted and hang out. The channel stays here when empty.".into()
             }
             .into(),
         );
@@ -1013,6 +1034,7 @@ impl Adapter {
                         }
                         .into(),
                         muted: person.muted,
+                        deafened: false,
                     })
                     .collect()
             } else {
@@ -1429,6 +1451,18 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
 
 /// Only mentions get a number; plain unread activity is a dot, because sync
 /// does not deliver every message of a room that isn't open.
+/// "Ann is", "Ann and Bob are", or "Ann, Bob and 3 others are".
+fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
+    let names: Vec<&str> = people.iter().map(|person| person.name.as_str()).collect();
+    match names.as_slice() {
+        [one] => format!("{one} is"),
+        [first, second] => format!("{first} and {second} are"),
+        [first, second, third] => format!("{first}, {second} and {third} are"),
+        [first, second, rest @ ..] => format!("{first}, {second} and {} others are", rest.len()),
+        [] => String::new(),
+    }
+}
+
 fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
     match room.mentions {
         0 => SharedString::default(),
