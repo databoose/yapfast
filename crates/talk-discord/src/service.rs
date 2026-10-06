@@ -16,9 +16,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::{
     api::Api,
     gateway::{Closed, Gateway},
-    member_list::{ListedMember, MemberList},
+    member_list::{self, ListedMember, MemberList, Presence},
     message::{self, Message, Names},
-    ready::{self, Server},
+    ready::{self, PRIVATE, Private, Server},
     stream::{self, Opening, StreamServer},
     unread::Unreads,
 };
@@ -52,12 +52,34 @@ pub struct Account {
     pub avatar: String,
 }
 
+/// A DM or group DM, as the DM list shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Conversation {
+    pub id: String,
+    pub name: String,
+    /// The other person's avatar in a DM, or a group DM's icon.
+    pub avatar: Option<String>,
+    pub group: bool,
+    /// Everyone in it, this account included.
+    pub people: usize,
+    /// A message request, waiting to be accepted or ignored. Requests count
+    /// no mentions, and spam isn't unread either.
+    pub request: bool,
+    /// A request Discord thinks is spam.
+    pub spam: bool,
+    pub unread: bool,
+    /// Unread messages, as every message in a DM counts as a mention.
+    pub mentions: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub status: Status,
     pub user_id: Option<String>,
     pub account: Option<Account>,
     pub servers: Vec<Server>,
+    /// DMs and group DMs, the latest conversation first.
+    pub conversations: Vec<Conversation>,
     /// Who is in each voice channel, by channel id and then by name.
     pub voice: HashMap<String, Vec<VoiceMember>>,
     /// The channel whose member list is on screen, and how many people can
@@ -196,6 +218,7 @@ impl Discord {
                 viewing: HashSet::new(),
                 listing: None,
                 lists: Vec::new(),
+                group: None,
             },
         ));
         Ok(Self {
@@ -218,6 +241,8 @@ impl Discord {
 
     /// Tells Discord a server's channel is on screen, so its messages arrive
     /// live. With a text `channel`, its member list arrives as [`Live::Members`].
+    /// DMs arrive live anyway; with [`PRIVATE`] as the server, a group DM's
+    /// members arrive the same way.
     pub fn view(&self, guild: &str, channel: Option<&str>) {
         let _ = self.requests.send(Request::View {
             guild: guild.into(),
@@ -242,12 +267,13 @@ impl Discord {
         before: Option<&str>,
     ) -> Result<Vec<Message>> {
         let values = self.api.messages(channel, before).await?;
+        let server = server(guild);
         let mut unknown = HashSet::new();
         {
             let mut names = self.write_names();
             for value in &values {
-                names.learn_message(Some(guild), value);
-                if let Some(author) = value["author"]["id"].as_str()
+                names.learn_message(server, value);
+                if let (Some(guild), Some(author)) = (server, value["author"]["id"].as_str())
                     && !names.knows_member(guild, author)
                 {
                     unknown.insert(author.to_owned());
@@ -283,13 +309,20 @@ impl Discord {
         };
         let sent = self
             .api
-            .send(Some(guild), channel, content, nonce, reply, upload.as_ref())
+            .send(
+                server(guild),
+                channel,
+                content,
+                nonce,
+                reply,
+                upload.as_ref(),
+            )
             .await;
         if let (Err(_), Some(upload)) = (&sent, &upload) {
             let _ = self.api.discard(upload).await;
         }
         let value = sent?;
-        self.write_names().learn_message(Some(guild), &value);
+        self.write_names().learn_message(server(guild), &value);
         message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
     }
 
@@ -300,6 +333,16 @@ impl Discord {
 
     pub async fn delete(&self, channel: &str, id: &str) -> Result<()> {
         self.api.delete(channel, id).await
+    }
+
+    /// Accepts a message request, or ignores it. The DM list changes when
+    /// Discord confirms it.
+    pub async fn answer_request(&self, channel: &str, accept: bool) -> Result<()> {
+        if accept {
+            self.api.accept_request(channel).await
+        } else {
+            self.api.ignore_request(channel).await
+        }
     }
 
     /// Adds or removes this account's reaction; `emoji` is in the API's form.
@@ -324,7 +367,13 @@ impl Discord {
 
     /// The address of a user's avatar, in a server or in DMs.
     pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
-        self.read_names().avatar(guild, user)
+        self.read_names().avatar(guild.and_then(server), user)
+    }
+
+    /// The RGB colour of a member's name in a server: their highest coloured
+    /// role's, once their roles are known.
+    pub fn color(&self, server: &Server, user: &str) -> Option<u32> {
+        server.color(self.read_names().roles(&server.id, user))
     }
 
     /// Discord Markdown for Talk, with mentions, custom emoji and times as text.
@@ -421,6 +470,11 @@ impl Discord {
     }
 }
 
+/// The server a channel is in, or none for DMs.
+fn server(guild: &str) -> Option<&str> {
+    (guild != PRIVATE).then_some(guild)
+}
+
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 /// Reads within this long go to Discord as one acknowledgement per channel.
 const ACK_DELAY: Duration = Duration::from_secs(1);
@@ -439,6 +493,8 @@ struct Shared {
     /// Member lists of channels shown lately, newest last, to show again at
     /// once while Discord sends them afresh.
     lists: Vec<MemberList>,
+    /// The group DM on screen, whose members Talk lists itself.
+    group: Option<String>,
 }
 
 /// Member lists kept for channels shown again.
@@ -535,10 +591,12 @@ fn refuse(request: Request, shared: &mut Shared) {
                 "Discord isn't connected right now. Try again in a moment."
             )));
         }
+        Request::View { guild, channel } if guild == PRIVATE => shared.group = channel,
         Request::View { guild, channel } => {
             if let Some(channel) = channel {
                 shared.listing = Some((guild.clone(), channel));
             }
+            shared.group = None;
             shared.viewing.insert(guild);
         }
         _ => {}
@@ -617,6 +675,7 @@ async fn connected_session(
     };
     let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
     shared.snapshots.send_replace(tracker.snapshot());
+    publish_group(&tracker, shared);
     tracker.list = shared
         .listing
         .clone()
@@ -666,7 +725,13 @@ async fn connected_session(
                     Request::SelfState { guild, channel, mute, deaf } => {
                         gateway.update_voice_state(Some(&guild), Some(&channel), mute, deaf).await
                     }
+                    Request::View { guild, channel } if guild == PRIVATE => {
+                        shared.group = channel;
+                        publish_group(&tracker, shared);
+                        Ok(())
+                    }
                     Request::View { guild, channel } => {
+                        shared.group = None;
                         let new = shared.viewing.insert(guild.clone());
                         match channel {
                             Some(channel) if shared.listing.as_ref().is_none_or(|(g, c)| *g != guild || *c != channel) => {
@@ -841,6 +906,17 @@ async fn connected_session(
                 if tracker.apply(&event.name, &event.data) {
                     shared.snapshots.send_replace(tracker.snapshot());
                 }
+                // Server events, such as presences in a server, don't change a group.
+                if shared.group.is_some()
+                    && event.data["guild_id"].is_null()
+                    && matches!(
+                        event.name.as_str(),
+                        "READY_SUPPLEMENTAL" | "PRESENCE_UPDATE" | "CHANNEL_UPDATE"
+                            | "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE"
+                    )
+                {
+                    publish_group(&tracker, shared);
+                }
                 if !openings.is_empty() && event.name.starts_with("STREAM_") {
                     open_streams(&mut openings, &tracker, &event.name, &event.data);
                 }
@@ -870,6 +946,10 @@ struct Tracker {
     unreads: Unreads,
     /// The member list of the channel on screen.
     list: Option<MemberList>,
+    /// DMs and group DMs.
+    private: Vec<Private>,
+    /// What friends are doing, for group DM member lists.
+    presences: HashMap<String, (Presence, Option<String>)>,
 }
 
 impl Tracker {
@@ -882,10 +962,15 @@ impl Tracker {
             my_roles: HashMap::new(),
             unreads: Unreads::from_ready(ready),
             list: None,
+            private: Vec::new(),
+            presences: HashMap::new(),
         };
         tracker.learn_user(&ready["user"]);
         for user in ready["users"].as_array().into_iter().flatten() {
             tracker.learn_user(user);
+        }
+        for channel in ready["private_channels"].as_array().into_iter().flatten() {
+            tracker.put_private(channel);
         }
         tracker.learn_members(&ready["guilds"], &ready["merged_members"]);
         tracker
@@ -900,6 +985,22 @@ impl Tracker {
     fn apply_servers(&mut self, name: &str, data: &Value) -> bool {
         match name {
             "READY_SUPPLEMENTAL" => {
+                // The DMs left out of READY to make it smaller.
+                for channel in data["lazy_private_channels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    self.unreads.learn_channel(channel);
+                    self.put_private(channel);
+                }
+                for presence in data["merged_presences"]["friends"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    self.presence(presence["user_id"].as_str(), presence);
+                }
                 for guild in data["guilds"].as_array().into_iter().flatten() {
                     let Some(id) = guild["id"].as_str() else {
                         continue;
@@ -979,6 +1080,48 @@ impl Tracker {
                 self.servers.retain(|server| server.id != id);
                 self.voice.retain(|(guild, _), _| guild != id);
                 true
+            }
+            "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE"
+                if data["guild_id"].is_null() =>
+            {
+                let Some(id) = data["id"].as_str() else {
+                    return false;
+                };
+                self.private.retain(|private| private.id != id);
+                if name != "CHANNEL_DELETE" {
+                    self.put_private(data);
+                }
+                true
+            }
+            "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE" => {
+                let (Some(channel), Some(user)) =
+                    (data["channel_id"].as_str(), data["user"]["id"].as_str())
+                else {
+                    return false;
+                };
+                self.learn_user(&data["user"]);
+                let Some(private) = self
+                    .private
+                    .iter_mut()
+                    .find(|private| private.id == channel)
+                else {
+                    return false;
+                };
+                private.recipients.retain(|known| known != user);
+                if name == "CHANNEL_RECIPIENT_ADD" {
+                    private.recipients.push(user.to_owned());
+                }
+                true
+            }
+            // A DM moves to the top of the list with each new message.
+            "MESSAGE_CREATE" if data["guild_id"].is_null() => {
+                let channel = data["channel_id"].as_str().unwrap_or_default();
+                self.private.iter().any(|private| private.id == channel)
+            }
+            // Friends' presences; those in servers go to the member list.
+            "PRESENCE_UPDATE" if data["guild_id"].is_null() => {
+                self.presence(data["user"]["id"].as_str(), data);
+                false
             }
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
                 let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
@@ -1081,6 +1224,115 @@ impl Tracker {
         self.write_names().learn_user(user);
     }
 
+    /// Adds a DM or group DM from a channel object, learning the users it
+    /// carries.
+    fn put_private(&mut self, channel: &Value) {
+        let Some(private) = ready::private_channel(channel) else {
+            return;
+        };
+        for user in channel["recipients"].as_array().into_iter().flatten() {
+            self.learn_user(user);
+        }
+        self.private.retain(|known| known.id != private.id);
+        self.private.push(private);
+    }
+
+    fn presence(&mut self, user: Option<&str>, data: &Value) {
+        if let Some(user) = user {
+            self.presences.insert(
+                user.to_owned(),
+                (
+                    Presence::parse(&data["status"]),
+                    member_list::activity(&data["activities"]),
+                ),
+            );
+        }
+    }
+
+    /// A group DM's members by name, as Discord lists them.
+    fn group_members(&self, channel: &str) -> Option<Vec<ListedMember>> {
+        let group = self
+            .private
+            .iter()
+            .find(|private| private.id == channel && private.group)?;
+        let names = self
+            .names
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let people = std::iter::once(&self.me).chain(&group.recipients);
+        let heading = format!("Members — {}", group.recipients.len() + 1);
+        let mut members: Vec<_> = people
+            .map(|user| {
+                let (presence, activity) = if *user == self.me {
+                    (Presence::Online, None)
+                } else {
+                    self.presences.get(user).cloned().unwrap_or_default()
+                };
+                ListedMember {
+                    user_id: user.clone(),
+                    name: names.user_name(user).unwrap_or("Discord user").to_owned(),
+                    avatar: names.avatar(None, user),
+                    group: heading.clone(),
+                    presence,
+                    color: None,
+                    activity,
+                }
+            })
+            .collect();
+        members.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.user_id.cmp(&b.user_id))
+        });
+        Some(members)
+    }
+
+    /// DMs and group DMs, the latest conversation first.
+    fn conversations(&self, names: &Names) -> Vec<Conversation> {
+        let mut private = self.private.clone();
+        // Discord orders by the newest message, or when the DM opened.
+        private.sort_by_cached_key(|private| {
+            let opened = private.id.parse().unwrap_or_default();
+            std::cmp::Reverse(self.unreads.last_message(&private.id).max(opened))
+        });
+        private
+            .into_iter()
+            .map(|mut private| {
+                self.unreads.mark_private(&mut private);
+                let name = |user: &String| names.user_name(user).unwrap_or("Discord user");
+                let title = match (&private.name, private.recipients.as_slice()) {
+                    (Some(name), _) => name.clone(),
+                    (None, []) if private.group => "Unnamed group".into(),
+                    (None, recipients) if private.group => {
+                        recipients.iter().map(name).collect::<Vec<_>>().join(", ")
+                    }
+                    (None, [user, ..]) => name(user).to_owned(),
+                    (None, []) => "Discord user".into(),
+                };
+                let avatar = if private.group {
+                    private.icon.clone()
+                } else {
+                    private
+                        .recipients
+                        .first()
+                        .map(|user| names.avatar(None, user))
+                };
+                Conversation {
+                    id: private.id,
+                    name: title,
+                    avatar,
+                    group: private.group,
+                    people: private.recipients.len() + 1,
+                    request: private.request,
+                    spam: private.spam,
+                    unread: private.unread && !private.spam,
+                    mentions: if private.request { 0 } else { private.mentions },
+                }
+            })
+            .collect()
+    }
+
     fn learn_member(&mut self, guild: &str, member: &Value) {
         self.write_names().learn_member(guild, member);
         let user = member["user_id"]
@@ -1173,12 +1425,26 @@ impl Tracker {
                 avatar: names.avatar(None, &self.me),
             }),
             servers,
+            conversations: self.conversations(&names),
             voice,
             listed: self
                 .list
                 .as_ref()
                 .and_then(|list| Some((list.channel().to_owned(), list.count()?))),
         }
+    }
+}
+
+/// The members of the group DM on screen.
+fn publish_group(tracker: &Tracker, shared: &Shared) {
+    let Some(channel) = &shared.group else {
+        return;
+    };
+    if let Some(members) = tracker.group_members(channel) {
+        let _ = shared.live.send(Live::Members {
+            channel: channel.clone(),
+            members,
+        });
     }
 }
 
@@ -1349,6 +1615,172 @@ mod tests {
                 .is_some_and(|icon| icon.contains("/icons/10/ghi.png"))
         );
         assert_eq!(server.voice_channels.len(), 2, "the channels stay");
+    }
+
+    #[test]
+    fn lists_dms_newest_first_with_unreads() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "users": [
+                {"id": "2", "username": "ann", "global_name": "Ann", "avatar": "abc"},
+                {"id": "3", "username": "bob"},
+            ],
+            "private_channels": [
+                {"id": "20", "type": 1, "recipient_ids": ["2"], "last_message_id": "500"},
+                {"id": "21", "type": 3, "recipient_ids": ["2", "3"], "last_message_id": "600"},
+                {"id": "22", "type": 3, "name": "Plans", "icon": "def", "recipient_ids": ["3"]},
+                {"id": "23", "type": 1, "recipient_ids": ["3"], "is_message_request": true},
+            ],
+            "read_state": {"entries": [{"id": "21", "last_message_id": "550", "mention_count": 1}]},
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let listed = |tracker: &Tracker| -> Vec<(String, bool, u64)> {
+            tracker
+                .snapshot()
+                .conversations
+                .into_iter()
+                .filter(|dm| !dm.request)
+                .map(|dm| (dm.name, dm.unread, dm.mentions))
+                .collect()
+        };
+        assert_eq!(
+            listed(&tracker),
+            [
+                ("Ann, bob".into(), true, 1),
+                ("Ann".into(), false, 0),
+                ("Plans".into(), false, 0),
+            ],
+            "a DM without a read state is read"
+        );
+        let snapshot = tracker.snapshot();
+        let dm = |id: &str| {
+            snapshot
+                .conversations
+                .iter()
+                .find(|dm| dm.id == id)
+                .unwrap()
+        };
+        let ann = dm("20");
+        assert!(!ann.group && ann.people == 2);
+        assert!(
+            ann.avatar
+                .as_deref()
+                .unwrap()
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
+        assert!(
+            dm("22")
+                .avatar
+                .as_deref()
+                .unwrap()
+                .contains("/channel-icons/22/def.png")
+        );
+        assert_eq!(dm("21").avatar, None);
+
+        // Ann writes: her DM comes first, and each message counts.
+        let message = |id: &str| json!({"id": id, "channel_id": "20", "author": {"id": "2"}});
+        assert!(tracker.apply("MESSAGE_CREATE", &message("700")));
+        tracker.apply("MESSAGE_CREATE", &message("701"));
+        assert_eq!(listed(&tracker)[0], ("Ann".into(), true, 2));
+        assert_eq!(
+            tracker.unreads.mark_read(PRIVATE, "20").as_deref(),
+            Some("701")
+        );
+        assert_eq!(listed(&tracker)[0], ("Ann".into(), false, 0));
+
+        // A muted DM shows nothing.
+        tracker.apply(
+            "USER_GUILD_SETTINGS_UPDATE",
+            &json!({"guild_id": null, "channel_overrides": [{"channel_id": "20", "muted": true}]}),
+        );
+        tracker.apply("MESSAGE_CREATE", &message("702"));
+        assert_eq!(listed(&tracker)[0], ("Ann".into(), false, 0));
+
+        // DMs open, close and change their people.
+        tracker.apply(
+            "CHANNEL_CREATE",
+            &json!({"id": "800", "type": 1, "recipients": [{"id": "4", "username": "cat"}]}),
+        );
+        assert_eq!(listed(&tracker)[0].0, "cat");
+        tracker.apply("CHANNEL_DELETE", &json!({"id": "800", "type": 1}));
+        tracker.apply(
+            "CHANNEL_RECIPIENT_ADD",
+            &json!({"channel_id": "22", "user": {"id": "4", "username": "cat"}}),
+        );
+        tracker.apply(
+            "CHANNEL_RECIPIENT_REMOVE",
+            &json!({"channel_id": "22", "user": {"id": "3"}}),
+        );
+        tracker.apply(
+            "PRESENCE_UPDATE",
+            &json!({"user": {"id": "4"}, "status": "idle", "activities": []}),
+        );
+        let members: Vec<_> = tracker
+            .group_members("22")
+            .unwrap()
+            .into_iter()
+            .map(|member| (member.name, member.group, member.presence))
+            .collect();
+        assert_eq!(
+            members,
+            [
+                ("cat".into(), "Members — 2".into(), Presence::Idle),
+                ("me".into(), "Members — 2".into(), Presence::Online),
+            ]
+        );
+        assert!(
+            tracker.group_members("20").is_none(),
+            "a DM lists no members"
+        );
+        assert_eq!(
+            tracker.snapshot().conversations.len(),
+            4,
+            "with the request"
+        );
+    }
+
+    #[test]
+    fn message_requests_wait_to_be_answered() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "users": [{"id": "2", "username": "ann"}, {"id": "3", "username": "spam"}],
+            "private_channels": [
+                {"id": "20", "type": 1, "recipient_ids": ["2"], "is_message_request": true},
+                {"id": "21", "type": 1, "recipient_ids": ["3"], "is_message_request": true, "is_spam": true},
+            ],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        for (id, channel, author) in [("500", "20", "2"), ("501", "21", "3")] {
+            tracker.apply(
+                "MESSAGE_CREATE",
+                &json!({"id": id, "channel_id": channel, "author": {"id": author}}),
+            );
+        }
+        let listed: Vec<_> = tracker
+            .snapshot()
+            .conversations
+            .into_iter()
+            .map(|dm| (dm.name, dm.request, dm.spam, dm.unread, dm.mentions))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("spam".into(), true, true, false, 0),
+                ("ann".into(), true, false, true, 0)
+            ],
+            "requests count no mentions, and spam isn't unread"
+        );
+
+        // Accepting makes it a DM; ignoring removes it.
+        tracker.apply(
+            "CHANNEL_UPDATE",
+            &json!({"id": "20", "type": 1, "recipient_ids": ["2"], "is_message_request": false}),
+        );
+        tracker.apply("CHANNEL_DELETE", &json!({"id": "21", "type": 1}));
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.conversations.len(), 1);
+        assert!(!snapshot.conversations[0].request);
+        assert_eq!(snapshot.conversations[0].mentions, 1);
     }
 
     #[test]

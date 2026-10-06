@@ -41,7 +41,7 @@ pub enum Presence {
 }
 
 impl Presence {
-    fn parse(status: &Value) -> Self {
+    pub fn parse(status: &Value) -> Self {
         match status.as_str() {
             Some("online") => Self::Online,
             Some("idle") => Self::Idle,

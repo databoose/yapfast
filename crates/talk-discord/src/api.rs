@@ -113,6 +113,22 @@ impl Api {
             .await
     }
 
+    /// Accepts a message request, which makes it an ordinary DM.
+    pub async fn accept_request(&self, channel: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/recipients/@me");
+        // 2 is ACCEPTED.
+        let body = json!({"consent_status": 2});
+        self.empty(with_json(self.request(Method::PUT, &path), &body))
+            .await
+    }
+
+    /// Ignores a message request: it leaves this account's DMs, and the
+    /// sender isn't told.
+    pub async fn ignore_request(&self, channel: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/recipients/@me");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
     /// Uploads a file to Discord's storage, as the official client does
     /// before sending a message with it.
     pub async fn upload(&self, channel: &str, filename: &str, data: Vec<u8>) -> Result<Upload> {

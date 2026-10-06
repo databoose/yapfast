@@ -7,6 +7,7 @@ use std::time::Duration;
 use talk_discord::{
     client,
     member_list::Presence,
+    ready::PRIVATE,
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
     stream,
@@ -279,6 +280,11 @@ async fn talks_to_the_fake_server() {
         .unwrap();
     assert_eq!(message.author, "Bob");
     assert!(message.content.starts_with("Live Message 0"));
+    assert_eq!(
+        discord.color(&snapshot.servers[0], &message.author_id),
+        Some(0x3498db),
+        "Bob's name takes the Mods role's blue"
+    );
     snapshot_where(&discord, |snapshot| {
         snapshot.servers[0].text_channels[0].unread
     })
@@ -320,6 +326,138 @@ async fn talks_to_the_fake_server() {
     live_where(&mut live, |event| match event {
         Live::Deleted { id, .. } if id == sent.id => Some(()),
         _ => None,
+    })
+    .await;
+
+    // DMs and message requests, the latest first; each unread message in a
+    // DM counts as a mention, and requests count none.
+    let listed: Vec<_> = snapshot
+        .conversations
+        .iter()
+        .map(|dm| {
+            (
+                dm.name.as_str(),
+                dm.request,
+                dm.spam,
+                dm.unread,
+                dm.mentions,
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Erin", true, false, true, 0),
+            ("Free Nitro", true, true, false, 0),
+            ("Bob", false, false, true, 2),
+            ("Weekend plans", false, false, false, 0)
+        ]
+    );
+    let id = |name: &str| {
+        snapshot
+            .conversations
+            .iter()
+            .find(|dm| dm.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let (dm_bob, weekend, erin, frank) =
+        (id("Bob"), id("Weekend plans"), id("Erin"), id("Free Nitro"));
+    assert!(
+        snapshot.conversations[2]
+            .avatar
+            .as_deref()
+            .is_some_and(|avatar| avatar.contains("/avatars/1400000000000000002/bob1.png"))
+    );
+    let history = discord.history(PRIVATE, &dm_bob, None).await.unwrap();
+    let said: Vec<_> = history
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "Did you see the trip notes?",
+            "Yes, bringing snacks",
+            "Great",
+            "See you at nine"
+        ]
+    );
+    discord.mark_read(PRIVATE, &dm_bob, true);
+    snapshot_where(&discord, |snapshot| {
+        let bob = snapshot.conversations.iter().find(|dm| dm.id == dm_bob);
+        bob.is_some_and(|bob| !bob.unread && bob.mentions == 0)
+    })
+    .await;
+    let nonce = talk_discord::message::nonce();
+    let sent = discord
+        .send(
+            PRIVATE,
+            &dm_bob,
+            "On my way",
+            &nonce,
+            Some(&history[3].id),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(sent.reply.is_some());
+    live_where(&mut live, |event| match event {
+        Live::Created(message) if message.id == sent.id => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // A group DM lists everyone in it, with friends' presence.
+    discord.view(PRIVATE, Some(&weekend));
+    let members = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == weekend => Some(members),
+        _ => None,
+    })
+    .await;
+    let listed: Vec<_> = members
+        .iter()
+        .map(|member| (member.name.as_str(), member.group.as_str(), member.presence))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Alice", "Members — 3", Presence::Online),
+            ("Bob", "Members — 3", Presence::DoNotDisturb),
+            ("Carol", "Members — 3", Presence::Idle)
+        ]
+    );
+
+    // Dave writes for the first time: his new DM comes first, unread.
+    control
+        .post(format!("{server}/_control/dm"))
+        .send()
+        .await
+        .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot.conversations.len() == 5
+            && snapshot.conversations[0].name == "Dave"
+            && snapshot.conversations[0].mentions == 1
+    })
+    .await;
+
+    // A request can be read before answering it. Accepting Erin's makes it
+    // a DM; ignoring the spam removes it.
+    let asked = discord.history(PRIVATE, &erin, None).await.unwrap();
+    assert!(
+        asked[0]
+            .content
+            .starts_with("Hi Alice, Bob gave me your name")
+    );
+    discord.answer_request(&erin, true).await.unwrap();
+    discord.answer_request(&frank, false).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .any(|dm| dm.id == erin && !dm.request && dm.mentions == 1)
+            && !snapshot.conversations.iter().any(|dm| dm.id == frank)
     })
     .await;
 

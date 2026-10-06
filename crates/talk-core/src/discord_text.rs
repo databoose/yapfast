@@ -711,6 +711,7 @@ impl OpenChannel {
                 author,
                 sender: format!("discord:{}", message.author_id),
                 avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
+                color: server.and_then(|server| discord.color(server, &message.author_id)),
                 body,
                 formatted: ordinary,
                 time: format!(
@@ -743,6 +744,7 @@ impl OpenChannel {
         }
         let me_name = name(&me, "You");
         let me_avatar = discord.avatar(Some(&self.guild), &me);
+        let me_color = server.and_then(|server| discord.color(server, &me));
         for pending in &self.pending {
             rows.push(ChatMessage {
                 id: format!("n:{}", pending.nonce),
@@ -750,6 +752,7 @@ impl OpenChannel {
                 author: me_name.clone(),
                 sender: format!("discord:{me}"),
                 avatar: Some(me_avatar.clone()),
+                color: me_color,
                 body: pending.body.clone(),
                 formatted: true,
                 own: true,
@@ -994,6 +997,33 @@ pub fn command(
     if let Command::MarkDiscordRead { room, sync } = &command {
         if let (Some(discord), Some((guild, channel))) = (discord, discord::parse_room(room)) {
             discord.mark_read(guild, channel, *sync);
+        }
+        return None;
+    }
+    if let Command::AnswerRequest { room, accept } = command {
+        match (discord, discord::parse_room(&room)) {
+            (Some(discord), Some((_, channel))) => {
+                let (discord, events, channel) =
+                    (discord.clone(), events.clone(), channel.to_owned());
+                // The DM list changes when Discord confirms it.
+                tokio::spawn(async move {
+                    if let Err(error) = discord.answer_request(&channel, accept).await {
+                        let _ = events.send(Event::RoomError {
+                            room,
+                            message: format!(
+                                "Could not {} the message request: {error}",
+                                if accept { "accept" } else { "ignore" }
+                            ),
+                        });
+                    }
+                });
+            }
+            _ => {
+                let _ = events.send(Event::RoomError {
+                    room,
+                    message: "Discord isn't linked on this device.".into(),
+                });
+            }
         }
         return None;
     }

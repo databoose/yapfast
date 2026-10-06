@@ -596,7 +596,10 @@ impl Matrix {
                 }
             }
             // The chat actor handles voice, and Discord takes its own commands first.
-            Command::Voice(_) | Command::MarkDiscordRead { .. } | Command::Pictures(_) => {}
+            Command::Voice(_)
+            | Command::MarkDiscordRead { .. }
+            | Command::AnswerRequest { .. }
+            | Command::Pictures(_) => {}
         }
         true
     }
@@ -715,7 +718,9 @@ async fn room_index(client: &Client) -> RoomIndex {
             locked: false,
             read_only: false,
             category: String::new(),
+            request: false,
             people: vec![],
+            avatar: None,
         });
     }
     result.sort_by(|a, b| {

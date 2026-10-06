@@ -12,6 +12,11 @@
 // counted; GET /_control/video lists what each stream received. Watching
 // Bob's stream gets testing/fixtures' recording once the viewer asks for video
 // with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
+// Alice has a DM with Bob, whose last two messages she hasn't read, and a
+// group DM, "Weekend plans", with Bob and Carol. POST /_control/dm makes Dave
+// write to her, opening a DM with her the first time. Erin, who shares no
+// server with her, sent a message request, and Frank one Discord marked as
+// spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -38,6 +43,11 @@ const CATEGORY = "1400000000000000101";
 const GENERAL = "1400000000000000102";
 const LOUNGE = "1400000000000000103";
 const MODS = "1400000000000000110";
+const DM_BOB = "1400000000000000120";
+const WEEKEND = "1400000000000000121";
+const DM_DAVE = "1400000000000000122";
+const REQUEST_ERIN = "1400000000000000123";
+const SPAM_FRANK = "1400000000000000124";
 const ALICE = "1400000000000000001";
 
 // Dave has no avatar, so he gets a default one; Carol set another for the server.
@@ -48,7 +58,12 @@ const users: Record<string, User> = {
   carol: { id: "1400000000000000003", username: "carol", global_name: "Carol", avatar: "carol1" },
   dave: { id: "1400000000000000004", username: "dave", global_name: "Dave", avatar: null },
 };
-const userById = new Map(Object.values(users).map((user) => [user.id, user]));
+// People Alice shares no server with, who wrote to her anyway.
+const strangers: Record<string, User> = {
+  erin: { id: "1400000000000000005", username: "erin", global_name: "Erin", avatar: "erin1" },
+  frank: { id: "1400000000000000006", username: "frank_deals", global_name: "Free Nitro", avatar: null },
+};
+const userById = new Map([...Object.values(users), ...Object.values(strangers)].map((user) => [user.id, user]));
 
 const HISTORY_START = Date.UTC(2026, 9, 1, 9, 0, 0);
 const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
@@ -77,7 +92,8 @@ function wireUser(user: User) {
   };
 }
 
-function member(user: User, roles: string[] = []) {
+// Bob is a Mod everywhere his member object goes, so his name takes its colour.
+function member(user: User, roles: string[] = user.id === users.bob.id ? [MODS] : []) {
   return {
     user: wireUser(user),
     user_id: user.id,
@@ -223,7 +239,15 @@ type Message = {
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
   [LOUNGE, []],
+  [DM_BOB, []],
+  [WEEKEND, []],
+  [REQUEST_ERIN, []],
+  [SPAM_FRANK, []],
 ]);
+
+// DMs and group DMs by channel id, with everyone in them besides Alice.
+type Private = { type: 1 | 3; recipients: User[]; name?: string; request?: boolean; spam?: boolean };
+const privates = new Map<string, Private>();
 const byId = new Map<string, Message>();
 let lastId = 0n;
 
@@ -298,17 +322,40 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
       type: 0,
       channel_id: message.channel,
       message_id: message.reply,
-      guild_id: GUILD,
+      ...guildOf(message.channel),
     };
     wire.referenced_message = original ? wireMessage(original, origin, true) : null;
   }
   return wire;
 }
 
+/** The server of a channel as events carry it; DMs have none. */
+function guildOf(channel: string): { guild_id?: string } {
+  return privates.has(channel) ? {} : { guild_id: GUILD };
+}
+
 /** A message as the gateway dispatches it: with the server and the author's member. */
 function dispatched(message: Message, origin: string) {
+  if (privates.has(message.channel)) return wireMessage(message, origin);
   const { user: _, ...profile } = member(message.author);
   return { ...wireMessage(message, origin), guild_id: GUILD, member: profile };
+}
+
+/** A DM or group DM as READY lists it, with user ids, or as an event carries it. */
+function wirePrivate(id: string, channel: Private, users: "ids" | "objects") {
+  return {
+    id,
+    type: channel.type,
+    last_message_id: messages.get(id)!.at(-1)?.id ?? null,
+    flags: 0,
+    ...(channel.type === 3 ? { name: channel.name ?? null, icon: null, owner_id: channel.recipients[0]!.id } : {}),
+    ...(channel.request
+      ? { is_message_request: true, is_message_request_timestamp: iso(timeOf(messages.get(id)![0]!.id)), is_spam: !!channel.spam }
+      : {}),
+    ...(users === "ids"
+      ? { recipient_ids: channel.recipients.map((user) => user.id) }
+      : { recipients: channel.recipients.map(wireUser) }),
+  };
 }
 
 // The Matrix fixture's conversation, then its extra history.
@@ -360,10 +407,28 @@ for (let index = 0; index < extra; index++) {
   post(GENERAL, users.bob, sample(index), HISTORY_START + (4 + index) * 60_000);
 }
 
-// Alice has read all but the last five messages of the fixture.
+privates.set(DM_BOB, { type: 1, recipients: [users.bob] });
+privates.set(WEEKEND, { type: 3, recipients: [users.bob, users.carol], name: "Weekend plans" });
+const DM_START = HISTORY_START + 86_400_000;
+post(WEEKEND, users.carol, "Hike on Saturday?", DM_START);
+post(WEEKEND, users.bob, "I'm in", DM_START + 60_000);
+post(DM_BOB, users.bob, "Did you see the trip notes?", DM_START + 120_000);
+const readBob = post(DM_BOB, users.alice, "Yes, bringing snacks", DM_START + 180_000);
+post(DM_BOB, users.bob, "Great", DM_START + 240_000);
+post(DM_BOB, users.bob, "See you at nine", DM_START + 300_000);
+privates.set(REQUEST_ERIN, { type: 1, recipients: [strangers.erin!], request: true });
+privates.set(SPAM_FRANK, { type: 1, recipients: [strangers.frank!], request: true, spam: true });
+post(SPAM_FRANK, strangers.frank!, "Claim your free Nitro at nitro-gift.example", DM_START + 360_000);
+post(REQUEST_ERIN, strangers.erin!, "Hi Alice, Bob gave me your name. Can I ask about the trip?", DM_START + 420_000);
+
+// Alice has read all but the last five messages of the fixture, and Bob's
+// last two in their DM, which count as mentions as in Discord.
 const general = messages.get(GENERAL)!;
 const readStates = new Map<string, { last: string; mentions: number }>([
   [GENERAL, { last: general[Math.max(0, general.length - 6)]!.id, mentions: 0 }],
+  [DM_BOB, { last: readBob.id, mentions: 2 }],
+  [REQUEST_ERIN, { last: readBob.id, mentions: 1 }],
+  [SPAM_FRANK, { last: readBob.id, mentions: 1 }],
 ]);
 
 // --- Voice ------------------------------------------------------------------
@@ -508,7 +573,7 @@ function ready(ws: Socket) {
       locale: "en-US",
       nsfw_allowed: true,
     },
-    users: Object.values(users).filter((user) => user.id !== ALICE).map(wireUser),
+    users: [...Object.values(users), ...Object.values(strangers)].filter((user) => user.id !== ALICE).map(wireUser),
     guilds: [guild()],
     merged_members: [[alice]],
     read_state: {
@@ -542,7 +607,7 @@ function ready(ws: Socket) {
       partial: false,
       version: 1,
     },
-    private_channels: [],
+    private_channels: [...privates].map(([id, channel]) => wirePrivate(id, channel, "ids")),
     relationships: [],
     connected_accounts: [],
     guild_join_requests: [],
@@ -591,7 +656,10 @@ function readySupplemental() {
         return profile;
       }),
     ],
-    merged_presences: { guilds: [[]], friends: [] },
+    merged_presences: {
+      guilds: [[]],
+      friends: [users.bob, users.carol, users.dave].map((user) => ({ user_id: user.id, ...presences[user.id] })),
+    },
     lazy_private_channels: [],
     disclose: [],
     game_invites: [],
@@ -1409,7 +1477,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       const list = messages.get(message.channel)!;
       list.splice(list.indexOf(message), 1);
       byId.delete(message.id);
-      dispatch("MESSAGE_DELETE", { id: message.id, channel_id: message.channel, guild_id: GUILD });
+      dispatch("MESSAGE_DELETE", { id: message.id, channel_id: message.channel, ...guildOf(message.channel) });
       return empty();
     }
   }
@@ -1430,11 +1498,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       user_id: ALICE,
       channel_id: message.channel,
       message_id: message.id,
-      guild_id: GUILD,
+      ...guildOf(message.channel),
       emoji: { id, name },
       burst: false,
       type: 0,
-      ...(add ? { member: member(users.alice), message_author_id: message.author.id } : {}),
+      ...(add && !privates.has(message.channel) ? { member: member(users.alice) } : {}),
+      ...(add ? { message_author_id: message.author.id } : {}),
     });
     return empty();
   }
@@ -1444,6 +1513,32 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     readStates.set(m[1]!, { last: m[2]!, mentions: 0 });
     dispatch("MESSAGE_ACK", { channel_id: m[1], message_id: m[2], version: 1, mention_count: 0 });
     return json({ token: null });
+  }
+
+  // Accepting a message request makes it a DM; ignoring it closes the DM.
+  if ((m = path.match(/^\/channels\/(\d+)\/recipients\/@me$/))) {
+    const id = m[1]!;
+    const channel = privates.get(id);
+    if (!channel?.request) return notFound("Unknown Channel", 10003);
+    if (method === "PUT") {
+      const body: any = await req.json();
+      if (body.consent_status !== 2) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+      channel.request = false;
+      channel.spam = false;
+      const wire = wirePrivate(id, channel, "objects");
+      dispatch("CHANNEL_UPDATE", wire);
+      return json(wire);
+    }
+    if (method === "DELETE") {
+      privates.delete(id);
+      const wire = { ...wirePrivate(id, channel, "objects"), is_message_request: false };
+      const last = messages.get(id)!.at(-1)!.id;
+      readStates.set(id, { last, mentions: 0 });
+      dispatch("CHANNEL_UPDATE", wire);
+      dispatch("MESSAGE_ACK", { channel_id: id, message_id: last, version: 1, mention_count: 0 });
+      dispatch("CHANNEL_DELETE", wire);
+      return json(wire);
+    }
   }
 
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/typing$/))) {
@@ -1576,6 +1671,17 @@ const server = Bun.serve<SocketData>({
       const message = post(GENERAL, users.bob, "Three from today", now, { files });
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
       return new Response("gallery posted\n");
+    }
+    if (req.method === "POST" && path === "/_control/dm") {
+      if (!privates.has(DM_DAVE)) {
+        const channel: Private = { type: 1, recipients: [users.dave] };
+        privates.set(DM_DAVE, channel);
+        messages.set(DM_DAVE, []);
+        dispatch("CHANNEL_CREATE", wirePrivate(DM_DAVE, channel, "objects"));
+      }
+      const message = post(DM_DAVE, users.dave, `Hi Alice, it's Dave (${messages.get(DM_DAVE)!.length + 1})`, Date.now());
+      dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      return new Response("Dave wrote\n");
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

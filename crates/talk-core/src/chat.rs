@@ -35,10 +35,17 @@ pub struct ChatRoom {
     /// Readable, but this account may not send here, such as a Discord
     /// announcement channel.
     pub read_only: bool,
-    /// The Discord category the channel is listed under; empty for none.
+    /// The Discord category the channel is listed under, or for a message
+    /// request "Message requests" or "Spam"; empty for none.
     pub category: String,
+    /// A Discord message request: readable, but answered by accepting or
+    /// ignoring it before replying.
+    pub request: bool,
     /// Who is in a Discord voice channel, known without joining it.
     pub people: Vec<VoicePerson>,
+    /// The address of a Discord DM's picture: the other person's avatar or
+    /// the group's icon. See [`Command::Pictures`].
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -163,6 +170,9 @@ pub struct ChatMessage {
     pub sender: String,
     /// The address of the author's avatar; see [`Command::Pictures`].
     pub avatar: Option<String>,
+    /// The RGB colour of the author's name, from their highest coloured
+    /// Discord role.
+    pub color: Option<u32>,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,
@@ -261,6 +271,11 @@ pub enum Command {
     MarkDiscordRead {
         room: String,
         sync: bool,
+    },
+    /// Accept a Discord message request, or ignore it.
+    AnswerRequest {
+        room: String,
+        accept: bool,
     },
     /// Download server icons and avatars by address. Each that arrives comes
     /// back as [`Event::Picture`]; one that fails doesn't.
@@ -521,7 +536,9 @@ pub async fn run(
                         voice.command(command);
                     }
                     // Discord commands never reach Matrix.
-                    Command::MarkDiscordRead { .. } | Command::Pictures(_) => {}
+                    Command::MarkDiscordRead { .. }
+                    | Command::AnswerRequest { .. }
+                    | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
                     command => {
                         if !matrix.command(command, &mut voice, &events).await {

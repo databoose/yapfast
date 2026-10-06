@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{
     message::{iso_ms, snowflake_at},
-    ready::{Access, Server},
+    ready::{Access, PRIVATE, Private, Server},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -77,6 +77,9 @@ impl Unreads {
                 unreads.learn_channel(channel);
             }
         }
+        for channel in ready["private_channels"].as_array().into_iter().flatten() {
+            unreads.learn_channel(channel);
+        }
         for read in entries(&ready["read_state"]) {
             // Other read state types track features, not messages.
             if read["read_state_type"].as_u64().unwrap_or(0) != 0 {
@@ -115,10 +118,9 @@ impl Unreads {
         }
     }
 
+    /// A server's settings, or with no server, those of DMs.
     fn learn_settings(&mut self, value: &Value) {
-        let Some(guild) = value["guild_id"].as_str() else {
-            return;
-        };
+        let guild = value["guild_id"].as_str().unwrap_or(PRIVATE);
         let muted_channels = value["channel_overrides"]
             .as_array()
             .into_iter()
@@ -159,8 +161,8 @@ impl Unreads {
                 else {
                     return false;
                 };
-                let guild = data["guild_id"].as_str();
-                let before = self.state(guild.unwrap_or_default(), channel);
+                let guild = data["guild_id"].as_str().unwrap_or(PRIVATE);
+                let before = self.state(guild, channel);
                 self.newer(channel, id);
                 if data["author"]["id"] == me {
                     // Sending reads the channel.
@@ -171,12 +173,11 @@ impl Unreads {
                             mentions: 0,
                         },
                     );
-                } else if let Some(guild) = guild
-                    && self.mentions_me(guild, data, me, roles.get(guild))
-                {
+                } else if guild == PRIVATE || self.mentions_me(guild, data, me, roles.get(guild)) {
+                    // Every message in a DM counts as a mention, as in Discord.
                     self.read(guild, channel).mentions += 1;
                 }
-                before != self.state(guild.unwrap_or_default(), channel)
+                before != self.state(guild, channel)
             }
             "MESSAGE_ACK" => {
                 let (Some(channel), Some(id)) =
@@ -254,12 +255,23 @@ impl Unreads {
 
     /// Whether a channel has unread messages, and how many mention this account.
     fn state(&self, guild: &str, channel: &str) -> (bool, u64) {
+        let last = self.last_messages.get(channel).copied().unwrap_or_default();
         let read = self.reads.get(channel).copied().unwrap_or(Read {
-            last: self.joined.get(guild).copied().unwrap_or_default(),
+            // Discord keeps a read state for each DM with messages to read,
+            // so a DM without one is read.
+            last: if guild == PRIVATE {
+                last
+            } else {
+                self.joined.get(guild).copied().unwrap_or_default()
+            },
             mentions: 0,
         });
-        let last = self.last_messages.get(channel).copied().unwrap_or_default();
         (last > read.last, read.mentions)
+    }
+
+    /// A channel's newest message, or 0 when none is known.
+    pub fn last_message(&self, channel: &str) -> u64 {
+        self.last_messages.get(channel).copied().unwrap_or_default()
     }
 
     /// Marks a channel read up to its newest message. Returns that message's
@@ -290,6 +302,18 @@ impl Unreads {
             channel.unread = readable && unread && !channel.muted;
             channel.mentions = if readable { mentions } else { 0 };
         }
+    }
+
+    /// Sets the unread, mention and muted state of a DM. A muted DM shows
+    /// neither, as in Discord.
+    pub fn mark_private(&self, private: &mut Private) {
+        private.muted = self
+            .settings
+            .get(PRIVATE)
+            .is_some_and(|settings| settings.muted_channels.get(&private.id) == Some(&true));
+        let (unread, mentions) = self.state(PRIVATE, &private.id);
+        private.unread = unread && !private.muted;
+        private.mentions = if private.muted { 0 } else { mentions };
     }
 }
 

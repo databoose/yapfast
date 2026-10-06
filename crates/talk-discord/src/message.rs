@@ -340,6 +340,8 @@ pub struct Names {
     avatars: HashMap<String, String>,
     /// Server avatar hashes by server and user id.
     member_avatars: HashMap<(String, String), String>,
+    /// Members' roles by server and user id, for the colour of their name.
+    roles: HashMap<(String, String), Vec<String>>,
 }
 
 impl Names {
@@ -388,7 +390,22 @@ impl Names {
                 self.member_avatars.remove(&key);
             }
         }
+        // Some member objects leave the roles out.
+        if let Some(roles) = member["roles"].as_array() {
+            let roles = roles
+                .iter()
+                .filter_map(|role| role.as_str().map(str::to_owned))
+                .collect();
+            self.roles.insert(key.clone(), roles);
+        }
         self.members.insert(key);
+    }
+
+    /// A member's roles in a server, as far as they're known.
+    pub fn roles(&self, guild: &str, user: &str) -> &[String] {
+        self.roles
+            .get(&(guild.to_owned(), user.to_owned()))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Learns the author and the mentioned users of a message object.
@@ -649,5 +666,31 @@ mod tests {
             "@Annie @me @Mods in #general :pog: :dance: 2026-10-06 14:05 UTC @Discord user a < b"
         );
         assert!(names.knows_member("10", "2") && !names.knows_member("10", "1"));
+    }
+
+    #[test]
+    fn learns_roles_for_name_colours() {
+        let mut names = Names::default();
+        names.learn_member("10", &json!({"user_id": "2", "roles": ["30", "31"]}));
+        let server = Server {
+            id: "10".into(),
+            role_colors: HashMap::from([
+                ("30".into(), (1, 0x3498db)),
+                ("31".into(), (2, 0xe91e63)),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            server.color(names.roles("10", "2")),
+            Some(0xe91e63),
+            "the highest role's"
+        );
+        names.learn_member("10", &json!({"user_id": "2", "nick": "Annie"}));
+        assert_eq!(
+            names.roles("10", "2"),
+            ["30", "31"],
+            "kept when a member object leaves them out"
+        );
+        assert!(names.roles("11", "2").is_empty());
     }
 }

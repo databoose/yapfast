@@ -24,7 +24,10 @@ client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes, reacts and sends files
 through Discord's cloud uploads. Mentions, custom emoji and timestamps show as
 text, every attachment shows, images with previews scaled by Discord's media
-proxy, and channels the account can't send in are read-only.
+proxy, and channels the account can't send in are read-only. An author's
+name takes their highest coloured role's colour, once their roles are known:
+live messages carry them, and for history Talk asks Discord for the authors'
+member profiles.
 
 Talk keeps the open channel's messages in memory, and those of the 16
 channels open before it, so going back to one shows it at once. A closed
@@ -50,8 +53,28 @@ they're playing below it. Talk shows the list's first 100 rows, headings
 included. The member lists of the last 16 channels shown are kept too: going
 back to one shows its list at once, and Discord's fresh sync replaces it, even
 under another list id, as after the channel's readers changed. A build without Matrix shows the Discord account's name, avatar and
-connection in the bottom-left panel. Forwarding,
-typing, desktop notifications and DMs are still open.
+connection in the bottom-left panel.
+
+DMs and group DMs are listed under the DM button after Matrix DMs, the latest
+conversation first as in Discord, with the other person's avatar or the
+group's icon and a Discord badge. They open, send and keep their messages
+like server channels, under the room id `discord:@me:<channel>`, which takes
+`@me` for the server as Discord's links do. Every unread message in a DM
+counts as a mention, and a muted DM shows neither, as in Discord. A DM
+without a read state counts as read, since Discord keeps one for each DM
+with something to read. A group DM lists its members by name, with the
+presence of those who are friends. Talk downloads the pictures of the first
+50 DMs listed; the rest keep their initials.
+
+Message requests, from people outside the account's DMs, are listed at the
+top of the DM list under "Message requests", and those Discord marks as spam
+at the bottom under "Spam", so a person Discord misjudged can still be found.
+Opening one shows its messages with Accept and Ignore in place of the
+composer: replying waits for accepting, as in Discord. Accepting makes it an
+ordinary DM; ignoring removes it, and the sender isn't told. Requests count
+no mentions, spam isn't marked unread, and Talk never opens a request on its
+own when it picks a conversation. Forwarding, typing, desktop notifications,
+DM calls and starting a new DM are still open.
 
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,
