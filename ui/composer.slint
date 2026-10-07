@@ -1,0 +1,201 @@
+import { Theme, Middle } from "theme.slint";
+import { ActionButton, IconButton, Avatar } from "controls.slint";
+
+/// A file waiting to go with the next message.
+export struct StagedFile { name: string, size: string, has-picture: bool, picture: image }
+
+// A file waiting to go with the next message: its picture or a file icon, its
+// name and size, and a button that takes it out.
+export component StagedTile inherits Rectangle {
+    in property <StagedFile> file;
+    callback remove;
+    width: 120px; height: 140px; border-radius: 8px; background: Theme.raised;
+    accessible-role: groupbox;
+    accessible-label: root.file.name + ", " + root.file.size;
+    VerticalLayout {
+        padding: 6px; spacing: 2px;
+        Rectangle {
+            height: 86px; border-radius: 6px; clip: true; background: Theme.sidebar;
+            if root.file.has-picture: Image { width: parent.width; height: parent.height; source: root.file.picture; image-fit: cover; }
+            if !root.file.has-picture: Image {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: 32px; height: 32px; source: @image-url("icons/file.svg"); colorize: Theme.muted;
+            }
+        }
+        Text { text: root.file.name; color: Theme.text; font-size: 13px; font-weight: 500; overflow: elide; }
+        Text { text: root.file.size; color: Theme.muted; font-size: 12px; overflow: elide; }
+    }
+    Rectangle {
+        x: parent.width - self.width - 4px; y: 4px; width: 28px; height: 28px; border-radius: 14px;
+        background: #000000b3;
+        IconButton {
+            icon: @image-url("icons/x.svg"); label: "Remove " + root.file.name;
+            size: 28px; glyph: 16px; radius: 14px; tint: #ffffff;
+            clicked => { root.remove(); }
+        }
+    }
+}
+
+// The message composer. Text wraps and the field grows to about ten lines, then
+// scrolls to keep the cursor in view. Enter sends; Shift+Enter starts a new line.
+export component Composer inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <string> label;
+    in property <length> text-size: 16px;
+    // Mention suggestions show, so the arrow keys, Tab, Enter and Escape go to them.
+    in property <bool> suggesting;
+    callback edited(string);
+    callback accepted;
+    // The text and the cursor's byte offset in it, after an edit or a move.
+    callback caret(string, int);
+    callback suggestion-moved(int);
+    callback suggestion-chosen;
+    callback suggestion-dismissed;
+    // Up in an empty composer, and Alt+Up anywhere in it.
+    callback up-from-empty;
+    callback up-to-messages;
+    // Ctrl+V: the clipboard may hold files or a picture rather than text, so the
+    // application looks first and, finding text, pastes it with paste-text.
+    callback paste;
+    public function paste-text() { input.paste(); }
+    public function focus-input() { input.focus(); }
+    public function place-caret(offset: int) { input.set-selection-offsets(offset, offset); }
+    property <length> pad: 12px;
+    property <length> line: root.text-size * 1.5;
+    horizontal-stretch: 1;
+    height: max(48px, min(input.preferred-height + 2 * root.pad, 10 * root.line + 2 * root.pad));
+    Text {
+        x: 6px; y: root.pad; width: root.width - 12px; height: root.line;
+        visible: root.text == "";
+        text: root.placeholder; color: root.enabled ? Theme.muted : Theme.faint; font-size: root.text-size;
+        vertical-alignment: center; overflow: elide;
+    }
+    FocusScope {
+        x: 6px; y: root.pad; width: root.width - 12px; height: root.height - 2 * root.pad;
+        capture-key-pressed(event) => {
+            if root.suggesting {
+                if event.text == Key.UpArrow { root.suggestion-moved(-1); return accept; }
+                if event.text == Key.DownArrow { root.suggestion-moved(1); return accept; }
+                if (event.text == Key.Return || event.text == Key.Tab) && !event.modifiers.shift { root.suggestion-chosen(); return accept; }
+                if event.text == Key.Escape { root.suggestion-dismissed(); return accept; }
+            }
+            if event.text == Key.UpArrow && event.modifiers.alt { root.up-to-messages(); return accept; }
+            if event.text == Key.UpArrow && root.text == "" && !event.modifiers.shift && !event.modifiers.control {
+                root.up-from-empty();
+                return accept;
+            }
+            if event.text == Key.Return && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt {
+                root.accepted();
+                return accept;
+            }
+            if (event.text == "v" || event.text == "V") && event.modifiers.control && !event.modifiers.alt && root.enabled {
+                root.paste();
+                return accept;
+            }
+            return reject;
+        }
+        flick := Flickable {
+            content-height: input.height;
+            input := TextInput {
+                width: flick.width;
+                height: max(flick.height, self.preferred-height);
+                text <=> root.text;
+                enabled: root.enabled;
+                single-line: false;
+                wrap: word-wrap;
+                font-size: root.text-size;
+                color: root.enabled ? Theme.text : Theme.muted;
+                selection-background-color: Theme.accent.with-alpha(0.35);
+                selection-foreground-color: Theme.text;
+                accessible-label: root.label;
+                edited => { root.edited(self.text); root.caret(self.text, self.cursor-position-byte-offset); }
+                cursor-position-changed(position) => {
+                    root.caret(self.text, self.cursor-position-byte-offset);
+                    if position.y + flick.content-y < 0px {
+                        flick.content-y = -position.y;
+                    } else if position.y + root.line + flick.content-y > flick.height {
+                        flick.content-y = flick.height - position.y - root.line;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Someone or something the `@` word being typed may mention.
+export struct MentionRow {
+    name: string, initial: string, tint: color, picture: image,
+    // The name's colour, from a coloured Discord role.
+    color: color, has-color: bool,
+    // A role or a group such as @everyone, rather than a person.
+    group: bool,
+    // What a group reaches, such as "Everyone in this channel"; for roles, "Role".
+    detail: string,
+}
+
+// Mention suggestions, just above the composer: Up and Down choose, Tab or Enter
+// or a click mentions, Escape closes them.
+export component MentionList inherits Rectangle {
+    in property <[MentionRow]> mentions;
+    /// The highlighted one.
+    in property <int> mention-index;
+    callback mention-chosen(int);
+    height: suggestions.preferred-height;
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    suggestions := VerticalLayout {
+        padding: 6px; spacing: 0px;
+        Text {
+            text: "MENTION"; color: Theme.muted; font-size: 11px; font-weight: 700;
+            height: 22px; vertical-alignment: center;
+        }
+        for mention[index] in root.mentions: Rectangle {
+            height: 36px; border-radius: 6px;
+            background: index == root.mention-index ? Theme.active : pick.has-hover ? Theme.hover : transparent;
+            pick := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.mention-chosen(index); }
+            }
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 10px; spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    if !mention.group: Avatar { size: 24px; initial: mention.initial; tint: mention.tint; picture: mention.picture; }
+                    if mention.group: Rectangle {
+                        width: 24px; height: 24px; border-radius: 12px;
+                        background: (mention.has-color ? mention.color : Theme.muted).with-alpha(0.2);
+                        Text { text: "@"; color: mention.has-color ? mention.color : Theme.secondary; font-size: 13px; font-weight: 700; }
+                    }
+                }
+                Text {
+                    text: mention.name; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                    color: mention.has-color ? mention.color : Theme.text; font-size: 14px; font-weight: 600;
+                }
+                Text { text: mention.detail; vertical-alignment: center; color: Theme.muted; font-size: 12px; }
+            }
+        }
+    }
+}
+
+// A Discord message request in place of the composer, answered rather than
+// written to.
+export component RequestBar inherits Rectangle {
+    /// What the request is, such as who sent it.
+    in property <string> request-title;
+    callback accept-request;
+    callback ignore-request;
+    background: Theme.field; border-radius: 10px;
+    HorizontalLayout {
+        padding: 12px; padding-left: 16px; spacing: 10px;
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            // One line each: a wrapped line would spill over the hint below.
+            Text { text: root.request-title; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
+            Text { text: "Accept to reply. Ignoring removes it without telling them."; color: Theme.secondary; font-size: 14px; overflow: elide; }
+        }
+        Middle { ActionButton { text: "Ignore"; label: "Ignore the message request"; clicked => { root.ignore-request(); } } }
+        Middle { ActionButton { text: "Accept"; label: "Accept the message request"; primary: true; clicked => { root.accept-request(); } } }
+    }
+}
