@@ -14,7 +14,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
+import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -1243,6 +1243,7 @@ export component TalkWindow inherits Window {
                                                         if message.first: HorizontalLayout {
                                                             spacing: 8px;
                                                             StyledText { text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center; }
+                                                            if message.bot: Middle { BotTag { } }
                                                             StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
                                                             Rectangle { horizontal-stretch: 1; }
                                                         }

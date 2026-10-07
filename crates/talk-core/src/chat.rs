@@ -513,6 +513,8 @@ pub struct ChatMessage {
     /// The RGB colour of the author's name, from their highest coloured
     /// Discord role.
     pub color: Option<u32>,
+    /// The author is a Discord bot or webhook.
+    pub bot: bool,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,

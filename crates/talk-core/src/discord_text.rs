@@ -778,6 +778,7 @@ impl OpenChannel {
                 sender: format!("discord:{}", message.author_id),
                 avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
                 color: server.and_then(|server| discord.color(server, &message.author_id)),
+                bot: message.bot,
                 body,
                 formatted: ordinary,
                 time: crate::clock::time(timestamp),

@@ -101,7 +101,7 @@ const STICKER_BOUNCE = "1400000000000000311";
 const ALICE = "1400000000000000001";
 
 // Dave has no avatar, so he gets a default one; Carol set another for the server.
-type User = { id: string; username: string; global_name: string; avatar: string | null };
+type User = { id: string; username: string; global_name: string; avatar: string | null; bot?: boolean };
 const users: Record<string, User> = {
   alice: { id: ALICE, username: "alice", global_name: "Alice", avatar: "alice1" },
   bob: { id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: "bob1" },
@@ -2249,7 +2249,7 @@ function serveFile(path: string, url: URL): Response {
 // --- Embeds -----------------------------------------------------------------
 
 // A bot that posts cards; it shares no server member list with anyone.
-const statusBot: User = { id: "1400000000000000007", username: "statusbot", global_name: "Status Bot", avatar: null };
+const statusBot: User = { id: "1400000000000000007", username: "statusbot", global_name: "Status Bot", avatar: null, bot: true };
 
 /** An embed picture as Discord's proxy gives it: drawn here at any size. */
 function proxied(origin: string, name: string, width: number, height: number) {
