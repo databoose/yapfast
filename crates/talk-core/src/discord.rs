@@ -69,6 +69,17 @@ fn in_voice(snapshot: &Snapshot, channel: &str) -> Vec<VoicePerson> {
 }
 
 #[cfg(feature = "discord")]
+/// Discord's presence as Talk's chat names it.
+pub fn presence(presence: talk_discord::member_list::Presence) -> chat::Presence {
+    use talk_discord::member_list::Presence as Discord;
+    match presence {
+        Discord::Online => chat::Presence::Online,
+        Discord::Idle => chat::Presence::Idle,
+        Discord::DoNotDisturb => chat::Presence::DoNotDisturb,
+        Discord::Offline => chat::Presence::Offline,
+    }
+}
+
 fn voice_person(member: &talk_discord::service::VoiceMember) -> VoicePerson {
     VoicePerson {
         id: member.user_id.clone(),
@@ -127,6 +138,8 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
             incoming: dm.ringing.iter().any(|person| person.user_id == me),
             avatar: dm.avatar.clone(),
             upload_limit: talk_discord::api::upload_limit(premium, None),
+            presence: dm.presence.map(presence),
+            activity: dm.activity.clone(),
         })
         .collect();
     let mut servers = Vec::new();
@@ -175,6 +188,8 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     ringing: vec![],
                     incoming: false,
                     avatar: None,
+                    presence: None,
+                    activity: None,
                     upload_limit: talk_discord::api::upload_limit(
                         premium,
                         Some(server.premium_tier),
@@ -205,6 +220,8 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     ringing: vec![],
                     incoming: false,
                     avatar: None,
+                    presence: None,
+                    activity: None,
                     upload_limit: talk_discord::api::upload_limit(
                         premium,
                         Some(server.premium_tier),

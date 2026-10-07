@@ -11,7 +11,7 @@ use std::{
 
 use talk_discord::{
     api::PAGE,
-    member_list::{ListedMember, Presence as DiscordPresence},
+    member_list::ListedMember,
     message::{Message, Reply as DiscordReply, Shown},
     service::{Discord, Live, Snapshot, Status},
 };
@@ -28,8 +28,8 @@ use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Embed,
         EmbedField, Event, MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture,
-        Placement, Presence, Profile, ProfileRole, Reaction, Reply, Role, decode_preview,
-        decode_view, plain_snippet,
+        Placement, Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view,
+        plain_snippet,
     },
     discord,
     mention::{Mentioned, Target},
@@ -38,14 +38,18 @@ use crate::{
 /// Discord's message length limit without Nitro, in characters.
 pub const MAX_CHARS: usize = 2000;
 /// Channels kept after closing, and of each, the newest messages and image
-/// previews kept: a preview is about 400 KB decoded.
-const RECENT: usize = 16;
-const KEPT_MESSAGES: usize = 100;
+/// previews kept: a preview is about 400 KB decoded. Previews come back from
+/// the disk quickly, so few are kept.
+const RECENT: usize = 40;
+const KEPT_MESSAGES: usize = 200;
 /// How long someone shows as typing after Discord says they started.
 const TYPING: Duration = Duration::from_secs(10);
 /// How often Discord hears that this account is still typing.
 const TYPING_AGAIN: Duration = Duration::from_secs(8);
-const KEPT_PREVIEWS: usize = 12;
+const KEPT_PREVIEWS: usize = 4;
+/// How often changed channels' newest messages go to disk; see
+/// [`talk_discord::cache`].
+const SAVE_EVERY: Duration = Duration::from_secs(20);
 /// Saving a file holds it in memory first.
 const MAX_SAVE_BYTES: usize = 100 * 1024 * 1024;
 
@@ -119,8 +123,11 @@ pub struct OpenChannel {
     sent: HashSet<String>,
     /// The channel's first message is loaded.
     complete: bool,
-    /// A page of messages arrived, so there's something to show.
+    /// A page of messages arrived, or was kept on disk, so there's something
+    /// to show.
     loaded: bool,
+    /// Its messages changed since they last went to disk.
+    dirty: bool,
     pictures: HashMap<String, Option<Arc<Picture>>>,
     requested: HashSet<String>,
     // Loading goes on after the channel closes, and dropping the set when
@@ -130,9 +137,15 @@ pub struct OpenChannel {
 }
 
 impl OpenChannel {
-    /// Opens a channel and starts loading its latest messages.
+    /// Opens a channel and starts loading its latest messages. What was kept
+    /// on disk shows meanwhile, and the latest page fits in as it does for a
+    /// channel kept in memory.
     pub fn open(discord: &Discord, room: &str, done: &UnboundedSender<Done>) -> Option<Self> {
         let mut open = Self::new(room)?;
+        for message in talk_discord::cache::messages(&open.channel) {
+            open.messages.insert(message.order(), message);
+            open.loaded = true;
+        }
         discord.view(&open.guild, Some(&open.channel));
         open.load(discord, done, None);
         Some(open)
@@ -149,6 +162,7 @@ impl OpenChannel {
             sent: HashSet::new(),
             complete: false,
             loaded: false,
+            dirty: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
             tasks: JoinSet::new(),
@@ -175,6 +189,11 @@ impl OpenChannel {
     }
 
     fn load(&mut self, discord: &Discord, done: &UnboundedSender<Done>, before: Option<String>) {
+        // Offline, as while starting from the saved account, the latest page
+        // loads once Discord is back, rather than failing now.
+        if before.is_none() && discord.snapshots().borrow().status != Status::Online {
+            return;
+        }
         let (discord, done) = (discord.clone(), done.clone());
         let (room, guild, channel) = (self.room.clone(), self.guild.clone(), self.channel.clone());
         self.tasks.spawn(async move {
@@ -194,6 +213,7 @@ impl OpenChannel {
 
     pub fn loaded(&mut self, older: bool, messages: Vec<Message>) {
         self.loaded = true;
+        self.dirty = true;
         if !older {
             self.latest(&messages);
         }
@@ -255,7 +275,23 @@ impl OpenChannel {
         self.requested.retain(|url| shown.contains(url));
     }
 
+    /// Its newest messages to keep on disk, once they've changed.
+    fn take_changes(&mut self) -> Option<(String, Vec<Message>)> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        let skip = self
+            .messages
+            .len()
+            .saturating_sub(talk_discord::cache::CHANNEL_MESSAGES);
+        Some((
+            self.channel.clone(),
+            self.messages.values().skip(skip).cloned().collect(),
+        ))
+    }
+
     fn insert(&mut self, message: Message) {
+        self.dirty = true;
         if let Some(nonce) = &message.nonce {
             self.pending.retain(|pending| &pending.nonce != nonce);
         }
@@ -264,6 +300,12 @@ impl OpenChannel {
 
     /// Applies a gateway event; returns whether this channel changed.
     pub fn live(&mut self, event: &Live) -> bool {
+        let changed = self.apply_live(event);
+        self.dirty |= changed;
+        changed
+    }
+
+    fn apply_live(&mut self, event: &Live) -> bool {
         match event {
             Live::Created(message) if message.channel_id == self.channel => {
                 self.insert(message.clone());
@@ -510,7 +552,10 @@ impl OpenChannel {
     }
 
     pub fn deleted(&mut self, id: &str) {
-        self.messages.remove(&id.parse().unwrap_or_default());
+        self.dirty |= self
+            .messages
+            .remove(&id.parse().unwrap_or_default())
+            .is_some();
     }
 
     /// Adds this account's reaction, or removes it if it is there. The
@@ -846,7 +891,12 @@ pub struct Channels {
     typing: HashMap<String, HashMap<String, (String, Instant)>>,
     /// Where this account last told Discord it's typing, and when.
     typed: Option<(String, Instant)>,
+    /// Counts member searches, so one typed over before it went is dropped.
+    searches: Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// How long a member search waits for more typing before it goes to Discord.
+const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 
 impl Channels {
     /// Forgets who stopped typing in `room`, and says who still is.
@@ -872,8 +922,16 @@ impl Channels {
             channel.shelve();
             self.recent.push(channel);
             if self.recent.len() > RECENT {
-                self.recent.remove(0);
+                let mut gone = self.recent.remove(0);
+                save(gone.take_changes());
             }
+        }
+    }
+
+    /// Puts the newest messages of the channels that changed on disk.
+    fn save(&mut self) {
+        for channel in self.open.iter_mut().chain(&mut self.recent) {
+            save(channel.take_changes());
         }
     }
 
@@ -899,11 +957,20 @@ impl Channels {
     }
 }
 
+/// Writes a channel's messages to disk, off the async threads.
+fn save(saved: Option<(String, Vec<Message>)>) {
+    if let Some((channel, messages)) = saved {
+        tokio::task::spawn_blocking(move || talk_discord::cache::save_messages(&channel, messages));
+    }
+}
+
 /// What woke the Discord side of the chat actor.
 pub(crate) enum Wake {
     Snapshot(Option<Snapshot>),
     Live(Option<Result<Live, RecvError>>),
     Finished(Done),
+    /// Time to put changed channels on disk.
+    Save,
 }
 
 /// The linked Discord account in the chat actor: its connection and the open
@@ -918,6 +985,23 @@ pub(crate) struct Chat {
     done: UnboundedSender<Done>,
     finished: UnboundedReceiver<Done>,
     pictures: discord::Pictures,
+    saving: tokio::time::Interval,
+}
+
+impl Drop for Chat {
+    /// What changed since the last save goes to disk before Talk closes.
+    fn drop(&mut self) {
+        for channel in self
+            .channels
+            .open
+            .iter_mut()
+            .chain(&mut self.channels.recent)
+        {
+            if let Some((id, messages)) = channel.take_changes() {
+                talk_discord::cache::save_messages(&id, messages);
+            }
+        }
+    }
 }
 
 impl Chat {
@@ -936,6 +1020,12 @@ impl Chat {
             done,
             finished,
             pictures: discord::Pictures::new(),
+            saving: {
+                let mut saving =
+                    tokio::time::interval_at(tokio::time::Instant::now() + SAVE_EVERY, SAVE_EVERY);
+                saving.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                saving
+            },
         })
     }
 
@@ -967,6 +1057,7 @@ impl Chat {
             snapshot = changed(&mut self.states) => Wake::Snapshot(snapshot),
             event = next_live(&mut self.live) => Wake::Live(event),
             Some(finished) = self.finished.recv() => Wake::Finished(finished),
+            _ = self.saving.tick() => Wake::Save,
         }
     }
 
@@ -996,6 +1087,7 @@ impl Chat {
                     events,
                 );
             }
+            Wake::Save => self.channels.save(),
             Wake::Snapshot(None) | Wake::Live(None) => {}
         }
     }
@@ -1153,7 +1245,14 @@ pub fn command(
             && guild != talk_discord::ready::PRIVATE
         {
             let (discord, events, guild) = (discord.clone(), events.clone(), guild.to_owned());
+            let searches = channels.searches.clone();
+            let search = searches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             tokio::spawn(async move {
+                // Typing on asks for a longer name, which covers this one.
+                tokio::time::sleep(SEARCH_PAUSE).await;
+                if searches.load(std::sync::atomic::Ordering::Relaxed) != search {
+                    return;
+                }
                 let found = match discord.search_members(&guild, &query).await {
                     Ok(found) => found,
                     Err(error) => {
@@ -1386,7 +1485,13 @@ pub fn command(
         }
         match OpenChannel::open(discord, &room, done) {
             // The member list follows as Live::Members.
-            Some(channel) => channels.open = Some(channel),
+            Some(mut channel) => {
+                // Shown at once as it was kept on disk, while the latest page loads.
+                if channel.loaded {
+                    publish(&mut channel, discord, done, events);
+                }
+                channels.open = Some(channel);
+            }
             None => {
                 let _ = events.send(Event::RoomError {
                     room,
@@ -1907,12 +2012,7 @@ fn chat_member(member: ListedMember) -> ChatMember {
         role: Role::Member,
         avatar: Some(member.avatar),
         group: Some(member.group),
-        presence: Some(match member.presence {
-            DiscordPresence::Online => Presence::Online,
-            DiscordPresence::Idle => Presence::Idle,
-            DiscordPresence::DoNotDisturb => Presence::DoNotDisturb,
-            DiscordPresence::Offline => Presence::Offline,
-        }),
+        presence: Some(discord::presence(member.presence)),
         color: member.color,
         activity: member.activity,
     }
@@ -2074,27 +2174,59 @@ mod tests {
             }],
             ..message(&id.to_string(), None)
         };
-        open.loaded(false, (100..150).map(with_image).collect());
-        open.loaded(true, page(50..100));
-        open.loaded(true, page(0..50));
-        for id in 100..150 {
+        // Fifty more than it keeps, the newest page with pictures.
+        let total = KEPT_MESSAGES as u64 + 50;
+        open.loaded(false, (total - 50..total).map(with_image).collect());
+        for start in (0..(total - 50) / 50).rev().map(|page| page * 50) {
+            open.loaded(true, page(start..start + 50));
+        }
+        for id in total - 50..total {
             let url = format!("preview/{id}");
             open.requested.insert(url.clone());
             open.picture(url, None);
         }
         open.shelve();
-        assert_eq!(ids(&open), (50..150).collect::<Vec<_>>());
+        assert_eq!(ids(&open), (50..total).collect::<Vec<_>>());
         assert!(!open.complete, "the oldest went, so they load again");
         let mut kept: Vec<_> = open.pictures.keys().cloned().collect();
         kept.sort();
         assert_eq!(
             kept,
-            (138..150)
+            (total - KEPT_PREVIEWS as u64..total)
                 .map(|id| format!("preview/{id}"))
                 .collect::<Vec<_>>()
         );
-        open.picture("preview/120".into(), None);
-        assert_eq!(open.pictures.len(), 12, "a preview it gave up arrives late");
+        open.picture(format!("preview/{}", total - 30), None);
+        assert_eq!(
+            open.pictures.len(),
+            KEPT_PREVIEWS,
+            "a preview it gave up arrives late"
+        );
+    }
+
+    #[test]
+    fn channels_go_to_disk_once_they_change() {
+        let mut open = OpenChannel::new("discord:10:11").unwrap();
+        assert!(open.take_changes().is_none(), "nothing to save yet");
+        open.loaded(false, page(1..=3));
+        let (channel, saved) = open.take_changes().unwrap();
+        assert_eq!(channel, "11");
+        assert_eq!(saved.len(), 3);
+        assert!(open.take_changes().is_none(), "saved, and unchanged since");
+        assert!(!open.live(&Live::Deleted {
+            channel: "11".into(),
+            id: "9".into()
+        }));
+        assert!(open.take_changes().is_none(), "a message it didn't have");
+        open.deleted("2");
+        let (_, saved) = open.take_changes().unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "3"]
+        );
     }
 
     #[test]

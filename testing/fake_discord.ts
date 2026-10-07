@@ -38,6 +38,22 @@
 // /users/@me/settings-proto/1 replaces it, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
 // a friend request by username: Frank takes none, and unknown names fail.
+// Linking by QR code goes through a remote login gateway at /remote-auth/, as
+// remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
+// code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
+// says no, and /_control/qr-expire ends the code as the real one does after
+// two minutes. Start Talk with TALK_DISCORD_TEST_UNLINKED=1 to link. POST
+// /auth/logout ends the session, and GET /_control/logouts counts them.
+// A gateway session whose connection drops resumes with op 6, getting the
+// events it missed; a close with 1000 or 1001 ends it instead. POST
+// /_control/gateway-reconnect sends op 7, and GET /_control/sessions counts
+// identifies and resumes. The API sets a device cookie, as Discord's does, and
+// GET /_control/cookies counts how often it was set and sent back.
+// GET /_control/list-requests counts member list subscriptions. POST
+// /_control/slow with a number of milliseconds slows history, attachments
+// and links' pictures, to show loading states.
+// POST /_control/bob-away makes Bob idle with a custom status, and
+// /_control/bob-offline takes him offline.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -652,10 +668,21 @@ type SocketData = {
   ssrc?: number;
   /** A viewer's stream, which starts once it asks for video with op 15. */
   waiting?: { key: Buffer; ssrc: number };
+  /** A remote login: the client's key, the nonce it must prove, and the code. */
+  remoteAuth?: { key?: CryptoKey; nonce?: Uint8Array; fingerprint?: string; scanned?: boolean; timer?: Timer };
 };
 type Socket = ServerWebSocket<SocketData>;
 const sockets = new Set<Socket>();
 let sessions = 0;
+/** Sessions whose connection dropped, with the events they missed, until
+ *  they resume. A close with 1000 or 1001 ends the session instead. */
+const parked = new Map<string, { sequence: number; missed: { name: string; data: unknown }[] }>();
+/** How long history and media take to answer, set by POST /_control/slow. */
+let slowMs = 0;
+/** How often clients asked for a member list, for GET /_control/list-requests. */
+let listRequests = 0;
+/** How often clients identified and resumed, for GET /_control/sessions. */
+const sessionCounts = { identifies: 0, resumes: 0 };
 
 function send(ws: Socket, op: number, d: unknown, t: string | null = null) {
   const s = op === 0 ? ++ws.data.sequence : null;
@@ -664,6 +691,7 @@ function send(ws: Socket, op: number, d: unknown, t: string | null = null) {
 
 function dispatch(name: string, data: unknown) {
   for (const ws of sockets) if (ws.data.identified) send(ws, 0, data, name);
+  for (const session of parked.values()) session.missed.push({ name, data });
 }
 
 function guild() {
@@ -889,6 +917,62 @@ function memberList() {
   };
 }
 
+// --- Remote login ---------------------------------------------------------
+// Linking by QR code: the client sends its RSA public key, proves it can read
+// a nonce encrypted to it, and gets a code to show. Scanning sends who
+// scanned, and confirming a ticket that the API trades for the login, both
+// encrypted to the key.
+
+const REMOTE_AUTH_TIMEOUT_MS = 120_000;
+const remoteLogins = new Set<Socket>();
+// How many times Alice signed out with POST /auth/logout.
+let logouts = 0;
+// Each confirmed login's ticket, with the key to encrypt the login to.
+const tickets = new Map<string, CryptoKey>();
+
+async function seal(key: CryptoKey, data: Uint8Array | string): Promise<string> {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  return Buffer.from(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, key, bytes)).toString("base64");
+}
+
+async function remoteAuthMessage(ws: Socket, text: string) {
+  const login = ws.data.remoteAuth!;
+  const message = JSON.parse(text);
+  switch (message.op) {
+    case "heartbeat":
+      ws.send(JSON.stringify({ op: "heartbeat_ack" }));
+      break;
+    case "init":
+      login.key = await crypto.subtle.importKey(
+        "spki",
+        Buffer.from(String(message.encoded_public_key), "base64"),
+        { name: "RSA-OAEP", hash: "SHA-256" },
+        false,
+        ["encrypt"],
+      );
+      login.nonce = crypto.getRandomValues(new Uint8Array(32));
+      ws.send(JSON.stringify({ op: "nonce_proof", encrypted_nonce: await seal(login.key, login.nonce) }));
+      break;
+    case "nonce_proof": {
+      const expected = Buffer.from(await crypto.subtle.digest("SHA-256", login.nonce!)).toString("base64url");
+      if (message.proof !== expected) {
+        ws.close(4003, "Invalid nonce proof");
+        return;
+      }
+      login.fingerprint = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url");
+      ws.send(JSON.stringify({ op: "pending_remote_init", fingerprint: login.fingerprint }));
+      break;
+    }
+  }
+}
+
+/** Does `step` to every remote login showing a code, and says how many there were. */
+async function eachRemoteLogin(step: (ws: Socket, key: CryptoKey) => Promise<void> | void): Promise<Response> {
+  const showing = [...remoteLogins].filter((ws) => ws.data.remoteAuth?.fingerprint && ws.data.remoteAuth.key);
+  for (const ws of showing) await step(ws, ws.data.remoteAuth!.key!);
+  return new Response(`${showing.length} codes\n`);
+}
+
 function gatewayMessage(ws: Socket, text: string) {
   let payload: { op?: number; d?: any };
   try {
@@ -909,11 +993,30 @@ function gatewayMessage(ws: Socket, text: string) {
         return;
       }
       ws.data.identified = true;
+      sessionCounts.identifies++;
       send(ws, 0, ready(ws), "READY");
       send(ws, 0, readySupplemental(), "READY_SUPPLEMENTAL");
       // Calls going on, as Talk's capabilities ask.
       for (const channel of calls.keys()) send(ws, 0, wireCall(channel), "CALL_CREATE");
       break;
+    case 6: {
+      // Resume: replay what the session missed, then RESUMED.
+      const session = parked.get(d.session_id);
+      if (d.token !== TOKEN || !session || d.seq !== session.sequence) {
+        console.error(`gateway: can't resume ${d.session_id} at ${d.seq}`);
+        send(ws, 9, false);
+        return;
+      }
+      parked.delete(d.session_id);
+      ws.data.session = d.session_id;
+      ws.data.sequence = session.sequence;
+      ws.data.identified = true;
+      sessionCounts.resumes++;
+      console.log(`gateway: resumed ${d.session_id}, replaying ${session.missed.length} events`);
+      for (const event of session.missed) send(ws, 0, event.data, event.name);
+      send(ws, 0, {}, "RESUMED");
+      break;
+    }
     case 3: // Presence
       alicePresence = d;
       console.log(`gateway: presence ${JSON.stringify(d)}`);
@@ -1028,6 +1131,7 @@ function gatewayMessage(ws: Socket, text: string) {
       // list is sent when asked for.
       for (const [guildId, subscription] of Object.entries<any>(d.subscriptions ?? {})) {
         if (guildId === GUILD && Object.keys(subscription.channels ?? {}).length > 0) {
+          listRequests++;
           send(ws, 0, memberList(), "GUILD_MEMBER_LIST_UPDATE");
         }
       }
@@ -1715,6 +1819,14 @@ const uploads = new Map<string, { filename: string; data?: Uint8Array }>();
 let uploadCount = 0;
 
 async function api(req: Request, path: string, origin: string): Promise<Response> {
+  // A confirmed remote login's ticket, traded for the login without one.
+  if (req.method === "POST" && path === "/users/@me/remote-auth/login") {
+    const body: any = await req.json().catch(() => ({}));
+    const key = tickets.get(String(body.ticket));
+    if (!key) return json({ message: "Invalid ticket", code: 50035 }, 400);
+    tickets.delete(String(body.ticket));
+    return json({ encrypted_token: await seal(key, TOKEN) });
+  }
   if (req.headers.get("authorization") !== TOKEN) {
     return json({ message: "401: Unauthorized", code: 0 }, 401);
   }
@@ -1891,6 +2003,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
 
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/typing$/))) {
     return messages.has(m[1]!) ? empty() : notFound("Unknown Channel", 10003);
+  }
+
+  // Signing out ends the session; the fake counts them.
+  if (method === "POST" && path === "/auth/logout") {
+    logouts++;
+    return empty();
   }
 
   // Alice's settings: Talk changes only the custom status, which every
@@ -2197,6 +2315,22 @@ function chatTick(origin: string) {
   dispatch("MESSAGE_CREATE", dispatched(message, origin));
 }
 
+/** API requests that sent back the device cookie, and how often it was set. */
+const cookieCounts = { set: 0, returned: 0 };
+
+/** Sets a device cookie on the first API answer, as Discord does, and counts
+ *  the requests that send it back. */
+function withDeviceCookie(req: Request, response: Response) {
+  if (/(^|;\s*)__dcfduid=fake-device(;|$)/.test(req.headers.get("cookie") ?? "")) {
+    cookieCounts.returned++;
+    return response;
+  }
+  cookieCounts.set++;
+  const headers = new Headers(response.headers);
+  headers.append("set-cookie", "__dcfduid=fake-device; Max-Age=31536000; Path=/; HttpOnly");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 const server = Bun.serve<SocketData>({
   hostname: args.host,
   port: Number(args.port),
@@ -2204,6 +2338,10 @@ const server = Bun.serve<SocketData>({
     const url = new URL(req.url);
     const path = url.pathname;
     const origin = url.origin;
+    // Slowed, so loading states can be seen: history, attachments and links' pictures.
+    if (slowMs > 0 && req.method === "GET" && (/\/channels\/\d+\/messages$/.test(path) || path.startsWith("/attachments/") || path.startsWith("/external/"))) {
+      await Bun.sleep(slowMs);
+    }
     if (path === "/" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       if (url.searchParams.get("compress")) {
         return new Response("compression isn't supported", { status: 400 });
@@ -2214,13 +2352,23 @@ const server = Bun.serve<SocketData>({
       }
       return new Response("upgrade failed", { status: 400 });
     }
+    if (path === "/remote-auth/" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      if (req.headers.get("origin") !== "https://discord.com") return new Response("bad origin", { status: 403 });
+      if (server.upgrade(req, { data: { sequence: 0, identified: false, session: "", origin, remoteAuth: {} } })) {
+        return undefined;
+      }
+      return new Response("upgrade failed", { status: 400 });
+    }
     if (path === "/voice/" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       if (server.upgrade(req, { data: { sequence: 0, identified: false, session: "", origin, voice: true } })) {
         return undefined;
       }
       return new Response("upgrade failed", { status: 400 });
     }
-    if (path.startsWith("/api/v9/")) return api(req, path.slice("/api/v9".length), origin);
+    if (path.startsWith("/api/v9/")) {
+      const response = await api(req, path.slice("/api/v9".length), origin);
+      return withDeviceCookie(req, response);
+    }
     if (req.method === "GET" && path.startsWith("/attachments/")) {
       return serveFile(path.slice("/attachments/".length), url);
     }
@@ -2239,6 +2387,57 @@ const server = Bun.serve<SocketData>({
     }
     if (path === "/_control/health") return new Response("ok\n");
     if (path === "/_control/presence") return Response.json(alicePresence);
+    if (req.method === "POST" && path === "/_control/bob-away") {
+      // Bob goes idle with a custom status, as his friends hear it.
+      presences[users.bob.id] = {
+        status: "idle",
+        activities: [{ type: 4, name: "Custom Status", state: "brb, making tea", emoji: { name: "🍵" } }],
+      };
+      dispatch("PRESENCE_UPDATE", { user: { id: users.bob.id }, client_status: {}, ...presences[users.bob.id] });
+      return new Response("Bob is away\n");
+    }
+    if (req.method === "POST" && path === "/_control/bob-offline") {
+      presences[users.bob.id] = { status: "offline", activities: [] };
+      dispatch("PRESENCE_UPDATE", { user: { id: users.bob.id }, client_status: {}, ...presences[users.bob.id] });
+      return new Response("Bob is offline\n");
+    }
+    if (path === "/_control/logouts") return Response.json(logouts);
+    if (path === "/_control/sessions") return Response.json(sessionCounts);
+    if (path === "/_control/cookies") return Response.json(cookieCounts);
+    if (path === "/_control/list-requests") return Response.json(listRequests);
+    if (req.method === "POST" && path === "/_control/slow") {
+      slowMs = Number(await req.text()) || 0;
+      return new Response(`history and media take ${slowMs} ms\n`);
+    }
+    if (req.method === "POST" && path === "/_control/gateway-reconnect") {
+      // Discord's op 7: the client should drop the connection and resume.
+      for (const ws of sockets) if (ws.data.identified) send(ws, 7, null);
+      return new Response("asked gateways to reconnect\n");
+    }
+    if (req.method === "POST" && path === "/_control/qr-scan") {
+      return eachRemoteLogin(async (ws, key) => {
+        ws.data.remoteAuth!.scanned = true;
+        const payload = `${ALICE}:0:${users.alice.avatar}:${users.alice.username}`;
+        ws.send(JSON.stringify({ op: "pending_ticket", encrypted_user_payload: await seal(key, payload) }));
+      });
+    }
+    if (req.method === "POST" && path === "/_control/qr-confirm") {
+      return eachRemoteLogin((ws, key) => {
+        if (!ws.data.remoteAuth!.scanned) return;
+        const ticket = `fake-ticket-${crypto.randomUUID()}`;
+        tickets.set(ticket, key);
+        ws.send(JSON.stringify({ op: "pending_login", ticket }));
+      });
+    }
+    if (req.method === "POST" && path === "/_control/qr-cancel") {
+      return eachRemoteLogin((ws) => {
+        ws.send(JSON.stringify({ op: "cancel" }));
+        ws.close(1000);
+      });
+    }
+    if (req.method === "POST" && path === "/_control/qr-expire") {
+      return eachRemoteLogin((ws) => ws.close(1000));
+    }
     if (path === "/_control/video") {
       return json({
         received: [...received.values()].map(({ key: _, ...stream }) => stream),
@@ -2349,6 +2548,12 @@ const server = Bun.serve<SocketData>({
   },
   websocket: {
     open(ws) {
+      if (ws.data.remoteAuth) {
+        remoteLogins.add(ws);
+        ws.data.remoteAuth.timer = setTimeout(() => ws.close(1000), REMOTE_AUTH_TIMEOUT_MS);
+        ws.send(JSON.stringify({ op: "hello", heartbeat_interval: HEARTBEAT_INTERVAL, timeout_ms: REMOTE_AUTH_TIMEOUT_MS }));
+        return;
+      }
       if (ws.data.voice) {
         ws.send(JSON.stringify({ op: 8, d: { heartbeat_interval: 13_750 } }));
         return;
@@ -2364,15 +2569,31 @@ const server = Bun.serve<SocketData>({
       );
     },
     message(ws, message) {
+      if (ws.data.remoteAuth) {
+        const text = typeof message === "string" ? message : new TextDecoder().decode(message);
+        remoteAuthMessage(ws, text).catch((error) => {
+          console.error(`remote login: ${error}`);
+          ws.close(4000, "bad message");
+        });
+        return;
+      }
       if (ws.data.voice) {
         if (typeof message === "string") voiceMessage(ws, message);
         return;
       }
       gatewayMessage(ws, typeof message === "string" ? message : new TextDecoder().decode(message));
     },
-    close(ws) {
+    close(ws, code) {
+      if (ws.data.remoteAuth) {
+        clearTimeout(ws.data.remoteAuth.timer);
+        remoteLogins.delete(ws);
+        return;
+      }
       if (ws.data.voice && ws.data.ssrc) clearInterval(watchers.get(ws.data.ssrc)?.timer);
       sockets.delete(ws);
+      if (!ws.data.voice && !ws.data.stream && ws.data.identified && code !== 1000 && code !== 1001) {
+        parked.set(ws.data.session, { sequence: ws.data.sequence, missed: [] });
+      }
     },
   },
 });

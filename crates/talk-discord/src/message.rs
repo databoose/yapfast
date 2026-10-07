@@ -35,7 +35,7 @@ const STICKER_SIZE: u32 = 160;
 /// The attachment flag that marks a spoiler.
 const IS_SPOILER: u64 = 1 << 3;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -59,7 +59,7 @@ pub struct Message {
     pub editable: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Reply {
     Message {
         /// The original message's id.
@@ -71,7 +71,7 @@ pub enum Reply {
     Deleted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub size: Option<u64>,
@@ -89,7 +89,7 @@ pub struct Attachment {
 }
 
 /// Where a message's picture shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Shown {
     /// With the message's attached files and images.
     #[default]
@@ -104,7 +104,7 @@ pub enum Shown {
     Sticker,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Reaction {
     /// What Talk shows: the emoji itself, or `:name:` for a custom one.
     pub key: String,
@@ -482,6 +482,18 @@ fn author_name(message: &Value) -> &str {
         .unwrap_or("Discord user")
 }
 
+/// [`Names`] as saved to disk, where maps keyed by server and user become
+/// lists.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct SavedNames {
+    users: Vec<(String, String)>,
+    nicknames: Vec<(String, String, String)>,
+    members: Vec<(String, String)>,
+    avatars: Vec<(String, String)>,
+    member_avatars: Vec<(String, String, String)>,
+    roles: Vec<(String, String, Vec<String>)>,
+}
+
 /// Who is who, learned from the gateway and from messages.
 #[derive(Default)]
 pub struct Names {
@@ -500,6 +512,51 @@ pub struct Names {
 }
 
 impl Names {
+    pub fn save(&self) -> SavedNames {
+        let pair = |map: &HashMap<String, String>| {
+            map.iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        };
+        let triple = |map: &HashMap<(String, String), String>| {
+            map.iter()
+                .map(|((guild, user), value)| (guild.clone(), user.clone(), value.clone()))
+                .collect()
+        };
+        SavedNames {
+            users: pair(&self.users),
+            nicknames: triple(&self.nicknames),
+            members: self.members.iter().cloned().collect(),
+            avatars: pair(&self.avatars),
+            member_avatars: triple(&self.member_avatars),
+            roles: self
+                .roles
+                .iter()
+                .map(|((guild, user), roles)| (guild.clone(), user.clone(), roles.clone()))
+                .collect(),
+        }
+    }
+
+    pub fn restore(saved: SavedNames) -> Self {
+        let keyed = |list: Vec<(String, String, String)>| {
+            list.into_iter()
+                .map(|(guild, user, value)| ((guild, user), value))
+                .collect()
+        };
+        Self {
+            users: saved.users.into_iter().collect(),
+            nicknames: keyed(saved.nicknames),
+            members: saved.members.into_iter().collect(),
+            avatars: saved.avatars.into_iter().collect(),
+            member_avatars: keyed(saved.member_avatars),
+            roles: saved
+                .roles
+                .into_iter()
+                .map(|(guild, user, roles)| ((guild, user), roles))
+                .collect(),
+        }
+    }
+
     pub fn learn_user(&mut self, user: &Value) {
         let Some(id) = user["id"].as_str() else {
             return;

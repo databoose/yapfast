@@ -484,6 +484,9 @@ impl Layout {
 struct Models {
     servers: Rc<VecModel<ServerRow>>,
     rooms: Rc<VecModel<RoomRow>>,
+    /// Discord's message requests and spam, on the requests screen.
+    message_requests: Rc<VecModel<RoomRow>>,
+    spam_rooms: Rc<VecModel<RoomRow>>,
     messages: Rc<VecModel<MessageRow>>,
     roster: Rc<VecModel<MemberRow>>,
     mentions: Rc<VecModel<MentionRow>>,
@@ -503,6 +506,8 @@ impl Models {
     fn attach(&self, window: &TalkWindow) {
         window.set_servers(ModelRc::from(self.servers.clone()));
         window.set_rooms(ModelRc::from(self.rooms.clone()));
+        window.set_message_requests(ModelRc::from(self.message_requests.clone()));
+        window.set_spam_rooms(ModelRc::from(self.spam_rooms.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_mentions(ModelRc::from(self.mentions.clone()));
@@ -579,6 +584,15 @@ struct Adapter {
     /// Ringing for a DM call that rings this account.
     #[cfg(feature = "discord")]
     ringer: Option<talk_core::ring::Ringer>,
+    /// Linking a Discord account by QR code; dropping it stops the linking.
+    #[cfg(feature = "discord")]
+    linking: Option<talk_core::runtime::BackgroundTask<()>>,
+    /// Counts linking runs, so a replaced run's last words are ignored.
+    #[cfg(feature = "discord")]
+    link_run: u64,
+    /// The code shown for linking, by the address it carries.
+    #[cfg(feature = "discord")]
+    link_code: Option<(String, slint::Image)>,
 }
 
 impl Adapter {
@@ -637,6 +651,12 @@ impl Adapter {
                 pasted: None,
                 #[cfg(feature = "discord")]
                 ringer: None,
+                #[cfg(feature = "discord")]
+                linking: None,
+                #[cfg(feature = "discord")]
+                link_run: 0,
+                #[cfg(feature = "discord")]
+                link_code: None,
             })
         }))
     }
@@ -781,6 +801,17 @@ impl Adapter {
                         tracing::error!(%error, "could not list audio devices for the preview");
                     }
                 }
+                Effect::LinkDiscord => {
+                    #[cfg(feature = "discord")]
+                    self.link_discord();
+                }
+                Effect::StopDiscordLink => {
+                    #[cfg(feature = "discord")]
+                    {
+                        self.linking = None;
+                        self.link_run += 1;
+                    }
+                }
                 Effect::Notify(alert) => {
                     // Only while Talk isn't in front: there the lists show what's new.
                     if self.layout.notifications.unwrap_or(true) && !FOCUSED.get() {
@@ -803,6 +834,38 @@ impl Adapter {
                     }
                 }
             }
+        }
+    }
+
+    /// Starts linking a Discord account, replacing any linking under way. The
+    /// work runs on Tokio; its progress reaches the app on Slint's executor.
+    #[cfg(feature = "discord")]
+    fn link_discord(&mut self) {
+        self.link_run += 1;
+        let run = self.link_run;
+        let (task, mut progress) = talk_core::discord_link::start(&self.runtime);
+        self.linking = Some(task);
+        let weak = self.weak.clone();
+        let task = slint::spawn_local(async move {
+            while let Some(step) = progress.recv().await {
+                let Some(adapter) = weak.upgrade() else {
+                    return;
+                };
+                let window = adapter.borrow().window.upgrade();
+                let mut adapter = adapter.borrow_mut();
+                if adapter.link_run != run {
+                    return;
+                }
+                let effects = adapter.app.linking(step);
+                adapter.execute(effects);
+                if let Some(window) = window {
+                    adapter.refresh(&window);
+                }
+            }
+        });
+        if let Err(error) = task {
+            tracing::error!(%error, "could not follow linking Discord");
+            self.linking = None;
         }
     }
 
@@ -1001,7 +1064,55 @@ impl Adapter {
                 .iter()
                 .any(|room| room.direct && room.unread > 0),
         );
-        window.set_discord_linked(state.servers.iter().any(|server| server.discord));
+        window.set_discord_linked(
+            state.discord_linked || state.servers.iter().any(|server| server.discord),
+        );
+        window.set_discord_build(cfg!(feature = "discord"));
+        window.set_matrix_build(cfg!(feature = "matrix"));
+        // Without Matrix, the account's dot is its Discord status.
+        window.set_account_presence(
+            if cfg!(feature = "matrix") || state.preview {
+                ""
+            } else if !state.discord_online {
+                "offline"
+            } else {
+                match state.discord_presence.as_deref() {
+                    Some("idle") => "idle",
+                    Some("dnd") => "dnd",
+                    Some("invisible") => "offline",
+                    _ => "online",
+                }
+            }
+            .into(),
+        );
+        #[cfg(feature = "discord")]
+        {
+            use talk_core::application::DiscordLink;
+            let (phase, name, note) = match &state.discord_link {
+                None => (0, "", ""),
+                Some(DiscordLink::Starting) => (1, "", ""),
+                Some(DiscordLink::Code(_)) => (2, "", ""),
+                Some(DiscordLink::Scanned(name)) => (3, name.as_str(), ""),
+                Some(DiscordLink::Failed(error)) => (4, "", error.as_str()),
+            };
+            window.set_link_phase(phase);
+            window.set_link_name(name.into());
+            window.set_link_note(note.into());
+            if let Some(DiscordLink::Code(address)) = &state.discord_link
+                && self
+                    .link_code
+                    .as_ref()
+                    .is_none_or(|(shown, _)| shown != address)
+            {
+                self.link_code = qr_code(address).map(|image| (address.clone(), image));
+                window.set_link_code(
+                    self.link_code
+                        .as_ref()
+                        .map(|(_, image)| image.clone())
+                        .unwrap_or_default(),
+                );
+            }
+        }
         window.set_show_hidden_channels(state.show_hidden_channels);
         window.set_sync_discord_reads(state.sync_discord_reads);
         window.set_sidebar_title(match &state.navigation {
@@ -1049,21 +1160,10 @@ impl Adapter {
             .filter(|room| state.in_scope(room) && room.name.to_lowercase().contains(&query))
             .collect();
         let direct = state.navigation == Navigation::DirectMessages;
-        if direct {
-            // Message requests come first, as in Discord, and spam last.
-            listed.sort_by_key(|room| match room.category.as_str() {
-                discord::REQUESTS => 0,
-                discord::SPAM => 2,
-                _ => 1,
-            });
-        }
-        let counted = |name: &str| listed.iter().filter(|room| room.category == name).count();
-        // Friend requests head the DM list, matched by name like the DMs.
+        // Friend requests, message requests and spam have their own screen.
         let requests: Vec<_> = state
             .friend_requests
             .iter()
-            .filter(|_| direct)
-            .filter(|request| request.name.to_lowercase().contains(&query))
             .map(|request| FriendRequestRow {
                 id: request.id.as_str().into(),
                 name: request.name.as_str().into(),
@@ -1079,25 +1179,74 @@ impl Adapter {
                 .into(),
             })
             .collect();
-        let friend_requests = !requests.is_empty();
+        let incoming = state
+            .friend_requests
+            .iter()
+            .filter(|request| request.incoming && !request.spam)
+            .count();
         window.set_friend_requests(ModelRc::new(VecModel::from(requests)));
-        let (requests, spam) = (counted(discord::REQUESTS), counted(discord::SPAM));
+        let waiting = |name: &str| {
+            state
+                .rooms
+                .iter()
+                .filter(|room| state.in_scope(room) && room.category == name)
+                .collect::<Vec<_>>()
+        };
+        let (message_requests, spam) = (waiting(discord::REQUESTS), waiting(discord::SPAM));
+        let unanswered = incoming + message_requests.len();
+        window.set_requests_badge(if unanswered > 0 {
+            unanswered.to_string().into()
+        } else {
+            SharedString::default()
+        });
+        window.set_requests_open(state.requests_open);
+        window.set_requests_current(
+            direct
+                && (state.requests_open
+                    || state.selected.as_ref().is_some_and(|selected| {
+                        message_requests
+                            .iter()
+                            .chain(&spam)
+                            .any(|room| &room.id == selected)
+                    })),
+        );
+        let dm_icon = self.icons.dm.clone();
+        let request_row = |room: &talk_core::chat::ChatRoom,
+                           pictures: &mut HashMap<String, slint::Image>| {
+            RoomRow {
+                id: room.id.clone().into(),
+                name: room.name.clone().into(),
+                icon: dm_icon.clone(),
+                direct: true,
+                initial: initial(&room.name),
+                tint: tint(&room.id),
+                picture: cached_picture(pictures, state, room.avatar.as_deref()),
+                discord: true,
+                person: room.person.is_some(),
+                unread: room.unread > 0,
+                ..Default::default()
+            }
+        };
+        let rows: Vec<_> = message_requests
+            .iter()
+            .map(|room| request_row(room, &mut self.pictures))
+            .collect();
+        update_model(&self.models.message_requests, rows);
+        let rows: Vec<_> = spam
+            .iter()
+            .map(|room| request_row(room, &mut self.pictures))
+            .collect();
+        update_model(&self.models.spam_rooms, rows);
+        if direct {
+            listed.retain(|room| {
+                room.category != discord::REQUESTS && room.category != discord::SPAM
+            });
+        }
         let rows: Vec<_> = listed
             .into_iter()
             .map(|room| {
                 let heading = if direct {
-                    // Headings only once requests are listed.
-                    match (category.replace(&room.category), room.category.as_str()) {
-                        (previous, discord::REQUESTS) if previous != Some(discord::REQUESTS) => {
-                            format!("MESSAGE REQUESTS — {requests}")
-                        }
-                        (previous, discord::SPAM) if previous != Some(discord::SPAM) => {
-                            format!("SPAM — {spam}")
-                        }
-                        (Some(discord::REQUESTS), "") => "DIRECT MESSAGES".into(),
-                        (None, "") if friend_requests => "DIRECT MESSAGES".into(),
-                        _ => String::new(),
-                    }
+                    String::new()
                 } else if discord::is_discord(&room.id) {
                     // Discord channels sit under their categories, as in Discord.
                     if category.replace(&room.category) != Some(&room.category) {
@@ -1164,6 +1313,15 @@ impl Adapter {
                         ModelRc::new(VecModel::from(people))
                     },
                     call: room.direct && !room.people.is_empty(),
+                    // Discord sends only friends' presence; anyone else in a
+                    // one-to-one DM shows offline, as in Discord's DM list.
+                    presence: if room.person.is_some() && discord::is_discord(&room.id) {
+                        presence_name(room.presence.or(Some(Presence::Offline)))
+                    } else {
+                        presence_name(room.presence)
+                    }
+                    .into(),
+                    detail: dm_detail(room).into(),
                 }
             })
             .collect();
@@ -1559,17 +1717,26 @@ impl Adapter {
         }
         update_model(&self.models.mentions, mentions);
         window.set_loading_history(state.loading_history);
+        // Without Matrix everything is Discord, so the encryption and key hints
+        // say nothing new; what stops sending still shows.
+        let discord_only = !cfg!(feature = "matrix");
         window.set_composer_hint(
             if room.is_none() {
                 "Choose a DM or server channel to write a message."
             } else if state.preview {
                 "Enter to send locally, Shift+Enter for a new line."
             } else if room.is_some_and(|room| room.request) {
-                "Discord · not end-to-end encrypted."
+                if discord_only {
+                    ""
+                } else {
+                    "Discord · not end-to-end encrypted."
+                }
             } else if discord_room && room.is_some_and(|room| room.read_only || room.locked) {
                 "You can't send messages in this Discord channel."
             } else if discord_room && !state.discord_online {
                 "Discord is disconnected. Talk is reconnecting."
+            } else if discord_only {
+                ""
             } else if discord_room {
                 "Discord · not end-to-end encrypted. Enter to send, Shift+Enter for a new line."
             } else if !state.trusted {
@@ -2174,6 +2341,10 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind_item!(on_forward_to, Action::Forward);
     bind!(on_open_new_dm, Action::OpenNewDm);
     bind!(on_open_add_friend, Action::OpenAddFriend);
+    bind!(on_open_requests, Action::OpenRequests);
+    bind!(on_link_discord, Action::LinkDiscord);
+    bind!(on_cancel_discord_link, Action::CancelDiscordLink);
+    bind!(on_unlink_discord, Action::UnlinkDiscord);
     bind!(on_close_add_friend, Action::CloseAddFriend);
     bind_item!(on_add_friend, Action::AddFriend);
     bind!(on_open_status, Action::OpenStatusEditor);
@@ -2889,6 +3060,28 @@ fn tint(key: &str) -> slint::Color {
 }
 
 /// The readable part of a Matrix ID: `@alice:example.org` becomes `alice`.
+/// A QR code carrying `address`, black on white with the quiet zone around it,
+/// one pixel to a module; Slint scales it up without smoothing.
+#[cfg(feature = "discord")]
+fn qr_code(address: &str) -> Option<slint::Image> {
+    /// The blank margin scanners need, in modules.
+    const QUIET: usize = 4;
+    let code = qrcode::QrCode::new(address.as_bytes()).ok()?;
+    let width = code.width();
+    let modules = code.to_colors();
+    let side = width + 2 * QUIET;
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(side as u32, side as u32);
+    for (index, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
+        let (x, y) = (index % side, index / side);
+        let dark = (QUIET..QUIET + width).contains(&x)
+            && (QUIET..QUIET + width).contains(&y)
+            && modules[(y - QUIET) * width + (x - QUIET)] == qrcode::Color::Dark;
+        let value = if dark { 0 } else { 255 };
+        *pixel = slint::Rgba8Pixel::new(value, value, value, 255);
+    }
+    Some(slint::Image::from_rgba8(buffer))
+}
+
 /// The custom status as the account panel shows it: its emoji, then its words.
 fn status_line(status: &talk_core::chat::CustomStatus) -> String {
     let emoji = match (&status.emoji, &status.emoji_id) {
@@ -3118,43 +3311,89 @@ fn blurred(picture: &Picture) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// An attachment's place in a message, the attachment, and its preview once
+/// it has arrived.
+type Preview<'a> = (
+    usize,
+    &'a talk_core::chat::Attachment,
+    Option<&'a Arc<Picture>>,
+);
+
+/// The size Discord shows stickers at, as their pictures are made.
+const STICKER_SIZE: i32 = 160;
+
+/// A picture whose preview is on its way, shown as a skeleton meanwhile.
+fn loading(attachment: &talk_core::chat::Attachment) -> bool {
+    attachment.image && attachment.preview.is_none() && !attachment.preview_failed
+}
+
+/// The size a preview will show at, from the picture's own size when known,
+/// so its skeleton takes the same room.
+fn coming_size(attachment: &talk_core::chat::Attachment) -> (i32, i32) {
+    use talk_core::chat::{PREVIEW_HEIGHT, PREVIEW_WIDTH};
+    let Some((width, height)) = attachment.dimensions else {
+        return (PREVIEW_WIDTH as i32, 200);
+    };
+    let scale = f64::min(
+        1.0,
+        f64::min(
+            f64::from(PREVIEW_WIDTH) / f64::from(width.max(1)),
+            f64::from(PREVIEW_HEIGHT) / f64::from(height.max(1)),
+        ),
+    );
+    let side = |side: u32| ((f64::from(side) * scale).round() as i32).max(1);
+    (side(width), side(height))
+}
+
 /// A message's previews laid out: one at its own size, several as square
 /// tiles two to a row, together as wide as one preview.
 fn gallery(
-    previews: &[(usize, &talk_core::chat::Attachment, &Arc<Picture>)],
+    previews: &[Preview<'_>],
     covered: &dyn Fn(usize) -> bool,
 ) -> (Vec<ImageCell>, i32, i32) {
     const TILE: i32 = 178;
     const GAP: i32 = 4;
-    let cell = |index: usize, attachment: &talk_core::chat::Attachment, preview: &Arc<Picture>| {
-        let spoiler = attachment.spoiler && covered(index);
-        if spoiler {
-            return ImageCell {
+    let cell =
+        |index: usize, attachment: &talk_core::chat::Attachment, preview: Option<&Arc<Picture>>| {
+            let Some(preview) = preview else {
+                return ImageCell {
+                    index: index as i32,
+                    name: attachment.name.clone().into(),
+                    loading: true,
+                    ..Default::default()
+                };
+            };
+            let spoiler = attachment.spoiler && covered(index);
+            if spoiler {
+                return ImageCell {
+                    index: index as i32,
+                    name: attachment.name.clone().into(),
+                    image: blurred(preview),
+                    spoiler,
+                    ..Default::default()
+                };
+            }
+            let (frames, delays) = animation(preview);
+            ImageCell {
                 index: index as i32,
                 name: attachment.name.clone().into(),
-                image: blurred(preview),
-                spoiler,
+                image: picture(preview),
+                frames,
+                delays,
                 ..Default::default()
-            };
-        }
-        let (frames, delays) = animation(preview);
-        ImageCell {
-            index: index as i32,
-            name: attachment.name.clone().into(),
-            image: picture(preview),
-            frames,
-            delays,
-            ..Default::default()
-        }
-    };
+            }
+        };
     match previews {
         [] => (vec![], 0, 0),
         [(index, attachment, preview)] => {
-            let (width, height) = (preview.width as i32, preview.height as i32);
+            let (width, height) = match preview {
+                Some(preview) => (preview.width as i32, preview.height as i32),
+                None => coming_size(attachment),
+            };
             let image = ImageCell {
                 width,
                 height,
-                ..cell(*index, attachment, preview)
+                ..cell(*index, attachment, *preview)
             };
             (vec![image], width, height)
         }
@@ -3167,13 +3406,28 @@ fn gallery(
                     y: (place / 2) as i32 * (TILE + GAP),
                     width: TILE,
                     height: TILE,
-                    ..cell(*index, attachment, preview)
+                    ..cell(*index, attachment, *preview)
                 })
                 .collect();
             let rows = previews.len().div_ceil(2) as i32;
             (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
         }
     }
+}
+
+/// The line under a Discord DM in the list: the person's custom status or
+/// what they're doing on one line, or a group's size.
+fn dm_detail(room: &talk_core::chat::ChatRoom) -> String {
+    if !room.direct || !discord::is_discord(&room.id) {
+        return String::new();
+    }
+    if room.person.is_none() {
+        return format!("{} members", room.members);
+    }
+    room.activity
+        .as_deref()
+        .map(|activity| activity.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
 }
 
 /// How the UI names a presence; empty when there's none.
@@ -3353,23 +3607,32 @@ fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> MessageRow 
     };
     // An image with a preview shows in the gallery; any other attachment shows
     // a file card. Embeds' pictures show in their cards.
-    let previews =
-        |placement: Placement| -> Vec<(usize, &talk_core::chat::Attachment, &Arc<Picture>)> {
-            message
-                .attachments
-                .iter()
-                .enumerate()
-                .filter(|(_, attachment)| attachment.placement == placement)
-                .filter_map(|(index, attachment)| {
-                    Some((index, attachment, attachment.preview.as_ref()?))
-                })
-                .collect()
-        };
+    // Pictures, and those on their way, which show as skeletons.
+    let previews = |placement: Placement| -> Vec<Preview<'_>> {
+        message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.placement == placement)
+            .filter(|(_, attachment)| attachment.preview.is_some() || loading(attachment))
+            .map(|(index, attachment)| (index, attachment, attachment.preview.as_ref()))
+            .collect()
+    };
     let covered = |index: usize| !revealed.contains(&format!("{}/a{index}", message.item));
     let (images, gallery_width, gallery_height) = gallery(&previews(Placement::Message), &covered);
     let stickers: Vec<ImageCell> = previews(Placement::Sticker)
         .into_iter()
         .map(|(index, attachment, preview)| {
+            let Some(preview) = preview else {
+                return ImageCell {
+                    index: index as i32,
+                    name: attachment.name.clone().into(),
+                    width: STICKER_SIZE,
+                    height: STICKER_SIZE,
+                    loading: true,
+                    ..Default::default()
+                };
+            };
             let (frames, delays) = animation(preview);
             ImageCell {
                 index: index as i32,
@@ -3407,8 +3670,9 @@ fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> MessageRow 
                 footer: slint::StyledText::from_plain_text(&embed.footer),
                 has_footer: !embed.footer.is_empty(),
                 thumbnail: thumbnail
-                    .map(|(_, _, preview)| picture(preview))
+                    .and_then(|(_, _, preview)| preview.map(|preview| picture(preview)))
                     .unwrap_or_default(),
+                thumbnail_loading: thumbnail.is_some_and(|(_, _, preview)| preview.is_none()),
                 thumbnail_index: thumbnail.map_or(-1, |(index, _, _)| index as i32),
                 has_thumbnail: thumbnail.is_some(),
                 images: ModelRc::new(VecModel::from(images)),
@@ -3423,7 +3687,9 @@ fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> MessageRow 
         .iter()
         .enumerate()
         .filter(|(_, attachment)| {
-            attachment.preview.is_none() && attachment.placement == Placement::Message
+            attachment.preview.is_none()
+                && !loading(attachment)
+                && attachment.placement == Placement::Message
         })
         .map(|(index, attachment)| {
             let size = attachment.size.map(file_size);
@@ -3941,6 +4207,36 @@ mod tests {
                 "Sam 19:20\nThinking co-op after nine.\nRiley 19:21\nYep. I should be free after dinner."
             )
         );
+    }
+
+    #[test]
+    fn pictures_on_their_way_hold_their_place_as_skeletons() {
+        let attachment = |name: &str, preview_failed| talk_core::chat::Attachment {
+            name: name.into(),
+            size: Some(1000),
+            image: true,
+            dimensions: Some((1600, 900)),
+            preview: None,
+            preview_failed,
+            placement: Placement::Message,
+            spoiler: false,
+        };
+        let row = message_row_plain(&ChatMessage {
+            attachments: vec![attachment("wide.png", false)],
+            ..Default::default()
+        });
+        let cell = row.images.row_data(0).unwrap();
+        assert!(cell.loading);
+        // As the 360 by 270 preview will be: 1600 by 900 scaled to fit.
+        assert_eq!((row.gallery_width, row.gallery_height), (360, 203));
+        assert_eq!(row.files.row_count(), 0, "not a file card meanwhile");
+        // One whose preview failed is a file card instead.
+        let row = message_row_plain(&ChatMessage {
+            attachments: vec![attachment("broken.png", true)],
+            ..Default::default()
+        });
+        assert_eq!(row.images.row_count(), 0);
+        assert_eq!(row.files.row_count(), 1);
     }
 
     #[test]

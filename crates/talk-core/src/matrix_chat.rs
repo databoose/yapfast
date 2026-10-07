@@ -639,6 +639,8 @@ impl Matrix {
             | Command::Friend { .. }
             | Command::AddFriend { .. }
             | Command::SetCustomStatus(_)
+            | Command::StartDiscord
+            | Command::UnlinkDiscord
             | Command::Profile { .. }
             | Command::Pictures(_) => {}
         }
@@ -901,6 +903,8 @@ async fn room_index(client: &Client) -> RoomIndex {
             incoming: false,
             avatar: None,
             upload_limit: MAX_ATTACHMENT_BYTES,
+            presence: None,
+            activity: None,
         });
     }
     result.sort_by(|a, b| {

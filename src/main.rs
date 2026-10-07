@@ -134,6 +134,8 @@ fn launch(
         _ => graphics::Renderer::Software,
     };
     let plan = graphics::plan(renderer, std::env::var(GPU_FALLBACK_REASON).ok());
+    #[cfg(feature = "discord")]
+    talk_core::keep_discord_files(&root);
     match ui::run(runtime, root, preview, plan)? {
         ui::Exit::Closed => Ok(()),
         ui::Exit::UseSoftware(reason) => relaunch_with_software(arguments, &reason),

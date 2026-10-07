@@ -9,6 +9,7 @@ use talk_discord::{
     member_list::Presence,
     message::Shown,
     ready::PRIVATE,
+    remote_auth::{self, Step},
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
     settings::CustomStatus,
@@ -280,6 +281,26 @@ async fn talks_to_the_fake_server() {
     assert!(
         members[2].avatar.contains("/guilds/"),
         "Carol's server avatar"
+    );
+
+    // Lounge has the same readers as #general, so it shares the list
+    // without asking Discord again, and so does going back.
+    discord.view(&guild, Some(&lounge));
+    let shared = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == lounge => Some(members),
+        _ => None,
+    })
+    .await;
+    assert_eq!(shared, members);
+    discord.view(&guild, Some(&general));
+    live_where(&mut live, |event| match event {
+        Live::Members { channel, .. } if channel == general => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        self::control(server, "GET", "/_control/list-requests", ""),
+        "1"
     );
     let account = snapshot.account.as_ref().expect("the account");
     assert_eq!(account.name, "Alice");
@@ -1079,4 +1100,71 @@ async fn talks_to_the_fake_server() {
         presence["activities"] == serde_json::json!([])
     })
     .await;
+
+    // Discord asks the gateway to reconnect: the session resumes, without a
+    // new identify, and carries on.
+    post_control(server, "/_control/gateway-reconnect", "");
+    timeout(WAIT, async {
+        while self::control(server, "GET", "/_control/sessions", "")
+            != r#"{"identifies":1,"resumes":1}"#
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the session didn't resume");
+    post_control(server, "/_control/typing", "");
+    live_where(&mut live, |event| {
+        matches!(event, Live::Typing { .. }).then_some(())
+    })
+    .await;
+    assert_eq!(discord.snapshots().borrow().status, Status::Online);
+
+    // Linking by QR code: the code shows, Alice scans it and confirms on her
+    // phone, and the login arrives.
+    let (steps, mut shown) = tokio::sync::mpsc::unbounded_channel();
+    let linking = tokio::spawn(remote_auth::link(move |step| {
+        let _ = steps.send(step);
+    }));
+    let Step::Code(code) = next_step(&mut shown).await else {
+        panic!("no code")
+    };
+    assert!(code.starts_with("https://discord.com/ra/"), "{code}");
+    post_control(server, "/_control/qr-scan", "");
+    assert!(matches!(next_step(&mut shown).await, Step::Scanned { name, .. } if name == "alice"));
+    post_control(server, "/_control/qr-confirm", "");
+    let login = timeout(WAIT, linking).await.unwrap().unwrap().unwrap();
+    assert_eq!(login, client::TEST_TOKEN);
+
+    // Saying no on the phone stops linking.
+    let (steps, mut shown) = tokio::sync::mpsc::unbounded_channel();
+    let linking = tokio::spawn(remote_auth::link(move |step| {
+        let _ = steps.send(step);
+    }));
+    assert!(matches!(next_step(&mut shown).await, Step::Code(_)));
+    post_control(server, "/_control/qr-cancel", "");
+    let refused = timeout(WAIT, linking).await.unwrap().unwrap().unwrap_err();
+    assert_eq!(
+        refused.downcast_ref(),
+        Some(&remote_auth::Stopped::Cancelled)
+    );
+
+    // Talk sent back the device cookie the API set, once it had it: the API
+    // set it once, or twice if the first requests went together.
+    let cookies: serde_json::Value =
+        serde_json::from_str(&self::control(server, "GET", "/_control/cookies", "")).unwrap();
+    assert!(cookies["returned"].as_u64().unwrap() > 10, "{cookies}");
+    assert!(cookies["set"].as_u64().unwrap() <= 2, "{cookies}");
+
+    // Signing out ends the session on Discord.
+    discord.logout().await.unwrap();
+    assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");
+}
+
+/// What linking showed next.
+async fn next_step(shown: &mut tokio::sync::mpsc::UnboundedReceiver<Step>) -> Step {
+    timeout(WAIT, shown.recv())
+        .await
+        .expect("timed out linking")
+        .expect("linking stopped")
 }

@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{
     client,
+    limits::{self, Limits},
     settings::{self, CustomStatus},
 };
 
@@ -55,7 +56,15 @@ pub struct Api {
     token: String,
     /// The API's base URL: Discord's, or the test server's.
     base: String,
+    limits: Limits,
+    /// Downloads going at once, so opening the emoji picker or a busy channel
+    /// spreads its pictures out rather than asking for hundreds together.
+    downloads: tokio::sync::Semaphore,
 }
+
+/// The most files Talk downloads from Discord at once, about what a browser
+/// opens to one host.
+const DOWNLOADS: usize = 6;
 
 impl Api {
     pub fn new(token: String) -> Result<Self> {
@@ -68,19 +77,57 @@ impl Api {
         let http = Client::builder()
             .user_agent(client::USER_AGENT)
             .default_headers(headers)
+            .cookie_provider(crate::cookies::jar())
             .build()
             .context("could not set up HTTPS")?;
         let base = match client::test_server() {
             Some(server) => format!("{server}/api/v9"),
             None => API.to_owned(),
         };
-        Ok(Self { http, token, base })
+        Ok(Self {
+            http,
+            token,
+            base,
+            limits: Limits::default(),
+            downloads: tokio::sync::Semaphore::new(DOWNLOADS),
+        })
+    }
+
+    /// Without a login, for linking one.
+    pub fn anonymous() -> Result<Self> {
+        Self::new(String::new())
     }
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        self.http
-            .request(method, format!("{}{path}", self.base))
-            .header(header::AUTHORIZATION, &self.token)
+        let request = self.http.request(method, format!("{}{path}", self.base));
+        if self.token.is_empty() {
+            return request;
+        }
+        request.header(header::AUTHORIZATION, &self.token)
+    }
+
+    /// Trades a remote login's ticket for the login, encrypted with the key
+    /// that started it, in base64; see [`crate::remote_auth`].
+    pub async fn remote_auth_login(&self, ticket: &str) -> Result<String> {
+        let body = json!({"ticket": ticket});
+        let answer = self
+            .json(with_json(
+                self.request(Method::POST, "/users/@me/remote-auth/login"),
+                &body,
+            ))
+            .await?;
+        answer["encrypted_token"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord didn't hand over the login.")
+    }
+
+    /// Ends this login's session on Discord, as signing out of the web client
+    /// does. The token stops working.
+    pub async fn logout(&self) -> Result<()> {
+        let body = json!({"provider": null, "voip_provider": null});
+        self.empty(with_json(self.request(Method::POST, "/auth/logout"), &body))
+            .await
     }
 
     /// The account the token belongs to.
@@ -358,6 +405,7 @@ impl Api {
         if !discord_file(url) && !test_file {
             bail!("not a Discord file");
         }
+        let _turn = self.downloads.acquire().await?;
         let mut response = self
             .http
             .get(url)
@@ -378,7 +426,7 @@ impl Api {
     }
 
     async fn json(&self, request: RequestBuilder) -> Result<Value> {
-        let response = checked(request).await?;
+        let response = self.execute(request).await?;
         let body = response
             .bytes()
             .await
@@ -387,13 +435,48 @@ impl Api {
     }
 
     async fn empty(&self, request: RequestBuilder) -> Result<()> {
-        checked(request).await.map(drop)
+        self.execute(request).await.map(drop)
+    }
+
+    /// Sends a request within Discord's rate limits; see [`crate::limits`].
+    /// A 429 means Discord didn't act on it, so it goes once more after the
+    /// wait Discord asks for.
+    async fn execute(&self, request: RequestBuilder) -> Result<Response> {
+        let (client, request) = request.build_split();
+        let mut request = request.context("could not build the request")?;
+        let route = limits::route(request.method(), request.url().path());
+        let mut retried = false;
+        loop {
+            if let Err(wait) = self.limits.acquire(&route).await {
+                bail!(
+                    "Discord asks Talk to slow down. Try again in {} s.",
+                    wait.as_secs()
+                );
+            }
+            let again = if retried { None } else { request.try_clone() };
+            let response = client
+                .execute(request)
+                .await
+                .context("Can't reach Discord.")?;
+            self.limits
+                .update(&route, response.status(), response.headers());
+            match again {
+                Some(next) if response.status() == StatusCode::TOO_MANY_REQUESTS => {
+                    tracing::warn!(
+                        route,
+                        "Discord limited a request; sending it again after the wait"
+                    );
+                    request = next;
+                    retried = true;
+                }
+                _ => return checked(response).await,
+            }
+        }
     }
 }
 
-/// Sends a request and turns Discord's refusals into errors a person can act on.
-async fn checked(request: RequestBuilder) -> Result<Response> {
-    let response = request.send().await.context("Can't reach Discord.")?;
+/// Turns Discord's refusals into errors a person can act on.
+async fn checked(response: Response) -> Result<Response> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);

@@ -1,8 +1,14 @@
 //! Discord's main gateway, as a user client: identify, heartbeats, and
 //! dispatched events. Voice media goes through songbird; this only carries the
 //! voice state and voice server details that songbird needs to connect.
+//!
+//! A lost connection resumes the session where it can, as Discord asks of
+//! every client: Talk connects to the session's resume address, sends RESUME
+//! with the last sequence number, and Discord replays what was missed. A new
+//! IDENTIFY, which Discord limits, follows only when Discord won't resume.
+//! Talk also keeps under Discord's limit on what a connection sends.
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -29,6 +35,7 @@ const HEARTBEAT: u64 = 1;
 const IDENTIFY: u64 = 2;
 const PRESENCE_UPDATE: u64 = 3;
 const VOICE_STATE_UPDATE: u64 = 4;
+const RESUME: u64 = 6;
 const RECONNECT: u64 = 7;
 const REQUEST_GUILD_MEMBERS: u64 = 8;
 const INVALID_SESSION: u64 = 9;
@@ -68,6 +75,34 @@ impl std::fmt::Display for Closed {
 
 impl std::error::Error for Closed {}
 
+impl Closed {
+    /// Close codes after which the session can't resume: an unknown sequence
+    /// number, or a session that timed out.
+    fn ends_session(&self) -> bool {
+        self.is_final() || matches!(self.code, 4007 | 4009)
+    }
+}
+
+/// Discord ended the session, so the next connection must identify again.
+#[derive(Debug)]
+pub struct Invalidated;
+
+impl std::fmt::Display for Invalidated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Discord ended the gateway session")
+    }
+}
+
+impl std::error::Error for Invalidated {}
+
+/// Discord allows 120 gateway commands a minute on a connection; Talk keeps
+/// a margin for heartbeats.
+const SEND_LIMIT: usize = 110;
+const SEND_WINDOW: Duration = Duration::from_secs(60);
+/// How many times a lost connection tries to resume before Talk identifies
+/// again.
+const RESUME_TRIES: u32 = 3;
+
 pub struct Dispatch {
     pub name: String,
     pub data: Value,
@@ -78,6 +113,39 @@ pub struct Gateway {
     sequence: Option<u64>,
     interval: Duration,
     next_heartbeat: Instant,
+    /// Discord acknowledged the last heartbeat; a connection that stops
+    /// answering is dead, and resumes.
+    acked: bool,
+    token: String,
+    /// The session, and where it resumes, from READY.
+    session_id: Option<String>,
+    resume_url: Option<String>,
+    /// When the commands of the last minute went, for [`SEND_LIMIT`].
+    sent: VecDeque<Instant>,
+    /// Why the connection was lost, while the session waits to resume.
+    lost: Option<anyhow::Error>,
+    /// Resumes tried since Discord last confirmed one.
+    resumes: u32,
+    /// When the next resume may be tried.
+    resume_at: Option<Instant>,
+}
+
+/// Opens a gateway connection to `url`, as the web client does.
+async fn open(url: &str) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+    let mut request = url.into_client_request()?;
+    let headers = request.headers_mut();
+    headers.insert(
+        header::USER_AGENT,
+        HeaderValue::from_static(client::USER_AGENT),
+    );
+    headers.insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://discord.com"),
+    );
+    let (socket, _) = connect_async(request)
+        .await
+        .context("could not reach Discord's gateway")?;
+    Ok(socket)
 }
 
 impl Gateway {
@@ -94,39 +162,24 @@ impl Gateway {
             }
             None => URL.to_owned(),
         };
-        let mut request = url.into_client_request()?;
-        let headers = request.headers_mut();
-        headers.insert(
-            header::USER_AGENT,
-            HeaderValue::from_static(client::USER_AGENT),
-        );
-        headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://discord.com"),
-        );
-        let (socket, _) = connect_async(request)
-            .await
-            .context("could not reach Discord's gateway")?;
         let mut gateway = Self {
-            socket,
+            socket: open(&url).await?,
             sequence: None,
             interval: Duration::from_secs(40),
             next_heartbeat: Instant::now(),
+            acked: true,
+            token: token.to_owned(),
+            session_id: None,
+            resume_url: None,
+            sent: VecDeque::new(),
+            lost: None,
+            resumes: 0,
+            resume_at: None,
         };
-
-        let hello = gateway.receive().await?;
-        if hello["op"] != HELLO {
-            bail!("Discord's gateway didn't greet as expected");
-        }
-        let interval = hello["d"]["heartbeat_interval"]
-            .as_u64()
-            .context("Discord's gateway sent no heartbeat interval")?;
-        gateway.interval = Duration::from_millis(interval);
-        // Discord asks for the first heartbeat after a random part of the interval.
-        gateway.next_heartbeat = Instant::now() + gateway.interval.mul_f64(0.5);
+        gateway.greeted().await?;
 
         gateway
-            .send(
+            .write(
                 IDENTIFY,
                 json!({
                     "token": token,
@@ -140,19 +193,132 @@ impl Gateway {
             .await?;
 
         loop {
-            let event = gateway.next().await?;
+            let event = gateway.next_once().await?;
             if event.name == "READY" {
+                gateway.session_id = event.data["session_id"].as_str().map(str::to_owned);
+                gateway.resume_url = event.data["resume_gateway_url"].as_str().map(str::to_owned);
                 return Ok((gateway, event.data));
             }
         }
     }
 
+    /// Sends a command, resuming the session first if the connection was lost.
     pub async fn send(&mut self, op: u64, data: Value) -> Result<()> {
+        loop {
+            if self.lost.is_some() {
+                self.resume().await?;
+            }
+            match self.write(op, data.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(error) => self.lose(error)?,
+            }
+        }
+    }
+
+    /// Notes a lost connection to resume, or passes on an error that ends
+    /// the session.
+    fn lose(&mut self, error: anyhow::Error) -> Result<()> {
+        let resumable = self.session_id.is_some()
+            && self.resume_url.is_some()
+            && error.downcast_ref::<Invalidated>().is_none()
+            && !error
+                .downcast_ref::<Closed>()
+                .is_some_and(Closed::ends_session);
+        if !resumable {
+            return Err(error);
+        }
+        tracing::info!(%error, "resuming the Discord gateway session");
+        self.lost = Some(error);
+        Ok(())
+    }
+
+    /// Sends a command on this connection, within Discord's send limit.
+    async fn write(&mut self, op: u64, data: Value) -> Result<()> {
+        if op != HEARTBEAT {
+            let now = Instant::now();
+            while self
+                .sent
+                .front()
+                .is_some_and(|sent| now.duration_since(*sent) >= SEND_WINDOW)
+            {
+                self.sent.pop_front();
+            }
+            if self.sent.len() >= SEND_LIMIT
+                && let Some(oldest) = self.sent.front().copied()
+            {
+                tracing::warn!("holding back a gateway command to stay under Discord's limit");
+                tokio::time::sleep_until(oldest + SEND_WINDOW).await;
+                self.sent.pop_front();
+            }
+            self.sent.push_back(Instant::now());
+        }
         let payload = json!({"op": op, "d": data}).to_string();
         self.socket
             .send(Message::text(payload))
             .await
             .context("could not send to Discord's gateway")
+    }
+
+    /// Reads HELLO and sets the heartbeat from it.
+    async fn greeted(&mut self) -> Result<()> {
+        let hello = self.receive().await?;
+        if hello["op"] != HELLO {
+            bail!("Discord's gateway didn't greet as expected");
+        }
+        let interval = hello["d"]["heartbeat_interval"]
+            .as_u64()
+            .context("Discord's gateway sent no heartbeat interval")?;
+        self.interval = Duration::from_millis(interval);
+        // Discord asks for the first heartbeat after a random part of the interval.
+        self.next_heartbeat = Instant::now() + self.interval.mul_f64(rand::random::<f64>());
+        self.acked = true;
+        Ok(())
+    }
+
+    /// Connects again and resumes the session; Discord then replays what was
+    /// missed, ending with RESUMED. The state lives on the gateway, so a
+    /// resume that's cancelled midway starts over on the next call.
+    async fn resume(&mut self) -> Result<()> {
+        let (Some(session_id), Some(resume_url)) =
+            (self.session_id.clone(), self.resume_url.clone())
+        else {
+            bail!("the gateway session can't resume");
+        };
+        let url = format!("{}/?v=9&encoding=json", resume_url.trim_end_matches('/'));
+        while self.lost.is_some() {
+            if self.resumes >= RESUME_TRIES {
+                let error = self.lost.take().expect("the connection was lost");
+                return Err(error.context("could not resume the gateway session"));
+            }
+            if let Some(at) = self.resume_at {
+                tokio::time::sleep_until(at).await;
+            }
+            self.resumes += 1;
+            self.resume_at = Some(
+                Instant::now()
+                    + Duration::from_secs(2u64.pow(self.resumes))
+                    + Duration::from_millis(rand::random_range(0..1_000)),
+            );
+            match self.reconnect(&url, &session_id).await {
+                Ok(()) => self.lost = None,
+                Err(error) => tracing::warn!(%error, "could not resume the gateway session"),
+            }
+        }
+        Ok(())
+    }
+
+    async fn reconnect(&mut self, url: &str, session_id: &str) -> Result<()> {
+        // Dropping the old connection without a close frame keeps the
+        // session; a normal close would end it.
+        self.socket = open(url).await?;
+        self.sent.clear();
+        self.greeted().await?;
+        let resume = json!({
+            "token": self.token,
+            "session_id": session_id,
+            "seq": self.sequence,
+        });
+        self.write(RESUME, resume).await
     }
 
     /// Tells Discord this session's status and activities.
@@ -270,12 +436,30 @@ impl Gateway {
         .await
     }
 
-    /// The next dispatched event, sending heartbeats while waiting.
+    /// The next dispatched event, sending heartbeats while waiting, and
+    /// resuming the session when the connection is lost.
     pub async fn next(&mut self) -> Result<Dispatch> {
+        loop {
+            if self.lost.is_some() {
+                self.resume().await?;
+            }
+            match self.next_once().await {
+                Ok(event) => return Ok(event),
+                Err(error) => self.lose(error)?,
+            }
+        }
+    }
+
+    /// The next dispatched event on this connection.
+    async fn next_once(&mut self) -> Result<Dispatch> {
         loop {
             let message = tokio::select! {
                 () = tokio::time::sleep_until(self.next_heartbeat) => {
-                    self.send(HEARTBEAT, json!(self.sequence)).await?;
+                    if !self.acked {
+                        bail!("Discord's gateway stopped answering heartbeats");
+                    }
+                    self.write(HEARTBEAT, json!(self.sequence)).await?;
+                    self.acked = false;
                     self.next_heartbeat += self.interval;
                     continue;
                 }
@@ -288,12 +472,24 @@ impl Gateway {
                 Some(DISPATCH) => {
                     let name = message["t"].as_str().unwrap_or_default().to_owned();
                     let data = message.get("d").cloned().unwrap_or(Value::Null);
+                    if name == "RESUMED" {
+                        tracing::info!("resumed the Discord gateway session");
+                        self.resumes = 0;
+                        self.resume_at = None;
+                    }
                     return Ok(Dispatch { name, data });
                 }
-                Some(HEARTBEAT) => self.send(HEARTBEAT, json!(self.sequence)).await?,
-                Some(HEARTBEAT_ACK) => {}
+                Some(HEARTBEAT) => self.write(HEARTBEAT, json!(self.sequence)).await?,
+                Some(HEARTBEAT_ACK) => self.acked = true,
                 Some(RECONNECT) => bail!("Discord asked the gateway to reconnect"),
-                Some(INVALID_SESSION) => bail!("Discord rejected the gateway session"),
+                // `d` says whether the session may resume.
+                Some(INVALID_SESSION) if message["d"] == true => {
+                    bail!("Discord asked the gateway to resume")
+                }
+                Some(INVALID_SESSION) => {
+                    self.session_id = None;
+                    return Err(Invalidated.into());
+                }
                 _ => {}
             }
         }

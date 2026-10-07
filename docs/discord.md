@@ -10,9 +10,9 @@ voice channel joins through the same voice dock and one-call rule as Matrix
 voice. Calls start muted, mute and deafen show in Discord, and a voice gate
 sends audio only during speech. The
 owner and a friend talked through it on 2026-10-06. Audio uses PulseAudio and
-libwebrtc's processing module, so Windows needs its own audio backend. The
-token still comes from the browser through `talk-discord-probe store-token`;
-QR linking is still open. DM and group DM calls ring and are answered, as
+libwebrtc's processing module, so Windows needs its own audio backend.
+Accounts link by QR code, as described under [Account linking](#account-linking).
+DM and group DM calls ring and are answered, as
 described under [DM calls](#dm-calls). songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
@@ -31,17 +31,20 @@ name takes their highest coloured role's colour, once their roles are known:
 live messages carry them, and for history Talk asks Discord for the authors'
 member profiles.
 
-Talk keeps the open channel's messages in memory, and those of the 16
+Talk keeps the open channel's messages in memory, and those of the 40
 channels open before it, so going back to one shows it at once. A closed
-channel keeps its newest 100 messages and the previews of its newest 12
-images (a decoded preview is about 400 KB), and follows new messages, edits,
-deletions and reactions while it's kept. Opening it again loads the latest
-page in the background and fits it in: messages kept within the page's span
-that it lacks were deleted meanwhile, and when a full page starts after
-everything kept, more came than a page holds, so only the page stays. The
-UI keeps the same 16 channels' last timeline and member list, so going back
-shows them before the chat side answers, without "Loading messages...".
-Nothing is written to disk.
+channel keeps its newest 200 messages and the previews of its newest 4
+images (a decoded preview is about 400 KB, and the rest come back from disk
+quickly), and follows new messages, edits, deletions and reactions while
+it's kept. Opening it again loads the latest page in the background and fits
+it in: messages kept within the page's span that it lacks were deleted
+meanwhile, and when a full page starts after everything kept, more came than
+a page holds, so only the page stays. The UI keeps the same 40 channels'
+last timeline and member list, so going back shows them before the chat side
+answers, without "Loading messages...". Channels also go to disk, as
+[the startup cache](#servers-channels-and-messages) describes, so a channel
+opened after a restart shows its saved messages while the latest page loads
+and fits in the same way.
 
 Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
@@ -52,9 +55,14 @@ does: under hoisted roles, then online, then offline, with offline members
 faded. Each shows a status dot for online, idle or do not disturb, their name
 in their highest coloured role's colour, and their custom status or what
 they're playing below it. Talk shows the list's first 100 rows, headings
-included. The member lists of the last 16 channels shown are kept too: going
-back to one shows its list at once, and Discord's fresh sync replaces it, even
-under another list id, as after the channel's readers changed. A build without Matrix shows the Discord account's name, avatar and
+included. Discord keeps one list for all channels with the same readers: the
+overwrites that allow or deny seeing them, `everyone` when none do. Talk keys
+its lists the same way, so moving between such channels shows the same list
+and asks Discord for nothing. Talk keeps the last 40 lists. One Discord still
+sends, or sent within 10 minutes, shows without asking again. An older one
+shows at once while Talk subscribes, and Discord's sync replaces it. A list
+on screen that Discord doesn't send is asked for again once it's 10 minutes
+old. A build without Matrix shows the Discord account's name, avatar and
 connection in the bottom-left panel.
 
 DMs and group DMs are listed under the DM button after Matrix DMs, the latest
@@ -64,14 +72,21 @@ like server channels, under the room id `discord:@me:<channel>`, which takes
 `@me` for the server as Discord's links do. Every unread message in a DM
 counts as a mention, and a muted DM shows neither, as in Discord. A DM
 without a read state counts as read, since Discord keeps one for each DM
-with something to read. A group DM lists its members by name, with the
+with something to read. A one-to-one DM shows its person's status dot, with
+their custom status or what they're doing under the name. Discord sends
+presence only for friends, so anyone else shows the grey offline ring, as in
+Discord's DM list. These follow PRESENCE_UPDATE live. A group DM
+shows how many are in it. A group DM lists its members by name, with the
 presence of those who are friends. Talk downloads the pictures of the first
-50 DMs listed; the rest keep their initials.
+150 DMs listed; the rest keep their initials.
 
-Message requests, from people outside the account's DMs, are listed at the
-top of the DM list under "Message requests", and those Discord marks as spam
-at the bottom under "Spam", so a person Discord misjudged can still be found.
-Opening one shows its messages with Accept and Ignore in place of the
+Friend requests, message requests and spam have their own screen. A
+"Requests" entry at the top of the DM list opens it in place of the
+conversation, with a badge counting the incoming friend requests (spam
+excluded) and message requests. Message requests come from people outside the
+account's DMs. Those Discord marks as spam are listed too, under "Spam", so a
+person Discord misjudged can still be found. The entry stays highlighted
+while a request from the screen is open. Opening one shows its messages with Accept and Ignore in place of the
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Talk never opens a request on its
@@ -88,7 +103,7 @@ The person beside it, in the same header, adds a friend by username: `POST
 that name), 80000 (they take no requests from strangers) and 80007 (already
 friends) get their own words.
 
-Friend requests head the DM list under "Friend requests", from READY's
+Friend requests come first on the requests screen, from READY's
 relationships (type 3 sent to this account, 4 sent by it) and kept current by
 RELATIONSHIP_ADD and RELATIONSHIP_REMOVE. One sent to this account is
 accepted with the check or ignored with the cross; one it sent is cancelled
@@ -137,6 +152,49 @@ never act without a user action behind it, and don't poll. Keep all Discord code
 in one crate, so a protocol change breaks only that part and Talk can disable it
 without affecting Matrix.
 
+### Staying within Discord's limits
+
+Talk follows the rules Discord documents for every client:
+
+- **HTTP rate limits.** Each request's route maps to the bucket Discord names in
+  `X-RateLimit-Bucket`. A bucket's major ID is the channel, server or webhook,
+  so each channel gets its own bucket. Talk waits for an empty bucket to reset
+  before it asks again. It also waits after a global 429. If Discord still
+  answers 429, Talk waits `Retry-After` and tries once more. A wait longer than
+  a minute fails at once, with a message to try again later.
+- **Invalid requests.** Discord bans an IP that sends 10,000 requests in a
+  10-minute window answered 401, 403 or 429. Talk doesn't ask for what it knows
+  will be refused: a channel the account's roles hide shows a notice instead
+  of fetching messages.
+- **Gateway resume.** When the connection drops, Talk resumes the session at
+  READY's `resume_gateway_url` with op 6 and the last sequence number, and
+  Discord replays what was missed. Talk also resumes after op 7, after op 9
+  with `d: true`, and when a heartbeat goes unacknowledged. It identifies again
+  only when Discord won't resume: op 9 with `d: false`, close codes 4007 and
+  4009, or three failed attempts. After op 9 it waits a random one to five
+  seconds first. Talk drops a connection without a close frame, because a
+  close with 1000 or 1001 ends the session.
+- **Gateway send limit.** A connection may send 120 commands a minute and is
+  closed with 4008 past that. Talk holds commands back at 110, so heartbeats
+  always fit.
+- **Backoff.** Reconnects back off from 2 to 60 seconds. Each wait is a random
+  50% to 100% of the step, so clients cut off together don't return together.
+  The first heartbeat comes after a random part of the interval, as Discord
+  asks.
+- **Typing.** Mention search waits 300 ms after the last key before it asks
+  Discord for members, so typing a name sends one search, not one per letter.
+- **Cookies.** Talk keeps the cookies Discord's servers set and sends them
+  back where they apply, as any HTTP client with a cookie jar does. These are
+  Discord's device cookies and Cloudflare's rate limiting and bot management
+  cookies. One jar serves the whole process. Persistent cookies are saved,
+  readable only by the user, in `discord-cookies.json` in the data directory,
+  so Talk stays the same device across restarts. Talk can't pass a Cloudflare
+  challenge or captcha, so it never has a `cf_clearance` cookie.
+- **Downloads.** Pictures and files from Discord's CDN download six at a
+  time, about what a browser opens to one host. Opening the emoji picker
+  queues its pictures in the picker's order instead of asking for hundreds at
+  once.
+
 ## Why not an existing bridge
 
 [mautrix-discord](https://github.com/mautrix/discord) bridges messages through
@@ -154,15 +212,46 @@ it only works in servers that install the bot, and bots can't join DM calls.
 
 Link by QR code, the method mautrix-discord uses. Talk shows a code from
 Discord's remote login service, and the person scans it with the Discord phone
-app. Pasting a token and email/password login aren't offered. Discord may still
-ask for a captcha, so plan a fallback through a small embedded web view.
+app. Pasting a token and email/password login aren't offered. A build with
+Matrix links from Settings, under Discord; one without Matrix links on its
+sign-in screen, and signing out there unlinks. Either way, Talk first says
+that Discord doesn't allow third-party clients, so linking puts the account at
+risk, and shows the code only when asked.
+
+The remote login gateway (`wss://remote-auth-gateway.discord.gg/?v=2`, with
+Discord's web origin) works as Discord's own login page does,
+`talk_discord::remote_auth`:
+
+1. Talk makes a 2048-bit RSA key and sends its public half, as base64 DER.
+2. Discord sends a nonce encrypted to it (RSA-OAEP with SHA-256), and Talk
+   answers with the SHA-256 of the nonce, base64url, which proves it holds the
+   key.
+3. Discord sends a fingerprint, and the code carries
+   `https://discord.com/ra/{fingerprint}`.
+4. Scanning it sends who scanned (`id:discriminator:avatar:username`, encrypted
+   to the key), and Talk shows "Confirm on your phone".
+5. Confirming sends a ticket, which `POST /users/@me/remote-auth/login` trades
+   for the login, encrypted to the key again.
+
+The gateway closes the connection about two minutes after the code shows, and
+Talk connects again for a new code while the code is on screen. Saying no on
+the phone stops linking, with "Try again". The key lives only in memory for the
+one attempt. The `rsa` crate carries the Marvin timing advisory
+(RUSTSEC-2023-0071), which needs an attacker to time many decryptions; Talk
+decrypts three messages from Discord per attempt. Linking connects Discord at
+once, without restarting: voice reaches it through a slot the chat backend
+fills. Discord may still ask for a captcha when trading the ticket, which Talk
+reports as an error for now; a fallback through a small embedded web view is
+still open.
 
 Store the Discord token in the OS credential store, next to the Matrix session.
 The token gives full control of the account, so it never goes into Matrix, not
 even encrypted. A device that links appears in Discord as its own session.
 Devices that only use the mirror don't need to link.
 
-Logging a device out of Discord ends its session and deletes its token. Removing
+Unlinking a device, from Settings or by signing out of a build without Matrix,
+leaves any Discord call, ends the session with `POST /auth/logout`, and deletes
+its token. Removing
 the mirrored rooms is a separate step, described under [Unlinking](#unlinking).
 
 ## Voice
@@ -430,9 +519,47 @@ without the call's, and Talk shows streams from Discord's client.
 Talk shows Discord live from its own Discord connection. Every server, channel
 and DM is visible without copying anything into Matrix.
 
+Talk starts from Discord as it last saw it, kept in the data directory by
+`talk_discord::cache`, and Discord's answers replace it as they arrive:
+
+- `discord-account.json` holds the account's name and avatar, its servers
+  with their channels, roles and emoji, its DMs, friends, friend requests and
+  status. It also holds the names Talk learned (users, server nicknames,
+  server avatars and members' roles), which messages and member lists show
+  people by, and the member lists shown lately. It's written at most every 20
+  seconds while connected. Calls and who is in voice aren't saved. On the
+  next start Talk shows it all at once, identifies with the saved status, and
+  READY replaces it. A saved member list shows at once, even before Talk
+  connects, and Discord's sync replaces it.
+- `discord-messages/` holds, for each channel shown lately, its newest 100
+  messages, written within 20 seconds of a change, when the channel leaves
+  the 40 kept in memory, and when Talk closes. The 300 channels used last are
+  kept. Opening a channel shows its saved messages, and the latest page fits
+  in as it does for a channel kept in memory.
+- `discord-pictures/` holds avatars, server icons, emoji and stickers, and the
+  media proxy's previews of attachments and links, up to 8 MiB each. Discord
+  gives each version of a picture its own address, so a kept one is never
+  stale; the proxy's signature (`ex`, `is` and `hm`) isn't part of the key,
+  so a picture signed again is found. Past 256 MiB the least recently shown
+  go. Attachments' own files aren't kept.
+
+The files are readable only by the user and aren't encrypted. Each names its
+login by a SHA-256 hash of the token, so another linked account starts empty,
+and unlinking deletes them all. While Discord is unreachable, an open channel
+shows what was saved, waits, and loads once Talk is back, rather than showing
+an error.
+
 - Discord servers appear in the server rail with a Discord badge, and Discord
   DMs appear in the DM list with the same badge. A build without Matrix leaves
   the badge off, since everything in it is Discord's.
+- A build without Matrix leaves out the composer's line about encryption and
+  keys, since everything in it is Discord's; what stops sending still shows
+  there. The account's dot in the bottom-left shows its Discord status: idle,
+  do not disturb, or the grey ring when invisible or disconnected.
+- Discord servers keep the order the account's server list has in Discord,
+  from `guild_folders` in its settings, and follow it when it changes
+  elsewhere. A folder's servers show in its place, without the folder. A
+  server the settings don't list yet, such as one just joined, goes first.
 - Server icons and avatars come from Discord's CDN, which needs no login.
   Talk asks for each one once it shows: in the rail, beside people in a
   voice channel of the open server, in the call, or beside a message. A
@@ -540,7 +667,7 @@ Later, in rough order. The browser covers these until then.
 - Camera video and the soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
-- Linking by QR code, in place of the browser token.
+- A captcha fallback for linking, through a small embedded web view.
 - A friends page: everyone, online, pending and blocked.
 - Blocking and unblocking from a profile.
 - Marking uploads as spoilers.
@@ -686,8 +813,12 @@ channel on screen. Measure settled idle and a Discord call with the method in
 
 `testing/fake_discord.ts` is a local Discord: the gateway, the parts of the
 HTTP API Talk uses, a voice server that answers the handshake without DAVE,
-and Go Live signalling. Set `TALK_DISCORD_TEST_SERVER` to it, and Talk uses a
-test token instead of the linked account. `crates/talk-discord/tests/fake_server.rs`
+Go Live signalling, and the remote login gateway. Set
+`TALK_DISCORD_TEST_SERVER` to it, and Talk uses a test token instead of the
+linked account, kept in memory. With `TALK_DISCORD_TEST_UNLINKED=1` too, Talk
+starts unlinked and links against the fake, whose controls scan and confirm
+the code. The fake resumes a dropped gateway session, replaying what it
+missed, and can send op 7. `crates/talk-discord/tests/fake_server.rs`
 runs against it. What the fake can't show, such as media and DAVE with
 Discord's servers, needs real Discord. Use a separate test account, which the
 owner provides, in a private test server. Run these tests by hand, never in CI: repeated automated logins

@@ -4,7 +4,7 @@
 //! GUILD_MEMBER_LIST_UPDATE events, and keeps them current with operations
 //! on those rows.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 use serde_json::Value;
 
@@ -30,7 +30,7 @@ pub struct ListedMember {
 }
 
 /// Whether someone is around, as their status dot shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Presence {
     Online,
     Idle,
@@ -52,14 +52,14 @@ impl Presence {
 }
 
 /// What the list says about one member besides their name.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Person {
     roles: Vec<String>,
     presence: Presence,
     activity: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Row {
     Group(String),
     Member(String),
@@ -67,9 +67,17 @@ enum Row {
     Unknown,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemberList {
     guild: String,
+    /// The channel it shows for, of those sharing it.
     channel: String,
+    /// Who can read its channels; see [`Server::readers`].
+    readers: String,
+    /// When Discord last sent anything for it; not saved, so a saved list
+    /// is asked for again.
+    #[serde(skip)]
+    heard: Option<Instant>,
     /// Discord's id for the list, learned from the first full sync after
     /// subscribing. Channels with the same readers share a list.
     id: Option<String>,
@@ -86,10 +94,12 @@ pub struct MemberList {
 }
 
 impl MemberList {
-    pub fn new(guild: String, channel: String) -> Self {
+    pub fn new(guild: String, channel: String, readers: String) -> Self {
         Self {
             guild,
             channel,
+            readers,
+            heard: None,
             id: None,
             rows: Vec::new(),
             counts: HashMap::new(),
@@ -113,6 +123,25 @@ impl MemberList {
         &self.channel
     }
 
+    /// Shows the list for another channel with the same readers.
+    pub fn show_for(&mut self, channel: &str) {
+        channel.clone_into(&mut self.channel);
+    }
+
+    pub fn readers(&self) -> &str {
+        &self.readers
+    }
+
+    /// Whether Discord sent anything for it within `within`.
+    pub fn heard_within(&self, within: std::time::Duration) -> bool {
+        self.heard.is_some_and(|heard| heard.elapsed() < within)
+    }
+
+    /// When it stops being fresh after `within`.
+    pub fn stale_at(&self, within: std::time::Duration) -> Option<Instant> {
+        self.heard.map(|heard| heard + within)
+    }
+
     /// How many people can read the channel, once Discord has said.
     pub fn count(&self) -> Option<u64> {
         self.count
@@ -121,6 +150,12 @@ impl MemberList {
     /// Whether Discord has sent the list yet.
     pub fn synced(&self) -> bool {
         self.id.is_some()
+    }
+
+    /// Synced, and not waiting for a sync that may come under another id, so
+    /// only updates to its own list apply to it.
+    pub fn settled(&self) -> bool {
+        self.id.is_some() && !self.resync
     }
 
     /// Applies one GUILD_MEMBER_LIST_UPDATE, learning the members it carries.
@@ -209,6 +244,7 @@ impl MemberList {
             }
         }
         self.rows.truncate(ROWS);
+        self.heard = Some(Instant::now());
         let rows = &self.rows;
         self.people.retain(|user, _| {
             rows.iter()
@@ -381,7 +417,7 @@ mod tests {
     #[test]
     fn follows_syncs_and_row_operations() {
         let mut names = Names::default();
-        let mut list = MemberList::new("10".into(), "11".into());
+        let mut list = MemberList::new("10".into(), "11".into(), "everyone".into());
         let server = Server {
             id: "10".into(),
             role_names: HashMap::from([("20".into(), "Mods".into())]),

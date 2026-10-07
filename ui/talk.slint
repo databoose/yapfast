@@ -488,6 +488,43 @@ component Picture inherits Image {
     }
 }
 
+// Stands in for something on its way, such as a picture or the messages,
+// with a light sweeping across it as in Discord.
+component Skeleton inherits Rectangle {
+    background: Theme.raised;
+    clip: true;
+    accessible-role: image;
+    accessible-label: "Loading";
+    Rectangle {
+        width: max(120px, parent.width * 0.5); height: parent.height;
+        x: Math.mod(animation-tick() / 1ms, 1500) / 1500 * (parent.width + self.width) - self.width;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff10 50%, #ffffff00 100%);
+    }
+}
+
+// Messages on their way: rows the shape of messages.
+component MessagesSkeleton inherits VerticalLayout {
+    padding: 16px; spacing: 22px; alignment: end;
+    for line in [
+        { name: 92px, lines: [380px, 220px] },
+        { name: 120px, lines: [300px] },
+        { name: 76px, lines: [420px, 340px, 160px] },
+        { name: 104px, lines: [260px] },
+        { name: 88px, lines: [360px, 200px] },
+    ]: HorizontalLayout {
+        spacing: 16px; alignment: start;
+        VerticalLayout {
+            alignment: start;
+            Skeleton { width: 40px; height: 40px; border-radius: 20px; }
+        }
+        VerticalLayout {
+            spacing: 8px; padding-top: 4px; alignment: start;
+            Skeleton { width: line.name; height: 12px; border-radius: 6px; }
+            for width in line.lines: Skeleton { width: width; height: 12px; border-radius: 6px; }
+        }
+    }
+}
+
 component SpoilerCover inherits Rectangle {
     background: #00000059;
     Rectangle {
@@ -519,6 +556,79 @@ component DiscordBadge inherits Rectangle {
     }
 }
 
+// Linking Discord by QR code: the risk to the account first, then the code to
+// scan with the phone app, then who scanned it while they confirm. The phase
+// is 0 before linking, 1 while Talk gets a code, 2 showing it, 3 once it's
+// scanned, and 4 when linking failed.
+component DiscordLinkPanel inherits VerticalLayout {
+    in property <int> phase;
+    in property <image> code;
+    in property <string> name;
+    in property <string> note;
+    callback begin;
+    spacing: 16px;
+    if root.phase == 0 || root.phase == 4: VerticalLayout {
+        spacing: 12px;
+        Rectangle {
+            min-height: warning.preferred-height;
+            background: Theme.danger.with-alpha(0.1); border-radius: 8px;
+            border-width: 1px; border-color: Theme.danger.with-alpha(0.35);
+            warning := HorizontalLayout {
+                padding: 12px; spacing: 10px;
+                VerticalLayout {
+                    alignment: start;
+                    Image { source: @image-url("icons/triangle-alert.svg"); width: 18px; height: 18px; colorize: Theme.danger; }
+                }
+                Text {
+                    text: "Discord doesn't allow apps like Talk on personal accounts. Linking puts your account at some risk of being suspended.";
+                    color: Theme.text; font-size: 14px; wrap: word-wrap; horizontal-stretch: 1;
+                }
+            }
+        }
+        if root.phase == 4: Text { text: root.note; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: start;
+            ActionButton {
+                text: root.phase == 4 ? "Try again" : "Show the code"; primary: true;
+                clicked => { root.begin(); }
+            }
+        }
+    }
+    if root.phase >= 1 && root.phase <= 3: HorizontalLayout {
+        spacing: 20px;
+        Rectangle {
+            width: 184px; height: 184px; border-radius: 12px;
+            background: root.phase == 2 ? #ffffff : Theme.sunken;
+            if root.phase == 2: Image {
+                source: root.code; width: 176px; height: 176px; image-rendering: pixelated;
+                accessible-role: image; accessible-label: "QR code that links Discord";
+            }
+            if root.phase == 1: Text { text: "Getting a code..."; color: Theme.muted; font-size: 14px; }
+            if root.phase == 3: VerticalLayout {
+                alignment: center; spacing: 8px;
+                HorizontalLayout {
+                    alignment: center;
+                    Image { source: @image-url("icons/check.svg"); width: 40px; height: 40px; colorize: Theme.live; }
+                }
+                Text { text: "Scanned"; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-alignment: center; }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 8px; horizontal-stretch: 1;
+            Text {
+                text: root.phase == 3 ? "Confirm on your phone" : "Scan it with the Discord app";
+                color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap;
+            }
+            Text {
+                text: root.phase == 3
+                    ? "Linking " + root.name + ". Tap Log in on your phone to finish."
+                    : "On your phone, open Discord, go to Settings, tap Scan QR Code, and point the camera here. A new code replaces this one after a couple of minutes.";
+                color: Theme.secondary; font-size: 14px; wrap: word-wrap;
+            }
+        }
+    }
+}
+
 // A server or the DM home: a circle that becomes a squircle, with a pill at the rail edge.
 export struct FriendRequestRow {
     id: string, name: string, initial: string, tint: color, picture: image,
@@ -532,6 +642,8 @@ export struct FriendRequestRow {
 // account, or cancelled when it sent it.
 component FriendRequest inherits Rectangle {
     in property <FriendRequestRow> request;
+    /// What it sits on, for the badge's ring.
+    in property <brush> surface: Theme.sidebar;
     callback accept;
     callback remove;
     height: 42px; border-radius: 6px;
@@ -544,7 +656,7 @@ component FriendRequest inherits Rectangle {
         Middle {
             Avatar {
                 size: 32px; initial: root.request.initial; tint: root.request.tint; picture: root.request.picture;
-                DiscordBadge { x: -2px; y: -2px; size: 13px; ring: pointer.has-hover ? Theme.hover : Theme.sidebar; }
+                DiscordBadge { x: -2px; y: -2px; size: 13px; ring: pointer.has-hover ? Theme.hover : root.surface; }
             }
         }
         VerticalLayout {
@@ -649,6 +761,32 @@ component RailItem inherits Rectangle {
 }
 
 // A channel or DM in the sidebar.
+// A presence dot on a ring cut from the background, as in Discord: green when
+// online, a moon when idle, a bar when they don't want to be disturbed, and a
+// grey ring when offline. Anything else counts as offline.
+component StatusDot inherits Rectangle {
+    in property <string> presence;
+    in property <color> ring;
+    property <bool> online: root.presence == "online" || root.presence == "idle" || root.presence == "dnd";
+    width: 16px; height: 16px; border-radius: 8px;
+    background: root.ring;
+    accessible-role: image;
+    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : root.presence == "online" ? "Online" : "Offline";
+    Rectangle {
+        width: 10px; height: 10px; border-radius: 5px;
+        background: root.presence == "dnd" ? Theme.danger : root.presence == "idle" ? Theme.accent : root.presence == "online" ? Theme.live : Theme.faint;
+    }
+    if !root.online: Rectangle {
+        width: 4px; height: 4px; border-radius: 2px; background: root.ring;
+    }
+    if root.presence == "idle": Rectangle {
+        x: 2px; y: 2px; width: 6px; height: 6px; border-radius: 3px; background: root.ring;
+    }
+    if root.presence == "dnd": Rectangle {
+        width: 6px; height: 2px; border-radius: 1px; background: root.ring;
+    }
+}
+
 component ChannelRow inherits Rectangle {
     in property <string> text;
     in property <string> label: root.text;
@@ -666,6 +804,9 @@ component ChannelRow inherits Rectangle {
     in property <bool> locked;
     /// A DM with a call going on.
     in property <bool> call;
+    /// A DM person's presence, as RoomRow has it, and a line under the name.
+    in property <string> presence;
+    in property <string> detail;
     callback clicked;
     /// A right click, where it happened in the window.
     callback context-menu(length, length);
@@ -694,12 +835,22 @@ component ChannelRow inherits Rectangle {
                     x: -2px; y: -2px; size: 13px;
                     ring: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : Theme.sidebar;
                 }
+                if root.presence != "": StatusDot {
+                    x: 20px; y: 20px; presence: root.presence;
+                    ring: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : Theme.sidebar;
+                }
             }
         }
         if !root.person: Image { source: root.icon; width: 20px; image-fit: contain; colorize: root.selected || root.unread ? Theme.secondary : Theme.faint; }
-        Text {
-            text: root.text; color: root.ink; font-size: 16px; font-weight: root.unread || root.selected ? 700 : 500;
-            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+        VerticalLayout {
+            alignment: center; spacing: 0px; horizontal-stretch: 1;
+            Text {
+                text: root.text; color: root.ink; font-size: 16px; font-weight: root.unread || root.selected ? 700 : 500;
+                vertical-alignment: center; overflow: elide;
+            }
+            if root.detail != "": Text {
+                text: root.detail; color: Theme.muted; font-size: 12px; overflow: elide;
+            }
         }
         if root.call: Image {
             source: @image-url("icons/phone.svg"); width: 16px; image-fit: contain; colorize: Theme.live;
@@ -1142,27 +1293,6 @@ export struct MemberRow {
     activity: string,
 }
 
-// A presence dot on a ring cut from the background, as in Discord: green when
-// online, a moon when idle, a bar when they don't want to be disturbed.
-component StatusDot inherits Rectangle {
-    in property <string> presence;
-    in property <color> ring;
-    width: 16px; height: 16px; border-radius: 8px;
-    background: root.ring;
-    accessible-role: image;
-    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : "Online";
-    Rectangle {
-        width: 10px; height: 10px; border-radius: 5px;
-        background: root.presence == "dnd" ? Theme.danger : root.presence == "idle" ? Theme.accent : Theme.live;
-    }
-    if root.presence == "idle": Rectangle {
-        x: 2px; y: 2px; width: 6px; height: 6px; border-radius: 3px; background: root.ring;
-    }
-    if root.presence == "dnd": Rectangle {
-        width: 6px; height: 2px; border-radius: 1px; background: root.ring;
-    }
-}
-
 // The open room's members, grouped by role under the conversation header.
 component MemberPanel inherits Rectangle {
     in property <[MemberRow]> rows;
@@ -1448,7 +1578,67 @@ export struct RoomRow {
     people: [PersonRow],
     /// A DM with a call going on.
     call: bool,
+    /// A one-to-one Discord DM's other person: "online", "idle", "dnd" or
+    /// "offline", empty when unknown; and their custom status or what
+    /// they're doing, or a group DM's size.
+    presence: string,
+    detail: string,
 }
+
+component RequestsHeading inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 8px; height: 36px;
+    Text { text: root.text; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+}
+
+/// Friend requests, message requests and spam, in place of a conversation.
+component RequestsScreen inherits Rectangle {
+    in property <[FriendRequestRow]> friend-requests;
+    in property <[RoomRow]> message-requests;
+    in property <[RoomRow]> spam;
+    callback accept(string);
+    callback remove(string);
+    callback open(string);
+    property <bool> empty: root.friend-requests.length == 0 && root.message-requests.length == 0 && root.spam.length == 0;
+    if root.empty: VerticalLayout {
+        padding: 32px; spacing: 10px; alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 80px; height: 80px; border-radius: 40px; background: Theme.raised;
+                Image { source: @image-url("icons/inbox.svg"); width: 36px; height: 36px; colorize: Theme.secondary; }
+            }
+        }
+        Text { text: "No requests"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+        Text { text: "Friend requests and messages from people you don't know show up here."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
+    }
+    if !root.empty: ScrollView {
+        VerticalLayout {
+            padding: 16px; padding-top: 8px; spacing: 2px; alignment: start;
+            if root.friend-requests.length > 0: RequestsHeading { text: "FRIEND REQUESTS — " + root.friend-requests.length; }
+            for request in root.friend-requests: FriendRequest {
+                request: request; surface: Theme.chat;
+                accept => { root.accept(request.id); }
+                remove => { root.remove(request.id); }
+            }
+            if root.message-requests.length > 0: RequestsHeading { text: "MESSAGE REQUESTS — " + root.message-requests.length; }
+            for room in root.message-requests: ChannelRow {
+                text: room.name; label: room.name + ", message request" + (room.unread ? ", unread" : "");
+                icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                picture: room.picture; discord: room.discord; unread: room.unread;
+                clicked => { root.open(room.id); }
+            }
+            if root.spam.length > 0: RequestsHeading { text: "SPAM — " + root.spam.length; }
+            for room in root.spam: ChannelRow {
+                text: room.name; label: room.name + ", spam";
+                icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                picture: room.picture; discord: room.discord;
+                clicked => { root.open(room.id); }
+            }
+        }
+    }
+}
+
 /// A reaction: `key` names it, and `label` shows it, with a custom emoji's glyph once it has one.
 export struct ReactionChip { key: string, label: string, count: int, mine: bool }
 /// An image in a message's gallery, placed in pixels; `index` is its place
@@ -1458,6 +1648,8 @@ export struct ReactionChip { key: string, label: string, count: int, mine: bool 
 export struct ImageCell {
     index: int, name: string, image: image, x: int, y: int, width: int, height: int, spoiler: bool,
     frames: [image], delays: [int],
+    /// On its way: a skeleton shows in its place, at the size it will take.
+    loading: bool,
 }
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
@@ -1473,7 +1665,7 @@ export struct EmbedCard {
     field-rows: [EmbedFieldRow],
     footer: styled-text, has-footer: bool,
     /// The small picture beside the text; `thumbnail-index` is its place among the message's attachments.
-    thumbnail: image, thumbnail-index: int, has-thumbnail: bool,
+    thumbnail: image, thumbnail-index: int, has-thumbnail: bool, thumbnail-loading: bool,
     images: [ImageCell], gallery-width: int, gallery-height: int,
     video: bool,
 }
@@ -1577,6 +1769,9 @@ export component TalkWindow inherits Window {
     in property <string> account;
     in property <string> account-name;
     in property <string> account-initial;
+    /// The Discord-only build's own status for the account's dot, as
+    /// StatusDot takes it; empty to show the connection instead.
+    in property <string> account-presence;
     in property <color> account-tint;
     in property <image> account-picture;
     in property <string> account-status;
@@ -1599,6 +1794,17 @@ export component TalkWindow inherits Window {
     callback member-list-toggled(bool);
     /// A Discord account is linked, so its settings show.
     in property <bool> discord-linked;
+    // Which networks this build carries.
+    in property <bool> discord-build;
+    in property <bool> matrix-build: true;
+    // Linking Discord by QR code; see DiscordLinkPanel.
+    in property <int> link-phase;
+    in property <image> link-code;
+    in property <string> link-name;
+    in property <string> link-note;
+    callback link-discord;
+    callback cancel-discord-link;
+    callback unlink-discord;
     in-out property <bool> show-hidden-channels;
     callback show-hidden-channels-toggled(bool);
     /// A link in a message was clicked.
@@ -1763,8 +1969,17 @@ export component TalkWindow inherits Window {
     /// The newest picture of the watched stream, refreshed by stream-tick.
     in-out property <image> watch-frame;
     in property <string> switch-prompt;
-    /// Discord friend requests, listed above the DMs.
+    /// Discord friend requests, message requests and spam, on the requests
+    /// screen, which the top of the DM list opens.
     in property <[FriendRequestRow]> friend-requests;
+    in property <[RoomRow]> message-requests;
+    in property <[RoomRow]> spam-rooms;
+    in property <bool> requests-open;
+    /// The requests screen, or a request from it, is on screen.
+    in property <bool> requests-current;
+    /// Requests waiting for an answer, as a badge.
+    in property <string> requests-badge;
+    callback open-requests;
     /// Send a Discord user a friend request or accept theirs, by user id, or
     /// ignore or cancel one.
     callback befriend(string);
@@ -1801,6 +2016,8 @@ export component TalkWindow inherits Window {
     /// The settings screen covers the window, showing one section: 0 account, 1 voice and
     /// audio, 2 messages, 3 notifications, 4 Discord.
     in-out property <bool> settings-open;
+    // Closing settings stops linking Discord there.
+    changed settings-open => { if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); } }
     in-out property <int> settings-section;
     /// Preferences people set in the settings; preferences-changed reports any change.
     in-out property <bool> twelve-hour-clock;
@@ -1907,7 +2124,10 @@ export component TalkWindow inherits Window {
 
     public function focus-composer() { composer.focus-input(); }
     public function place-composer-caret(offset: int) { composer.place-caret(offset); }
-    public function focus-sign-in() { username-field.focus-input(); }
+    // The Matrix sign-in, which only a build with Matrix has, focuses its first
+    // field each time this counts up.
+    property <int> sign-in-focus;
+    public function focus-sign-in() { root.sign-in-focus += 1; }
     public function timeline-at-end() -> bool { return root.follow-latest; }
     // How far the newest message is below the view; zero at the end.
     public function timeline-below() -> length { return max(0px, timeline.content-y - min(0px, timeline.height - timeline.content-height)); }
@@ -2316,7 +2536,23 @@ export component TalkWindow inherits Window {
                         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
                         HorizontalLayout {
                             padding: 32px; spacing: 32px;
-                            VerticalLayout {
+                            // A build without Matrix signs in by linking Discord.
+                            if !root.matrix-build: VerticalLayout {
+                                spacing: 8px; horizontal-stretch: 1; min-width: 300px;
+                                Text { text: "Sign in to Talk"; color: Theme.text; font-size: 26px; font-weight: 700; horizontal-alignment: center; }
+                                Text { text: "Link your Discord account with your phone."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
+                                Rectangle { height: 12px; }
+                                if !root.busy: DiscordLinkPanel {
+                                    phase: root.link-phase; code: root.link-code; name: root.link-name; note: root.link-note;
+                                    begin => { root.link-discord(); }
+                                }
+                                if root.notice != "" && (root.busy || root.link-phase == 0): Text {
+                                    text: root.notice; color: root.busy ? Theme.secondary : Theme.danger; font-size: 15px; wrap: word-wrap;
+                                }
+                            }
+                            if root.matrix-build: VerticalLayout {
+                                property <int> focus-asked: root.sign-in-focus;
+                                changed focus-asked => { username-field.focus-input(); }
                                 spacing: 8px; horizontal-stretch: 1; min-width: 300px;
                                 Text { text: "Sign in to Talk"; color: Theme.text; font-size: 26px; font-weight: 700; horizontal-alignment: center; }
                                 Text { text: "Use your existing Matrix account."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
@@ -2431,16 +2667,15 @@ export component TalkWindow inherits Window {
                                 min-height: 96px; vertical-stretch: 1;
                                 VerticalLayout {
                                     padding-left: 8px; padding-right: 8px; padding-bottom: 12px; spacing: 2px;
-                                    if root.dms-selected && root.friend-requests.length > 0: VerticalLayout {
-                                        spacing: 2px;
-                                        HorizontalLayout {
-                                            padding-left: 8px; height: 36px;
-                                            Text { text: "FRIEND REQUESTS — " + root.friend-requests.length; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
-                                        }
-                                        for request in root.friend-requests: FriendRequest {
-                                            request: request;
-                                            accept => { root.befriend(request.id); }
-                                            remove => { root.remove-friend-request(request.id); }
+                                    // Friend requests, message requests and spam open on their own screen.
+                                    if root.dms-selected && root.discord-linked && !root.preview: VerticalLayout {
+                                        padding-top: 6px; padding-bottom: 6px;
+                                        ChannelRow {
+                                            text: "Requests";
+                                            label: "Requests" + (root.requests-badge != "" ? ", " + root.requests-badge + " waiting" : "");
+                                            icon: @image-url("icons/inbox.svg");
+                                            selected: root.requests-current; badge: root.requests-badge;
+                                            clicked => { root.open-requests(); }
                                         }
                                     }
                                     for room in root.rooms: VerticalLayout {
@@ -2451,11 +2686,14 @@ export component TalkWindow inherits Window {
                                         }
                                         ChannelRow {
                                             text: room.name;
-                                            label: room.name + (room.discord ? ", Discord" : "") + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                                            label: room.name + (room.discord ? ", Discord" : "")
+                                                + (room.presence == "dnd" ? ", do not disturb" : room.presence != "" ? ", " + room.presence : "")
+                                                + (room.detail != "" ? ", " + room.detail : "")
+                                                + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                                             icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
                                             picture: room.picture; discord: room.discord;
                                             selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
-                                            call: room.call;
+                                            call: room.call; presence: room.presence; detail: room.detail;
                                             clicked => { root.select-room(room.id); }
                                             // A DM's menu offers its other person's profile.
                                             context-menu(x, y) => {
@@ -2585,7 +2823,10 @@ export component TalkWindow inherits Window {
                         Rectangle {
                             width: 58px;
                             Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; }
-                            Rectangle {
+                            if root.account-presence != "": StatusDot {
+                                x: 40px; y: parent.height / 2 + 3px; presence: root.account-presence; ring: Theme.panel;
+                            }
+                            if root.account-presence == "": Rectangle {
                                 x: 41px; y: parent.height / 2 + 4px; width: 14px; height: 14px; border-radius: 7px; background: Theme.panel;
                                 Rectangle {
                                     width: 8px; height: 8px; border-radius: 4px;
@@ -2656,7 +2897,8 @@ export component TalkWindow inherits Window {
                         padding-left: 16px; padding-right: 16px; spacing: 10px;
                         if root.room-direct: Middle { Avatar { size: 26px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; } }
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
-                        Text { text: root.room-selected ? root.room-name : root.sidebar-title; color: root.room-selected ? Theme.text : Theme.secondary; font-size: 16px; font-weight: 700; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        if root.requests-open: Image { source: @image-url("icons/inbox.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
+                        Text { text: root.room-selected ? root.room-name : root.requests-open ? "Requests" : root.sidebar-title; color: root.room-selected || root.requests-open ? Theme.text : Theme.secondary; font-size: 16px; font-weight: 700; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                         if root.dm-friend == 1 || root.dm-friend == 3: Middle {
                             IconButton {
                                 icon: @image-url("icons/user-plus.svg");
@@ -3157,7 +3399,8 @@ export component TalkWindow inherits Window {
                                                                 for cell in message.images: Rectangle {
                                                                     x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
                                                                     border-radius: 8px; clip: true; background: Theme.sunken;
-                                                                    Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
+                                                                    if cell.loading: Skeleton { width: parent.width; height: parent.height; }
+                                                                    if !cell.loading: Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
                                                                     if cell.spoiler: SpoilerCover {}
                                                                     TouchArea {
                                                                         mouse-cursor: MouseCursor.pointer;
@@ -3178,10 +3421,14 @@ export component TalkWindow inherits Window {
                                                         }
                                                         if message.stickers.length > 0: HorizontalLayout {
                                                             padding-top: 4px; spacing: 8px;
-                                                            for cell in message.stickers: Picture {
-                                                                still: cell.image; frames: cell.frames; delays: cell.delays;
-                                                                width: cell.width * 1px; height: cell.height * 1px; image-fit: contain;
-                                                                accessible-role: image; accessible-label: "Sticker: " + cell.name;
+                                                            for cell in message.stickers: Rectangle {
+                                                                width: cell.width * 1px; height: cell.height * 1px;
+                                                                if cell.loading: Skeleton { width: parent.width; height: parent.height; border-radius: 12px; }
+                                                                if !cell.loading: Picture {
+                                                                    still: cell.image; frames: cell.frames; delays: cell.delays;
+                                                                    width: parent.width; height: parent.height; image-fit: contain;
+                                                                    accessible-role: image; accessible-label: "Sticker: " + cell.name;
+                                                                }
                                                             }
                                                             Rectangle { horizontal-stretch: 1; }
                                                         }
@@ -3249,7 +3496,8 @@ export component TalkWindow inherits Window {
                                                                                 for cell in embed.images: Rectangle {
                                                                                     x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
                                                                                     border-radius: 4px; clip: true; background: Theme.sunken;
-                                                                                    Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
+                                                                                    if cell.loading: Skeleton { width: parent.width; height: parent.height; }
+                                                                                    if !cell.loading: Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
                                                                                     if cell.spoiler: SpoilerCover {}
                                                                                     if embed.video && !cell.spoiler: Rectangle {
                                                                                         width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
@@ -3275,6 +3523,7 @@ export component TalkWindow inherits Window {
                                                                         alignment: start;
                                                                         Rectangle {
                                                                             width: 80px; height: 80px; border-radius: 4px; clip: true;
+                                                                            if embed.thumbnail-loading: Skeleton { width: parent.width; height: parent.height; }
                                                                             Image { source: embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Thumbnail"; }
                                                                             TouchArea {
                                                                                 mouse-cursor: MouseCursor.pointer;
@@ -3356,8 +3605,17 @@ export component TalkWindow inherits Window {
                                     }
                                 }
                             }
+                            if root.requests-open: RequestsScreen {
+                                width: parent.width; height: parent.height;
+                                friend-requests: root.friend-requests;
+                                message-requests: root.message-requests;
+                                spam: root.spam-rooms;
+                                accept(id) => { root.befriend(id); }
+                                remove(id) => { root.remove-friend-request(id); }
+                                open(id) => { root.select-room(id); }
+                            }
                             // The conversation's opening, or what to do when none is chosen.
-                            if !root.room-selected: VerticalLayout {
+                            if !root.room-selected && !root.requests-open: VerticalLayout {
                                 width: parent.width; height: parent.height;
                                 padding: 32px; spacing: 10px; alignment: center;
                                 HorizontalLayout {
@@ -3370,7 +3628,10 @@ export component TalkWindow inherits Window {
                                 Text { text: "Pick a conversation"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
                                 Text { text: "Choose a DM or a server channel on the left."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
                             }
-                            if root.room-selected && root.messages.length == 0: VerticalLayout {
+                            if root.room-selected && root.messages.length == 0 && !root.room-ready: MessagesSkeleton {
+                                width: parent.width; height: parent.height;
+                            }
+                            if root.room-selected && root.messages.length == 0 && root.room-ready: VerticalLayout {
                                 width: parent.width; height: parent.height;
                                 padding: 24px; spacing: 8px; alignment: end;
                                 if root.room-selected && root.room-ready && root.room-direct: Avatar { size: 72px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; }
@@ -3703,7 +3964,7 @@ export component TalkWindow inherits Window {
                                 text: "Notifications"; icon: @image-url("icons/bell.svg");
                                 selected: root.settings-section == 3; clicked => { root.settings-section = 3; }
                             }
-                            if root.discord-linked: ChannelRow {
+                            if root.discord-build && !root.preview: ChannelRow {
                                 text: "Discord"; icon: @image-url("icons/discord.svg");
                                 selected: root.settings-section == 4; clicked => { root.settings-section = 4; }
                             }
@@ -3727,7 +3988,7 @@ export component TalkWindow inherits Window {
                                             Middle { Avatar { size: 64px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; } }
                                             VerticalLayout {
                                                 alignment: center; spacing: 2px; horizontal-stretch: 1;
-                                                Text { text: root.account; color: Theme.text; font-size: 20px; font-weight: 700; overflow: elide; }
+                                                Text { text: root.account-name; color: Theme.text; font-size: 20px; font-weight: 700; overflow: elide; }
                                                 Label { text: root.account-status; wrap: no-wrap; overflow: elide; }
                                             }
                                         }
@@ -3864,9 +4125,26 @@ export component TalkWindow inherits Window {
                                         toggled => { root.preferences-changed(); }
                                     }
                                 }
+                                if root.settings-section == 4 && !root.discord-linked: VerticalLayout {
+                                    spacing: 16px;
+                                    SettingsTitle { text: "Discord"; }
+                                    Label { text: "Link your Discord account to see its servers and DMs in Talk, and join its calls. The login stays on this computer, in the system's credential store."; }
+                                    DiscordLinkPanel {
+                                        phase: root.link-phase; code: root.link-code; name: root.link-name; note: root.link-note;
+                                        begin => { root.link-discord(); }
+                                    }
+                                }
                                 if root.settings-section == 4 && root.discord-linked: VerticalLayout {
                                     spacing: 16px;
                                     SettingsTitle { text: "Discord"; }
+                                    if root.matrix-build: HorizontalLayout {
+                                        spacing: 12px;
+                                        Label { text: "Unlinking signs Talk out of Discord on this computer."; vertical-alignment: center; horizontal-stretch: 1; }
+                                        ActionButton {
+                                            text: "Unlink Discord"; icon: @image-url("icons/log-out.svg"); danger: true;
+                                            clicked => { root.unlink-discord(); }
+                                        }
+                                    }
                                     SettingsSwitch {
                                         text: "Show channels you can't access";
                                         description: "They appear locked. Server admins hid them on purpose.";

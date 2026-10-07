@@ -26,7 +26,7 @@ const SEND_MESSAGES: u64 = 1 << 11;
 const MENTION_EVERYONE: u64 = 1 << 17;
 const CONNECT: u64 = 1 << 20;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Server {
     pub id: String,
     pub name: String,
@@ -57,10 +57,12 @@ pub struct Server {
     pub premium_tier: u8,
     /// Its custom emoji, by name.
     pub emojis: Vec<Emoji>,
+    /// When this account joined it, as Discord's ISO 8601 time.
+    pub joined_at: Option<String>,
 }
 
 /// A server's custom emoji.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Emoji {
     pub id: String,
     pub name: String,
@@ -89,7 +91,7 @@ pub fn emojis(list: &Value) -> Vec<Emoji> {
     emojis
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Channel {
     pub id: String,
     pub name: String,
@@ -111,14 +113,14 @@ pub struct Channel {
     pub muted: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Category {
     pub name: String,
     pub position: i64,
 }
 
 /// What an account may do in a channel.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Access {
     /// Connect to a voice channel, or send in a text channel.
     #[default]
@@ -199,7 +201,7 @@ pub fn private_channel(channel: &Value) -> Option<Private> {
 }
 
 /// A channel's change to the permissions of one role or member.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Overwrite {
     pub id: String,
     pub member: bool,
@@ -208,6 +210,38 @@ pub struct Overwrite {
 }
 
 impl Server {
+    /// Who can read `channel`, as the overwrites that allow or deny seeing it.
+    /// Discord gives channels with the same readers one member list, whose
+    /// id hashes this same set; `everyone` when no overwrite touches it.
+    pub fn readers(&self, channel: &str) -> String {
+        let Some(channel) = self
+            .text_channels
+            .iter()
+            .chain(&self.voice_channels)
+            .find(|known| known.id == channel)
+        else {
+            return format!("channel:{channel}");
+        };
+        let mut readers: Vec<String> = channel
+            .overwrites
+            .iter()
+            .filter_map(|overwrite| {
+                if overwrite.allow & VIEW_CHANNEL != 0 {
+                    Some(format!("allow:{}", overwrite.id))
+                } else if overwrite.deny & VIEW_CHANNEL != 0 {
+                    Some(format!("deny:{}", overwrite.id))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if readers.is_empty() {
+            return "everyone".into();
+        }
+        readers.sort();
+        readers.join(",")
+    }
+
     /// Whether `user`, holding `roles`, can see `channel` and connect to it,
     /// or send in it for a text channel. Computed as Discord does: the roles'
     /// permissions, then the channel's overwrites for @everyone, for the roles,
@@ -465,25 +499,15 @@ pub fn user_id(ready: &Value) -> Option<&str> {
     ready["user"]["id"].as_str()
 }
 
-/// Servers by name, from READY's guilds.
+/// Servers from READY's guilds, in READY's order; the service orders them as
+/// the account's settings say.
 pub fn servers(ready: &Value) -> Vec<Server> {
-    let mut servers: Vec<Server> = ready["guilds"]
+    ready["guilds"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(server)
-        .collect();
-    sort_servers(&mut servers);
-    servers
-}
-
-pub fn sort_servers(servers: &mut [Server]) {
-    servers.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.id.cmp(&b.id))
-    });
+        .collect()
 }
 
 /// One guild object, from READY or GUILD_CREATE.
@@ -513,6 +537,7 @@ pub fn server(guild: &Value) -> Option<Server> {
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
         emojis: emojis(&guild["emojis"]),
+        joined_at: guild["joined_at"].as_str().map(str::to_owned),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {
@@ -658,6 +683,53 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, ["Lounge", "Second"]);
+    }
+
+    #[test]
+    fn channels_with_the_same_readers_share_a_list() {
+        let overwrite = |id: &str, allow: u64, deny: u64| Overwrite {
+            id: id.into(),
+            member: false,
+            allow,
+            deny,
+        };
+        let channel = |id: &str, overwrites: Vec<Overwrite>| Channel {
+            id: id.into(),
+            overwrites,
+            ..Default::default()
+        };
+        let server = Server {
+            id: "10".into(),
+            text_channels: vec![
+                channel("1", vec![]),
+                // Only sending is changed: the readers stay everyone.
+                channel("2", vec![overwrite("10", 0, SEND_MESSAGES)]),
+                channel(
+                    "3",
+                    vec![
+                        overwrite("10", 0, VIEW_CHANNEL),
+                        overwrite("30", VIEW_CHANNEL, 0),
+                    ],
+                ),
+                channel(
+                    "4",
+                    vec![
+                        overwrite("30", VIEW_CHANNEL, 0),
+                        overwrite("10", 0, VIEW_CHANNEL),
+                    ],
+                ),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(server.readers("1"), "everyone");
+        assert_eq!(server.readers("2"), "everyone");
+        assert_eq!(server.readers("3"), "allow:30,deny:10");
+        assert_eq!(server.readers("3"), server.readers("4"));
+        assert_ne!(
+            server.readers("9"),
+            server.readers("1"),
+            "unknown channels share nothing"
+        );
     }
 
     #[test]

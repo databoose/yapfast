@@ -12,8 +12,8 @@ use crate::voice;
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
 /// Larger downloads only get a file card, never an inline preview.
 pub(crate) const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
-pub(crate) const PREVIEW_WIDTH: u32 = 360;
-pub(crate) const PREVIEW_HEIGHT: u32 = 270;
+pub const PREVIEW_WIDTH: u32 = 360;
+pub const PREVIEW_HEIGHT: u32 = 270;
 /// The image viewer shows pictures up to this size, so a full-size photo
 /// costs at most about 9 MiB while it's open.
 pub const VIEW_WIDTH: u32 = 1920;
@@ -54,6 +54,10 @@ pub struct ChatRoom {
     pub avatar: Option<String>,
     /// The largest file a message here may carry, in bytes.
     pub upload_limit: u64,
+    /// A one-to-one Discord DM's other person: whether they're around, when
+    /// Discord says, and their custom status or what they're doing.
+    pub presence: Option<Presence>,
+    pub activity: Option<String>,
 }
 
 /// The most files one message carries, as Discord allows.
@@ -605,6 +609,11 @@ pub enum Command {
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
+    /// Connect the Discord account that was just linked.
+    StartDiscord,
+    /// Forget the linked Discord account on this device, ending its session
+    /// on Discord; [`Event::DiscordUnlinked`] follows.
+    UnlinkDiscord,
     /// Fetch a Discord user's profile, as a member of a room's server or as
     /// the other person in a DM. It comes back as [`Event::Profile`].
     Profile {
@@ -659,6 +668,8 @@ pub enum Event {
     FriendAdded(Result<String, String>),
     /// Whether [`Command::SetCustomStatus`] changed it, or why not.
     CustomStatusSet(Result<(), String>),
+    /// [`Command::UnlinkDiscord`] forgot the account.
+    DiscordUnlinked,
     /// The roles and groups a message in a room may mention.
     MentionGroups {
         room: String,
@@ -916,7 +927,18 @@ pub fn notification_text(markdown: &str) -> String {
 /// session, or always in a build without Matrix, where Discord uses the
 /// account linked on this device.
 pub fn can_restore(root: &std::path::Path) -> bool {
-    !cfg!(feature = "matrix") || root.join("active.json").exists()
+    #[cfg(feature = "matrix")]
+    return root.join("active.json").exists();
+    #[cfg(all(not(feature = "matrix"), feature = "discord"))]
+    return {
+        let _ = root;
+        talk_discord::token::load().is_ok()
+    };
+    #[cfg(not(any(feature = "matrix", feature = "discord")))]
+    {
+        let _ = root;
+        true
+    }
 }
 
 /// A new message that should notify the person, by their notification settings on its
@@ -974,14 +996,16 @@ pub async fn run(
     // Discord connects when this device has a linked account; see docs/discord.md.
     #[cfg(feature = "discord")]
     let mut discord = crate::discord_text::Chat::start();
+    // Voice reaches Discord through this, so linking and unlinking reach it too.
+    #[cfg(feature = "discord")]
+    let linked =
+        tokio::sync::watch::Sender::new(discord.as_ref().map(crate::discord_text::Chat::service));
     #[cfg(not(feature = "matrix"))]
     {
         let refused = match start {
             Start::Login { .. } => Some("This build of Talk has no Matrix sign-in."),
             #[cfg(feature = "discord")]
-            Start::Restore if discord.is_none() => Some(
-                "Link a Discord account with talk-discord-probe store-token, then restart Talk.",
-            ),
+            Start::Restore if discord.is_none() => Some("Link your Discord account to sign in."),
             #[cfg(not(feature = "discord"))]
             Start::Restore => Some("This build of Talk has no networks."),
             #[allow(unreachable_patterns)]
@@ -996,7 +1020,7 @@ pub async fn run(
         #[cfg(feature = "matrix")]
         session: session.lease(),
         #[cfg(feature = "discord")]
-        discord: discord.as_ref().map(crate::discord_text::Chat::service),
+        discord: linked.subscribe(),
     };
     let Ok(mut voice) = voice::Controller::start_remembering(calls, Some(remembered)) else {
         let _ = events.send(Event::Error(
@@ -1043,6 +1067,30 @@ pub async fn run(
             Wake::Command(None) => break,
             Wake::Command(Some(command)) => {
                 #[cfg(feature = "discord")]
+                let command = match command {
+                    Command::StartDiscord => {
+                        if discord.is_none() {
+                            discord = crate::discord_text::Chat::start();
+                            linked.send_replace(
+                                discord.as_ref().map(crate::discord_text::Chat::service),
+                            );
+                        }
+                        continue;
+                    }
+                    Command::UnlinkDiscord => {
+                        unlink_discord(&mut discord, &linked, &voice);
+                        let _ = events.send(Event::DiscordUnlinked);
+                        continue;
+                    }
+                    #[cfg(not(feature = "matrix"))]
+                    Command::Logout => {
+                        unlink_discord(&mut discord, &linked, &voice);
+                        let _ = events.send(Event::LoggedOut);
+                        break;
+                    }
+                    command => command,
+                };
+                #[cfg(feature = "discord")]
                 let command = match discord.as_mut() {
                     Some(discord) => discord.command(command, &events),
                     None => Some(command),
@@ -1064,6 +1112,8 @@ pub async fn run(
                     | Command::Friend { .. }
                     | Command::AddFriend { .. }
                     | Command::SetCustomStatus(_)
+                    | Command::StartDiscord
+                    | Command::UnlinkDiscord
                     | Command::Profile { .. }
                     | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
@@ -1099,6 +1149,40 @@ pub async fn run(
     voice.stop().await;
     #[cfg(feature = "matrix")]
     matrix.stop().await;
+}
+
+/// Forgets the linked Discord account on this device: leaves its call, ends
+/// its session on Discord, and stops it.
+#[cfg(feature = "discord")]
+fn unlink_discord(
+    discord: &mut Option<crate::discord_text::Chat>,
+    linked: &tokio::sync::watch::Sender<Option<talk_discord::service::Discord>>,
+    voice: &voice::Controller,
+) {
+    if voice
+        .states
+        .borrow()
+        .room
+        .as_deref()
+        .is_some_and(crate::discord::is_discord)
+    {
+        voice.command(voice::Command::Leave);
+    }
+    linked.send_replace(None);
+    if let Some(chat) = discord.take() {
+        let service = chat.service();
+        tokio::spawn(async move {
+            if let Err(error) = service.logout().await {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "could not end the Discord session"
+                );
+            }
+        });
+    }
+    if let Err(error) = talk_discord::token::forget() {
+        tracing::warn!(%error, "could not forget the Discord login");
+    }
 }
 
 #[cfg(test)]

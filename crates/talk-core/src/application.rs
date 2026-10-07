@@ -45,6 +45,18 @@ pub struct NewDm {
     pub error: Option<String>,
 }
 
+/// Linking a Discord account by QR code, while it's under way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiscordLink {
+    /// Talk is asking Discord for a code.
+    Starting,
+    /// The code to scan, as the address it carries.
+    Code(String),
+    /// Someone scanned it, by their username, and confirms on their phone.
+    Scanned(String),
+    Failed(String),
+}
+
 /// The dialog that sends a friend request by Discord username.
 #[derive(Clone, Debug, Default)]
 pub struct AddFriend {
@@ -151,12 +163,22 @@ pub struct AppState {
     pub discord_online: bool,
     /// The linked Discord account's user id.
     pub discord_user: Option<String>,
+    /// Its status as its settings keep it: `online`, `idle`, `dnd` or
+    /// `invisible`.
+    pub discord_presence: Option<String>,
     /// Its friends, by user id, and friend requests waiting for an answer.
     pub discord_friends: Vec<String>,
     pub friend_requests: Vec<chat::FriendRequest>,
     /// The Discord account's custom status, while it lasts.
     pub custom_status: Option<chat::CustomStatus>,
+    /// A Discord account is linked on this device, whether or not it's
+    /// connected, and linking one, while that's under way.
+    pub discord_linked: bool,
+    pub discord_link: Option<DiscordLink>,
     pub add_friend: Option<AddFriend>,
+    /// The requests screen is open in place of a conversation: friend
+    /// requests, message requests and spam.
+    pub requests_open: bool,
     pub status_editor: Option<StatusEditor>,
     /// Whether Discord channels hidden from this account are listed, locked.
     pub show_hidden_channels: bool,
@@ -577,6 +599,8 @@ pub enum Action {
     DeclineCall(String),
     /// Send a Discord user a friend request, or accept theirs.
     Befriend(String),
+    /// Show the requests screen in place of the conversation.
+    OpenRequests,
     /// Ignore a Discord user's friend request, or cancel this account's.
     RemoveFriendRequest(String),
     /// Open the dialog that adds a friend by Discord username, send the
@@ -584,6 +608,11 @@ pub enum Action {
     OpenAddFriend,
     AddFriend(String),
     CloseAddFriend,
+    /// Link a Discord account by QR code, or start again with a new code;
+    /// stop linking; or forget the linked account on this device.
+    LinkDiscord,
+    CancelDiscordLink,
+    UnlinkDiscord,
     /// Open the custom status dialog, set the status, clear it, or close it.
     /// The emoji is a Unicode one or a custom one's `:name:`, which needs Nitro.
     OpenStatusEditor,
@@ -629,6 +658,11 @@ pub enum Effect {
     /// List the system's audio devices for the preview, then report them
     /// through [`Application::preview_devices`].
     ListDevices,
+    /// Link a Discord account by QR code, with `crate::discord_link::run`,
+    /// reporting through `Application::linking`; this replaces any linking
+    /// under way. Stop linking.
+    LinkDiscord,
+    StopDiscordLink,
 }
 
 #[derive(Default)]
@@ -673,10 +707,10 @@ struct Shown {
 
 /// Discord channels whose last view is kept, as many as the Discord side
 /// keeps loaded.
-const SHOWN: usize = 16;
+const SHOWN: usize = 40;
 /// DM pictures downloaded for the list. An account can have hundreds of
 /// DMs, and the ones further down keep their initials.
-const LISTED_PICTURES: usize = 50;
+const LISTED_PICTURES: usize = 150;
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
@@ -817,7 +851,15 @@ impl Application {
                     return vec![];
                 }
                 self.state.navigation = navigation;
+                self.state.requests_open = false;
                 self.restore_selection()
+            }
+            Action::OpenRequests => {
+                if self.state.requests_open || self.state.navigation != Navigation::DirectMessages {
+                    return vec![];
+                }
+                self.state.requests_open = true;
+                self.deselect()
             }
             Action::Open(id) => {
                 let Some(room) = self.state.rooms.iter().find(|room| room.id == id) else {
@@ -1330,6 +1372,24 @@ impl Application {
                 }
                 _ => vec![],
             },
+            Action::LinkDiscord => {
+                if self.state.preview || self.state.discord_linked || !cfg!(feature = "discord") {
+                    return vec![];
+                }
+                self.state.discord_link = Some(DiscordLink::Starting);
+                vec![Effect::LinkDiscord]
+            }
+            Action::CancelDiscordLink => match self.state.discord_link.take() {
+                Some(_) => vec![Effect::StopDiscordLink],
+                None => vec![],
+            },
+            Action::UnlinkDiscord => {
+                if self.state.discord_linked && self.state.account.is_some() {
+                    vec![Effect::Backend(Command::UnlinkDiscord)]
+                } else {
+                    vec![]
+                }
+            }
             Action::OpenAddFriend => {
                 if self.state.discord_user.is_some() {
                     self.state.add_friend = Some(AddFriend::default());
@@ -1641,7 +1701,10 @@ impl Application {
                         Status::Offline(reason) => reason.clone(),
                     });
                 }
+                self.state.discord_linked = true;
                 self.state.discord_user = snapshot.user_id.clone();
+                self.state.discord_presence =
+                    Some(snapshot.presence.clone()).filter(|presence| !presence.is_empty());
                 self.state.discord_friends = snapshot.friends.clone();
                 self.state.custom_status =
                     snapshot
@@ -1736,6 +1799,21 @@ impl Application {
                     dialog.sending = false;
                     dialog.outcome = Some(outcome);
                 }
+            }
+            Event::DiscordUnlinked => {
+                #[cfg(feature = "discord")]
+                {
+                    self.discord = None;
+                }
+                self.discord_rooms.clear();
+                self.discord_servers.clear();
+                self.state.discord_linked = false;
+                self.state.discord_online = false;
+                self.state.discord_user = None;
+                self.state.discord_friends.clear();
+                self.state.friend_requests.clear();
+                self.state.custom_status = None;
+                return self.show_lists();
             }
             Event::CustomStatusSet(Ok(())) => {
                 self.state.status_editor = None;
@@ -1948,7 +2026,11 @@ impl Application {
 
     fn start(&mut self, start: chat::Start) -> Vec<Effect> {
         self.state.busy = true;
-        self.state.notice = Some("Connecting to Matrix...".into());
+        self.state.notice = Some(if cfg!(feature = "matrix") {
+            "Connecting to Matrix...".into()
+        } else {
+            "Connecting to Discord...".into()
+        });
         vec![Effect::Start(start)]
     }
 
@@ -1970,22 +2052,27 @@ impl Application {
         if let Some(id) = next {
             self.select(id)
         } else {
-            self.remember_view();
-            self.state.selected = None;
-            self.state.confirm_delete = None;
-            self.state.forwarding = None;
-            self.state.viewer = None;
-            self.state.room_ready = false;
-            self.state.loading_history = false;
-            self.state.notice = None;
-            self.state.messages = Arc::new(vec![]);
-            self.state.members = None;
-            self.state.selection_version = self.state.selection_version.wrapping_add(1);
-            if self.state.preview {
-                vec![]
-            } else {
-                vec![Effect::Backend(Command::CloseRoom)]
-            }
+            self.deselect()
+        }
+    }
+
+    /// Closes the conversation on screen, leaving none selected.
+    fn deselect(&mut self) -> Vec<Effect> {
+        self.remember_view();
+        self.state.selected = None;
+        self.state.confirm_delete = None;
+        self.state.forwarding = None;
+        self.state.viewer = None;
+        self.state.room_ready = false;
+        self.state.loading_history = false;
+        self.state.notice = None;
+        self.state.messages = Arc::new(vec![]);
+        self.state.members = None;
+        self.state.selection_version = self.state.selection_version.wrapping_add(1);
+        if self.state.preview {
+            vec![]
+        } else {
+            vec![Effect::Backend(Command::CloseRoom)]
         }
     }
 
@@ -2087,6 +2174,10 @@ impl Application {
         {
             self.state.navigation = Navigation::DirectMessages;
         }
+        // The requests screen stands in for a conversation.
+        if self.state.requests_open && self.state.navigation == Navigation::DirectMessages {
+            return vec![];
+        }
         if !self
             .state
             .rooms
@@ -2108,9 +2199,11 @@ impl Application {
             return vec![];
         };
         let voice_room = room.voice;
+        let locked = room.locked;
         self.remember_view();
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
+        self.state.requests_open = false;
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
         self.state.forwarding = None;
@@ -2146,6 +2239,13 @@ impl Application {
             }
             vec![]
         } else if voice_room {
+            vec![Effect::Backend(Command::CloseRoom)]
+        } else if locked {
+            // Discord would refuse its messages, and refusals count against
+            // the account, so Talk doesn't ask.
+            self.state.room_ready = true;
+            self.state.notice =
+                Some("Your roles on this Discord server don't let you read this channel.".into());
             vec![Effect::Backend(Command::CloseRoom)]
         } else {
             vec![Effect::Backend(Command::Open(id))]
@@ -2330,6 +2430,44 @@ impl Application {
             item: forwarding.item,
             target,
         })]
+    }
+
+    /// How linking a Discord account goes, from [`Effect::LinkDiscord`].
+    #[cfg(feature = "discord")]
+    pub fn linking(&mut self, progress: crate::discord_link::Progress) -> Vec<Effect> {
+        use crate::discord_link::Progress;
+        // Linking that was stopped says nothing more.
+        let Some(link) = &mut self.state.discord_link else {
+            return vec![];
+        };
+        match progress {
+            Progress::Code(address) => *link = DiscordLink::Code(address),
+            Progress::Scanned(name) => *link = DiscordLink::Scanned(name),
+            // A code that showed expired, so a new one replaces it. Without
+            // one, the service turned Talk away.
+            Progress::Expired if *link == DiscordLink::Starting => {
+                *link = DiscordLink::Failed(
+                    "Discord's login service closed the connection. Try again.".into(),
+                );
+            }
+            Progress::Expired => {
+                *link = DiscordLink::Starting;
+                return vec![Effect::LinkDiscord];
+            }
+            Progress::Failed(error) => *link = DiscordLink::Failed(error),
+            Progress::Linked => {
+                self.state.discord_link = None;
+                self.state.discord_linked = true;
+                // A running Talk connects the account; one without Matrix
+                // signs in with it.
+                return if self.state.account.is_some() {
+                    vec![Effect::Backend(Command::StartDiscord)]
+                } else {
+                    self.start(chat::Start::Restore)
+                };
+            }
+        }
+        vec![]
     }
 
     /// Sends the custom status to Discord from its dialog.
@@ -2789,6 +2927,8 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         incoming: false,
         avatar: None,
         upload_limit: 50 * 1024 * 1024,
+        presence: None,
+        activity: None,
     }
 }
 
@@ -2889,6 +3029,68 @@ mod tests {
             messages: vec![],
         });
         app
+    }
+
+    #[test]
+    fn the_requests_screen_stands_in_for_a_conversation() {
+        let mut app = connected();
+        assert_eq!(app.state.selected.as_deref(), Some("dm"));
+        assert!(matches!(
+            app.dispatch(Action::OpenRequests).as_slice(),
+            [Effect::Backend(Command::CloseRoom)]
+        ));
+        assert!(app.state.requests_open);
+        assert_eq!(app.state.selected, None);
+        // The lists changing doesn't pick a conversation over it.
+        let rooms = app.state.rooms.clone();
+        let servers = app.state.servers.clone();
+        app.apply(Event::Rooms(RoomIndex { rooms, servers }));
+        assert!(app.state.requests_open);
+        assert_eq!(app.state.selected, None);
+        // Choosing a conversation, or a server, closes it.
+        app.dispatch(Action::SelectRoom("dm".into()));
+        assert!(!app.state.requests_open);
+        app.dispatch(Action::OpenRequests);
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert!(!app.state.requests_open);
+        assert!(
+            app.dispatch(Action::OpenRequests).is_empty(),
+            "only among DMs"
+        );
+    }
+
+    #[test]
+    fn locked_channels_show_without_asking_for_their_messages() {
+        let mut app = Application::default();
+        app.apply(Event::Connected {
+            user: "@alice:test".into(),
+            trusted: true,
+            storage: "test",
+        });
+        app.apply(Event::Rooms(RoomIndex {
+            rooms: vec![
+                preview_room("general", "general", false, 3),
+                ChatRoom {
+                    locked: true,
+                    ..preview_room("secret", "secret", false, 3)
+                },
+            ],
+            servers: vec![ChatServer {
+                id: "friends".into(),
+                name: "Friends".into(),
+                channels: vec!["general".into(), "secret".into()],
+                discord: false,
+                muted: false,
+                icon: None,
+            }],
+        }));
+        app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+        assert!(matches!(
+            app.dispatch(Action::SelectRoom("secret".into())).as_slice(),
+            [Effect::Backend(Command::CloseRoom)]
+        ));
+        assert!(app.state.room_ready);
+        assert!(app.state.notice.is_some());
     }
 
     fn send_command(effects: Vec<Effect>) -> Command {
@@ -4572,6 +4774,87 @@ mod tests {
             effects.last(),
             Some(Effect::Backend(Command::Voice(voice::Command::Join(id)))) if *id == dm
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn links_discord_by_qr_code_and_unlinks_it() {
+        use crate::discord_link::Progress;
+        use talk_discord::service::{Snapshot, Status};
+        // Signed in to Matrix, Talk links Discord from settings and connects it.
+        let mut app = connected();
+        assert!(matches!(
+            app.dispatch(Action::LinkDiscord).as_slice(),
+            [Effect::LinkDiscord]
+        ));
+        assert_eq!(app.state.discord_link, Some(DiscordLink::Starting));
+        app.linking(Progress::Code("https://discord.com/ra/one".into()));
+        assert_eq!(
+            app.state.discord_link,
+            Some(DiscordLink::Code("https://discord.com/ra/one".into()))
+        );
+        // An expired code makes way for a new one.
+        assert!(matches!(
+            app.linking(Progress::Expired).as_slice(),
+            [Effect::LinkDiscord]
+        ));
+        assert_eq!(app.state.discord_link, Some(DiscordLink::Starting));
+        // Without a code first, it's a failure, not a loop.
+        assert!(app.linking(Progress::Expired).is_empty());
+        assert!(matches!(
+            app.state.discord_link,
+            Some(DiscordLink::Failed(_))
+        ));
+        app.dispatch(Action::LinkDiscord);
+        app.linking(Progress::Scanned("alice".into()));
+        assert_eq!(
+            app.state.discord_link,
+            Some(DiscordLink::Scanned("alice".into()))
+        );
+        assert!(matches!(
+            app.linking(Progress::Linked).as_slice(),
+            [Effect::Backend(Command::StartDiscord)]
+        ));
+        assert_eq!(app.state.discord_link, None);
+        assert!(app.state.discord_linked);
+        assert!(
+            app.dispatch(Action::LinkDiscord).is_empty(),
+            "already linked"
+        );
+
+        // Unlinking forgets everything Discord showed.
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            friends: vec!["2".into()],
+            ..Default::default()
+        }));
+        assert!(matches!(
+            app.dispatch(Action::UnlinkDiscord).as_slice(),
+            [Effect::Backend(Command::UnlinkDiscord)]
+        ));
+        app.apply(Event::DiscordUnlinked);
+        assert!(!app.state.discord_linked);
+        assert_eq!(app.state.discord_user, None);
+        assert!(app.state.discord_friends.is_empty());
+
+        // Stopping linking ignores what the stopped linking says next.
+        app.dispatch(Action::LinkDiscord);
+        assert!(matches!(
+            app.dispatch(Action::CancelDiscordLink).as_slice(),
+            [Effect::StopDiscordLink]
+        ));
+        assert!(app.linking(Progress::Linked).is_empty());
+        assert!(!app.state.discord_linked);
+
+        // Without a session, as in a build without Matrix, linking signs in.
+        let mut app = Application::default();
+        app.dispatch(Action::LinkDiscord);
+        assert!(matches!(
+            app.linking(Progress::Linked).as_slice(),
+            [Effect::Start(chat::Start::Restore)]
+        ));
+        assert!(app.state.busy);
     }
 
     #[test]

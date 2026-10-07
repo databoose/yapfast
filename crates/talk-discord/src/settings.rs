@@ -1,7 +1,8 @@
 //! The account's status as Discord's user settings keep it: online, idle, do not
-//! disturb or invisible, and a custom status. The settings are a protobuf
-//! message, `PreloadedUserSettings`, in base64; Talk reads and writes only its
-//! `status` field, by hand.
+//! disturb or invisible, and a custom status; and the order of its servers.
+//! The settings are a protobuf message, `PreloadedUserSettings`, in base64;
+//! Talk reads its `status` and `guild_folders` fields and writes only `status`,
+//! by hand.
 //!
 //! Each session tells the gateway its presence, so Talk sends the status the
 //! settings hold once connected, and again when they change.
@@ -19,6 +20,14 @@ const CUSTOM_TEXT: u64 = 1;
 const CUSTOM_EMOJI_ID: u64 = 2;
 const CUSTOM_EMOJI_NAME: u64 = 3;
 const CUSTOM_EXPIRES: u64 = 4;
+/// `PreloadedUserSettings.guild_folders`, a `GuildFolders`: its `folders`, in
+/// the order the server list shows them, and `guild_positions`, the order
+/// older clients kept.
+const GUILD_FOLDERS: u64 = 14;
+const FOLDERS: u64 = 1;
+const GUILD_POSITIONS: u64 = 2;
+/// `GuildFolder.guild_ids`: one server outside a folder, or a folder's.
+const FOLDER_GUILDS: u64 = 1;
 
 const VARINT: u64 = 0;
 const FIXED64: u64 = 1;
@@ -26,7 +35,7 @@ const BYTES: u64 = 2;
 const FIXED32: u64 = 5;
 
 /// A custom status: its text, its emoji, and when it ends.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CustomStatus {
     pub text: String,
     /// A Unicode emoji, or a custom emoji's name.
@@ -106,6 +115,66 @@ pub fn read(encoded: &str) -> StatusSettings {
         }
     }
     settings
+}
+
+/// The account's servers in the order its server list shows them, each
+/// folder's in its place. `None` when the settings don't say: a partial
+/// update leaves the order as it was.
+pub fn server_order(encoded: &str) -> Option<Vec<String>> {
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let folders = fields(&data).find_map(|(number, value)| match value {
+        Field::Bytes(bytes) if number == GUILD_FOLDERS => Some(bytes),
+        _ => None,
+    })?;
+    let mut order = Vec::new();
+    let mut positions = Vec::new();
+    for (number, value) in fields(folders) {
+        match (number, value) {
+            (FOLDERS, Field::Bytes(folder)) => {
+                for (number, value) in fields(folder) {
+                    if number == FOLDER_GUILDS {
+                        order.extend(fixed64s(value));
+                    }
+                }
+            }
+            (GUILD_POSITIONS, value) => positions.extend(fixed64s(value)),
+            _ => {}
+        }
+    }
+    if order.is_empty() {
+        order = positions;
+    }
+    Some(order.into_iter().map(|id| id.to_string()).collect())
+}
+
+/// Base64 settings holding only a server order: each folder's servers, a
+/// server outside a folder as a folder of one.
+#[cfg(test)]
+pub(crate) fn write_server_order(folders: &[&[u64]]) -> String {
+    let mut message = Vec::new();
+    for servers in folders {
+        let packed: Vec<u8> = servers.iter().flat_map(|id| id.to_le_bytes()).collect();
+        let mut folder = Vec::new();
+        put_bytes(&mut folder, FOLDER_GUILDS, &packed);
+        put_bytes(&mut message, FOLDERS, &folder);
+    }
+    let mut settings = Vec::new();
+    put_bytes(&mut settings, GUILD_FOLDERS, &message);
+    base64::engine::general_purpose::STANDARD.encode(settings)
+}
+
+/// The values of a repeated `fixed64` field: packed, or one by one.
+fn fixed64s(value: Field<'_>) -> Vec<u64> {
+    match value {
+        Field::Fixed64(value) => vec![value],
+        Field::Bytes(packed) => packed
+            .chunks_exact(8)
+            .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Base64 settings that set the custom status, or clear it with `None`.
@@ -272,6 +341,42 @@ mod tests {
         assert_eq!(read.status.as_deref(), Some("dnd"));
         assert_eq!(read.custom, None, "a partial update leaves it as it was");
         assert_eq!(super::read("not base64!"), StatusSettings::default());
+    }
+
+    #[test]
+    fn reads_the_server_order_with_folders_in_place() {
+        let packed = |ids: &[u64]| {
+            ids.iter()
+                .flat_map(|id| id.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+        let mut folders = Vec::new();
+        // A server on its own, a folder of two, then one written unpacked.
+        let mut folder = Vec::new();
+        put_bytes(&mut folder, FOLDER_GUILDS, &packed(&[30]));
+        put_bytes(&mut folders, FOLDERS, &folder);
+        let mut folder = Vec::new();
+        put_bytes(&mut folder, FOLDER_GUILDS, &packed(&[10, 20]));
+        put_bytes(&mut folder, 3, b"\x0a\x05Games");
+        put_bytes(&mut folders, FOLDERS, &folder);
+        let mut folder = Vec::new();
+        put_fixed64(&mut folder, FOLDER_GUILDS, 5);
+        put_bytes(&mut folders, FOLDERS, &folder);
+        put_bytes(&mut folders, GUILD_POSITIONS, &packed(&[1, 2]));
+        let mut settings = Vec::new();
+        put_bytes(&mut settings, STATUS, b"");
+        put_bytes(&mut settings, GUILD_FOLDERS, &folders);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&settings);
+        assert_eq!(server_order(&encoded).unwrap(), ["30", "10", "20", "5"]);
+
+        // Older settings keep only the flat order.
+        let mut folders = Vec::new();
+        put_bytes(&mut folders, GUILD_POSITIONS, &packed(&[2, 1]));
+        let mut settings = Vec::new();
+        put_bytes(&mut settings, GUILD_FOLDERS, &folders);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&settings);
+        assert_eq!(server_order(&encoded).unwrap(), ["2", "1"]);
+        assert_eq!(server_order(&write_custom(None)), None);
     }
 
     #[test]
