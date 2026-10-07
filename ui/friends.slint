@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, ListView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar, TextField } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
@@ -145,11 +145,11 @@ export component FriendsScreen inherits Rectangle {
                 text: root.filter != "" ? "No friend's name matches that." : "None of your friends are around right now.";
             }
         }
-        ScrollView {
+        ListView {
             vertical-stretch: 1;
-            VerticalLayout {
-                padding-bottom: 16px; spacing: 0px; alignment: start;
-                for friend in root.rows: FriendItem {
+            for friend[index] in root.rows: VerticalLayout {
+                padding-bottom: index == root.rows.length - 1 ? 16px : 0px;
+                FriendItem {
                     friend: friend;
                     message => { root.message(friend.id); }
                 }

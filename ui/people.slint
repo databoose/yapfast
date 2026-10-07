@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, ListView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar } from "controls.slint";
 import { StatusDot } from "rail.slint";
@@ -26,11 +26,16 @@ export component MemberPanel inherits Rectangle {
     background: Theme.sidebar;
     accessible-role: list;
     accessible-label: "Members";
-    ScrollView {
-        VerticalLayout {
-            padding-left: 8px; padding-right: 8px; padding-top: 8px; padding-bottom: 12px; spacing: 2px;
-            for member in root.rows: VerticalLayout {
-                spacing: 2px; vertical-stretch: 0;
+    VerticalLayout {
+        if root.note != "": HorizontalLayout { padding: 16px; Label { text: root.note; } }
+        // A list view makes only the rows in sight, which matters in large servers.
+        ListView {
+            vertical-stretch: 1;
+            for member[index] in root.rows: VerticalLayout {
+                padding-left: 8px; padding-right: 8px;
+                padding-top: index == 0 ? 8px : 0px;
+                padding-bottom: index == root.rows.length - 1 ? 12px : 2px;
+                spacing: 2px;
                 if member.heading != "": HorizontalLayout {
                     padding-left: 8px; height: 36px;
                     Text { text: member.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
@@ -69,8 +74,6 @@ export component MemberPanel inherits Rectangle {
                   }
                 }
             }
-            if root.note != "": HorizontalLayout { padding: 8px; Label { text: root.note; } }
-            Rectangle { vertical-stretch: 1; }
         }
     }
 }

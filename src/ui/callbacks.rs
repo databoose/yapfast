@@ -636,10 +636,12 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_draft_edited(move |text| {
-        if let Some(window) = weak.upgrade() {
-            state
-                .borrow_mut()
-                .action(&window, Action::SetDraft(text.into()));
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        // The caret's move usually took the text already; a second refresh
+        // with nothing changed is wasted work on every keystroke.
+        if adapter.app.state.draft() != text.as_str() {
+            adapter.action(&window, Action::SetDraft(text.into()));
         }
     });
     let state = adapter.clone();

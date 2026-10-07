@@ -1,4 +1,4 @@
-import { ScrollView, ListView } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme, Tip, Middle, Label } from "theme.slint";
 import { Avatar } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
@@ -271,7 +271,31 @@ export component ServerRail inherits Rectangle {
 
 // The sidebar's conversations: on the DM home, the friends list and requests
 // first; then each room, with who is in its voice channel under it.
-export component RoomList inherits ScrollView {
+// The friends list, and friend requests, message requests and spam, which
+// open on their own screens, at the top of the DM list.
+component DmScreenLinks inherits VerticalLayout {
+    in property <bool> friends-open;
+    in property <bool> requests-current;
+    in property <string> requests-badge;
+    callback open-friends;
+    callback open-requests;
+    padding-top: 6px; padding-bottom: 6px; spacing: 2px;
+    ChannelRow {
+        text: "Friends";
+        icon: @image-url("icons/users.svg");
+        selected: root.friends-open;
+        clicked => { root.open-friends(); }
+    }
+    ChannelRow {
+        text: "Requests";
+        label: "Requests" + (root.requests-badge != "" ? ", " + root.requests-badge + " waiting" : "");
+        icon: @image-url("icons/inbox.svg");
+        selected: root.requests-current; badge: root.requests-badge;
+        clicked => { root.open-requests(); }
+    }
+}
+
+export component RoomList inherits VerticalLayout {
     in property <[RoomRow]> rooms;
     in property <bool> dms-selected;
     in property <bool> discord-linked;
@@ -295,28 +319,29 @@ export component RoomList inherits ScrollView {
     callback open-volume(PersonRow, length, length);
     callback watch-stream(string);
     min-height: 96px; vertical-stretch: 1;
-    VerticalLayout {
-        padding-left: 8px; padding-right: 8px; padding-bottom: 12px; spacing: 2px;
-        // The friends list, and friend requests, message requests
-        // and spam, open on their own screens.
-        if root.dms-selected && root.discord-linked && !root.preview: VerticalLayout {
-            padding-top: 6px; padding-bottom: 6px; spacing: 2px;
-            ChannelRow {
-                text: "Friends";
-                icon: @image-url("icons/users.svg");
-                selected: root.friends-open;
-                clicked => { root.open-friends(); }
-            }
-            ChannelRow {
-                text: "Requests";
-                label: "Requests" + (root.requests-badge != "" ? ", " + root.requests-badge + " waiting" : "");
-                icon: @image-url("icons/inbox.svg");
-                selected: root.requests-current; badge: root.requests-badge;
-                clicked => { root.open-requests(); }
-            }
+    property <bool> screens: root.dms-selected && root.discord-linked && !root.preview;
+    // With no rooms the list is empty; what it would start with shows above it.
+    if root.rooms.length == 0 && (root.screens || root.sidebar-empty != ""): VerticalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 2px;
+        if root.screens: DmScreenLinks {
+            friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
+            open-friends => { root.open-friends(); }
+            open-requests => { root.open-requests(); }
         }
-        for room in root.rooms: VerticalLayout {
-            spacing: 2px; vertical-stretch: 0;
+        if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
+    }
+    // A list view makes only the rows in sight, which matters with hundreds of DMs.
+    ListView {
+        vertical-stretch: 1;
+        for room[index] in root.rooms: VerticalLayout {
+            padding-left: 8px; padding-right: 8px;
+            padding-bottom: index == root.rooms.length - 1 ? 12px : 2px;
+            spacing: 2px;
+            if index == 0 && root.screens: DmScreenLinks {
+                friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
+                open-friends => { root.open-friends(); }
+                open-requests => { root.open-requests(); }
+            }
             if room.heading != "": HorizontalLayout {
                 padding-left: 8px; height: 36px;
                 Text { text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
@@ -398,7 +423,5 @@ export component RoomList inherits ScrollView {
                 }
             }
         }
-        if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
-        Rectangle { vertical-stretch: 1; }
     }
 }
