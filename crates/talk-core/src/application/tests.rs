@@ -2182,6 +2182,55 @@ fn adds_friends_by_username_and_sets_the_custom_status() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn discord_dialogs_stop_waiting_when_the_backend_cant_answer() {
+    use talk_discord::service::{Snapshot, Status};
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        ..Default::default()
+    }));
+    app.dispatch(Action::OpenAddFriend);
+    let effects = app.dispatch(Action::AddFriend("erin".into()));
+    let [Effect::Backend(command)] = effects.as_slice() else {
+        panic!("the request goes to Discord");
+    };
+    app.backend_failed(command);
+    let dialog = app.state.add_friend.as_ref().expect("still open");
+    assert!(!dialog.sending);
+    assert!(matches!(&dialog.outcome, Some(Err(_))));
+
+    // The backend stopping ends the status editor's and a profile's waits.
+    app.dispatch(Action::OpenStatusEditor);
+    app.dispatch(Action::SetCustomStatus {
+        emoji: None,
+        text: "Hi".into(),
+        clear_after: ClearAfter::Never,
+    });
+    assert!(
+        app.state
+            .status_editor
+            .as_ref()
+            .is_some_and(|editor| editor.saving)
+    );
+    app.state.profile = Some(ProfileView {
+        profile: Profile {
+            id: "2".into(),
+            ..Default::default()
+        },
+        large: false,
+        loading: true,
+        note: None,
+    });
+    app.stopped();
+    let editor = app.state.status_editor.as_ref().expect("still open");
+    assert!(!editor.saving && editor.error.is_some());
+    let profile = app.state.profile.as_ref().expect("still open");
+    assert!(!profile.loading && profile.note.is_some());
+}
+
+#[test]
 fn clears_a_status_today_at_midnight() {
     use chrono::{Datelike, Local, TimeZone, Timelike};
     let evening = Local.with_ymd_and_hms(2026, 10, 7, 21, 30, 0).unwrap();

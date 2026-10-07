@@ -90,8 +90,37 @@ impl Application {
             }
             _ => {}
         }
+        self.stop_waiting();
         self.state.online = false;
         self.state.notice = Some(STOPPED.into());
+    }
+
+    /// Ends what dialogs wait for once no answer can come: sending a friend
+    /// request, saving the custom status and fetching a profile fail.
+    fn stop_waiting(&mut self) {
+        if let Some(dialog) = self
+            .state
+            .add_friend
+            .as_mut()
+            .filter(|dialog| dialog.sending)
+        {
+            dialog.sending = false;
+            dialog.outcome = Some(Err(STOPPED.into()));
+        }
+        if let Some(editor) = self
+            .state
+            .status_editor
+            .as_mut()
+            .filter(|editor| editor.saving)
+        {
+            editor.saving = false;
+            editor.error = Some(STOPPED.into());
+        }
+        let views = [&mut self.state.profile, &mut self.state.panel_profile];
+        for view in views.into_iter().flatten().filter(|view| view.loading) {
+            view.loading = false;
+            view.note = Some("Discord didn't share the rest of this profile.".into());
+        }
     }
 
     /// Call after the event stream closes. Error details from the last event survive.
@@ -101,6 +130,7 @@ impl Application {
         self.state.online = false;
         self.state.sending = None;
         self.state.loading_history = false;
+        self.stop_waiting();
         if self.state.account.is_some() && (self.state.notice.is_none() || was_busy) {
             self.state.notice = Some(STOPPED.into());
         }

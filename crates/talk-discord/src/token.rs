@@ -32,6 +32,19 @@ fn test_link() -> &'static Mutex<Option<String>> {
     })
 }
 
+/// No Discord account is linked on this device, which [`load`] says rather
+/// than failing.
+#[derive(Debug)]
+pub struct NotLinked;
+
+impl std::fmt::Display for NotLinked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no Discord account is linked")
+    }
+}
+
+impl std::error::Error for NotLinked {}
+
 pub fn store(token: &str) -> Result<()> {
     let token = clean(token)?;
     if crate::client::test_server().is_some() {
@@ -51,7 +64,7 @@ pub fn load() -> Result<String> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-            .ok_or_else(|| anyhow!("no Discord account is linked"));
+            .ok_or_else(|| NotLinked.into());
     }
     match entry()?.get_password() {
         Ok(token) => return Ok(token),
@@ -64,7 +77,7 @@ pub fn load() -> Result<String> {
             let _ = named(EARLIER_ACCOUNT)?.delete_credential();
             Ok(token)
         }
-        Err(keyring::Error::NoEntry) => bail!("no Discord account is linked"),
+        Err(keyring::Error::NoEntry) => Err(NotLinked.into()),
         Err(_) => bail!("could not read the token from the OS credential store"),
     }
 }

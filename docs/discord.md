@@ -136,7 +136,11 @@ one attempt. The `rsa` crate carries the Marvin timing advisory
 (RUSTSEC-2023-0071), which needs an attacker to time many decryptions; Talk
 decrypts three messages from Discord per attempt. Linking connects Discord at
 once, without restarting: voice reaches it through a slot the chat backend
-fills. Discord may still ask for a captcha when trading the ticket, which Talk
+fills. When Discord can't start then, or as Talk starts, such as when the
+credential store can't be read, Talk says why. What waits on Discord, such as
+a friend request, the custom status or a profile, fails with that reason
+rather than waiting, as it does when the chat backend stops. Discord may
+still ask for a captcha when trading the ticket, which Talk
 reports as an error for now; a fallback through a small embedded web view is
 still open.
 
