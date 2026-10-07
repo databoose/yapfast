@@ -63,6 +63,9 @@ pub const WATCH_HEIGHT: u32 = 1080;
 const THUMBNAIL_WIDTH: u32 = 512;
 const THUMBNAIL_HEIGHT: u32 = 288;
 const THUMBNAIL_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long a shared stream whose connection ended waits for a server
+/// Discord moved it to.
+const MOVE_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -202,6 +205,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 streaming: false,
                 preview_due: None,
                 thumbnail: None,
+                lost: None,
             };
             report(Report::Ready);
             match source {
@@ -251,6 +255,9 @@ struct Sink {
     preview_due: Option<Instant>,
     /// A preview made but not reported yet.
     thumbnail: Option<String>,
+    /// When the stream connection ended, while Discord may still name a
+    /// server it moved the stream to.
+    lost: Option<Instant>,
 }
 
 struct Video {
@@ -361,8 +368,15 @@ impl Sink {
                 self.preview_due = Some(Instant::now());
                 report(Report::Streaming);
             }
-            Some(Link::Ended(reason)) => bail!("Lost the stream connection: {reason}"),
-            _ => {}
+            // Discord ends the connection when it moves the stream to
+            // another server, which then arrives as another Send.
+            Some(Link::Ended(reason)) => {
+                let lost = *self.lost.get_or_insert_with(Instant::now);
+                if lost.elapsed() >= MOVE_GRACE {
+                    bail!("Lost the stream connection: {reason}");
+                }
+            }
+            _ => self.lost = None,
         }
         if let Some(thumbnail) = self.thumbnail.take() {
             report(Report::Preview { thumbnail });
@@ -972,6 +986,7 @@ mod tests {
             streaming: false,
             preview_due: None,
             thumbnail: None,
+            lost: None,
         };
         // A 1080p picture, mid-grey: luma and chroma halfway.
         let mut picture = I420Buffer::new(SHARE_WIDTH, SHARE_HEIGHT);
@@ -1005,6 +1020,7 @@ mod tests {
             streaming: false,
             preview_due: Some(Instant::now()),
             thumbnail: None,
+            lost: None,
         };
         let mut picture = I420Buffer::new(SHARE_WIDTH, SHARE_HEIGHT);
         let (y, u, v) = picture.data_mut();

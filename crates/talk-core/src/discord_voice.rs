@@ -191,6 +191,20 @@ impl Watch {
         }
     }
 
+    /// Shows the stream from `server`, in place of a worker showing it from
+    /// the server it was on before.
+    fn open(&mut self, server: &StreamServer, state: &mut State) -> Result<()> {
+        self.opening = None;
+        let volume = crate::volume::get(crate::volume::Kind::Stream, &self.user);
+        let (worker, frames, reports) =
+            Worker::watch(server, state.speaker.clone(), state.deafened, volume)?;
+        self.worker = Some((worker, reports));
+        if let Some(shown) = state.watching.as_mut() {
+            shown.frames = Some(Arc::new(frames));
+        }
+        Ok(())
+    }
+
     /// Stops watching on Discord, and the worker with it.
     fn stop(self, discord: &Discord, state: &mut State) {
         discord.end_stream(&self.key);
@@ -257,7 +271,8 @@ pub(crate) async fn call(
     let hearing = std::sync::Arc::new(Hearing::new(ended));
     let joining = async {
         let server = discord.join(guild, channel).await?;
-        DiscordCall::connect(&server, guild, channel, hearing.clone()).await
+        let call = DiscordCall::connect(&server, guild, channel, hearing.clone()).await?;
+        anyhow::Ok((server, call))
     };
     tokio::pin!(joining);
     let deadline = tokio::time::sleep(Duration::from_secs(35));
@@ -283,8 +298,8 @@ pub(crate) async fn call(
             result = &mut joining => break result,
         }
     };
-    let mut call = match joined {
-        Ok(call) => call,
+    let (mut server, mut call) = match joined {
+        Ok(joined) => joined,
         Err(error) => {
             discord.leave(guild);
             return Err(error);
@@ -328,6 +343,11 @@ pub(crate) async fn call(
         let mut ticks = tokio::time::interval(Duration::from_millis(150));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut volumes = crate::volume::changes();
+        // The voice connection dropped, and the call ends when `lost` comes
+        // unless Discord says it moved the call meanwhile.
+        let mut dropped = false;
+        let lost = tokio::time::sleep(MOVE_GRACE);
+        tokio::pin!(lost);
         loop {
             let talking = capture.as_ref().is_some_and(Capture::talking);
             let participants = discord_participants(
@@ -547,18 +567,10 @@ pub(crate) async fn call(
                     let mut stop = None;
                     match event {
                         WatchEvent::Opened(Ok(server)) => {
-                            if let Some(watching) = watch.as_mut() {
-                                watching.opening = None;
-                                let volume = crate::volume::get(crate::volume::Kind::Stream, &watching.user);
-                                match Worker::watch(&server, state.speaker.clone(), state.deafened, volume) {
-                                    Ok((worker, frames, reports)) => {
-                                        watching.worker = Some((worker, reports));
-                                        if let Some(shown) = state.watching.as_mut() {
-                                            shown.frames = Some(Arc::new(frames));
-                                        }
-                                    }
-                                    Err(error) => stop = Some(Some(format!("{error:#}"))),
-                                }
+                            if let Some(watching) = watch.as_mut()
+                                && let Err(error) = watching.open(&server, state)
+                            {
+                                stop = Some(Some(format!("{error:#}")));
                             }
                         }
                         WatchEvent::Opened(Err(error)) => stop = Some(Some(error.to_string())),
@@ -584,26 +596,76 @@ pub(crate) async fn call(
                     }
                     snapshots.send_replace(state.clone());
                 }
-                Ok(Live::StreamEnded { stream_key, reason }) = live.recv() => {
-                    // The streamer stopped, or Discord ended watching.
-                    if watch.as_ref().is_some_and(|watch| watch.key == stream_key)
-                        && let Some(stopped) = watch.take()
-                    {
-                        stopped.stop(discord, state);
-                        snapshots.send_replace(state.clone());
+                Ok(event) = live.recv() => match event {
+                    Live::StreamEnded { stream_key, reason } => {
+                        // The streamer stopped, or Discord ended watching.
+                        if watch.as_ref().is_some_and(|watch| watch.key == stream_key)
+                            && let Some(stopped) = watch.take()
+                        {
+                            stopped.stop(discord, state);
+                            snapshots.send_replace(state.clone());
+                        }
+                        if share.as_ref().is_some_and(|share| share.key.as_ref() == Some(&stream_key))
+                            && let Some(stopped) = share.take()
+                        {
+                            stopped.stop(discord, state);
+                            if reason.as_deref() != Some("user_requested") {
+                                state.error = Some("Discord ended your stream.".into());
+                            }
+                            snapshots.send_replace(state.clone());
+                        }
                     }
-                    if share.as_ref().is_some_and(|share| share.key.as_ref() == Some(&stream_key))
-                        && let Some(stopped) = share.take()
-                    {
-                        stopped.stop(discord, state);
-                        if reason.as_deref() != Some("user_requested") {
-                            state.error = Some("Discord ended your stream.".into());
+                    // Discord moved the call to another voice server: the
+                    // call carries on there.
+                    Live::VoiceMoved { guild: moved, server: next } if moved == guild => {
+                        if dropped || next.endpoint != server.endpoint || next.token != server.token {
+                            tracing::info!("Discord moved the call to another voice server");
+                            match tokio::time::timeout(MOVE_TIMEOUT, call.move_to(&next)).await {
+                                Ok(Ok(())) => {
+                                    server = next;
+                                    dropped = false;
+                                }
+                                Ok(Err(error)) => {
+                                    tracing::warn!(error = format!("{error:#}"), "could not follow the call to its new voice server");
+                                    bail!("Discord moved the call to another voice server, and Talk couldn't connect to it. Join again.");
+                                }
+                                Err(_) => bail!("Discord moved the call to another voice server, which took too long to answer. Join again."),
+                            }
+                        }
+                    }
+                    // Or a stream this account shares or watches.
+                    Live::StreamMoved(next) => {
+                        if starting.is_none()
+                            && let Some(going) = share.as_mut().filter(|going| going.key.as_ref() == Some(&next.stream_key))
+                            && let Err(error) = going.worker.send(&next)
+                            && let Some(stopped) = share.take()
+                        {
+                            stopped.stop(discord, state);
+                            state.error = Some(error.to_string());
+                        }
+                        if let Some(watching) = watch.as_mut().filter(|watching| watching.key == next.stream_key && watching.opening.is_none()) {
+                            if let Some(shown) = state.watching.as_mut() {
+                                shown.opening = true;
+                            }
+                            if let Err(error) = watching.open(&next, state)
+                                && let Some(stopped) = watch.take()
+                            {
+                                stopped.stop(discord, state);
+                                state.error = Some(format!("{error:#}"));
+                            }
                         }
                         snapshots.send_replace(state.clone());
                     }
-                }
+                    _ => {}
+                },
                 Some(reason) = endings.recv() => {
+                    // Discord ends the connection when it moves the call,
+                    // perhaps before it says where to.
                     tracing::warn!(%reason, "Discord voice disconnected");
+                    dropped = true;
+                    lost.as_mut().reset(tokio::time::Instant::now() + MOVE_GRACE);
+                }
+                () = &mut lost, if dropped => {
                     bail!("Discord voice disconnected. Join again to reconnect.");
                 }
                 changed = discord_states.changed() => {
@@ -633,6 +695,12 @@ pub(crate) async fn call(
     discord.leave(guild);
     result
 }
+
+/// How long a dropped voice connection waits for Discord to say it moved
+/// the call, before the call ends.
+const MOVE_GRACE: Duration = Duration::from_secs(5);
+/// How long connecting to the voice server a call moved to may take.
+const MOVE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Opens the chosen speakers, or the system default if they're gone.
 fn open_discord_speakers(

@@ -707,6 +707,36 @@ async fn talks_to_the_fake_server() {
         })
     };
     snapshot_where(&discord, |snapshot| in_lounge(snapshot).is_some()).await;
+
+    // Discord moves the call to another voice server, which Talk hears of
+    // and connects to, while the call goes on.
+    post_control(server, "/_control/voice-move", "");
+    let moved = live_where(&mut live, |event| match event {
+        Live::VoiceMoved {
+            guild: moved,
+            server,
+        } if moved == guild => Some(server),
+        _ => None,
+    })
+    .await;
+    assert_eq!(moved.token, "fake-voice-token-moved");
+    assert_eq!(moved.session_id, assigned.session_id);
+    timeout(WAIT, call.move_to(&moved))
+        .await
+        .expect("timed out moving the call")
+        .unwrap();
+    let identified: Vec<String> = serde_json::from_str(&crate::control(
+        server,
+        "GET",
+        "/_control/voice-identifies",
+        "",
+    ))
+    .unwrap();
+    assert_eq!(
+        identified.last().map(String::as_str),
+        Some("fake-voice-token-moved")
+    );
+
     let watched = discord.watch(&bob_stream).await.unwrap();
     assert_eq!(watched.stream_key, bob_stream);
     assert_eq!(watched.rtc_server_id, "fake-rtc");
@@ -771,6 +801,18 @@ async fn talks_to_the_fake_server() {
         _ => None,
     })
     .await;
+    // Discord moves the stream to another server, which Talk hears of.
+    post_control(server, "/_control/stream-move", &mine.stream_key);
+    let moved = live_where(&mut live, |event| match event {
+        Live::StreamMoved(moved) if moved.stream_key == mine.stream_key => Some(moved),
+        _ => None,
+    })
+    .await;
+    assert_eq!(moved.rtc_server_id, "fake-rtc-moved");
+    assert_eq!(
+        (&moved.session_id, &moved.token),
+        (&mine.session_id, &mine.token)
+    );
 
     // The stream's video: the recording's first frames in the codec Talk
     // sends, a 320x180 keyframe and then deltas, arrive decrypted and whole

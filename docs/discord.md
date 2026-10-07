@@ -171,6 +171,14 @@ module, so Windows needs its own audio backend. songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
 
+Discord may move a call to another voice server, saying so with a new
+`VOICE_SERVER_UPDATE` while the call is connected. Talk connects the call
+there and it goes on. The old server may drop the connection before that
+word comes, so a dropped connection waits five seconds for it before the
+call ends. A stream moves the same way, with a new `STREAM_CREATE` and
+`STREAM_SERVER_UPDATE`: sharing sends to the new server, after waiting up to
+five seconds for it when the old connection ends, and watching connects again.
+
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
 Camera video comes after the beta, together with video in Talk.

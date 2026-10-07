@@ -41,6 +41,9 @@ pub trait Listener: Send + Sync + 'static {
 
 pub struct Call {
     driver: Driver,
+    /// The server and channel ids the connection identifies with.
+    guild_id: NonZeroU64,
+    channel_id: NonZeroU64,
 }
 
 impl Call {
@@ -62,6 +65,7 @@ impl Call {
             Channels::Stereo,
             SampleRate::Hz48000,
         )));
+        let (guild_id, channel_id) = (id(guild_id)?, id(channel_id)?);
         let mut driver = Driver::new(config);
         let handler = Handler {
             listener,
@@ -77,18 +81,29 @@ impl Call {
         ] {
             driver.add_global_event(Event::Core(event), Shared(handler.clone()));
         }
-        driver
+        let mut call = Self {
+            driver,
+            guild_id,
+            channel_id,
+        };
+        call.move_to(server).await?;
+        Ok(call)
+    }
+
+    /// Connects to `server`, as when Discord moves the call to another voice
+    /// server. What plays carries on there.
+    pub async fn move_to(&mut self, server: &VoiceServer) -> Result<()> {
+        self.driver
             .connect(ConnectionInfo {
-                channel_id: id(channel_id)?.into(),
+                channel_id: self.channel_id.into(),
                 endpoint: server.endpoint.clone(),
-                guild_id: id(guild_id)?.into(),
+                guild_id: self.guild_id.into(),
                 session_id: server.session_id.clone(),
                 token: server.token.clone(),
                 user_id: id(&server.user_id)?.into(),
             })
             .await
-            .map_err(|error| anyhow!("could not connect to Discord voice: {error}"))?;
-        Ok(Self { driver })
+            .map_err(|error| anyhow!("could not connect to Discord voice: {error}"))
     }
 
     /// Sends this input's audio, mixed with anything already playing.

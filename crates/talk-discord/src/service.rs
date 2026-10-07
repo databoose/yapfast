@@ -220,6 +220,15 @@ pub enum Live {
         stream_key: String,
         reason: Option<String>,
     },
+    /// Discord moved this account's call in `guild`, or with [`PRIVATE`] its
+    /// DM call, to another voice server, which the call connects to.
+    VoiceMoved {
+        guild: String,
+        server: VoiceServer,
+    },
+    /// Discord moved a stream this account shares or watches to another
+    /// server.
+    StreamMoved(StreamServer),
 }
 
 /// What songbird needs to open the voice connection Discord assigned.
@@ -229,6 +238,17 @@ pub struct VoiceServer {
     pub session_id: String,
     pub token: String,
     pub endpoint: String,
+}
+
+/// Leaves out the token, which no log should show.
+impl std::fmt::Debug for VoiceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceServer")
+            .field("user_id", &self.user_id)
+            .field("session_id", &self.session_id)
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
 }
 
 enum Request {
@@ -1382,6 +1402,13 @@ async fn connected_session(
                         return Ended::Failed(error);
                     }
                 };
+                // A server update that no join or stream waits for moves one
+                // under way.
+                let awaited = match event.name.as_str() {
+                    "VOICE_SERVER_UPDATE" => pending.as_ref().is_some_and(|waiting| waiting.answers(&event.data)),
+                    "STREAM_SERVER_UPDATE" => event.data["stream_key"].as_str().is_some_and(|key| openings.contains_key(key)),
+                    _ => true,
+                };
                 if let Some(waiting) = pending.as_mut() {
                     match event.name.as_str() {
                         "VOICE_STATE_UPDATE" if event.data["user_id"] == me.as_str() && waiting.answers(&event.data) => {
@@ -1465,6 +1492,9 @@ async fn connected_session(
                 if tracker.apply(&event.name, &event.data) {
                     stale = true;
                 }
+                if !awaited && let Some(moved) = tracker.moved(&event.name, &event.data) {
+                    let _ = shared.live.send(moved);
+                }
                 if event.name == "USER_SETTINGS_PROTO_UPDATE" {
                     status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
                     if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
@@ -1536,6 +1566,8 @@ struct Tracker {
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
+    /// The RTC server of each stream this account shares or watches, by key.
+    streams: HashMap<String, String>,
 }
 
 /// A user's Nitro from their user object, as [`Account::premium_type`].
@@ -1567,6 +1599,7 @@ impl Tracker {
             status: "online".into(),
             custom_status: None,
             requests: HashMap::new(),
+            streams: HashMap::new(),
         };
         tracker.sort_servers();
         if let Some(encoded) = ready["user_settings_proto"].as_str() {
@@ -1893,7 +1926,69 @@ impl Tracker {
                 }
                 true
             }
+            // Discord sends STREAM_CREATE to the streamer and those who
+            // watch, naming the stream's server again when it moves.
+            "STREAM_CREATE" | "STREAM_UPDATE" | "STREAM_DELETE" => {
+                let Some(key) = data["stream_key"].as_str() else {
+                    return false;
+                };
+                let rtc = data["rtc_server_id"].as_str().map(str::to_owned);
+                match (name, rtc) {
+                    ("STREAM_DELETE", _) => {
+                        self.streams.remove(key);
+                    }
+                    ("STREAM_CREATE", Some(rtc)) => {
+                        self.streams.insert(key.to_owned(), rtc);
+                    }
+                    ("STREAM_UPDATE", Some(rtc)) => {
+                        if let Some(known) = self.streams.get_mut(key) {
+                            *known = rtc;
+                        }
+                    }
+                    _ => {}
+                }
+                false
+            }
             _ => false,
+        }
+    }
+
+    /// Where a call or stream this account is in went, from a server update
+    /// that no join or stream waited for: Discord moved it to another server.
+    fn moved(&self, name: &str, data: &Value) -> Option<Live> {
+        // The endpoint is null while Discord is still allocating a server.
+        let (token, endpoint) = (data["token"].as_str()?, data["endpoint"].as_str()?);
+        match name {
+            "VOICE_SERVER_UPDATE" => {
+                let guild = data["guild_id"].as_str().unwrap_or(PRIVATE);
+                let entry = self.voice.get(&(guild.to_owned(), self.me.clone()))?;
+                // A DM call's update names its channel instead.
+                if guild == PRIVATE && data["channel_id"] != entry.channel.as_str() {
+                    return None;
+                }
+                Some(Live::VoiceMoved {
+                    guild: guild.to_owned(),
+                    server: VoiceServer {
+                        user_id: self.me.clone(),
+                        session_id: entry.session.clone()?,
+                        token: token.to_owned(),
+                        endpoint: endpoint.to_owned(),
+                    },
+                })
+            }
+            "STREAM_SERVER_UPDATE" => {
+                let key = data["stream_key"].as_str()?;
+                let (guild, _, _) = stream::parse(key)?;
+                Some(Live::StreamMoved(StreamServer {
+                    stream_key: key.to_owned(),
+                    user_id: self.me.clone(),
+                    session_id: self.voice_session(guild)?.to_owned(),
+                    rtc_server_id: self.streams.get(key)?.clone(),
+                    token: token.to_owned(),
+                    endpoint: endpoint.to_owned(),
+                }))
+            }
+            _ => None,
         }
     }
 
@@ -2974,6 +3069,83 @@ mod tests {
         assert!(!tracker.notifies(&from("3")));
         tracker.status = "idle".into();
         assert!(tracker.notifies(&from("3")));
+    }
+
+    #[test]
+    fn follows_calls_and_streams_to_new_servers() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "guilds": [{"id": "10", "properties": {"name": "Test"}, "channels": [
+                {"id": "11", "name": "Lounge", "type": 2, "position": 0},
+            ]}],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let update =
+            json!({"guild_id": "10", "token": "new", "endpoint": "moved.discord.media:443"});
+        assert!(
+            tracker.moved("VOICE_SERVER_UPDATE", &update).is_none(),
+            "not in a call there"
+        );
+        tracker.apply(
+            "VOICE_STATE_UPDATE",
+            &json!({"guild_id": "10", "user_id": "1", "channel_id": "11", "session_id": "s"}),
+        );
+        let Some(Live::VoiceMoved { guild, server }) =
+            tracker.moved("VOICE_SERVER_UPDATE", &update)
+        else {
+            panic!("the call moved");
+        };
+        assert_eq!(guild, "10");
+        assert_eq!(
+            (
+                server.session_id.as_str(),
+                server.token.as_str(),
+                server.endpoint.as_str()
+            ),
+            ("s", "new", "moved.discord.media:443")
+        );
+        let allocating = json!({"guild_id": "10", "token": "new", "endpoint": null});
+        assert!(tracker.moved("VOICE_SERVER_UPDATE", &allocating).is_none());
+
+        // A stream moves where its last STREAM_CREATE said.
+        let key = stream::key("10", "11", "1");
+        let server_update =
+            json!({"stream_key": key, "token": "t2", "endpoint": "moved.discord.media:443"});
+        assert!(
+            tracker
+                .moved("STREAM_SERVER_UPDATE", &server_update)
+                .is_none(),
+            "a stream it isn't in"
+        );
+        tracker.apply(
+            "STREAM_CREATE",
+            &json!({"stream_key": key, "rtc_server_id": "rtc"}),
+        );
+        tracker.apply(
+            "STREAM_CREATE",
+            &json!({"stream_key": key, "rtc_server_id": "rtc2"}),
+        );
+        let Some(Live::StreamMoved(server)) = tracker.moved("STREAM_SERVER_UPDATE", &server_update)
+        else {
+            panic!("the stream moved");
+        };
+        assert_eq!(
+            (
+                server.rtc_server_id.as_str(),
+                server.session_id.as_str(),
+                server.token.as_str()
+            ),
+            ("rtc2", "s", "t2")
+        );
+        tracker.apply(
+            "STREAM_DELETE",
+            &json!({"stream_key": key, "reason": "user_requested"}),
+        );
+        assert!(
+            tracker
+                .moved("STREAM_SERVER_UPDATE", &server_update)
+                .is_none()
+        );
     }
 
     #[test]
