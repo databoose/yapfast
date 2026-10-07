@@ -28,6 +28,10 @@ export struct RoomRow {
     /// they're doing, or a group DM's size.
     presence: string,
     detail: string,
+    /// Its heading's category is collapsed; and the row is only that heading,
+    /// for a category with nothing left showing.
+    collapsed: bool,
+    hidden: bool,
 }
 
 // A server or the DM home: a circle that becomes a squircle, with a pill at the rail edge.
@@ -247,6 +251,42 @@ export component ChannelRow inherits Rectangle {
     }
 }
 
+// A channel category's heading. Clicking it collapses the category, or opens it again.
+component CategoryHeading inherits Rectangle {
+    in property <string> text;
+    in property <bool> collapsed;
+    callback toggled;
+    height: 36px;
+    accessible-role: button;
+    accessible-label: root.text + (root.collapsed ? ", collapsed" : ", expanded");
+    accessible-action-default => { root.toggled(); }
+    forward-focus: focus;
+    property <color> ink: touch.has-hover ? Theme.secondary : Theme.muted;
+    HorizontalLayout {
+        padding-left: 2px; spacing: 2px;
+        Image {
+            source: root.collapsed ? @image-url("icons/chevron-right.svg") : @image-url("icons/chevron-down.svg");
+            width: 12px; image-fit: contain; colorize: root.ink;
+        }
+        Text {
+            text: root.text; color: root.ink; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.toggled(); return accept;
+            }
+            return reject;
+        }
+        touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.toggled(); } }
+    }
+    Rectangle {
+        border-radius: 4px; border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
+    }
+}
+
 // The server rail: the DMs, then each server.
 export component ServerRail inherits Rectangle {
     in property <bool> dms-selected;
@@ -339,6 +379,8 @@ export component RoomList inherits VerticalLayout {
     /// A right click on a participant, with where it was in the window.
     callback open-volume(PersonRow, length, length);
     callback watch-stream(string);
+    /// A category's heading was clicked: collapse or open it.
+    callback toggle-category(string);
     min-height: 96px; vertical-stretch: 1;
     property <bool> screens: root.dms-selected && root.discord-linked && !root.preview;
     // With no rooms the list is empty; what it would start with shows above it.
@@ -363,11 +405,11 @@ export component RoomList inherits VerticalLayout {
                 open-friends => { root.open-friends(); }
                 open-requests => { root.open-requests(); }
             }
-            if room.heading != "": HorizontalLayout {
-                padding-left: 8px; height: 36px;
-                Text { text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+            if room.heading != "": CategoryHeading {
+                text: room.heading; collapsed: room.collapsed;
+                toggled => { root.toggle-category(room.heading); }
             }
-            ChannelRow {
+            if !room.hidden: ChannelRow {
                 text: room.name;
                 label: room.name + (room.discord ? ", Discord" : "")
                     + (room.presence == "dnd" ? ", do not disturb" : room.presence != "" ? ", " + room.presence : "")

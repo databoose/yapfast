@@ -1115,3 +1115,55 @@ fn signed_in_controls_keep_trust_and_plaintext_sending_gates() {
     assert_eq!(window.get_draft(), "Keep encrypted");
     assert!(!window.get_sending());
 }
+
+#[test]
+fn collapsed_categories_keep_the_open_unread_and_occupied_channels() {
+    let row = |id: &str, heading: &str| RoomRow {
+        id: id.into(),
+        heading: heading.into(),
+        ..Default::default()
+    };
+    let rows = vec![
+        row("a", "TEXT"),
+        RoomRow {
+            selected: true,
+            ..row("b", "")
+        },
+        RoomRow {
+            unread: true,
+            ..row("c", "")
+        },
+        row("d", ""),
+        row("e", "VOICE"),
+        row("f", ""),
+        row("g", "OTHER"),
+        row("h", ""),
+    ];
+    let collapsed = std::collections::BTreeSet::from(["TEXT".to_owned(), "VOICE".to_owned()]);
+    let folded = refresh::fold_collapsed(rows, &collapsed, Some("f"));
+    let shown: Vec<_> = folded
+        .iter()
+        .map(|row| {
+            (
+                row.id.as_str(),
+                row.heading.as_str(),
+                row.collapsed,
+                row.hidden,
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            // A category's first channel goes, and its heading stays alone.
+            ("", "TEXT", true, true),
+            ("b", "", true, false),
+            ("c", "", true, false),
+            ("", "VOICE", true, true),
+            // The voice channel Talk is in stays.
+            ("f", "", true, false),
+            ("g", "OTHER", false, false),
+            ("h", "", false, false),
+        ]
+    );
+}

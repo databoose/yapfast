@@ -40,7 +40,7 @@
 // Bob post a spoiler, custom emoji, stickers, a GIF, a spoilered picture and a reply
 // to the start of #general's history, and Alice block Dave, who then posts.
 // Alice's custom status, "Testing Talk", is in her settings; PATCH
-// /users/@me/settings-proto/1 replaces it, and GET /_control/presence shows the
+// /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
 // a friend request by username: Frank takes none, and unknown names fail.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
@@ -2118,8 +2118,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return empty();
   }
 
-  // Alice's settings: Talk changes only the custom status, which every
-  // session hears of.
+  // Alice's settings: Talk changes the status or the custom status, which
+  // every session hears of. The fake keeps only the latest change.
   if (method === "PATCH" && path === "/users/@me/settings-proto/1") {
     const body: any = await req.json().catch(() => ({}));
     if (typeof body.settings !== "string") return json({ message: "Invalid Form Body", code: 50035 }, 400);

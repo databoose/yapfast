@@ -278,19 +278,31 @@ export component TextField inherits Rectangle {
 }
 
 // A round button answering or ending a call.
-export component CallButton inherits Rectangle {
+export component CallButton inherits VerticalLayout {
     in property <image> icon;
+    /// Said under the button, so its meaning doesn't rest on the icon.
     in property <string> label;
     in property <color> fill;
     in property <bool> enabled: true;
     callback clicked;
-    width: 64px; height: 48px; border-radius: 24px;
-    background: touch.has-hover ? root.fill.darker(0.15) : root.fill;
+    spacing: 6px;
     opacity: root.enabled ? 1 : 0.5;
-    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { root.clicked(); } }
-    Image { source: root.icon; width: 22px; height: 22px; colorize: #ffffff; }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            width: 64px; height: 48px; border-radius: 24px;
+            background: touch.has-hover ? root.fill.darker(0.15) : root.fill;
+            accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
+            accessible-action-default => { if root.enabled { root.clicked(); } }
+            Image { source: root.icon; width: 22px; height: 22px; colorize: #ffffff; }
+            touch := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+        }
+    }
+    Text {
+        text: root.label; font-size: 13px; horizontal-alignment: center;
+        color: touch.has-hover ? Theme.text : Theme.secondary;
+        accessible-role: none;
+    }
 }
 
 // A picture, or an animation's frames in turn while it shows.

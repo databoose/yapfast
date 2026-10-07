@@ -672,6 +672,9 @@ pub enum Command {
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
+    /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`;
+    /// [`Event::StatusSet`] follows.
+    SetStatus(String),
     /// Connect the Discord account that was just linked.
     StartDiscord,
     /// Forget the linked Discord account on this device, ending its session
@@ -731,6 +734,8 @@ pub enum Event {
     FriendAdded(Result<String, String>),
     /// Whether [`Command::SetCustomStatus`] changed it, or why not.
     CustomStatusSet(Result<(), String>),
+    /// Whether [`Command::SetStatus`] changed it, or why not.
+    StatusSet(Result<(), String>),
     /// [`Command::UnlinkDiscord`] forgot the account.
     DiscordUnlinked,
     /// The roles and groups a message in a room may mention.
@@ -1175,6 +1180,7 @@ pub async fn run(
                     | Command::Friend { .. }
                     | Command::AddFriend { .. }
                     | Command::SetCustomStatus(_)
+                    | Command::SetStatus(_)
                     | Command::StartDiscord
                     | Command::UnlinkDiscord
                     | Command::Profile { .. }

@@ -452,6 +452,9 @@ struct Layout {
     zoom: Option<f32>,
     /// Each server's last selected channel, by server ID.
     channels: HashMap<String, String>,
+    /// Each server's collapsed channel categories, by server ID, as their
+    /// headings show them.
+    collapsed: HashMap<String, std::collections::BTreeSet<String>>,
     /// How often this device added each reaction, for the frequent reactions.
     reactions: HashMap<String, u32>,
     /// List Discord channels hidden from this account, locked.

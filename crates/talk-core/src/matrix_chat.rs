@@ -639,6 +639,7 @@ impl Matrix {
             | Command::Friend { .. }
             | Command::AddFriend { .. }
             | Command::SetCustomStatus(_)
+            | Command::SetStatus(_)
             | Command::StartDiscord
             | Command::UnlinkDiscord
             | Command::Profile { .. }

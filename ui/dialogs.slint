@@ -1,7 +1,8 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar, TextField } from "controls.slint";
+import { ActionButton, IconButton, Avatar, TextField, MenuItem } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
+import { StatusDot } from "rail.slint";
 import { EmojiCell } from "messages.slint";
 import { Choices } from "settings.slint";
 
@@ -292,6 +293,91 @@ export component ForwardDialog inherits Rectangle {
                     ActionButton { text: "Done"; clicked => { root.close-forward(); } }
                 }
             }
+        }
+    }
+}
+
+// A status in the status menu: its dot, its name and what it does, with a
+// check beside the current one.
+component StatusOption inherits Rectangle {
+    in property <string> key;
+    in property <string> name;
+    in property <string> note;
+    in property <bool> checked;
+    callback clicked;
+    height: max(36px, content.preferred-height);
+    border-radius: 4px;
+    background: pointer.has-hover ? Theme.active : transparent;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.note;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    content := HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; padding-top: 6px; padding-bottom: 6px; spacing: 10px;
+        Middle {
+            StatusDot {
+                presence: root.key == "invisible" ? "offline" : root.key;
+                ring: pointer.has-hover ? Theme.active : Theme.raised;
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            Text {
+                text: root.name; font-size: 15px; font-weight: root.checked ? 700 : 400;
+                color: root.checked || pointer.has-hover ? Theme.text : Theme.secondary;
+            }
+            if root.note != "": Text { text: root.note; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+        }
+        if root.checked: Middle {
+            Image { source: @image-url("icons/check.svg"); width: 16px; image-fit: contain; colorize: Theme.accent; }
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    }
+}
+
+// The account's Discord status, picked from a menu over the account panel as
+// in Discord, and the way into its custom status.
+export component StatusMenu inherits Rectangle {
+    /// "online", "idle", "dnd" or "invisible".
+    in property <string> status;
+    in property <bool> has-custom-status;
+    callback choose(string);
+    callback custom-status;
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    accessible-role: groupbox;
+    accessible-label: "Status";
+    VerticalLayout {
+        padding: 6px; spacing: 2px;
+        for option in [
+            { key: "online", name: "Online", note: "" },
+            { key: "idle", name: "Idle", note: "" },
+            { key: "dnd", name: "Do Not Disturb", note: "You won't get message notifications." },
+            { key: "invisible", name: "Invisible", note: "You'll show as offline, but can use Talk as usual." },
+        ]: StatusOption {
+            key: option.key; name: option.name; note: option.note; checked: root.status == option.key;
+            clicked => { root.choose(option.key); }
+        }
+        HorizontalLayout {
+            padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px;
+            Rectangle { height: 1px; background: Theme.line; }
+        }
+        MenuItem {
+            text: root.has-custom-status ? "Change custom status" : "Set a custom status";
+            icon: @image-url("icons/smile-plus.svg");
+            clicked => { root.custom-status(); }
         }
     }
 }
