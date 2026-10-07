@@ -1228,7 +1228,7 @@ impl Adapter {
             if room.is_none() {
                 "Choose a DM or server channel to write a message."
             } else if state.preview {
-                "Enter to send locally."
+                "Enter to send locally, Shift+Enter for a new line."
             } else if room.is_some_and(|room| room.request) {
                 "Discord · not end-to-end encrypted."
             } else if discord_room && room.is_some_and(|room| room.read_only || room.locked) {
@@ -1236,11 +1236,11 @@ impl Adapter {
             } else if discord_room && !state.discord_online {
                 "Discord is disconnected. Talk is reconnecting."
             } else if discord_room {
-                "Discord · not end-to-end encrypted. Enter to send."
+                "Discord · not end-to-end encrypted. Enter to send, Shift+Enter for a new line."
             } else if !state.trusted {
                 "Sending is locked until this device is verified."
             } else if room.is_some_and(|room| room.encrypted) {
-                "End-to-end encrypted. Enter to send."
+                "End-to-end encrypted. Enter to send, Shift+Enter for a new line."
             } else {
                 "Unencrypted room. Reading only in this build."
             }
@@ -2544,6 +2544,42 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_composer_sends_on_enter_and_breaks_lines_on_shift_enter() {
+        use slint::platform::{Key, WindowEvent};
+        let window = one_message("Hi");
+        let sent = Rc::new(Cell::new(0));
+        let count = sent.clone();
+        window.on_send(move || count.set(count.get() + 1));
+        window.invoke_focus_composer();
+        let press = |text: SharedString| {
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        };
+        press("a".into());
+        window.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Shift.into(),
+        });
+        press(Key::Return.into());
+        window.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Shift.into(),
+        });
+        press("b".into());
+        assert_eq!(window.get_draft(), "a\nb");
+        assert_eq!(sent.get(), 0);
+        press(Key::Return.into());
+        assert_eq!(sent.get(), 1);
+        assert_eq!(
+            window.get_draft(),
+            "a\nb",
+            "sending is the application's to clear"
+        );
+    }
 
     #[test]
     fn preferences_set_the_clock_text_size_previews_and_unmuting() {

@@ -332,6 +332,63 @@ component TextField inherits Rectangle {
     }
 }
 
+// The message composer. Text wraps and the field grows to about ten lines, then
+// scrolls to keep the cursor in view. Enter sends; Shift+Enter starts a new line.
+component Composer inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <string> label;
+    in property <length> text-size: 16px;
+    callback edited(string);
+    callback accepted;
+    public function focus-input() { input.focus(); }
+    property <length> pad: 12px;
+    property <length> line: root.text-size * 1.5;
+    horizontal-stretch: 1;
+    height: max(48px, min(input.preferred-height + 2 * root.pad, 10 * root.line + 2 * root.pad));
+    Text {
+        x: 6px; y: root.pad; width: root.width - 12px; height: root.line;
+        visible: root.text == "";
+        text: root.placeholder; color: root.enabled ? Theme.muted : Theme.faint; font-size: root.text-size;
+        vertical-alignment: center; overflow: elide;
+    }
+    FocusScope {
+        x: 6px; y: root.pad; width: root.width - 12px; height: root.height - 2 * root.pad;
+        capture-key-pressed(event) => {
+            if event.text == Key.Return && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt {
+                root.accepted();
+                return accept;
+            }
+            return reject;
+        }
+        flick := Flickable {
+            content-height: input.height;
+            input := TextInput {
+                width: flick.width;
+                height: max(flick.height, self.preferred-height);
+                text <=> root.text;
+                enabled: root.enabled;
+                single-line: false;
+                wrap: word-wrap;
+                font-size: root.text-size;
+                color: root.enabled ? Theme.text : Theme.muted;
+                selection-background-color: Theme.accent.with-alpha(0.35);
+                selection-foreground-color: Theme.text;
+                accessible-label: root.label;
+                edited => { root.edited(self.text); }
+                cursor-position-changed(position) => {
+                    if position.y + flick.content-y < 0px {
+                        flick.content-y = -position.y;
+                    } else if position.y + root.line + flick.content-y > flick.height {
+                        flick.content-y = flick.height - position.y - root.line;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Marks something from Discord: its logo, white on blurple, on a ring of the
 // colour behind it.
 component DiscordBadge inherits Rectangle {
@@ -2603,23 +2660,29 @@ export component TalkWindow inherits Window {
                                 border-top-right-radius: root.compose-label != "" ? 0px : 10px;
                                 HorizontalLayout {
                                     padding-left: 10px; padding-right: 8px; spacing: 6px;
-                                    IconButton {
-                                        icon: @image-url("icons/circle-plus.svg"); label: root.attaching ? "Attaching..." : "Attach a file";
-                                        glyph: 22px;
-                                        enabled: root.can-attach; clicked => { root.attach(); }
+                                    // The buttons stay on the last line as the composer grows.
+                                    VerticalLayout {
+                                        alignment: end; padding-bottom: 8px;
+                                        IconButton {
+                                            icon: @image-url("icons/circle-plus.svg"); label: root.attaching ? "Attaching..." : "Attach a file";
+                                            glyph: 22px;
+                                            enabled: root.can-attach; clicked => { root.attach(); }
+                                        }
                                     }
-                                    composer := TextField {
-                                        min-height: 48px; fill: transparent; ring: false; pad: 6px; text-size: 16px;
+                                    composer := Composer {
                                         text <=> root.draft; enabled: root.composer-enabled; label: "Message";
                                         placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
                                         edited(text) => { root.draft-edited(text); }
                                         accepted => { root.send(); }
                                     }
-                                    IconButton {
-                                        icon: @image-url("icons/send-horizontal.svg");
-                                        label: root.sending ? "Sending..." : root.is-editing ? "Save" : "Send";
-                                        enabled: root.can-send; emphasis: root.can-send;
-                                        clicked => { root.send(); }
+                                    VerticalLayout {
+                                        alignment: end; padding-bottom: 8px;
+                                        IconButton {
+                                            icon: @image-url("icons/send-horizontal.svg");
+                                            label: root.sending ? "Sending..." : root.is-editing ? "Save" : "Send";
+                                            enabled: root.can-send; emphasis: root.can-send;
+                                            clicked => { root.send(); }
+                                        }
                                     }
                                 }
                             }
