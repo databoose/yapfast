@@ -196,13 +196,14 @@ impl Gateway {
         .await
     }
 
-    /// Starts sharing to the voice channel this account is in. Discord answers
-    /// with STREAM_CREATE and then STREAM_SERVER_UPDATE.
-    pub async fn create_stream(&mut self, guild_id: &str, channel_id: &str) -> Result<()> {
+    /// Starts sharing to the voice channel this account is in, or with no
+    /// server, the DM call. Discord answers with STREAM_CREATE and then
+    /// STREAM_SERVER_UPDATE.
+    pub async fn create_stream(&mut self, guild_id: Option<&str>, channel_id: &str) -> Result<()> {
         self.send(
             STREAM_CREATE,
             json!({
-                "type": "guild",
+                "type": if guild_id.is_some() { "guild" } else { "call" },
                 "guild_id": guild_id,
                 "channel_id": channel_id,
                 "preferred_region": null,

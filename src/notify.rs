@@ -50,8 +50,9 @@ impl Notifier {
 }
 
 /// The body of a notification: the message, or for privacy only that there is one.
+/// A call's says only that it's ringing.
 fn body(alert: &Alert, style: Style) -> String {
-    if style.text {
+    if style.text || alert.call {
         alert.body.clone()
     } else {
         "New message".into()
@@ -110,7 +111,8 @@ mod linux {
             }
             let mut hints = HashMap::<&str, Value>::new();
             hints.insert("category", Value::from("im.received"));
-            if style.sound {
+            // Talk rings for a call itself.
+            if style.sound && !alert.call {
                 hints.insert("sound-name", Value::from("message-new-instant"));
             } else {
                 hints.insert("suppress-sound", Value::from(true));

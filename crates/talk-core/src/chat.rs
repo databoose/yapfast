@@ -43,8 +43,12 @@ pub struct ChatRoom {
     pub request: bool,
     /// The other person in a one-to-one DM: their Discord user id or Matrix ID.
     pub person: Option<String>,
-    /// Who is in a Discord voice channel, known without joining it.
+    /// Who is in a Discord voice channel or DM call, known without joining it.
     pub people: Vec<VoicePerson>,
+    /// Whom a Discord DM call here is ringing, other than this account.
+    pub ringing: Vec<VoicePerson>,
+    /// A Discord DM call here is ringing this account.
+    pub incoming: bool,
     /// The address of a Discord DM's picture: the other person's avatar or
     /// the group's icon. See [`Command::Pictures`].
     pub avatar: Option<String>,
@@ -54,6 +58,20 @@ pub struct ChatRoom {
 
 /// The most files one message carries, as Discord allows.
 pub const MAX_FILES: usize = 10;
+
+/// A Discord friend request waiting for an answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FriendRequest {
+    /// Their Discord user id.
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// Sent to this account, rather than by it.
+    pub incoming: bool,
+    /// Discord took it for spam.
+    pub spam: bool,
+}
 
 /// A file waiting in the composer to go with the next message.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -477,6 +495,16 @@ pub enum Command {
         room: String,
         accept: bool,
     },
+    /// Decline a Discord DM call ringing this account.
+    DeclineCall {
+        room: String,
+    },
+    /// Send a Discord user a friend request or accept theirs, or with
+    /// `add` false, ignore theirs or cancel this account's.
+    Friend {
+        user: String,
+        add: bool,
+    },
     /// Fetch a Discord user's profile, as a member of a room's server or as
     /// the other person in a DM. It comes back as [`Event::Profile`].
     Profile {
@@ -720,6 +748,8 @@ pub struct Alert {
     pub title: String,
     pub body: String,
     pub picture: Option<Arc<Picture>>,
+    /// A call ringing this account, rather than a message.
+    pub call: bool,
 }
 
 /// What woke the actor. Each network's own events are handled by its module.
@@ -838,6 +868,8 @@ pub async fn run(
                     | Command::SearchMembers { .. }
                     | Command::RoleMembers { .. }
                     | Command::AnswerRequest { .. }
+                    | Command::DeclineCall { .. }
+                    | Command::Friend { .. }
                     | Command::Profile { .. }
                     | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]

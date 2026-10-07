@@ -105,6 +105,11 @@ pub struct AppState {
     pub voice: voice::State,
     /// Discord is linked on this device and connected.
     pub discord_online: bool,
+    /// The linked Discord account's user id.
+    pub discord_user: Option<String>,
+    /// Its friends, by user id, and friend requests waiting for an answer.
+    pub discord_friends: Vec<String>,
+    pub friend_requests: Vec<chat::FriendRequest>,
     /// Whether Discord channels hidden from this account are listed, locked.
     pub show_hidden_channels: bool,
     /// Reading a Discord channel in Talk marks it read on Discord too.
@@ -395,11 +400,31 @@ impl AppState {
         !self.busy && !discord::is_discord(&room.id) && self.writable(room)
     }
 
+    /// How this Discord account stands with a Discord user.
+    pub fn relation(&self, user: &str) -> Relation {
+        if self.discord_user.as_deref() == Some(user) {
+            Relation::Me
+        } else if self.discord_friends.iter().any(|friend| friend == user) {
+            Relation::Friend
+        } else {
+            match self
+                .friend_requests
+                .iter()
+                .find(|request| request.id == user)
+            {
+                Some(request) if request.incoming => Relation::Incoming,
+                Some(_) => Relation::Outgoing,
+                None => Relation::Stranger,
+            }
+        }
+    }
+
     pub fn can_join_voice(&self, id: &str) -> bool {
         !matches!(self.voice.phase, Phase::Joining | Phase::Leaving)
             && self.rooms.iter().any(|room| {
                 room.id == id
-                    && room.voice
+                    // A Discord DM or group DM has a call; a request waits for an answer.
+                    && (room.voice || (room.direct && discord::is_discord(id) && !room.request))
                     && !room.locked
                     && if discord::is_discord(id) {
                         self.discord_online && !self.busy
@@ -409,6 +434,18 @@ impl AppState {
                     }
             })
     }
+}
+
+/// How the linked Discord account stands with someone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Relation {
+    Me,
+    Friend,
+    /// They sent this account a friend request.
+    Incoming,
+    /// This account sent them one.
+    Outgoing,
+    Stranger,
 }
 
 pub enum Action {
@@ -477,6 +514,14 @@ pub enum Action {
     Logout,
     Preview,
     RequestJoinVoice(String),
+    /// Answer a Discord DM call ringing this account: open the conversation
+    /// and join, leaving any other call, or decline it.
+    AcceptCall(String),
+    DeclineCall(String),
+    /// Send a Discord user a friend request, or accept theirs.
+    Befriend(String),
+    /// Ignore a Discord user's friend request, or cancel this account's.
+    RemoveFriendRequest(String),
     ConfirmVoiceSwitch,
     CancelVoiceSwitch,
     DismissVoiceError,
@@ -617,6 +662,13 @@ impl Application {
                 state
                     .selected_room()
                     .and_then(|room| room.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .friend_requests
+                    .iter()
+                    .filter(|_| state.navigation == Navigation::DirectMessages)
+                    .filter_map(|request| request.avatar.as_deref()),
             )
             .chain(state.profile.iter().flat_map(|view| {
                 [&view.profile.avatar, &view.profile.banner]
@@ -1159,6 +1211,32 @@ impl Application {
                     self.voice_command(voice::Command::Join(id))
                 }
             }
+            Action::AcceptCall(id) => {
+                if !self.state.can_join_voice(&id) {
+                    return vec![];
+                }
+                let mut effects = self.dispatch(Action::Open(id.clone()));
+                if self.state.voice.room.as_ref() != Some(&id) || !self.state.voice.active() {
+                    if self.state.voice.active() {
+                        effects.extend(self.voice_command(voice::Command::Leave));
+                    }
+                    effects.extend(self.voice_command(voice::Command::Join(id)));
+                }
+                effects
+            }
+            Action::DeclineCall(room) => vec![Effect::Backend(Command::DeclineCall { room })],
+            Action::Befriend(user) => match self.state.relation(&user) {
+                Relation::Stranger | Relation::Incoming => {
+                    vec![Effect::Backend(Command::Friend { user, add: true })]
+                }
+                _ => vec![],
+            },
+            Action::RemoveFriendRequest(user) => match self.state.relation(&user) {
+                Relation::Incoming | Relation::Outgoing => {
+                    vec![Effect::Backend(Command::Friend { user, add: false })]
+                }
+                _ => vec![],
+            },
             Action::ConfirmVoiceSwitch => {
                 let Some(id) = self.state.switch_voice.take() else {
                     return vec![];
@@ -1333,6 +1411,7 @@ impl Application {
             title,
             body,
             picture,
+            call: false,
         }
     }
 
@@ -1398,6 +1477,19 @@ impl Application {
                         Status::Offline(reason) => reason.clone(),
                     });
                 }
+                self.state.discord_user = snapshot.user_id.clone();
+                self.state.discord_friends = snapshot.friends.clone();
+                self.state.friend_requests = snapshot
+                    .friend_requests
+                    .iter()
+                    .map(|request| chat::FriendRequest {
+                        id: request.user_id.clone(),
+                        name: request.name.clone(),
+                        avatar: Some(request.avatar.clone()),
+                        incoming: request.incoming,
+                        spam: request.spam,
+                    })
+                    .collect();
                 self.discord = Some(snapshot);
                 let mut effects = self.list_discord();
                 effects.extend(self.mark_discord_read());
@@ -1714,12 +1806,45 @@ impl Application {
     }
 
     fn list_discord(&mut self) -> Vec<Effect> {
+        #[allow(unused_mut)]
+        let mut effects = vec![];
         #[cfg(feature = "discord")]
         if let Some(snapshot) = &self.discord {
+            let rung: Vec<String> = self
+                .discord_rooms
+                .iter()
+                .filter(|room| room.incoming)
+                .map(|room| room.id.clone())
+                .collect();
             (self.discord_rooms, self.discord_servers) =
                 discord::index(snapshot, self.state.show_hidden_channels);
+            // A call that starts ringing this account notifies once.
+            for room in &self.discord_rooms {
+                if room.incoming
+                    && !rung.contains(&room.id)
+                    && self.state.voice.room.as_ref() != Some(&room.id)
+                {
+                    let caller = room.people.first();
+                    effects.push(Effect::Notify(chat::Alert {
+                        room: room.id.clone(),
+                        title: room.name.clone(),
+                        body: match caller {
+                            Some(caller) if room.person.is_none() => {
+                                format!("{} is calling", caller.name)
+                            }
+                            _ => "Incoming call".into(),
+                        },
+                        picture: room
+                            .avatar
+                            .as_ref()
+                            .and_then(|avatar| self.state.pictures.get(avatar).cloned()),
+                        call: true,
+                    }));
+                }
+            }
         }
-        self.show_lists()
+        effects.extend(self.show_lists());
+        effects
     }
 
     /// Shows the Matrix and Discord lists together, leaving a server or
@@ -2326,6 +2451,8 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         request: false,
         person: (direct && members <= 2).then(|| format!("@{id}:preview")),
         people: vec![],
+        ringing: vec![],
+        incoming: false,
         avatar: None,
         upload_limit: 50 * 1024 * 1024,
     }
@@ -3981,6 +4108,168 @@ mod tests {
         assert!(
             app.dispatch(Action::AnswerRequest(false)).is_empty(),
             "only requests are answered"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_dm_calls_start_ring_and_are_answered() {
+        use talk_discord::service::{Conversation, Snapshot, Status, VoiceMember};
+        let person = |id: &str, name: &str| VoiceMember {
+            user_id: id.into(),
+            name: name.into(),
+            avatar: format!("{id}.png"),
+            muted: false,
+            deafened: false,
+            streaming: false,
+        };
+        let snapshot = |ringing: Vec<VoiceMember>, in_call: Vec<VoiceMember>| Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            conversations: vec![
+                Conversation {
+                    id: "30".into(),
+                    name: "Ann".into(),
+                    people: 2,
+                    person: Some("2".into()),
+                    ringing,
+                    ..Default::default()
+                },
+                Conversation {
+                    id: "40".into(),
+                    name: "Erin".into(),
+                    people: 2,
+                    request: true,
+                    ..Default::default()
+                },
+            ],
+            voice: [("30".to_owned(), in_call)].into(),
+            ..Default::default()
+        };
+        let mut app = Application::default();
+        app.apply(Event::Discord(snapshot(vec![], vec![])));
+        let dm = "discord:@me:30".to_owned();
+        assert!(app.state.can_join_voice(&dm), "a DM has a call");
+        assert!(
+            !app.state.can_join_voice("discord:@me:40"),
+            "a request waits for an answer"
+        );
+
+        // Ann calls: the DM rings once, with a notification, until answered.
+        let effects = app.apply(Event::Discord(snapshot(
+            vec![person("1", "Me")],
+            vec![person("2", "Ann")],
+        )));
+        let alerts: Vec<_> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Notify(alert) => {
+                    Some((alert.call, alert.room.as_str(), alert.title.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(alerts, [(true, dm.as_str(), "Ann")]);
+        let room = app.state.rooms.iter().find(|room| room.id == dm).unwrap();
+        assert!(room.incoming && room.ringing.is_empty());
+        assert_eq!(room.people[0].name, "Ann");
+        assert!(
+            !app.apply(Event::Discord(snapshot(
+                vec![person("1", "Me")],
+                vec![person("2", "Ann")],
+            )))
+            .iter()
+            .any(|effect| matches!(effect, Effect::Notify(_))),
+            "a call notifies once"
+        );
+        assert!(matches!(
+            app.dispatch(Action::DeclineCall(dm.clone())).as_slice(),
+            [Effect::Backend(Command::DeclineCall { room })] if *room == dm
+        ));
+        let effects = app.dispatch(Action::AcceptCall(dm.clone()));
+        assert_eq!(
+            app.state.selected.as_ref(),
+            Some(&dm),
+            "answering opens the DM"
+        );
+        assert!(matches!(
+            effects.last(),
+            Some(Effect::Backend(Command::Voice(voice::Command::Join(id)))) if *id == dm
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_friend_requests_are_sent_answered_and_cancelled() {
+        use talk_discord::service::{FriendRequest, Snapshot, Status};
+        let request = |id: &str, name: &str, incoming: bool| FriendRequest {
+            user_id: id.into(),
+            name: name.into(),
+            avatar: format!("{id}.png"),
+            incoming,
+            spam: false,
+        };
+        let mut app = Application::default();
+        let effects = app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            friends: vec!["2".into()],
+            friend_requests: vec![request("3", "Erin", true), request("4", "Dave", false)],
+            ..Default::default()
+        }));
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "3.png")
+            )),
+            "the requests' avatars download"
+        );
+        let relations: Vec<_> = ["1", "2", "3", "4", "5"]
+            .into_iter()
+            .map(|user| app.state.relation(user))
+            .collect();
+        assert_eq!(
+            relations,
+            [
+                Relation::Me,
+                Relation::Friend,
+                Relation::Incoming,
+                Relation::Outgoing,
+                Relation::Stranger
+            ]
+        );
+        let sent = |effects: Vec<Effect>| -> Option<(String, bool)> {
+            match effects.as_slice() {
+                [Effect::Backend(Command::Friend { user, add })] => Some((user.clone(), *add)),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            sent(app.dispatch(Action::Befriend("5".into()))),
+            Some(("5".into(), true))
+        );
+        assert_eq!(
+            sent(app.dispatch(Action::Befriend("3".into()))),
+            Some(("3".into(), true))
+        );
+        assert_eq!(
+            sent(app.dispatch(Action::Befriend("4".into()))),
+            None,
+            "already sent"
+        );
+        assert_eq!(
+            sent(app.dispatch(Action::Befriend("2".into()))),
+            None,
+            "already friends"
+        );
+        assert_eq!(
+            sent(app.dispatch(Action::RemoveFriendRequest("4".into()))),
+            Some(("4".into(), false))
+        );
+        assert_eq!(
+            sent(app.dispatch(Action::RemoveFriendRequest("2".into()))),
+            None,
+            "not unfriending"
         );
     }
 }

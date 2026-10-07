@@ -57,7 +57,7 @@ Join rooms using another Matrix client for now. Messages support Markdown,
 replies, reactions, editing, deletion and encrypted attachments. Messages written
 offline wait in the SDK's send queue, and drafts survive restarts; see
 [the chat guide](docs/chat-ui.md). There is no room creation, channel discovery
-or ringing DM calls yet. Servers come from joined Matrix
+or ringing Matrix DM calls yet. Servers come from joined Matrix
 Spaces, including channels in joined subspaces. Clicking a server opens the
 channel you last had open there, even after a restart, or else its top channel.
 Text channels and group DMs list their members on the right, grouped into admins,

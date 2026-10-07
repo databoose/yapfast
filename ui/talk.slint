@@ -457,6 +457,22 @@ component Composer inherits Rectangle {
 
 // Marks something from Discord: its logo, white on blurple, on a ring of the
 // colour behind it.
+// A round button answering or ending a call.
+component CallButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <color> fill;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 64px; height: 48px; border-radius: 24px;
+    background: touch.has-hover ? root.fill.darker(0.15) : root.fill;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Image { source: root.icon; width: 22px; height: 22px; colorize: #ffffff; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+}
+
 component DiscordBadge inherits Rectangle {
     in property <length> size;
     in property <color> ring;
@@ -474,6 +490,53 @@ component DiscordBadge inherits Rectangle {
 }
 
 // A server or the DM home: a circle that becomes a squircle, with a pill at the rail edge.
+export struct FriendRequestRow {
+    id: string, name: string, initial: string, tint: color, picture: image,
+    /// Sent to this account, which answers it, rather than by it.
+    incoming: bool,
+    /// "Incoming friend request" and the like.
+    detail: string,
+}
+
+// A friend request in the DM list: accepted or ignored when it came to this
+// account, or cancelled when it sent it.
+component FriendRequest inherits Rectangle {
+    in property <FriendRequestRow> request;
+    callback accept;
+    callback remove;
+    height: 42px; border-radius: 6px;
+    background: pointer.has-hover ? Theme.hover : transparent;
+    accessible-role: groupbox;
+    accessible-label: root.request.name + ", " + root.request.detail;
+    pointer := TouchArea { }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 4px; spacing: 12px;
+        Middle {
+            Avatar {
+                size: 32px; initial: root.request.initial; tint: root.request.tint; picture: root.request.picture;
+                DiscordBadge { x: -2px; y: -2px; size: 13px; ring: pointer.has-hover ? Theme.hover : Theme.sidebar; }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 0px; horizontal-stretch: 1;
+            Text { text: root.request.name; color: Theme.text; font-size: 15px; font-weight: 500; overflow: elide; }
+            Text { text: root.request.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
+        }
+        if root.request.incoming: Middle {
+            IconButton {
+                icon: @image-url("icons/check.svg"); label: "Accept"; size: 30px; glyph: 18px; tint: Theme.live; tip-side: 2;
+                clicked => { root.accept(); }
+            }
+        }
+        Middle {
+            IconButton {
+                icon: @image-url("icons/x.svg"); label: root.request.incoming ? "Ignore" : "Cancel"; size: 30px; glyph: 18px; tip-side: 2;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}
+
 component RailItem inherits Rectangle {
     in property <string> label;
     /// The tooltip; the accessible label may add state such as "unread".
@@ -571,6 +634,8 @@ component ChannelRow inherits Rectangle {
     in property <string> badge;
     /// A channel this account may not join: drawn faint.
     in property <bool> locked;
+    /// A DM with a call going on.
+    in property <bool> call;
     callback clicked;
     /// A right click, where it happened in the window.
     callback context-menu(length, length);
@@ -605,6 +670,10 @@ component ChannelRow inherits Rectangle {
         Text {
             text: root.text; color: root.ink; font-size: 16px; font-weight: root.unread || root.selected ? 700 : 500;
             vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+        }
+        if root.call: Image {
+            source: @image-url("icons/phone.svg"); width: 16px; image-fit: contain; colorize: Theme.live;
+            accessible-role: image; accessible-label: "In a call";
         }
         if root.badge != "": Middle {
             Rectangle {
@@ -1140,6 +1209,9 @@ export struct ProfileData {
     servers: [string], friends: [string],
     /// Loading, or why there's no more.
     note: string,
+    /// Friendship on Discord: 0 nothing to offer, 1 send a friend request,
+    /// 2 one was sent, 3 accept theirs.
+    friend: int,
 }
 
 component ProfileHeading inherits Text {
@@ -1156,6 +1228,7 @@ component ProfileCard inherits Rectangle {
     callback enlarge;
     callback close;
     callback open-link(string);
+    callback befriend;
     property <length> banner-height: root.large ? 210px : 105px;
     property <length> avatar-size: root.large ? 120px : 80px;
     property <length> pad: root.large ? 24px : 16px;
@@ -1210,6 +1283,14 @@ component ProfileCard inherits Rectangle {
                         if root.data.activity != "": Text {
                             text: root.data.activity; color: Theme.secondary; font-size: 14px;
                             wrap: word-wrap; overflow: elide; max-height: 40px;
+                        }
+                    }
+                    if root.data.friend > 0: HorizontalLayout {
+                        alignment: start;
+                        ActionButton {
+                            small: true; primary: root.data.friend != 2; enabled: root.data.friend != 2;
+                            text: root.data.friend == 1 ? "Send friend request" : root.data.friend == 2 ? "Friend request sent" : "Accept friend request";
+                            clicked => { root.befriend(); }
                         }
                     }
                     if root.data.has-bio: VerticalLayout {
@@ -1332,6 +1413,8 @@ export struct RoomRow {
     person: bool,
     /// Who is in a Discord voice channel, shown without joining it.
     people: [PersonRow],
+    /// A DM with a call going on.
+    call: bool,
 }
 export struct ReactionChip { key: string, count: int, mine: bool }
 /// An image in a message's gallery, placed in pixels; `index` is its place
@@ -1612,6 +1695,41 @@ export component TalkWindow inherits Window {
     /// The newest picture of the watched stream, refreshed by stream-tick.
     in-out property <image> watch-frame;
     in property <string> switch-prompt;
+    /// Discord friend requests, listed above the DMs.
+    in property <[FriendRequestRow]> friend-requests;
+    /// Send a Discord user a friend request or accept theirs, by user id, or
+    /// ignore or cancel one.
+    callback befriend(string);
+    callback remove-friend-request(string);
+    /// The open DM's other person, as in ProfileData.friend: whether the header
+    /// offers to send them a friend request or accept theirs.
+    in property <int> dm-friend;
+    in property <string> dm-person;
+    /// A Discord DM is open, whose call can be started or joined from its header.
+    in property <bool> can-call;
+    /// Someone is in the open DM's call, so the header joins rather than starts it.
+    in property <bool> call-going;
+    callback start-call;
+    /// The open DM's call shows above its messages: this account is in it, or
+    /// others are, or it rings this account.
+    in property <bool> call-shown;
+    /// The open DM, whose call the panel answers.
+    in property <string> call-room;
+    /// Who is in the open DM's call, while this account isn't.
+    in property <[PersonRow]> call-people;
+    in property <string> call-note;
+    /// The open DM's call rings this account.
+    in property <bool> call-incoming;
+    /// Join a DM call ringing this account, by the DM's id, or decline it.
+    callback answer-call(string, bool);
+    /// A call ringing this account in a DM that isn't open, shown over everything.
+    in property <bool> incoming-open;
+    in property <string> incoming-room;
+    in property <string> incoming-name;
+    in property <string> incoming-detail;
+    in property <string> incoming-initial;
+    in property <color> incoming-tint;
+    in property <image> incoming-picture;
     /// The settings screen covers the window, showing one section: 0 account, 1 voice and
     /// audio, 2 messages, 3 notifications, 4 Discord.
     in-out property <bool> settings-open;
@@ -2218,6 +2336,18 @@ export component TalkWindow inherits Window {
                                 min-height: 96px; vertical-stretch: 1;
                                 VerticalLayout {
                                     padding-left: 8px; padding-right: 8px; padding-bottom: 12px; spacing: 2px;
+                                    if root.dms-selected && root.friend-requests.length > 0: VerticalLayout {
+                                        spacing: 2px;
+                                        HorizontalLayout {
+                                            padding-left: 8px; height: 36px;
+                                            Text { text: "FRIEND REQUESTS — " + root.friend-requests.length; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+                                        }
+                                        for request in root.friend-requests: FriendRequest {
+                                            request: request;
+                                            accept => { root.befriend(request.id); }
+                                            remove => { root.remove-friend-request(request.id); }
+                                        }
+                                    }
                                     for room in root.rooms: VerticalLayout {
                                         spacing: 2px; vertical-stretch: 0;
                                         if room.heading != "": HorizontalLayout {
@@ -2226,10 +2356,11 @@ export component TalkWindow inherits Window {
                                         }
                                         ChannelRow {
                                             text: room.name;
-                                            label: room.name + (room.discord ? ", Discord" : "") + (room.locked ? ", locked" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                                            label: room.name + (room.discord ? ", Discord" : "") + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                                             icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
                                             picture: room.picture; discord: room.discord;
                                             selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
+                                            call: room.call;
                                             clicked => { root.select-room(room.id); }
                                             // A DM's menu offers its other person's profile.
                                             context-menu(x, y) => {
@@ -2418,6 +2549,21 @@ export component TalkWindow inherits Window {
                         if root.room-direct: Middle { Avatar { size: 26px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; } }
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
                         Text { text: root.room-selected ? root.room-name : root.sidebar-title; color: root.room-selected ? Theme.text : Theme.secondary; font-size: 16px; font-weight: 700; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        if root.dm-friend == 1 || root.dm-friend == 3: Middle {
+                            IconButton {
+                                icon: @image-url("icons/user-plus.svg");
+                                label: root.dm-friend == 1 ? "Send friend request" : "Accept friend request";
+                                size: 32px; glyph: 20px; emphasis: root.dm-friend == 3;
+                                clicked => { root.befriend(root.dm-person); }
+                            }
+                        }
+                        if root.can-call: Middle {
+                            IconButton {
+                                icon: @image-url("icons/phone.svg"); label: root.call-going ? "Join the call" : "Start a call";
+                                size: 32px; glyph: 20px; enabled: root.can-join;
+                                clicked => { root.start-call(); }
+                            }
+                        }
                         if root.members-available: Middle {
                             HeaderToggle {
                                 icon: @image-url("icons/users.svg"); text: root.members; open: root.member-list;
@@ -2472,9 +2618,39 @@ export component TalkWindow inherits Window {
                         if root.graphics-notice != "": Banner { text <=> root.graphics-notice; dismissed => { root.graphics-notice = ""; } }
                         if root.notice != "": Banner { text: root.notice; dismissed => { root.dismiss-notice(); } }
                         // Voice channel: a stage of participants, or an invitation to join.
-                        if root.voice-room: Rectangle {
-                            vertical-stretch: 1; background: Theme.stage;
-                            if !root.voice-here: VerticalLayout {
+                        // A DM's call shows the same above its messages.
+                        if root.voice-room || root.call-shown: Rectangle {
+                            // Above a DM's messages, a call takes less than half the room,
+                            // more while watching a stream, and little while offering to join.
+                            vertical-stretch: root.voice-room ? 1 : !root.voice-here ? 0 : root.watching ? 1.8 : 0.8;
+                            min-height: root.voice-room ? 0px : root.voice-here ? 260px : 210px;
+                            max-height: root.voice-room || root.voice-here ? 100000px : 210px;
+                            background: Theme.stage;
+                            if !root.voice-here && !root.voice-room: VerticalLayout {
+                                padding: 20px; spacing: 12px; alignment: center;
+                                HorizontalLayout {
+                                    alignment: center; spacing: 8px;
+                                    for person in root.call-people: Avatar {
+                                        size: 56px; initial: person.initial; tint: person.tint; picture: person.picture;
+                                        accessible-role: image; accessible-label: person.name;
+                                    }
+                                }
+                                Text { text: root.call-note; color: Theme.secondary; font-size: 15px; horizontal-alignment: center; wrap: word-wrap; }
+                                HorizontalLayout {
+                                    alignment: center; spacing: 16px;
+                                    if root.call-incoming: CallButton {
+                                        icon: @image-url("icons/phone-off.svg"); label: "Decline"; fill: Theme.danger;
+                                        clicked => { root.answer-call(root.call-room, false); }
+                                    }
+                                    CallButton {
+                                        icon: @image-url("icons/phone.svg"); label: root.call-incoming ? "Accept" : "Join the call";
+                                        fill: Theme.live; enabled: root.can-join;
+                                        clicked => { root.answer-call(root.call-room, true); }
+                                    }
+                                }
+                            }
+                            if !root.voice-room: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
+                            if !root.voice-here && root.voice-room: VerticalLayout {
                                 padding: 32px; spacing: 14px; alignment: center;
                                 HorizontalLayout {
                                     alignment: center;
@@ -3197,6 +3373,49 @@ export component TalkWindow inherits Window {
     // Switching voice channels asks first, over everything else. Clicking
     // outside or Escape cancels; Enter switches. The dialog stays in the tree
     // so it can fade out, keeping its text while it goes.
+    // A call ringing this account elsewhere, at the top until it's answered or stops.
+    if root.incoming-open: Rectangle {
+        x: (root.width - self.width) / 2; y: 64px;
+        width: 300px; height: incoming-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Incoming call from " + root.incoming-name;
+        // Clicks on the card never reach what's under it.
+        TouchArea { }
+        incoming-content := VerticalLayout {
+            padding: 20px; spacing: 10px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 92px; height: 92px;
+                    // A ring that pulses while it rings.
+                    Rectangle {
+                        border-radius: self.width / 2; border-width: 3px; border-color: Theme.live;
+                        opacity: 0.45 + 0.4 * sin(animation-tick() / 1ms * 0.36deg);
+                    }
+                    Avatar {
+                        x: 10px; y: 10px; size: 72px;
+                        initial: root.incoming-initial; tint: root.incoming-tint; picture: root.incoming-picture;
+                    }
+                }
+            }
+            Text { text: root.incoming-name; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-alignment: center; overflow: elide; }
+            Text { text: root.incoming-detail; color: Theme.secondary; font-size: 15px; horizontal-alignment: center; wrap: word-wrap; }
+            HorizontalLayout {
+                alignment: center; spacing: 20px; padding-top: 6px;
+                CallButton {
+                    icon: @image-url("icons/phone-off.svg"); label: "Decline"; fill: Theme.danger;
+                    clicked => { root.answer-call(root.incoming-room, false); }
+                }
+                CallButton {
+                    icon: @image-url("icons/phone.svg"); label: "Accept"; fill: Theme.live;
+                    clicked => { root.answer-call(root.incoming-room, true); }
+                }
+            }
+        }
+    }
+
     property <bool> switching: root.switch-prompt != "";
     property <string> switch-text;
     changed switch-prompt => { if root.switch-prompt != "" { root.switch-text = root.switch-prompt; } }
@@ -3601,6 +3820,7 @@ export component TalkWindow inherits Window {
             data: root.profile;
             enlarge => { root.enlarge-profile(); }
             close => { root.close-profile(); }
+            befriend => { root.befriend(root.profile.id); }
             open-link(link) => { root.open-link(link); }
         }
     }
@@ -3621,6 +3841,7 @@ export component TalkWindow inherits Window {
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             data: root.profile;
             close => { root.close-profile(); }
+            befriend => { root.befriend(root.profile.id); }
             open-link(link) => { root.open-link(link); }
         }
     }

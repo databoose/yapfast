@@ -56,6 +56,30 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(PREFIX)?.split_once(':')
 }
 
+/// Who is in a voice channel or DM call.
+#[cfg(feature = "discord")]
+fn in_voice(snapshot: &Snapshot, channel: &str) -> Vec<VoicePerson> {
+    snapshot
+        .voice
+        .get(channel)
+        .into_iter()
+        .flatten()
+        .map(voice_person)
+        .collect()
+}
+
+#[cfg(feature = "discord")]
+fn voice_person(member: &talk_discord::service::VoiceMember) -> VoicePerson {
+    VoicePerson {
+        id: member.user_id.clone(),
+        name: member.name.clone(),
+        avatar: Some(member.avatar.clone()),
+        muted: member.muted,
+        deafened: member.deafened,
+        streaming: member.streaming,
+    }
+}
+
 #[cfg(feature = "discord")]
 /// The servers, channels and DMs to list, in Discord's order: by category,
 /// text channels before voice channels in each, and the latest DM first.
@@ -69,6 +93,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
         .account
         .as_ref()
         .map_or(0, |account| account.premium_type);
+    let me = snapshot.user_id.as_deref().unwrap_or_default();
     let mut rooms: Vec<_> = snapshot
         .conversations
         .iter()
@@ -92,7 +117,14 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
             .into(),
             request: dm.request,
             person: dm.person.clone(),
-            people: vec![],
+            people: in_voice(snapshot, &dm.id),
+            ringing: dm
+                .ringing
+                .iter()
+                .filter(|person| person.user_id != me)
+                .map(voice_person)
+                .collect(),
+            incoming: dm.ringing.iter().any(|person| person.user_id == me),
             avatar: dm.avatar.clone(),
             upload_limit: talk_discord::api::upload_limit(premium, None),
         })
@@ -139,20 +171,9 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     category,
                     request: false,
                     person: None,
-                    people: snapshot
-                        .voice
-                        .get(&channel.id)
-                        .into_iter()
-                        .flatten()
-                        .map(|member| VoicePerson {
-                            id: member.user_id.clone(),
-                            name: member.name.clone(),
-                            avatar: Some(member.avatar.clone()),
-                            muted: member.muted,
-                            deafened: member.deafened,
-                            streaming: member.streaming,
-                        })
-                        .collect(),
+                    people: in_voice(snapshot, &channel.id),
+                    ringing: vec![],
+                    incoming: false,
                     avatar: None,
                     upload_limit: talk_discord::api::upload_limit(
                         premium,
@@ -181,6 +202,8 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     request: false,
                     person: None,
                     people: vec![],
+                    ringing: vec![],
+                    incoming: false,
                     avatar: None,
                     upload_limit: talk_discord::api::upload_limit(
                         premium,

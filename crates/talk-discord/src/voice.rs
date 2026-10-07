@@ -22,7 +22,7 @@ use symphonia::core::io::MediaSource;
 /// Controls a playing input, such as pausing the microphone between words.
 pub use songbird::tracks::TrackHandle as Track;
 
-use crate::service::VoiceServer;
+use crate::{ready::PRIVATE, service::VoiceServer};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Received audio is interleaved stereo.
@@ -44,12 +44,20 @@ pub struct Call {
 }
 
 impl Call {
+    /// Connects to the voice server for a channel in `guild_id`, or with
+    /// [`PRIVATE`], for a DM or group DM call.
     pub async fn connect(
         server: &VoiceServer,
         guild_id: &str,
         channel_id: &str,
         listener: Arc<dyn Listener>,
     ) -> Result<Self> {
+        // A call identifies with its channel where a server's would its server.
+        let guild_id = if guild_id == PRIVATE {
+            channel_id
+        } else {
+            guild_id
+        };
         let config = Config::default().decode_mode(DecodeMode::Decode(DecodeConfig::new(
             Channels::Stereo,
             SampleRate::Hz48000,

@@ -635,6 +635,8 @@ impl Matrix {
             | Command::SearchMembers { .. }
             | Command::RoleMembers { .. }
             | Command::AnswerRequest { .. }
+            | Command::DeclineCall { .. }
+            | Command::Friend { .. }
             | Command::Profile { .. }
             | Command::Pictures(_) => {}
         }
@@ -893,6 +895,8 @@ async fn room_index(client: &Client) -> RoomIndex {
             request: false,
             person,
             people: vec![],
+            ringing: vec![],
+            incoming: false,
             avatar: None,
             upload_limit: MAX_ATTACHMENT_BYTES,
         });

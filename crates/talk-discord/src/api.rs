@@ -274,6 +274,47 @@ impl Api {
         self.empty(self.request(Method::POST, &path)).await
     }
 
+    /// Sends `user` a friend request, or accepts theirs. `place` is where in
+    /// Discord's client this happens, which it tells Discord with each change
+    /// to a relationship, such as "User Profile" or "Friends".
+    pub async fn add_friend(&self, user: &str, place: &str) -> Result<()> {
+        let path = format!("/users/@me/relationships/{user}");
+        let request = with_json(self.request(Method::PUT, &path), &json!({}));
+        self.empty(request.header("X-Context-Properties", context(place)))
+            .await
+    }
+
+    /// Ignores a friend request, cancels one, or ends a friendship.
+    pub async fn remove_relationship(&self, user: &str, place: &str) -> Result<()> {
+        let path = format!("/users/@me/relationships/{user}");
+        let request = self.request(Method::DELETE, &path);
+        self.empty(request.header("X-Context-Properties", context(place)))
+            .await
+    }
+
+    /// Whether this account may ring the others in a DM, beyond calling them.
+    pub async fn ringable(&self, channel: &str) -> Result<bool> {
+        let path = format!("/channels/{channel}/call");
+        let answer = self.json(self.request(Method::GET, &path)).await?;
+        Ok(answer["ringable"].as_bool().unwrap_or(false))
+    }
+
+    /// Rings everyone in a DM or group DM call who isn't in it yet.
+    pub async fn ring(&self, channel: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/call/ring");
+        let body = json!({"recipients": null});
+        self.empty(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Stops ringing this account for a call, which declines it.
+    pub async fn stop_ringing(&self, channel: &str, me: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/call/stop-ringing");
+        let body = json!({"recipients": [me]});
+        self.empty(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
     /// Shows `thumbnail`, a JPEG as a data URI, as the preview of this
     /// account's live stream, as Discord's client does every few minutes.
     pub async fn stream_preview(&self, stream_key: &str, thumbnail: &str) -> Result<()> {
@@ -336,7 +377,12 @@ async fn checked(request: RequestBuilder) -> Result<Response> {
         Ok(body) => serde_json::from_slice(&body).unwrap_or_default(),
         Err(_) => Value::Null,
     };
-    Err(match status {
+    // Discord's own words go in the error's chain, for logs: `{:#}` shows them.
+    let detail = match (body["code"].as_u64(), body["message"].as_str()) {
+        (Some(code), Some(message)) => anyhow!("Discord answered {status}, code {code}: {message}"),
+        _ => anyhow!("Discord answered {status}"),
+    };
+    Err(detail.context(match status {
         StatusCode::UNAUTHORIZED => anyhow!("Discord rejected the login. Link Discord again."),
         StatusCode::FORBIDDEN => anyhow!("Discord says you don't have permission to do that here."),
         StatusCode::NOT_FOUND => anyhow!("Discord no longer has that message or channel."),
@@ -354,7 +400,14 @@ async fn checked(request: RequestBuilder) -> Result<Response> {
             Some(message) => anyhow!("Discord refused: {message}"),
             None => anyhow!("Discord answered {status}."),
         },
-    })
+    }))
+}
+
+/// The X-Context-Properties header Discord's client sends: where an action
+/// happened, as base64 JSON.
+fn context(place: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(json!({"location": place}).to_string())
 }
 
 fn with_json(request: RequestBuilder, body: &Value) -> RequestBuilder {
@@ -405,6 +458,19 @@ mod tests {
         assert_eq!(upload_limit(0, Some(2)), 50 * MIB);
         assert_eq!(upload_limit(0, Some(3)), 100 * MIB);
         assert_eq!(upload_limit(2, Some(3)), 500 * MIB, "the larger wins");
+    }
+
+    #[test]
+    fn says_where_actions_happen_as_discords_client_does() {
+        // The values Discord's client sends, as discord.py-self records them.
+        assert_eq!(
+            super::context("User Profile"),
+            "eyJsb2NhdGlvbiI6IlVzZXIgUHJvZmlsZSJ9"
+        );
+        assert_eq!(
+            super::context("Friends"),
+            "eyJsb2NhdGlvbiI6IkZyaWVuZHMifQ=="
+        );
     }
 
     #[test]

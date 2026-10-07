@@ -158,8 +158,7 @@ fn spawn(
 
 /// The user and channel ids a stream key names, as numbers.
 fn ids(server: &StreamServer) -> Result<(u64, u64, u64)> {
-    let (_, channel, streamer) =
-        stream::parse(&server.stream_key).context("not a server stream")?;
+    let (_, channel, streamer) = stream::parse(&server.stream_key).context("not a stream key")?;
     Ok((
         server.user_id.parse().context("not a user id")?,
         channel.parse().context("not a channel id")?,

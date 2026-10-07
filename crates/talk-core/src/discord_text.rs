@@ -659,7 +659,7 @@ impl OpenChannel {
                 .as_ref()
                 .is_some_and(|nonce| self.sent.contains(nonce));
             let author = name(&message.author_id, &message.author);
-            let body = match message.system {
+            let body = match &message.system {
                 Some(system) => format!("{author} {system}"),
                 None => discord.render(server, &message.content),
             };
@@ -1193,6 +1193,50 @@ pub fn command(
                     result: Err("Discord isn't linked on this device.".into()),
                 });
             }
+        }
+        return None;
+    }
+    if let Command::Friend { user, add } = command {
+        match discord {
+            Some(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                // The lists change when Discord confirms it.
+                tokio::spawn(async move {
+                    let result = if add {
+                        discord.befriend(&user).await
+                    } else {
+                        discord.remove_friend_request(&user).await
+                    };
+                    if let Err(error) = result {
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            "could not change a friend request"
+                        );
+                        let _ = events.send(Event::Error(format!(
+                            "Could not {} the friend request: {error}",
+                            if add { "send or accept" } else { "remove" }
+                        )));
+                    }
+                });
+            }
+            None => {
+                let _ = events.send(Event::Error("Discord isn't linked on this device.".into()));
+            }
+        }
+        return None;
+    }
+    if let Command::DeclineCall { room } = command {
+        if let (Some(discord), Some((_, channel))) = (discord, discord::parse_room(&room)) {
+            let (discord, events, channel) = (discord.clone(), events.clone(), channel.to_owned());
+            // The call stops ringing when Discord confirms it.
+            tokio::spawn(async move {
+                if let Err(error) = discord.decline(&channel).await {
+                    let _ = events.send(Event::RoomError {
+                        room,
+                        message: format!("Could not decline the call: {error}"),
+                    });
+                }
+            });
         }
         return None;
     }

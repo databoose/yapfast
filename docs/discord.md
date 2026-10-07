@@ -12,7 +12,8 @@ sends audio only during speech. The
 owner and a friend talked through it on 2026-10-06. Audio uses PulseAudio and
 libwebrtc's processing module, so Windows needs its own audio backend. The
 token still comes from the browser through `talk-discord-probe store-token`;
-QR linking and DM calls are still open. songbird's DAVE receive fix is
+QR linking is still open. DM and group DM calls ring and are answered, as
+described under [DM calls](#dm-calls). songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
 
@@ -73,12 +74,27 @@ Opening one shows its messages with Accept and Ignore in place of the
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Talk never opens a request on its
-own when it picks a conversation. Forwarding and DM calls are still open.
+own when it picks a conversation. Forwarding is still open.
 
 The pen in the DM list's header starts a DM: it lists the account's friends
 (from READY's relationships), then anyone else Talk knows by name, and
 opening one posts to `/users/@me/channels`, which finds the DM with them or
 starts one. Talk opens it once its CHANNEL_CREATE lists it.
+
+Friend requests head the DM list under "Friend requests", from READY's
+relationships (type 3 sent to this account, 4 sent by it) and kept current by
+RELATIONSHIP_ADD and RELATIONSHIP_REMOVE. One sent to this account is
+accepted with the check or ignored with the cross; one it sent is cancelled
+with the cross. A profile card offers "Send friend request" to someone who
+isn't a friend, or "Accept friend request" when they asked first, and the
+header of a DM with them offers the same. Sending or accepting is
+`PUT /users/@me/relationships/{id}` with an empty body, and ignoring or
+cancelling is `DELETE` on the same path, each with the X-Context-Properties
+header Discord's client sends: `{"location":"User Profile"}` when sending
+from a profile, `{"location":"Friends"}` otherwise, as base64. Discord
+doesn't let a client send many requests quickly, and Talk only sends one when
+the person clicks. Requests Discord took for spam are listed too, marked
+"Maybe spam".
 
 Clicking someone in a channel's member list shows their profile in a small
 card beside it, which "View full profile" enlarges into a centred one;
@@ -179,6 +195,53 @@ the processing module's reverse stream so echo cancellation has its reference.
 Check one linking risk before building on this. songbird encodes with `opus2`,
 which builds its own libopus, while Talk's libwebrtc archive already contains
 libopus. Linking both into Talk may clash, particularly on Windows MSVC.
+
+### DM calls
+
+A DM or group DM has a call, as in Discord. The phone in its header starts
+one, or joins the one going on, through the same voice dock and one-call
+rule as a voice channel. Joining sends op 4 without a server, naming the DM
+as the channel; VOICE_STATE_UPDATE and VOICE_SERVER_UPDATE come back without
+a server too, the latter with the channel's id, and the voice connection
+identifies with the DM's id where a server's call gives the server's. Talk
+keeps those voice states under the server `@me`, as DM room ids do.
+
+Discord sends CALL_CREATE, CALL_UPDATE and CALL_DELETE for the DMs' calls,
+including one for each call going on when Talk connects (the
+AUTO_CALL_CONNECT capability Talk already asks for). Each names whom the call
+rings. Starting a call, rather than joining one with someone in it, rings the
+others with `POST /channels/{id}/call/ring` and no recipients, once Discord
+has reported the call: it rings only in a call it knows. Calling and ringing
+are allowed separately. In a DM, Talk rings a friend at once and anyone else
+only when `GET /channels/{id}/call` says they're `ringable`, as discord.py-self
+does; otherwise, or when Discord refuses, the call says so until someone
+comes, and the other person sees the call only in the DM. Talk plays a soft
+ringback while nobody has come. People
+being rung show in the call faded, "Calling...", until they answer or Discord
+stops ringing them.
+
+A call ringing this account shows a card at the top of the window with the
+DM's picture, Decline and Accept, and Talk rings: a rising arpeggio
+synthesized in `ring.rs` and played through PulseAudio on the call's speakers
+until the call is answered, declined or stops ringing. While Talk isn't in
+front a desktop notification says who is calling. Accepting opens the DM and
+joins, leaving any other call without asking, since answering already chose.
+Declining posts `POST /channels/{id}/call/stop-ringing` with this account,
+which leaves the call to the others. The DM's own call shows the same choice
+above its messages when it's open.
+
+While this account is in a DM's call, the call's stage shows above the DM's
+messages, taking less than half the conversation, more while watching a
+stream. Without it, a DM with a call going on shows who is in it and a button
+to join, and its row in the DM list a green phone. Discord's call messages
+(type 3) read "started a call.", and once Discord adds when it ended, "started
+a call that lasted 5 minutes.". Go Live works in DM calls too: op 18 with the
+type `call` and no server, and the stream key `call:{channel}:{user}`. The
+fake server checks all of this and answers for Bob, who picks up after three
+seconds when Alice rings him; in a group nobody answers, and Dave, who isn't
+her friend, can't be rung. Message requests
+have no call until accepted. A DM call through real Discord, and Go Live in
+one, haven't been checked by hand yet.
 
 ### Microphone
 

@@ -76,6 +76,22 @@ pub struct Conversation {
     pub unread: bool,
     /// Unread messages, as every message in a DM counts as a mention.
     pub mentions: u64,
+    /// A call is going on here. Who is in it is in [`Snapshot::voice`].
+    pub call: bool,
+    /// Whom Discord is ringing for the call, this account perhaps among them.
+    pub ringing: Vec<VoiceMember>,
+}
+
+/// A friend request, sent to this account or by it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FriendRequest {
+    pub user_id: String,
+    pub name: String,
+    pub avatar: String,
+    /// Sent to this account, rather than by it.
+    pub incoming: bool,
+    /// Discord took it for spam.
+    pub spam: bool,
 }
 
 /// Someone this account can start a DM with.
@@ -98,6 +114,9 @@ pub struct Snapshot {
     pub conversations: Vec<Conversation>,
     /// The account's friends, by user id.
     pub friends: Vec<String>,
+    /// Friend requests waiting for an answer: those sent to this account
+    /// first, then those it sent, the newest first in each.
+    pub friend_requests: Vec<FriendRequest>,
     /// Who is in each voice channel, by channel id and then by name.
     pub voice: HashMap<String, Vec<VoiceMember>>,
     /// The channel whose member list is on screen, and how many people can
@@ -444,6 +463,51 @@ impl Discord {
         self.api.typing(channel).await
     }
 
+    /// Rings the others in a DM or group DM call this account started, as
+    /// Discord's client does: in a DM, a friend at once, and anyone else only
+    /// if Discord says they may be rung. Returns whether it rang.
+    pub async fn ring(&self, channel: &str) -> Result<bool> {
+        let stranger = {
+            let snapshot = self.snapshots.borrow();
+            snapshot
+                .conversations
+                .iter()
+                .find(|conversation| conversation.id == channel)
+                .and_then(|conversation| conversation.person.clone())
+                .is_some_and(|person| !snapshot.friends.contains(&person))
+        };
+        if stranger && !self.api.ringable(channel).await? {
+            return Ok(false);
+        }
+        self.api.ring(channel).await?;
+        Ok(true)
+    }
+
+    /// Sends someone a friend request from their profile, or accepts theirs.
+    /// The lists change when Discord confirms it.
+    pub async fn befriend(&self, user: &str) -> Result<()> {
+        let incoming = self
+            .snapshots
+            .borrow()
+            .friend_requests
+            .iter()
+            .any(|request| request.user_id == user && request.incoming);
+        // Discord's client accepts from its friends list and sends from a profile.
+        let place = if incoming { "Friends" } else { "User Profile" };
+        self.api.add_friend(user, place).await
+    }
+
+    /// Ignores a friend request to this account, or cancels one it sent.
+    pub async fn remove_friend_request(&self, user: &str) -> Result<()> {
+        self.api.remove_relationship(user, "Friends").await
+    }
+
+    /// Declines a call ringing this account; the call goes on without it.
+    pub async fn decline(&self, channel: &str) -> Result<()> {
+        let me = self.snapshots.borrow().user_id.clone().unwrap_or_default();
+        self.api.stop_ringing(channel, &me).await
+    }
+
     /// Uploads the preview Discord shows of this account's live stream: a
     /// JPEG as a data URI.
     pub async fn stream_preview(&self, stream_key: &str, thumbnail: &str) -> Result<()> {
@@ -636,8 +700,10 @@ fn server(guild: &str) -> Option<&str> {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
-/// A relationship's type when the other person is a friend.
+/// Relationship types: a friend, and friend requests to and from this account.
 const FRIEND: u64 = 1;
+const INCOMING_REQUEST: u64 = 3;
+const OUTGOING_REQUEST: u64 = 4;
 /// How long a member search waits for Discord.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Reads within this long go to Discord as one acknowledgement per channel.
@@ -810,9 +876,21 @@ enum Ended {
 
 struct Pending {
     guild: String,
+    channel: String,
     reply: oneshot::Sender<Result<VoiceServer>>,
     session_id: Option<String>,
     server: Option<(String, String)>,
+}
+
+impl Pending {
+    /// Whether a voice state or voice server event is about this join: in
+    /// its server, or for a DM call, its channel, as those carry no server.
+    fn answers(&self, data: &Value) -> bool {
+        match server(&self.guild) {
+            Some(guild) => data["guild_id"] == guild,
+            None => data["guild_id"].is_null() && data["channel_id"] == self.channel.as_str(),
+        }
+    }
 }
 
 /// A stream started or watched, waiting for its server.
@@ -876,9 +954,9 @@ async fn connected_session(
                 };
                 let sent = match request {
                     Request::Join { guild, channel, reply } => {
-                        let sent = gateway.update_voice_state(Some(&guild), Some(&channel), true, false).await;
+                        let sent = gateway.update_voice_state(server(&guild), Some(&channel), true, false).await;
                         deadline.as_mut().reset(tokio::time::Instant::now() + JOIN_TIMEOUT);
-                        if let Some(previous) = pending.replace(Pending { guild, reply, session_id: None, server: None }) {
+                        if let Some(previous) = pending.replace(Pending { guild, channel, reply, session_id: None, server: None }) {
                             let _ = previous.reply.send(Err(anyhow!("Another voice join replaced this one.")));
                         }
                         sent
@@ -887,10 +965,10 @@ async fn connected_session(
                         if pending.as_ref().is_some_and(|pending| pending.guild == guild) {
                             pending = None;
                         }
-                        gateway.update_voice_state(Some(&guild), None, false, false).await
+                        gateway.update_voice_state(server(&guild), None, false, false).await
                     }
                     Request::SelfState { guild, channel, mute, deaf } => {
-                        gateway.update_voice_state(Some(&guild), Some(&channel), mute, deaf).await
+                        gateway.update_voice_state(server(&guild), Some(&channel), mute, deaf).await
                     }
                     Request::View { guild, channel } if guild == PRIVATE => {
                         shared.group = channel;
@@ -939,10 +1017,10 @@ async fn connected_session(
                     }
                     Request::GoLive { guild, channel, reply } => {
                         if tracker.voice_channel(&guild).is_none_or(|current| current != channel) {
-                            let _ = reply.send(Err(anyhow!("Join the voice channel before going live.")));
+                            let _ = reply.send(Err(anyhow!("Join the call before going live.")));
                             Ok(())
                         } else {
-                            let key = stream::guild_key(&guild, &channel, &me);
+                            let key = stream::key(&guild, &channel, &me);
                             stream_deadline.as_mut().reset(tokio::time::Instant::now() + JOIN_TIMEOUT);
                             let waiting = PendingStream { guild: guild.clone(), reply, opening: Opening::default() };
                             if let Some(previous) = openings.insert(key.clone(), waiting) {
@@ -950,7 +1028,7 @@ async fn connected_session(
                             }
                             // Unpaused straight away, as Discord-video-stream
                             // does: viewers of a paused stream get no video.
-                            match gateway.create_stream(&guild, &channel).await {
+                            match gateway.create_stream(server(&guild), &channel).await {
                                 Ok(()) => gateway.pause_stream(&key, false).await,
                                 Err(error) => Err(error),
                             }
@@ -968,11 +1046,11 @@ async fn connected_session(
                                 gateway.watch_stream(&stream_key).await
                             }
                             Some(_) => {
-                                let _ = reply.send(Err(anyhow!("Join the voice channel to watch its streams.")));
+                                let _ = reply.send(Err(anyhow!("Join the call to watch its streams.")));
                                 Ok(())
                             }
                             None => {
-                                let _ = reply.send(Err(anyhow!("Talk can only watch streams in server voice channels.")));
+                                let _ = reply.send(Err(anyhow!("That isn't a stream Talk knows how to watch.")));
                                 Ok(())
                             }
                         }
@@ -1039,11 +1117,11 @@ async fn connected_session(
                 };
                 if let Some(waiting) = pending.as_mut() {
                     match event.name.as_str() {
-                        "VOICE_STATE_UPDATE" if event.data["user_id"] == me.as_str() && event.data["guild_id"] == waiting.guild.as_str() => {
+                        "VOICE_STATE_UPDATE" if event.data["user_id"] == me.as_str() && waiting.answers(&event.data) => {
                             waiting.session_id = event.data["session_id"].as_str().map(str::to_owned);
                         }
                         // The endpoint is null while Discord is still allocating a server.
-                        "VOICE_SERVER_UPDATE" if event.data["guild_id"] == waiting.guild.as_str() => {
+                        "VOICE_SERVER_UPDATE" if waiting.answers(&event.data) => {
                             if let (Some(token), Some(endpoint)) = (event.data["token"].as_str(), event.data["endpoint"].as_str()) {
                                 waiting.server = Some((token.into(), endpoint.into()));
                             }
@@ -1137,8 +1215,11 @@ struct Tracker {
     premium: u8,
     servers: Vec<Server>,
     names: Arc<RwLock<Names>>,
-    /// Where each user is in voice, by server and user id.
+    /// Where each user is in voice, by server and user id; DM and group DM
+    /// calls go under [`PRIVATE`].
     voice: HashMap<(String, String), VoiceEntry>,
+    /// The calls in DMs and group DMs, by channel id, with whom each rings.
+    calls: HashMap<String, Vec<String>>,
     /// This account's roles, by server id.
     my_roles: HashMap<String, Vec<String>>,
     unreads: Unreads,
@@ -1150,6 +1231,9 @@ struct Tracker {
     presences: HashMap<String, (Presence, Option<String>)>,
     /// The account's friends, by user id.
     friends: Vec<String>,
+    /// Friend requests by user id: whether each came to this account, whether
+    /// Discord took it for spam, and when it was sent.
+    requests: HashMap<String, (bool, bool, String)>,
 }
 
 /// A user's Nitro from their user object, as [`Account::premium_type`].
@@ -1168,12 +1252,14 @@ impl Tracker {
             servers: ready::servers(ready),
             names,
             voice: HashMap::new(),
+            calls: HashMap::new(),
             my_roles: HashMap::new(),
             unreads: Unreads::from_ready(ready),
             list: None,
             private: Vec::new(),
             presences: HashMap::new(),
             friends: Vec::new(),
+            requests: HashMap::new(),
         };
         for relationship in ready["relationships"].as_array().into_iter().flatten() {
             tracker.relationship(relationship);
@@ -1226,11 +1312,41 @@ impl Tracker {
                 true
             }
             "VOICE_STATE_UPDATE" => {
-                let Some(guild) = data["guild_id"].as_str() else {
+                match data["guild_id"].as_str() {
+                    Some(guild) => {
+                        self.learn_member(guild, &data["member"]);
+                        self.voice_state(guild, data);
+                    }
+                    // In a DM or group DM call.
+                    None => self.voice_state(PRIVATE, data),
+                }
+                true
+            }
+            // Calls in DMs and group DMs. Discord sends one for each call
+            // going on when Talk connects, as its capabilities ask.
+            "CALL_CREATE" | "CALL_UPDATE" => {
+                let Some(channel) = data["channel_id"].as_str() else {
                     return false;
                 };
-                self.learn_member(guild, &data["member"]);
-                self.voice_state(guild, data);
+                let ringing = data["ringing"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|user| user.as_str().map(str::to_owned))
+                    .collect();
+                self.calls.insert(channel.to_owned(), ringing);
+                for state in data["voice_states"].as_array().into_iter().flatten() {
+                    self.voice_state(PRIVATE, state);
+                }
+                true
+            }
+            "CALL_DELETE" => {
+                let Some(channel) = data["channel_id"].as_str() else {
+                    return false;
+                };
+                self.calls.remove(channel);
+                self.voice
+                    .retain(|(guild, _), entry| guild != PRIVATE || entry.channel != channel);
                 true
             }
             "GUILD_CREATE" => {
@@ -1255,6 +1371,9 @@ impl Tracker {
             "RELATIONSHIP_REMOVE" => {
                 let id = data["id"].as_str().or_else(|| data["user_id"].as_str());
                 self.friends.retain(|friend| Some(friend.as_str()) != id);
+                if let Some(id) = id {
+                    self.requests.remove(id);
+                }
                 true
             }
             "GUILD_MEMBER_UPDATE" => {
@@ -1553,10 +1672,42 @@ impl Tracker {
         else {
             return;
         };
+        // An update may leave out the type, which then hasn't changed.
+        let Some(kind) = relationship["type"].as_u64() else {
+            return;
+        };
         self.friends.retain(|friend| friend != id);
-        if relationship["type"].as_u64() == Some(FRIEND) {
-            self.friends.push(id.to_owned());
+        self.requests.remove(id);
+        match kind {
+            FRIEND => self.friends.push(id.to_owned()),
+            INCOMING_REQUEST | OUTGOING_REQUEST => {
+                let spam = relationship["is_spam_request"].as_bool().unwrap_or(false);
+                let since = relationship["since"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                self.requests
+                    .insert(id.to_owned(), (kind == INCOMING_REQUEST, spam, since));
+            }
+            _ => {}
         }
+    }
+
+    /// Friend requests waiting for an answer, incoming then outgoing, the
+    /// newest first.
+    fn friend_requests(&self, names: &Names) -> Vec<FriendRequest> {
+        let mut requests: Vec<_> = self.requests.iter().collect();
+        requests.sort_by(|(_, a), (_, b)| b.0.cmp(&a.0).then_with(|| b.2.cmp(&a.2)));
+        requests
+            .into_iter()
+            .map(|(user, (incoming, spam, _))| FriendRequest {
+                user_id: user.clone(),
+                name: names.user_name(user).unwrap_or("Discord user").to_owned(),
+                avatar: names.avatar(None, user),
+                incoming: *incoming,
+                spam: *spam,
+            })
+            .collect()
     }
 
     fn conversations(&self, names: &Names) -> Vec<Conversation> {
@@ -1588,6 +1739,21 @@ impl Tracker {
                         .first()
                         .map(|user| names.avatar(None, user))
                 };
+                let call = self.calls.contains_key(&private.id);
+                let ringing = self
+                    .calls
+                    .get(&private.id)
+                    .into_iter()
+                    .flatten()
+                    .map(|user| VoiceMember {
+                        user_id: user.clone(),
+                        name: name(user).to_owned(),
+                        avatar: names.avatar(None, user),
+                        muted: false,
+                        deafened: false,
+                        streaming: false,
+                    })
+                    .collect();
                 Conversation {
                     id: private.id,
                     name: title,
@@ -1601,6 +1767,8 @@ impl Tracker {
                         .flatten(),
                     unread: private.unread && !private.spam,
                     mentions: if private.request { 0 } else { private.mentions },
+                    call,
+                    ringing,
                 }
             })
             .collect()
@@ -1658,7 +1826,7 @@ impl Tracker {
                 .push(VoiceMember {
                     user_id: user.clone(),
                     name: names.name(guild, user).unwrap_or("Discord user").to_owned(),
-                    avatar: names.avatar(Some(guild), user),
+                    avatar: names.avatar(server(guild), user),
                     muted: entry.muted,
                     deafened: entry.deafened,
                     streaming: entry.streaming,
@@ -1703,6 +1871,7 @@ impl Tracker {
             servers,
             conversations: self.conversations(&names),
             friends: self.friends.clone(),
+            friend_requests: self.friend_requests(&names),
             voice,
             listed: self
                 .list
@@ -1917,6 +2086,110 @@ mod tests {
                 .is_some_and(|icon| icon.contains("/icons/10/ghi.png"))
         );
         assert_eq!(server.voice_channels.len(), 2, "the channels stay");
+    }
+
+    #[test]
+    fn tracks_dm_calls_and_whom_they_ring() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "users": [{"id": "2", "username": "ann", "global_name": "Ann", "avatar": "abc"}],
+            "private_channels": [{"id": "20", "type": 1, "recipient_ids": ["2"]}],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        tracker.apply(
+            "CALL_CREATE",
+            &json!({"channel_id": "20", "message_id": "30", "region": "rotterdam",
+            "ringing": ["1"], "voice_states": [
+                {"user_id": "2", "channel_id": "20", "session_id": "s", "self_mute": true},
+            ]}),
+        );
+        let snapshot = tracker.snapshot();
+        let call = &snapshot.voice["20"];
+        assert_eq!((call[0].name.as_str(), call[0].muted), ("Ann", true));
+        assert!(call[0].avatar.ends_with("/avatars/2/abc.png?size=128"));
+        let ringing: Vec<_> = snapshot.conversations[0]
+            .ringing
+            .iter()
+            .map(|person| (person.user_id.as_str(), person.name.as_str()))
+            .collect();
+        assert_eq!(ringing, [("1", "me")]);
+
+        // Answering: this account joins, without a server, and stops ringing.
+        tracker.apply(
+            "VOICE_STATE_UPDATE",
+            &json!({"user_id": "1", "channel_id": "20", "session_id": "mine"}),
+        );
+        tracker.apply(
+            "CALL_UPDATE",
+            &json!({"channel_id": "20", "message_id": "30", "ringing": []}),
+        );
+        assert_eq!(tracker.voice_channel(PRIVATE), Some("20"));
+        assert_eq!(tracker.voice_session(PRIVATE), Some("mine"));
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.voice["20"].len(), 2);
+        assert!(snapshot.conversations[0].ringing.is_empty());
+
+        tracker.apply("CALL_DELETE", &json!({"channel_id": "20"}));
+        assert!(tracker.snapshot().voice.is_empty());
+    }
+
+    #[test]
+    fn tracks_friend_requests_both_ways() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "relationships": [
+                {"id": "2", "type": 1, "user": {"id": "2", "username": "ann"}},
+                {"id": "3", "type": 3, "since": "2026-10-01T10:00:00+00:00",
+                    "user": {"id": "3", "username": "bob"}},
+                {"id": "4", "type": 4, "since": "2026-10-02T10:00:00+00:00",
+                    "user": {"id": "4", "username": "cat"}},
+                {"id": "5", "type": 3, "since": "2026-10-03T10:00:00+00:00",
+                    "is_spam_request": true, "user": {"id": "5", "username": "spam"}},
+            ],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let listed = |tracker: &Tracker| -> Vec<(String, bool, bool)> {
+            tracker
+                .snapshot()
+                .friend_requests
+                .into_iter()
+                .map(|request| (request.name, request.incoming, request.spam))
+                .collect()
+        };
+        assert_eq!(
+            listed(&tracker),
+            [
+                ("spam".to_owned(), true, true),
+                ("bob".to_owned(), true, false),
+                ("cat".to_owned(), false, false),
+            ],
+            "those sent to this account first, the newest first"
+        );
+
+        // Accepting Bob's makes him a friend; Cat's is cancelled.
+        tracker.apply(
+            "RELATIONSHIP_ADD",
+            &json!({"id": "3", "type": 1, "user": {"id": "3", "username": "bob"}}),
+        );
+        tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "4", "type": 4}));
+        tracker.apply("RELATIONSHIP_UPDATE", &json!({"id": "5", "nickname": "x"}));
+        assert_eq!(listed(&tracker), [("spam".to_owned(), true, true)]);
+        assert_eq!(tracker.snapshot().friends, ["2", "3"]);
+    }
+
+    #[test]
+    fn answers_a_dm_join_by_its_channel() {
+        let (reply, _) = oneshot::channel();
+        let waiting = Pending {
+            guild: PRIVATE.into(),
+            channel: "20".into(),
+            reply,
+            session_id: None,
+            server: None,
+        };
+        assert!(waiting.answers(&json!({"guild_id": null, "channel_id": "20"})));
+        assert!(!waiting.answers(&json!({"guild_id": null, "channel_id": "21"})));
+        assert!(!waiting.answers(&json!({"guild_id": "10", "channel_id": "20"})));
     }
 
     #[test]

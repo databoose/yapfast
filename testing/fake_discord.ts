@@ -18,6 +18,8 @@
 // /_control/mention makes Bob mention her in #general. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
+// Erin also sent her a friend request; see "relationships" below.
+// POST /_control/call makes Bob call her; see "DM calls" below.
 // Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
 // Carol, whom she has none with yet.
 // POST /_control/typing makes Bob start typing in #general; GET
@@ -77,6 +79,16 @@ const strangers: Record<string, User> = {
   frank: { id: "1400000000000000006", username: "frank_deals", global_name: "Free Nitro", avatar: null },
 };
 const userById = new Map([...Object.values(users), ...Object.values(strangers)].map((user) => [user.id, user]));
+
+// Alice's relationships by user id: Bob and Carol are friends (1), and Erin
+// sent her a friend request (3). Alice's own requests are outgoing (4); Dave
+// accepts hers after FRIEND_ACCEPT_MS, and nobody else answers.
+const relationships = new Map<string, number>([
+  [users.bob.id, 1],
+  [users.carol.id, 1],
+  [strangers.erin!.id, 3],
+]);
+const FRIEND_ACCEPT_MS = 2000;
 
 const HISTORY_START = Date.UTC(2026, 9, 1, 9, 0, 0);
 const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
@@ -280,6 +292,8 @@ type Message = {
   edited?: number;
   /** Its embeds, given the server's address for their pictures. */
   embeds?: (origin: string) => unknown[];
+  /** A DM call's message: who took part, and when it ended. */
+  call?: { participants: Set<string>; ended?: number };
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -349,6 +363,12 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     components: [],
   };
   if (message.nonce) wire.nonce = message.nonce;
+  if (message.call) {
+    wire.call = {
+      participants: [...message.call.participants],
+      ended_timestamp: message.call.ended ? iso(message.call.ended) : null,
+    };
+  }
   if (message.reactions.length) {
     wire.reactions = message.reactions.map((reaction) => ({
       emoji: { id: reaction.id, name: reaction.name },
@@ -479,25 +499,34 @@ const readStates = new Map<string, { last: string; mentions: number }>([
 // --- Voice ------------------------------------------------------------------
 
 // Bob shares his screen with Go Live.
-type VoiceState = { channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean };
+// A voice state's guild is null in a DM or group DM call.
+type VoiceState = { guild: string | null; channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean };
 const voice = new Map<string, VoiceState>([
-  [users.bob.id, { channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
-  [users.carol.id, { channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
-  [users.dave.id, { channel: LOUNGE, self_mute: true, self_deaf: true, session: "voice-dave" }],
+  [users.bob.id, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
+  [users.carol.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
+  [users.dave.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: true, session: "voice-dave" }],
 ]);
 
-// Go Live streams by stream key; Bob's is running from the start.
+// Go Live streams by stream key; Bob's is running from the start. A DM
+// call's streams are keyed `call:{channel}:{user}`.
 type Stream = { viewers: Set<string>; paused: boolean };
-const streamKey = (channel: string, user: string) => `guild:${GUILD}:${channel}:${user}`;
-const streams = new Map<string, Stream>([[streamKey(LOUNGE, users.bob.id), { viewers: new Set(), paused: false }]]);
+const streamKey = (guild: string | null, channel: string, user: string) =>
+  guild ? `guild:${guild}:${channel}:${user}` : `call:${channel}:${user}`;
+/** The channel and streamer a stream key names. */
+function streamOf(key: string): { channel?: string; user?: string } {
+  const parts = key.split(":");
+  return parts[0] === "call" ? { channel: parts[1], user: parts[2] } : { channel: parts[2], user: parts[3] };
+}
+const streams = new Map<string, Stream>([[streamKey(GUILD, LOUNGE, users.bob.id), { viewers: new Set(), paused: false }]]);
 
 function wireStream(key: string, stream: Stream) {
   return { stream_key: key, rtc_server_id: "fake-rtc", region: "fake", viewer_ids: [...stream.viewers], paused: stream.paused };
 }
 
-function wireVoiceState(userId: string, state: VoiceState | undefined) {
+/** A voice state; one that left says where it was in `left`. */
+function wireVoiceState(userId: string, state: VoiceState | undefined, left: string | null = GUILD) {
   return {
-    guild_id: GUILD,
+    guild_id: state ? state.guild : left,
     channel_id: state?.channel ?? null,
     user_id: userId,
     session_id: state?.session ?? "voice-left",
@@ -654,8 +683,7 @@ function ready(ws: Socket) {
       version: 1,
     },
     private_channels: [...privates].map(([id, channel]) => wirePrivate(id, channel, "ids")),
-    // Bob and Carol are Alice's friends.
-    relationships: [users.bob, users.carol].map((user) => ({ id: user.id, type: 1, nickname: null, user_id: user.id, since: JOINED_AT })),
+    relationships: [...relationships].map(([id, type]) => ({ id, type, nickname: null, user_id: id, since: JOINED_AT })),
     connected_accounts: [],
     guild_join_requests: [],
     experiments: [],
@@ -684,12 +712,13 @@ function ready(ws: Socket) {
 }
 
 function readySupplemental() {
-  const inVoice = [...voice.keys()];
+  const inServer = [...voice].filter(([, state]) => state.guild === GUILD);
+  const inVoice = inServer.map(([id]) => id);
   return {
     guilds: [
       {
         id: GUILD,
-        voice_states: [...voice].map(([userId, state]) => {
+        voice_states: inServer.map(([userId, state]) => {
           const { guild_id: _, ...wire } = wireVoiceState(userId, state);
           return wire;
         }),
@@ -781,16 +810,20 @@ function gatewayMessage(ws: Socket, text: string) {
       ws.data.identified = true;
       send(ws, 0, ready(ws), "READY");
       send(ws, 0, readySupplemental(), "READY_SUPPLEMENTAL");
+      // Calls going on, as Talk's capabilities ask.
+      for (const channel of calls.keys()) send(ws, 0, wireCall(channel), "CALL_CREATE");
       break;
     case 3: // Presence
       break;
     case 4: {
-      // Voice state: Alice shows in the channel; no voice server is assigned.
+      // Voice state: Alice shows in the channel or DM call, and gets its voice server.
       const channel: string | null = d.channel_id ?? null;
+      const guild: string | null = d.guild_id ?? null;
       const before = voice.get(ALICE);
-      if (before && before.channel !== channel) endStream(streamKey(before.channel, ALICE), "user_requested");
+      if (before && before.channel !== channel) endStream(streamKey(before.guild, before.channel, ALICE), "user_requested");
       if (channel) {
         voice.set(ALICE, {
+          guild,
           channel,
           self_mute: !!d.self_mute,
           self_deaf: !!d.self_deaf,
@@ -800,17 +833,21 @@ function gatewayMessage(ws: Socket, text: string) {
       } else {
         voice.delete(ALICE);
       }
-      dispatch("VOICE_STATE_UPDATE", { ...wireVoiceState(ALICE, voice.get(ALICE)), member: member(users.alice) });
+      moved(ALICE, before, ws.data.origin);
       if (channel && before?.channel !== channel) {
-        send(ws, 0, { guild_id: GUILD, token: VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
+        const server = guild
+          ? { guild_id: GUILD, token: VOICE_TOKEN }
+          : { guild_id: null, channel_id: channel, token: callToken(channel) };
+        send(ws, 0, { ...server, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
       }
       break;
     }
     case 18: {
-      // Go Live: only into the voice channel Alice is in.
-      const key = streamKey(d.channel_id, ALICE);
+      // Go Live: only into the voice channel or DM call Alice is in.
+      const guild: string | null = d.guild_id ?? null;
+      const key = streamKey(guild, d.channel_id, ALICE);
       const state = voice.get(ALICE);
-      if (d.guild_id !== GUILD || state?.channel !== d.channel_id) {
+      if (state?.guild !== guild || state?.channel !== d.channel_id || d.type !== (guild ? "guild" : "call")) {
         send(ws, 0, { stream_key: key, unavailable: false, reason: "unauthorized" }, "STREAM_DELETE");
         break;
       }
@@ -818,7 +855,7 @@ function gatewayMessage(ws: Socket, text: string) {
       const stream = { viewers: new Set<string>(), paused: true };
       streams.set(key, stream);
       state.self_stream = true;
-      dispatch("VOICE_STATE_UPDATE", { ...wireVoiceState(ALICE, state), member: member(users.alice) });
+      announce(ALICE);
       send(ws, 0, wireStream(key, stream), "STREAM_CREATE");
       send(ws, 0, streamServer(ws, key), "STREAM_SERVER_UPDATE");
       break;
@@ -835,7 +872,7 @@ function gatewayMessage(ws: Socket, text: string) {
       // Watch: a running stream in the voice channel Alice is in.
       const key: string = d.stream_key ?? "";
       const stream = streams.get(key);
-      const [, , channel] = key.split(":");
+      const { channel } = streamOf(key);
       if (!stream || voice.get(ALICE)?.channel !== channel) {
         send(ws, 0, { stream_key: key, unavailable: true, reason: "unauthorized" }, "STREAM_DELETE");
         break;
@@ -905,13 +942,128 @@ function streamServer(ws: Socket, key: string) {
 
 function endStream(key: string, reason: string) {
   if (!streams.delete(key)) return;
-  const user = key.split(":")[3]!;
+  const user = streamOf(key).user!;
   const state = voice.get(user);
   if (state) {
     state.self_stream = false;
-    dispatch("VOICE_STATE_UPDATE", { ...wireVoiceState(user, state), member: member(userById.get(user)!) });
+    announce(user);
   }
   dispatch("STREAM_DELETE", { stream_key: key, unavailable: false, reason });
+}
+
+/** Tells everyone where `user` is in voice now. */
+function announce(user: string) {
+  const state = voice.get(user)!;
+  const wire = wireVoiceState(user, state);
+  dispatch("VOICE_STATE_UPDATE", state.guild ? { ...wire, member: member(userById.get(user)!) } : wire);
+}
+
+/** Tells everyone `user` moved in voice from `before`: leaving a server's
+ * channel or a DM call, joining one, or changing their state in it. */
+function moved(user: string, before: VoiceState | undefined, origin: string) {
+  const now = voice.get(user);
+  if (before && (before.guild !== now?.guild || before.channel !== now?.channel)) {
+    const wire = wireVoiceState(user, undefined, before.guild);
+    dispatch("VOICE_STATE_UPDATE", before.guild ? { ...wire, member: member(userById.get(user)!) } : wire);
+    if (!before.guild) leftCall(before.channel, origin);
+  }
+  if (!now) return;
+  announce(user);
+  if (!now.guild && before?.channel !== now.channel) joinedCall(now.channel, user, origin);
+}
+
+// --- DM calls -----------------------------------------------------------------
+// Calls in DMs and group DMs, by channel id: whom each rings, and its message.
+// Bob answers when Alice rings him in their DM; in a group nobody does, and
+// the ringing stops after RING_MS. POST /_control/call makes Bob call Alice
+// (with ?group, in Weekend plans), and POST /_control/hang-up makes everyone
+// but Alice leave DM calls, back to the Lounge if they were there. Joining one connects with the call's channel as
+// the voice server's server id. Alice may ring only her friends in a DM, as
+// GET /channels/{id}/call says; Dave isn't one until he accepts her request.
+
+type Call = { ringing: Set<string>; message: string; rang: number };
+const calls = new Map<string, Call>();
+const ANSWER_MS = 3000;
+const RING_MS = 30_000;
+const callToken = (channel: string) => `call-token-${channel}`;
+/** Where people in the Lounge were before a DM call, to return after it. */
+const returnTo = new Map<string, VoiceState>();
+
+/** Puts `user` in a DM call, leaving wherever they were. */
+function joinCall(user: string, channel: string, origin: string) {
+  const before = voice.get(user);
+  if (before?.guild) returnTo.set(user, before);
+  voice.set(user, { guild: null, channel, self_mute: false, self_deaf: false, session: `voice-${user}` });
+  moved(user, before, origin);
+}
+
+const ringable = (dm: Private) => dm.type === 3 || dm.recipients.every((user) => relationships.get(user.id) === 1);
+
+function wireCall(channel: string) {
+  const call = calls.get(channel)!;
+  return {
+    channel_id: channel,
+    message_id: call.message,
+    region: "fake",
+    ringing: [...call.ringing],
+    voice_states: [...voice]
+      .filter(([, state]) => state.guild === null && state.channel === channel)
+      .map(([user, state]) => wireVoiceState(user, state)),
+    embedded_activities: [],
+  };
+}
+
+/** `user` joined a DM call: starting it, with its message, or answering it. */
+function joinedCall(channel: string, user: string, origin: string) {
+  const call = calls.get(channel);
+  if (call) {
+    call.ringing.delete(user);
+    const message = byId.get(call.message);
+    message?.call?.participants.add(user);
+    dispatch("CALL_UPDATE", wireCall(channel));
+    return;
+  }
+  const message = post(channel, userById.get(user)!, "", Date.now(), { type: 3, call: { participants: new Set([user]) } });
+  calls.set(channel, { ringing: new Set(), message: message.id, rang: 0 });
+  dispatch("MESSAGE_CREATE", dispatched(message, origin));
+  dispatch("CALL_CREATE", wireCall(channel));
+}
+
+/** Someone left a DM call; the last to leave ends it. */
+function leftCall(channel: string, origin: string) {
+  const call = calls.get(channel);
+  if (!call) return;
+  const inCall = [...voice.values()].some((state) => state.guild === null && state.channel === channel);
+  if (inCall) {
+    dispatch("CALL_UPDATE", wireCall(channel));
+    return;
+  }
+  calls.delete(channel);
+  dispatch("CALL_DELETE", { channel_id: channel });
+  const message = byId.get(call.message);
+  if (message?.call) {
+    message.call.ended = Date.now();
+    dispatch("MESSAGE_UPDATE", dispatched(message, origin));
+  }
+}
+
+/** Rings these people for a DM call; Bob answers in his DM with Alice. */
+function ring(channel: string, people: string[], origin: string) {
+  const call = calls.get(channel)!;
+  for (const user of people) call.ringing.add(user);
+  const rang = ++call.rang;
+  dispatch("CALL_UPDATE", wireCall(channel));
+  // Only the latest ringing of this call stops.
+  setTimeout(() => {
+    if (calls.get(channel) !== call || call.rang !== rang || !call.ringing.size) return;
+    call.ringing.clear();
+    dispatch("CALL_UPDATE", wireCall(channel));
+  }, RING_MS);
+  if (channel === DM_BOB && people.includes(users.bob.id)) {
+    setTimeout(() => {
+      if (calls.get(channel)?.ringing.has(users.bob.id)) joinCall(users.bob.id, channel, origin);
+    }, ANSWER_MS);
+  }
 }
 
 // --- Voice server -------------------------------------------------------------
@@ -1366,8 +1518,13 @@ function voiceMessage(ws: Socket, text: string) {
   const reply = (op: number, data: unknown) => ws.send(JSON.stringify({ op, d: data }));
   switch (payload.op) {
     case 0: // Identify
-      if (d.token !== VOICE_TOKEN && !String(d.token).startsWith("stream-token-")) {
+      if (d.token !== VOICE_TOKEN && !String(d.token).startsWith("stream-token-") && !String(d.token).startsWith("call-token-")) {
         ws.close(4004, "Authentication failed.");
+        return;
+      }
+      // A DM call identifies with its channel for the server.
+      if (String(d.token).startsWith("call-token-") && d.server_id !== String(d.token).slice("call-token-".length)) {
+        ws.close(4006, "Session is no longer valid.");
         return;
       }
       ws.data.ssrc = ssrcs += 3;
@@ -1633,6 +1790,68 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return messages.has(m[1]!) ? empty() : notFound("Unknown Channel", 10003);
   }
 
+  // Friend requests: sending one, or accepting one, from where Discord's
+  // client does it, which it says in X-Context-Properties.
+  if ((m = path.match(/^\/users\/@me\/relationships\/(\d+)$/)) && (method === "PUT" || method === "DELETE")) {
+    const id = m[1]!;
+    const user = userById.get(id);
+    if (!user || id === ALICE) return notFound("Unknown User", 10013);
+    const where = (() => {
+      try {
+        return JSON.parse(atob(req.headers.get("x-context-properties") ?? "")).location;
+      } catch {
+        return undefined;
+      }
+    })();
+    if (!where) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    const before = relationships.get(id);
+    if (method === "DELETE") {
+      if (before === undefined) return notFound("Unknown Relationship", 10011);
+      relationships.delete(id);
+      dispatch("RELATIONSHIP_REMOVE", { id, type: before, nickname: null });
+      return empty();
+    }
+    const befriend = (type: number) => {
+      relationships.set(id, type);
+      dispatch("RELATIONSHIP_ADD", {
+        id, type, user: wireUser(user), nickname: null, since: new Date().toISOString(), should_notify: type === 3,
+      });
+    };
+    if (before === 1 || before === 4) return empty();
+    befriend(before === 3 ? 1 : 4);
+    if (before !== 3 && id === users.dave.id) {
+      setTimeout(() => relationships.get(id) === 4 && befriend(1), FRIEND_ACCEPT_MS);
+    }
+    return empty();
+  }
+
+  // Alice may ring her friends in a DM, and anyone in a group.
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/call$/))) {
+    const dm = privates.get(m[1]!);
+    if (!dm) return notFound("Unknown Channel", 10003);
+    return json({ ringable: ringable(dm) });
+  }
+
+  // Ringing for a DM call: everyone not in it, or these people; stopping
+  // rings no more, by default this account, which declines.
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/call\/(ring|stop-ringing)$/))) {
+    const channel = m[1]!;
+    const call = calls.get(channel);
+    const dm = privates.get(channel);
+    if (!call || !dm) return notFound("Unknown Channel", 10003);
+    const body: any = await req.json();
+    const recipients: string[] | null = body.recipients ?? null;
+    if (m[2] === "ring") {
+      if (!ringable(dm)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+      const inCall = (user: string) => voice.get(user)?.channel === channel;
+      ring(channel, (recipients ?? dm.recipients.map((user) => user.id)).filter((user) => !inCall(user)), origin);
+    } else {
+      for (const user of recipients ?? [ALICE]) call.ringing.delete(user);
+      dispatch("CALL_UPDATE", wireCall(channel));
+    }
+    return empty();
+  }
+
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/attachments$/))) {
     const body: any = await req.json();
     const attachments = (body.files ?? []).map((file: any) => {
@@ -1889,6 +2108,24 @@ const server = Bun.serve<SocketData>({
       const message = post(DM_DAVE, users.dave, `Hi Alice, it's Dave (${messages.get(DM_DAVE)!.length + 1})`, Date.now());
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
       return new Response("Dave wrote\n");
+    }
+    if (req.method === "POST" && path === "/_control/call") {
+      const channel = url.searchParams.has("group") ? WEEKEND : DM_BOB;
+      joinCall(users.bob.id, channel, origin);
+      const others = privates.get(channel)!.recipients.map((user) => user.id).filter((user) => user !== users.bob.id);
+      ring(channel, [ALICE, ...others], origin);
+      return new Response("Bob is calling\n");
+    }
+    if (req.method === "POST" && path === "/_control/hang-up") {
+      for (const [user, state] of [...voice]) {
+        if (user === ALICE || state.guild) continue;
+        const back = returnTo.get(user);
+        returnTo.delete(user);
+        if (back) voice.set(user, back);
+        else voice.delete(user);
+        moved(user, state, origin);
+      }
+      return new Response("everyone hung up\n");
     }
     if (req.method === "POST" && path === "/_control/mention") {
       const message = post(GENERAL, users.bob, `<@${users.alice.id}> are you in for co-op tonight?`, Date.now());

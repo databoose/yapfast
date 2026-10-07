@@ -4,6 +4,7 @@ use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::{Result, bail, ensure};
 use talk_discord::{
+    ready::PRIVATE,
     service::{Discord, Live, Status},
     stream::{self, StreamServer},
     voice::{Call as DiscordCall, live_microphone},
@@ -12,6 +13,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     discord_audio::{self, Capture, Hearing, Speakers},
+    ring::{Ringer, Tone},
     stream_worker::{self, Report, Worker},
     voice::{
         Chosen, Command, Participant, Phase, SharePhase, Sharing, State, StreamQuality, Watching,
@@ -117,6 +119,18 @@ async fn started(starting: &mut Starting) -> Result<StreamServer> {
     }
 }
 
+/// Ringing the others for a DM call this account started: whether Discord
+/// let it ring them.
+type Ringing = Option<Pin<Box<dyn Future<Output = Result<bool>> + Send>>>;
+
+/// Whether ringing worked, or never while nothing is being rung.
+async fn rung(ringing: &mut Ringing) -> Result<bool> {
+    match ringing {
+        Some(ringing) => ringing.await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Watching someone's stream: Discord's answer, then a worker showing it.
 struct Watch {
     key: String,
@@ -156,7 +170,7 @@ impl Watch {
     }
 
     fn start(discord: &Discord, guild: &str, channel: &str, user: &str, state: &mut State) -> Self {
-        let key = stream::guild_key(guild, channel, user);
+        let key = stream::key(guild, channel, user);
         let name = state
             .participants
             .iter()
@@ -221,13 +235,22 @@ pub(crate) async fn call(
     );
     let mut discord_states = discord.snapshots();
     let me = discord_states.borrow().user_id.clone().unwrap_or_default();
-    state.name = discord_states
-        .borrow()
-        .servers
-        .iter()
-        .flat_map(|server| &server.voice_channels)
-        .find(|found| found.id == channel)
-        .map_or_else(|| "Discord voice".into(), |found| found.name.clone());
+    state.name = if guild == PRIVATE {
+        discord_states
+            .borrow()
+            .conversations
+            .iter()
+            .find(|found| found.id == channel)
+            .map_or_else(|| "Discord call".into(), |found| found.name.clone())
+    } else {
+        discord_states
+            .borrow()
+            .servers
+            .iter()
+            .flat_map(|server| &server.voice_channels)
+            .find(|found| found.id == channel)
+            .map_or_else(|| "Discord voice".into(), |found| found.name.clone())
+    };
     snapshots.send_replace(state.clone());
 
     let (ended, mut endings) = mpsc::unbounded_channel();
@@ -277,11 +300,31 @@ pub(crate) async fn call(
     let mut starting: Starting = None;
     let mut watch: Option<Watch> = None;
     let mut live = discord.live();
+    // Ringing the others while they haven't come, with the ringback heard meanwhile.
+    let mut ringing: Ringing = None;
+    let mut ringback: Option<Ringer> = None;
+    // Discord wouldn't ring them, which the call says until someone comes.
+    let mut unrung = false;
 
     let result = async {
         let mut speakers = Some(open_discord_speakers(state, &played, &hearing)?);
         Chosen::write(remembered, state);
         state.phase = Phase::Connected;
+        if guild == PRIVATE && alone(&discord_states.borrow(), channel, &me) {
+            // Starting a DM call, rather than joining one, rings the others,
+            // once Discord has the call: it rings only in one.
+            let (discord, channel) = (discord.clone(), channel.to_owned());
+            ringing = Some(Box::pin(async move {
+                let mut states = discord.snapshots();
+                let started = states.wait_for(|snapshot| {
+                    snapshot.conversations.iter().any(|found| found.id == channel && found.call)
+                });
+                if tokio::time::timeout(Duration::from_secs(5), started).await.is_err() {
+                    tracing::warn!("Discord hasn't reported the DM call; ringing anyway");
+                }
+                discord.ring(&channel).await
+            }));
+        }
         let mut ticks = tokio::time::interval(Duration::from_millis(150));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut volumes = crate::volume::changes();
@@ -298,6 +341,20 @@ pub(crate) async fn call(
             if participants != state.participants {
                 state.participants = participants;
                 snapshots.send_replace(state.clone());
+            }
+            if unrung && !alone(&discord_states.borrow(), channel, &me) {
+                unrung = false;
+                state.warning = None;
+                snapshots.send_replace(state.clone());
+            }
+            let calling = guild == PRIVATE
+                && !state.deafened
+                && alone(&discord_states.borrow(), channel, &me)
+                && state.participants.iter().any(|person| !person.connected);
+            if calling != ringback.is_some() {
+                ringback = calling
+                    .then(|| Ringer::start(Tone::Outgoing, state.speaker.as_deref()))
+                    .and_then(|started| started.inspect_err(|error| tracing::warn!(%error, "could not play the ringback")).ok());
             }
             tokio::select! {
                 command = commands.recv() => {
@@ -411,7 +468,7 @@ pub(crate) async fn call(
                             {
                                 sharing.phase = SharePhase::Starting;
                                 if let Some(going) = share.as_mut() {
-                                    going.key = Some(stream::guild_key(guild, channel, &me));
+                                    going.key = Some(stream::key(guild, channel, &me));
                                 }
                                 let (discord, guild, channel) = (discord.clone(), guild.to_owned(), channel.to_owned());
                                 starting = Some(Box::pin(async move { discord.go_live(&guild, &channel).await }));
@@ -465,6 +522,25 @@ pub(crate) async fn call(
                         }
                     }
                     snapshots.send_replace(state.clone());
+                }
+                result = rung(&mut ringing) => {
+                    ringing = None;
+                    let warning = match result {
+                        Ok(true) => None,
+                        Ok(false) => Some(format!(
+                            "Discord doesn't let you ring {}. They'll see the call when they open the DM.",
+                            state.name
+                        )),
+                        Err(error) => {
+                            tracing::warn!(error = format!("{error:#}"), "could not ring the DM call");
+                            Some(format!("Discord didn't ring them: {error}"))
+                        }
+                    };
+                    if warning.is_some() && alone(&discord_states.borrow(), channel, &me) {
+                        unrung = true;
+                        state.warning = warning;
+                        snapshots.send_replace(state.clone());
+                    }
                 }
                 Ok(()) = volumes.changed() => Watch::volume(&mut watch),
                 event = watch_event(&mut watch) => {
@@ -550,6 +626,7 @@ pub(crate) async fn call(
     }
     state.phase = Phase::Leaving;
     snapshots.send_replace(state.clone());
+    drop(ringback);
     drop(capture);
     hearing.set_output(None);
     call.leave();
@@ -638,6 +715,43 @@ fn discord_participants(
             }
         })
         .collect();
+    // Those a DM call rings, until they answer or it stops ringing them.
+    let ringing = snapshot
+        .conversations
+        .iter()
+        .find(|conversation| conversation.id == channel)
+        .map_or(&[][..], |conversation| conversation.ringing.as_slice());
+    for member in ringing {
+        if member.user_id != me
+            && !participants
+                .iter()
+                .any(|person| person.id == member.user_id)
+        {
+            participants.push(Participant {
+                id: member.user_id.clone(),
+                user: member.name.clone(),
+                person: member.user_id.clone(),
+                local: false,
+                muted: false,
+                deafened: false,
+                speaking: false,
+                connected: false,
+                problem: Some("Calling...".into()),
+                avatar: Some(member.avatar.clone()),
+                streaming: false,
+            });
+        }
+    }
     participants.sort_by_key(|person| std::cmp::Reverse(person.local));
     participants
+}
+
+/// Whether nobody but this account is in a call.
+fn alone(snapshot: &talk_discord::service::Snapshot, channel: &str, me: &str) -> bool {
+    snapshot
+        .voice
+        .get(channel)
+        .into_iter()
+        .flatten()
+        .all(|member| member.user_id == me)
 }

@@ -106,13 +106,18 @@ fn watch_frames(
 
 /// Tells the fake which codec Bob streams in.
 fn stream_codec(server: &str, codec: &str) {
+    post_control(server, "/_control/stream-codec", codec);
+}
+
+/// Posts `body` to one of the fake's controls.
+fn post_control(server: &str, path: &str, body: &str) {
     use std::io::{Read, Write};
     let address = server.trim_start_matches("http://");
     let mut connection = std::net::TcpStream::connect(address).unwrap();
     write!(
         connection,
-        "POST /_control/stream-codec HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{codec}",
-        codec.len()
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .unwrap();
     let mut answer = String::new();
@@ -633,12 +638,9 @@ async fn talks_to_the_fake_server() {
 
     // Go Live: watching Bob needs the voice channel; then Alice joins the
     // call, watches him and shares her own screen.
-    let bob_stream = stream::guild_key(&guild, &lounge, &bob);
+    let bob_stream = stream::key(&guild, &lounge, &bob);
     let refused = discord.watch(&bob_stream).await.unwrap_err();
-    assert_eq!(
-        refused.to_string(),
-        "Join the voice channel to watch its streams."
-    );
+    assert_eq!(refused.to_string(), "Join the call to watch its streams.");
     let assigned = discord.join(&guild, &lounge).await.unwrap();
     let mut call = timeout(
         WAIT,
@@ -840,4 +842,153 @@ async fn talks_to_the_fake_server() {
     call.leave();
     discord.leave(&guild);
     snapshot_where(&discord, |snapshot| in_lounge(snapshot).is_none()).await;
+
+    // A DM call: Alice starts one with Bob, connecting with the DM for the
+    // server, and rings him; he answers.
+    let me = snapshot.user_id.clone().unwrap();
+    let dm = discord
+        .snapshots()
+        .borrow()
+        .conversations
+        .iter()
+        .find(|conversation| conversation.person.as_deref() == Some(bob.as_str()))
+        .unwrap()
+        .id
+        .clone();
+    let assigned = discord.join(PRIVATE, &dm).await.unwrap();
+    let mut call = timeout(
+        WAIT,
+        Call::connect(&assigned, PRIVATE, &dm, std::sync::Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to the DM call")
+    .unwrap();
+    let started = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.channel_id == dm => Some(message),
+        _ => None,
+    })
+    .await;
+    assert_eq!(started.system.as_deref(), Some("started a call."));
+    let in_call = |snapshot: &Snapshot| -> Vec<String> {
+        snapshot
+            .voice
+            .get(&dm)
+            .into_iter()
+            .flatten()
+            .map(|member| member.name.clone())
+            .collect()
+    };
+    let ringing = |snapshot: &Snapshot| -> Vec<String> {
+        snapshot
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == dm)
+            .map(|conversation| {
+                conversation
+                    .ringing
+                    .iter()
+                    .map(|person| person.user_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    snapshot_where(&discord, |snapshot| in_call(snapshot) == ["Alice"]).await;
+    assert!(discord.ring(&dm).await.unwrap(), "Bob is a friend");
+    snapshot_where(&discord, |snapshot| ringing(snapshot) == [bob.clone()]).await;
+    snapshot_where(&discord, |snapshot| {
+        in_call(snapshot) == ["Alice", "Bob"] && ringing(snapshot).is_empty()
+    })
+    .await;
+
+    // Going live in a DM call names the stream by the call.
+    let mine = discord.go_live(PRIVATE, &dm).await.unwrap();
+    assert_eq!(mine.stream_key, format!("call:{dm}:{me}"));
+    assert_eq!(
+        stream::parse(&mine.stream_key),
+        Some((PRIVATE, dm.as_str(), me.as_str()))
+    );
+    discord.end_stream(&mine.stream_key);
+    call.leave();
+    discord.leave(PRIVATE);
+    snapshot_where(&discord, |snapshot| in_call(snapshot) == ["Bob"]).await;
+    post_control(server, "/_control/hang-up", "");
+    snapshot_where(&discord, |snapshot| !snapshot.voice.contains_key(&dm)).await;
+    let ended = live_where(&mut live, |event| match event {
+        Live::Updated(message) if message.id == started.id => Some(message),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        ended.system.as_deref(),
+        Some("started a call that lasted a few seconds.")
+    );
+
+    // Bob calls Alice, and she declines; he stays until he hangs up.
+    post_control(server, "/_control/call", "");
+    snapshot_where(&discord, |snapshot| {
+        in_call(snapshot) == ["Bob"] && ringing(snapshot) == [me.clone()]
+    })
+    .await;
+    discord.decline(&dm).await.unwrap();
+    snapshot_where(&discord, |snapshot| ringing(snapshot).is_empty()).await;
+    assert_eq!(in_call(&discord.snapshots().borrow()), ["Bob"]);
+    post_control(server, "/_control/hang-up", "");
+    snapshot_where(&discord, |snapshot| !snapshot.voice.contains_key(&dm)).await;
+
+    // Dave isn't a friend, and Discord doesn't let Alice ring him.
+    post_control(server, "/_control/dm", "");
+    let dave = snapshot_where(&discord, |snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .any(|found| found.name == "Dave")
+    })
+    .await
+    .conversations
+    .into_iter()
+    .find(|found| found.name == "Dave")
+    .unwrap();
+    let (dave, dave_user) = (dave.id, dave.person.unwrap());
+    let assigned = discord.join(PRIVATE, &dave).await.unwrap();
+    let mut call = timeout(
+        WAIT,
+        Call::connect(&assigned, PRIVATE, &dave, std::sync::Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to the DM call")
+    .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .any(|found| found.id == dave && found.call)
+    })
+    .await;
+    assert!(!discord.ring(&dave).await.unwrap(), "Dave can't be rung");
+
+    // Alice sends Dave a friend request, which he accepts; then he can be rung.
+    discord.befriend(&dave_user).await.unwrap();
+    let requested = |snapshot: &Snapshot| -> Vec<(String, bool)> {
+        snapshot
+            .friend_requests
+            .iter()
+            .map(|request| (request.name.clone(), request.incoming))
+            .collect()
+    };
+    snapshot_where(&discord, |snapshot| {
+        requested(snapshot) == [("Erin".to_owned(), true), ("Dave".to_owned(), false)]
+    })
+    .await;
+    snapshot_where(&discord, |snapshot| snapshot.friends.contains(&dave_user)).await;
+    assert!(discord.ring(&dave).await.unwrap(), "Dave is a friend now");
+    call.leave();
+    discord.leave(PRIVATE);
+    snapshot_where(&discord, |snapshot| !snapshot.voice.contains_key(&dave)).await;
+
+    // Erin's friend request is ignored.
+    let erin = discord.snapshots().borrow().friend_requests[0]
+        .user_id
+        .clone();
+    discord.remove_friend_request(&erin).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.friend_requests.is_empty()).await;
 }

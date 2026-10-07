@@ -129,8 +129,8 @@ async fn messages(channel_id: &str) -> Result<()> {
         let author = discord
             .name(&server.id, &message.author_id)
             .unwrap_or_else(|| message.author.clone());
-        let body = match message.system {
-            Some(system) => system.to_owned(),
+        let body = match &message.system {
+            Some(system) => system.clone(),
             None => discord.render(Some(server), &message.content),
         };
         let edited = if message.edited { " (edited)" } else { "" };

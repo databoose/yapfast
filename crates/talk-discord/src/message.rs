@@ -15,6 +15,7 @@ use crate::{
 const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
 
 const DEFAULT: u64 = 0;
+const CALL: u64 = 3;
 const PINNED: u64 = 6;
 const MEMBER_JOIN: u64 = 7;
 const REPLY: u64 = 19;
@@ -35,8 +36,9 @@ pub struct Message {
     pub author: String,
     /// Discord Markdown with mentions still as `<@id>`.
     pub content: String,
-    /// Shown instead of content, for joins and pins.
-    pub system: Option<&'static str>,
+    /// Shown after the author's name instead of content, for joins, pins
+    /// and calls.
+    pub system: Option<String>,
     pub edited: bool,
     pub reply: Option<Reply>,
     /// Its files, then its embeds' pictures.
@@ -194,14 +196,39 @@ pub fn nonce() -> String {
     ((now.saturating_sub(DISCORD_EPOCH_MS)) << 22).to_string()
 }
 
+/// How long a call lasted, as Discord says it.
+fn lasted(ms: u64) -> String {
+    let minutes = (ms + 30_000) / 60_000;
+    match minutes {
+        0 => "a few seconds".into(),
+        1 => "a minute".into(),
+        2..45 => format!("{minutes} minutes"),
+        45..90 => "an hour".into(),
+        _ => format!("{} hours", (minutes + 30) / 60),
+    }
+}
+
 /// A message object, from the API or the gateway. Kinds Talk doesn't show,
 /// such as boosts and thread notices, give `None`.
 pub fn parse(value: &Value) -> Option<Message> {
     let kind = value["type"].as_u64().unwrap_or(DEFAULT);
     let system = match kind {
         DEFAULT | REPLY | CHAT_INPUT_COMMAND | CONTEXT_MENU_COMMAND => None,
-        MEMBER_JOIN => Some("joined the server."),
-        PINNED => Some("pinned a message."),
+        MEMBER_JOIN => Some("joined the server.".to_owned()),
+        PINNED => Some("pinned a message.".to_owned()),
+        // Discord updates it with when the call ended.
+        CALL => Some(
+            match value["call"]["ended_timestamp"].as_str().and_then(iso_ms) {
+                Some(ended) => {
+                    let started = value["id"].as_str().map_or(ended, snowflake_ms);
+                    format!(
+                        "started a call that lasted {}.",
+                        lasted(ended.saturating_sub(started))
+                    )
+                }
+                None => "started a call.".to_owned(),
+            },
+        ),
         _ => return None,
     };
     let author = &value["author"];
@@ -617,6 +644,28 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn says_how_long_calls_lasted() {
+        // Two minutes after Discord's epoch, as a snowflake.
+        let id = snowflake_at(DISCORD_EPOCH_MS + 120_000).to_string();
+        let call = |ended: Value| {
+            parse(
+                &json!({"id": id, "type": 3, "author": {"id": "1"}, "call": {
+                    "participants": ["1"], "ended_timestamp": ended,
+                }}),
+            )
+            .and_then(|message| message.system)
+        };
+        assert_eq!(call(Value::Null).as_deref(), Some("started a call."));
+        assert_eq!(
+            call(json!("2015-01-01T00:07:10+00:00")).as_deref(),
+            Some("started a call that lasted 5 minutes.")
+        );
+        assert_eq!(lasted(10_000), "a few seconds");
+        assert_eq!(lasted(50 * 60_000), "an hour");
+        assert_eq!(lasted(150 * 60_000), "3 hours");
+    }
 
     #[test]
     fn parses_replies_attachments_and_reactions() {

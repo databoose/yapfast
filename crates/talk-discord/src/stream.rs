@@ -6,24 +6,27 @@
 
 use serde_json::Value;
 
-/// The key of `user`'s stream in a server's voice channel.
-pub fn guild_key(guild: &str, channel: &str, user: &str) -> String {
-    format!("guild:{guild}:{channel}:{user}")
+use crate::ready::PRIVATE;
+
+/// The key of `user`'s stream: in a server's voice channel, or with
+/// [`PRIVATE`] for the server, in a DM or group DM call.
+pub fn key(guild: &str, channel: &str, user: &str) -> String {
+    if guild == PRIVATE {
+        format!("call:{channel}:{user}")
+    } else {
+        format!("guild:{guild}:{channel}:{user}")
+    }
 }
 
-/// The server, voice channel and streamer a server stream's key names.
+/// The server, channel and streamer a stream's key names; the server of a
+/// DM call's stream is [`PRIVATE`].
 pub fn parse(key: &str) -> Option<(&str, &str, &str)> {
-    let mut parts = key.split(':');
-    let (Some("guild"), Some(guild), Some(channel), Some(user), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return None;
-    };
-    Some((guild, channel, user))
+    let parts: Vec<_> = key.split(':').collect();
+    match parts.as_slice() {
+        ["guild", guild, channel, user] => Some((guild, channel, user)),
+        ["call", channel, user] => Some((PRIVATE, channel, user)),
+        _ => None,
+    }
 }
 
 /// What the stream connection needs, like [`crate::service::VoiceServer`]
@@ -96,15 +99,17 @@ mod tests {
 
     #[test]
     fn keys_name_the_streamer() {
-        let key = guild_key("1", "2", "3");
+        let key = key("1", "2", "3");
         assert_eq!(key, "guild:1:2:3");
         assert_eq!(parse(&key), Some(("1", "2", "3")));
-        assert_eq!(parse("call:2:3"), None, "calls aren't in a server");
+        assert_eq!(super::key(PRIVATE, "2", "3"), "call:2:3");
+        assert_eq!(parse("call:2:3"), Some((PRIVATE, "2", "3")));
+        assert_eq!(parse("guild:1:2"), None);
     }
 
     #[test]
     fn opens_once_both_answers_are_in() {
-        let key = guild_key("1", "2", "3");
+        let key = key("1", "2", "3");
         let mut opening = Opening::default();
         opening.apply(
             &key,

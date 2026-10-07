@@ -13,7 +13,7 @@ use slint::{
     ComponentHandle, Model, ModelRc, SharedString, VecModel, winit_030::WinitWindowAccessor,
 };
 use talk_core::{
-    application::{Action, Application, Compose, Effect, Navigation, NewDm},
+    application::{Action, Application, Compose, Effect, Navigation, NewDm, Relation},
     backend::Backend,
     chat::{
         ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
@@ -563,6 +563,9 @@ struct Adapter {
     thumbnails: HashMap<PathBuf, Option<slint::Image>>,
     /// Where pasted pictures are saved until they're sent; removed as Talk closes.
     pasted: Option<tempfile::TempDir>,
+    /// Ringing for a DM call that rings this account.
+    #[cfg(feature = "discord")]
+    ringer: Option<talk_core::ring::Ringer>,
 }
 
 impl Adapter {
@@ -617,6 +620,8 @@ impl Adapter {
                 meter: None,
                 thumbnails: HashMap::new(),
                 pasted: None,
+                #[cfg(feature = "discord")]
+                ringer: None,
             })
         }))
     }
@@ -850,6 +855,12 @@ impl Adapter {
             } else {
                 view.note.clone().unwrap_or_default().into()
             },
+            // Matrix IDs start with `@`; Discord user ids are numbers.
+            friend: if profile.id.starts_with('@') {
+                0
+            } else {
+                friend_offer(state.relation(&profile.id))
+            },
         });
     }
 
@@ -1029,6 +1040,29 @@ impl Adapter {
             });
         }
         let counted = |name: &str| listed.iter().filter(|room| room.category == name).count();
+        // Friend requests head the DM list, matched by name like the DMs.
+        let requests: Vec<_> = state
+            .friend_requests
+            .iter()
+            .filter(|_| direct)
+            .filter(|request| request.name.to_lowercase().contains(&query))
+            .map(|request| FriendRequestRow {
+                id: request.id.as_str().into(),
+                name: request.name.as_str().into(),
+                initial: initial(&request.name),
+                tint: tint(&request.id),
+                picture: cached_picture(&mut self.pictures, state, request.avatar.as_deref()),
+                incoming: request.incoming,
+                detail: match (request.incoming, request.spam) {
+                    (true, true) => "Maybe spam",
+                    (true, false) => "Incoming request",
+                    (false, _) => "Request sent",
+                }
+                .into(),
+            })
+            .collect();
+        let friend_requests = !requests.is_empty();
+        window.set_friend_requests(ModelRc::new(VecModel::from(requests)));
         let (requests, spam) = (counted(discord::REQUESTS), counted(discord::SPAM));
         let rows: Vec<_> = listed
             .into_iter()
@@ -1043,6 +1077,7 @@ impl Adapter {
                             format!("SPAM — {spam}")
                         }
                         (Some(discord::REQUESTS), "") => "DIRECT MESSAGES".into(),
+                        (None, "") if friend_requests => "DIRECT MESSAGES".into(),
                         _ => String::new(),
                     }
                 } else if discord::is_discord(&room.id) {
@@ -1110,6 +1145,7 @@ impl Adapter {
                             .collect();
                         ModelRc::new(VecModel::from(people))
                     },
+                    call: room.direct && !room.people.is_empty(),
                 }
             })
             .collect();
@@ -1632,9 +1668,74 @@ impl Adapter {
             .into(),
         );
         let present = room.map_or(&[][..], |room| room.people.as_slice());
+        // A Discord DM's call, shown above its messages.
+        let dm_call = room.filter(|room| room.direct && discord::is_discord(&room.id));
+        let dm_person = dm_call.and_then(|room| room.person.as_deref());
+        window.set_dm_person(dm_person.unwrap_or_default().into());
+        window.set_dm_friend(dm_person.map_or(0, |person| match state.relation(person) {
+            // The header offers no "sent", which the profile card shows.
+            Relation::Outgoing => 0,
+            relation => friend_offer(relation),
+        }));
+        window.set_can_call(dm_call.is_some_and(|room| !room.request) && !voice_here);
+        window.set_call_going(!present.is_empty());
+        window.set_call_shown(
+            dm_call.is_some_and(|room| voice_here || !room.people.is_empty() || room.incoming),
+        );
+        window.set_call_room(dm_call.map_or_else(Default::default, |room| room.id.as_str().into()));
+        let incoming = dm_call.is_some_and(|room| room.incoming) && !voice_here;
+        window.set_call_incoming(incoming);
+        window.set_call_note(
+            match (incoming, present.is_empty()) {
+                (true, true) => "Incoming call.".into(),
+                (true, false) => format!("{} calling you.", who_is_here(present)),
+                (false, _) => format!("{} in the call.", who_is_here(present)),
+            }
+            .into(),
+        );
+        let call_people: Vec<_> = present
+            .iter()
+            .map(|person| PersonRow {
+                id: person.id.as_str().into(),
+                name: person.name.as_str().into(),
+                initial: initial(&person.name),
+                tint: tint(&person.id),
+                picture: cached_picture(&mut self.pictures, state, person.avatar.as_deref()),
+                connected: true,
+                ..Default::default()
+            })
+            .collect();
+        window.set_call_people(ModelRc::new(VecModel::from(call_people)));
+        let ringing = show_incoming(window, state, &mut self.pictures);
+        #[cfg(feature = "discord")]
+        if !ringing {
+            self.ringer = None;
+        } else if self.ringer.is_none() {
+            self.ringer = talk_core::ring::Ringer::start(
+                talk_core::ring::Tone::Incoming,
+                voice.speaker.as_deref(),
+            )
+            .inspect_err(|error| tracing::warn!(%error, "could not ring"))
+            .ok();
+        }
+        #[cfg(not(feature = "discord"))]
+        let _ = ringing;
         window.set_voice_description(
             if room.is_some_and(|room| room.locked) {
                 "Your roles on this Discord server don't let you join this channel.".into()
+            } else if let Some(room) = dm_call.filter(|_| voice_here) {
+                let ringing: Vec<&str> = room
+                    .ringing
+                    .iter()
+                    .map(|person| person.name.as_str())
+                    .collect();
+                if !ringing.is_empty() {
+                    format!("Calling {}...", ringing.join(", "))
+                } else if voice.participants.len() == 1 {
+                    "Nobody else is in the call yet.".into()
+                } else {
+                    "The call stays connected while you browse other conversations.".into()
+                }
             } else if voice_here && voice.participants.len() == 1 {
                 "You're here alone. Stay as long as you like; others can join later.".into()
             } else if voice_here {
@@ -1827,6 +1928,51 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind!(on_close_profile, Action::CloseProfile);
     bind!(on_ignore_request, Action::AnswerRequest(false));
     bind!(on_leave_voice, Action::Voice(voice::Command::Leave));
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_befriend(move |user| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Befriend(user.to_string()));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_remove_friend_request(move |user| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::RemoveFriendRequest(user.to_string()));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_start_call(move || {
+        if let Some(window) = weak.upgrade() {
+            let id = state.borrow().app.state.selected.clone();
+            if let Some(id) = id {
+                state
+                    .borrow_mut()
+                    .action(&window, Action::RequestJoinVoice(id));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_answer_call(move |room, accept| {
+        if let Some(window) = weak.upgrade() {
+            let room = room.to_string();
+            state.borrow_mut().action(
+                &window,
+                if accept {
+                    Action::AcceptCall(room)
+                } else {
+                    Action::DeclineCall(room)
+                },
+            );
+        }
+    });
     bind!(on_confirm_switch, Action::ConfirmVoiceSwitch);
     bind!(on_cancel_switch, Action::CancelVoiceSwitch);
     bind!(on_dismiss_voice_error, Action::DismissVoiceError);
@@ -2455,6 +2601,53 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// Only mentions get a number; plain unread activity is a dot, because sync
 /// does not deliver every message of a room that isn't open.
 /// "Ann is", "Ann and Bob are", or "Ann, Bob and 3 others are".
+/// What a profile or DM offers for a Discord friendship, as in
+/// ProfileData.friend.
+fn friend_offer(relation: Relation) -> i32 {
+    match relation {
+        Relation::Stranger => 1,
+        Relation::Outgoing => 2,
+        Relation::Incoming => 3,
+        Relation::Me | Relation::Friend => 0,
+    }
+}
+
+/// Shows a DM call ringing this account in another conversation over
+/// everything. Returns whether any call rings it, which Talk rings for.
+fn show_incoming(
+    window: &TalkWindow,
+    state: &talk_core::application::AppState,
+    pictures: &mut HashMap<String, slint::Image>,
+) -> bool {
+    let voice = &state.voice;
+    let ringing: Vec<_> = state
+        .rooms
+        .iter()
+        .filter(|room| room.incoming && !(voice.active() && voice.room.as_ref() == Some(&room.id)))
+        .collect();
+    // The open DM's own call answers in its panel.
+    let shown = ringing
+        .iter()
+        .find(|room| state.selected.as_ref() != Some(&room.id));
+    window.set_incoming_open(shown.is_some());
+    if let Some(room) = shown {
+        window.set_incoming_room(room.id.as_str().into());
+        window.set_incoming_name(room.name.as_str().into());
+        window.set_incoming_detail(
+            if room.person.is_some() || room.people.is_empty() {
+                "Incoming call".into()
+            } else {
+                format!("{} calling", who_is_here(&room.people))
+            }
+            .into(),
+        );
+        window.set_incoming_initial(initial(&room.name));
+        window.set_incoming_tint(tint(&room.id));
+        window.set_incoming_picture(cached_picture(pictures, state, room.avatar.as_deref()));
+    }
+    !ringing.is_empty()
+}
+
 fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
     let names: Vec<&str> = people.iter().map(|person| person.name.as_str()).collect();
     match names.as_slice() {
