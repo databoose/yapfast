@@ -81,6 +81,8 @@
             protobuf curl jq docker-compose python3 llvmPackages_21.llvm
             # pasta, nftables and iproute2 isolate one voice test participant's network.
             passt nftables iproute2
+            # Runs testing/fake_discord.ts.
+            bun
           ];
           buildInputs = libraries;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libraries;
@@ -92,7 +94,8 @@
           SKIA_BINARIES_URL = "file://${skia}/${skiaPackage}";
           shellHook = ''
             export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LD_LIBRARY_PATH"
-            echo "Talk dev shell. Run scripts/check or cargo run --locked."
+            # Only people see the greeting; commands run through the shell don't.
+            [ -t 1 ] && echo "Talk dev shell. Run scripts/check --fast or cargo run --profile fast."
           '';
         };
         windows = pkgs.mkShell {

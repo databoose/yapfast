@@ -1,5 +1,18 @@
 # Native builds
 
+## Shells
+
+Three Nix shells cover the work:
+
+- `nix develop path:./nix` is the development shell. Run every `cargo` command
+  in it, as `nix develop path:./nix --command cargo ...`. It also provides
+  `bun` for the fake Discord.
+- `nix-shell --impure experiments/frameworks/shell.nix` adds Weston,
+  PulseAudio, the ALSA plugins and FFmpeg to it, for the private display that
+  `scripts/run-framework-isolated` starts.
+- `nix develop path:./nix#windows` cross-builds for Windows; see the
+  [Windows beta guide](windows-beta.md).
+
 ## Dependencies
 
 Talk pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
@@ -64,9 +77,70 @@ SDK and the C++ media bindings do not exhaust it.
 
 Development builds omit debug symbols for dependencies; the app keeps line
 tables. Release builds use thin LTO and strip symbols. Use them for builds
-people run and for measurements. The `fast` profile optimizes like release
-without LTO and builds incrementally. Use it for tests and local runs:
-`cargo build --profile fast` or `cargo test --profile fast`.
+people run. The `fast` profile optimizes like release without LTO and builds
+incrementally. Use it for tests, local runs and
+[measurements](measurements/README.md): `cargo build --profile fast` or
+`cargo test --profile fast`.
+
+### Dependency sources
+
+Talk patches these crates in `vendor/`, through `[patch.crates-io]` or a path
+dependency in Cargo.toml:
+
+- `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText`, above.
+- `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
+  above.
+- `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native
+  audio tracks and cancellable joins.
+- `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling and
+  remote track volume.
+- `songbird`: songbird 0.6.0, fixed to receive audio in DAVE calls.
+- `davey`: davey 0.1.4, keeping its key packages when a Go Live stream's group
+  id changes.
+- `gpui-pre-windows`: a Windows build fix for the archived GPUI client. Nothing
+  uses it now.
+
+Each has a `README.talk.md` with its changes, except the two Slint crates, which
+this section describes. The Slint crates keep their `.rs` files at the crate
+root, with no `src/`, both in `vendor/` and in Cargo's registry.
+
+Crates that aren't vendored are in
+`~/.cargo/registry/src/index.crates.io-*/NAME-VERSION/`. The Matrix SDK is a git
+dependency; its checkout is `~/.cargo/git/checkouts/matrix-rust-sdk-*/c6ad52e/`,
+the short form of the revision pinned in Cargo.toml. libwebrtc's headers are in
+`$LK_CUSTOM_WEBRTC/include` inside the development shell.
+
+## Checks
+
+`scripts/check` enters the development shell itself. `scripts/check --fast`
+builds with the `fast` profile, as local work does. It runs, in order:
+formatting; `scripts/check-doc-links`, which fails on a Markdown link to a
+missing file or heading; Clippy with warnings denied and the tests for the whole workspace;
+Clippy for the Discord-only, Matrix-only and headless builds; a build; and the
+headless and desktop smoke tests. The desktop smoke test runs last, so
+`target/<profile>/talk` is the desktop build afterwards. Each step prints
+`=== step` and `rc=N`, with Rust's errors when it fails, and keeps its full log
+under `target/check/`. The script runs every step and exits non-zero if any
+failed.
+
+`git config core.hooksPath .githooks` turns on the pre-commit hook, which
+checks formatting only, so commits stay quick.
+
+## Seeing the app
+
+`scripts/ui-session` runs Talk on a private Weston display, for screenshots and
+checks by hand, without touching the desktop or a real account:
+
+```sh
+scripts/ui-session start      # the preview; --discord for the fake Discord
+scripts/ui-session do 'click 40 100' 'type hello' 'key enter' 'shot sent'
+scripts/ui-session relaunch   # rebuild and restart Talk on the same display
+scripts/ui-session stop
+```
+
+Screenshots go to `.local/ui-session/shots/`, and `scripts/ui-session --help`
+lists every option and command. The scripted probes are in
+[the Slint client's validation notes](slint-client.md#validation-and-limits).
 
 ## Networks
 
@@ -87,6 +161,9 @@ network only opens `--preview`.
 `TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400` points Discord at
 `testing/fake_discord.ts` (`bun testing/fake_discord.ts --port 18400`). It uses a
 test token instead of the linked account, so the real token never reaches it.
+`scripts/test-fake-discord [FILTER]` starts the fake on a free port, waits until
+it answers, runs the ignored tests in `crates/talk-discord/tests/fake_server.rs`
+with the `fast` profile, and stops it.
 `TALK_DISCORD_TEST_UNLINKED=1` starts Talk unlinked, to link against the fake.
 [Network memory](measurements/README.md) compares the three builds.
 
@@ -118,15 +195,19 @@ Windows execution has not been demonstrated by a Linux build.
 ## Logs
 
 Talk logs only its own operational events at info level and above. Dependency
-logs are disabled because they can expose authentication data or message content.
+logs are disabled on purpose, because they can expose authentication data or
+message content. Talk ignores `RUST_LOG`; `TALK_LOG=debug` turns on Talk's own
+debug logs (`crates/talk-core/src/logging.rs`).
 Typed text never enters the log. Future errors must use fixed event
 names and safe classifications rather than raw protocol responses or SDK Debug
 output.
 
 ## Initial resource measurement
 
-After a release build, open `target/release/talk` inside the Nix shell. Leave it
-inactive for at least 15 seconds, then sample its PID on Linux:
+After a `fast` build, open `target/fast/talk` inside the Nix shell; measure
+`release` only for the shipped build's absolute numbers. Leave it inactive for
+at least 15 seconds, then sample its PID on Linux. `scripts/ui-session` writes
+the PID of the Talk it runs to `.local/ui-session/talk.pid`.
 
 ```sh
 scripts/measure-process PID --seconds 30

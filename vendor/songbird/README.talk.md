@@ -26,3 +26,9 @@ its voice gateway over plain WebSocket on this machine. `generate_url` in
 `driver/connection/mod.rs` accepts an endpoint written as `ws://host:port/path`
 when the host is a loopback address or `localhost`; every other endpoint keeps
 the upstream `wss://` form. Discord's endpoints never carry a scheme.
+
+# Talk build warning
+
+`Config::initialise_disposer` in `config.rs` allows dead code when neither the
+serenity nor the twilight feature is on. Talk enables neither, so the
+dead-code warning otherwise printed in every build.

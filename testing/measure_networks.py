@@ -11,8 +11,22 @@ Each profile opens #general, warms up, samples Talk's process while idle, then
 samples again while Bob posts a message every 2 s in the open channel. Voice
 isn't measured: the fake Discord has no voice server.
 
-Run inside scripts/run-framework-isolated --audio --no-services, with the local
-stack running (scripts/test-stack up).
+Start the local stack (scripts/test-stack up). Copy target/fast/talk, built
+with each feature set, into --builds (target/networks) as talk-matrix,
+talk-discord and talk-combined; docs/measurements/README.md gives the builds.
+Find the talk-core test binary with
+`nix develop path:./nix --command cargo test --profile fast --locked -p talk-core --no-run --message-format short`
+(its "Executable unittests src/lib.rs" line), then run from the repository root:
+
+    nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated
+        --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS"
+        --compositor-log .local/networks.weston.log --
+        python3 testing/measure_networks.py --output .local/measure-networks
+        --load-executable target/fast/deps/talk_core-HASH'
+
+(one line). Without --load-executable it runs `cargo test --no-run` itself,
+with the debug profile, inside the private session. This script starts
+testing/fake_discord.ts itself.
 """
 import argparse
 import hashlib

@@ -80,6 +80,7 @@ pub fn presence(presence: talk_discord::member_list::Presence) -> chat::Presence
     }
 }
 
+#[cfg(feature = "discord")]
 fn voice_person(member: &talk_discord::service::VoiceMember) -> VoicePerson {
     VoicePerson {
         id: member.user_id.clone(),

@@ -1,155 +1,21 @@
 # Discord in Talk
 
-Status: decisions recorded 2026-10-06. Step 2 of the [order of work](#order-of-work)
-works on Linux. Talk lists the linked account's Discord servers in the rail
-with a Discord badge and their voice channels. Channels the account's roles
-and channel overwrites keep it out of show greyed out with a lock, as in
-Discord; channels hidden from it appear the same way only with the "Show
-channels you can't access" setting, which is off by default. Clicking a
-voice channel joins through the same voice dock and one-call rule as Matrix
-voice. Calls start muted, mute and deafen show in Discord, and a voice gate
-sends audio only during speech. The
-owner and a friend talked through it on 2026-10-06. Audio uses PulseAudio and
-libwebrtc's processing module, so Windows needs its own audio backend.
-Accounts link by QR code, as described under [Account linking](#account-linking).
-DM and group DM calls ring and are answered, as
-described under [DM calls](#dm-calls). songbird's DAVE receive fix is
-described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
-groups in `vendor/davey/README.talk.md`.
+Status on 2026-10-07: steps 1 to 4 of the [order of work](#order-of-work) work
+on Linux, and step 5, mirroring into Matrix, hasn't started. Decisions were
+recorded on 2026-10-06.
 
-Server text channels from step 4 are in progress. They're listed under
-their Discord categories and open in Talk's timeline. History loads from
-Discord 50 messages at a time, and new messages, edits, deletions and
-reactions arrive live. Opening a channel subscribes to its server, as the web
-client does, because Discord sends large servers' messages only to
-subscribers. Talk sends, replies, edits, deletes, reacts and sends files
-through Discord's cloud uploads. Mentions and timestamps show as text, custom
-emoji and stickers as pictures, every attachment shows, images with previews
-scaled by Discord's media proxy, and channels the account can't send in are
-read-only. An author's
-name takes their highest coloured role's colour, once their roles are known:
-live messages carry them, and for history Talk asks Discord for the authors'
-member profiles.
+| Area | Works on Linux | Open |
+| --- | --- | --- |
+| [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate, [RNNoise](#microphone) | Audio on Windows; Discord's push-to-talk; soundboard |
+| [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
+| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications, member lists | Threads, forums, search, pins, forwarding |
+| [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM | |
+| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status | Blocking, and a list of the blocked |
+| [Mirroring](#mirroring-into-matrix) | | Everything |
 
-Talk keeps the open channel's messages in memory, and those of the 40
-channels open before it, so going back to one shows it at once. A closed
-channel keeps its newest 200 messages and the previews of its newest 4
-images (a decoded preview is about 400 KB, and the rest come back from disk
-quickly), and follows new messages, edits, deletions and reactions while
-it's kept. Opening it again loads the latest page in the background and fits
-it in: messages kept within the page's span that it lacks were deleted
-meanwhile, and when a full page starts after everything kept, more came than
-a page holds, so only the page stays. The UI keeps the same 40 channels'
-last timeline and member list, so going back shows them before the chat side
-answers, without "Loading messages...". Channels also go to disk, as
-[the startup cache](#servers-channels-and-messages) describes, so a channel
-opened after a restart shows its saved messages while the latest page loads
-and fits in the same way.
-
-Unread dots and mention counts follow Discord's read states, mutes and
-@everyone and role suppression, including passive updates from large servers.
-Showing an unread channel marks it read, and with the "Mark messages read on
-Discord" setting, on by default, acknowledges it on Discord within a second.
-The open text channel lists its members on the right as Discord's sidebar
-does: under hoisted roles, then online, then offline, with offline members
-faded. Each shows a status dot for online, idle or do not disturb, their name
-in their highest coloured role's colour, and their custom status or what
-they're playing below it. Talk shows the list's first 100 rows, headings
-included. Discord keeps one list for all channels with the same readers: the
-overwrites that allow or deny seeing them, `everyone` when none do. Talk keys
-its lists the same way, so moving between such channels shows the same list
-and asks Discord for nothing. Talk keeps the last 40 lists. One Discord still
-sends, or sent within 10 minutes, shows without asking again. An older one
-shows at once while Talk subscribes, and Discord's sync replaces it. A list
-on screen that Discord doesn't send is asked for again once it's 10 minutes
-old. A build without Matrix shows the Discord account's name, avatar and
-connection in the bottom-left panel.
-
-DMs and group DMs are listed under the DM button after Matrix DMs, the latest
-conversation first as in Discord, with the other person's avatar or the
-group's icon and a Discord badge. They open, send and keep their messages
-like server channels, under the room id `discord:@me:<channel>`, which takes
-`@me` for the server as Discord's links do. Every unread message in a DM
-counts as a mention, and a muted DM shows neither, as in Discord. A DM
-without a read state counts as read, since Discord keeps one for each DM
-with something to read. A one-to-one DM shows its person's status dot, with
-their custom status or what they're doing under the name. Discord sends
-presence only for friends, so anyone else shows the grey offline ring, as in
-Discord's DM list. These follow PRESENCE_UPDATE live. The header of an open
-one-to-one DM shows the same dot on their avatar, and their custom status or
-what they're doing in a bubble beside the name. A group DM
-shows how many are in it. A group DM lists its members by name, with the
-presence of those who are friends. Talk downloads the pictures of the first
-150 DMs listed; the rest keep their initials.
-
-"Friends", at the top of the DM list, opens the friends list in place of the
-conversation. It lists the account's friends from READY's relationships by
-name, each with their status dot and custom status or activity, under two
-tabs in the header: Online, for those online, idle or on do not disturb, and
-All. A search field filters it by name, and "Add Friend" in the header opens
-the add-friend dialog. Discord sends presence for friends in READY's
-`merged_presences` and in PRESENCE_UPDATE, so the list keeps up with them.
-Clicking a friend, or the message button on their row, opens the DM with
-them, or starts one as the pen does and opens it once Discord lists it.
-
-Friend requests, message requests and spam have their own screen. A
-"Requests" entry below it at the top of the DM list opens it in place of the
-conversation, with a badge counting the incoming friend requests (spam
-excluded) and message requests. Message requests come from people outside the
-account's DMs. Those Discord marks as spam are listed too, under "Spam", so a
-person Discord misjudged can still be found. The entry stays highlighted
-while a request from the screen is open. Opening one shows its messages with Accept and Ignore in place of the
-composer: replying waits for accepting, as in Discord. Accepting makes it an
-ordinary DM; ignoring removes it, and the sender isn't told. Requests count
-no mentions, spam isn't marked unread, and Talk never opens a request on its
-own when it picks a conversation. Forwarding is still open.
-
-The pen in the DM list's header starts a DM: it lists the account's friends
-(from READY's relationships), then anyone else Talk knows by name, and
-opening one posts to `/users/@me/channels`, which finds the DM with them or
-starts one. Talk opens it once its CHANNEL_CREATE lists it.
-
-The person beside it, in the same header, adds a friend by username: `POST
-/users/@me/relationships` with `{"username": ..., "discriminator": null}` and
-`{"location":"Add Friend"}` as the context. Discord's codes 80004 (nobody by
-that name), 80000 (they take no requests from strangers) and 80007 (already
-friends) get their own words.
-
-Friend requests come first on the requests screen, from READY's
-relationships (type 3 sent to this account, 4 sent by it) and kept current by
-RELATIONSHIP_ADD and RELATIONSHIP_REMOVE. One sent to this account is
-accepted with the check or ignored with the cross; one it sent is cancelled
-with the cross. A profile card offers "Send friend request" to someone who
-isn't a friend, or "Accept friend request" when they asked first, and the
-header of a DM with them offers the same. Sending or accepting is
-`PUT /users/@me/relationships/{id}` with an empty body, and ignoring or
-cancelling is `DELETE` on the same path, each with the X-Context-Properties
-header Discord's client sends: `{"location":"User Profile"}` when sending
-from a profile, `{"location":"Friends"}` otherwise, as base64. Discord
-doesn't let a client send many requests quickly, and Talk only sends one when
-the person clicks. Requests Discord took for spam are listed too, marked
-"Maybe spam".
-
-Clicking someone in a channel's member list shows their profile in a small
-card beside it, which "View full profile" enlarges into a centred one;
-right-clicking a DM and choosing "Profile" opens the full one. A one-to-one
-DM shows its other person's profile in a panel on the right, with the bio in
-full and the mutual servers and friends. Mutual servers show their icon and
-the person's nickname there; clicking one opens a card beside it with the
-server's banner, member count (from READY's `member_count`), channel count
-and "Go to server". Mutual friends show their avatar and status dot;
-clicking one opens their profile card beside it, or their full profile from
-a full profile; the person icon in the DM's header
-hides or shows it, and Talk remembers the choice in `layout.json`. Talk fetches the
-profile once each time the open DM changes to someone else. Talk fetches it
-from `GET /users/{id}/profile` with the open server's id, so the server's
-nickname, avatar, banner, bio and pronouns win over the person's own, and the
-card lists their roles in role order, when they joined Discord and the server,
-and the servers and friends the account shares with them. Profiles are kept for
-five minutes, at most 32 of them. Presence and activity come from the member
-list, since the profile doesn't carry them. When Discord refuses, the card
-keeps what the member list knew and says so. Matrix members and one-to-one
-Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
+The [later list](#later) has the rest.
 
 Talk connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Talk joins Discord voice as that person,
@@ -160,6 +26,15 @@ replace beta features of Talk itself.
 
 [PRODUCT.md](../PRODUCT.md#discord) records the agreed scope. This document
 describes how to build it.
+
+Protocol references: Discord doesn't document what its own client sends. The
+community's
+[discord-userdoccers](https://github.com/discord-userdoccers/discord-userdoccers)
+does, for example in `pages/gateway/gateway-events.mdx`,
+`pages/topics/read-state.mdx`, `pages/resources/relationships.mdx`,
+`pages/remote-authentication/desktop.mdx` and `pages/topics/cloud-uploads.mdx`.
+The settings protobuf is in
+[discord-protos](https://github.com/discord-userdoccers/discord-protos).
 
 ## Risk to accounts
 
@@ -288,6 +163,14 @@ Scope for the beta:
   voice leveling as Talk calls. Noise suppression is RNNoise rather than
   WebRTC's, as described under Microphone below.
 
+Clicking a voice channel joins through the same voice dock and one-call rule
+as Matrix voice. Calls start muted, mute and deafen show in Discord, and a
+voice gate sends audio only during speech. The owner and a friend talked
+through it on 2026-10-06. Audio uses PulseAudio and libwebrtc's processing
+module, so Windows needs its own audio backend. songbird's DAVE receive fix is
+described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
+groups in `vendor/davey/README.talk.md`.
+
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
 Camera video comes after the beta, together with video in Talk.
@@ -303,7 +186,7 @@ its own Opus encoding and decoding plus the same audio processing. libwebrtc's
 device module can't be reused outside a LiveKit room: it hands captured audio
 straight to WebRTC and only plays remote WebRTC streams. Its audio processing
 module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
-Discord voice gets a small path of its own: `cpal` for the microphone and
+Discord voice gets a small path of its own: PulseAudio for the microphone and
 speakers at 48 kHz, the processing module for echo cancellation and gain
 (noise suppression became RNNoise; see [Microphone](#microphone)), then
 songbird for Opus and DAVE. Feed the speaker mix to
@@ -540,6 +423,56 @@ without the call's, and Talk shows streams from Discord's client.
 Talk shows Discord live from its own Discord connection. Every server, channel
 and DM is visible without copying anything into Matrix.
 
+Talk lists the linked account's Discord servers in the rail with their
+channels. Channels the account's roles and channel overwrites keep it out of
+show greyed out with a lock, as in Discord; channels hidden from it appear the
+same way only with the "Show channels you can't access" setting, which is off
+by default. Server text channels are listed under their Discord categories and
+open in Talk's timeline. History loads from Discord 50 messages at a time, and
+new messages, edits, deletions and reactions arrive live. Opening a channel
+subscribes to its server, as the web client does, because Discord sends large
+servers' messages only to subscribers. Talk sends, replies, edits, deletes,
+reacts and sends files through Discord's cloud uploads. Mentions and timestamps
+show as text, custom emoji and stickers as pictures, every attachment shows,
+images with previews scaled by Discord's media proxy, and channels the account
+can't send in are read-only. An author's name takes their highest coloured
+role's colour, once their roles are known: live messages carry them, and for
+history Talk asks Discord for the authors' member profiles.
+
+Talk keeps the open channel's messages in memory, and those of the 40
+channels open before it, so going back to one shows it at once. A closed
+channel keeps its newest 200 messages and the previews of its newest 4
+images (a decoded preview is about 400 KB, and the rest come back from disk
+quickly), and follows new messages, edits, deletions and reactions while
+it's kept. Opening it again loads the latest page in the background and fits
+it in: messages kept within the page's span that it lacks were deleted
+meanwhile, and when a full page starts after everything kept, more came than
+a page holds, so only the page stays. The UI keeps the same 40 channels'
+last timeline and member list, so going back shows them before the chat side
+answers, without "Loading messages...". Channels also go to disk, as
+the startup cache below describes, so a channel
+opened after a restart shows its saved messages while the latest page loads
+and fits in the same way.
+
+Unread dots and mention counts follow Discord's read states, mutes and
+@everyone and role suppression, including passive updates from large servers.
+Showing an unread channel marks it read, and with the "Mark messages read on
+Discord" setting, on by default, acknowledges it on Discord within a second.
+The open text channel lists its members on the right as Discord's sidebar
+does: under hoisted roles, then online, then offline, with offline members
+faded. Each shows a status dot for online, idle or do not disturb, their name
+in their highest coloured role's colour, and their custom status or what
+they're playing below it. Talk shows the list's first 100 rows, headings
+included. Discord keeps one list for all channels with the same readers: the
+overwrites that allow or deny seeing them, `everyone` when none do. Talk keys
+its lists the same way, so moving between such channels shows the same list
+and asks Discord for nothing. Talk keeps the last 40 lists. One Discord still
+sends, or sent within 10 minutes, shows without asking again. An older one
+shows at once while Talk subscribes, and Discord's sync replaces it. A list
+on screen that Discord doesn't send is asked for again once it's 10 minutes
+old. A build without Matrix shows the Discord account's name, avatar and
+connection in the bottom-left panel.
+
 Talk starts from Discord as it last saw it, kept in the data directory by
 `talk_discord::cache`, and Discord's answers replace it as they arrive:
 
@@ -675,7 +608,101 @@ an error.
   connected, whenever the settings change, and clears it when it ends. A
   custom emoji in a status needs Nitro.
 
-Later, in rough order. The browser covers these until then.
+### DMs
+
+DMs and group DMs are listed under the DM button after Matrix DMs, the latest
+conversation first as in Discord, with the other person's avatar or the
+group's icon and a Discord badge. They open, send and keep their messages
+like server channels, under the room id `discord:@me:<channel>`, which takes
+`@me` for the server as Discord's links do. Every unread message in a DM
+counts as a mention, and a muted DM shows neither, as in Discord. A DM
+without a read state counts as read, since Discord keeps one for each DM
+with something to read. A one-to-one DM shows its person's status dot, with
+their custom status or what they're doing under the name. Discord sends
+presence only for friends, so anyone else shows the grey offline ring, as in
+Discord's DM list. These follow PRESENCE_UPDATE live. The header of an open
+one-to-one DM shows the same dot on their avatar, and their custom status or
+what they're doing in a bubble beside the name. A group DM
+shows how many are in it. A group DM lists its members by name, with the
+presence of those who are friends. Talk downloads the pictures of the first
+150 DMs listed; the rest keep their initials.
+
+Friend requests, message requests and spam have their own screen. A
+"Requests" entry below Friends at the top of the DM list opens it in place of the
+conversation, with a badge counting the incoming friend requests (spam
+excluded) and message requests. Message requests come from people outside the
+account's DMs. Those Discord marks as spam are listed too, under "Spam", so a
+person Discord misjudged can still be found. The entry stays highlighted
+while a request from the screen is open. Opening one shows its messages with Accept and Ignore in place of the
+composer: replying waits for accepting, as in Discord. Accepting makes it an
+ordinary DM; ignoring removes it, and the sender isn't told. Requests count
+no mentions, spam isn't marked unread, and Talk never opens a request on its
+own when it picks a conversation. Forwarding is still open.
+
+The pen in the DM list's header starts a DM: it lists the account's friends
+(from READY's relationships), then anyone else Talk knows by name, and
+opening one posts to `/users/@me/channels`, which finds the DM with them or
+starts one. Talk opens it once its CHANNEL_CREATE lists it.
+
+### Friends and requests
+
+"Friends", at the top of the DM list, opens the friends list in place of the
+conversation. It lists the account's friends from READY's relationships by
+name, each with their status dot and custom status or activity, under two
+tabs in the header: Online, for those online, idle or on do not disturb, and
+All. A search field filters it by name, and "Add Friend" in the header opens
+the add-friend dialog. Discord sends presence for friends in READY's
+`merged_presences` and in PRESENCE_UPDATE, so the list keeps up with them.
+Clicking a friend, or the message button on their row, opens the DM with
+them, or starts one as the pen does and opens it once Discord lists it.
+
+The person beside the pen, in the same header, adds a friend by username: `POST
+/users/@me/relationships` with `{"username": ..., "discriminator": null}` and
+`{"location":"Add Friend"}` as the context. Discord's codes 80004 (nobody by
+that name), 80000 (they take no requests from strangers) and 80007 (already
+friends) get their own words.
+
+Friend requests come first on the requests screen, from READY's
+relationships (type 3 sent to this account, 4 sent by it) and kept current by
+RELATIONSHIP_ADD and RELATIONSHIP_REMOVE. One sent to this account is
+accepted with the check or ignored with the cross; one it sent is cancelled
+with the cross. A profile card offers "Send friend request" to someone who
+isn't a friend, or "Accept friend request" when they asked first, and the
+header of a DM with them offers the same. Sending or accepting is
+`PUT /users/@me/relationships/{id}` with an empty body, and ignoring or
+cancelling is `DELETE` on the same path, each with the X-Context-Properties
+header Discord's client sends: `{"location":"User Profile"}` when sending
+from a profile, `{"location":"Friends"}` otherwise, as base64. Discord
+doesn't let a client send many requests quickly, and Talk only sends one when
+the person clicks. Requests Discord took for spam are listed too, marked
+"Maybe spam".
+
+### Profiles
+
+Clicking someone in a channel's member list shows their profile in a small
+card beside it, which "View full profile" enlarges into a centred one;
+right-clicking a DM and choosing "Profile" opens the full one. A one-to-one
+DM shows its other person's profile in a panel on the right, with the bio in
+full and the mutual servers and friends. Mutual servers show their icon and
+the person's nickname there; clicking one opens a card beside it with the
+server's banner, member count (from READY's `member_count`), channel count
+and "Go to server". Mutual friends show their avatar and status dot;
+clicking one opens their profile card beside it, or their full profile from
+a full profile; the person icon in the DM's header
+hides or shows it, and Talk remembers the choice in `layout.json`. Talk fetches the
+profile once each time the open DM changes to someone else. Talk fetches it
+from `GET /users/{id}/profile` with the open server's id, so the server's
+nickname, avatar, banner, bio and pronouns win over the person's own, and the
+card lists their roles in role order, when they joined Discord and the server,
+and the servers and friends the account shares with them. Profiles are kept for
+five minutes, at most 32 of them. Presence and activity come from the member
+list, since the profile doesn't carry them. When Discord refuses, the card
+keeps what the member list knew and says so. Matrix members and one-to-one
+Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
+
+### Later
+
+In rough order. The browser covers these until then.
 
 - Threads and forum channels.
 - Search and pinned messages.
@@ -689,7 +716,7 @@ Later, in rough order. The browser covers these until then.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
 - A captcha fallback for linking, through a small embedded web view.
-- A friends page: everyone, online, pending and blocked.
+- The blocked on the friends page, beside Online and All.
 - Blocking and unblocking from a profile.
 - Marking uploads as spoilers.
 - Tenor and Giphy "gifv" links, which are MP4s and need a video demuxer to
@@ -866,6 +893,8 @@ material only, under the borrowing rules in the
 4. Live servers, channels, DMs and messages, notifications, read state and
    status.
 5. Mirroring into Matrix.
+
+Steps 1 to 4 work on Linux; step 5 hasn't started.
 
 Screen sharing and watching streams in Discord calls (Go Live) came early.
 Camera video follows after the beta.

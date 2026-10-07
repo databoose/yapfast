@@ -1,9 +1,68 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Formatting, doc links, Clippy for every network combination, tests and
+# smoke runs.
+# Usage: scripts/check [--fast]
+# --fast builds with the `fast` profile, which local work uses. Each step
+# prints `=== step` and `rc=N`; its full output is in target/check/. The
+# script exits non-zero when any step failed, after running them all.
+set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
-cargo build --locked --workspace
-cargo run --locked -- --smoke-test
-cargo run --locked --no-default-features --features matrix,discord -- --smoke-test
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop path:./nix --command "$0" "$@"
+fi
+
+profile=()
+case "${1:-}" in
+  --fast) profile=(--profile fast) ;;
+  "") ;;
+  *) echo "usage: scripts/check [--fast]" >&2; exit 2 ;;
+esac
+
+logs=target/check
+mkdir -p "$logs"
+rm -f "$logs"/*.log
+failed=()
+step=0
+
+run() {
+  local name=$1
+  shift
+  step=$((step + 1))
+  local log
+  log=$(printf '%s/%02d-%s.log' "$logs" "$step" "$name")
+  echo "=== $name: $*"
+  "$@" >"$log" 2>&1
+  local rc=$?
+  echo "rc=$rc"
+  if [[ $rc -ne 0 ]]; then
+    failed+=("$name")
+    # Rust's own diagnostics, without the C compilers' warnings around them,
+    # or the end of the output when there are none.
+    grep -E -A12 '^(error|warning)(\[|:)|^test .* FAILED|panicked at' "$log" | head -80 ||
+      tail -20 "$log"
+    echo "(full output: $log)"
+  fi
+}
+
+clippy=(cargo clippy --locked "${profile[@]}" --all-targets)
+run fmt cargo fmt --all -- --check
+run doc-links scripts/check-doc-links
+run clippy "${clippy[@]}" --workspace -- -D warnings
+run test cargo test --locked "${profile[@]}" --workspace
+# Each network alone, in the desktop and in the shared core with its tests.
+run clippy-discord-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
+  --features talk/desktop,talk/discord,talk-core/discord -- -D warnings
+run clippy-matrix-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
+  --features talk/desktop,talk/matrix,talk-core/matrix -- -D warnings
+run clippy-headless "${clippy[@]}" -p talk --no-default-features --features matrix,discord -- -D warnings
+run build cargo build --locked "${profile[@]}" --workspace
+run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
+# Last, so target/<profile>/talk is the desktop build afterwards.
+run smoke cargo run --locked "${profile[@]}" -- --smoke-test
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  echo "FAILED: ${failed[*]}"
+  exit 1
+fi
+echo "All checks passed."
