@@ -45,7 +45,7 @@ impl MemberSearches {
             return;
         };
         // Learn the members before answering, so their names are known.
-        tracker.apply(&event.name, &event.data);
+        tracker.apply(&event.event, &event.data);
         let found = event.data["members"]
             .as_array()
             .into_iter()

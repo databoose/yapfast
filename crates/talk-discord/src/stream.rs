@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::ready::PRIVATE;
+use crate::{event::Event, ready::PRIVATE};
 
 /// The key of `user`'s stream: in a server's voice channel, or with
 /// [`PRIVATE`] for the server, in a DM or group DM call.
@@ -52,16 +52,16 @@ pub(crate) struct Opening {
 
 impl Opening {
     /// Takes in a dispatch about the stream `key`.
-    pub(crate) fn apply(&mut self, key: &str, name: &str, data: &Value) {
+    pub(crate) fn apply(&mut self, key: &str, event: &Event, data: &Value) {
         if data["stream_key"] != key {
             return;
         }
-        match name {
-            "STREAM_CREATE" => {
+        match event {
+            Event::StreamCreate => {
                 self.rtc_server_id = data["rtc_server_id"].as_str().map(str::to_owned);
             }
             // The endpoint is null while Discord is still allocating a server.
-            "STREAM_SERVER_UPDATE" => {
+            Event::StreamServerUpdate => {
                 if let (Some(token), Some(endpoint)) =
                     (data["token"].as_str(), data["endpoint"].as_str())
                 {
@@ -113,23 +113,23 @@ mod tests {
         let mut opening = Opening::default();
         opening.apply(
             &key,
-            "STREAM_SERVER_UPDATE",
+            &Event::StreamServerUpdate,
             &json!({"stream_key": key, "token": "t", "endpoint": null}),
         );
         opening.apply(
             &key,
-            "STREAM_CREATE",
+            &Event::StreamCreate,
             &json!({"stream_key": "guild:1:2:9", "rtc_server_id": "other"}),
         );
         opening.apply(
             &key,
-            "STREAM_CREATE",
+            &Event::StreamCreate,
             &json!({"stream_key": key, "rtc_server_id": "rtc"}),
         );
         assert_eq!(opening.server(&key, "3", "s"), None, "no endpoint yet");
         opening.apply(
             &key,
-            "STREAM_SERVER_UPDATE",
+            &Event::StreamServerUpdate,
             &json!({"stream_key": key, "token": "t", "endpoint": "e:443"}),
         );
         assert_eq!(

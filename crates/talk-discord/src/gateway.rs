@@ -31,7 +31,7 @@ use tokio_tungstenite::{
     },
 };
 
-use crate::{client, member_list};
+use crate::{client, event::Event, member_list};
 
 const URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
 /// The capability bits the web client sends, as used by mautrix-discord.
@@ -193,8 +193,9 @@ impl Reconnects {
     }
 }
 
+/// A dispatched event, its name parsed once as it arrives.
 pub struct Dispatch {
-    pub name: String,
+    pub event: Event,
     pub data: Value,
 }
 
@@ -307,7 +308,7 @@ impl Gateway {
         };
         loop {
             let event = gateway.next().await?;
-            if event.name == "READY" {
+            if event.event == Event::Ready {
                 return Ok((gateway, event.data));
             }
         }
@@ -590,20 +591,20 @@ impl Connection {
         }
         match message["op"].as_u64() {
             Some(DISPATCH) => {
-                let name = message["t"].as_str().unwrap_or_default().to_owned();
+                let event = Event::parse(message["t"].as_str().unwrap_or_default());
                 let data = message.get("d").cloned().unwrap_or(Value::Null);
-                match name.as_str() {
-                    "READY" => {
+                match event {
+                    Event::Ready => {
                         self.session_id = data["session_id"].as_str().map(str::to_owned);
                         self.resume_url = data["resume_gateway_url"].as_str().map(str::to_owned);
                     }
-                    "RESUMED" => {
+                    Event::Resumed => {
                         tracing::info!("resumed the Discord gateway session");
                         self.resumes = 0;
                     }
                     _ => {}
                 }
-                return Ok(Some(Dispatch { name, data }));
+                return Ok(Some(Dispatch { event, data }));
             }
             Some(HEARTBEAT) => self.write(HEARTBEAT, &json!(self.sequence)).await?,
             Some(HEARTBEAT_ACK) => self.acked = true,
@@ -850,7 +851,10 @@ mod tests {
         let discord = Discord::new().await;
         let (mut gateway, mut peer) = discord.session(SLOW_HEARTBEAT, limiter()).await;
         peer.dispatch("MESSAGE_CREATE", json!({"id": "1"})).await;
-        assert_eq!(next(&mut gateway).await.unwrap().name, "MESSAGE_CREATE");
+        assert_eq!(
+            next(&mut gateway).await.unwrap().event,
+            Event::MessageCreate
+        );
 
         // The connection drops without a close frame.
         drop(peer);
@@ -864,7 +868,7 @@ mod tests {
         peer.dispatch("RESUMED", json!({})).await;
         let missed = next(&mut gateway).await.unwrap();
         assert_eq!(missed.data["id"], "2");
-        assert_eq!(next(&mut gateway).await.unwrap().name, "RESUMED");
+        assert_eq!(next(&mut gateway).await.unwrap().event, Event::Resumed);
 
         // Commands go on the new connection.
         gateway.subscribe("guild", None).await.unwrap();
@@ -1039,7 +1043,17 @@ mod tests {
 
         // The connection stayed up through it all.
         peer.dispatch("TYPING_START", json!({})).await;
-        assert_eq!(next(&mut gateway).await.unwrap().name, "TYPING_START");
+        assert_eq!(next(&mut gateway).await.unwrap().event, Event::TypingStart);
+
+        // An event Talk doesn't know passes through by name, with its data.
+        peer.dispatch("GUILD_SOUNDBOARD_SOUND_CREATE", json!({"id": "7"}))
+            .await;
+        let other = next(&mut gateway).await.unwrap();
+        assert_eq!(
+            other.event,
+            Event::Other("GUILD_SOUNDBOARD_SOUND_CREATE".into())
+        );
+        assert_eq!(other.data["id"], "7");
     }
 
     #[tokio::test]

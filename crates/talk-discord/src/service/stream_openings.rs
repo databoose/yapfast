@@ -12,6 +12,7 @@ use tokio::{
 
 use super::{server, tracker::Tracker};
 use crate::{
+    event::Event,
     gateway::{Dispatch, Gateway},
     stream::{self, Opening, StreamServer},
 };
@@ -144,14 +145,14 @@ impl StreamOpenings {
     /// Passes a stream dispatch to the streams being opened, and answers those
     /// that are now ready or that Discord refused.
     pub(super) fn apply(&mut self, tracker: &Tracker, event: &Dispatch) {
-        let (name, data) = (event.name.as_str(), &event.data);
+        let data = &event.data;
         let Some(key) = data["stream_key"].as_str() else {
             return;
         };
         let Some(mut waiting) = self.waiting.remove(key) else {
             return;
         };
-        if name == "STREAM_DELETE" {
+        if event.event == Event::StreamDelete {
             let reason = match data["reason"].as_str() {
                 Some("stream_full") => "The stream is full.",
                 Some("unauthorized") => "You aren't allowed to stream or watch here.",
@@ -160,7 +161,7 @@ impl StreamOpenings {
             let _ = waiting.reply.send(Err(anyhow!(reason)));
             return;
         }
-        waiting.opening.apply(key, name, data);
+        waiting.opening.apply(key, &event.event, data);
         let session = tracker.voice_session(&waiting.guild);
         match session.and_then(|session| waiting.opening.server(key, &tracker.me, session)) {
             Some(server) => {

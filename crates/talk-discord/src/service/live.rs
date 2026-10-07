@@ -5,10 +5,21 @@ use std::sync::RwLock;
 use serde_json::Value;
 
 use super::Live;
-use crate::message::{self, Names};
+use crate::{
+    event::Event,
+    message::{self, Message, Names},
+};
 
 /// The live message events in one gateway event, learning the names it carries.
-pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Value) -> Vec<Live> {
+/// `message` is the message a MESSAGE_CREATE or MESSAGE_UPDATE carries,
+/// parsed once by the caller.
+pub(super) fn live_events(
+    me: &str,
+    names: &RwLock<Names>,
+    event: &Event,
+    data: &Value,
+    message: Option<&Message>,
+) -> Vec<Live> {
     let channel = || data["channel_id"].as_str().unwrap_or_default().to_owned();
     let reaction = |added: bool| {
         let (key, emoji) = message::emoji(&data["emoji"])?;
@@ -21,22 +32,22 @@ pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Va
             added,
         })
     };
-    match name {
-        "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
-            let Some(message) = message::parse(data) else {
+    match event {
+        Event::MessageCreate | Event::MessageUpdate => {
+            let Some(message) = message.cloned() else {
                 return vec![];
             };
             names
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .learn_message(data["guild_id"].as_str(), data);
-            vec![if name == "MESSAGE_CREATE" {
+            vec![if *event == Event::MessageCreate {
                 Live::Created(message)
             } else {
                 Live::Updated(message)
             }]
         }
-        "MESSAGE_DELETE" => data["id"]
+        Event::MessageDelete => data["id"]
             .as_str()
             .map(|id| Live::Deleted {
                 channel: channel(),
@@ -44,7 +55,7 @@ pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Va
             })
             .into_iter()
             .collect(),
-        "MESSAGE_DELETE_BULK" => data["ids"]
+        Event::MessageDeleteBulk => data["ids"]
             .as_array()
             .into_iter()
             .flatten()
@@ -54,9 +65,9 @@ pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Va
                 id: id.to_owned(),
             })
             .collect(),
-        "MESSAGE_REACTION_ADD" => reaction(true).into_iter().collect(),
-        "MESSAGE_REACTION_REMOVE" => reaction(false).into_iter().collect(),
-        "MESSAGE_REACTION_REMOVE_ALL" | "MESSAGE_REACTION_REMOVE_EMOJI" => data["message_id"]
+        Event::MessageReactionAdd => reaction(true).into_iter().collect(),
+        Event::MessageReactionRemove => reaction(false).into_iter().collect(),
+        Event::MessageReactionRemoveAll | Event::MessageReactionRemoveEmoji => data["message_id"]
             .as_str()
             .map(|message| Live::ReactionsCleared {
                 channel: channel(),
@@ -65,7 +76,7 @@ pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Va
             })
             .into_iter()
             .collect(),
-        "TYPING_START" => {
+        Event::TypingStart => {
             let Some(user) = data["user_id"].as_str().filter(|user| *user != me) else {
                 return vec![];
             };
@@ -91,8 +102,8 @@ pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Va
             }]
         }
         // Answers to the member requests history makes.
-        "GUILD_MEMBERS_CHUNK" => vec![Live::Names],
-        "STREAM_CREATE" | "STREAM_UPDATE" => data["stream_key"]
+        Event::GuildMembersChunk => vec![Live::Names],
+        Event::StreamCreate | Event::StreamUpdate => data["stream_key"]
             .as_str()
             .map(|key| Live::StreamUpdated {
                 stream_key: key.to_owned(),
@@ -107,7 +118,7 @@ pub(super) fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Va
             })
             .into_iter()
             .collect(),
-        "STREAM_DELETE" => data["stream_key"]
+        Event::StreamDelete => data["stream_key"]
             .as_str()
             .map(|key| Live::StreamEnded {
                 stream_key: key.to_owned(),

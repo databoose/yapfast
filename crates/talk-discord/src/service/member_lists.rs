@@ -17,6 +17,7 @@ use tokio::{
 use super::{Live, Snapshot, tracker::Tracker};
 use crate::{
     cache,
+    event::Event,
     gateway::{Dispatch, Gateway},
     member_list::MemberList,
     message::Names,
@@ -269,12 +270,12 @@ impl MemberLists {
         if self.group.is_some()
             && event.data["guild_id"].is_null()
             && matches!(
-                event.name.as_str(),
-                "READY_SUPPLEMENTAL"
-                    | "PRESENCE_UPDATE"
-                    | "CHANNEL_UPDATE"
-                    | "CHANNEL_RECIPIENT_ADD"
-                    | "CHANNEL_RECIPIENT_REMOVE"
+                event.event,
+                Event::ReadySupplemental
+                    | Event::PresenceUpdate
+                    | Event::ChannelUpdate
+                    | Event::ChannelRecipientAdd
+                    | Event::ChannelRecipientRemove
             )
         {
             self.publish_group(tracker);

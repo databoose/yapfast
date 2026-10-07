@@ -11,7 +11,7 @@ use tokio::{
 };
 
 use super::{VoiceServer, server};
-use crate::gateway::Dispatch;
+use crate::{event::Event, gateway::Dispatch};
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -99,12 +99,12 @@ impl VoiceJoin {
             return;
         };
         let data = &event.data;
-        match event.name.as_str() {
-            "VOICE_STATE_UPDATE" if data["user_id"] == me && waiting.answers(data) => {
+        match event.event {
+            Event::VoiceStateUpdate if data["user_id"] == me && waiting.answers(data) => {
                 waiting.session_id = data["session_id"].as_str().map(str::to_owned);
             }
             // The endpoint is null while Discord is still allocating a server.
-            "VOICE_SERVER_UPDATE" if waiting.answers(data) => {
+            Event::VoiceServerUpdate if waiting.answers(data) => {
                 if let (Some(token), Some(endpoint)) =
                     (data["token"].as_str(), data["endpoint"].as_str())
                 {

@@ -7,6 +7,7 @@ pub mod client;
 pub mod cookies;
 mod dave;
 pub mod embed;
+pub mod event;
 pub mod gateway;
 pub mod limits;
 pub mod member_list;

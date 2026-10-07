@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::{
+    event::Event,
     message::{iso_ms, snowflake_at},
     ready::{Access, Channel, PRIVATE, Private, Server},
 };
@@ -196,13 +197,13 @@ impl Unreads {
     /// `roles` gives this account's roles by server, for role mentions.
     pub fn apply(
         &mut self,
-        name: &str,
+        event: &Event,
         data: &Value,
         me: &str,
         roles: &HashMap<String, Vec<String>>,
     ) -> bool {
-        match name {
-            "MESSAGE_CREATE" => {
+        match event {
+            Event::MessageCreate => {
                 let (Some(channel), Some(id)) =
                     (data["channel_id"].as_str(), snowflake(&data["id"]))
                 else {
@@ -226,7 +227,7 @@ impl Unreads {
                 }
                 before != self.state(guild, channel)
             }
-            "MESSAGE_ACK" => {
+            Event::MessageAck => {
                 let (Some(channel), Some(id)) =
                     (data["channel_id"].as_str(), snowflake(&data["message_id"]))
                 else {
@@ -241,20 +242,20 @@ impl Unreads {
                 );
                 true
             }
-            "CHANNEL_CREATE" | "CHANNEL_UPDATE" => {
+            Event::ChannelCreate | Event::ChannelUpdate => {
                 self.learn_channel(data);
                 true
             }
-            "GUILD_CREATE" => {
+            Event::GuildCreate => {
                 self.learn_server(data);
                 true
             }
-            "USER_GUILD_SETTINGS_UPDATE" => {
+            Event::UserGuildSettingsUpdate => {
                 self.learn_settings(data);
                 true
             }
             // Large servers send these instead of messages until subscribed.
-            "PASSIVE_UPDATE_V1" | "PASSIVE_UPDATE_V2" => {
+            Event::PassiveUpdateV1 | Event::PassiveUpdateV2 => {
                 let channels = data["channels"]
                     .as_array()
                     .or_else(|| data["updated_channels"].as_array());
@@ -554,21 +555,26 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             message
         };
-        assert!(unreads.apply("MESSAGE_CREATE", &message("600", json!({})), "1", &roles));
         assert!(unreads.apply(
-            "MESSAGE_CREATE",
+            &Event::MessageCreate,
+            &message("600", json!({})),
+            "1",
+            &roles
+        ));
+        assert!(unreads.apply(
+            &Event::MessageCreate,
             &message("601", json!({"mentions": [{"id": "1"}]})),
             "1",
             &roles
         ));
         unreads.apply(
-            "MESSAGE_CREATE",
+            &Event::MessageCreate,
             &message("602", json!({"mention_roles": ["30"]})),
             "1",
             &roles,
         );
         unreads.apply(
-            "MESSAGE_CREATE",
+            &Event::MessageCreate,
             &message("603", json!({"mention_everyone": true})),
             "1",
             &roles,
@@ -579,7 +585,12 @@ mod tests {
             "@everyone is suppressed"
         );
         assert!(
-            !unreads.apply("MESSAGE_CREATE", &message("604", json!({})), "1", &roles),
+            !unreads.apply(
+                &Event::MessageCreate,
+                &message("604", json!({})),
+                "1",
+                &roles
+            ),
             "already unread"
         );
 
@@ -588,13 +599,13 @@ mod tests {
         assert_eq!(state(&unreads, &mut server)[0], (false, 0));
 
         unreads.apply(
-            "MESSAGE_ACK",
+            &Event::MessageAck,
             &json!({"channel_id": "12", "message_id": "500"}),
             "1",
             &roles,
         );
         unreads.apply(
-            "MESSAGE_CREATE",
+            &Event::MessageCreate,
             &json!({"id": "700", "channel_id": "13", "guild_id": "10", "author": {"id": "1"}}),
             "1",
             &roles,

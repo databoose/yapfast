@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{
     api::Api,
+    event::Event,
     gateway::{Closed, Dispatch, Gateway, Reconnects, TooManyIdentifies},
     message::{self, Names},
     ready,
@@ -320,50 +321,54 @@ impl Session<'_> {
     }
 
     /// Takes in a dispatched event; an error ends the session.
-    async fn event(&mut self, event: Dispatch) -> Result<()> {
+    async fn event(&mut self, dispatch: Dispatch) -> Result<()> {
+        let (event, data) = (&dispatch.event, &dispatch.data);
         // A server update that no join or stream waits for moves one
         // under way.
-        let awaited = match event.name.as_str() {
-            "VOICE_SERVER_UPDATE" => self.join.awaits(&event.data),
-            "STREAM_SERVER_UPDATE" => self.streams.awaits(&event.data),
+        let awaited = match event {
+            Event::VoiceServerUpdate => self.join.awaits(data),
+            Event::StreamServerUpdate => self.streams.awaits(data),
             _ => true,
         };
-        self.join.apply(&self.tracker.me, &event);
-        if event.name == "PRESENCE_UPDATE" {
-            self.shared.lists.presence(&self.tracker, &event.data);
+        self.join.apply(&self.tracker.me, &dispatch);
+        match event {
+            Event::PresenceUpdate => self.shared.lists.presence(&self.tracker, data),
+            Event::GuildMemberListUpdate => {
+                if self.shared.lists.update(&self.tracker, data) {
+                    self.publisher.changed();
+                }
+            }
+            Event::GuildMembersChunk => self.searches.answer(&mut self.tracker, &dispatch),
+            _ => {}
         }
-        if event.name == "GUILD_MEMBER_LIST_UPDATE"
-            && self.shared.lists.update(&self.tracker, &event.data)
-        {
-            self.publisher.changed();
-        }
-        if event.name == "GUILD_MEMBERS_CHUNK" {
-            self.searches.answer(&mut self.tracker, &event);
-        }
+        // Parsed once, for the timeline and for a notification.
+        let message = matches!(event, Event::MessageCreate | Event::MessageUpdate)
+            .then(|| message::parse(data))
+            .flatten();
         let me = &self.tracker.me;
-        for live in live_events(me, &self.shared.names, &event.name, &event.data) {
+        for live in live_events(me, &self.shared.names, event, data, message.as_ref()) {
             let _ = self.shared.live.send(live);
         }
-        if event.name == "MESSAGE_CREATE"
-            && self.tracker.notifies(&event.data)
-            && let Some(message) = message::parse(&event.data)
+        if *event == Event::MessageCreate
+            && self.tracker.notifies(data)
+            && let Some(message) = message
         {
-            let guild = event.data["guild_id"].as_str().map(str::to_owned);
+            let guild = data["guild_id"].as_str().map(str::to_owned);
             let _ = self.shared.live.send(Live::Notify { guild, message });
         }
-        if self.tracker.apply(&event.name, &event.data) {
+        if self.tracker.apply(event, data) {
             self.publisher.changed();
         }
-        if !awaited && let Some(moved) = self.tracker.moved(&event.name, &event.data) {
+        if !awaited && let Some(moved) = self.tracker.moved(event, data) {
             let _ = self.shared.live.send(moved);
         }
-        if event.name == "USER_SETTINGS_PROTO_UPDATE" {
+        if *event == Event::UserSettingsProtoUpdate {
             self.custom_status_changed();
             self.show_presence().await?;
         }
-        self.shared.lists.group_event(&self.tracker, &event);
-        if self.streams.waiting() && event.name.starts_with("STREAM_") {
-            self.streams.apply(&self.tracker, &event);
+        self.shared.lists.group_event(&self.tracker, &dispatch);
+        if self.streams.waiting() && event.is_stream() {
+            self.streams.apply(&self.tracker, &dispatch);
         }
         Ok(())
     }

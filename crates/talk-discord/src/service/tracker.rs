@@ -15,6 +15,7 @@ use super::{
     now_ms, server,
 };
 use crate::{
+    event::Event,
     member_list::{self, ListedMember, Presence},
     message::Names,
     ready::{self, PRIVATE, Private, Server},
@@ -140,14 +141,14 @@ impl Tracker {
     }
 
     /// Applies one dispatched event; returns whether anything visible changed.
-    pub(super) fn apply(&mut self, name: &str, data: &Value) -> bool {
-        let unreads = self.unreads.apply(name, data, &self.me, &self.my_roles);
-        self.apply_servers(name, data) || unreads
+    pub(super) fn apply(&mut self, event: &Event, data: &Value) -> bool {
+        let unreads = self.unreads.apply(event, data, &self.me, &self.my_roles);
+        self.apply_servers(event, data) || unreads
     }
 
-    fn apply_servers(&mut self, name: &str, data: &Value) -> bool {
-        match name {
-            "READY_SUPPLEMENTAL" => {
+    fn apply_servers(&mut self, event: &Event, data: &Value) -> bool {
+        match event {
+            Event::ReadySupplemental => {
                 // The DMs left out of READY to make it smaller.
                 for channel in data["lazy_private_channels"]
                     .as_array()
@@ -175,7 +176,7 @@ impl Tracker {
                 self.learn_members(&data["guilds"], &data["merged_members"]);
                 true
             }
-            "VOICE_STATE_UPDATE" => {
+            Event::VoiceStateUpdate => {
                 match data["guild_id"].as_str() {
                     Some(guild) => {
                         self.learn_member(guild, &data["member"]);
@@ -188,7 +189,7 @@ impl Tracker {
             }
             // Calls in DMs and group DMs. Discord sends one for each call
             // going on when Talk connects, as its capabilities ask.
-            "CALL_CREATE" | "CALL_UPDATE" => {
+            Event::CallCreate | Event::CallUpdate => {
                 let Some(channel) = data["channel_id"].as_str() else {
                     return false;
                 };
@@ -204,7 +205,7 @@ impl Tracker {
                 }
                 true
             }
-            "CALL_DELETE" => {
+            Event::CallDelete => {
                 let Some(channel) = data["channel_id"].as_str() else {
                     return false;
                 };
@@ -213,7 +214,7 @@ impl Tracker {
                     .retain(|(guild, _), entry| guild != PRIVATE || entry.channel != channel);
                 true
             }
-            "GUILD_CREATE" => {
+            Event::GuildCreate => {
                 let Some(server) = ready::server(data) else {
                     return false;
                 };
@@ -235,11 +236,11 @@ impl Tracker {
                 self.sort_servers();
                 true
             }
-            "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
+            Event::RelationshipAdd | Event::RelationshipUpdate => {
                 self.relationship(data);
                 true
             }
-            "RELATIONSHIP_REMOVE" => {
+            Event::RelationshipRemove => {
                 let id = data["id"].as_str().or_else(|| data["user_id"].as_str());
                 self.friends.retain(|friend| Some(friend.as_str()) != id);
                 self.blocked.retain(|blocked| Some(blocked.as_str()) != id);
@@ -248,21 +249,21 @@ impl Tracker {
                 }
                 true
             }
-            "GUILD_MEMBER_UPDATE" => {
+            Event::GuildMemberUpdate => {
                 let Some(guild) = data["guild_id"].as_str() else {
                     return false;
                 };
                 self.learn_member(guild, data);
                 true
             }
-            "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" | "GUILD_ROLE_DELETE" => {
+            Event::GuildRoleCreate | Event::GuildRoleUpdate | Event::GuildRoleDelete => {
                 let Some(server) = data["guild_id"]
                     .as_str()
                     .and_then(|guild| self.server_mut(guild))
                 else {
                     return false;
                 };
-                if name == "GUILD_ROLE_DELETE" {
+                if *event == Event::GuildRoleDelete {
                     if let Some(role) = data["role_id"].as_str() {
                         server.remove_role(role);
                     }
@@ -272,14 +273,14 @@ impl Tracker {
                 true
             }
             // The settings of type 1 hold the status.
-            "USER_SETTINGS_PROTO_UPDATE" if data["settings"]["type"] == 1 => {
+            Event::UserSettingsProtoUpdate if data["settings"]["type"] == 1 => {
                 let Some(encoded) = data["settings"]["proto"].as_str() else {
                     return false;
                 };
                 self.settings(encoded);
                 true
             }
-            "GUILD_EMOJIS_UPDATE" => {
+            Event::GuildEmojisUpdate => {
                 let Some(server) = data["guild_id"]
                     .as_str()
                     .and_then(|guild| self.server_mut(guild))
@@ -290,7 +291,7 @@ impl Tracker {
                 true
             }
             // Carries the server's own fields, without its channels or members.
-            "GUILD_UPDATE" => {
+            Event::GuildUpdate => {
                 let (Some(update), Some(known)) = (
                     ready::server(data),
                     data["id"].as_str().and_then(|id| self.server_mut(id)),
@@ -304,7 +305,7 @@ impl Tracker {
                 true
             }
             // This account's Nitro can change while connected.
-            "USER_UPDATE" if data["id"].as_str() == Some(self.me.as_str()) => {
+            Event::UserUpdate if data["id"].as_str() == Some(self.me.as_str()) => {
                 let premium = premium_type(data);
                 let changed = premium != self.premium;
                 self.premium = premium;
@@ -313,7 +314,7 @@ impl Tracker {
             }
             // An outage, with `unavailable`, keeps the server as last known
             // until its GUILD_CREATE; without, this account left it.
-            "GUILD_DELETE" => {
+            Event::GuildDelete => {
                 let Some(id) = data["id"].as_str() else {
                     return false;
                 };
@@ -327,19 +328,19 @@ impl Tracker {
                 self.voice.retain(|(guild, _), _| guild != id);
                 true
             }
-            "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE"
+            Event::ChannelCreate | Event::ChannelUpdate | Event::ChannelDelete
                 if data["guild_id"].is_null() =>
             {
                 let Some(id) = data["id"].as_str() else {
                     return false;
                 };
                 self.private.retain(|private| private.id != id);
-                if name != "CHANNEL_DELETE" {
+                if *event != Event::ChannelDelete {
                     self.put_private(data);
                 }
                 true
             }
-            "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE" => {
+            Event::ChannelRecipientAdd | Event::ChannelRecipientRemove => {
                 let (Some(channel), Some(user)) =
                     (data["channel_id"].as_str(), data["user"]["id"].as_str())
                 else {
@@ -354,18 +355,18 @@ impl Tracker {
                     return false;
                 };
                 private.recipients.retain(|known| known != user);
-                if name == "CHANNEL_RECIPIENT_ADD" {
+                if *event == Event::ChannelRecipientAdd {
                     private.recipients.push(user.to_owned());
                 }
                 true
             }
             // A DM moves to the top of the list with each new message.
-            "MESSAGE_CREATE" if data["guild_id"].is_null() => {
+            Event::MessageCreate if data["guild_id"].is_null() => {
                 let channel = data["channel_id"].as_str().unwrap_or_default();
                 self.private.iter().any(|private| private.id == channel)
             }
             // Friends' presences; those in servers go to the member list.
-            "PRESENCE_UPDATE" if data["guild_id"].is_null() => {
+            Event::PresenceUpdate if data["guild_id"].is_null() => {
                 let user = data["user"]["id"].as_str();
                 // The DM list shows the person of each one-to-one DM, and the
                 // friends list each friend.
@@ -378,7 +379,7 @@ impl Tracker {
                             !private.group && private.recipients.first().map(String::as_str) == user
                         }))
             }
-            "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
+            Event::ChannelCreate | Event::ChannelUpdate | Event::ChannelDelete => {
                 let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
                 else {
                     return false;
@@ -386,7 +387,7 @@ impl Tracker {
                 let Some(server) = self.server_mut(guild) else {
                     return false;
                 };
-                if name == "CHANNEL_DELETE" {
+                if *event == Event::ChannelDelete {
                     server.remove_channel(id);
                 } else {
                     server.put_channel(data);
@@ -394,7 +395,7 @@ impl Tracker {
                 true
             }
             // Large servers report voice in these until subscribed.
-            "PASSIVE_UPDATE_V1" | "PASSIVE_UPDATE_V2" => {
+            Event::PassiveUpdateV1 | Event::PassiveUpdateV2 => {
                 let Some(guild) = data["guild_id"].as_str() else {
                     return false;
                 };
@@ -404,7 +405,7 @@ impl Tracker {
                 for member in members.into_iter().flatten() {
                     self.learn_member(guild, member);
                 }
-                if name == "PASSIVE_UPDATE_V1" {
+                if *event == Event::PassiveUpdateV1 {
                     self.voice.retain(|(server, _), _| server != guild);
                 }
                 let states = data["voice_states"]
@@ -424,7 +425,7 @@ impl Tracker {
                 }
                 true
             }
-            "GUILD_MEMBERS_CHUNK" => {
+            Event::GuildMembersChunk => {
                 let Some(guild) = data["guild_id"].as_str() else {
                     return false;
                 };
@@ -435,19 +436,19 @@ impl Tracker {
             }
             // Discord sends STREAM_CREATE to the streamer and those who
             // watch, naming the stream's server again when it moves.
-            "STREAM_CREATE" | "STREAM_UPDATE" | "STREAM_DELETE" => {
+            Event::StreamCreate | Event::StreamUpdate | Event::StreamDelete => {
                 let Some(key) = data["stream_key"].as_str() else {
                     return false;
                 };
                 let rtc = data["rtc_server_id"].as_str().map(str::to_owned);
-                match (name, rtc) {
-                    ("STREAM_DELETE", _) => {
+                match (event, rtc) {
+                    (Event::StreamDelete, _) => {
                         self.streams.remove(key);
                     }
-                    ("STREAM_CREATE", Some(rtc)) => {
+                    (Event::StreamCreate, Some(rtc)) => {
                         self.streams.insert(key.to_owned(), rtc);
                     }
-                    ("STREAM_UPDATE", Some(rtc)) => {
+                    (Event::StreamUpdate, Some(rtc)) => {
                         if let Some(known) = self.streams.get_mut(key) {
                             *known = rtc;
                         }
@@ -462,11 +463,11 @@ impl Tracker {
 
     /// Where a call or stream this account is in went, from a server update
     /// that no join or stream waited for: Discord moved it to another server.
-    pub(super) fn moved(&self, name: &str, data: &Value) -> Option<Live> {
+    pub(super) fn moved(&self, event: &Event, data: &Value) -> Option<Live> {
         // The endpoint is null while Discord is still allocating a server.
         let (token, endpoint) = (data["token"].as_str()?, data["endpoint"].as_str()?);
-        match name {
-            "VOICE_SERVER_UPDATE" => {
+        match event {
+            Event::VoiceServerUpdate => {
                 let guild = data["guild_id"].as_str().unwrap_or(PRIVATE);
                 let entry = self.voice.get(&(guild.to_owned(), self.me.clone()))?;
                 // A DM call's update names its channel instead.
@@ -483,7 +484,7 @@ impl Tracker {
                     },
                 })
             }
-            "STREAM_SERVER_UPDATE" => {
+            Event::StreamServerUpdate => {
                 let key = data["stream_key"].as_str()?;
                 let (guild, _, _) = stream::parse(key)?;
                 Some(Live::StreamMoved(StreamServer {
@@ -978,7 +979,7 @@ mod tests {
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         tracker.apply(
-            "READY_SUPPLEMENTAL",
+            &Event::ReadySupplemental,
             &json!({
                 "guilds": [{"id": "10", "voice_states": [
                     {"user_id": "2", "channel_id": "11", "self_mute": true},
@@ -994,13 +995,13 @@ mod tests {
         assert!(lounge[0].muted);
 
         tracker.apply(
-            "VOICE_STATE_UPDATE",
+            &Event::VoiceStateUpdate,
             &json!({"guild_id": "10", "user_id": "2", "channel_id": null}),
         );
         assert!(tracker.snapshot().voice.is_empty());
 
         tracker.apply(
-            "CHANNEL_CREATE",
+            &Event::ChannelCreate,
             &json!({"guild_id": "10", "id": "12", "name": "Games", "type": 2, "position": 1}),
         );
         let names: Vec<_> = tracker.servers[0]
@@ -1011,7 +1012,7 @@ mod tests {
         assert_eq!(names, ["Lounge", "Games"]);
 
         tracker.apply(
-            "GUILD_UPDATE",
+            &Event::GuildUpdate,
             &json!({"id": "10", "name": "Renamed", "icon": "ghi"}),
         );
         let server = &tracker.servers[0];
@@ -1051,7 +1052,10 @@ mod tests {
             servers
         };
 
-        tracker.apply("GUILD_DELETE", &json!({"id": "10", "unavailable": true}));
+        tracker.apply(
+            &Event::GuildDelete,
+            &json!({"id": "10", "unavailable": true}),
+        );
         assert_eq!(
             listed(&mut tracker),
             [("Other".into(), false, 1), ("Test".into(), true, 1)],
@@ -1070,7 +1074,7 @@ mod tests {
             [("Other".into(), false, 1), ("Test".into(), true, 1)]
         );
 
-        tracker.apply("GUILD_CREATE", &guild("10", "Test"));
+        tracker.apply(&Event::GuildCreate, &guild("10", "Test"));
         assert_eq!(
             listed(&mut tracker),
             [("Other".into(), false, 1), ("Test".into(), false, 1)],
@@ -1078,7 +1082,7 @@ mod tests {
         );
 
         // Without `unavailable`, this account left the server.
-        tracker.apply("GUILD_DELETE", &json!({"id": "10"}));
+        tracker.apply(&Event::GuildDelete, &json!({"id": "10"}));
         assert_eq!(listed(&mut tracker), [("Other".into(), false, 1)]);
     }
 
@@ -1091,7 +1095,7 @@ mod tests {
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         tracker.apply(
-            "CALL_CREATE",
+            &Event::CallCreate,
             &json!({"channel_id": "20", "message_id": "30", "region": "rotterdam",
             "ringing": ["1"], "voice_states": [
                 {"user_id": "2", "channel_id": "20", "session_id": "s", "self_mute": true},
@@ -1110,11 +1114,11 @@ mod tests {
 
         // Answering: this account joins, without a server, and stops ringing.
         tracker.apply(
-            "VOICE_STATE_UPDATE",
+            &Event::VoiceStateUpdate,
             &json!({"user_id": "1", "channel_id": "20", "session_id": "mine"}),
         );
         tracker.apply(
-            "CALL_UPDATE",
+            &Event::CallUpdate,
             &json!({"channel_id": "20", "message_id": "30", "ringing": []}),
         );
         assert_eq!(tracker.voice_channel(PRIVATE), Some("20"));
@@ -1123,7 +1127,7 @@ mod tests {
         assert_eq!(snapshot.voice["20"].len(), 2);
         assert!(snapshot.conversations[0].ringing.is_empty());
 
-        tracker.apply("CALL_DELETE", &json!({"channel_id": "20"}));
+        tracker.apply(&Event::CallDelete, &json!({"channel_id": "20"}));
         assert!(tracker.snapshot().voice.is_empty());
     }
 
@@ -1148,9 +1152,12 @@ mod tests {
         );
         let away = json!({"user": {"id": "2"}, "status": "idle",
             "activities": [{"type": 4, "name": "Custom Status", "state": "making tea"}]});
-        assert!(tracker.apply("PRESENCE_UPDATE", &away), "Ann's DM shows it");
         assert!(
-            !tracker.apply("PRESENCE_UPDATE", &away),
+            tracker.apply(&Event::PresenceUpdate, &away),
+            "Ann's DM shows it"
+        );
+        assert!(
+            !tracker.apply(&Event::PresenceUpdate, &away),
             "the same again changes nothing"
         );
         let snapshot = tracker.snapshot();
@@ -1169,7 +1176,7 @@ mod tests {
         assert_eq!(group.presence, None, "a group has no one person");
         // Someone with no one-to-one DM doesn't change the list.
         assert!(!tracker.apply(
-            "PRESENCE_UPDATE",
+            &Event::PresenceUpdate,
             &json!({"user": {"id": "3"}, "status": "online"})
         ));
     }
@@ -1201,7 +1208,7 @@ mod tests {
 
         // A server just joined goes first, until the settings place it.
         tracker.apply(
-            "GUILD_CREATE",
+            &Event::GuildCreate,
             &guild("50", "Echo", "2026-05-01T00:00:00+00:00"),
         );
         assert_eq!(
@@ -1209,7 +1216,7 @@ mod tests {
             ["Echo", "Bravo", "Charlie", "Alpha", "Delta"]
         );
         tracker.apply(
-            "USER_SETTINGS_PROTO_UPDATE",
+            &Event::UserSettingsProtoUpdate,
             &json!({"settings": {"type": 1, "proto":
                 settings::write_server_order(&[&[40], &[50], &[30], &[20], &[10]])}}),
         );
@@ -1220,7 +1227,7 @@ mod tests {
 
         // Changing only the status leaves the order alone.
         tracker.apply(
-            "USER_SETTINGS_PROTO_UPDATE",
+            &Event::UserSettingsProtoUpdate,
             &json!({"settings": {"type": 1, "proto": settings::write_custom(None)}, "partial": true}),
         );
         assert_eq!(
@@ -1251,12 +1258,12 @@ mod tests {
         // Settings of another type say nothing of it; clearing it does.
         let cleared = settings::write_custom(None);
         assert!(!tracker.apply(
-            "USER_SETTINGS_PROTO_UPDATE",
+            &Event::UserSettingsProtoUpdate,
             &json!({"settings": {"type": 2, "proto": cleared}, "partial": true}),
         ));
         assert!(tracker.snapshot().custom_status.is_some());
         assert!(tracker.apply(
-            "USER_SETTINGS_PROTO_UPDATE",
+            &Event::UserSettingsProtoUpdate,
             &json!({"settings": {"type": 1, "proto": cleared}, "partial": true}),
         ));
         assert_eq!(tracker.snapshot().custom_status, None);
@@ -1298,11 +1305,14 @@ mod tests {
 
         // Accepting Bob's makes him a friend; Cat's is cancelled.
         tracker.apply(
-            "RELATIONSHIP_ADD",
+            &Event::RelationshipAdd,
             &json!({"id": "3", "type": 1, "user": {"id": "3", "username": "bob"}}),
         );
-        tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "4", "type": 4}));
-        tracker.apply("RELATIONSHIP_UPDATE", &json!({"id": "5", "nickname": "x"}));
+        tracker.apply(&Event::RelationshipRemove, &json!({"id": "4", "type": 4}));
+        tracker.apply(
+            &Event::RelationshipUpdate,
+            &json!({"id": "5", "nickname": "x"}),
+        );
         assert_eq!(listed(&mut tracker), [("spam".to_owned(), true, true)]);
         assert_eq!(tracker.snapshot().friends, ["2", "3"]);
         let friends: Vec<_> = tracker
@@ -1318,7 +1328,7 @@ mod tests {
         );
         // A friend's presence changes the friends list, though there's no DM with them.
         assert!(tracker.apply(
-            "PRESENCE_UPDATE",
+            &Event::PresenceUpdate,
             &json!({"user": {"id": "3"}, "status": "idle", "activities": []}),
         ));
         assert_eq!(
@@ -1327,13 +1337,13 @@ mod tests {
         );
 
         // Blocking Ann ends the friendship, and her messages stop notifying.
-        tracker.apply("RELATIONSHIP_ADD", &json!({"id": "2", "type": 2}));
+        tracker.apply(&Event::RelationshipAdd, &json!({"id": "2", "type": 2}));
         assert_eq!(tracker.snapshot().friends, ["3"]);
         assert_eq!(tracker.snapshot().blocked, ["2"]);
         let from =
             |author: &str| json!({"channel_id": "9", "author": {"id": author}, "content": "hi"});
         assert!(!tracker.notifies(&from("2")));
-        tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "2", "type": 2}));
+        tracker.apply(&Event::RelationshipRemove, &json!({"id": "2", "type": 2}));
         assert!(tracker.snapshot().blocked.is_empty());
         assert!(tracker.notifies(&from("2")));
 
@@ -1356,15 +1366,15 @@ mod tests {
         let update =
             json!({"guild_id": "10", "token": "new", "endpoint": "moved.discord.media:443"});
         assert!(
-            tracker.moved("VOICE_SERVER_UPDATE", &update).is_none(),
+            tracker.moved(&Event::VoiceServerUpdate, &update).is_none(),
             "not in a call there"
         );
         tracker.apply(
-            "VOICE_STATE_UPDATE",
+            &Event::VoiceStateUpdate,
             &json!({"guild_id": "10", "user_id": "1", "channel_id": "11", "session_id": "s"}),
         );
         let Some(Live::VoiceMoved { guild, server }) =
-            tracker.moved("VOICE_SERVER_UPDATE", &update)
+            tracker.moved(&Event::VoiceServerUpdate, &update)
         else {
             panic!("the call moved");
         };
@@ -1378,7 +1388,11 @@ mod tests {
             ("s", "new", "moved.discord.media:443")
         );
         let allocating = json!({"guild_id": "10", "token": "new", "endpoint": null});
-        assert!(tracker.moved("VOICE_SERVER_UPDATE", &allocating).is_none());
+        assert!(
+            tracker
+                .moved(&Event::VoiceServerUpdate, &allocating)
+                .is_none()
+        );
 
         // A stream moves where its last STREAM_CREATE said.
         let key = stream::key("10", "11", "1");
@@ -1386,19 +1400,20 @@ mod tests {
             json!({"stream_key": key, "token": "t2", "endpoint": "moved.discord.media:443"});
         assert!(
             tracker
-                .moved("STREAM_SERVER_UPDATE", &server_update)
+                .moved(&Event::StreamServerUpdate, &server_update)
                 .is_none(),
             "a stream it isn't in"
         );
         tracker.apply(
-            "STREAM_CREATE",
+            &Event::StreamCreate,
             &json!({"stream_key": key, "rtc_server_id": "rtc"}),
         );
         tracker.apply(
-            "STREAM_CREATE",
+            &Event::StreamCreate,
             &json!({"stream_key": key, "rtc_server_id": "rtc2"}),
         );
-        let Some(Live::StreamMoved(server)) = tracker.moved("STREAM_SERVER_UPDATE", &server_update)
+        let Some(Live::StreamMoved(server)) =
+            tracker.moved(&Event::StreamServerUpdate, &server_update)
         else {
             panic!("the stream moved");
         };
@@ -1411,12 +1426,12 @@ mod tests {
             ("rtc2", "s", "t2")
         );
         tracker.apply(
-            "STREAM_DELETE",
+            &Event::StreamDelete,
             &json!({"stream_key": key, "reason": "user_requested"}),
         );
         assert!(
             tracker
-                .moved("STREAM_SERVER_UPDATE", &server_update)
+                .moved(&Event::StreamServerUpdate, &server_update)
                 .is_none()
         );
     }
@@ -1483,8 +1498,8 @@ mod tests {
 
         // Ann writes: her DM comes first, and each message counts.
         let message = |id: &str| json!({"id": id, "channel_id": "20", "author": {"id": "2"}});
-        assert!(tracker.apply("MESSAGE_CREATE", &message("700")));
-        tracker.apply("MESSAGE_CREATE", &message("701"));
+        assert!(tracker.apply(&Event::MessageCreate, &message("700")));
+        tracker.apply(&Event::MessageCreate, &message("701"));
         assert_eq!(listed(&mut tracker)[0], ("Ann".into(), true, 2));
         assert_eq!(
             tracker.unreads.mark_read(PRIVATE, "20").as_deref(),
@@ -1494,29 +1509,29 @@ mod tests {
 
         // A muted DM shows nothing.
         tracker.apply(
-            "USER_GUILD_SETTINGS_UPDATE",
+            &Event::UserGuildSettingsUpdate,
             &json!({"guild_id": null, "channel_overrides": [{"channel_id": "20", "muted": true}]}),
         );
-        tracker.apply("MESSAGE_CREATE", &message("702"));
+        tracker.apply(&Event::MessageCreate, &message("702"));
         assert_eq!(listed(&mut tracker)[0], ("Ann".into(), false, 0));
 
         // DMs open, close and change their people.
         tracker.apply(
-            "CHANNEL_CREATE",
+            &Event::ChannelCreate,
             &json!({"id": "800", "type": 1, "recipients": [{"id": "4", "username": "cat"}]}),
         );
         assert_eq!(listed(&mut tracker)[0].0, "cat");
-        tracker.apply("CHANNEL_DELETE", &json!({"id": "800", "type": 1}));
+        tracker.apply(&Event::ChannelDelete, &json!({"id": "800", "type": 1}));
         tracker.apply(
-            "CHANNEL_RECIPIENT_ADD",
+            &Event::ChannelRecipientAdd,
             &json!({"channel_id": "22", "user": {"id": "4", "username": "cat"}}),
         );
         tracker.apply(
-            "CHANNEL_RECIPIENT_REMOVE",
+            &Event::ChannelRecipientRemove,
             &json!({"channel_id": "22", "user": {"id": "3"}}),
         );
         tracker.apply(
-            "PRESENCE_UPDATE",
+            &Event::PresenceUpdate,
             &json!({"user": {"id": "4"}, "status": "idle", "activities": []}),
         );
         let members: Vec<_> = tracker
@@ -1556,7 +1571,7 @@ mod tests {
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         for (id, channel, author) in [("500", "20", "2"), ("501", "21", "3")] {
             tracker.apply(
-                "MESSAGE_CREATE",
+                &Event::MessageCreate,
                 &json!({"id": id, "channel_id": channel, "author": {"id": author}}),
             );
         }
@@ -1577,10 +1592,10 @@ mod tests {
 
         // Accepting makes it a DM; ignoring removes it.
         tracker.apply(
-            "CHANNEL_UPDATE",
+            &Event::ChannelUpdate,
             &json!({"id": "20", "type": 1, "recipient_ids": ["2"], "is_message_request": false}),
         );
-        tracker.apply("CHANNEL_DELETE", &json!({"id": "21", "type": 1}));
+        tracker.apply(&Event::ChannelDelete, &json!({"id": "21", "type": 1}));
         let snapshot = tracker.snapshot();
         assert_eq!(snapshot.conversations.len(), 1);
         assert!(!snapshot.conversations[0].request);
@@ -1613,7 +1628,7 @@ mod tests {
         };
         assert_eq!(channels(&mut tracker), ["Lounge"]);
         tracker.apply(
-            "GUILD_MEMBER_UPDATE",
+            &Event::GuildMemberUpdate,
             &json!({"guild_id": "10", "user": {"id": "1"}, "roles": ["20"]}),
         );
         assert_eq!(channels(&mut tracker), ["Lounge", "Staff"]);
@@ -1638,7 +1653,7 @@ mod tests {
 
         // A message marks one server's channel unread; the other stays shared.
         tracker.apply(
-            "MESSAGE_CREATE",
+            &Event::MessageCreate,
             &json!({"id": "900", "channel_id": "21", "guild_id": "20", "author": {"id": "2"}}),
         );
         let unread = tracker.snapshot();
@@ -1651,7 +1666,7 @@ mod tests {
         );
 
         // Changing a server copies it rather than the one a snapshot holds.
-        tracker.apply("GUILD_UPDATE", &json!({"id": "10", "name": "Renamed"}));
+        tracker.apply(&Event::GuildUpdate, &json!({"id": "10", "name": "Renamed"}));
         let renamed = tracker.snapshot();
         assert_eq!(renamed.servers[0].name, "Renamed");
         assert_eq!(unread.servers[0].name, "One");
