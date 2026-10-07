@@ -52,7 +52,7 @@ def test_binary():
 
 
 def provision():
-    output = subprocess.run(['cargo', 'run', '--locked', '--no-default-features', '--features', 'matrix,discord', '--', '--voice-demo'],
+    output = subprocess.run(['cargo', 'run', '--locked', '--', '--voice-demo'],
                             check=True, capture_output=True, text=True, cwd=ROOT).stdout
     for line in output.splitlines():
         if '--data-dir' in line and line.rstrip().endswith('/alice'):

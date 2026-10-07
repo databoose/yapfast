@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Run Talk on a private Weston display and drive it, for screenshots and UI checks.
+
+  scripts/ui-session start [--discord [--fake-args '--servers 3 --dms 50']]
+                           [--size 1120x760] [--renderer software|gpu]
+                           [--bin PATH | --no-build] [-- TALK_ARGS...]
+  scripts/ui-session do 'click X Y' 'type Hello' 'key enter' 'shot NAME' ...
+  scripts/ui-session relaunch     rebuild, then restart Talk on the same display
+  scripts/ui-session status
+  scripts/ui-session stop
+
+start builds Talk with the `fast` profile (Discord-only with --discord, which
+also starts testing/fake_discord.ts on a free port; otherwise the default
+build with --preview) and runs a copy of it, so later builds don't disturb it.
+After a --discord build, target/fast/talk is the Discord-only build until the
+next default build.
+The display is the window's size, so coordinates are window coordinates.
+
+do commands, run in order; the first error stops the rest:
+  click X Y | move X Y | scroll PIXELS (negative scrolls up)
+  key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace
+      delete space up down left right home end pageup pagedown, a-z, 0-9)
+  type TEXT (US layout letters, digits and common punctuation)
+  sleep SECONDS | pid
+  shot NAME [X Y W H]   saves .local/ui-session/shots/NAME.png, cropped if asked
+  control NAME | get NAME   POST or GET /_control/NAME on the fake Discord
+Without arguments, do reads one command per line from standard input.
+
+Logs: .local/ui-session/{talk,fake,session,build}.log. Talk's PID is in
+.local/ui-session/talk.pid. Nothing reaches the desktop or a real account.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+ROOT = Path(__file__).resolve().parent.parent
+STATE = ROOT / '.local/ui-session'
+SESSION_PID = STATE / 'session.pid'
+SETTINGS = STATE / 'settings.json'
+
+
+def running():
+    try:
+        pid = int(SESSION_PID.read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def tail(path, lines=20):
+    if path.exists():
+        print(f'--- {path.relative_to(ROOT)}', file=sys.stderr)
+        print('\n'.join(path.read_text(errors='replace').splitlines()[-lines:]), file=sys.stderr)
+
+
+def build(discord):
+    features = ['--no-default-features', '--features', 'desktop,discord'] if discord else []
+    command = ['nix', 'develop', 'path:./nix', '--command', 'cargo', 'build', '--locked', '--profile', 'fast', *features]
+    print('Building:', shlex.join(command[4:]), flush=True)
+    log = STATE / 'build.log'
+    result = subprocess.run(command, cwd=ROOT, stdout=log.open('wb'), stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        tail(log, 40)
+        raise SystemExit(f'The build failed; see {log.relative_to(ROOT)}')
+    # Replace, never overwrite, so a running copy keeps its file.
+    copy = STATE / 'talk.new'
+    shutil.copy2(ROOT / 'target/fast/talk', copy)
+    os.replace(copy, STATE / 'talk')
+
+
+def send(commands, timeout=60):
+    """Sends commands one at a time and prints their output; stops at the first error."""
+    if not running():
+        raise SystemExit('No UI session is running; start one with scripts/ui-session start.')
+    results = STATE / 'results'
+    for command in commands:
+        identifier = uuid.uuid4().hex[:8]
+        with (STATE / 'commands').open('a') as pending:
+            pending.write(f'{identifier}\t{command}\n')
+        wait = timeout + (float(command.split()[1]) if command.startswith('sleep ') else 0)
+        deadline = time.monotonic() + wait
+        while True:
+            answer = next((line.split('\t', 2) for line in
+                           (results.read_text().splitlines() if results.exists() else [])
+                           if line.startswith(identifier + '\t')), None)
+            if answer:
+                break
+            if not running():
+                tail(STATE / 'session.log')
+                raise SystemExit('The UI session ended.')
+            if time.monotonic() > deadline:
+                raise SystemExit(f'No answer to {command!r} within {wait:.0f} s; see .local/ui-session/session.log')
+            time.sleep(.05)
+        _, status, output = answer
+        output = json.loads(output)
+        if status != 'ok':
+            raise SystemExit(f'{command}: {output}')
+        print(f'{command}: {output}' if output else command)
+
+
+def start(args):
+    if running():
+        raise SystemExit('A UI session is already running; stop it first.')
+    width, height = map(int, args.size.split('x'))
+    if STATE.exists():
+        for entry in STATE.iterdir():
+            if entry.name not in ('talk', 'build.log'):
+                shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+    STATE.mkdir(parents=True, exist_ok=True)
+    if args.bin:
+        shutil.copy2(args.bin, STATE / 'talk')
+    elif not args.no_build:
+        build(args.discord)
+    if not (STATE / 'talk').exists():
+        raise SystemExit('No Talk binary yet; start without --no-build.')
+    talk_args = args.talk_args[1:] if args.talk_args[:1] == ['--'] else args.talk_args
+    if not args.discord and '--preview' not in talk_args:
+        talk_args = ['--preview', *talk_args]
+    SETTINGS.write_text(json.dumps({'discord': args.discord, 'build': not (args.bin or args.no_build)}))
+    driver = ['python3', 'testing/ui_session.py', '--state', str(STATE), '--bin', str(STATE / 'talk'),
+              '--size', args.size, '--renderer', args.renderer,
+              *(['--discord', '--fake-args', args.fake_args] if args.discord else []), '--', *talk_args]
+    display = (f'scripts/run-framework-isolated --audio --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" '
+               f'--no-services --kiosk --width {width} --height {height} '
+               f'--compositor-log {shlex.quote(str(STATE / "weston.log"))} -- {shlex.join(driver)}')
+    session = subprocess.Popen(['nix-shell', '--impure', 'experiments/frameworks/shell.nix', '--run', display],
+                               cwd=ROOT, stdin=subprocess.DEVNULL, stdout=(STATE / 'session.log').open('wb'),
+                               stderr=subprocess.STDOUT, start_new_session=True)
+    SESSION_PID.write_text(f'{session.pid}\n')
+    deadline = time.monotonic() + 180
+    while not (STATE / 'ready').exists():
+        if session.poll() is not None or time.monotonic() > deadline:
+            tail(STATE / 'session.log')
+            tail(STATE / 'talk.log')
+            tail(STATE / 'fake.log')
+            stop()
+            raise SystemExit('The UI session did not start.')
+        time.sleep(.2)
+    print(f'Talk is running on a private {args.size} display, PID {(STATE / "talk.pid").read_text().strip()}.')
+    print('Drive it with scripts/ui-session do; shots go to .local/ui-session/shots/.')
+
+
+def relaunch():
+    if not running():
+        raise SystemExit('No UI session is running.')
+    settings = json.loads(SETTINGS.read_text())
+    if settings['build']:
+        build(settings['discord'])
+    send(['relaunch'])
+
+
+def stop():
+    pid = running()
+    if pid:
+        try:
+            send(['quit'], timeout=10)
+        except SystemExit:
+            pass
+        deadline = time.monotonic() + 15
+        while running() and time.monotonic() < deadline:
+            time.sleep(.2)
+        if running():
+            os.killpg(pid, signal.SIGTERM)
+            time.sleep(5)
+            if running():
+                os.killpg(pid, signal.SIGKILL)
+    SESSION_PID.unlink(missing_ok=True)
+
+
+parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+actions = parser.add_subparsers(dest='action', required=True)
+starting = actions.add_parser('start')
+starting.add_argument('--discord', action='store_true', help='Discord-only build against the fake Discord')
+starting.add_argument('--fake-args', default='', help="arguments for testing/fake_discord.ts, such as '--dms 50'")
+starting.add_argument('--size', default='1120x760')
+starting.add_argument('--renderer', choices=['software', 'gpu'], default='software')
+binary = starting.add_mutually_exclusive_group()
+binary.add_argument('--bin', type=Path, help='run this Talk binary instead of building')
+binary.add_argument('--no-build', action='store_true', help='run the copy from the last start')
+starting.add_argument('talk_args', nargs=argparse.REMAINDER, help='after --, arguments for Talk')
+doing = actions.add_parser('do')
+doing.add_argument('commands', nargs='*')
+actions.add_parser('relaunch')
+actions.add_parser('status')
+actions.add_parser('stop')
+args = parser.parse_args()
+
+if args.action == 'start':
+    start(args)
+elif args.action == 'do':
+    send(args.commands or [line.strip() for line in sys.stdin if line.strip()])
+elif args.action == 'relaunch':
+    relaunch()
+elif args.action == 'status':
+    pid = running()
+    print(f'Running; Talk PID {(STATE / "talk.pid").read_text().strip()}.' if pid else 'Not running.')
+else:
+    stop()
