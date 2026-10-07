@@ -30,7 +30,8 @@ No remote push is part of this migration.
   button or Escape. Desktop notifications for DMs and mentions show while Talk isn't in
   front; clicking one opens the conversation.
 
-`ui/talk.slint` defines the controls and layout; `src/ui.rs` adapts application
+`ui/talk.slint` defines the window, with its controls and parts in the other
+files under `ui/`; `src/ui.rs` and the modules under `src/ui/` adapt application
 state and effects. The `talk-ui` crate compiles the interface. Its generated code
 is large, so it lives apart from the application: changing Talk's Rust code does
 not recompile it. Backend events wake Slint's executor through the Tokio

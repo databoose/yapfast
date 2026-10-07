@@ -1,0 +1,290 @@
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme, Middle, Label } from "theme.slint";
+import { ActionButton, IconButton, Avatar, TextField } from "controls.slint";
+import { DiscordBadge } from "discord.slint";
+import { RoomRow, StatusDot, ChannelRow } from "rail.slint";
+
+export struct FriendRequestRow {
+    id: string, name: string, initial: string, tint: color, picture: image,
+    /// Sent to this account, which answers it, rather than by it.
+    incoming: bool,
+    /// "Incoming friend request" and the like.
+    detail: string,
+}
+
+// A friend request in the DM list: accepted or ignored when it came to this
+// account, or cancelled when it sent it.
+export component FriendRequest inherits Rectangle {
+    in property <FriendRequestRow> request;
+    /// What it sits on, for the badge's ring.
+    in property <brush> surface: Theme.sidebar;
+    callback accept;
+    callback remove;
+    height: 42px; border-radius: 6px;
+    background: pointer.has-hover ? Theme.hover : transparent;
+    accessible-role: groupbox;
+    accessible-label: root.request.name + ", " + root.request.detail;
+    pointer := TouchArea { }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 4px; spacing: 12px;
+        Middle {
+            Avatar {
+                size: 32px; initial: root.request.initial; tint: root.request.tint; picture: root.request.picture;
+                DiscordBadge { x: -2px; y: -2px; size: 13px; ring: pointer.has-hover ? Theme.hover : root.surface; }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 0px; horizontal-stretch: 1;
+            Text { text: root.request.name; color: Theme.text; font-size: 15px; font-weight: 500; overflow: elide; }
+            Text { text: root.request.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
+        }
+        if root.request.incoming: Middle {
+            IconButton {
+                icon: @image-url("icons/check.svg"); label: "Accept"; size: 30px; glyph: 18px; tint: Theme.live; tip-side: 2;
+                clicked => { root.accept(); }
+            }
+        }
+        Middle {
+            IconButton {
+                icon: @image-url("icons/x.svg"); label: root.request.incoming ? "Ignore" : "Cancel"; size: 30px; glyph: 18px; tip-side: 2;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}
+
+export component RequestsHeading inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 8px; height: 36px;
+    Text { text: root.text; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+}
+
+export struct FriendRow {
+    id: string, name: string, initial: string, tint: color, picture: image,
+    /// As in MemberRow: "online", "idle", "dnd" or "offline".
+    presence: string,
+    /// Their custom status or what they're doing.
+    activity: string,
+}
+
+// A friend in the friends list. Clicking it opens your DM with them.
+export component FriendItem inherits Rectangle {
+    in property <FriendRow> friend;
+    callback message;
+    property <string> status: root.friend.presence == "dnd" ? "Do Not Disturb" : root.friend.presence == "idle" ? "Idle" : root.friend.presence == "online" ? "Online" : "Offline";
+    property <brush> surface: pointer.has-hover ? Theme.hover : Theme.chat;
+    height: 62px; border-radius: 8px;
+    background: pointer.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.friend.name + ", " + root.status + (root.friend.activity != "" ? ", " + root.friend.activity : "") + ", message";
+    accessible-action-default => { root.message(); }
+    // Rows are ruled apart, as in Discord's list; hovering a row hides its rule.
+    if !pointer.has-hover: Rectangle { x: 10px; y: 0px; width: parent.width - 20px; height: 1px; background: Theme.line; }
+    pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.message(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 12px;
+        Middle {
+            Rectangle {
+                width: 32px; height: 32px;
+                Avatar { size: 32px; initial: root.friend.initial; tint: root.friend.tint; picture: root.friend.picture; }
+                StatusDot { x: 20px; y: 20px; presence: root.friend.presence; ring: root.surface; }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 1px; horizontal-stretch: 1;
+            Text { text: root.friend.name; color: Theme.text; font-size: 16px; font-weight: 700; overflow: elide; }
+            Text { text: root.friend.activity != "" ? root.friend.activity : root.status; color: Theme.muted; font-size: 13px; overflow: elide; }
+        }
+        Middle {
+            IconButton {
+                icon: @image-url("icons/message-circle.svg"); label: "Message"; size: 36px; glyph: 20px; radius: 18px;
+                fill: Theme.raised; tip-side: 2;
+                clicked => { root.message(); }
+            }
+        }
+    }
+}
+
+/// The Discord friends list, in place of a conversation: those around, or all.
+export component FriendsScreen inherits Rectangle {
+    in property <[FriendRow]> rows;
+    in property <bool> all;
+    /// Friends in all, before the search.
+    in property <int> total;
+    in-out property <string> filter;
+    callback filter-edited;
+    callback message(string);
+    callback add-friend;
+    if root.total == 0: VerticalLayout {
+        padding: 32px; spacing: 10px; alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 80px; height: 80px; border-radius: 40px; background: Theme.raised;
+                Image { source: @image-url("icons/users.svg"); width: 36px; height: 36px; colorize: Theme.secondary; }
+            }
+        }
+        Text { text: "No friends yet"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+        Text { text: "Add someone with their Discord username."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: center;
+            ActionButton { text: "Add a friend"; primary: true; clicked => { root.add-friend(); } }
+        }
+    }
+    if root.total > 0: VerticalLayout {
+        padding: 16px; padding-bottom: 0px; spacing: 8px;
+        TextField {
+            min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken; ring: false;
+            placeholder: "Search"; label: "Search friends"; text <=> root.filter;
+            edited => { root.filter-edited(); }
+        }
+        RequestsHeading { text: (root.all ? "ALL FRIENDS — " : "ONLINE — ") + root.rows.length; }
+        if root.rows.length == 0: HorizontalLayout {
+            padding-left: 8px;
+            Label {
+                text: root.filter != "" ? "No friend's name matches that." : "None of your friends are around right now.";
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for friend[index] in root.rows: VerticalLayout {
+                padding-bottom: index == root.rows.length - 1 ? 16px : 0px;
+                FriendItem {
+                    friend: friend;
+                    message => { root.message(friend.id); }
+                }
+            }
+        }
+    }
+}
+
+// A tab in the friends list's header.
+export component HeaderTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    width: tab-text.preferred-width + 20px; height: 28px; border-radius: 6px;
+    background: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.quick; }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    tab-text := Text {
+        text: root.text; font-size: 15px; font-weight: 500;
+        color: root.selected || pointer.has-hover ? Theme.text : Theme.secondary;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    }
+}
+
+/// Friend requests, message requests and spam, in place of a conversation.
+export component RequestsScreen inherits Rectangle {
+    in property <[FriendRequestRow]> friend-requests;
+    in property <[RoomRow]> message-requests;
+    in property <[RoomRow]> spam;
+    callback accept(string);
+    callback remove(string);
+    callback open(string);
+    property <bool> empty: root.friend-requests.length == 0 && root.message-requests.length == 0 && root.spam.length == 0;
+    if root.empty: VerticalLayout {
+        padding: 32px; spacing: 10px; alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 80px; height: 80px; border-radius: 40px; background: Theme.raised;
+                Image { source: @image-url("icons/inbox.svg"); width: 36px; height: 36px; colorize: Theme.secondary; }
+            }
+        }
+        Text { text: "No requests"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+        Text { text: "Friend requests and messages from people you don't know show up here."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
+    }
+    if !root.empty: ScrollView {
+        VerticalLayout {
+            padding: 16px; padding-top: 8px; spacing: 2px; alignment: start;
+            if root.friend-requests.length > 0: RequestsHeading { text: "FRIEND REQUESTS — " + root.friend-requests.length; }
+            for request in root.friend-requests: FriendRequest {
+                request: request; surface: Theme.chat;
+                accept => { root.accept(request.id); }
+                remove => { root.remove(request.id); }
+            }
+            if root.message-requests.length > 0: RequestsHeading { text: "MESSAGE REQUESTS — " + root.message-requests.length; }
+            for room in root.message-requests: ChannelRow {
+                text: room.name; label: room.name + ", message request" + (room.unread ? ", unread" : "");
+                icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                picture: room.picture; discord: room.discord; unread: room.unread;
+                clicked => { root.open(room.id); }
+            }
+            if root.spam.length > 0: RequestsHeading { text: "SPAM — " + root.spam.length; }
+            for room in root.spam: ChannelRow {
+                text: room.name; label: room.name + ", spam";
+                icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                picture: room.picture; discord: room.discord;
+                clicked => { root.open(room.id); }
+            }
+        }
+    }
+}
+
+// Adding a Discord friend by username. Clicking outside or Escape closes it.
+export component AddFriendDialog inherits Rectangle {
+    in-out property <string> add-friend-name;
+    in property <bool> add-friend-sending;
+    /// Whether the request went, and what to say.
+    in property <bool> add-friend-sent;
+    in property <string> add-friend-note;
+    callback add-friend(string);
+    callback close-add-friend;
+    background: #00000099;
+    TouchArea { clicked => { root.close-add-friend(); } }
+    Rectangle {
+        width: min(460px, root.width - 48px); height: add-friend-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Add a friend";
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-add-friend(); return accept; }
+                return reject;
+            }
+            add-friend-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "Add a friend"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-add-friend(); } }
+                }
+                Label { text: "Send someone a friend request on Discord with their username."; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    TextField {
+                        init => { self.focus-input(); }
+                        min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                        placeholder: "Username"; label: "Username"; text <=> root.add-friend-name;
+                        accepted => { root.add-friend(root.add-friend-name); }
+                    }
+                    ActionButton {
+                        text: "Send request"; primary: true;
+                        enabled: !root.add-friend-sending && root.add-friend-name != "";
+                        clicked => { root.add-friend(root.add-friend-name); }
+                    }
+                }
+                if root.add-friend-note != "": Text {
+                    text: root.add-friend-note; font-size: 14px; wrap: word-wrap;
+                    color: root.add-friend-sent ? Theme.live : root.add-friend-sending ? Theme.muted : Theme.danger;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,55 @@
+// Layered graphite: the rail is darkest, the conversation lightest. Marigold marks
+// selection and primary actions, red mentions and destructive actions, green live voice.
+export global Theme {
+    out property <color> rail: #111215;
+    out property <color> sidebar: #17181c;
+    out property <color> panel: #121316;
+    out property <color> chat: #1e1f24;
+    out property <color> stage: #1e1f24;
+    out property <color> raised: #26272e;
+    out property <color> field: #2a2b32;
+    out property <color> sunken: #0e0f12;
+    out property <color> hover: #222329;
+    out property <color> active: #2c2d35;
+    out property <color> row-hover: #1a1b20;
+    out property <color> line: #2c2d34;
+    out property <color> edge: #0c0d0f;
+    out property <color> text: #eef0f4;
+    out property <color> secondary: #b5b8c1;
+    out property <color> muted: #8d919c;
+    out property <color> faint: #5c606a;
+    out property <color> accent: #ffbf47;
+    out property <color> accent-hover: #ffcd70;
+    out property <color> on-accent: #1d1607;
+    out property <color> accent-soft: #ffbf4726;
+    out property <color> danger: #f0545e;
+    out property <color> danger-hover: #f46f77;
+    out property <color> live: #3ecf7e;
+    out property <color> link: #7cc4ff;
+    out property <duration> quick: 120ms;
+}
+
+// One tooltip for the whole window, drawn above everything else.
+export global Tip {
+    in-out property <string> text;
+    in-out property <length> x;
+    in-out property <length> y;
+    /// 0 above the anchor, 1 to its right, 2 below it.
+    in-out property <int> side;
+}
+
+// Centres a fixed-size child across a row, which Slint layouts align to the top.
+export component Middle inherits VerticalLayout {
+    alignment: center;
+}
+
+export component Label inherits Text {
+    color: Theme.muted; font-size: 13px; wrap: word-wrap;
+    vertical-stretch: 0;
+}
+
+// Whether Discord's things carry its badge. A build without Matrix shows
+// nothing else, so it leaves them off.
+export global Badges {
+    in property <bool> discord: true;
+}

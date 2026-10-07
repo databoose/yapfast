@@ -7,6 +7,8 @@
 // (default 56, 60 in all). `--servers N` adds N - 1 large, quiet servers, as a
 // busy account has, for measuring; POST /_control/busy-start makes Bob post
 // in their channels ten times a second, and /_control/busy-stop stops him.
+// `--dms N` adds N older DMs, each with a person of its own, every other one
+// a friend, as a busy account has.
 // POST /_control/chat-start makes Bob post in
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
@@ -70,6 +72,7 @@ const { values: args } = parseArgs({
     host: { type: "string", default: "127.0.0.1" },
     extra: { type: "string", default: "56" },
     servers: { type: "string", default: "1" },
+    dms: { type: "string", default: "0" },
   },
 });
 
@@ -590,6 +593,19 @@ for (let index = 0; index < extra; index++) {
   post(GENERAL, users.bob, sample(index), HISTORY_START + (4 + index) * 60_000);
 }
 
+// The extra DMs of `--dms`, older than the fixture's.
+const fillerPeople: User[] = [];
+for (let n = 0; n < Number(args.dms); n++) {
+  const user = { id: (1_600_000_000_000_000_000n + BigInt(n)).toString(), username: `person${n}`, global_name: `Person ${n}`, avatar: `p${n}` };
+  fillerPeople.push(user);
+  userById.set(user.id, user);
+  if (n % 2 === 0) relationships.set(user.id, 1);
+  const channel = (1_390_000_000_000_000_000n + BigInt(n)).toString();
+  messages.set(channel, []);
+  privates.set(channel, { type: 1, recipients: [user] });
+  post(channel, user, `Hi from ${user.global_name}`, HISTORY_START + n * 1000);
+}
+
 privates.set(DM_BOB, { type: 1, recipients: [users.bob] });
 privates.set(WEEKEND, { type: 3, recipients: [users.bob, users.carol], name: "Weekend plans" });
 const DM_START = HISTORY_START + 86_400_000;
@@ -868,7 +884,7 @@ function ready(ws: Socket) {
       locale: "en-US",
       nsfw_allowed: true,
     },
-    users: [...Object.values(users), ...Object.values(strangers)].filter((user) => user.id !== ALICE).map(wireUser),
+    users: [...Object.values(users), ...Object.values(strangers), ...fillerPeople].filter((user) => user.id !== ALICE).map(wireUser),
     guilds: [guild(), ...fillers],
     merged_members: [[alice], ...fillers.map((filler) => [{ ...alice, roles: [filler.roles[1]!.id, filler.roles[4]!.id] }])],
     read_state: {

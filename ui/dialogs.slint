@@ -1,0 +1,295 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Middle, Label } from "theme.slint";
+import { ActionButton, IconButton, Avatar, TextField } from "controls.slint";
+import { DiscordBadge } from "discord.slint";
+import { EmojiCell } from "messages.slint";
+import { Choices } from "settings.slint";
+
+// Someone the new conversation dialog found.
+export struct ContactRow {
+    name: string, detail: string, initial: string, tint: color, picture: image, discord: bool,
+}
+
+/// A conversation a message can be forwarded to.
+export struct ForwardRow {
+    id: string, name: string, place: string, icon: image, direct: bool, initial: string, tint: color,
+    /// The message went there during this forward.
+    sent: bool,
+}
+
+// The custom status: an emoji from the picker, words, and when it clears.
+export component StatusDialog inherits Rectangle {
+    in-out property <string> status-text;
+    in-out property <EmojiCell> status-emoji;
+    /// Never, 30 minutes, an hour, four hours or today.
+    in-out property <int> status-clear-after;
+    in property <bool> has-custom-status;
+    in property <bool> status-saving;
+    in property <string> status-error;
+    in property <string> emoji-font;
+    /// The emoji picker is wanted, beside where it last opened, or beside
+    /// what asked for it, at this place in the window.
+    callback pick-emoji;
+    callback pick-emoji-beside(length, length, length, length);
+    callback save-status;
+    callback clear-status;
+    callback close-status;
+    background: #00000099;
+    TouchArea { clicked => { root.close-status(); } }
+    Rectangle {
+        width: min(460px, root.width - 48px); height: status-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Set a custom status";
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-status(); return accept; }
+                return reject;
+            }
+            status-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "Set a custom status"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-status(); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 40px; height: 40px; border-radius: 6px;
+                        background: status-emoji-touch.has-hover ? Theme.hover : Theme.sunken;
+                        accessible-role: button;
+                        accessible-label: root.status-emoji.glyph != "" ? "Emoji, " + root.status-emoji.name + ". Change it" : "Pick an emoji";
+                        accessible-action-default => { root.pick-emoji(); }
+                        if root.status-emoji.glyph != "": Text {
+                            text: root.status-emoji.glyph; font-family: root.emoji-font; font-size: 22px;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                        if root.status-emoji.glyph == "": Image {
+                            source: @image-url("icons/smile-plus.svg"); width: 20px; colorize: Theme.secondary;
+                        }
+                        status-emoji-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.pick-emoji-beside(self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                        }
+                        // Taking the emoji off: a small badge on its corner.
+                        if root.status-emoji.glyph != "": Rectangle {
+                            x: parent.width - 12px; y: -6px; width: 18px; height: 18px; border-radius: 9px;
+                            background: remove-touch.has-hover ? Theme.danger : Theme.faint;
+                            border-width: 2px; border-color: Theme.raised;
+                            accessible-role: button;
+                            accessible-label: "Remove the emoji";
+                            accessible-action-default => { root.status-emoji = { glyph: "", name: "", key: "" }; }
+                            Image { source: @image-url("icons/x.svg"); width: 10px; colorize: Theme.text; }
+                            remove-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.status-emoji = { glyph: "", name: "", key: "" }; }
+                            }
+                        }
+                    }
+                    TextField {
+                        init => { self.focus-input(); }
+                        min-height: 40px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                        placeholder: "What's happening?"; label: "Status"; text <=> root.status-text;
+                        accepted => { root.save-status(); }
+                    }
+                }
+                Text { text: "CLEAR AFTER"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                Choices {
+                    label: "Clear after"; options: ["Never", "30 min", "1 hour", "4 hours", "Today"];
+                    current <=> root.status-clear-after;
+                }
+                if root.status-error != "": Text { text: root.status-error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px; padding-top: 4px;
+                    if root.has-custom-status: ActionButton {
+                        text: "Clear status"; ghost: true; enabled: !root.status-saving;
+                        clicked => { root.clear-status(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    ActionButton { text: "Cancel"; ghost: true; clicked => { root.close-status(); } }
+                    ActionButton {
+                        text: root.status-saving ? "Saving..." : "Save"; primary: true; enabled: !root.status-saving;
+                        clicked => { root.save-status(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Starting a DM: find someone on Discord or Matrix, then open the conversation
+// with them, which starts it if there's none yet.
+export component NewDmDialog inherits Rectangle {
+    in-out property <string> new-dm-query;
+    /// Who it found, and whether one is starting.
+    in property <[ContactRow]> new-dm-people;
+    in property <bool> new-dm-starting;
+    in property <string> new-dm-note;
+    callback new-dm-search;
+    callback start-dm(int);
+    callback close-new-dm;
+    background: #00000099;
+    TouchArea { clicked => { root.close-new-dm(); } }
+    Rectangle {
+        width: min(440px, root.width - 48px); height: min(520px, root.height - 48px);
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "New message";
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-new-dm(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "New message"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-new-dm(); } }
+                }
+                TextField {
+                    init => { self.focus-input(); }
+                    min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                    placeholder: "Find a friend, or type a Matrix id"; label: "Find people"; text <=> root.new-dm-query;
+                    edited => { root.new-dm-search(); }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 2px; alignment: start;
+                        for person[index] in root.new-dm-people: Rectangle {
+                            height: 48px; border-radius: 6px;
+                            background: person-touch.has-hover && !root.new-dm-starting ? Theme.hover : transparent;
+                            accessible-role: button;
+                            accessible-label: "Message " + person.name + ", " + person.detail;
+                            accessible-action-default => { root.start-dm(index); }
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 12px;
+                                Middle {
+                                    Rectangle {
+                                        width: 36px; height: 32px;
+                                        Avatar { x: 0; y: 0; size: 32px; initial: person.initial; tint: person.tint; picture: person.picture; }
+                                        if person.discord: DiscordBadge { x: 18px; y: 16px; size: 14px; ring: Theme.raised; }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1;
+                                    Text { text: person.name; color: Theme.text; font-size: 16px; font-weight: 500; overflow: elide; }
+                                    Text { text: person.detail; color: Theme.muted; font-size: 13px; overflow: elide; }
+                                }
+                                Middle {
+                                    ActionButton { text: "Message"; small: true; primary: person-touch.has-hover; enabled: !root.new-dm-starting; clicked => { root.start-dm(index); } }
+                                }
+                            }
+                            person-touch := TouchArea {
+                                enabled: !root.new-dm-starting; mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.start-dm(index); }
+                            }
+                        }
+                        if root.new-dm-note != "": HorizontalLayout {
+                            padding: 8px;
+                            Label { text: root.new-dm-note; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Forwarding a message: pick conversations to send it to, one click each.
+// Clicking outside or Escape closes it.
+export component ForwardDialog inherits Rectangle {
+    in property <string> forward-preview;
+    in property <[ForwardRow]> forward-targets;
+    in-out property <string> forward-query;
+    callback forward-search;
+    callback forward-to(string);
+    callback close-forward;
+    background: #00000099;
+    TouchArea { clicked => { root.close-forward(); } }
+    Rectangle {
+        width: min(440px, root.width - 48px); height: min(520px, root.height - 48px);
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Forward message";
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-forward(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "Forward message"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-forward(); } }
+                }
+                // The message, as a quote.
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle { width: 3px; border-radius: 1.5px; background: Theme.line; }
+                    Text { text: root.forward-preview; color: Theme.secondary; font-size: 15px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                }
+                forward-field := TextField {
+                    init => { self.focus-input(); }
+                    min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                    placeholder: "Find a conversation"; label: "Find a conversation"; text <=> root.forward-query;
+                    edited => { root.forward-search(); }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 2px; alignment: start;
+                        for target in root.forward-targets: Rectangle {
+                            height: 48px; border-radius: 6px;
+                            background: target-touch.has-hover && !target.sent ? Theme.hover : transparent;
+                            accessible-role: button;
+                            accessible-label: (target.sent ? "Sent to " : "Forward to ") + target.name + ", " + target.place;
+                            accessible-action-default => { if !target.sent { root.forward-to(target.id); } }
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 12px;
+                                if target.direct: Middle { Avatar { size: 32px; initial: target.initial; tint: target.tint; } }
+                                if !target.direct: Middle {
+                                    Rectangle {
+                                        width: 32px; height: 32px; border-radius: 16px; background: Theme.field;
+                                        Image { source: target.icon; width: 18px; height: 18px; colorize: Theme.secondary; }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1;
+                                    Text { text: target.name; color: Theme.text; font-size: 16px; font-weight: 500; overflow: elide; }
+                                    Text { text: target.place; color: Theme.muted; font-size: 13px; overflow: elide; }
+                                }
+                                if target.sent: HorizontalLayout {
+                                    spacing: 4px;
+                                    Image { source: @image-url("icons/check.svg"); width: 16px; image-fit: contain; colorize: Theme.live; }
+                                    Text { text: "Sent"; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                }
+                                if !target.sent: Middle {
+                                    ActionButton { text: "Send"; small: true; primary: target-touch.has-hover; clicked => { root.forward-to(target.id); } }
+                                }
+                            }
+                            target-touch := TouchArea {
+                                enabled: !target.sent; mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.forward-to(target.id); }
+                            }
+                        }
+                        if root.forward-targets.length == 0: HorizontalLayout {
+                            padding: 8px;
+                            Label { text: root.forward-query != "" ? "No conversations match." : "There's nowhere to forward to yet. Talk forwards only into encrypted conversations."; }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    ActionButton { text: "Done"; clicked => { root.close-forward(); } }
+                }
+            }
+        }
+    }
+}

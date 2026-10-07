@@ -1,0 +1,571 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Tip, Middle, Label } from "theme.slint";
+
+// A labelled action. Primary is marigold, danger red, ghost transparent until hovered.
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <string> label: root.text;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    in property <bool> primary;
+    in property <bool> ghost;
+    in property <bool> danger;
+    in property <bool> small;
+    callback clicked;
+    min-width: max(root.small ? 28px : 36px, content.preferred-width);
+    min-height: root.small ? 28px : 36px;
+    max-height: self.min-height;
+    vertical-stretch: 0;
+    border-radius: 6px;
+    background: !root.enabled ? (root.primary ? Theme.accent.with-alpha(0.3) : root.ghost ? transparent : Theme.raised)
+        : root.primary ? (pointer.has-hover ? Theme.accent-hover : Theme.accent)
+        : root.danger ? (pointer.has-hover ? Theme.danger-hover : Theme.danger)
+        : root.ghost ? (pointer.has-hover ? #ffffff14 : transparent)
+        : (pointer.has-hover ? #3c3d46 : #33343c);
+    animate background { duration: Theme.quick; }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    property <color> ink: !root.enabled ? (root.primary ? Theme.on-accent.with-alpha(0.6) : Theme.faint)
+        : root.primary ? Theme.on-accent : root.danger ? #ffffff
+        : root.ghost && !pointer.has-hover ? Theme.secondary : Theme.text;
+    content := HorizontalLayout {
+        padding-left: root.small ? 10px : 16px; padding-right: self.padding-left;
+        spacing: 8px; alignment: center;
+        if root.icon.width > 0: Image {
+            source: root.icon; width: root.small ? 16px : 18px; image-fit: contain;
+            colorize: root.ink;
+        }
+        if root.text != "": Text {
+            text: root.text; color: root.ink; font-size: root.small ? 14px : 15px; font-weight: 700;
+            vertical-alignment: center; overflow: elide;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+// An icon-only action with a tooltip naming it.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    /// A state worth warning about, such as a muted microphone: drawn in red.
+    in property <bool> alert;
+    in property <bool> danger;
+    in property <bool> emphasis;
+    in property <length> size: 32px;
+    in property <length> glyph: 20px;
+    in property <color> tint: Theme.secondary;
+    in property <color> fill: transparent;
+    in property <int> tip-side: 0;
+    in property <length> radius: 6px;
+    out property <bool> hovered: pointer.has-hover;
+    callback clicked;
+    // The root fills its row; the visible face stays square and centred.
+    width: root.size; min-height: root.size;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    face := Rectangle {
+        width: root.size; height: root.size;
+        border-radius: root.radius;
+        background: !root.enabled ? root.fill
+            : root.emphasis ? (pointer.has-hover ? Theme.accent-hover : Theme.accent)
+            : root.danger && pointer.has-hover ? Theme.danger.with-alpha(0.16)
+            : pointer.has-hover ? root.fill.mix(#ffffff, 0.9) : root.fill;
+        animate background { duration: Theme.quick; }
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
+        Image {
+            source: root.icon; width: root.glyph; height: root.glyph;
+            colorize: !root.enabled ? Theme.faint : root.emphasis ? Theme.on-accent
+                : root.alert || (root.danger && pointer.has-hover) ? Theme.danger
+                : pointer.has-hover ? Theme.text : root.tint;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { Tip.text = ""; root.clicked(); }
+            changed has-hover => {
+                if self.has-hover {
+                    Tip.text = root.label;
+                    Tip.side = root.tip-side;
+                    Tip.x = root.tip-side == 1 ? face.absolute-position.x + root.size : face.absolute-position.x + root.size / 2;
+                    Tip.y = root.tip-side == 0 ? face.absolute-position.y : root.tip-side == 1 ? face.absolute-position.y + root.size / 2 : face.absolute-position.y + root.size;
+                } else if Tip.text == root.label {
+                    Tip.text = "";
+                }
+            }
+        }
+    }
+}
+
+// A toggle with a caret beside it that opens its device menu. The pair shares one
+// hover ground, so the caret reads as part of the control it configures.
+export component DeviceToggle inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> menu-label;
+    in property <bool> alert;
+    in property <bool> enabled: true;
+    in property <bool> open;
+    callback clicked;
+    callback menu;
+    width: 52px; min-height: 32px;
+    // The ground is the visible pair only, centred in the row like IconButton's face.
+    Rectangle {
+        y: (parent.height - self.height) / 2; height: 32px;
+        border-radius: 6px;
+        background: root.open || toggle.hovered || caret.has-hover ? Theme.hover : transparent;
+        animate background { duration: Theme.quick; }
+    }
+    HorizontalLayout {
+        toggle := IconButton {
+            icon: root.icon; label: root.label; alert: root.alert; enabled: root.enabled;
+            clicked => { root.clicked(); }
+        }
+        Rectangle {
+            width: 20px;
+            accessible-role: button;
+            accessible-label: root.menu-label;
+            accessible-action-default => { root.menu(); }
+            Rectangle {
+                y: (parent.height - self.height) / 2; width: 20px; height: 32px; border-radius: 6px;
+                background: caret.has-hover ? #ffffff14 : transparent;
+                animate background { duration: Theme.quick; }
+                border-width: caret-focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent;
+                Image {
+                    source: @image-url("icons/chevron-down.svg"); width: 14px; height: 14px;
+                    colorize: caret.has-hover || root.open ? Theme.text : Theme.muted;
+                    transform-rotation: root.open ? 180deg : 0deg;
+                    animate transform-rotation { duration: Theme.quick; }
+                }
+            }
+            caret-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == "\n" || event.text == " " {
+                        root.menu(); return accept;
+                    }
+                    return reject;
+                }
+                caret := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { Tip.text = ""; root.menu(); }
+                    changed has-hover => {
+                        if self.has-hover && !root.open {
+                            Tip.text = root.menu-label;
+                            Tip.side = 0;
+                            Tip.x = self.absolute-position.x + self.width / 2;
+                            Tip.y = self.absolute-position.y + (self.height - 32px) / 2;
+                        } else if Tip.text == root.menu-label {
+                            Tip.text = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A person's picture, or a round initial in their own tint until it arrives;
+// optionally ringed while they speak.
+export component Avatar inherits Rectangle {
+    in property <string> initial;
+    in property <color> tint: #6b7280;
+    in property <image> picture;
+    in property <length> size: 40px;
+    in property <bool> speaking;
+    width: root.size; height: root.size;
+    border-radius: root.size / 2;
+    background: root.picture.width > 0 ? transparent : root.tint;
+    if root.picture.width == 0: Text {
+        text: root.initial; color: #ffffff; font-size: root.size * 0.42; font-weight: 700;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    if root.picture.width > 0: Rectangle {
+        width: root.size; height: root.size;
+        border-radius: root.size / 2; clip: true;
+        Image { source: root.picture; width: root.size; height: root.size; image-fit: cover; }
+    }
+    if root.speaking: Rectangle {
+        x: -3px; y: -3px; width: root.size + 6px; height: root.size + 6px;
+        border-radius: self.width / 2; border-width: 2px; border-color: Theme.live;
+    }
+}
+
+// A single-line text field. Long text scrolls to keep the cursor visible.
+export component TextField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <bool> password;
+    in property <string> label;
+    in property <length> text-size: 16px;
+    in property <length> pad: 12px;
+    in property <color> fill: Theme.sunken;
+    in property <bool> ring: true;
+    callback edited(string);
+    callback accepted;
+    public function focus-input() { input.focus(); }
+    min-height: 40px; vertical-stretch: 0; horizontal-stretch: 1;
+    border-radius: 6px;
+    background: root.fill;
+    border-width: root.ring && input.has-focus ? 1px : 0px;
+    border-color: Theme.accent.with-alpha(0.8);
+    Text {
+        x: root.pad; width: root.width - 2 * root.pad; height: root.height;
+        visible: root.text == "";
+        text: root.placeholder; color: root.enabled ? Theme.muted : Theme.faint; font-size: root.text-size;
+        vertical-alignment: center; overflow: elide;
+    }
+    Rectangle {
+        x: root.pad; width: root.width - 2 * root.pad; height: root.height; clip: true;
+        input := TextInput {
+            property <length> scroll: 0px;
+            x: min(0px, max(parent.width - self.width, self.scroll));
+            width: max(parent.width, self.preferred-width + self.text-cursor-width);
+            height: parent.height;
+            text <=> root.text;
+            enabled: root.enabled;
+            single-line: true;
+            vertical-alignment: center;
+            font-size: root.text-size;
+            color: root.enabled ? Theme.text : Theme.muted;
+            input-type: root.password ? InputType.password : InputType.text;
+            selection-background-color: Theme.accent.with-alpha(0.35);
+            selection-foreground-color: Theme.text;
+            accessible-label: root.label;
+            edited => { root.edited(self.text); }
+            accepted => { root.accepted(); }
+            cursor-position-changed(position) => {
+                if position.x + self.scroll < 0px {
+                    self.scroll = -position.x;
+                } else if position.x + self.scroll > parent.width - self.text-cursor-width {
+                    self.scroll = parent.width - self.text-cursor-width - position.x;
+                }
+            }
+        }
+    }
+}
+
+// A round button answering or ending a call.
+export component CallButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <color> fill;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 64px; height: 48px; border-radius: 24px;
+    background: touch.has-hover ? root.fill.darker(0.15) : root.fill;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Image { source: root.icon; width: 22px; height: 22px; colorize: #ffffff; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+}
+
+// A picture, or an animation's frames in turn while it shows.
+export component Picture inherits Image {
+    in property <image> still;
+    in property <[image]> frames;
+    in property <[int]> delays;
+    property <int> frame;
+    source: root.frames.length > 1 ? root.frames[root.frame] : root.still;
+    Timer {
+        running: root.frames.length > 1;
+        interval: max(20, root.delays[root.frame]) * 1ms;
+        triggered => { root.frame = mod(root.frame + 1, root.frames.length); }
+    }
+}
+
+// Stands in for something on its way, such as a picture or the messages,
+// with a light sweeping across it as in Discord.
+export component Skeleton inherits Rectangle {
+    background: Theme.raised;
+    clip: true;
+    accessible-role: image;
+    accessible-label: "Loading";
+    Rectangle {
+        width: max(120px, parent.width * 0.5); height: parent.height;
+        x: Math.mod(animation-tick() / 1ms, 1500) / 1500 * (parent.width + self.width) - self.width;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff10 50%, #ffffff00 100%);
+    }
+}
+
+// Messages on their way: rows the shape of messages.
+export component MessagesSkeleton inherits VerticalLayout {
+    padding: 16px; spacing: 22px; alignment: end;
+    for line in [
+        { name: 92px, lines: [380px, 220px] },
+        { name: 120px, lines: [300px] },
+        { name: 76px, lines: [420px, 340px, 160px] },
+        { name: 104px, lines: [260px] },
+        { name: 88px, lines: [360px, 200px] },
+    ]: HorizontalLayout {
+        spacing: 16px; alignment: start;
+        VerticalLayout {
+            alignment: start;
+            Skeleton { width: 40px; height: 40px; border-radius: 20px; }
+        }
+        VerticalLayout {
+            spacing: 8px; padding-top: 4px; alignment: start;
+            Skeleton { width: line.name; height: 12px; border-radius: 6px; }
+            for width in line.lines: Skeleton { width: width; height: 12px; border-radius: 6px; }
+        }
+    }
+}
+
+// Lies over a spoiler's blurred picture until it's clicked.
+export component SpoilerCover inherits Rectangle {
+    background: #00000059;
+    Rectangle {
+        width: label.preferred-width + 24px; height: 28px; border-radius: 14px; background: #000000b3;
+        label := Text { text: "SPOILER"; color: #ffffff; font-size: 13px; font-weight: 800; letter-spacing: 0.5px; vertical-alignment: center; }
+    }
+}
+
+// One choice in a menu, with a check beside the current one.
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> checked;
+    /// A destructive choice, such as deleting: drawn in red.
+    in property <bool> danger;
+    callback clicked;
+    height: 32px;
+    border-radius: 4px;
+    background: pointer.has-hover ? (root.danger ? Theme.danger.with-alpha(0.16) : Theme.active) : transparent;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 8px;
+        Image {
+            source: root.checked ? @image-url("icons/check.svg") : root.icon;
+            width: 16px; image-fit: contain;
+            colorize: root.checked ? Theme.accent : root.danger ? Theme.danger : pointer.has-hover ? Theme.text : Theme.muted;
+        }
+        Text {
+            text: root.text; color: root.danger ? Theme.danger : root.checked || pointer.has-hover ? Theme.text : Theme.secondary;
+            font-size: 15px; font-weight: root.checked ? 700 : 400;
+            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    }
+}
+
+// The menu behind a toggle's caret: its devices, anything placed inside, then
+// a way into the full settings.
+export component DeviceMenu inherits Rectangle {
+    in property <string> heading;
+    in property <[string]> devices;
+    in property <int> current;
+    in property <string> empty;
+    callback select(int);
+    callback settings;
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    VerticalLayout {
+        padding: 6px; spacing: 6px;
+        HorizontalLayout {
+            padding-left: 8px; padding-top: 4px;
+            Text { text: root.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+        }
+        if root.devices.length > 0: ScrollView {
+            // Five devices before the list scrolls.
+            height: min(5, root.devices.length) * 32px;
+            VerticalLayout {
+                for device[index] in root.devices: MenuItem {
+                    text: device; checked: index == root.current;
+                    clicked => { root.select(index); }
+                }
+            }
+        }
+        if root.devices.length == 0: HorizontalLayout {
+            padding-left: 8px; padding-right: 8px;
+            Label { text: root.empty; }
+        }
+        @children
+        Rectangle { height: 1px; background: Theme.line; }
+        MenuItem { text: "Voice settings"; icon: @image-url("icons/settings.svg"); clicked => { root.settings(); } }
+    }
+}
+
+// How loud someone sounds, from 0% to 200% as Discord allows: a marigold fill
+// up to the value over a mark at 100%, which a drag snaps to nearby. Dragging
+// reports each step through `changed` and the last through `committed`; the
+// arrow keys move 5% at a time.
+export component VolumeSlider inherits Rectangle {
+    in property <string> label;
+    in-out property <int> value: 100;
+    callback changed(int);
+    callback committed(int);
+    height: column.preferred-height;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 200;
+    accessible-value-step: 5;
+    accessible-action-increment => { root.step(5); }
+    accessible-action-decrement => { root.step(-5); }
+    forward-focus: focus;
+    function set(value: int) {
+        let clamped = max(0, min(200, value));
+        if clamped != root.value {
+            root.value = clamped;
+            root.changed(clamped);
+        }
+    }
+    function step(by: int) {
+        root.set(root.value + by);
+        root.committed(root.value);
+    }
+    function point(x: length) {
+        let value = round(max(0, min(1, x / track.width)) * 200);
+        root.set(abs(value - 100) <= 4 ? 100 : value);
+    }
+    column := VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            Text { text: root.label; color: Theme.secondary; font-size: 13px; font-weight: 600; horizontal-stretch: 1; }
+            Text { text: root.value + "%"; color: Theme.text; font-size: 13px; font-weight: 600; }
+        }
+        track := Rectangle {
+            height: 18px;
+            Rectangle { y: (parent.height - self.height) / 2; height: 4px; border-radius: 2px; background: Theme.field; }
+            Rectangle {
+                x: 0; y: (parent.height - self.height) / 2; width: parent.width * root.value / 200; height: 4px;
+                border-radius: 2px; background: Theme.accent;
+            }
+            Rectangle { x: parent.width / 2 - 1px; y: (parent.height - self.height) / 2; width: 2px; height: 10px; background: Theme.secondary; }
+            Rectangle {
+                x: parent.width * root.value / 200 - self.width / 2; y: (parent.height - self.height) / 2;
+                width: 14px; height: 14px; border-radius: 7px; background: Theme.text;
+                border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
+            }
+            touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        focus.focus();
+                        root.point(self.mouse-x);
+                    }
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.committed(root.value);
+                    }
+                }
+                moved => { if self.pressed { root.point(self.mouse-x); } }
+            }
+        }
+    }
+    focus := FocusScope {
+        width: 0; height: 0;
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow || event.text == Key.DownArrow { root.step(-5); return accept; }
+            if event.text == Key.RightArrow || event.text == Key.UpArrow { root.step(5); return accept; }
+            return reject;
+        }
+    }
+}
+
+// A header control with an icon and a short text that opens or closes a panel.
+export component HeaderToggle inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <string> label;
+    in property <bool> open;
+    callback clicked;
+    width: content.preferred-width; height: 32px;
+    border-radius: 6px;
+    background: pointer.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.quick; }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    property <color> ink: root.open || pointer.has-hover ? Theme.text : Theme.muted;
+    content := HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 6px;
+        Image { source: root.icon; width: 18px; image-fit: contain; colorize: root.ink; }
+        Text { text: root.text; color: root.ink; font-size: 14px; font-weight: 500; vertical-alignment: center; }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { Tip.text = ""; root.clicked(); }
+            changed has-hover => {
+                if self.has-hover {
+                    Tip.text = root.label;
+                    Tip.side = 2;
+                    Tip.x = root.absolute-position.x + root.width / 2;
+                    Tip.y = root.absolute-position.y + root.height;
+                } else if Tip.text == root.label {
+                    Tip.text = "";
+                }
+            }
+        }
+    }
+}
+
+// A dismissible message that applies to the whole window, such as a renderer fallback.
+export component Banner inherits Rectangle {
+    in-out property <string> text;
+    callback dismissed;
+    min-height: banner-content.preferred-height; vertical-stretch: 0; background: Theme.raised;
+    banner-content := HorizontalLayout {
+        padding-left: 16px; padding-right: 8px; padding-top: 6px; padding-bottom: 6px; spacing: 12px;
+        Image { source: @image-url("icons/triangle-alert.svg"); width: 18px; image-fit: contain; colorize: Theme.accent; }
+        Text { text: root.text; color: Theme.text; font-size: 15px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+        Middle { ActionButton { text: "Dismiss"; ghost: true; small: true; clicked => { root.dismissed(); } } }
+    }
+}

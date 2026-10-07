@@ -1,0 +1,574 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Tip, Middle, Label } from "theme.slint";
+import { ActionButton, IconButton, Avatar, Picture, Skeleton, SpoilerCover, MenuItem, TextField } from "controls.slint";
+
+/// An emoji: what shows, its name, and the reaction it adds, which for a custom
+/// emoji is Discord's `name:id`.
+export struct EmojiCell { glyph: string, name: string, key: string }
+/// A heading, or up to a row's worth of emoji, in the emoji picker.
+export struct EmojiRow { heading: string, cells: [EmojiCell] }
+
+// An emoji to react with, named by a tooltip unless it reports hovering instead.
+export component EmojiButton inherits Rectangle {
+    in property <EmojiCell> emoji;
+    in property <string> font;
+    in property <length> size: 32px;
+    in property <length> glyph: 20px;
+    in property <color> fill: transparent;
+    in property <bool> tip: true;
+    callback clicked;
+    callback hovered;
+    width: root.size; height: root.size;
+    border-radius: 6px;
+    background: pointer.has-hover ? #ffffff1f : root.fill;
+    animate background { duration: Theme.quick; }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: "React with " + root.emoji.name;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    Text {
+        text: root.emoji.glyph; font-family: root.font; font-size: root.glyph;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { Tip.text = ""; root.clicked(); }
+            changed has-hover => {
+                if self.has-hover {
+                    root.hovered();
+                    if root.tip {
+                        Tip.text = root.emoji.name;
+                        Tip.side = 0;
+                        Tip.x = root.absolute-position.x + root.width / 2;
+                        Tip.y = root.absolute-position.y;
+                    }
+                } else if Tip.text == root.emoji.name {
+                    Tip.text = "";
+                }
+            }
+        }
+    }
+}
+
+// A reaction under a message: the emoji in a color emoji font, then the count.
+export component ReactionToggle inherits Rectangle {
+    in property <string> key;
+    in property <string> label: root.key;
+    in property <int> count;
+    in property <bool> mine;
+    in property <bool> enabled;
+    in property <string> emoji-font;
+    callback clicked;
+    min-width: chip.preferred-width; height: 28px; border-radius: 8px;
+    background: root.mine ? Theme.accent-soft : Theme.raised;
+    border-width: 1px;
+    border-color: root.mine ? Theme.accent.with-alpha(0.7) : pointer.has-hover && root.enabled ? #ffffff26 : transparent;
+    accessible-role: button;
+    accessible-label: root.key + ", " + root.count + (root.mine ? ", including you. Remove your reaction" : ". Add this reaction");
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    chip := HorizontalLayout {
+        padding-left: 8px; padding-right: 9px; spacing: 6px;
+        Text { text: root.label; font-family: root.emoji-font; font-size: 16px; vertical-alignment: center; }
+        Text { text: root.count; color: root.mine ? Theme.accent : Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+    }
+    pointer := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+}
+
+/// A reaction: `key` names it, and `label` shows it, with a custom emoji's glyph once it has one.
+export struct ReactionChip { key: string, label: string, count: int, mine: bool }
+/// An image in a message's gallery, placed in pixels; `index` is its place
+/// among the message's attachments. A spoiler's picture shows blurred, under a
+/// SPOILER label, until clicked.
+/// An animation's `frames` show in turn, each for its `delays` in milliseconds.
+export struct ImageCell {
+    index: int, name: string, image: image, x: int, y: int, width: int, height: int, spoiler: bool,
+    frames: [image], delays: [int],
+    /// On its way: a skeleton shows in its place, at the size it will take.
+    loading: bool,
+}
+/// A file, or an image without a preview, as a card.
+export struct FileCell { index: int, name: string, detail: string }
+/// An embed's field, and a row of them: inline fields share a row.
+export struct EmbedField { name: styled-text, value: styled-text }
+export struct EmbedFieldRow { fields: [EmbedField] }
+/// A Discord link preview or bot card. `title` links to the page when
+/// there's one. A video's pictures are its poster, which opens `url`.
+export struct EmbedCard {
+    color: color, has-color: bool,
+    provider: styled-text, has-provider: bool, author: styled-text, has-author: bool, title: styled-text, has-title: bool, url: string,
+    description: styled-text, has-description: bool,
+    field-rows: [EmbedFieldRow],
+    footer: styled-text, has-footer: bool,
+    /// The small picture beside the text; `thumbnail-index` is its place among the message's attachments.
+    thumbnail: image, thumbnail-index: int, has-thumbnail: bool, thumbnail-loading: bool,
+    images: [ImageCell], gallery-width: int, gallery-height: int,
+    video: bool,
+}
+export struct MessageRow {
+    id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
+    /// The author's Discord role colour, when they have one.
+    color: color, has-color: bool,
+    /// Starts a group: shows the avatar and author. Later messages from the same person follow compactly.
+    first: bool,
+    /// A date divider above this message, when it starts a new day.
+    day: string,
+    /// The body, and the author and time as selectable text: a selection runs across messages
+    /// through all three. A body of nothing but emoji shows them large.
+    jumbo: bool,
+    styled: styled-text, author-styled: styled-text, time-styled: styled-text, edited: bool, deleted: bool,
+    reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, reply-picture: image, has-reply: bool,
+    /// The original message's item; clicking the reply jumps to it.
+    reply-item: string,
+    reactions: [ReactionChip],
+    /// Images with previews, laid out in a gallery of this size; other
+    /// attachments show as file cards.
+    images: [ImageCell], gallery-width: int, gallery-height: int,
+    /// Discord stickers, drawn on their own at their size.
+    stickers: [ImageCell],
+    files: [FileCell],
+    embeds: [EmbedCard],
+    /// Says a card is hidden, for a message that is only one, with link previews off.
+    hidden-card: string,
+    delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
+    can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
+}
+
+// The emoji picker: a search, the emoji in rows under their headings, and the
+// hovered one with its name. Escape closes it.
+export component EmojiPicker inherits Rectangle {
+    /// The grid for `emoji-query`, refreshed through emoji-search.
+    in property <[EmojiRow]> emoji-rows;
+    in-out property <string> emoji-query;
+    in-out property <EmojiCell> emoji-hover;
+    in property <string> emoji-font;
+    /// What the emoji is for: a message's item, or "talk:status" for the custom status.
+    in property <string> react-item;
+    callback emoji-search(string);
+    callback pick(EmojiCell);
+    callback close-picker;
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 10px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    clip: true;
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.close-picker(); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            spacing: 0px;
+            HorizontalLayout {
+                padding: 10px; padding-bottom: 6px;
+                // The picker's contents are created each time it opens.
+                picker-field := TextField {
+                    init => { self.focus-input(); }
+                    min-height: 34px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                    placeholder: "Find an emoji"; label: "Find an emoji"; text <=> root.emoji-query;
+                    edited(text) => { root.emoji-search(text); }
+                    // Enter picks the first match.
+                    accepted => {
+                        if root.emoji-query != "" && root.emoji-rows.length > 0 && root.emoji-rows[0].cells.length > 0 {
+                            root.pick(root.emoji-rows[0].cells[0]);
+                        }
+                    }
+                }
+            }
+            ListView {
+                vertical-stretch: 1;
+                for row in root.emoji-rows: VerticalLayout {
+                    padding-left: 8px; padding-right: 8px;
+                    if row.heading != "": HorizontalLayout {
+                        padding-left: 4px; height: 30px;
+                        Text { text: row.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: bottom; }
+                    }
+                    if row.cells.length > 0: HorizontalLayout {
+                        alignment: start; padding-top: 2px;
+                        for cell in row.cells: EmojiButton {
+                            emoji: cell; font: root.emoji-font; size: 40px; glyph: 26px; tip: false;
+                            hovered => { root.emoji-hover = cell; }
+                            clicked => { root.pick(cell); }
+                        }
+                    }
+                }
+            }
+            if root.emoji-rows.length == 0: HorizontalLayout {
+                padding: 16px; vertical-stretch: 1;
+                Label { text: "No emoji match \"" + root.emoji-query + "\"."; horizontal-alignment: center; }
+            }
+            // The hovered emoji, larger, with its name.
+            Rectangle {
+                height: 48px; background: Theme.panel;
+                HorizontalLayout {
+                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                    if root.emoji-hover.glyph != "": Text { text: root.emoji-hover.glyph; font-family: root.emoji-font; font-size: 26px; vertical-alignment: center; }
+                    Text {
+                        text: root.emoji-hover.glyph != "" ? root.emoji-hover.name
+                            : root.react-item == "talk:status" ? "Pick an emoji for your status." : "Pick an emoji to react with.";
+                        color: root.emoji-hover.glyph != "" ? Theme.text : Theme.muted; font-size: 15px;
+                        font-weight: root.emoji-hover.glyph != "" ? 700 : 400;
+                        vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A message's actions, from its hover bar's "More" button or a right click:
+// frequent reactions, then what can be done with it.
+export component MessageMenu inherits Rectangle {
+    in property <MessageRow> menu-message;
+    in property <bool> menu-can-react;
+    /// The reactions this device uses most.
+    in property <[EmojiCell]> menu-reactions;
+    in property <string> emoji-font;
+    in property <bool> composer-enabled;
+    in property <bool> trusted;
+    in property <bool> preview;
+    out property <length> content-height: menu-content.preferred-height;
+    callback react(string, string);
+    callback open-picker(string);
+    callback edit(string);
+    callback reply(string);
+    callback start-forward(string);
+    callback copy-text(string);
+    callback request-delete(string);
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    menu-content := VerticalLayout {
+        padding: 6px; spacing: 2px;
+        if root.menu-can-react: HorizontalLayout {
+            spacing: 4px; padding-bottom: 4px;
+            for cell in root.menu-reactions: EmojiButton {
+                emoji: cell; font: root.emoji-font; size: 50px; height: 40px; glyph: 22px; fill: Theme.field;
+                clicked => { root.react(root.menu-message.item, cell.key); }
+            }
+        }
+        if root.menu-can-react: MenuItem {
+            text: "Add reaction"; icon: @image-url("icons/smile-plus.svg");
+            clicked => { root.open-picker(root.menu-message.item); }
+        }
+        if root.menu-message.can-edit && root.composer-enabled: MenuItem {
+            text: "Edit message"; icon: @image-url("icons/pencil.svg");
+            clicked => { root.edit(root.menu-message.item); }
+        }
+        if root.menu-message.can-reply && root.composer-enabled: MenuItem {
+            text: "Reply"; icon: @image-url("icons/reply.svg");
+            clicked => { root.reply(root.menu-message.item); }
+        }
+        if root.menu-message.can-forward && (root.trusted || root.preview): MenuItem {
+            text: "Forward"; icon: @image-url("icons/forward.svg");
+            clicked => { root.start-forward(root.menu-message.item); }
+        }
+        if root.menu-message.body != "": MenuItem {
+            text: "Copy text"; icon: @image-url("icons/copy.svg");
+            clicked => { root.copy-text(root.menu-message.body); }
+        }
+        if root.menu-message.can-delete && root.composer-enabled: Rectangle { height: 1px; background: Theme.line; }
+        if root.menu-message.can-delete && root.composer-enabled: MenuItem {
+            text: "Delete message"; icon: @image-url("icons/trash-2.svg"); danger: true;
+            clicked => { root.request-delete(root.menu-message.item); }
+        }
+    }
+}
+
+// A message's images with previews, laid out as a gallery. Clicking an image
+// opens it large.
+export component MessageGallery inherits HorizontalLayout {
+    in property <MessageRow> message;
+    in property <string> active-item;
+    in property <bool> preview;
+    callback reveal-attachment(string, int);
+    callback view-image(string, int);
+    callback save-attachment(string, int);
+    padding-top: 4px;
+    Rectangle {
+        width: root.message.gallery-width * 1px; height: root.message.gallery-height * 1px;
+        for cell in root.message.images: Rectangle {
+            x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
+            border-radius: 8px; clip: true; background: Theme.sunken;
+            if cell.loading: Skeleton { width: parent.width; height: parent.height; }
+            if !cell.loading: Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
+            if cell.spoiler: SpoilerCover {}
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    if cell.spoiler { root.reveal-attachment(root.message.item, cell.index); } else { root.view-image(root.message.item, cell.index); }
+                }
+            }
+            if root.active-item == root.message.item && !root.preview && root.message.delivery == "" && !cell.spoiler: Rectangle {
+                x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
+                IconButton {
+                    icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: Theme.text;
+                    clicked => { root.save-attachment(root.message.item, cell.index); }
+                }
+            }
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// A message's Discord stickers, drawn on their own at their size.
+export component MessageStickers inherits HorizontalLayout {
+    in property <[ImageCell]> stickers;
+    padding-top: 4px; spacing: 8px;
+    for cell in root.stickers: Rectangle {
+        width: cell.width * 1px; height: cell.height * 1px;
+        if cell.loading: Skeleton { width: parent.width; height: parent.height; border-radius: 12px; }
+        if !cell.loading: Picture {
+            still: cell.image; frames: cell.frames; delays: cell.delays;
+            width: parent.width; height: parent.height; image-fit: contain;
+            accessible-role: image; accessible-label: "Sticker: " + cell.name;
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// A file, or an image without a preview, as a card with a way to save it.
+export component FileCard inherits HorizontalLayout {
+    in property <FileCell> file;
+    in property <bool> preview;
+    /// The message's delivery state, empty once it's sent.
+    in property <string> delivery;
+    callback save;
+    padding-top: 4px;
+    Rectangle {
+        min-height: file-card.preferred-height; max-width: 432px; horizontal-stretch: 100;
+        background: Theme.sidebar; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+        file-card := HorizontalLayout {
+            padding: 12px; padding-right: 8px; spacing: 12px;
+            Image { source: @image-url("icons/file.svg"); width: 30px; image-fit: contain; colorize: Theme.accent; }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 1;
+                Text { text: root.file.name; color: Theme.text; font-weight: 500; overflow: elide; }
+                if root.file.detail != "": Label { text: root.file.detail; }
+            }
+            IconButton {
+                icon: @image-url("icons/download.svg"); label: "Save " + root.file.name;
+                enabled: !root.preview && root.delivery == "";
+                clicked => { root.save(); }
+            }
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// Link previews and bot cards, behind a bar of their colour.
+export component EmbedView inherits HorizontalLayout {
+    in property <EmbedCard> embed;
+    /// The message's item, which its pictures open by.
+    in property <string> item;
+    callback open-link(string);
+    callback reveal-attachment(string, int);
+    callback view-image(string, int);
+    padding-top: 4px;
+    Rectangle {
+        min-height: embed-body.preferred-height; max-width: 432px; horizontal-stretch: 100;
+        background: Theme.sidebar; border-radius: 4px; clip: true;
+        Rectangle { x: 0px; width: 4px; background: root.embed.has-color ? root.embed.color : Theme.edge; }
+        embed-body := HorizontalLayout {
+            padding: 12px; padding-left: 16px; padding-right: 16px; spacing: 16px;
+            VerticalLayout {
+                spacing: 8px; horizontal-stretch: 1; alignment: start;
+                if root.embed.has-provider: StyledText { text: root.embed.provider; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; max-lines: 1; }
+                if root.embed.has-author: StyledText { text: root.embed.author; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
+                if root.embed.has-title: StyledText {
+                    text: root.embed.title; default-color: Theme.text; link-color: Theme.link; default-font-size: 16px;
+                    link-clicked(link) => { root.open-link(link); }
+                }
+                if root.embed.has-description: StyledText {
+                    text: root.embed.description; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                    link-clicked(link) => { root.open-link(link); }
+                }
+                for row in root.embed.field-rows: HorizontalLayout {
+                    spacing: 8px;
+                    for field in row.fields: VerticalLayout {
+                        spacing: 2px; horizontal-stretch: 1;
+                        StyledText { text: field.name; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
+                        StyledText {
+                            text: field.value; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                            link-clicked(link) => { root.open-link(link); }
+                        }
+                    }
+                }
+                // A video's poster opens the video; other pictures open in the viewer.
+                if root.embed.images.length > 0: HorizontalLayout {
+                    Rectangle {
+                        width: root.embed.gallery-width * 1px; height: root.embed.gallery-height * 1px;
+                        for cell in root.embed.images: Rectangle {
+                            x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
+                            border-radius: 4px; clip: true; background: Theme.sunken;
+                            if cell.loading: Skeleton { width: parent.width; height: parent.height; }
+                            if !cell.loading: Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
+                            if cell.spoiler: SpoilerCover {}
+                            if root.embed.video && !cell.spoiler: Rectangle {
+                                width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
+                                Path {
+                                    width: 18px; height: 20px; x: 17px; y: 14px;
+                                    commands: "M 0 0 L 18 10 L 0 20 Z"; fill: #ffffff;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => {
+                                    if cell.spoiler { root.reveal-attachment(root.item, cell.index); }
+                                    else if root.embed.video { root.open-link(root.embed.url); } else { root.view-image(root.item, cell.index); }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.embed.has-footer: StyledText { text: root.embed.footer; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; }
+            }
+            if root.embed.has-thumbnail: VerticalLayout {
+                alignment: start;
+                Rectangle {
+                    width: 80px; height: 80px; border-radius: 4px; clip: true;
+                    if root.embed.thumbnail-loading: Skeleton { width: parent.width; height: parent.height; }
+                    Image { source: root.embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Thumbnail"; }
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.view-image(root.item, root.embed.thumbnail-index); }
+                    }
+                }
+            }
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// What to do when no conversation is chosen.
+export component NoConversation inherits VerticalLayout {
+    padding: 32px; spacing: 10px; alignment: center;
+    HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            width: 80px; height: 80px; border-radius: 40px; background: Theme.raised;
+            Image { source: @image-url("icons/message-circle.svg"); width: 36px; height: 36px; colorize: Theme.secondary; }
+        }
+    }
+    Text { text: "Pick a conversation"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+    Text { text: "Choose a DM or a server channel on the left."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
+}
+
+// The opening of a conversation without messages yet.
+export component ConversationStart inherits VerticalLayout {
+    in property <bool> room-selected;
+    in property <bool> room-ready;
+    in property <bool> room-direct;
+    in property <string> room-name;
+    in property <image> room-icon;
+    in property <string> room-initial;
+    in property <color> room-tint;
+    in property <image> room-picture;
+    padding: 24px; spacing: 8px; alignment: end;
+    if root.room-selected && root.room-ready && root.room-direct: Avatar { size: 72px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; }
+    if root.room-selected && root.room-ready && !root.room-direct: Rectangle {
+        width: 68px; height: 68px; border-radius: 34px; background: Theme.raised;
+        Image { source: root.room-icon; width: 36px; height: 36px; colorize: Theme.text; }
+    }
+    Text {
+        text: !root.room-ready ? "Loading conversation..." : root.room-direct ? root.room-name : "Welcome to #" + root.room-name;
+        color: Theme.text; font-size: root.room-ready ? 28px : 18px; font-weight: 900; wrap: word-wrap;
+    }
+    if root.room-ready: Text {
+        text: root.room-direct ? "This is the beginning of your messages with " + root.room-name + "."
+            : "This is the start of #" + root.room-name + ". No messages here yet.";
+        color: Theme.secondary; wrap: word-wrap;
+    }
+}
+
+// An image shown large over everything. Arrow keys or the side buttons
+// step through the message's images; Escape, the close button or a click
+// outside the image closes it.
+export component ImageViewer inherits Rectangle {
+    in property <image> viewer-image;
+    in property <[image]> viewer-frames;
+    in property <[int]> viewer-delays;
+    /// The image's full size in pixels.
+    in property <int> viewer-width;
+    in property <int> viewer-height;
+    in property <string> viewer-name;
+    /// Such as "2 / 3"; empty for a message's only image.
+    in property <string> viewer-position;
+    /// While the full image loads, or why it can't show.
+    in property <string> viewer-note;
+    in property <string> viewer-item;
+    in property <int> viewer-index;
+    in property <bool> preview;
+    callback close-image;
+    callback step-image(int);
+    callback save-attachment(string, int);
+    background: #000000e6;
+    accessible-role: groupbox;
+    accessible-label: "Image viewer";
+    TouchArea { clicked => { root.close-image(); } }
+    viewer-keys := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.close-image(); return accept; }
+            if event.text == Key.LeftArrow && root.viewer-position != "" { root.step-image(-1); return accept; }
+            if event.text == Key.RightArrow && root.viewer-position != "" { root.step-image(1); return accept; }
+            return reject;
+        }
+        // Shown at full size, shrunk to fit beside the bars and arrows.
+        property <length> room-width: root.width - 160px;
+        property <length> room-height: root.height - 128px;
+        property <length> natural-width: max(1, root.viewer-width) * 1px;
+        property <length> natural-height: max(1, root.viewer-height) * 1px;
+        property <float> scale: min(1, min(self.room-width / self.natural-width, self.room-height / self.natural-height));
+        Picture {
+            width: viewer-keys.natural-width * viewer-keys.scale; height: viewer-keys.natural-height * viewer-keys.scale;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            still: root.viewer-image; frames: root.viewer-frames; delays: root.viewer-delays; image-fit: contain;
+            accessible-role: image; accessible-label: root.viewer-name;
+            TouchArea { }
+        }
+        HorizontalLayout {
+            y: 0px; height: 64px; padding-left: 20px; padding-right: 12px; spacing: 8px;
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 1;
+                Text { text: root.viewer-name; color: #ffffff; font-size: 15px; font-weight: 700; overflow: elide; }
+                if root.viewer-position != "": Text { text: root.viewer-position; color: #ffffffb3; font-size: 13px; }
+            }
+            if !root.preview: Middle {
+                IconButton {
+                    icon: @image-url("icons/download.svg"); label: "Save " + root.viewer-name; tint: #ffffff;
+                    clicked => { root.save-attachment(root.viewer-item, root.viewer-index); }
+                }
+            }
+            Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; tint: #ffffff; clicked => { root.close-image(); } } }
+        }
+        if root.viewer-position != "": Rectangle {
+            x: 20px; y: (parent.height - self.height) / 2; width: 48px; height: 48px; border-radius: 24px;
+            background: previous-touch.has-hover ? #ffffff33 : #ffffff1a;
+            Image { source: @image-url("icons/chevron-left.svg"); width: 28px; height: 28px; colorize: #ffffff; }
+            previous-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.step-image(-1); } }
+            accessible-role: button; accessible-label: "Previous image";
+            accessible-action-default => { root.step-image(-1); }
+        }
+        if root.viewer-position != "": Rectangle {
+            x: parent.width - self.width - 20px; y: (parent.height - self.height) / 2; width: 48px; height: 48px; border-radius: 24px;
+            background: next-touch.has-hover ? #ffffff33 : #ffffff1a;
+            Image { source: @image-url("icons/chevron-right.svg"); width: 28px; height: 28px; colorize: #ffffff; }
+            next-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.step-image(1); } }
+            accessible-role: button; accessible-label: "Next image";
+            accessible-action-default => { root.step-image(1); }
+        }
+        if root.viewer-note != "": Rectangle {
+            x: (parent.width - self.width) / 2; y: parent.height - self.height - 20px;
+            width: viewer-note-text.preferred-width + 24px; height: 32px; border-radius: 6px; background: #000000b3;
+            viewer-note-text := Text { text: root.viewer-note; color: #ffffffd9; font-size: 13px; }
+        }
+    }
+}
