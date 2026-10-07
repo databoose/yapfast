@@ -760,6 +760,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             adapter.layout.collapsed.remove(&server);
         }
         adapter.layout.write(&adapter.root);
+        // What the sidebar was built from leaves the layout out.
+        adapter.sidebar = None;
         adapter.show_sidebar(&window);
     });
     let state = adapter.clone();

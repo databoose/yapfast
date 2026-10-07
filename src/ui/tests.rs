@@ -1268,3 +1268,32 @@ fn collapsed_categories_keep_the_open_unread_and_occupied_channels() {
         ]
     );
 }
+
+#[test]
+fn clicking_a_category_collapses_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    let server = adapter.borrow().app.state.servers[0].id.clone();
+    window.invoke_navigate_server(server.into());
+    let heading = window
+        .get_rooms()
+        .iter()
+        .map(|row| row.heading)
+        .find(|heading| !heading.is_empty())
+        .expect("the preview server has categories");
+    assert!(!window.get_rooms().iter().any(|row| row.collapsed));
+    // Nothing the app keeps changes, only how the sidebar shows it.
+    window.invoke_toggle_category(heading.clone());
+    assert!(window.get_rooms().iter().any(|row| row.collapsed));
+    window.invoke_toggle_category(heading);
+    assert!(!window.get_rooms().iter().any(|row| row.collapsed));
+}
