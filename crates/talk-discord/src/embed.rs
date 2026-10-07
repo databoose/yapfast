@@ -16,7 +16,7 @@ const THUMBNAIL_SIZE: u64 = 160;
 
 /// An embed as a card. Its pictures are among the message's attachments,
 /// placed with [`Shown::Embed`] and [`Shown::Thumbnail`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Embed {
     /// The RGB colour of the bar down its side.
     pub color: Option<u32>,
@@ -36,7 +36,7 @@ pub struct Embed {
     pub video: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Field {
     pub name: String,
     /// Discord Markdown.
@@ -80,6 +80,7 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
         preview_url: Some(preview_url),
         view_url: scaled_url(value, VIEW_WIDTH, VIEW_HEIGHT),
         shown,
+        spoiler: false,
     })
 }
 

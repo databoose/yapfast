@@ -2,7 +2,11 @@
 #![recursion_limit = "256"]
 
 #[cfg(feature = "desktop")]
+mod custom_emoji;
+#[cfg(feature = "desktop")]
 mod emoji;
+#[cfg(feature = "desktop")]
+mod emoji_font;
 #[cfg(feature = "desktop")]
 mod graphics;
 #[cfg(feature = "desktop")]
@@ -11,6 +15,8 @@ mod notify;
 mod paste;
 #[cfg(feature = "desktop")]
 mod ui;
+#[cfg(feature = "desktop")]
+mod zoom;
 
 use anyhow::{Context, Result, bail};
 use talk_core::{cli, logging, runtime::BackgroundRuntime};
@@ -130,6 +136,8 @@ fn launch(
         _ => graphics::Renderer::Software,
     };
     let plan = graphics::plan(renderer, std::env::var(GPU_FALLBACK_REASON).ok());
+    #[cfg(feature = "discord")]
+    talk_core::keep_discord_files(&root);
     match ui::run(runtime, root, preview, plan)? {
         ui::Exit::Closed => Ok(()),
         ui::Exit::UseSoftware(reason) => relaunch_with_software(arguments, &reason),

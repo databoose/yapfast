@@ -2,15 +2,17 @@
 //! server, then run with TALK_DISCORD_TEST_SERVER pointing at it:
 //! `cargo test -p talk-discord --test fake_server -- --ignored`.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use talk_discord::{
     client,
     member_list::Presence,
     message::Shown,
     ready::PRIVATE,
+    remote_auth::{self, Step},
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
+    settings::CustomStatus,
     stream,
     stream_connection::{Frame, Link, SEND_CODEC, Sound, StreamReceiver, StreamSender},
     token,
@@ -111,22 +113,47 @@ fn stream_codec(server: &str, codec: &str) {
 
 /// Posts `body` to one of the fake's controls.
 fn post_control(server: &str, path: &str, body: &str) {
+    control(server, "POST", path, body);
+}
+
+/// Asks one of the fake's controls, and returns its answer's body.
+fn control(server: &str, method: &str, path: &str, body: &str) -> String {
     use std::io::{Read, Write};
     let address = server.trim_start_matches("http://");
     let mut connection = std::net::TcpStream::connect(address).unwrap();
     write!(
         connection,
-        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();
     let mut answer = String::new();
     connection.read_to_string(&mut answer).unwrap();
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    answer
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default()
+}
+
+/// The presence Alice's session last sent the fake.
+async fn presence_where(server: &str, check: impl Fn(&serde_json::Value) -> bool) {
+    timeout(WAIT, async {
+        loop {
+            let presence = serde_json::from_str(&control(server, "GET", "/_control/presence", ""))
+                .unwrap_or_default();
+            if check(&presence) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the presence");
 }
 
 /// The first snapshot that passes `check`.
-async fn snapshot_where(discord: &Discord, check: impl Fn(&Snapshot) -> bool) -> Snapshot {
+async fn snapshot_where(discord: &Discord, check: impl Fn(&Snapshot) -> bool) -> Arc<Snapshot> {
     let mut snapshots = discord.snapshots();
     timeout(WAIT, async {
         loop {
@@ -254,6 +281,26 @@ async fn talks_to_the_fake_server() {
     assert!(
         members[2].avatar.contains("/guilds/"),
         "Carol's server avatar"
+    );
+
+    // Lounge has the same readers as #general, so it shares the list
+    // without asking Discord again, and so does going back.
+    discord.view(&guild, Some(&lounge));
+    let shared = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == lounge => Some(members),
+        _ => None,
+    })
+    .await;
+    assert_eq!(shared, members);
+    discord.view(&guild, Some(&general));
+    live_where(&mut live, |event| match event {
+        Live::Members { channel, .. } if channel == general => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        self::control(server, "GET", "/_control/list-requests", ""),
+        "1"
     );
     let account = snapshot.account.as_ref().expect("the account");
     assert_eq!(account.name, "Alice");
@@ -595,8 +642,10 @@ async fn talks_to_the_fake_server() {
     );
     assert_eq!(in_server.roles.len(), 1, "Bob is a Mod");
     assert!(in_server.joined.is_some());
-    assert_eq!(in_server.mutual_servers, [guild.as_str()]);
-    assert_eq!(in_server.mutual_friends, ["Carol"]);
+    assert_eq!(in_server.mutual_servers.len(), 1);
+    assert_eq!(in_server.mutual_servers[0].id, guild);
+    assert_eq!(in_server.mutual_friends.len(), 1);
+    assert_eq!(in_server.mutual_friends[0].name, "Carol");
     let own = discord.profile(PRIVATE, &bob).await.unwrap();
     assert!(own.bio.is_some_and(|bio| bio.starts_with("Plays bass")));
     assert!(own.roles.is_empty() && own.joined.is_none());
@@ -945,8 +994,9 @@ async fn talks_to_the_fake_server() {
     })
     .await
     .conversations
-    .into_iter()
+    .iter()
     .find(|found| found.name == "Dave")
+    .cloned()
     .unwrap();
     let (dave, dave_user) = (dave.id, dave.person.unwrap());
     let assigned = discord.join(PRIVATE, &dave).await.unwrap();
@@ -991,4 +1041,134 @@ async fn talks_to_the_fake_server() {
         .clone();
     discord.remove_friend_request(&erin).await.unwrap();
     snapshot_where(&discord, |snapshot| snapshot.friend_requests.is_empty()).await;
+
+    // Friend requests by username: to someone unknown, to Frank, who takes
+    // none, and to Erin.
+    let refused = |name: &'static str| {
+        let discord = &discord;
+        async move {
+            discord
+                .add_friend_by_username(name)
+                .await
+                .expect_err("refused")
+                .to_string()
+        }
+    };
+    assert_eq!(
+        refused("nobody").await,
+        "Discord has nobody by that username."
+    );
+    assert_eq!(
+        refused("frank_deals").await,
+        "They don't take friend requests from people they don't know."
+    );
+    assert_eq!(refused("bob").await, "You're already friends.");
+    discord.add_friend_by_username("erin").await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        requested(snapshot) == [("Erin".to_owned(), false)]
+    })
+    .await;
+
+    // Alice's custom status from her settings shows from this session, and
+    // changing it changes what the session shows.
+    let custom = snapshot_where(&discord, |snapshot| snapshot.custom_status.is_some())
+        .await
+        .custom_status
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (custom.text.as_str(), custom.emoji_name.as_deref()),
+        ("Testing Talk", Some("🧪"))
+    );
+    presence_where(server, |presence| {
+        presence["activities"][0]["state"] == "Testing Talk"
+    })
+    .await;
+    let away = CustomStatus {
+        text: "Fixing the bridge".into(),
+        emoji_name: Some("🔧".into()),
+        ..Default::default()
+    };
+    discord.set_custom_status(Some(away.clone())).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot.custom_status.as_ref() == Some(&away)
+    })
+    .await;
+    presence_where(server, |presence| {
+        presence["activities"][0]["emoji"]["name"] == "🔧"
+    })
+    .await;
+    discord.set_custom_status(None).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.custom_status.is_none()).await;
+    presence_where(server, |presence| {
+        presence["activities"] == serde_json::json!([])
+    })
+    .await;
+
+    // Discord asks the gateway to reconnect: the session resumes, without a
+    // new identify, and carries on.
+    post_control(server, "/_control/gateway-reconnect", "");
+    timeout(WAIT, async {
+        while self::control(server, "GET", "/_control/sessions", "")
+            != r#"{"identifies":1,"resumes":1}"#
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the session didn't resume");
+    post_control(server, "/_control/typing", "");
+    live_where(&mut live, |event| {
+        matches!(event, Live::Typing { .. }).then_some(())
+    })
+    .await;
+    assert_eq!(discord.snapshots().borrow().status, Status::Online);
+
+    // Linking by QR code: the code shows, Alice scans it and confirms on her
+    // phone, and the login arrives.
+    let (steps, mut shown) = tokio::sync::mpsc::unbounded_channel();
+    let linking = tokio::spawn(remote_auth::link(move |step| {
+        let _ = steps.send(step);
+    }));
+    let Step::Code(code) = next_step(&mut shown).await else {
+        panic!("no code")
+    };
+    assert!(code.starts_with("https://discord.com/ra/"), "{code}");
+    post_control(server, "/_control/qr-scan", "");
+    assert!(matches!(next_step(&mut shown).await, Step::Scanned { name, .. } if name == "alice"));
+    post_control(server, "/_control/qr-confirm", "");
+    let login = timeout(WAIT, linking).await.unwrap().unwrap().unwrap();
+    assert_eq!(login, client::TEST_TOKEN);
+
+    // Saying no on the phone stops linking.
+    let (steps, mut shown) = tokio::sync::mpsc::unbounded_channel();
+    let linking = tokio::spawn(remote_auth::link(move |step| {
+        let _ = steps.send(step);
+    }));
+    assert!(matches!(next_step(&mut shown).await, Step::Code(_)));
+    post_control(server, "/_control/qr-cancel", "");
+    let refused = timeout(WAIT, linking).await.unwrap().unwrap().unwrap_err();
+    assert_eq!(
+        refused.downcast_ref(),
+        Some(&remote_auth::Stopped::Cancelled)
+    );
+
+    // Talk sent back the device cookie the API set, once it had it: the API
+    // set it once, or twice if the first requests went together.
+    let cookies: serde_json::Value =
+        serde_json::from_str(&self::control(server, "GET", "/_control/cookies", "")).unwrap();
+    assert!(cookies["returned"].as_u64().unwrap() > 10, "{cookies}");
+    assert!(cookies["set"].as_u64().unwrap() <= 2, "{cookies}");
+
+    // Signing out ends the session on Discord.
+    discord.logout().await.unwrap();
+    assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");
+}
+
+/// What linking showed next.
+async fn next_step(shown: &mut tokio::sync::mpsc::UnboundedReceiver<Step>) -> Step {
+    timeout(WAIT, shown.recv())
+        .await
+        .expect("timed out linking")
+        .expect("linking stopped")
 }

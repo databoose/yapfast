@@ -12,14 +12,14 @@ use crate::voice;
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
 /// Larger downloads only get a file card, never an inline preview.
 pub(crate) const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
-pub(crate) const PREVIEW_WIDTH: u32 = 360;
-pub(crate) const PREVIEW_HEIGHT: u32 = 270;
+pub const PREVIEW_WIDTH: u32 = 360;
+pub const PREVIEW_HEIGHT: u32 = 270;
 /// The image viewer shows pictures up to this size, so a full-size photo
 /// costs at most about 9 MiB while it's open.
 pub const VIEW_WIDTH: u32 = 1920;
 pub const VIEW_HEIGHT: u32 = 1200;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChatRoom {
     pub id: String,
     pub name: String,
@@ -54,10 +54,26 @@ pub struct ChatRoom {
     pub avatar: Option<String>,
     /// The largest file a message here may carry, in bytes.
     pub upload_limit: u64,
+    /// A one-to-one Discord DM's other person: whether they're around, when
+    /// Discord says, and their custom status or what they're doing.
+    pub presence: Option<Presence>,
+    pub activity: Option<String>,
 }
 
 /// The most files one message carries, as Discord allows.
 pub const MAX_FILES: usize = 10;
+
+/// A Discord custom status: its text and emoji, and when it clears itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomStatus {
+    pub text: String,
+    /// A Unicode emoji, or a custom emoji's name.
+    pub emoji: Option<String>,
+    /// A custom emoji's id.
+    pub emoji_id: Option<String>,
+    /// Unix milliseconds when it clears itself; none when it stays.
+    pub expires_at_ms: Option<u64>,
+}
 
 /// A Discord friend request waiting for an answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +87,20 @@ pub struct FriendRequest {
     pub incoming: bool,
     /// Discord took it for spam.
     pub spam: bool,
+}
+
+/// A Discord friend, as the friends list shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Friend {
+    /// Their Discord user id.
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// Whether they're around, when Discord says, and their custom status or
+    /// what they're doing.
+    pub presence: Option<Presence>,
+    pub activity: Option<String>,
 }
 
 /// A file waiting in the composer to go with the next message.
@@ -133,6 +163,24 @@ pub fn file_size(bytes: u64) -> String {
     }
 }
 
+/// Makes `list` hold `items`, copying only those that differ from what it
+/// held there: comparing a long list costs less than copying it.
+pub fn sync_list<'a, T: Clone + PartialEq + 'a>(
+    list: &mut Vec<T>,
+    items: impl IntoIterator<Item = &'a T>,
+) {
+    let mut count = 0;
+    for item in items {
+        match list.get_mut(count) {
+            Some(held) if held == item => {}
+            Some(held) => held.clone_from(item),
+            None => list.push(item.clone()),
+        }
+        count += 1;
+    }
+    list.truncate(count);
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VoicePerson {
     pub id: String,
@@ -145,7 +193,7 @@ pub struct VoicePerson {
     pub streaming: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChatServer {
     pub id: String,
     pub name: String,
@@ -193,8 +241,34 @@ pub struct Profile {
     /// When they joined this server, as a date.
     pub joined: Option<String>,
     /// The servers and friends this account shares with them.
-    pub servers: Vec<String>,
-    pub friends: Vec<String>,
+    pub servers: Vec<ProfileServer>,
+    pub friends: Vec<ProfileFriend>,
+}
+
+/// A server a profile's person shares with this account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileServer {
+    /// As in [`ChatServer::id`].
+    pub id: String,
+    pub name: String,
+    /// The addresses of its icon and banner; see [`Command::Pictures`].
+    pub icon: Option<String>,
+    pub banner: Option<String>,
+    /// How many members it has, when known, and channels this account sees.
+    pub members: Option<u64>,
+    pub channels: usize,
+    /// The person's nickname there, when they set one.
+    pub nick: Option<String>,
+}
+
+/// A friend a profile's person shares with this account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileFriend {
+    /// Their Discord user id.
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -275,7 +349,68 @@ pub enum Delivery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reply {
     pub author: String,
+    /// The address of the author's avatar, where the network gives one; see
+    /// [`Command::Pictures`].
+    pub avatar: Option<String>,
     pub body: String,
+    /// The original message's item, to jump to it; none when it's gone.
+    pub item: Option<String>,
+}
+
+/// A Discord custom emoji, which shows as `text` until its picture arrives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomEmoji {
+    /// Its name between colons, such as `:pog:`, as message bodies and
+    /// reaction keys show it.
+    pub text: String,
+    pub id: String,
+    pub animated: bool,
+    /// The address of its picture; see [`Command::Pictures`].
+    pub picture: String,
+}
+
+/// The size custom emoji pictures are downloaded at: enough for text's emoji on
+/// a doubled display, and for a message of nothing but emoji.
+pub const EMOJI_PICTURE_SIZE: u32 = 64;
+
+/// A server's custom emoji that this account may use where it's writing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmojiSet {
+    pub server: String,
+    pub emoji: Vec<CustomEmoji>,
+}
+
+/// `text` with each `:name:` of a usable custom emoji, outside code, in Discord's
+/// form, `<:name:id>`. The first emoji of a name wins.
+pub fn wire_emoji(text: &str, usable: &[CustomEmoji]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut code = false;
+    let mut rest = text;
+    while let Some(next) = rest.chars().next() {
+        if next == '`' {
+            code = !code;
+        }
+        if !code
+            && next == ':'
+            && !out.ends_with('<')
+            && !out.ends_with("<a")
+            && let Some(end) = rest[1..].find(':')
+            && let name = &rest[1..1 + end]
+            && name.len() >= 2
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && let Some(emoji) = usable
+                .iter()
+                .find(|emoji| emoji.text[1..emoji.text.len() - 1] == *name)
+        {
+            let animated = if emoji.animated { "a" } else { "" };
+            out.push_str(&format!("<{animated}:{name}:{}>", emoji.id));
+            rest = &rest[end + 2..];
+            continue;
+        }
+        out.push(next);
+        rest = &rest[next.len_utf8()..];
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -286,12 +421,26 @@ pub struct Reaction {
 }
 
 /// A decoded, size-limited preview. Talk never hands undecoded media to the UI.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
     pub height: u32,
+    /// The picture, or an animation's first frame.
     pub rgba: Vec<u8>,
+    /// An animation's frames, the first being `rgba` again; empty for a still.
+    pub frames: Vec<Frame>,
 }
+
+/// A frame of an animation, and how long it shows.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub rgba: Vec<u8>,
+    pub delay_ms: u32,
+}
+
+/// The most memory an animation's frames take; longer ones keep fewer frames,
+/// each showing longer.
+const ANIMATION_BYTES: usize = 24 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attachment {
@@ -304,6 +453,8 @@ pub struct Attachment {
     /// The preview could not be downloaded or decoded; the file can still be saved.
     pub preview_failed: bool,
     pub placement: Placement,
+    /// Marked as a spoiler: its picture is covered until clicked.
+    pub spoiler: bool,
 }
 
 /// Where an attachment's picture shows.
@@ -316,6 +467,8 @@ pub enum Placement {
     Embed(usize),
     /// Small, beside the text of the embed at this index.
     Thumbnail(usize),
+    /// On its own, without a frame: a Discord sticker.
+    Sticker,
 }
 
 /// A Discord link preview or bot card. Empty texts are left out.
@@ -369,6 +522,8 @@ pub struct ChatMessage {
     pub own: bool,
     pub edited: bool,
     pub deleted: bool,
+    /// From someone this account blocked: it shows collapsed until asked for.
+    pub blocked: bool,
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,
@@ -378,6 +533,8 @@ pub struct ChatMessage {
     pub embeds: Vec<Embed>,
     /// Who and what the body mentions, which it links to.
     pub mentions: Vec<crate::mention::Mentioned>,
+    /// The Discord custom emoji its body and reactions show.
+    pub emoji: Vec<CustomEmoji>,
     pub can_reply: bool,
     pub can_edit: bool,
     pub can_delete: bool,
@@ -505,6 +662,19 @@ pub enum Command {
         user: String,
         add: bool,
     },
+    /// Send a friend request to whoever has this Discord username;
+    /// [`Event::FriendAdded`] follows.
+    AddFriend {
+        username: String,
+    },
+    /// Set the Discord custom status, or clear it with `None`;
+    /// [`Event::CustomStatusSet`] follows.
+    SetCustomStatus(Option<CustomStatus>),
+    /// Connect the Discord account that was just linked.
+    StartDiscord,
+    /// Forget the linked Discord account on this device, ending its session
+    /// on Discord; [`Event::DiscordUnlinked`] follows.
+    UnlinkDiscord,
     /// Fetch a Discord user's profile, as a member of a room's server or as
     /// the other person in a DM. It comes back as [`Event::Profile`].
     Profile {
@@ -529,7 +699,7 @@ pub enum Event {
     },
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
-    Discord(talk_discord::service::Snapshot),
+    Discord(Arc<talk_discord::service::Snapshot>),
     /// An image [`Command::ViewImage`] asked for, or why it can't show.
     Image {
         room: String,
@@ -555,6 +725,12 @@ pub enum Event {
     },
     /// The DM [`Command::StartDm`] asked for, by room id, or why it couldn't start.
     DmStarted(Result<String, String>),
+    /// Whether [`Command::AddFriend`]'s request went: to whom, or why not.
+    FriendAdded(Result<String, String>),
+    /// Whether [`Command::SetCustomStatus`] changed it, or why not.
+    CustomStatusSet(Result<(), String>),
+    /// [`Command::UnlinkDiscord`] forgot the account.
+    DiscordUnlinked,
     /// The roles and groups a message in a room may mention.
     MentionGroups {
         room: String,
@@ -657,6 +833,11 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
+    if let Some(format) = reader.format()
+        && let Some(animation) = decode_animation(data, format, width, height)
+    {
+        return Some(animation);
+    }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
@@ -673,6 +854,89 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
         width: picture.width(),
         height: picture.height(),
         rgba: picture.into_raw(),
+        frames: Vec::new(),
+    })
+}
+
+/// An animated GIF, PNG or WebP's frames, shrunk to fit `width` by `height`;
+/// none for a still picture. Past [`ANIMATION_BYTES`], every other frame is
+/// dropped and the rest show twice as long, as often as it takes.
+fn decode_animation(
+    data: &[u8],
+    format: image::ImageFormat,
+    width: u32,
+    height: u32,
+) -> Option<Picture> {
+    use image::{AnimationDecoder, ImageDecoder, ImageFormat, codecs};
+    const MAX_SIDE: u32 = 8192;
+    let cursor = || std::io::Cursor::new(data);
+    let fits = |(w, h): (u32, u32)| w <= MAX_SIDE && h <= MAX_SIDE;
+    let frames = match format {
+        ImageFormat::Gif => {
+            let decoder = codecs::gif::GifDecoder::new(cursor()).ok()?;
+            fits(decoder.dimensions()).then_some(())?;
+            decoder.into_frames()
+        }
+        ImageFormat::Png => {
+            let decoder = codecs::png::PngDecoder::new(cursor()).ok()?;
+            (fits(decoder.dimensions()) && decoder.is_apng().ok()?).then_some(())?;
+            decoder.apng().ok()?.into_frames()
+        }
+        ImageFormat::WebP => {
+            let decoder = codecs::webp::WebPDecoder::new(cursor()).ok()?;
+            (fits(decoder.dimensions()) && decoder.has_animation()).then_some(())?;
+            decoder.into_frames()
+        }
+        _ => return None,
+    };
+    let mut kept: Vec<Frame> = Vec::new();
+    let (mut size, mut step, mut skipped) = ((0, 0), 1, 0);
+    for frame in frames {
+        let frame = frame.ok()?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        // Browsers show frames meant for under 20 ms for 100 ms.
+        let delay = numerator / denominator.max(1);
+        let delay = if delay < 20 { 100 } else { delay };
+        let buffer = frame.into_buffer();
+        if skipped % step != 0 {
+            if let Some(last) = kept.last_mut() {
+                last.delay_ms += delay;
+            }
+            skipped += 1;
+            continue;
+        }
+        skipped += 1;
+        let buffer = if buffer.width() > width || buffer.height() > height {
+            image::imageops::thumbnail(&buffer, width, height)
+        } else {
+            buffer
+        };
+        size = buffer.dimensions();
+        kept.push(Frame {
+            rgba: buffer.into_raw(),
+            delay_ms: delay,
+        });
+        if kept.iter().map(|frame| frame.rgba.len()).sum::<usize>() > ANIMATION_BYTES {
+            // An odd frame out takes the next one's time.
+            skipped = kept.len() % 2;
+            kept = kept
+                .chunks_mut(2)
+                .map(|pair| Frame {
+                    rgba: std::mem::take(&mut pair[0].rgba),
+                    delay_ms: pair.iter().map(|frame| frame.delay_ms).sum(),
+                })
+                .collect();
+            step *= 2;
+        }
+    }
+    if kept.len() < 2 {
+        return None;
+    }
+    Some(Picture {
+        width: size.0,
+        height: size.1,
+        rgba: kept[0].rgba.clone(),
+        frames: kept,
     })
 }
 
@@ -724,7 +988,18 @@ pub fn notification_text(markdown: &str) -> String {
 /// session, or always in a build without Matrix, where Discord uses the
 /// account linked on this device.
 pub fn can_restore(root: &std::path::Path) -> bool {
-    !cfg!(feature = "matrix") || root.join("active.json").exists()
+    #[cfg(feature = "matrix")]
+    return root.join("active.json").exists();
+    #[cfg(all(not(feature = "matrix"), feature = "discord"))]
+    return {
+        let _ = root;
+        talk_discord::token::load().is_ok()
+    };
+    #[cfg(not(any(feature = "matrix", feature = "discord")))]
+    {
+        let _ = root;
+        true
+    }
 }
 
 /// A new message that should notify the person, by their notification settings on its
@@ -782,14 +1057,16 @@ pub async fn run(
     // Discord connects when this device has a linked account; see docs/discord.md.
     #[cfg(feature = "discord")]
     let mut discord = crate::discord_text::Chat::start();
+    // Voice reaches Discord through this, so linking and unlinking reach it too.
+    #[cfg(feature = "discord")]
+    let linked =
+        tokio::sync::watch::Sender::new(discord.as_ref().map(crate::discord_text::Chat::service));
     #[cfg(not(feature = "matrix"))]
     {
         let refused = match start {
             Start::Login { .. } => Some("This build of Talk has no Matrix sign-in."),
             #[cfg(feature = "discord")]
-            Start::Restore if discord.is_none() => Some(
-                "Link a Discord account with talk-discord-probe store-token, then restart Talk.",
-            ),
+            Start::Restore if discord.is_none() => Some("Link your Discord account to sign in."),
             #[cfg(not(feature = "discord"))]
             Start::Restore => Some("This build of Talk has no networks."),
             #[allow(unreachable_patterns)]
@@ -804,7 +1081,7 @@ pub async fn run(
         #[cfg(feature = "matrix")]
         session: session.lease(),
         #[cfg(feature = "discord")]
-        discord: discord.as_ref().map(crate::discord_text::Chat::service),
+        discord: linked.subscribe(),
     };
     let Ok(mut voice) = voice::Controller::start_remembering(calls, Some(remembered)) else {
         let _ = events.send(Event::Error(
@@ -851,6 +1128,30 @@ pub async fn run(
             Wake::Command(None) => break,
             Wake::Command(Some(command)) => {
                 #[cfg(feature = "discord")]
+                let command = match command {
+                    Command::StartDiscord => {
+                        if discord.is_none() {
+                            discord = crate::discord_text::Chat::start();
+                            linked.send_replace(
+                                discord.as_ref().map(crate::discord_text::Chat::service),
+                            );
+                        }
+                        continue;
+                    }
+                    Command::UnlinkDiscord => {
+                        unlink_discord(&mut discord, &linked, &voice);
+                        let _ = events.send(Event::DiscordUnlinked);
+                        continue;
+                    }
+                    #[cfg(not(feature = "matrix"))]
+                    Command::Logout => {
+                        unlink_discord(&mut discord, &linked, &voice);
+                        let _ = events.send(Event::LoggedOut);
+                        break;
+                    }
+                    command => command,
+                };
+                #[cfg(feature = "discord")]
                 let command = match discord.as_mut() {
                     Some(discord) => discord.command(command, &events),
                     None => Some(command),
@@ -870,6 +1171,10 @@ pub async fn run(
                     | Command::AnswerRequest { .. }
                     | Command::DeclineCall { .. }
                     | Command::Friend { .. }
+                    | Command::AddFriend { .. }
+                    | Command::SetCustomStatus(_)
+                    | Command::StartDiscord
+                    | Command::UnlinkDiscord
                     | Command::Profile { .. }
                     | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
@@ -907,9 +1212,108 @@ pub async fn run(
     matrix.stop().await;
 }
 
+/// Forgets the linked Discord account on this device: leaves its call, ends
+/// its session on Discord, and stops it.
+#[cfg(feature = "discord")]
+fn unlink_discord(
+    discord: &mut Option<crate::discord_text::Chat>,
+    linked: &tokio::sync::watch::Sender<Option<talk_discord::service::Discord>>,
+    voice: &voice::Controller,
+) {
+    if voice
+        .states
+        .borrow()
+        .room
+        .as_deref()
+        .is_some_and(crate::discord::is_discord)
+    {
+        voice.command(voice::Command::Leave);
+    }
+    linked.send_replace(None);
+    if let Some(chat) = discord.take() {
+        let service = chat.service();
+        tokio::spawn(async move {
+            if let Err(error) = service.logout().await {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "could not end the Discord session"
+                );
+            }
+        });
+    }
+    if let Err(error) = talk_discord::token::forget() {
+        tracing::warn!(%error, "could not forget the Discord login");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An animated GIF of `count` frames of one colour each, 50 ms apiece.
+    fn gif(side: u32, count: u8) -> Vec<u8> {
+        let mut data = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut data);
+            for index in 0..count {
+                let shade = image::Rgba([index.wrapping_mul(20), 0, 0, 255]);
+                let frame = image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(side, side, shade),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(50, 1),
+                );
+                encoder.encode_frame(frame).unwrap();
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn decodes_animations_within_their_memory() {
+        let picture = decode_picture(&gif(8, 3), 360, 270).unwrap();
+        assert_eq!(picture.frames.len(), 3);
+        assert_eq!(picture.rgba, picture.frames[0].rgba);
+        assert_eq!(picture.frames[2].rgba[0], 40);
+        assert!(picture.frames.iter().all(|frame| frame.delay_ms == 50));
+        // 1.4 MB frames: 24 MB holds 17, so every other frame of 30 goes.
+        let long = decode_picture(&gif(600, 30), 1000, 1000).unwrap();
+        assert_eq!(long.frames.len(), 15);
+        assert!(long.frames.iter().all(|frame| frame.delay_ms == 100));
+        assert_eq!(
+            long.frames.iter().map(|frame| frame.delay_ms).sum::<u32>(),
+            1500
+        );
+        // A still picture has no frames.
+        assert!(
+            decode_picture(&gif(8, 1), 360, 270)
+                .unwrap()
+                .frames
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn sends_custom_emoji_in_discords_form() {
+        let emoji = |name: &str, id: &str, animated| CustomEmoji {
+            text: format!(":{name}:"),
+            id: id.into(),
+            animated,
+            picture: String::new(),
+        };
+        let usable = [
+            emoji("pog", "5", false),
+            emoji("party", "6", true),
+            emoji("pog", "7", false),
+        ];
+        assert_eq!(
+            wire_emoji(
+                "gg :pog: :party::pog: `:pog:` <:pog:5> :nope: 10:30:45",
+                &usable
+            ),
+            "gg <:pog:5> <a:party:6><:pog:5> `:pog:` <:pog:5> :nope: 10:30:45"
+        );
+    }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut data = Vec::new();

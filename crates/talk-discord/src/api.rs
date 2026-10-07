@@ -5,7 +5,11 @@ use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::client;
+use crate::{
+    client,
+    limits::{self, Limits},
+    settings::{self, CustomStatus},
+};
 
 const API: &str = "https://discord.com/api/v9";
 /// The most messages one history request returns.
@@ -52,7 +56,15 @@ pub struct Api {
     token: String,
     /// The API's base URL: Discord's, or the test server's.
     base: String,
+    limits: Limits,
+    /// Downloads going at once, so opening the emoji picker or a busy channel
+    /// spreads its pictures out rather than asking for hundreds together.
+    downloads: tokio::sync::Semaphore,
 }
+
+/// The most files Talk downloads from Discord at once, about what a browser
+/// opens to one host.
+const DOWNLOADS: usize = 6;
 
 impl Api {
     pub fn new(token: String) -> Result<Self> {
@@ -65,19 +77,57 @@ impl Api {
         let http = Client::builder()
             .user_agent(client::USER_AGENT)
             .default_headers(headers)
+            .cookie_provider(crate::cookies::jar())
             .build()
             .context("could not set up HTTPS")?;
         let base = match client::test_server() {
             Some(server) => format!("{server}/api/v9"),
             None => API.to_owned(),
         };
-        Ok(Self { http, token, base })
+        Ok(Self {
+            http,
+            token,
+            base,
+            limits: Limits::default(),
+            downloads: tokio::sync::Semaphore::new(DOWNLOADS),
+        })
+    }
+
+    /// Without a login, for linking one.
+    pub fn anonymous() -> Result<Self> {
+        Self::new(String::new())
     }
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        self.http
-            .request(method, format!("{}{path}", self.base))
-            .header(header::AUTHORIZATION, &self.token)
+        let request = self.http.request(method, format!("{}{path}", self.base));
+        if self.token.is_empty() {
+            return request;
+        }
+        request.header(header::AUTHORIZATION, &self.token)
+    }
+
+    /// Trades a remote login's ticket for the login, encrypted with the key
+    /// that started it, in base64; see [`crate::remote_auth`].
+    pub async fn remote_auth_login(&self, ticket: &str) -> Result<String> {
+        let body = json!({"ticket": ticket});
+        let answer = self
+            .json(with_json(
+                self.request(Method::POST, "/users/@me/remote-auth/login"),
+                &body,
+            ))
+            .await?;
+        answer["encrypted_token"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord didn't hand over the login.")
+    }
+
+    /// Ends this login's session on Discord, as signing out of the web client
+    /// does. The token stops working.
+    pub async fn logout(&self) -> Result<()> {
+        let body = json!({"provider": null, "voip_provider": null});
+        self.empty(with_json(self.request(Method::POST, "/auth/logout"), &body))
+            .await
     }
 
     /// The account the token belongs to.
@@ -284,6 +334,28 @@ impl Api {
             .await
     }
 
+    /// Sends a friend request to whoever has `username`.
+    pub async fn add_friend_by_username(&self, username: &str) -> Result<()> {
+        let body = json!({"username": username, "discriminator": null});
+        let request = with_json(
+            self.request(Method::POST, "/users/@me/relationships"),
+            &body,
+        );
+        self.empty(request.header("X-Context-Properties", context("Add Friend")))
+            .await
+    }
+
+    /// Sets the custom status, or clears it with `None`, in the account's settings.
+    pub async fn set_custom_status(&self, custom: Option<&CustomStatus>) -> Result<()> {
+        let body = json!({"settings": settings::write_custom(custom)});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/1"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// Ignores a friend request, cancels one, or ends a friendship.
     pub async fn remove_relationship(&self, user: &str, place: &str) -> Result<()> {
         let path = format!("/users/@me/relationships/{user}");
@@ -333,6 +405,7 @@ impl Api {
         if !discord_file(url) && !test_file {
             bail!("not a Discord file");
         }
+        let _turn = self.downloads.acquire().await?;
         let mut response = self
             .http
             .get(url)
@@ -353,7 +426,7 @@ impl Api {
     }
 
     async fn json(&self, request: RequestBuilder) -> Result<Value> {
-        let response = checked(request).await?;
+        let response = self.execute(request).await?;
         let body = response
             .bytes()
             .await
@@ -362,13 +435,48 @@ impl Api {
     }
 
     async fn empty(&self, request: RequestBuilder) -> Result<()> {
-        checked(request).await.map(drop)
+        self.execute(request).await.map(drop)
+    }
+
+    /// Sends a request within Discord's rate limits; see [`crate::limits`].
+    /// A 429 means Discord didn't act on it, so it goes once more after the
+    /// wait Discord asks for.
+    async fn execute(&self, request: RequestBuilder) -> Result<Response> {
+        let (client, request) = request.build_split();
+        let mut request = request.context("could not build the request")?;
+        let route = limits::route(request.method(), request.url().path());
+        let mut retried = false;
+        loop {
+            if let Err(wait) = self.limits.acquire(&route).await {
+                bail!(
+                    "Discord asks Talk to slow down. Try again in {} s.",
+                    wait.as_secs()
+                );
+            }
+            let again = if retried { None } else { request.try_clone() };
+            let response = client
+                .execute(request)
+                .await
+                .context("Can't reach Discord.")?;
+            self.limits
+                .update(&route, response.status(), response.headers());
+            match again {
+                Some(next) if response.status() == StatusCode::TOO_MANY_REQUESTS => {
+                    tracing::warn!(
+                        route,
+                        "Discord limited a request; sending it again after the wait"
+                    );
+                    request = next;
+                    retried = true;
+                }
+                _ => return checked(response).await,
+            }
+        }
     }
 }
 
-/// Sends a request and turns Discord's refusals into errors a person can act on.
-async fn checked(request: RequestBuilder) -> Result<Response> {
-    let response = request.send().await.context("Can't reach Discord.")?;
+/// Turns Discord's refusals into errors a person can act on.
+async fn checked(response: Response) -> Result<Response> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -382,26 +490,40 @@ async fn checked(request: RequestBuilder) -> Result<Response> {
         (Some(code), Some(message)) => anyhow!("Discord answered {status}, code {code}: {message}"),
         _ => anyhow!("Discord answered {status}"),
     };
-    Err(detail.context(match status {
-        StatusCode::UNAUTHORIZED => anyhow!("Discord rejected the login. Link Discord again."),
-        StatusCode::FORBIDDEN => anyhow!("Discord says you don't have permission to do that here."),
-        StatusCode::NOT_FOUND => anyhow!("Discord no longer has that message or channel."),
-        StatusCode::PAYLOAD_TOO_LARGE => {
-            anyhow!("Discord says the file is too large for your account.")
+    Err(detail.context(match (status, body["code"].as_u64()) {
+        (_, Some(UNKNOWN_USERNAME)) => anyhow!("Discord has nobody by that username."),
+        (_, Some(REQUESTS_CLOSED)) => {
+            anyhow!("They don't take friend requests from people they don't know.")
         }
-        StatusCode::TOO_MANY_REQUESTS => {
-            let wait = body["retry_after"].as_f64().unwrap_or(1.0).ceil();
-            anyhow!("Discord asks Talk to slow down. Try again in {wait} s.")
-        }
-        _ if body["captcha_key"].is_array() => {
-            anyhow!("Discord asked for a captcha. Do this in the Discord app for now.")
-        }
-        _ => match body["message"].as_str() {
-            Some(message) => anyhow!("Discord refused: {message}"),
-            None => anyhow!("Discord answered {status}."),
+        (_, Some(ALREADY_FRIENDS)) => anyhow!("You're already friends."),
+        _ => match status {
+            StatusCode::UNAUTHORIZED => anyhow!("Discord rejected the login. Link Discord again."),
+            StatusCode::FORBIDDEN => {
+                anyhow!("Discord says you don't have permission to do that here.")
+            }
+            StatusCode::NOT_FOUND => anyhow!("Discord no longer has that message or channel."),
+            StatusCode::PAYLOAD_TOO_LARGE => {
+                anyhow!("Discord says the file is too large for your account.")
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                let wait = body["retry_after"].as_f64().unwrap_or(1.0).ceil();
+                anyhow!("Discord asks Talk to slow down. Try again in {wait} s.")
+            }
+            _ if body["captcha_key"].is_array() => {
+                anyhow!("Discord asked for a captcha. Do this in the Discord app for now.")
+            }
+            _ => match body["message"].as_str() {
+                Some(message) => anyhow!("Discord refused: {message}"),
+                None => anyhow!("Discord answered {status}."),
+            },
         },
     }))
 }
+
+/// Discord's error codes that Talk words itself.
+const REQUESTS_CLOSED: u64 = 80000;
+const UNKNOWN_USERNAME: u64 = 80004;
+const ALREADY_FRIENDS: u64 = 80007;
 
 /// The X-Context-Properties header Discord's client sends: where an action
 /// happened, as base64 JSON.

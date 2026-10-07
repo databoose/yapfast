@@ -11,7 +11,7 @@ use std::{
 
 use talk_discord::{
     api::PAGE,
-    member_list::{ListedMember, Presence as DiscordPresence},
+    member_list::ListedMember,
     message::{Message, Reply as DiscordReply, Shown},
     service::{Discord, Live, Snapshot, Status},
 };
@@ -26,9 +26,10 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, Command, Contact, Delivery, Embed, EmbedField, Event,
-        MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture, Placement, Presence,
-        Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
+        Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Embed,
+        EmbedField, Event, MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture,
+        Placement, Profile, ProfileFriend, ProfileRole, ProfileServer, Reaction, Reply, Role,
+        decode_preview, decode_view, plain_snippet,
     },
     discord,
     mention::{Mentioned, Target},
@@ -37,14 +38,18 @@ use crate::{
 /// Discord's message length limit without Nitro, in characters.
 pub const MAX_CHARS: usize = 2000;
 /// Channels kept after closing, and of each, the newest messages and image
-/// previews kept: a preview is about 400 KB decoded.
-const RECENT: usize = 16;
-const KEPT_MESSAGES: usize = 100;
+/// previews kept: a preview is about 400 KB decoded. Previews come back from
+/// the disk quickly, so few are kept.
+const RECENT: usize = 40;
+const KEPT_MESSAGES: usize = 200;
 /// How long someone shows as typing after Discord says they started.
 const TYPING: Duration = Duration::from_secs(10);
 /// How often Discord hears that this account is still typing.
 const TYPING_AGAIN: Duration = Duration::from_secs(8);
-const KEPT_PREVIEWS: usize = 12;
+const KEPT_PREVIEWS: usize = 4;
+/// How often changed channels' newest messages go to disk; see
+/// [`talk_discord::cache`].
+const SAVE_EVERY: Duration = Duration::from_secs(20);
 /// Saving a file holds it in memory first.
 const MAX_SAVE_BYTES: usize = 100 * 1024 * 1024;
 
@@ -118,8 +123,11 @@ pub struct OpenChannel {
     sent: HashSet<String>,
     /// The channel's first message is loaded.
     complete: bool,
-    /// A page of messages arrived, so there's something to show.
+    /// A page of messages arrived, or was kept on disk, so there's something
+    /// to show.
     loaded: bool,
+    /// Its messages changed since they last went to disk.
+    dirty: bool,
     pictures: HashMap<String, Option<Arc<Picture>>>,
     requested: HashSet<String>,
     // Loading goes on after the channel closes, and dropping the set when
@@ -129,9 +137,15 @@ pub struct OpenChannel {
 }
 
 impl OpenChannel {
-    /// Opens a channel and starts loading its latest messages.
+    /// Opens a channel and starts loading its latest messages. What was kept
+    /// on disk shows meanwhile, and the latest page fits in as it does for a
+    /// channel kept in memory.
     pub fn open(discord: &Discord, room: &str, done: &UnboundedSender<Done>) -> Option<Self> {
         let mut open = Self::new(room)?;
+        for message in talk_discord::cache::messages(&open.channel) {
+            open.messages.insert(message.order(), message);
+            open.loaded = true;
+        }
         discord.view(&open.guild, Some(&open.channel));
         open.load(discord, done, None);
         Some(open)
@@ -148,6 +162,7 @@ impl OpenChannel {
             sent: HashSet::new(),
             complete: false,
             loaded: false,
+            dirty: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
             tasks: JoinSet::new(),
@@ -174,6 +189,11 @@ impl OpenChannel {
     }
 
     fn load(&mut self, discord: &Discord, done: &UnboundedSender<Done>, before: Option<String>) {
+        // Offline, as while starting from the saved account, the latest page
+        // loads once Discord is back, rather than failing now.
+        if before.is_none() && discord.snapshots().borrow().status != Status::Online {
+            return;
+        }
         let (discord, done) = (discord.clone(), done.clone());
         let (room, guild, channel) = (self.room.clone(), self.guild.clone(), self.channel.clone());
         self.tasks.spawn(async move {
@@ -193,6 +213,7 @@ impl OpenChannel {
 
     pub fn loaded(&mut self, older: bool, messages: Vec<Message>) {
         self.loaded = true;
+        self.dirty = true;
         if !older {
             self.latest(&messages);
         }
@@ -254,7 +275,23 @@ impl OpenChannel {
         self.requested.retain(|url| shown.contains(url));
     }
 
+    /// Its newest messages to keep on disk, once they've changed.
+    fn take_changes(&mut self) -> Option<(String, Vec<Message>)> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        let skip = self
+            .messages
+            .len()
+            .saturating_sub(talk_discord::cache::CHANNEL_MESSAGES);
+        Some((
+            self.channel.clone(),
+            self.messages.values().skip(skip).cloned().collect(),
+        ))
+    }
+
     fn insert(&mut self, message: Message) {
+        self.dirty = true;
         if let Some(nonce) = &message.nonce {
             self.pending.retain(|pending| &pending.nonce != nonce);
         }
@@ -263,6 +300,12 @@ impl OpenChannel {
 
     /// Applies a gateway event; returns whether this channel changed.
     pub fn live(&mut self, event: &Live) -> bool {
+        let changed = self.apply_live(event);
+        self.dirty |= changed;
+        changed
+    }
+
+    fn apply_live(&mut self, event: &Live) -> bool {
         match event {
             Live::Created(message) if message.channel_id == self.channel => {
                 self.insert(message.clone());
@@ -509,7 +552,10 @@ impl OpenChannel {
     }
 
     pub fn deleted(&mut self, id: &str) {
-        self.messages.remove(&id.parse().unwrap_or_default());
+        self.dirty |= self
+            .messages
+            .remove(&id.parse().unwrap_or_default())
+            .is_some();
     }
 
     /// Adds this account's reaction, or removes it if it is there. The
@@ -526,10 +572,12 @@ impl OpenChannel {
         else {
             return;
         };
+        // A custom emoji picked comes as `name:id`, which a reaction shown has
+        // as its API form.
         let known = message
             .reactions
             .iter()
-            .find(|reaction| reaction.key == key);
+            .find(|reaction| reaction.key == key || reaction.emoji == key);
         let emoji = known
             .map_or(key, |reaction| reaction.emoji.as_str())
             .to_owned();
@@ -644,7 +692,8 @@ impl OpenChannel {
         let server = snapshot
             .servers
             .iter()
-            .find(|server| server.id == self.guild);
+            .find(|server| server.id == self.guild)
+            .map(Arc::as_ref);
         let name = |user: &str, fallback: &str| {
             discord
                 .name(&self.guild, user)
@@ -687,7 +736,9 @@ impl OpenChannel {
                             Shown::Message => Placement::Message,
                             Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
                             Shown::Thumbnail(index) => Placement::Thumbnail(index),
+                            Shown::Sticker => Placement::Sticker,
                         },
+                        spoiler: attachment.spoiler,
                     }
                 })
                 .collect();
@@ -698,16 +749,21 @@ impl OpenChannel {
                 .collect();
             let reply = message.reply.as_ref().map(|reply| match reply {
                 DiscordReply::Message {
+                    id,
                     author_id,
                     author,
                     content,
                 } => Reply {
                     author: name(author_id, author),
-                    body: plain_snippet(&discord.render(server, content)),
+                    avatar: Some(discord.avatar(Some(&self.guild), author_id)),
+                    body: plain_snippet(&crate::spoiler::hide(&discord.render(server, content))),
+                    item: Some(format!("d:{id}")),
                 },
                 DiscordReply::Deleted => Reply {
                     author: String::new(),
+                    avatar: None,
                     body: "The original message was deleted.".into(),
+                    item: None,
                 },
             });
             let timestamp = message.timestamp();
@@ -729,6 +785,7 @@ impl OpenChannel {
                 own,
                 edited: message.edited,
                 deleted: false,
+                blocked: snapshot.blocked.contains(&message.author_id),
                 delivery: Delivery::Sent,
                 reply,
                 reactions: message
@@ -743,6 +800,7 @@ impl OpenChannel {
                 attachments,
                 embeds,
                 mentions: mentions(discord, server, &message.content),
+                emoji: custom_emoji(message),
                 can_reply: ordinary,
                 can_edit: own && message.editable,
                 can_delete: own,
@@ -775,7 +833,11 @@ impl OpenChannel {
                     let original = self.messages.get(&id.parse().unwrap_or_default())?;
                     Some(Reply {
                         author: name(&original.author_id, &original.author),
-                        body: plain_snippet(&discord.render(server, &original.content)),
+                        avatar: Some(discord.avatar(Some(&self.guild), &original.author_id)),
+                        body: plain_snippet(&crate::spoiler::hide(
+                            &discord.render(server, &original.content),
+                        )),
+                        item: Some(format!("d:{id}")),
                     })
                 }),
                 attachments: pending
@@ -789,6 +851,7 @@ impl OpenChannel {
                         preview: None,
                         preview_failed: false,
                         placement: Placement::Message,
+                        spoiler: false,
                     })
                     .collect(),
                 ..Default::default()
@@ -832,7 +895,12 @@ pub struct Channels {
     typing: HashMap<String, HashMap<String, (String, Instant)>>,
     /// Where this account last told Discord it's typing, and when.
     typed: Option<(String, Instant)>,
+    /// Counts member searches, so one typed over before it went is dropped.
+    searches: Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// How long a member search waits for more typing before it goes to Discord.
+const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 
 impl Channels {
     /// Forgets who stopped typing in `room`, and says who still is.
@@ -858,8 +926,16 @@ impl Channels {
             channel.shelve();
             self.recent.push(channel);
             if self.recent.len() > RECENT {
-                self.recent.remove(0);
+                let mut gone = self.recent.remove(0);
+                save(gone.take_changes());
             }
+        }
+    }
+
+    /// Puts the newest messages of the channels that changed on disk.
+    fn save(&mut self) {
+        for channel in self.open.iter_mut().chain(&mut self.recent) {
+            save(channel.take_changes());
         }
     }
 
@@ -885,11 +961,20 @@ impl Channels {
     }
 }
 
+/// Writes a channel's messages to disk, off the async threads.
+fn save(saved: Option<(String, Vec<Message>)>) {
+    if let Some((channel, messages)) = saved {
+        tokio::task::spawn_blocking(move || talk_discord::cache::save_messages(&channel, messages));
+    }
+}
+
 /// What woke the Discord side of the chat actor.
 pub(crate) enum Wake {
-    Snapshot(Option<Snapshot>),
+    Snapshot(Option<Arc<Snapshot>>),
     Live(Option<Result<Live, RecvError>>),
     Finished(Done),
+    /// Time to put changed channels on disk.
+    Save,
 }
 
 /// The linked Discord account in the chat actor: its connection and the open
@@ -897,13 +982,30 @@ pub(crate) enum Wake {
 pub(crate) struct Chat {
     discord: Discord,
     // Each becomes None once the connection is gone.
-    states: Option<watch::Receiver<Snapshot>>,
+    states: Option<watch::Receiver<Arc<Snapshot>>>,
     live: Option<broadcast::Receiver<Live>>,
     online: bool,
     channels: Channels,
     done: UnboundedSender<Done>,
     finished: UnboundedReceiver<Done>,
     pictures: discord::Pictures,
+    saving: tokio::time::Interval,
+}
+
+impl Drop for Chat {
+    /// What changed since the last save goes to disk before Talk closes.
+    fn drop(&mut self) {
+        for channel in self
+            .channels
+            .open
+            .iter_mut()
+            .chain(&mut self.channels.recent)
+        {
+            if let Some((id, messages)) = channel.take_changes() {
+                talk_discord::cache::save_messages(&id, messages);
+            }
+        }
+    }
 }
 
 impl Chat {
@@ -922,6 +1024,12 @@ impl Chat {
             done,
             finished,
             pictures: discord::Pictures::new(),
+            saving: {
+                let mut saving =
+                    tokio::time::interval_at(tokio::time::Instant::now() + SAVE_EVERY, SAVE_EVERY);
+                saving.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                saving
+            },
         })
     }
 
@@ -953,6 +1061,7 @@ impl Chat {
             snapshot = changed(&mut self.states) => Wake::Snapshot(snapshot),
             event = next_live(&mut self.live) => Wake::Live(event),
             Some(finished) = self.finished.recv() => Wake::Finished(finished),
+            _ = self.saving.tick() => Wake::Save,
         }
     }
 
@@ -982,13 +1091,14 @@ impl Chat {
                     events,
                 );
             }
+            Wake::Save => self.channels.save(),
             Wake::Snapshot(None) | Wake::Live(None) => {}
         }
     }
 }
 
 /// The next snapshot, or never after the connection is gone.
-async fn changed(states: &mut Option<watch::Receiver<Snapshot>>) -> Option<Snapshot> {
+async fn changed(states: &mut Option<watch::Receiver<Arc<Snapshot>>>) -> Option<Arc<Snapshot>> {
     let Some(receiver) = states else {
         return std::future::pending().await;
     };
@@ -1139,7 +1249,14 @@ pub fn command(
             && guild != talk_discord::ready::PRIVATE
         {
             let (discord, events, guild) = (discord.clone(), events.clone(), guild.to_owned());
+            let searches = channels.searches.clone();
+            let search = searches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             tokio::spawn(async move {
+                // Typing on asks for a longer name, which covers this one.
+                tokio::time::sleep(SEARCH_PAUSE).await;
+                if searches.load(std::sync::atomic::Ordering::Relaxed) != search {
+                    return;
+                }
                 let found = match discord.search_members(&guild, &query).await {
                     Ok(found) => found,
                     Err(error) => {
@@ -1221,6 +1338,62 @@ pub fn command(
             }
             None => {
                 let _ = events.send(Event::Error("Discord isn't linked on this device.".into()));
+            }
+        }
+        return None;
+    }
+    if let Command::AddFriend { username } = command {
+        match discord {
+            Some(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .add_friend_by_username(&username)
+                        .await
+                        .map(|()| username)
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not send a friend request by username"
+                            );
+                            error.to_string()
+                        });
+                    let _ = events.send(Event::FriendAdded(result));
+                });
+            }
+            None => {
+                let _ = events.send(Event::FriendAdded(Err(
+                    "Discord isn't linked on this device.".into(),
+                )));
+            }
+        }
+        return None;
+    }
+    if let Command::SetCustomStatus(custom) = command {
+        match discord {
+            Some(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                let custom = custom.map(|custom| talk_discord::settings::CustomStatus {
+                    text: custom.text,
+                    emoji_name: custom.emoji,
+                    emoji_id: custom.emoji_id,
+                    expires_at_ms: custom.expires_at_ms,
+                });
+                tokio::spawn(async move {
+                    let result = discord.set_custom_status(custom).await.map_err(|error| {
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            "could not set the custom status"
+                        );
+                        error.to_string()
+                    });
+                    let _ = events.send(Event::CustomStatusSet(result));
+                });
+            }
+            None => {
+                let _ = events.send(Event::CustomStatusSet(Err(
+                    "Discord isn't linked on this device.".into(),
+                )));
             }
         }
         return None;
@@ -1316,7 +1489,13 @@ pub fn command(
         }
         match OpenChannel::open(discord, &room, done) {
             // The member list follows as Live::Members.
-            Some(channel) => channels.open = Some(channel),
+            Some(mut channel) => {
+                // Shown at once as it was kept on disk, while the latest page loads.
+                if channel.loaded {
+                    publish(&mut channel, discord, done, events);
+                }
+                channels.open = Some(channel);
+            }
             None => {
                 let _ = events.send(Event::RoomError {
                     room,
@@ -1424,6 +1603,7 @@ pub fn finished(
     // Closed channels kept lately take what finished too.
     let channel = channels.get_mut(&room);
     let mut changed = false;
+    let mut history_loaded = None;
     match (finished, channel) {
         (Done::Edited { item, result, .. }, channel) => {
             let result = match result {
@@ -1471,9 +1651,8 @@ pub fn finished(
                     });
                 }
             }
-            if older {
-                let _ = events.send(Event::HistoryLoaded(room));
-            }
+            // Said once the page is published, so the timeline has it.
+            history_loaded = older.then_some(room);
         }
         (_, None) => {}
         (Done::Sent { nonce, result, .. }, Some(channel)) => {
@@ -1513,22 +1692,35 @@ pub fn finished(
     {
         publish(channel, discord, done, events);
     }
+    if let Some(room) = history_loaded {
+        let _ = events.send(Event::HistoryLoaded(room));
+    }
 }
 
 /// A new Discord message as a notification: who wrote it, by their name in the server,
 /// and what it says, or what it carries when it has no text.
 fn notification(discord: &Discord, guild: Option<&str>, message: &Message) -> Notification {
     let snapshot = discord.snapshots().borrow().clone();
-    let server = guild.and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild));
+    let server = guild
+        .and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild))
+        .map(Arc::as_ref);
     let author = discord
         .name(
             guild.unwrap_or(talk_discord::ready::PRIVATE),
             &message.author_id,
         )
         .unwrap_or_else(|| message.author.clone());
-    let mut body = crate::chat::notification_text(&discord.render(server, &message.content));
+    let mut body = crate::chat::notification_text(&crate::spoiler::hide(
+        &discord.render(server, &message.content),
+    ));
     if body.is_empty() {
         body = if message
+            .attachments
+            .iter()
+            .any(|attachment| attachment.shown == Shown::Sticker)
+        {
+            "Sent a sticker".into()
+        } else if message
             .attachments
             .iter()
             .any(|attachment| attachment.image)
@@ -1577,6 +1769,10 @@ pub fn live(
         name,
     }) = &event
     {
+        // Nobody blocked is seen typing.
+        if discord.snapshots().borrow().blocked.contains(user) {
+            return;
+        }
         let room = discord::room_id(
             guild.as_deref().unwrap_or(talk_discord::ready::PRIVATE),
             channel,
@@ -1640,6 +1836,40 @@ pub fn live(
 }
 
 /// Who and what a message mentions, as its rendered body shows them.
+/// The custom emoji in a message's text and reactions.
+fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
+    let mut found: Vec<CustomEmoji> = talk_discord::message::custom_emoji(&message.content)
+        .into_iter()
+        .map(|emoji| CustomEmoji {
+            text: format!(":{}:", emoji.name),
+            picture: talk_discord::ready::custom_emoji(
+                &emoji.id,
+                false,
+                crate::chat::EMOJI_PICTURE_SIZE,
+            ),
+            id: emoji.id,
+            animated: emoji.animated,
+        })
+        .collect();
+    for reaction in &message.reactions {
+        if let Some((_, id)) = reaction.emoji.split_once(':')
+            && !found.iter().any(|known| known.id == id)
+        {
+            found.push(CustomEmoji {
+                text: reaction.key.clone(),
+                id: id.to_owned(),
+                animated: false,
+                picture: talk_discord::ready::custom_emoji(
+                    id,
+                    false,
+                    crate::chat::EMOJI_PICTURE_SIZE,
+                ),
+            });
+        }
+    }
+    found
+}
+
 fn mentions(
     discord: &Discord,
     server: Option<&talk_discord::ready::Server>,
@@ -1715,7 +1945,11 @@ fn chat_profile(
     profile: talk_discord::profile::Profile,
 ) -> Profile {
     let snapshot = discord.snapshots().borrow().clone();
-    let server = snapshot.servers.iter().find(|server| server.id == guild);
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == guild)
+        .map(Arc::as_ref);
     Profile {
         name: profile.name,
         avatar: Some(profile.avatar),
@@ -1736,11 +1970,32 @@ fn chat_profile(
         joined: profile.joined.map(talk_discord::message::date),
         servers: profile
             .mutual_servers
-            .iter()
-            .filter_map(|id| snapshot.servers.iter().find(|server| &server.id == id))
-            .map(|server| server.name.clone())
+            .into_iter()
+            .filter_map(|mutual| {
+                let server = snapshot
+                    .servers
+                    .iter()
+                    .find(|server| server.id == mutual.id)?;
+                Some(ProfileServer {
+                    id: discord::server_id(&server.id),
+                    name: server.name.clone(),
+                    icon: server.icon.clone(),
+                    banner: server.banner.clone(),
+                    members: server.member_count,
+                    channels: server.text_channels.len() + server.voice_channels.len(),
+                    nick: mutual.nick,
+                })
+            })
             .collect(),
-        friends: profile.mutual_friends,
+        friends: profile
+            .mutual_friends
+            .into_iter()
+            .map(|friend| ProfileFriend {
+                id: friend.id,
+                name: friend.name,
+                avatar: Some(friend.avatar),
+            })
+            .collect(),
         handle: profile.username,
         id: profile.user_id,
         // What the member list knows; the profile doesn't say.
@@ -1788,12 +2043,7 @@ fn chat_member(member: ListedMember) -> ChatMember {
         role: Role::Member,
         avatar: Some(member.avatar),
         group: Some(member.group),
-        presence: Some(match member.presence {
-            DiscordPresence::Online => Presence::Online,
-            DiscordPresence::Idle => Presence::Idle,
-            DiscordPresence::DoNotDisturb => Presence::DoNotDisturb,
-            DiscordPresence::Offline => Presence::Offline,
-        }),
+        presence: Some(discord::presence(member.presence)),
         color: member.color,
         activity: member.activity,
     }
@@ -1951,30 +2201,63 @@ mod tests {
                 preview_url: Some(format!("preview/{id}")),
                 view_url: None,
                 shown: Shown::Message,
+                spoiler: false,
             }],
             ..message(&id.to_string(), None)
         };
-        open.loaded(false, (100..150).map(with_image).collect());
-        open.loaded(true, page(50..100));
-        open.loaded(true, page(0..50));
-        for id in 100..150 {
+        // Fifty more than it keeps, the newest page with pictures.
+        let total = KEPT_MESSAGES as u64 + 50;
+        open.loaded(false, (total - 50..total).map(with_image).collect());
+        for start in (0..(total - 50) / 50).rev().map(|page| page * 50) {
+            open.loaded(true, page(start..start + 50));
+        }
+        for id in total - 50..total {
             let url = format!("preview/{id}");
             open.requested.insert(url.clone());
             open.picture(url, None);
         }
         open.shelve();
-        assert_eq!(ids(&open), (50..150).collect::<Vec<_>>());
+        assert_eq!(ids(&open), (50..total).collect::<Vec<_>>());
         assert!(!open.complete, "the oldest went, so they load again");
         let mut kept: Vec<_> = open.pictures.keys().cloned().collect();
         kept.sort();
         assert_eq!(
             kept,
-            (138..150)
+            (total - KEPT_PREVIEWS as u64..total)
                 .map(|id| format!("preview/{id}"))
                 .collect::<Vec<_>>()
         );
-        open.picture("preview/120".into(), None);
-        assert_eq!(open.pictures.len(), 12, "a preview it gave up arrives late");
+        open.picture(format!("preview/{}", total - 30), None);
+        assert_eq!(
+            open.pictures.len(),
+            KEPT_PREVIEWS,
+            "a preview it gave up arrives late"
+        );
+    }
+
+    #[test]
+    fn channels_go_to_disk_once_they_change() {
+        let mut open = OpenChannel::new("discord:10:11").unwrap();
+        assert!(open.take_changes().is_none(), "nothing to save yet");
+        open.loaded(false, page(1..=3));
+        let (channel, saved) = open.take_changes().unwrap();
+        assert_eq!(channel, "11");
+        assert_eq!(saved.len(), 3);
+        assert!(open.take_changes().is_none(), "saved, and unchanged since");
+        assert!(!open.live(&Live::Deleted {
+            channel: "11".into(),
+            id: "9".into()
+        }));
+        assert!(open.take_changes().is_none(), "a message it didn't have");
+        open.deleted("2");
+        let (_, saved) = open.take_changes().unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "3"]
+        );
     }
 
     #[test]

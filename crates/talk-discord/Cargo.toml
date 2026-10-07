@@ -12,12 +12,17 @@ aes-gcm = "0.10.3"
 chacha20poly1305 = "0.10.1"
 davey = "0.1.4"
 rand = "0.9"
+# Linking by QR code: Discord's remote login encrypts what it sends with the
+# client's RSA key, OAEP with SHA-256.
+rsa = { version = "0.9", features = ["getrandom"] }
+sha2 = "0.10"
 anyhow.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
 futures-util.workspace = true
 keyring.workspace = true
-reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls-no-provider"] }
+reqwest = { version = "0.13", default-features = false, features = ["cookies", "http2", "rustls-no-provider"] }
+cookie_store = { version = "0.22", features = ["serde_json"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -25,7 +25,17 @@ const CONTEXT_MENU_COMMAND: u64 = 23;
 /// The message flag that hides its embeds.
 const SUPPRESS_EMBEDS: u64 = 1 << 2;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Sticker formats: PNG and APNG show as pictures, as do GIFs, but not Lottie.
+const STICKER_PNG: u64 = 1;
+const STICKER_LOTTIE: u64 = 3;
+const STICKER_GIF: u64 = 4;
+/// The size Discord shows stickers at.
+const STICKER_SIZE: u32 = 160;
+
+/// The attachment flag that marks a spoiler.
+const IS_SPOILER: u64 = 1 << 3;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -49,9 +59,11 @@ pub struct Message {
     pub editable: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Reply {
     Message {
+        /// The original message's id.
+        id: String,
         author_id: String,
         author: String,
         content: String,
@@ -59,7 +71,7 @@ pub enum Reply {
     Deleted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub size: Option<u64>,
@@ -72,10 +84,12 @@ pub struct Attachment {
     /// The image scaled down to fit the viewer, by the same proxy.
     pub view_url: Option<String>,
     pub shown: Shown,
+    /// Marked as a spoiler: by a name starting `SPOILER_`, or by its flags.
+    pub spoiler: bool,
 }
 
 /// Where a message's picture shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Shown {
     /// With the message's attached files and images.
     #[default]
@@ -86,9 +100,11 @@ pub enum Shown {
     Thumbnail(usize),
     /// Large, as the poster of the video embed at this index.
     Poster(usize),
+    /// On its own, without a frame: a sticker.
+    Sticker,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Reaction {
     /// What Talk shows: the emoji itself, or `:name:` for a custom one.
     pub key: String,
@@ -236,6 +252,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         Value::Object(_) => {
             let original = &value["referenced_message"];
             Reply::Message {
+                id: original["id"].as_str().unwrap_or_default().into(),
                 author_id: original["author"]["id"].as_str().unwrap_or_default().into(),
                 author: author_name(original).into(),
                 content: original["content"].as_str().unwrap_or_default().into(),
@@ -251,8 +268,9 @@ pub fn parse(value: &Value) -> Option<Message> {
             let image = attachment["content_type"]
                 .as_str()
                 .is_some_and(|kind| kind.starts_with("image/"));
+            let name = attachment["filename"].as_str()?;
             Some(Attachment {
-                name: attachment["filename"].as_str()?.into(),
+                name: name.into(),
                 size: attachment["size"].as_u64(),
                 url: attachment["url"].as_str()?.into(),
                 image,
@@ -269,6 +287,8 @@ pub fn parse(value: &Value) -> Option<Message> {
                     .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT))
                     .flatten(),
                 shown: Shown::Message,
+                spoiler: name.starts_with("SPOILER_")
+                    || attachment["flags"].as_u64().unwrap_or_default() & IS_SPOILER != 0,
             })
         })
         .collect::<Vec<_>>();
@@ -296,14 +316,38 @@ pub fn parse(value: &Value) -> Option<Message> {
         content.clear();
     }
     let mut attachments = attachments;
-    attachments.extend(embeds.pictures);
+    // A link in a spoiler spoils its preview too.
+    let spoiled = spoils_links(&content);
+    attachments.extend(embeds.pictures.into_iter().map(|mut picture| {
+        picture.spoiler |= spoiled;
+        picture
+    }));
+    // Stickers show as pictures, but Lottie animations, which Talk can't draw,
+    // show their name.
     for sticker in value["sticker_items"].as_array().into_iter().flatten() {
-        if let Some(name) = sticker["name"].as_str() {
+        let (Some(id), Some(name)) = (sticker["id"].as_str(), sticker["name"].as_str()) else {
+            continue;
+        };
+        let format = sticker["format_type"].as_u64().unwrap_or(STICKER_PNG);
+        if format == STICKER_LOTTIE {
             if !content.is_empty() {
                 content.push('\n');
             }
             content.push_str(&format!("Sticker: {name}"));
+            continue;
         }
+        let url = ready::sticker(id, format == STICKER_GIF);
+        attachments.push(Attachment {
+            name: name.into(),
+            size: None,
+            url: url.clone(),
+            image: true,
+            dimensions: Some((STICKER_SIZE, STICKER_SIZE)),
+            preview_url: Some(url.clone()),
+            view_url: Some(url),
+            shown: Shown::Sticker,
+            spoiler: false,
+        });
     }
     Some(Message {
         id: value["id"].as_str()?.into(),
@@ -326,6 +370,18 @@ pub fn parse(value: &Value) -> Option<Message> {
     })
 }
 
+/// Whether a spoiler in `content` holds a link.
+fn spoils_links(content: &str) -> bool {
+    let parts: Vec<&str> = content.split("||").collect();
+    let pairs = parts.len().saturating_sub(1) / 2;
+    parts
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .take(pairs)
+        .any(|inside| inside.contains("http"))
+}
+
 /// The size Talk shows image previews at, at most.
 pub const PREVIEW_WIDTH: u64 = 360;
 pub const PREVIEW_HEIGHT: u64 = 270;
@@ -336,7 +392,8 @@ pub const VIEW_HEIGHT: u64 = 1200;
 
 /// Asks Discord's media proxy for the image fitted into `max_width` by
 /// `max_height` and never enlarged, as the official client does, so a phone
-/// photo doesn't download in full.
+/// photo doesn't download in full. It comes as WebP, but a GIF stays a GIF,
+/// so it moves.
 pub(crate) fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) -> Option<String> {
     let url = attachment["proxy_url"].as_str()?;
     let (width, height) = (
@@ -355,11 +412,56 @@ pub(crate) fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) ->
     );
     let fit = |side: u64| ((side as f64 * scale).round() as u64).max(1);
     let separator = if url.contains('?') { '&' } else { '?' };
+    let gif = attachment["content_type"].as_str() == Some("image/gif")
+        || url
+            .split('?')
+            .next()
+            .is_some_and(|path| path.ends_with(".gif"));
+    let format = if gif { "" } else { "format=webp&" };
     Some(format!(
-        "{url}{separator}format=webp&width={}&height={}",
+        "{url}{separator}{format}width={}&height={}",
         fit(width),
         fit(height)
     ))
+}
+
+/// A custom emoji a message shows: in its text as `<:name:id>`, or `<a:name:id>`
+/// when animated, or as a reaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomEmoji {
+    pub name: String,
+    pub id: String,
+    pub animated: bool,
+}
+
+/// The custom emoji in a message's text, each once, in order.
+pub fn custom_emoji(content: &str) -> Vec<CustomEmoji> {
+    let mut found: Vec<CustomEmoji> = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let tag = &rest[..end];
+        let (animated, emoji) = match tag.strip_prefix("a:") {
+            Some(emoji) => (true, emoji),
+            None => (false, tag.strip_prefix(':').unwrap_or_default()),
+        };
+        if let Some((name, id)) = emoji.split_once(':')
+            && !name.is_empty()
+            && !id.is_empty()
+            && id.bytes().all(|byte| byte.is_ascii_digit())
+            && !found.iter().any(|known| known.id == id)
+        {
+            found.push(CustomEmoji {
+                name: name.to_owned(),
+                id: id.to_owned(),
+                animated,
+            });
+        }
+    }
+    found
 }
 
 /// A reaction's emoji object as Talk's key and the API's form.
@@ -380,6 +482,18 @@ fn author_name(message: &Value) -> &str {
         .unwrap_or("Discord user")
 }
 
+/// [`Names`] as saved to disk, where maps keyed by server and user become
+/// lists.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct SavedNames {
+    users: Vec<(String, String)>,
+    nicknames: Vec<(String, String, String)>,
+    members: Vec<(String, String)>,
+    avatars: Vec<(String, String)>,
+    member_avatars: Vec<(String, String, String)>,
+    roles: Vec<(String, String, Vec<String>)>,
+}
+
 /// Who is who, learned from the gateway and from messages.
 #[derive(Default)]
 pub struct Names {
@@ -398,6 +512,51 @@ pub struct Names {
 }
 
 impl Names {
+    pub fn save(&self) -> SavedNames {
+        let pair = |map: &HashMap<String, String>| {
+            map.iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        };
+        let triple = |map: &HashMap<(String, String), String>| {
+            map.iter()
+                .map(|((guild, user), value)| (guild.clone(), user.clone(), value.clone()))
+                .collect()
+        };
+        SavedNames {
+            users: pair(&self.users),
+            nicknames: triple(&self.nicknames),
+            members: self.members.iter().cloned().collect(),
+            avatars: pair(&self.avatars),
+            member_avatars: triple(&self.member_avatars),
+            roles: self
+                .roles
+                .iter()
+                .map(|((guild, user), roles)| (guild.clone(), user.clone(), roles.clone()))
+                .collect(),
+        }
+    }
+
+    pub fn restore(saved: SavedNames) -> Self {
+        let keyed = |list: Vec<(String, String, String)>| {
+            list.into_iter()
+                .map(|(guild, user, value)| ((guild, user), value))
+                .collect()
+        };
+        Self {
+            users: saved.users.into_iter().collect(),
+            nicknames: keyed(saved.nicknames),
+            members: saved.members.into_iter().collect(),
+            avatars: saved.avatars.into_iter().collect(),
+            member_avatars: keyed(saved.member_avatars),
+            roles: saved
+                .roles
+                .into_iter()
+                .map(|(guild, user, roles)| ((guild, user), roles))
+                .collect(),
+        }
+    }
+
     pub fn learn_user(&mut self, user: &Value) {
         let Some(id) = user["id"].as_str() else {
             return;
@@ -499,9 +658,14 @@ impl Names {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// Learns the author and the mentioned users of a message object.
+    /// Learns the author and the mentioned users of a message object, and
+    /// those of the message it replies to.
     pub fn learn_message(&mut self, guild: Option<&str>, message: &Value) {
         self.learn_user(&message["author"]);
+        // Discord doesn't nest a reply's original inside the original.
+        if message["referenced_message"].is_object() {
+            self.learn_message(guild, &message["referenced_message"]);
+        }
         if let (Some(guild), Value::Object(member)) = (guild, &message["member"]) {
             let mut member = Value::Object(member.clone());
             member["user"] = message["author"].clone();
@@ -668,6 +832,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_stickers_and_spoilers() {
+        let message = parse(&json!({
+            "id": "1300000000000000000",
+            "type": 0,
+            "content": "look ||https://example.com/cat.gif||",
+            "author": {"id": "1", "username": "me"},
+            "attachments": [
+                {"filename": "SPOILER_cat.png", "url": "https://cdn/c.png", "content_type": "image/png"},
+                {"filename": "dog.png", "flags": 8, "url": "https://cdn/d.png", "content_type": "image/png"},
+                {"filename": "plain.png", "url": "https://cdn/p.png", "content_type": "image/png"},
+            ],
+            "embeds": [{"type": "image", "url": "https://example.com/cat.gif",
+                "thumbnail": {"url": "https://example.com/cat.gif", "proxy_url": "https://media/cat.gif", "width": 100, "height": 100}}],
+            "sticker_items": [
+                {"id": "7", "name": "Wave", "format_type": 1},
+                {"id": "8", "name": "Dance", "format_type": 4},
+                {"id": "9", "name": "Spin", "format_type": 3},
+            ],
+        }))
+        .unwrap();
+        let spoilers: Vec<bool> = message.attachments.iter().map(|a| a.spoiler).collect();
+        assert_eq!(&spoilers[..3], [true, true, false]);
+        assert!(spoilers[3], "a spoiled link's preview is a spoiler too");
+        let stickers: Vec<(&str, &str)> = message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.shown == Shown::Sticker)
+            .map(|attachment| (attachment.name.as_str(), attachment.url.as_str()))
+            .collect();
+        assert_eq!(
+            stickers,
+            [
+                ("Wave", "https://cdn.discordapp.com/stickers/7.png?size=160"),
+                (
+                    "Dance",
+                    "https://media.discordapp.net/stickers/8.gif?size=160"
+                ),
+            ]
+        );
+        assert!(
+            message.content.ends_with("\nSticker: Spin"),
+            "{}",
+            message.content
+        );
+    }
+
+    #[test]
     fn parses_replies_attachments_and_reactions() {
         let message = parse(&json!({
             "id": "1300000000000000000",
@@ -677,7 +888,7 @@ mod tests {
             "author": {"id": "1", "username": "me", "global_name": "Me"},
             "member": {"nick": "Captain"},
             "edited_timestamp": "2026-10-06T10:00:00.000000+00:00",
-            "referenced_message": {"author": {"id": "2", "username": "ann"}, "content": "hello"},
+            "referenced_message": {"id": "9", "author": {"id": "2", "username": "ann"}, "content": "hello"},
             "attachments": [{"filename": "cat.png", "size": 10, "url": "https://cdn/cat.png", "content_type": "image/png",
                 "proxy_url": "https://media/cat.png?ex=1", "width": 1440, "height": 540}],
             "reactions": [
@@ -691,6 +902,7 @@ mod tests {
         assert_eq!(
             message.reply,
             Some(Reply::Message {
+                id: "9".into(),
                 author_id: "2".into(),
                 author: "ann".into(),
                 content: "hello".into()
@@ -725,6 +937,26 @@ mod tests {
             &json!({"id": "1", "type": 19, "author": {"id": "1"}, "referenced_message": null}),
         );
         assert_eq!(deleted.unwrap().reply, Some(Reply::Deleted));
+    }
+
+    #[test]
+    fn learns_the_author_a_reply_quotes() {
+        let mut names = Names::default();
+        names.learn_message(
+            None,
+            &json!({
+                "id": "1", "type": 19, "author": {"id": "1", "username": "me"},
+                "referenced_message": {
+                    "id": "9", "author": {"id": "2", "username": "ann", "avatar": "abc"},
+                    "content": "hello",
+                },
+            }),
+        );
+        assert!(
+            names
+                .avatar(None, "2")
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
     }
 
     #[test]
@@ -798,6 +1030,21 @@ mod tests {
                 "@Annie @me @Mods in #general :pog: :dance: {} @Discord user a < b",
                 date_time(1_791_295_500)
             )
+        );
+        assert_eq!(
+            custom_emoji("<:pog:5> <a:dance:6> <:pog:5> <@2> <:bad:x> `<:x:>`"),
+            [
+                CustomEmoji {
+                    name: "pog".into(),
+                    id: "5".into(),
+                    animated: false
+                },
+                CustomEmoji {
+                    name: "dance".into(),
+                    id: "6".into(),
+                    animated: true
+                },
+            ]
         );
         assert!(names.knows_member("10", "2") && !names.knows_member("10", "1"));
         assert_eq!(

@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{
     message::{iso_ms, snowflake_at},
-    ready::{Access, PRIVATE, Private, Server},
+    ready::{Access, Channel, PRIVATE, Private, Server},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -389,19 +389,37 @@ impl Unreads {
 
     /// Sets the unread, mention and muted state of a server's channels.
     pub fn mark(&self, server: &mut Server) {
-        let settings = self.settings.get(&server.id);
-        server.muted = settings.is_some_and(|settings| settings.muted);
+        server.muted = self.server_muted(&server.id);
+        let id = server.id.clone();
+        for channel in &mut server.text_channels {
+            (channel.muted, channel.unread, channel.mentions) =
+                self.channel(&id, channel, channel.access);
+        }
+    }
+
+    /// Whether a server is muted in the notification settings.
+    pub fn server_muted(&self, guild: &str) -> bool {
+        self.settings
+            .get(guild)
+            .is_some_and(|settings| settings.muted)
+    }
+
+    /// A server's text channel's muted, unread and mention state, as
+    /// [`Self::mark`] sets it, for an account with `access` to it.
+    pub fn channel(&self, guild: &str, channel: &Channel, access: Access) -> (bool, bool, u64) {
+        let settings = self.settings.get(guild);
         let channel_muted = |id: &str| {
             settings.is_some_and(|settings| settings.muted_channels.get(id) == Some(&true))
         };
-        for channel in &mut server.text_channels {
-            channel.muted =
-                channel_muted(&channel.id) || channel.parent.as_deref().is_some_and(channel_muted);
-            let (unread, mentions) = self.state(&server.id, &channel.id);
-            let readable = channel.access != Access::Hidden;
-            channel.unread = readable && unread && !channel.muted;
-            channel.mentions = if readable { mentions } else { 0 };
-        }
+        let muted =
+            channel_muted(&channel.id) || channel.parent.as_deref().is_some_and(channel_muted);
+        let (unread, mentions) = self.state(guild, &channel.id);
+        let readable = access != Access::Hidden;
+        (
+            muted,
+            readable && unread && !muted,
+            if readable { mentions } else { 0 },
+        )
     }
 
     /// Sets the unread, mention and muted state of a DM. A muted DM shows

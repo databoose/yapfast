@@ -200,8 +200,10 @@ pub(crate) struct Calls {
     /// The session lease holds the SDK store lock until native departure finishes.
     #[cfg(feature = "matrix")]
     pub session: SessionLease,
+    /// The linked Discord account, which linking or unlinking changes while
+    /// Talk runs.
     #[cfg(feature = "discord")]
-    pub discord: Option<Discord>,
+    pub discord: watch::Receiver<Option<Discord>>,
 }
 
 pub struct Controller {
@@ -212,7 +214,7 @@ pub struct Controller {
     #[cfg(feature = "matrix")]
     devices: Option<PathBuf>,
     #[cfg(all(feature = "matrix", feature = "discord"))]
-    discord: Option<Discord>,
+    discord: watch::Receiver<Option<Discord>>,
 }
 
 impl Controller {
@@ -221,7 +223,7 @@ impl Controller {
         let calls = Calls {
             session,
             #[cfg(feature = "discord")]
-            discord: None,
+            discord: watch::channel(None).1,
         };
         Self::start_remembering(calls, None)
     }
@@ -374,10 +376,11 @@ async fn join(
 ) -> Result<()> {
     #[cfg(feature = "discord")]
     if crate::discord::is_discord(&id) {
-        return match (&calls.discord, crate::discord::parse_room(&id)) {
+        let discord = calls.discord.borrow().clone();
+        return match (discord, crate::discord::parse_room(&id)) {
             (Some(discord), Some((guild, channel))) => {
                 crate::discord_voice::call(
-                    discord, guild, channel, state, commands, snapshots, remembered,
+                    &discord, guild, channel, state, commands, snapshots, remembered,
                 )
                 .await
             }

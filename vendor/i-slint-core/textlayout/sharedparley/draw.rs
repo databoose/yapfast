@@ -247,6 +247,7 @@ impl TextParagraph {
                 };
             }
         }
+        self.draw_spoiler_covers(item_renderer, para_y, last_drawn);
     }
 
     /// Paints a translucent rounded capsule under every glyph run that lies inside one of
@@ -359,6 +360,50 @@ impl TextParagraph {
                     .platform_brush_for_color(&border)
                     .map(|brush| RectangleBorder { brush, width: border_width });
                 item_renderer.fill_rectangle(bg_rect, fill_brush, radius, border_brush);
+            }
+        }
+    }
+
+    /// Talk: covers each line of a hidden spoiler, a link to `talk:spoiler/`, with an
+    /// opaque pill drawn over its glyphs; clicking the link reveals it.
+    fn draw_spoiler_covers<R: GlyphRenderer>(
+        &self,
+        item_renderer: &mut R,
+        para_y: PhysicalLength,
+        last_drawn: usize,
+    ) {
+        const RADIUS: LogicalLength = LogicalLength::new(4.0);
+        const PADDING: LogicalLength = LogicalLength::new(2.0);
+        let spoilers = self.links.iter().filter(|(_, link)| link.starts_with("talk:spoiler/"));
+        let scale_factor = item_renderer.scale_factor();
+        let padding = (PADDING * scale_factor).get();
+        let cover = Color::from_rgb_u8(0x3a, 0x3c, 0x45);
+        for (range, _) in spoilers {
+            let Some(brush) = item_renderer.platform_brush_for_color(&cover) else {
+                return;
+            };
+            let start =
+                parley::editing::Cursor::from_byte_index(&self.layout, range.start, Default::default());
+            let end =
+                parley::editing::Cursor::from_byte_index(&self.layout, range.end, Default::default());
+            let mut boxes = alloc::vec::Vec::new();
+            parley::Selection::new(start, end).geometry_with(&self.layout, |bounding_box, line| {
+                if line <= last_drawn {
+                    boxes.push(bounding_box);
+                }
+            });
+            for bounding_box in boxes {
+                let rect = PhysicalRect::new(
+                    PhysicalPoint::from_lengths(
+                        PhysicalLength::new(bounding_box.x0 as f32 - padding),
+                        PhysicalLength::new(bounding_box.y0 as f32) + para_y,
+                    ),
+                    PhysicalSize::new(
+                        (bounding_box.x1 - bounding_box.x0) as f32 + 2.0 * padding,
+                        ((bounding_box.y1 - bounding_box.y0) as f32).max(1.0),
+                    ),
+                );
+                item_renderer.fill_rectangle(rect, brush.clone(), RADIUS * scale_factor, None);
             }
         }
     }

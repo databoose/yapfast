@@ -20,6 +20,8 @@ pub mod discord;
 #[cfg(feature = "discord")]
 pub mod discord_audio;
 #[cfg(feature = "discord")]
+pub mod discord_link;
+#[cfg(feature = "discord")]
 pub mod discord_text;
 #[cfg(feature = "discord")]
 mod discord_voice;
@@ -43,6 +45,8 @@ pub mod runtime;
 #[cfg(feature = "matrix")]
 pub mod session;
 #[cfg(feature = "discord")]
+pub mod spoiler;
+#[cfg(feature = "discord")]
 pub mod stream_audio;
 #[cfg(feature = "discord")]
 pub mod stream_worker;
@@ -63,6 +67,14 @@ pub fn default_directory() -> anyhow::Result<std::path::PathBuf> {
     directories::ProjectDirs::from("chat", "Talk", "Talk")
         .map(|dirs| dirs.data_local_dir().to_owned())
         .context("could not find an application data directory; pass --data-dir")
+}
+
+/// Keeps the cookies Discord sets, and the account as last seen, in `root`
+/// across restarts.
+#[cfg(feature = "discord")]
+pub fn keep_discord_files(root: &std::path::Path) {
+    talk_discord::cookies::keep_in(root.join("discord-cookies.json"));
+    talk_discord::cache::keep_in(root.join("discord-account.json"));
 }
 
 /// Check linked native services without a session, network request or audio device.

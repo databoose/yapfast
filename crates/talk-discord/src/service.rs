@@ -15,11 +15,13 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
     api::Api,
-    gateway::{Closed, Gateway},
+    cache,
+    gateway::{Closed, Gateway, Invalidated},
     member_list::{self, ListedMember, MemberList, Presence},
     message::{self, Message, Names},
     profile::{self, Profile},
-    ready::{self, PRIVATE, Private, Server},
+    ready::{self, Access, PRIVATE, Private, Server},
+    settings::{self, CustomStatus},
     stream::{self, Opening, StreamServer},
     unread::Unreads,
 };
@@ -46,7 +48,7 @@ pub struct VoiceMember {
 }
 
 /// The linked account, as Discord shows it outside any server.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Account {
     pub name: String,
     /// The address of its avatar.
@@ -57,7 +59,7 @@ pub struct Account {
 }
 
 /// A DM or group DM, as the DM list shows it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Conversation {
     pub id: String,
     pub name: String,
@@ -79,11 +81,19 @@ pub struct Conversation {
     /// A call is going on here. Who is in it is in [`Snapshot::voice`].
     pub call: bool,
     /// Whom Discord is ringing for the call, this account perhaps among them.
+    #[serde(skip)]
     pub ringing: Vec<VoiceMember>,
+    /// A one-to-one DM's other person: whether they're around, when Discord
+    /// says so of a friend, and their custom status or what they're doing.
+    /// Not saved, since it's stale by the next start.
+    #[serde(skip)]
+    pub presence: Option<Presence>,
+    #[serde(skip)]
+    pub activity: Option<String>,
 }
 
 /// A friend request, sent to this account or by it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FriendRequest {
     pub user_id: String,
     pub name: String,
@@ -92,6 +102,20 @@ pub struct FriendRequest {
     pub incoming: bool,
     /// Discord took it for spam.
     pub spam: bool,
+}
+
+/// A friend as the friends list shows them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Friend {
+    pub user_id: String,
+    pub name: String,
+    pub avatar: String,
+    /// Whether they're around and their custom status or what they're doing,
+    /// when Discord says. Not saved, since it's stale by the next start.
+    #[serde(skip)]
+    pub presence: Option<Presence>,
+    #[serde(skip)]
+    pub activity: Option<String>,
 }
 
 /// Someone this account can start a DM with.
@@ -104,23 +128,40 @@ pub struct Person {
     pub friend: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+/// What the account looks like now. [`crate::cache`] keeps all but the live
+/// parts, the connection and voice, to show on the next start.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
+    #[serde(skip)]
     pub status: Status,
     pub user_id: Option<String>,
     pub account: Option<Account>,
-    pub servers: Vec<Server>,
+    /// Shared between snapshots while unchanged, so publishing one copies
+    /// only the servers that changed.
+    pub servers: Vec<Arc<Server>>,
     /// DMs and group DMs, the latest conversation first.
     pub conversations: Vec<Conversation>,
     /// The account's friends, by user id.
     pub friends: Vec<String>,
+    /// The same friends by name, as the friends list shows them.
+    #[serde(default)]
+    pub friend_list: Vec<Friend>,
+    /// Those this account blocked, by user id. Their messages show collapsed,
+    /// and they don't notify.
+    pub blocked: Vec<String>,
+    /// This account's status: `online`, `idle`, `dnd` or `invisible`.
+    pub presence: String,
+    /// This account's custom status, until it ends.
+    pub custom_status: Option<CustomStatus>,
     /// Friend requests waiting for an answer: those sent to this account
     /// first, then those it sent, the newest first in each.
     pub friend_requests: Vec<FriendRequest>,
     /// Who is in each voice channel, by channel id and then by name.
+    #[serde(skip)]
     pub voice: HashMap<String, Vec<VoiceMember>>,
     /// The channel whose member list is on screen, and how many people can
     /// read it.
+    #[serde(skip)]
     pub listed: Option<(String, u64)>,
 }
 
@@ -239,13 +280,15 @@ enum Request {
         stream_key: String,
         paused: bool,
     },
+    /// The custom status changed in the settings; this session shows it.
+    CustomStatus(Option<CustomStatus>),
 }
 
 /// A handle to the connection. It ends when every handle is dropped.
 #[derive(Clone)]
 pub struct Discord {
     requests: mpsc::UnboundedSender<Request>,
-    snapshots: watch::Receiver<Snapshot>,
+    snapshots: watch::Receiver<Arc<Snapshot>>,
     live: broadcast::Sender<Live>,
     api: Arc<Api>,
     names: Arc<RwLock<Names>>,
@@ -272,9 +315,25 @@ impl Discord {
     pub fn start(token: String) -> Result<Self> {
         let api = Arc::new(Api::new(token.clone())?);
         let (requests, receiver) = mpsc::unbounded_channel();
-        let (snapshots, watcher) = watch::channel(Snapshot::default());
+        // The account as last seen shows while Talk connects.
+        let cache::Loaded {
+            snapshot: cached,
+            names,
+            lists,
+        } = cache::load(&token);
+        let presence = settings::presence(
+            if cached.presence.is_empty() {
+                "online"
+            } else {
+                &cached.presence
+            },
+            cached.custom_status.as_ref(),
+            now_ms(),
+        );
+        let (snapshots, watcher) = watch::channel(Arc::new(cached));
         let (live, _) = broadcast::channel(LIVE_BACKLOG);
-        let names = Arc::new(RwLock::new(Names::default()));
+        let names = Arc::new(RwLock::new(names));
+        tokio::spawn(cache::keep(watcher.clone(), names.clone()));
         tokio::spawn(run(
             token,
             receiver,
@@ -285,8 +344,9 @@ impl Discord {
                 api: api.clone(),
                 viewing: HashSet::new(),
                 listing: None,
-                lists: Vec::new(),
+                lists,
                 group: None,
+                presence,
             },
         ));
         Ok(Self {
@@ -299,7 +359,7 @@ impl Discord {
         })
     }
 
-    pub fn snapshots(&self) -> watch::Receiver<Snapshot> {
+    pub fn snapshots(&self) -> watch::Receiver<Arc<Snapshot>> {
         self.snapshots.clone()
     }
 
@@ -483,6 +543,24 @@ impl Discord {
         Ok(true)
     }
 
+    /// Ends this login's session on Discord; the token stops working.
+    pub async fn logout(&self) -> Result<()> {
+        self.api.logout().await
+    }
+
+    /// Sends a friend request to whoever has this username.
+    pub async fn add_friend_by_username(&self, username: &str) -> Result<()> {
+        self.api.add_friend_by_username(username).await
+    }
+
+    /// Sets or clears the custom status, everywhere this account is signed
+    /// in, and shows it from this session.
+    pub async fn set_custom_status(&self, custom: Option<CustomStatus>) -> Result<()> {
+        self.api.set_custom_status(custom.as_ref()).await?;
+        let _ = self.requests.send(Request::CustomStatus(custom));
+        Ok(())
+    }
+
     /// Sends someone a friend request from their profile, or accepts theirs.
     /// The lists change when Discord confirms it.
     pub async fn befriend(&self, user: &str) -> Result<()> {
@@ -514,8 +592,14 @@ impl Discord {
         self.api.stream_preview(stream_key, thumbnail).await
     }
 
+    /// Downloads a file from Discord's CDN, or a picture kept on disk.
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
-        self.api.download(url, limit).await
+        if let Some(kept) = cache::picture(url).await.filter(|kept| kept.len() <= limit) {
+            return Ok(kept);
+        }
+        let data = self.api.download(url, limit).await?;
+        cache::keep_picture(url, data.clone()).await;
+        Ok(data)
     }
 
     /// A user's name in a server: their nickname, display name or username.
@@ -555,7 +639,7 @@ impl Discord {
     /// an empty query, the friends alone.
     pub fn find_people(&self, query: &str) -> Vec<Person> {
         let snapshot = self.snapshots.borrow().clone();
-        let me = snapshot.user_id.unwrap_or_default();
+        let me = snapshot.user_id.clone().unwrap_or_default();
         let names = self.read_names();
         let person = |id: &String, friend: bool| Person {
             id: id.clone(),
@@ -700,19 +784,24 @@ fn server(guild: &str) -> Option<&str> {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
-/// Relationship types: a friend, and friend requests to and from this account.
+/// Relationship types: a friend, someone blocked, and friend requests to and
+/// from this account.
 const FRIEND: u64 = 1;
+const BLOCKED: u64 = 2;
 const INCOMING_REQUEST: u64 = 3;
 const OUTGOING_REQUEST: u64 = 4;
 /// How long a member search waits for Discord.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Snapshots go out at most this often: the first change after a quiet
+/// spell at once, and a burst of them together.
+const PUBLISH_GAP: Duration = Duration::from_millis(100);
 /// Reads within this long go to Discord as one acknowledgement per channel.
 const ACK_DELAY: Duration = Duration::from_secs(1);
 const FIRST_RETRY: Duration = Duration::from_secs(2);
 const LAST_RETRY: Duration = Duration::from_secs(60);
 
 struct Shared {
-    snapshots: watch::Sender<Snapshot>,
+    snapshots: watch::Sender<Arc<Snapshot>>,
     live: broadcast::Sender<Live>,
     names: Arc<RwLock<Names>>,
     api: Arc<Api>,
@@ -725,48 +814,88 @@ struct Shared {
     lists: Vec<MemberList>,
     /// The group DM on screen, whose members Talk lists itself.
     group: Option<String>,
+    /// The presence this session last sent, which it identifies with again.
+    presence: Value,
 }
 
 /// Member lists kept for channels shown again.
-const LISTS: usize = 16;
+const LISTS: usize = 40;
+/// How long a member list Discord sent stands without asking again. A list
+/// Discord still sends stays current however old.
+const LIST_FRESH: Duration = Duration::from_secs(10 * 60);
 
 impl Shared {
-    /// Keeps a member list Discord sent, for when its channel is shown again.
+    /// Keeps a member list Discord sent, for when a channel with the same
+    /// readers is shown again.
     fn keep_list(&mut self, list: MemberList) {
         if !list.synced() {
             return;
         }
-        self.lists.retain(|kept| kept.channel() != list.channel());
+        self.lists
+            .retain(|kept| kept.guild() != list.guild() || kept.readers() != list.readers());
         self.lists.push(list);
         if self.lists.len() > LISTS {
             self.lists.remove(0);
         }
+        cache::keep_lists(self.lists.clone());
     }
 
-    /// The member list kept for a channel, or an empty one.
-    fn take_list(&mut self, guild: &str, channel: &str) -> MemberList {
+    /// The member list kept for channels with these readers, shown for
+    /// `channel`, or an empty one.
+    fn take_list(&mut self, guild: &str, channel: &str, readers: &str) -> MemberList {
         match self
             .lists
             .iter()
-            .position(|list| list.guild() == guild && list.channel() == channel)
+            .position(|list| list.guild() == guild && list.readers() == readers)
         {
             Some(index) => {
                 let mut list = self.lists.remove(index);
-                list.revisit();
+                list.show_for(channel);
                 list
             }
-            None => MemberList::new(guild.to_owned(), channel.to_owned()),
+            None => MemberList::new(guild.to_owned(), channel.to_owned(), readers.to_owned()),
         }
     }
+}
+
+/// Asks Discord for the member list on screen, unless Discord already sends
+/// it or sent it within [`LIST_FRESH`]; then `stale` fires when it's due.
+/// `subscribed` holds the readers each server's subscription lists.
+async fn refresh_list(
+    gateway: &mut Gateway,
+    tracker: &mut Tracker,
+    subscribed: &mut HashMap<String, String>,
+    stale: std::pin::Pin<&mut tokio::time::Sleep>,
+) -> Result<()> {
+    let Some(list) = tracker.list.as_mut() else {
+        return Ok(());
+    };
+    if subscribed
+        .get(list.guild())
+        .is_some_and(|readers| readers == list.readers())
+    {
+        return Ok(());
+    }
+    if list.heard_within(LIST_FRESH)
+        && let Some(at) = list.stale_at(LIST_FRESH)
+    {
+        stale.reset(at.into());
+        return Ok(());
+    }
+    // Discord's sync replaces what was kept, even under another id, as when
+    // the readers changed meanwhile.
+    list.revisit();
+    subscribed.insert(list.guild().to_owned(), list.readers().to_owned());
+    gateway.subscribe(list.guild(), Some(list.channel())).await
 }
 
 async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut shared: Shared) {
     let snapshots = shared.snapshots.clone();
     let mut retry = FIRST_RETRY;
     loop {
-        snapshots.send_modify(|snapshot| snapshot.status = Status::Connecting);
+        snapshots.send_modify(|snapshot| Arc::make_mut(snapshot).status = Status::Connecting);
         let connected = tokio::select! {
-            connected = Gateway::connect(&token) => connected,
+            connected = Gateway::connect(&token, shared.presence.clone()) => connected,
             () = snapshots.closed() => return,
         };
         let error = match connected {
@@ -783,6 +912,7 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
         tracing::warn!(%error, "Discord connection ended");
         if closed.is_some_and(Closed::is_final) {
             snapshots.send_modify(|snapshot| {
+                let snapshot = Arc::make_mut(snapshot);
                 snapshot.status = Status::Offline(
                     "Discord refused the saved login. Link your Discord account again.".into(),
                 );
@@ -795,10 +925,19 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
             return;
         }
         snapshots.send_modify(|snapshot| {
+            let snapshot = Arc::make_mut(snapshot);
             snapshot.status = Status::Offline("Can't reach Discord. Reconnecting...".into());
             snapshot.voice.clear();
         });
-        let wait = tokio::time::sleep(retry);
+        // Discord asks for a random wait of one to five seconds after it ends
+        // a session; other retries back off, spread so clients don't return
+        // together.
+        let wait = if error.downcast_ref::<Invalidated>().is_some() {
+            Duration::from_millis(rand::random_range(1_000..5_000))
+        } else {
+            retry.mul_f64(rand::random_range(0.5..1.0))
+        };
+        let wait = tokio::time::sleep(wait);
         tokio::pin!(wait);
         loop {
             tokio::select! {
@@ -824,12 +963,46 @@ fn refuse(request: Request, shared: &mut Shared) {
         Request::View { guild, channel } if guild == PRIVATE => shared.group = channel,
         Request::View { guild, channel } => {
             if let Some(channel) = channel {
+                show_kept_members(shared, &guild, &channel);
                 shared.listing = Some((guild.clone(), channel));
             }
             shared.group = None;
             shared.viewing.insert(guild);
         }
         _ => {}
+    }
+}
+
+/// Shows the member list kept for a channel while Discord can't send it,
+/// as when starting from the saved account.
+fn show_kept_members(shared: &Shared, guild: &str, channel: &str) {
+    let snapshot = shared.snapshots.borrow().clone();
+    let Some(server) = snapshot.servers.iter().find(|server| server.id == guild) else {
+        return;
+    };
+    let readers = server.readers(channel);
+    let Some(list) = shared
+        .lists
+        .iter()
+        .find(|list| list.guild() == guild && list.readers() == readers && list.synced())
+    else {
+        return;
+    };
+    let members = {
+        let names = shared
+            .names
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        list.members(Some(server), &names)
+    };
+    let _ = shared.live.send(Live::Members {
+        channel: channel.to_owned(),
+        members,
+    });
+    if let Some(count) = list.count() {
+        shared.snapshots.send_modify(|snapshot| {
+            Arc::make_mut(snapshot).listed = Some((channel.to_owned(), count))
+        });
     }
 }
 
@@ -900,6 +1073,39 @@ struct PendingStream {
     opening: Opening,
 }
 
+/// Unix milliseconds now.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// How long until the custom status ends by itself; long when it doesn't.
+fn status_left(tracker: &Tracker) -> Duration {
+    tracker
+        .custom_status
+        .as_ref()
+        .and_then(|custom| custom.expires_at_ms)
+        .map_or(Duration::from_secs(86_400 * 365), |at| {
+            Duration::from_millis(at.saturating_sub(now_ms()))
+        })
+}
+
+/// Sends the gateway this session's presence when it changed.
+async fn show_presence(
+    gateway: &mut Gateway,
+    tracker: &Tracker,
+    shared: &mut Shared,
+) -> Result<()> {
+    let presence = tracker.own_presence();
+    if presence != shared.presence {
+        gateway.update_presence(presence.clone()).await?;
+        shared.presence = presence;
+    }
+    Ok(())
+}
+
 fn fail_streams(openings: &mut HashMap<String, PendingStream>, message: &str) {
     for (_, waiting) in openings.drain() {
         let _ = waiting.reply.send(Err(anyhow!("{message}")));
@@ -916,22 +1122,31 @@ async fn connected_session(
         return Ended::Failed(anyhow!("Discord's READY had no user"));
     };
     let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
-    shared.snapshots.send_replace(tracker.snapshot());
+    shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
+    // This session shows the status the settings hold, as Discord's own apps do.
+    if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
+        return Ended::Failed(error);
+    }
     publish_group(&tracker, shared);
-    tracker.list = shared
-        .listing
-        .clone()
-        .map(|(guild, channel)| shared.take_list(&guild, &channel));
+    tracker.list = shared.listing.clone().map(|(guild, channel)| {
+        let readers = tracker.readers(&guild, &channel);
+        shared.take_list(&guild, &channel, &readers)
+    });
+    // A new session has no subscriptions: those of servers on screen go again.
+    let mut subscribed: HashMap<String, String> = HashMap::new();
     for guild in &shared.viewing {
-        let channel = tracker
-            .list
-            .as_ref()
-            .filter(|list| list.guild() == guild)
-            .map(MemberList::channel);
-        if let Err(error) = gateway.subscribe(guild, channel).await {
+        let mut channel = None;
+        if let Some(list) = tracker.list.as_mut().filter(|list| list.guild() == guild) {
+            list.revisit();
+            subscribed.insert(guild.clone(), list.readers().to_owned());
+            channel = Some(list.channel().to_owned());
+        }
+        if let Err(error) = gateway.subscribe(guild, channel.as_deref()).await {
             return Ended::Failed(error);
         }
     }
+    let list_stale = tokio::time::sleep(LIST_FRESH);
+    tokio::pin!(list_stale);
     let mut pending: Option<Pending> = None;
     let deadline = tokio::time::sleep(JOIN_TIMEOUT);
     tokio::pin!(deadline);
@@ -945,8 +1160,29 @@ async fn connected_session(
     let mut search_nonce = 0u64;
     let ack_at = tokio::time::sleep(ACK_DELAY);
     tokio::pin!(ack_at);
+    // When the custom status ends by itself.
+    let status_ends = tokio::time::sleep(status_left(&tracker));
+    tokio::pin!(status_ends);
+    // The account changed since the last snapshot; one goes out when
+    // `publish_at` comes, PUBLISH_GAP after the last.
+    let mut stale = false;
+    let mut scheduled = false;
+    let mut published = tokio::time::Instant::now();
+    let publish_at = tokio::time::sleep(Duration::ZERO);
+    tokio::pin!(publish_at);
     loop {
+        if stale && !scheduled {
+            publish_at
+                .as_mut()
+                .reset((published + PUBLISH_GAP).max(tokio::time::Instant::now()));
+            scheduled = true;
+        }
         tokio::select! {
+            () = &mut publish_at, if scheduled => {
+                shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
+                published = tokio::time::Instant::now();
+                (stale, scheduled) = (false, false);
+            }
             request = requests.recv() => {
                 let Some(request) = request else {
                     gateway.close().await;
@@ -979,25 +1215,32 @@ async fn connected_session(
                         shared.group = None;
                         let new = shared.viewing.insert(guild.clone());
                         match channel {
-                            Some(channel) if shared.listing.as_ref().is_none_or(|(g, c)| *g != guild || *c != channel) => {
+                            Some(channel) => {
                                 shared.listing = Some((guild.clone(), channel.clone()));
-                                let list = shared.take_list(&guild, &channel);
-                                if let Some(previous) = tracker.list.replace(list) {
-                                    shared.keep_list(previous);
+                                let readers = tracker.readers(&guild, &channel);
+                                match tracker.list.as_mut() {
+                                    // Channels with the same readers share a list.
+                                    Some(list) if list.guild() == guild && list.readers() == readers => {
+                                        list.show_for(&channel);
+                                    }
+                                    _ => {
+                                        let list = shared.take_list(&guild, &channel, &readers);
+                                        if let Some(previous) = tracker.list.replace(list) {
+                                            shared.keep_list(previous);
+                                        }
+                                    }
                                 }
                                 // Shown at once from the cache, until Discord's sync.
                                 if tracker.list.as_ref().is_some_and(MemberList::synced) {
                                     publish_members(&tracker, shared);
                                 }
-                                shared.snapshots.send_replace(tracker.snapshot());
-                                gateway.subscribe(&guild, Some(&channel)).await
-                            }
-                            // The same channel again: what Discord sent still stands.
-                            Some(_) => {
-                                if tracker.list.as_ref().is_some_and(MemberList::synced) {
-                                    publish_members(&tracker, shared);
+                                stale = true;
+                                let sent = refresh_list(&mut gateway, &mut tracker, &mut subscribed, list_stale.as_mut()).await;
+                                if new && !subscribed.contains_key(&guild) {
+                                    gateway.subscribe(&guild, None).await.and(sent)
+                                } else {
+                                    sent
                                 }
-                                Ok(())
                             }
                             None if new => gateway.subscribe(&guild, None).await,
                             None => Ok(()),
@@ -1005,7 +1248,7 @@ async fn connected_session(
                     }
                     Request::MarkRead { guild, channel, sync } => {
                         if let Some(message) = tracker.unreads.mark_read(&guild, &channel) {
-                            shared.snapshots.send_replace(tracker.snapshot());
+                            stale = true;
                             if sync {
                                 if acks.is_empty() {
                                     ack_at.as_mut().reset(tokio::time::Instant::now() + ACK_DELAY);
@@ -1064,6 +1307,14 @@ async fn connected_session(
                     Request::PauseStream { stream_key, paused } => {
                         gateway.pause_stream(&stream_key, paused).await
                     }
+                    Request::CustomStatus(custom) => {
+                        // The settings update that follows says the same; this
+                        // shows it without waiting.
+                        tracker.custom_status = custom;
+                        stale = true;
+                        status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
+                        show_presence(&mut gateway, &tracker, shared).await
+                    }
                     Request::Search { guild, query, reply } => {
                         search_nonce += 1;
                         let nonce = format!("talk-search-{search_nonce}");
@@ -1083,6 +1334,19 @@ async fn connected_session(
                     }
                 };
                 if let Err(error) = sent {
+                    return Ended::Failed(error);
+                }
+            }
+            () = &mut status_ends, if tracker.custom_status.as_ref().is_some_and(|custom| custom.expires_at_ms.is_some()) => {
+                tracker.custom_status = None;
+                stale = true;
+                if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
+                    return Ended::Failed(error);
+                }
+            }
+            () = &mut list_stale, if tracker.list.as_ref().is_some_and(|list| subscribed.get(list.guild()).is_none_or(|readers| readers != list.readers())) => {
+                // The list on screen went stale without Discord sending it.
+                if let Err(error) = refresh_list(&mut gateway, &mut tracker, &mut subscribed, list_stale.as_mut()).await {
                     return Ended::Failed(error);
                 }
             }
@@ -1140,17 +1404,35 @@ async fn connected_session(
                 {
                     publish_members(&tracker, shared);
                 }
-                if event.name == "GUILD_MEMBER_LIST_UPDATE"
-                    && let Some(list) = tracker.list.as_mut()
-                {
-                    let count = list.count();
-                    let changed = list.apply(&event.data, &mut shared.names.write().unwrap_or_else(|poisoned| poisoned.into_inner()));
-                    let counted = list.count() != count;
+                if event.name == "GUILD_MEMBER_LIST_UPDATE" {
+                    let mut names = shared.names.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let (mut changed, mut counted, mut synced) = (false, false, false);
+                    if let Some(list) = tracker.list.as_mut() {
+                        let (count, settled) = (list.count(), list.settled());
+                        changed = list.apply(&event.data, &mut names);
+                        counted = list.count() != count;
+                        synced = !settled && list.settled();
+                    }
+                    // Or a list kept from before, which Discord still sends.
+                    if !changed {
+                        for kept in shared.lists.iter_mut().filter(|kept| kept.settled()) {
+                            if kept.apply(&event.data, &mut names) {
+                                break;
+                            }
+                        }
+                    }
+                    drop(names);
+                    // A list Discord just sent is saved for the next start.
+                    if synced {
+                        cache::keep_lists(
+                            shared.lists.iter().chain(tracker.list.as_ref()).cloned().collect(),
+                        );
+                    }
                     if changed {
                         publish_members(&tracker, shared);
                     }
                     if counted {
-                        shared.snapshots.send_replace(tracker.snapshot());
+                        stale = true;
                     }
                 }
                 if event.name == "GUILD_MEMBERS_CHUNK"
@@ -1178,7 +1460,13 @@ async fn connected_session(
                     let _ = shared.live.send(Live::Notify { guild, message });
                 }
                 if tracker.apply(&event.name, &event.data) {
-                    shared.snapshots.send_replace(tracker.snapshot());
+                    stale = true;
+                }
+                if event.name == "USER_SETTINGS_PROTO_UPDATE" {
+                    status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
+                    if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
+                        return Ended::Failed(error);
+                    }
                 }
                 // Server events, such as presences in a server, don't change a group.
                 if shared.group.is_some()
@@ -1213,7 +1501,11 @@ struct Tracker {
     me: String,
     /// This account's Nitro, as [`Account::premium_type`].
     premium: u8,
-    servers: Vec<Server>,
+    /// Changed through [`Self::server_mut`], which copies one a snapshot
+    /// still shares.
+    servers: Vec<Arc<Server>>,
+    /// Each server as the last snapshot marked it, by id.
+    published: HashMap<String, Published>,
     names: Arc<RwLock<Names>>,
     /// Where each user is in voice, by server and user id; DM and group DM
     /// calls go under [`PRIVATE`].
@@ -1231,6 +1523,13 @@ struct Tracker {
     presences: HashMap<String, (Presence, Option<String>)>,
     /// The account's friends, by user id.
     friends: Vec<String>,
+    /// Those this account blocked, by user id.
+    blocked: Vec<String>,
+    /// The server list's order, from the settings.
+    order: Vec<String>,
+    /// This account's status and custom status, from its settings.
+    status: String,
+    custom_status: Option<CustomStatus>,
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
@@ -1249,7 +1548,8 @@ impl Tracker {
         let mut tracker = Self {
             me,
             premium: premium_type(&ready["user"]),
-            servers: ready::servers(ready),
+            servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
+            published: HashMap::new(),
             names,
             voice: HashMap::new(),
             calls: HashMap::new(),
@@ -1259,8 +1559,16 @@ impl Tracker {
             private: Vec::new(),
             presences: HashMap::new(),
             friends: Vec::new(),
+            blocked: Vec::new(),
+            order: Vec::new(),
+            status: "online".into(),
+            custom_status: None,
             requests: HashMap::new(),
         };
+        tracker.sort_servers();
+        if let Some(encoded) = ready["user_settings_proto"].as_str() {
+            tracker.settings(encoded);
+        }
         for relationship in ready["relationships"].as_array().into_iter().flatten() {
             tracker.relationship(relationship);
         }
@@ -1360,8 +1668,8 @@ impl Tracker {
                     self.learn_member(&server.id, member);
                 }
                 self.servers.retain(|known| known.id != server.id);
-                self.servers.push(server);
-                ready::sort_servers(&mut self.servers);
+                self.servers.push(Arc::new(server));
+                self.sort_servers();
                 true
             }
             "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
@@ -1371,6 +1679,7 @@ impl Tracker {
             "RELATIONSHIP_REMOVE" => {
                 let id = data["id"].as_str().or_else(|| data["user_id"].as_str());
                 self.friends.retain(|friend| Some(friend.as_str()) != id);
+                self.blocked.retain(|blocked| Some(blocked.as_str()) != id);
                 if let Some(id) = id {
                     self.requests.remove(id);
                 }
@@ -1386,7 +1695,7 @@ impl Tracker {
             "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" | "GUILD_ROLE_DELETE" => {
                 let Some(server) = data["guild_id"]
                     .as_str()
-                    .and_then(|guild| self.servers.iter_mut().find(|server| server.id == guild))
+                    .and_then(|guild| self.server_mut(guild))
                 else {
                     return false;
                 };
@@ -1399,20 +1708,36 @@ impl Tracker {
                 }
                 true
             }
+            // The settings of type 1 hold the status.
+            "USER_SETTINGS_PROTO_UPDATE" if data["settings"]["type"] == 1 => {
+                let Some(encoded) = data["settings"]["proto"].as_str() else {
+                    return false;
+                };
+                self.settings(encoded);
+                true
+            }
+            "GUILD_EMOJIS_UPDATE" => {
+                let Some(server) = data["guild_id"]
+                    .as_str()
+                    .and_then(|guild| self.server_mut(guild))
+                else {
+                    return false;
+                };
+                server.emojis = ready::emojis(&data["emojis"]);
+                true
+            }
             // Carries the server's own fields, without its channels or members.
             "GUILD_UPDATE" => {
                 let (Some(update), Some(known)) = (
                     ready::server(data),
-                    data["id"]
-                        .as_str()
-                        .and_then(|id| self.servers.iter_mut().find(|server| server.id == id)),
+                    data["id"].as_str().and_then(|id| self.server_mut(id)),
                 ) else {
                     return false;
                 };
                 known.name = update.name;
                 known.icon = update.icon;
                 known.premium_tier = update.premium_tier;
-                ready::sort_servers(&mut self.servers);
+                self.sort_servers();
                 true
             }
             // This account's Nitro can change while connected.
@@ -1470,15 +1795,24 @@ impl Tracker {
             }
             // Friends' presences; those in servers go to the member list.
             "PRESENCE_UPDATE" if data["guild_id"].is_null() => {
-                self.presence(data["user"]["id"].as_str(), data);
-                false
+                let user = data["user"]["id"].as_str();
+                // The DM list shows the person of each one-to-one DM, and the
+                // friends list each friend.
+                self.presence(user, data)
+                    && (self
+                        .friends
+                        .iter()
+                        .any(|friend| Some(friend.as_str()) == user)
+                        || self.private.iter().any(|private| {
+                            !private.group && private.recipients.first().map(String::as_str) == user
+                        }))
             }
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
                 let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
                 else {
                     return false;
                 };
-                let Some(server) = self.servers.iter_mut().find(|server| server.id == guild) else {
+                let Some(server) = self.server_mut(guild) else {
                     return false;
                 };
                 if name == "CHANNEL_DELETE" {
@@ -1587,16 +1921,16 @@ impl Tracker {
         self.private.push(private);
     }
 
-    fn presence(&mut self, user: Option<&str>, data: &Value) {
-        if let Some(user) = user {
-            self.presences.insert(
-                user.to_owned(),
-                (
-                    Presence::parse(&data["status"]),
-                    member_list::activity(&data["activities"]),
-                ),
-            );
-        }
+    /// Learns a friend's presence; returns whether it changed.
+    fn presence(&mut self, user: Option<&str>, data: &Value) -> bool {
+        let Some(user) = user else {
+            return false;
+        };
+        let presence = (
+            Presence::parse(&data["status"]),
+            member_list::activity(&data["activities"]),
+        );
+        self.presences.insert(user.to_owned(), presence.clone()) != Some(presence)
     }
 
     /// A group DM's members by name, as Discord lists them.
@@ -1650,10 +1984,12 @@ impl Tracker {
                 .find(|known| known.id == channel)?;
             channel.parent.as_deref()
         });
-        let unwanted = self
-            .private
-            .iter()
-            .any(|private| private.id == channel && (private.request || private.spam));
+        let author = message["author"]["id"].as_str().unwrap_or_default();
+        let unwanted = self.blocked.iter().any(|blocked| blocked == author)
+            || self
+                .private
+                .iter()
+                .any(|private| private.id == channel && (private.request || private.spam));
         !unwanted
             && self
                 .unreads
@@ -1661,6 +1997,67 @@ impl Tracker {
     }
 
     /// DMs and group DMs, the latest conversation first.
+    /// Learns the status from settings, all or some of them, in base64.
+    fn settings(&mut self, encoded: &str) {
+        let read = settings::read(encoded);
+        if let Some(status) = read.status.filter(|status| !status.is_empty()) {
+            self.status = status;
+        }
+        if let Some(custom) = read.custom {
+            self.custom_status = custom;
+        }
+        if let Some(order) = settings::server_order(encoded) {
+            self.order = order;
+            self.sort_servers();
+        }
+    }
+
+    /// Orders the servers as the account's server list does. Those its
+    /// settings don't list yet go first, the latest joined first, as Discord
+    /// shows a server just joined.
+    /// A server to change, copied first if a snapshot shares it.
+    fn server_mut(&mut self, id: &str) -> Option<&mut Server> {
+        self.servers
+            .iter_mut()
+            .find(|server| server.id == id)
+            .map(Arc::make_mut)
+    }
+
+    fn sort_servers(&mut self) {
+        let place: HashMap<&str, usize> = self
+            .order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        self.servers.sort_by(|a, b| {
+            match (place.get(a.id.as_str()), place.get(b.id.as_str())) {
+                (Some(a), Some(b)) => a.cmp(b),
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (None, None) => b.joined_at.cmp(&a.joined_at),
+            }
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+        });
+    }
+
+    /// Who can read a server's channel; see [`ready::Server::readers`].
+    fn readers(&self, guild: &str, channel: &str) -> String {
+        self.servers
+            .iter()
+            .find(|server| server.id == guild)
+            .map_or_else(
+                || format!("channel:{channel}"),
+                |server| server.readers(channel),
+            )
+    }
+
+    /// The presence this session shows, as the settings say.
+    fn own_presence(&self) -> Value {
+        settings::presence(&self.status, self.custom_status.as_ref(), now_ms())
+    }
+
     /// Learns a relationship object: a friend, or someone who no longer is one.
     fn relationship(&mut self, relationship: &Value) {
         if relationship["user"].is_object() {
@@ -1677,9 +2074,11 @@ impl Tracker {
             return;
         };
         self.friends.retain(|friend| friend != id);
+        self.blocked.retain(|blocked| blocked != id);
         self.requests.remove(id);
         match kind {
             FRIEND => self.friends.push(id.to_owned()),
+            BLOCKED => self.blocked.push(id.to_owned()),
             INCOMING_REQUEST | OUTGOING_REQUEST => {
                 let spam = relationship["is_spam_request"].as_bool().unwrap_or(false);
                 let since = relationship["since"]
@@ -1708,6 +2107,26 @@ impl Tracker {
                 spam: *spam,
             })
             .collect()
+    }
+
+    /// The friends by name, with what Discord says of each.
+    fn friend_list(&self, names: &Names) -> Vec<Friend> {
+        let mut friends: Vec<Friend> = self
+            .friends
+            .iter()
+            .map(|user| {
+                let known = self.presences.get(user);
+                Friend {
+                    user_id: user.clone(),
+                    name: names.user_name(user).unwrap_or("Discord user").to_owned(),
+                    avatar: names.avatar(None, user),
+                    presence: known.map(|(presence, _)| *presence),
+                    activity: known.and_then(|(_, activity)| activity.clone()),
+                }
+            })
+            .collect();
+        friends.sort_by_cached_key(|friend| (friend.name.to_lowercase(), friend.user_id.clone()));
+        friends
     }
 
     fn conversations(&self, names: &Names) -> Vec<Conversation> {
@@ -1740,6 +2159,10 @@ impl Tracker {
                         .map(|user| names.avatar(None, user))
                 };
                 let call = self.calls.contains_key(&private.id);
+                let known = (!private.group)
+                    .then(|| private.recipients.first())
+                    .flatten()
+                    .and_then(|user| self.presences.get(user));
                 let ringing = self
                     .calls
                     .get(&private.id)
@@ -1769,6 +2192,8 @@ impl Tracker {
                     mentions: if private.request { 0 } else { private.mentions },
                     call,
                     ringing,
+                    presence: known.map(|(presence, _)| *presence),
+                    activity: known.and_then(|(_, activity)| activity.clone()),
                 }
             })
             .collect()
@@ -1813,7 +2238,7 @@ impl Tracker {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&mut self) -> Snapshot {
         let names = self
             .names
             .read()
@@ -1840,26 +2265,38 @@ impl Tracker {
                     .then_with(|| a.user_id.cmp(&b.user_id))
             });
         }
-        // Mark what this account may do in each channel.
-        let servers = self
-            .servers
-            .iter()
-            .map(|server| {
-                let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
-                let mut marked = server.clone();
-                for channel in marked
-                    .text_channels
-                    .iter_mut()
-                    .chain(&mut marked.voice_channels)
-                {
-                    channel.access = server.access(channel, &self.me, roles);
-                    channel.mention_everyone =
-                        server.may_mention_everyone(channel, &self.me, roles);
-                }
-                self.unreads.mark(&mut marked);
-                marked
-            })
-            .collect();
+        // Mark what this account may do in each channel, reusing the servers
+        // the last snapshot marked the same.
+        let mut published = HashMap::with_capacity(self.servers.len());
+        let mut servers = Vec::with_capacity(self.servers.len());
+        for server in &self.servers {
+            let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
+            let last = self
+                .published
+                .remove(&server.id)
+                .filter(|last| Arc::ptr_eq(&last.source, server) && last.roles == roles);
+            // What the account may do stays while the server and its roles do.
+            let marks = match &last {
+                Some(last) => last.marks.unread(server, &self.unreads),
+                None => Marks::new(server, &self.me, roles, &self.unreads),
+            };
+            let (marked, roles) = match last {
+                Some(last) if last.marks == marks => (last.marked, last.roles),
+                Some(last) => (Arc::new(marks.apply(server)), last.roles),
+                None => (Arc::new(marks.apply(server)), roles.to_vec()),
+            };
+            servers.push(marked.clone());
+            published.insert(
+                server.id.clone(),
+                Published {
+                    source: server.clone(),
+                    roles,
+                    marks,
+                    marked,
+                },
+            );
+        }
+        self.published = published;
         Snapshot {
             status: Status::Online,
             user_id: Some(self.me.clone()),
@@ -1871,6 +2308,13 @@ impl Tracker {
             servers,
             conversations: self.conversations(&names),
             friends: self.friends.clone(),
+            friend_list: self.friend_list(&names),
+            blocked: self.blocked.clone(),
+            presence: self.status.clone(),
+            custom_status: self
+                .custom_status
+                .clone()
+                .filter(|custom| !custom.expired(now_ms())),
             friend_requests: self.friend_requests(&names),
             voice,
             listed: self
@@ -1878,6 +2322,96 @@ impl Tracker {
                 .as_ref()
                 .and_then(|list| Some((list.channel().to_owned(), list.count()?))),
         }
+    }
+}
+
+/// A server as a snapshot published it: marked from `source` with `marks`,
+/// for an account with `roles` there.
+struct Published {
+    source: Arc<Server>,
+    roles: Vec<String>,
+    marks: Marks,
+    marked: Arc<Server>,
+}
+
+/// What [`Tracker::snapshot`] sets on a server for this account: whether
+/// it's muted, then for each text channel and each voice channel, in order,
+/// what [`ChannelMarks`] holds.
+#[derive(PartialEq, Eq)]
+struct Marks {
+    muted: bool,
+    channels: Vec<ChannelMarks>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChannelMarks {
+    access: Access,
+    mention_everyone: bool,
+    muted: bool,
+    unread: bool,
+    mentions: u64,
+}
+
+impl Marks {
+    fn new(server: &Server, me: &str, roles: &[String], unreads: &Unreads) -> Self {
+        let mut channels =
+            Vec::with_capacity(server.text_channels.len() + server.voice_channels.len());
+        for channel in &server.text_channels {
+            let access = server.access(channel, me, roles);
+            let (muted, unread, mentions) = unreads.channel(&server.id, channel, access);
+            channels.push(ChannelMarks {
+                access,
+                mention_everyone: server.may_mention_everyone(channel, me, roles),
+                muted,
+                unread,
+                mentions,
+            });
+        }
+        for channel in &server.voice_channels {
+            channels.push(ChannelMarks {
+                access: server.access(channel, me, roles),
+                mention_everyone: server.may_mention_everyone(channel, me, roles),
+                muted: channel.muted,
+                unread: channel.unread,
+                mentions: channel.mentions,
+            });
+        }
+        Self {
+            muted: unreads.server_muted(&server.id),
+            channels,
+        }
+    }
+
+    /// These marks with the unread state of `server`'s text channels as
+    /// it is now.
+    fn unread(&self, server: &Server, unreads: &Unreads) -> Self {
+        let mut channels = self.channels.clone();
+        for (channel, marks) in server.text_channels.iter().zip(&mut channels) {
+            (marks.muted, marks.unread, marks.mentions) =
+                unreads.channel(&server.id, channel, marks.access);
+        }
+        Self {
+            muted: unreads.server_muted(&server.id),
+            channels,
+        }
+    }
+
+    /// A copy of `server` with these marks.
+    fn apply(&self, server: &Server) -> Server {
+        let mut marked = server.clone();
+        marked.muted = self.muted;
+        let channels = marked
+            .text_channels
+            .iter_mut()
+            .chain(&mut marked.voice_channels);
+        for (channel, marks) in channels.zip(&self.channels) {
+            channel.access = marks.access;
+            channel.mention_everyone = marks.mention_everyone;
+            channel.muted = marks.muted;
+            channel.unread = marks.unread;
+            channel.mentions = marks.mentions;
+        }
+        marked
     }
 }
 
@@ -1901,7 +2435,8 @@ fn publish_members(tracker: &Tracker, shared: &Shared) {
     let server = tracker
         .servers
         .iter()
-        .find(|server| server.id == list.guild());
+        .find(|server| server.id == list.guild())
+        .map(Arc::as_ref);
     let names = shared
         .names
         .read()
@@ -2134,6 +2669,142 @@ mod tests {
     }
 
     #[test]
+    fn dms_show_their_persons_presence() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "users": [
+                {"id": "2", "username": "ann", "global_name": "Ann"},
+                {"id": "3", "username": "cy"},
+            ],
+            "private_channels": [
+                {"id": "20", "type": 1, "recipient_ids": ["2"]},
+                {"id": "30", "type": 3, "recipient_ids": ["2", "3"], "name": "Group"},
+            ],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        assert_eq!(
+            tracker.snapshot().conversations[0].presence,
+            None,
+            "unknown until Discord says"
+        );
+        let away = json!({"user": {"id": "2"}, "status": "idle",
+            "activities": [{"type": 4, "name": "Custom Status", "state": "making tea"}]});
+        assert!(tracker.apply("PRESENCE_UPDATE", &away), "Ann's DM shows it");
+        assert!(
+            !tracker.apply("PRESENCE_UPDATE", &away),
+            "the same again changes nothing"
+        );
+        let snapshot = tracker.snapshot();
+        let dm = snapshot
+            .conversations
+            .iter()
+            .find(|dm| dm.id == "20")
+            .unwrap();
+        assert_eq!(dm.presence, Some(Presence::Idle));
+        assert_eq!(dm.activity.as_deref(), Some("making tea"));
+        let group = snapshot
+            .conversations
+            .iter()
+            .find(|dm| dm.id == "30")
+            .unwrap();
+        assert_eq!(group.presence, None, "a group has no one person");
+        // Someone with no one-to-one DM doesn't change the list.
+        assert!(!tracker.apply(
+            "PRESENCE_UPDATE",
+            &json!({"user": {"id": "3"}, "status": "online"})
+        ));
+    }
+
+    #[test]
+    fn orders_servers_as_the_settings_do() {
+        let guild = |id: &str, name: &str, joined: &str| json!({"id": id, "name": name, "joined_at": joined, "channels": [], "roles": []});
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "guilds": [
+                guild("10", "Alpha", "2026-01-01T00:00:00+00:00"),
+                guild("20", "Bravo", "2026-02-01T00:00:00+00:00"),
+                guild("30", "Charlie", "2026-03-01T00:00:00+00:00"),
+                guild("40", "Delta", "2026-04-01T00:00:00+00:00"),
+            ],
+            // Charlie on its own, then a folder of Alpha and Delta; Bravo is
+            // missing, as a server joined from another client may be.
+            "user_settings_proto": settings::write_server_order(&[&[30], &[10, 40]]),
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let order = |tracker: &Tracker| -> Vec<String> {
+            tracker
+                .servers
+                .iter()
+                .map(|server| server.name.clone())
+                .collect()
+        };
+        assert_eq!(order(&tracker), ["Bravo", "Charlie", "Alpha", "Delta"]);
+
+        // A server just joined goes first, until the settings place it.
+        tracker.apply(
+            "GUILD_CREATE",
+            &guild("50", "Echo", "2026-05-01T00:00:00+00:00"),
+        );
+        assert_eq!(
+            order(&tracker),
+            ["Echo", "Bravo", "Charlie", "Alpha", "Delta"]
+        );
+        tracker.apply(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto":
+                settings::write_server_order(&[&[40], &[50], &[30], &[20], &[10]])}}),
+        );
+        assert_eq!(
+            order(&tracker),
+            ["Delta", "Echo", "Charlie", "Bravo", "Alpha"]
+        );
+
+        // Changing only the status leaves the order alone.
+        tracker.apply(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": settings::write_custom(None)}, "partial": true}),
+        );
+        assert_eq!(
+            order(&tracker),
+            ["Delta", "Echo", "Charlie", "Bravo", "Alpha"]
+        );
+    }
+
+    #[test]
+    fn shows_the_status_the_settings_hold() {
+        let away = CustomStatus {
+            text: "Fixing the bridge".into(),
+            emoji_name: Some("🔧".into()),
+            ..Default::default()
+        };
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "user_settings_proto": settings::write_custom(Some(&away)),
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        assert_eq!(tracker.snapshot().custom_status, Some(away));
+        assert_eq!(tracker.snapshot().presence, "online");
+        assert_eq!(
+            tracker.own_presence()["activities"][0]["state"],
+            "Fixing the bridge"
+        );
+
+        // Settings of another type say nothing of it; clearing it does.
+        let cleared = settings::write_custom(None);
+        assert!(!tracker.apply(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 2, "proto": cleared}, "partial": true}),
+        ));
+        assert!(tracker.snapshot().custom_status.is_some());
+        assert!(tracker.apply(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": cleared}, "partial": true}),
+        ));
+        assert_eq!(tracker.snapshot().custom_status, None);
+        assert_eq!(tracker.own_presence()["activities"], json!([]));
+    }
+
+    #[test]
     fn tracks_friend_requests_both_ways() {
         let ready = json!({
             "user": {"id": "1", "username": "me"},
@@ -2148,7 +2819,7 @@ mod tests {
             ],
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
-        let listed = |tracker: &Tracker| -> Vec<(String, bool, bool)> {
+        let listed = |tracker: &mut Tracker| -> Vec<(String, bool, bool)> {
             tracker
                 .snapshot()
                 .friend_requests
@@ -2157,7 +2828,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            listed(&tracker),
+            listed(&mut tracker),
             [
                 ("spam".to_owned(), true, true),
                 ("bob".to_owned(), true, false),
@@ -2173,8 +2844,38 @@ mod tests {
         );
         tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "4", "type": 4}));
         tracker.apply("RELATIONSHIP_UPDATE", &json!({"id": "5", "nickname": "x"}));
-        assert_eq!(listed(&tracker), [("spam".to_owned(), true, true)]);
+        assert_eq!(listed(&mut tracker), [("spam".to_owned(), true, true)]);
         assert_eq!(tracker.snapshot().friends, ["2", "3"]);
+        let friends: Vec<_> = tracker
+            .snapshot()
+            .friend_list
+            .into_iter()
+            .map(|friend| (friend.name, friend.presence))
+            .collect();
+        assert_eq!(
+            friends,
+            [("ann".to_owned(), None), ("bob".to_owned(), None)],
+            "by name"
+        );
+        // A friend's presence changes the friends list, though there's no DM with them.
+        assert!(tracker.apply(
+            "PRESENCE_UPDATE",
+            &json!({"user": {"id": "3"}, "status": "idle", "activities": []}),
+        ));
+        assert_eq!(
+            tracker.snapshot().friend_list[1].presence,
+            Some(Presence::Idle)
+        );
+
+        // Blocking Ann ends the friendship, and her messages stop notifying.
+        tracker.apply("RELATIONSHIP_ADD", &json!({"id": "2", "type": 2}));
+        assert_eq!(tracker.snapshot().friends, ["3"]);
+        assert_eq!(tracker.snapshot().blocked, ["2"]);
+        let from =
+            |author: &str| json!({"channel_id": "9", "author": {"id": author}, "content": "hi"});
+        assert!(!tracker.notifies(&from("2")));
+        tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "2", "type": 2}));
+        assert!(tracker.snapshot().blocked.is_empty());
     }
 
     #[test]
@@ -2209,7 +2910,7 @@ mod tests {
             "read_state": {"entries": [{"id": "21", "last_message_id": "550", "mention_count": 1}]},
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
-        let listed = |tracker: &Tracker| -> Vec<(String, bool, u64)> {
+        let listed = |tracker: &mut Tracker| -> Vec<(String, bool, u64)> {
             tracker
                 .snapshot()
                 .conversations
@@ -2219,7 +2920,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            listed(&tracker),
+            listed(&mut tracker),
             [
                 ("Ann, bob".into(), true, 1),
                 ("Ann".into(), false, 0),
@@ -2256,12 +2957,12 @@ mod tests {
         let message = |id: &str| json!({"id": id, "channel_id": "20", "author": {"id": "2"}});
         assert!(tracker.apply("MESSAGE_CREATE", &message("700")));
         tracker.apply("MESSAGE_CREATE", &message("701"));
-        assert_eq!(listed(&tracker)[0], ("Ann".into(), true, 2));
+        assert_eq!(listed(&mut tracker)[0], ("Ann".into(), true, 2));
         assert_eq!(
             tracker.unreads.mark_read(PRIVATE, "20").as_deref(),
             Some("701")
         );
-        assert_eq!(listed(&tracker)[0], ("Ann".into(), false, 0));
+        assert_eq!(listed(&mut tracker)[0], ("Ann".into(), false, 0));
 
         // A muted DM shows nothing.
         tracker.apply(
@@ -2269,14 +2970,14 @@ mod tests {
             &json!({"guild_id": null, "channel_overrides": [{"channel_id": "20", "muted": true}]}),
         );
         tracker.apply("MESSAGE_CREATE", &message("702"));
-        assert_eq!(listed(&tracker)[0], ("Ann".into(), false, 0));
+        assert_eq!(listed(&mut tracker)[0], ("Ann".into(), false, 0));
 
         // DMs open, close and change their people.
         tracker.apply(
             "CHANNEL_CREATE",
             &json!({"id": "800", "type": 1, "recipients": [{"id": "4", "username": "cat"}]}),
         );
-        assert_eq!(listed(&tracker)[0].0, "cat");
+        assert_eq!(listed(&mut tracker)[0].0, "cat");
         tracker.apply("CHANNEL_DELETE", &json!({"id": "800", "type": 1}));
         tracker.apply(
             "CHANNEL_RECIPIENT_ADD",
@@ -2374,7 +3075,7 @@ mod tests {
             "merged_members": [[{"user_id": "1", "roles": []}]],
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
-        let channels = |tracker: &Tracker| -> Vec<String> {
+        let channels = |tracker: &mut Tracker| -> Vec<String> {
             tracker.snapshot().servers[0]
                 .voice_channels
                 .iter()
@@ -2382,11 +3083,50 @@ mod tests {
                 .map(|channel| channel.name.clone())
                 .collect()
         };
-        assert_eq!(channels(&tracker), ["Lounge"]);
+        assert_eq!(channels(&mut tracker), ["Lounge"]);
         tracker.apply(
             "GUILD_MEMBER_UPDATE",
             &json!({"guild_id": "10", "user": {"id": "1"}, "roles": ["20"]}),
         );
-        assert_eq!(channels(&tracker), ["Lounge", "Staff"]);
+        assert_eq!(channels(&mut tracker), ["Lounge", "Staff"]);
+    }
+
+    #[test]
+    fn snapshots_share_the_servers_that_stay_the_same() {
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [
+                {"id": "10", "properties": {"name": "One"}, "joined_at": "2026-01-02T00:00:00+00:00",
+                 "channels": [{"id": "11", "name": "general", "type": 0, "position": 0}]},
+                {"id": "20", "properties": {"name": "Two"}, "joined_at": "2026-01-01T00:00:00+00:00",
+                 "channels": [{"id": "21", "name": "general", "type": 0, "position": 0}]},
+            ],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let first = tracker.snapshot();
+        let same = tracker.snapshot();
+        assert!(Arc::ptr_eq(&first.servers[0], &same.servers[0]));
+        assert!(Arc::ptr_eq(&first.servers[1], &same.servers[1]));
+
+        // A message marks one server's channel unread; the other stays shared.
+        tracker.apply(
+            "MESSAGE_CREATE",
+            &json!({"id": "900", "channel_id": "21", "guild_id": "20", "author": {"id": "2"}}),
+        );
+        let unread = tracker.snapshot();
+        assert!(Arc::ptr_eq(&first.servers[0], &unread.servers[0]));
+        assert!(!Arc::ptr_eq(&first.servers[1], &unread.servers[1]));
+        assert!(unread.servers[1].text_channels[0].unread);
+        assert!(
+            !first.servers[1].text_channels[0].unread,
+            "published ones don't change"
+        );
+
+        // Changing a server copies it rather than the one a snapshot holds.
+        tracker.apply("GUILD_UPDATE", &json!({"id": "10", "name": "Renamed"}));
+        let renamed = tracker.snapshot();
+        assert_eq!(renamed.servers[0].name, "Renamed");
+        assert_eq!(unread.servers[0].name, "One");
+        assert!(Arc::ptr_eq(&unread.servers[1], &renamed.servers[1]));
     }
 }

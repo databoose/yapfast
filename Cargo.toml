@@ -15,7 +15,7 @@ resolver = "3"
 default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["talk-core/matrix"]
-discord = ["talk-core/discord"]
+discord = ["talk-core/discord", "dep:qrcode"]
 desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs"]
 
 [dependencies]
@@ -44,6 +44,8 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 tempfile = { workspace = true, optional = true }
 tracing.workspace = true
+# The code the Discord phone app scans to link an account.
+qrcode = { version = "0.14", default-features = false, optional = true }
 
 # Desktop notifications through the freedesktop service, on the session bus Slint and
 # the keyring already use.
@@ -72,7 +74,7 @@ matrix-rtc-livekit = { path = "vendor/matrix-rtc-livekit", features = ["matrix-s
 matrix-rtc-core = { git = "https://github.com/element-hq/matrix-rust-rtc", rev = "5831af899f1e1744c21332613cdc9578a98c604f" }
 matrix-rtc-media = { git = "https://github.com/element-hq/matrix-rust-rtc", rev = "5831af899f1e1744c21332613cdc9578a98c604f" }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-skia", "renderer-skia-opengl", "accessibility", "unstable-winit-030", "unstable-fontique-011"] }
 tempfile = "3"

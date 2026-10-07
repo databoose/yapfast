@@ -33,6 +33,10 @@ The core of it is `talk_selection.rs`. The other changes are marked `Talk:` in:
 - `item_rendering.rs`
 - `textlayout/sharedparley.rs`
 - `textlayout/sharedparley/shaping.rs`
+- `textlayout/sharedparley/draw.rs`, which draws mention pills under their
+  text and opaque covers over hidden Discord spoilers, links to `talk:spoiler/`
+- `graphics/image.rs`, where no image equals no image; upstream they differ,
+  so every list row without a picture counted as changed on each refresh
 
 Reapply them to the matching release when upgrading Slint. Styled paragraphs now
 have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
@@ -74,8 +78,8 @@ cargo build --release --no-default-features --features desktop,discord  # Discor
 cargo build --release --no-default-features --features desktop,matrix   # Matrix only
 ```
 
-A Discord-only build has no sign-in screen. It connects with the Discord
-account linked on the device, and shows an error if there is none. Voice calls
+A Discord-only build signs in by linking Discord by QR code, and connects with
+the account linked on the device from then on. Voice calls
 still need LiveKit's libwebrtc, which provides the audio processing and the
 device list for both networks. The `--no-default-features` build without either
 network only opens `--preview`.
@@ -83,6 +87,7 @@ network only opens `--preview`.
 `TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400` points Discord at
 `testing/fake_discord.ts` (`bun testing/fake_discord.ts --port 18400`). It uses a
 test token instead of the linked account, so the real token never reaches it.
+`TALK_DISCORD_TEST_UNLINKED=1` starts Talk unlinked, to link against the fake.
 [Network memory](measurements/README.md) compares the three builds.
 
 With [direnv](https://direnv.net/), the repository's `.envrc` loads the Nix

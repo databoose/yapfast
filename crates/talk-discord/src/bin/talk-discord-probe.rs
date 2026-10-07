@@ -146,7 +146,7 @@ async fn messages(channel_id: &str) -> Result<()> {
 }
 
 /// The first snapshot after connecting, with voice channels this account can join.
-async fn online(discord: &Discord) -> Result<Snapshot> {
+async fn online(discord: &Discord) -> Result<Arc<Snapshot>> {
     let mut snapshots = discord.snapshots();
     loop {
         snapshots.changed().await?;

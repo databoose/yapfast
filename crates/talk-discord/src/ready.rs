@@ -26,12 +26,16 @@ const SEND_MESSAGES: u64 = 1 << 11;
 const MENTION_EVERYONE: u64 = 1 << 17;
 const CONNECT: u64 = 1 << 20;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Server {
     pub id: String,
     pub name: String,
     /// The address of the server's icon, if it has one.
     pub icon: Option<String>,
+    /// The address of its banner, if it has one.
+    pub banner: Option<String>,
+    /// How many members it has, as of READY or GUILD_CREATE.
+    pub member_count: Option<u64>,
     /// Text and announcement channels, in Discord's order.
     pub text_channels: Vec<Channel>,
     pub voice_channels: Vec<Channel>,
@@ -55,9 +59,43 @@ pub struct Server {
     /// Its boost level, from 0 to 3, which raises everyone's upload limit
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,
+    /// Its custom emoji, by name.
+    pub emojis: Vec<Emoji>,
+    /// When this account joined it, as Discord's ISO 8601 time.
+    pub joined_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A server's custom emoji.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Emoji {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+    /// Usable: a server that loses boosts keeps emoji it no longer has room for,
+    /// unavailable.
+    pub available: bool,
+}
+
+/// A server's emoji list, from a guild object or GUILD_EMOJIS_UPDATE.
+pub fn emojis(list: &Value) -> Vec<Emoji> {
+    let mut emojis: Vec<Emoji> = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|emoji| {
+            Some(Emoji {
+                id: emoji["id"].as_str()?.to_owned(),
+                name: emoji["name"].as_str()?.to_owned(),
+                animated: emoji["animated"].as_bool().unwrap_or(false),
+                available: emoji["available"].as_bool().unwrap_or(true),
+            })
+        })
+        .collect();
+    emojis.sort_by_key(|emoji| emoji.name.to_lowercase());
+    emojis
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Channel {
     pub id: String,
     pub name: String,
@@ -79,14 +117,14 @@ pub struct Channel {
     pub muted: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Category {
     pub name: String,
     pub position: i64,
 }
 
 /// What an account may do in a channel.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Access {
     /// Connect to a voice channel, or send in a text channel.
     #[default]
@@ -167,7 +205,7 @@ pub fn private_channel(channel: &Value) -> Option<Private> {
 }
 
 /// A channel's change to the permissions of one role or member.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Overwrite {
     pub id: String,
     pub member: bool,
@@ -176,6 +214,38 @@ pub struct Overwrite {
 }
 
 impl Server {
+    /// Who can read `channel`, as the overwrites that allow or deny seeing it.
+    /// Discord gives channels with the same readers one member list, whose
+    /// id hashes this same set; `everyone` when no overwrite touches it.
+    pub fn readers(&self, channel: &str) -> String {
+        let Some(channel) = self
+            .text_channels
+            .iter()
+            .chain(&self.voice_channels)
+            .find(|known| known.id == channel)
+        else {
+            return format!("channel:{channel}");
+        };
+        let mut readers: Vec<String> = channel
+            .overwrites
+            .iter()
+            .filter_map(|overwrite| {
+                if overwrite.allow & VIEW_CHANNEL != 0 {
+                    Some(format!("allow:{}", overwrite.id))
+                } else if overwrite.deny & VIEW_CHANNEL != 0 {
+                    Some(format!("deny:{}", overwrite.id))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if readers.is_empty() {
+            return "everyone".into();
+        }
+        readers.sort();
+        readers.join(",")
+    }
+
     /// Whether `user`, holding `roles`, can see `channel` and connect to it,
     /// or send in it for a text channel. Computed as Discord does: the roles'
     /// permissions, then the channel's overwrites for @everyone, for the roles,
@@ -433,25 +503,15 @@ pub fn user_id(ready: &Value) -> Option<&str> {
     ready["user"]["id"].as_str()
 }
 
-/// Servers by name, from READY's guilds.
+/// Servers from READY's guilds, in READY's order; the service orders them as
+/// the account's settings say.
 pub fn servers(ready: &Value) -> Vec<Server> {
-    let mut servers: Vec<Server> = ready["guilds"]
+    ready["guilds"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(server)
-        .collect();
-    sort_servers(&mut servers);
-    servers
-}
-
-pub fn sort_servers(servers: &mut [Server]) {
-    servers.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.id.cmp(&b.id))
-    });
+        .collect()
 }
 
 /// One guild object, from READY or GUILD_CREATE.
@@ -470,6 +530,10 @@ pub fn server(guild: &Value) -> Option<Server> {
         .as_str()
         .or_else(|| guild["properties"]["icon"].as_str())
         .map(|hash| server_icon(&id, hash));
+    let banner = guild["banner"]
+        .as_str()
+        .or_else(|| guild["properties"]["banner"].as_str())
+        .map(|hash| self::banner(&id, hash));
     let premium_tier = guild["premium_tier"]
         .as_u64()
         .or_else(|| guild["properties"]["premium_tier"].as_u64())
@@ -478,8 +542,12 @@ pub fn server(guild: &Value) -> Option<Server> {
         id,
         name,
         icon,
+        banner,
+        member_count: guild["member_count"].as_u64(),
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
+        emojis: emojis(&guild["emojis"]),
+        joined_at: guild["joined_at"].as_str().map(str::to_owned),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {
@@ -534,6 +602,27 @@ fn cdn() -> &'static str {
     client::test_server().unwrap_or("https://cdn.discordapp.com")
 }
 
+/// Discord's media proxy, or the test server.
+fn media() -> &'static str {
+    client::test_server().unwrap_or("https://media.discordapp.net")
+}
+
+/// A sticker's picture at the size Discord shows it. Animated GIF stickers come
+/// from the media proxy, the rest from the CDN.
+pub fn sticker(id: &str, gif: bool) -> String {
+    if gif {
+        format!("{}/stickers/{id}.gif?size=160", media())
+    } else {
+        format!("{}/stickers/{id}.png?size=160", cdn())
+    }
+}
+
+/// A custom emoji's picture, at `size` pixels at most.
+pub fn custom_emoji(id: &str, animated: bool, size: u32) -> String {
+    let format = if animated { "gif" } else { "png" };
+    format!("{}/emojis/{id}.{format}?size={size}", cdn())
+}
+
 pub fn server_icon(guild: &str, hash: &str) -> String {
     format!("{}/icons/{guild}/{hash}.png?size={PICTURE_SIZE}", cdn())
 }
@@ -550,7 +639,7 @@ pub fn avatar(user: &str, hash: Option<&str>) -> String {
     }
 }
 
-/// A profile banner, at the profile card's widest.
+/// A profile or server banner, at the profile card's widest.
 pub fn banner(user: &str, hash: &str) -> String {
     format!("{}/banners/{user}/{hash}.png?size=600", cdn())
 }
@@ -604,6 +693,53 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, ["Lounge", "Second"]);
+    }
+
+    #[test]
+    fn channels_with_the_same_readers_share_a_list() {
+        let overwrite = |id: &str, allow: u64, deny: u64| Overwrite {
+            id: id.into(),
+            member: false,
+            allow,
+            deny,
+        };
+        let channel = |id: &str, overwrites: Vec<Overwrite>| Channel {
+            id: id.into(),
+            overwrites,
+            ..Default::default()
+        };
+        let server = Server {
+            id: "10".into(),
+            text_channels: vec![
+                channel("1", vec![]),
+                // Only sending is changed: the readers stay everyone.
+                channel("2", vec![overwrite("10", 0, SEND_MESSAGES)]),
+                channel(
+                    "3",
+                    vec![
+                        overwrite("10", 0, VIEW_CHANNEL),
+                        overwrite("30", VIEW_CHANNEL, 0),
+                    ],
+                ),
+                channel(
+                    "4",
+                    vec![
+                        overwrite("30", VIEW_CHANNEL, 0),
+                        overwrite("10", 0, VIEW_CHANNEL),
+                    ],
+                ),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(server.readers("1"), "everyone");
+        assert_eq!(server.readers("2"), "everyone");
+        assert_eq!(server.readers("3"), "allow:30,deny:10");
+        assert_eq!(server.readers("3"), server.readers("4"));
+        assert_ne!(
+            server.readers("9"),
+            server.readers("1"),
+            "unknown channels share nothing"
+        );
     }
 
     #[test]

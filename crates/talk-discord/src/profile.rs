@@ -29,10 +29,27 @@ pub struct Profile {
     pub joined: Option<u64>,
     /// When their account was made, in Unix milliseconds.
     pub created: u64,
-    /// The ids of the servers this account shares with them.
-    pub mutual_servers: Vec<String>,
-    /// The names of the friends this account shares with them.
-    pub mutual_friends: Vec<String>,
+    /// The servers this account shares with them.
+    pub mutual_servers: Vec<MutualServer>,
+    /// The friends this account shares with them.
+    pub mutual_friends: Vec<MutualFriend>,
+}
+
+/// A server this account shares with someone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MutualServer {
+    pub id: String,
+    /// Their nickname there, when they set one.
+    pub nick: Option<String>,
+}
+
+/// A friend this account shares with someone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MutualFriend {
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar.
+    pub avatar: String,
 }
 
 /// A text field that may be missing, null or empty.
@@ -92,13 +109,25 @@ pub fn parse(value: &Value, guild: Option<&str>) -> Option<Profile> {
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|guild| guild["id"].as_str().map(str::to_owned))
+            .filter_map(|guild| {
+                Some(MutualServer {
+                    id: guild["id"].as_str()?.to_owned(),
+                    nick: text(&guild["nick"]).map(str::to_owned),
+                })
+            })
             .collect(),
         mutual_friends: value["mutual_friends"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|friend| ready::display_name(friend).map(str::to_owned))
+            .filter_map(|friend| {
+                let id = friend["id"].as_str()?;
+                Some(MutualFriend {
+                    id: id.to_owned(),
+                    name: ready::display_name(friend)?.to_owned(),
+                    avatar: ready::avatar(id, friend["avatar"].as_str()),
+                })
+            })
             .collect(),
         user_id: id,
     })
@@ -149,8 +178,22 @@ mod tests {
         assert_eq!(profile.roles, ["30", "31"]);
         assert_eq!(profile.joined, Some(1_788_253_200_000));
         assert_eq!(profile.created, 1_753_856_410_742);
-        assert_eq!(profile.mutual_servers, ["10", "11"]);
-        assert_eq!(profile.mutual_friends, ["Bob"]);
+        assert_eq!(
+            profile.mutual_servers,
+            [
+                MutualServer {
+                    id: "10".into(),
+                    nick: Some("Annie".into())
+                },
+                MutualServer {
+                    id: "11".into(),
+                    nick: None
+                }
+            ]
+        );
+        assert_eq!(profile.mutual_friends[0].id, "3");
+        assert_eq!(profile.mutual_friends[0].name, "Bob");
+        assert!(profile.mutual_friends[0].avatar.contains("/embed/avatars/"));
 
         // Outside a server: their own banner and name.
         let profile = parse(&answer, None).unwrap();
