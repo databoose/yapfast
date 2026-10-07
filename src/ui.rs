@@ -41,6 +41,7 @@ use callbacks::bind_callbacks;
 use messages::*;
 use pictures::*;
 use profile::*;
+use refresh::{Reach, SidebarShown};
 use talk_ui::*;
 
 /// How the desktop window ended.
@@ -646,6 +647,8 @@ struct Adapter {
     messages: Arc<Vec<ChatMessage>>,
     /// The rows built for those messages, by id, so the list keeps their state.
     rows: HashMap<String, MessageRow>,
+    /// What the sidebar showed last, so it's built again only once that changes.
+    sidebar: Option<SidebarShown>,
     /// Server icons and avatars already handed to Slint, by address.
     pictures: HashMap<String, slint::Image>,
     /// How many pictures had arrived when the message rows were last built.
@@ -731,6 +734,7 @@ impl Adapter {
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
                 rows: HashMap::new(),
+                sidebar: None,
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 jumped: None,
@@ -855,18 +859,18 @@ impl Adapter {
                             };
                             let window = adapter.borrow().window.upgrade();
                             let mut adapter = adapter.borrow_mut();
-                            adapter.apply(event);
+                            let mut reach = adapter.apply(event);
                             // What else has arrived meanwhile applies too, before
                             // one refresh: a burst, such as a page of avatars,
                             // lays the window out once rather than per event.
                             for _ in 1..EVENT_BATCH {
                                 match events.try_recv() {
-                                    Ok(event) => adapter.apply(event),
+                                    Ok(event) => reach = reach.and(adapter.apply(event)),
                                     Err(_) => break,
                                 }
                             }
                             if let Some(window) = window {
-                                adapter.refresh(&window);
+                                adapter.show(&window, reach);
                             }
                         }
                         if let Some(adapter) = weak.upgrade() {
@@ -991,10 +995,19 @@ impl Adapter {
         }
     }
 
-    /// Applies a backend event; the caller refreshes the window after.
-    fn apply(&mut self, event: Event) {
+    /// Applies a backend event; the caller shows what it can have changed after.
+    fn apply(&mut self, event: Event) -> Reach {
+        let reach = Reach::of(&event);
         let effects = self.app.apply(event);
+        // What it set off, such as opening a DM that just started, can change
+        // anything.
+        let reach = if effects.is_empty() {
+            reach
+        } else {
+            Reach::EVERYTHING
+        };
         self.execute(effects);
+        reach
     }
 }
 

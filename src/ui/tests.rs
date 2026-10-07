@@ -1178,3 +1178,41 @@ fn rows_with_ids_change_only_where_they_changed() {
     );
     assert_eq!(update(vec![]).len(), 4, "each row goes");
 }
+
+#[test]
+fn typing_and_the_call_show_without_building_the_rest_again() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    let mut adapter = adapter.borrow_mut();
+    let room = adapter.app.state.selected.clone().unwrap();
+    let reach = adapter.apply(Event::Typing {
+        room,
+        names: vec!["Sam".into()],
+    });
+    assert!(
+        !reach
+            .and(adapter.apply(Event::Voice(Default::default())))
+            .everything
+    );
+    adapter.show(&window, reach);
+    assert_eq!(window.get_typing(), "Sam is typing...");
+    // A refresh that changes nothing the sidebar shows doesn't build it again,
+    // so a row marked here stays marked.
+    let mut row = adapter.models.rooms.row_data(0).unwrap();
+    row.name = "Marked".into();
+    adapter.models.rooms.set_row_data(0, row);
+    adapter.refresh(&window);
+    assert_eq!(adapter.models.rooms.row_data(0).unwrap().name, "Marked");
+    adapter.app.state.rooms[0].name = "Renamed".into();
+    adapter.refresh(&window);
+    assert_ne!(adapter.models.rooms.row_data(0).unwrap().name, "Marked");
+}

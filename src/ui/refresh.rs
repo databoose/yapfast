@@ -23,7 +23,108 @@ impl Changes {
     }
 }
 
+/// What a backend event can change on screen.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Reach {
+    composer: bool,
+    voice: bool,
+    pub(super) everything: bool,
+}
+
+impl Reach {
+    pub(super) const EVERYTHING: Self = Self {
+        composer: true,
+        voice: true,
+        everything: true,
+    };
+
+    pub(super) fn of(event: &Event) -> Self {
+        match event {
+            // Who's typing shows only above the composer.
+            Event::Typing { .. } => Self {
+                composer: true,
+                ..Self::default()
+            },
+            // The call, with who's speaking, which changes several times a
+            // second, shows only in the call's own views.
+            Event::Voice(_) => Self {
+                voice: true,
+                ..Self::default()
+            },
+            _ => Self::EVERYTHING,
+        }
+    }
+
+    pub(super) fn and(self, other: Self) -> Self {
+        Self {
+            composer: self.composer || other.composer,
+            voice: self.voice || other.voice,
+            everything: self.everything || other.everything,
+        }
+    }
+}
+
+/// What the sidebar was built from, kept to tell whether it changed.
+#[derive(PartialEq)]
+pub(super) struct SidebarShown {
+    rooms: Vec<talk_core::chat::ChatRoom>,
+    servers: Vec<talk_core::chat::ChatServer>,
+    friends: Vec<talk_core::chat::Friend>,
+    friend_requests: Vec<talk_core::chat::FriendRequest>,
+    navigation: Navigation,
+    selected: Option<String>,
+    dm_screen: Option<DmScreen>,
+    filter: SharedString,
+    friend_filter: SharedString,
+    pictures: usize,
+}
+
+impl SidebarShown {
+    fn of(state: &AppState, window: &TalkWindow) -> Self {
+        Self {
+            rooms: state.rooms.clone(),
+            servers: state.servers.clone(),
+            friends: state.friends.clone(),
+            friend_requests: state.friend_requests.clone(),
+            navigation: state.navigation.clone(),
+            selected: state.selected.clone(),
+            dm_screen: state.dm_screen,
+            filter: window.get_filter(),
+            friend_filter: window.get_friend_filter(),
+            pictures: state.pictures.len(),
+        }
+    }
+
+    /// Whether the sidebar would show the same, without copying the lists.
+    fn shows(&self, state: &AppState, window: &TalkWindow) -> bool {
+        self.rooms == state.rooms
+            && self.servers == state.servers
+            && self.friends == state.friends
+            && self.friend_requests == state.friend_requests
+            && self.navigation == state.navigation
+            && self.selected == state.selected
+            && self.dm_screen == state.dm_screen
+            && self.filter == window.get_filter()
+            && self.friend_filter == window.get_friend_filter()
+            && self.pictures == state.pictures.len()
+    }
+}
+
 impl Adapter {
+    /// Shows what a burst of backend events can have changed.
+    pub(super) fn show(&mut self, window: &TalkWindow, reach: Reach) {
+        if reach.everything {
+            self.refresh(window);
+            return;
+        }
+        if reach.composer {
+            self.show_composer(window);
+        }
+        if reach.voice {
+            self.show_voice(window);
+        }
+    }
+
     pub(super) fn refresh(&mut self, window: &TalkWindow) {
         self.show_viewer(window);
         self.show_profile(window);
@@ -140,8 +241,17 @@ impl Adapter {
         window.set_sync_discord_reads(state.sync_discord_reads);
     }
 
-    /// The rail, the channel or DM list, and the friends and requests screens.
+    /// The rail, the channel or DM list, and the friends and requests screens,
+    /// built again only when what they show changed.
     pub(super) fn show_sidebar(&mut self, window: &TalkWindow) {
+        if self
+            .sidebar
+            .as_ref()
+            .is_some_and(|shown| shown.shows(&self.app.state, window))
+        {
+            return;
+        }
+        self.sidebar = Some(SidebarShown::of(&self.app.state, window));
         let state = &self.app.state;
         let query = window.get_filter().to_lowercase();
         window.set_sidebar_title(match &state.navigation {
