@@ -36,6 +36,7 @@ use crate::{
     network::Network,
 };
 
+mod account;
 mod channels;
 mod commands;
 mod open_channel;
