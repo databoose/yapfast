@@ -202,6 +202,8 @@ pub struct ChatServer {
     pub discord: bool,
     /// Its unread messages don't mark it in the rail; mentions still do.
     pub muted: bool,
+    /// Out of reach in a Discord outage, shown as last known until it's back.
+    pub unavailable: bool,
     /// The address of the server's icon; see [`Command::Pictures`].
     pub icon: Option<String>,
 }
@@ -1055,8 +1057,12 @@ pub async fn run(
         }
     };
     // Discord connects when this device has a linked account; see docs/discord.md.
+    // Why a linked account isn't running answers the commands that need it.
     #[cfg(feature = "discord")]
-    let mut discord = crate::discord_text::Chat::start();
+    let (mut discord, mut discord_error) = match crate::discord_text::Chat::start() {
+        Ok(discord) => (discord, None),
+        Err(error) => (None, Some(discord_failed(&error))),
+    };
     // Voice reaches Discord through this, so linking and unlinking reach it too.
     #[cfg(feature = "discord")]
     let linked =
@@ -1066,7 +1072,11 @@ pub async fn run(
         let refused = match start {
             Start::Login { .. } => Some("This build of Talk has no Matrix sign-in."),
             #[cfg(feature = "discord")]
-            Start::Restore if discord.is_none() => Some("Link your Discord account to sign in."),
+            Start::Restore if discord.is_none() => Some(
+                discord_error
+                    .as_deref()
+                    .unwrap_or("Link your Discord account to sign in."),
+            ),
             #[cfg(not(feature = "discord"))]
             Start::Restore => Some("This build of Talk has no networks."),
             #[allow(unreachable_patterns)]
@@ -1091,6 +1101,10 @@ pub async fn run(
     };
     #[cfg(feature = "matrix")]
     let mut matrix = crate::matrix_chat::Matrix::connect(session, &events).await;
+    #[cfg(feature = "discord")]
+    if let Some(error) = &discord_error {
+        let _ = events.send(Event::Error(error.clone()));
+    }
     #[cfg(not(feature = "matrix"))]
     let _ = events.send(Event::Connected {
         user: "Discord".into(),
@@ -1131,7 +1145,21 @@ pub async fn run(
                 let command = match command {
                     Command::StartDiscord => {
                         if discord.is_none() {
-                            discord = crate::discord_text::Chat::start();
+                            // Linking saved the login just before.
+                            let started = crate::discord_text::Chat::start().and_then(|started| {
+                                started.ok_or_else(|| anyhow::anyhow!("its login wasn't saved"))
+                            });
+                            match started {
+                                Ok(started) => {
+                                    discord = Some(started);
+                                    discord_error = None;
+                                }
+                                Err(error) => {
+                                    let error = discord_failed(&error);
+                                    let _ = events.send(Event::Error(error.clone()));
+                                    discord_error = Some(error);
+                                }
+                            }
                             linked.send_replace(
                                 discord.as_ref().map(crate::discord_text::Chat::service),
                             );
@@ -1140,6 +1168,7 @@ pub async fn run(
                     }
                     Command::UnlinkDiscord => {
                         unlink_discord(&mut discord, &linked, &voice);
+                        discord_error = None;
                         let _ = events.send(Event::DiscordUnlinked);
                         continue;
                     }
@@ -1154,7 +1183,13 @@ pub async fn run(
                 #[cfg(feature = "discord")]
                 let command = match discord.as_mut() {
                     Some(discord) => discord.command(command, &events),
-                    None => Some(command),
+                    None => crate::discord_text::without(
+                        command,
+                        discord_error
+                            .as_deref()
+                            .unwrap_or(crate::discord_text::NOT_LINKED),
+                        &events,
+                    ),
                 };
                 #[cfg(feature = "discord")]
                 let Some(command) = command else {
@@ -1210,6 +1245,13 @@ pub async fn run(
     voice.stop().await;
     #[cfg(feature = "matrix")]
     matrix.stop().await;
+}
+
+/// Logs why Discord couldn't start, and says so as the person sees it.
+#[cfg(feature = "discord")]
+fn discord_failed(error: &anyhow::Error) -> String {
+    tracing::warn!(error = format!("{error:#}"), "could not start Discord");
+    format!("Discord couldn't start: {error}")
 }
 
 /// Forgets the linked Discord account on this device: leaves its call, ends

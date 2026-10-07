@@ -20,6 +20,7 @@ impl Application {
                 ],
                 discord: false,
                 muted: false,
+                unavailable: false,
                 icon: None,
             },
             ChatServer {
@@ -32,6 +33,7 @@ impl Application {
                 ],
                 discord: false,
                 muted: false,
+                unavailable: false,
                 icon: None,
             },
         ];

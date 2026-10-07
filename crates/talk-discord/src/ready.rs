@@ -63,6 +63,11 @@ pub struct Server {
     pub emojis: Vec<Emoji>,
     /// When this account joined it, as Discord's ISO 8601 time.
     pub joined_at: Option<String>,
+    /// Out of reach in a Discord outage: still listed, with what was last
+    /// known of it, until Discord sends it again. Not saved, since the next
+    /// start learns afresh.
+    #[serde(skip)]
+    pub unavailable: bool,
 }
 
 /// A server's custom emoji.
@@ -548,6 +553,7 @@ pub fn server(guild: &Value) -> Option<Server> {
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
         emojis: emojis(&guild["emojis"]),
         joined_at: guild["joined_at"].as_str().map(str::to_owned),
+        unavailable: guild["unavailable"].as_bool().unwrap_or(false),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {

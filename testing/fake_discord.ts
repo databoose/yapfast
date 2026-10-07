@@ -14,7 +14,11 @@
 // /_control/gallery makes him post three photos in one message. Joining voice
 // connects to a voice server here that answers the handshake without DAVE and
 // drops the audio. A Go Live stream's video is decrypted and its VP8 frames
-// counted; GET /_control/video lists what each stream received. Watching
+// counted; GET /_control/video lists what each stream received. POST
+// /_control/voice-move moves Alice's call in the server to another voice
+// server, and GET /_control/voice-identifies lists the tokens voice
+// connections identified with; POST /_control/stream-move with a stream key
+// moves that stream to another server. Watching
 // Bob's stream gets testing/fixtures' recording once the viewer asks for video
 // with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
@@ -683,6 +687,8 @@ type SocketData = {
   session: string;
   origin: string;
   voice?: boolean;
+  /** The token a voice connection identified with. */
+  voiceToken?: string;
   /** A stream connection: its key, from the token it identified with. */
   stream?: string;
   ssrc?: number;
@@ -1385,6 +1391,13 @@ function ring(channel: string, people: string[], origin: string) {
 // has no DAVE and its audio is dropped, which is enough for Talk to connect.
 
 const VOICE_TOKEN = "fake-voice-token";
+/** The token of the server POST /_control/voice-move moves Alice's call to. */
+const MOVED_VOICE_TOKEN = "fake-voice-token-moved";
+/** The token each voice connection identified with, in order, for GET
+ *  /_control/voice-identifies. */
+const voiceIdentifies: string[] = [];
+/** Voice connections, open until they close. */
+const voiceSockets = new Set<Socket>();
 const voiceEndpoint = (ws: Socket) => `${ws.data.origin.replace(/^http/, "ws")}/voice`;
 let ssrcs = 100;
 
@@ -1832,7 +1845,7 @@ function voiceMessage(ws: Socket, text: string) {
   const reply = (op: number, data: unknown) => ws.send(JSON.stringify({ op, d: data }));
   switch (payload.op) {
     case 0: // Identify
-      if (d.token !== VOICE_TOKEN && !String(d.token).startsWith("stream-token-") && !String(d.token).startsWith("call-token-")) {
+      if (d.token !== VOICE_TOKEN && d.token !== MOVED_VOICE_TOKEN && !String(d.token).startsWith("stream-token-") && !String(d.token).startsWith("call-token-")) {
         ws.close(4004, "Authentication failed.");
         return;
       }
@@ -1842,6 +1855,11 @@ function voiceMessage(ws: Socket, text: string) {
         return;
       }
       ws.data.ssrc = ssrcs += 3;
+      ws.data.voiceToken = String(d.token);
+      voiceIdentifies.push(String(d.token));
+      if (d.token === MOVED_VOICE_TOKEN) {
+        for (const old of voiceSockets) if (old.data.voiceToken === VOICE_TOKEN) old.close(4014, "Disconnected.");
+      }
       if (String(d.token).startsWith("stream-token-")) ws.data.stream = String(d.token).slice("stream-token-".length);
       reply(2, {
         ssrc: ws.data.ssrc,
@@ -2511,6 +2529,32 @@ const server = Bun.serve<SocketData>({
       return new Response("Bob is offline\n");
     }
     if (path === "/_control/logouts") return Response.json(logouts);
+    if (path === "/_control/voice-identifies") return Response.json(voiceIdentifies);
+    if (req.method === "POST" && path === "/_control/voice-move") {
+      // Discord moves Alice's call in the server to another voice server: it
+      // names the new one, and the old one closes with 4014 once she's there.
+      const state = voice.get(ALICE);
+      if (!state?.guild) return new Response("Alice isn't in a server's voice channel\n", { status: 409 });
+      for (const ws of sockets) {
+        if (ws.data.session !== state.session) continue;
+        send(ws, 0, { guild_id: GUILD, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
+      }
+      return new Response("moved Alice's call\n");
+    }
+    if (req.method === "POST" && path === "/_control/stream-move") {
+      // Discord moves a stream Alice is in to another server, named by a new
+      // STREAM_CREATE, then STREAM_SERVER_UPDATE.
+      const key = (await req.text()).trim();
+      const stream = streams.get(key);
+      const state = voice.get(ALICE);
+      if (!stream || !state) return new Response("no such stream\n", { status: 409 });
+      for (const ws of sockets) {
+        if (ws.data.session !== state.session) continue;
+        send(ws, 0, { ...wireStream(key, stream), rtc_server_id: "fake-rtc-moved" }, "STREAM_CREATE");
+        send(ws, 0, streamServer(ws, key), "STREAM_SERVER_UPDATE");
+      }
+      return new Response(`moved ${key}\n`);
+    }
     if (path === "/_control/sessions") return Response.json(sessionCounts);
     if (path === "/_control/cookies") return Response.json(cookieCounts);
     if (path === "/_control/list-requests") return Response.json(listRequests);
@@ -2679,6 +2723,7 @@ const server = Bun.serve<SocketData>({
         return;
       }
       if (ws.data.voice) {
+        voiceSockets.add(ws);
         ws.send(JSON.stringify({ op: 8, d: { heartbeat_interval: 13_750 } }));
         return;
       }
@@ -2714,6 +2759,7 @@ const server = Bun.serve<SocketData>({
         return;
       }
       if (ws.data.voice && ws.data.ssrc) clearInterval(watchers.get(ws.data.ssrc)?.timer);
+      voiceSockets.delete(ws);
       sockets.delete(ws);
       if (!ws.data.voice && !ws.data.stream && ws.data.identified && code !== 1000 && code !== 1001) {
         parked.set(ws.data.session, { sequence: ws.data.sequence, missed: [] });

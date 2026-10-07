@@ -4,7 +4,10 @@
 //! cover them. A DM's id takes `@me` for its server, as in Discord's links.
 //! The ids are known in every build; listing needs the `discord` feature.
 #[cfg(feature = "discord")]
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 #[cfg(feature = "discord")]
 use talk_discord::{
@@ -35,6 +38,15 @@ const BANNER_SIZE: (u32, u32) = (600, 240);
 const PICTURE_SIZE: u32 = 128;
 #[cfg(feature = "discord")]
 const PARALLEL_DOWNLOADS: usize = 4;
+/// Tries per picture whose download may work later, before its initial
+/// shows for good.
+#[cfg(feature = "discord")]
+const PICTURE_TRIES: u32 = 6;
+/// How long downloads wait after a failure, doubling with each one after.
+#[cfg(feature = "discord")]
+const FIRST_WAIT: Duration = Duration::from_secs(10);
+#[cfg(feature = "discord")]
+const LAST_WAIT: Duration = Duration::from_secs(5 * 60);
 
 /// The server part of a DM's room id.
 pub const DM_GUILD: &str = "@me";
@@ -367,6 +379,7 @@ fn server_rooms(
         channels,
         discord: true,
         muted: server.muted,
+        unavailable: server.unavailable,
         icon: server.icon.clone(),
     };
     (rooms, server)
@@ -377,7 +390,43 @@ fn server_rooms(
 #[cfg(feature = "discord")]
 pub(crate) struct Pictures {
     slots: Arc<Semaphore>,
+    backoff: Arc<Mutex<Backoff>>,
     tasks: JoinSet<()>,
+}
+
+/// When pictures may next be downloaded, shared by every download. Each
+/// failure that may pass doubles the wait, from [`FIRST_WAIT`] to
+/// [`LAST_WAIT`], and a download that works ends it, so a CDN in trouble
+/// hears from Talk rarely rather than once per picture.
+#[cfg(feature = "discord")]
+#[derive(Debug, Default)]
+struct Backoff {
+    wait: Duration,
+    until: Option<Instant>,
+}
+
+#[cfg(feature = "discord")]
+impl Backoff {
+    /// When downloads may go again, if not yet at `now`.
+    fn until(&self, now: Instant) -> Option<Instant> {
+        self.until.filter(|until| *until > now)
+    }
+
+    /// A download begun at `started` failed at `now`, and may work later.
+    /// One begun before the wait it would set, alongside the download that
+    /// set it, leaves the wait as it is.
+    fn failed(&mut self, started: Instant, now: Instant) {
+        if self.until.is_some_and(|until| until > started) {
+            return;
+        }
+        self.wait = (self.wait * 2).clamp(FIRST_WAIT, LAST_WAIT);
+        // Spread, so Talks that failed together don't come back together.
+        self.until = Some(now + self.wait.mul_f64(rand::random_range(0.5..1.0)));
+    }
+
+    fn succeeded(&mut self) {
+        *self = Self::default();
+    }
 }
 
 #[cfg(feature = "discord")]
@@ -385,12 +434,15 @@ impl Pictures {
     pub(crate) fn new() -> Self {
         Self {
             slots: Arc::new(Semaphore::new(PARALLEL_DOWNLOADS)),
+            backoff: Arc::default(),
             tasks: JoinSet::new(),
         }
     }
 
-    /// Starts downloading `urls`, a few at a time. A picture that fails is
-    /// logged and left out; its initial shows instead.
+    /// Starts downloading `urls`, a few at a time. A picture whose download
+    /// may work later is tried again, after a wait every download keeps to;
+    /// one that fails for good is logged and left out, and its initial shows
+    /// instead.
     pub(crate) fn fetch(
         &mut self,
         discord: &Discord,
@@ -399,16 +451,43 @@ impl Pictures {
     ) {
         while self.tasks.try_join_next().is_some() {}
         for url in urls {
-            let (discord, events, slots) = (discord.clone(), events.clone(), self.slots.clone());
+            let (discord, events, slots, backoff) = (
+                discord.clone(),
+                events.clone(),
+                self.slots.clone(),
+                self.backoff.clone(),
+            );
             self.tasks.spawn(async move {
                 let Ok(_slot) = slots.acquire().await else {
                     return;
                 };
-                let data = match discord.download(&url, MAX_PICTURE_BYTES).await {
-                    Ok(data) => data,
-                    Err(error) => {
-                        tracing::debug!(%error, %url, "could not download a Discord picture");
-                        return;
+                let lock = || backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut tries = 0;
+                let data = loop {
+                    // Another download may push the wait further meanwhile.
+                    loop {
+                        let until = lock().until(Instant::now());
+                        let Some(until) = until else { break };
+                        tokio::time::sleep_until(until.into()).await;
+                    }
+                    tries += 1;
+                    let started = Instant::now();
+                    match discord.download(&url, MAX_PICTURE_BYTES).await {
+                        Ok(data) => {
+                            lock().succeeded();
+                            break data;
+                        }
+                        Err(error)
+                            if tries < PICTURE_TRIES
+                                && talk_discord::api::may_work_later(&error) =>
+                        {
+                            tracing::debug!(%error, %url, tries, "will download a Discord picture again");
+                            lock().failed(started, Instant::now());
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, %url, "could not download a Discord picture");
+                            return;
+                        }
                     }
                 };
                 let (width, height) = if url.contains("/banners/") {
@@ -438,6 +517,30 @@ mod tests {
     use talk_discord::ready::{Channel, Server};
 
     use super::*;
+
+    #[test]
+    fn picture_downloads_back_off_together() {
+        let now = Instant::now();
+        let mut backoff = Backoff::default();
+        assert_eq!(backoff.until(now), None);
+        backoff.failed(now, now);
+        let first = backoff.until(now).expect("a wait");
+        assert!(first >= now + FIRST_WAIT / 2 && first <= now + FIRST_WAIT);
+        // Downloads begun alongside the one that failed leave its wait.
+        backoff.failed(now, now + Duration::from_secs(1));
+        assert_eq!(backoff.until(now), Some(first));
+        // One that fails after the wait doubles it, up to the last.
+        backoff.failed(first, first);
+        assert_eq!(backoff.wait, FIRST_WAIT * 2);
+        for _ in 0..10 {
+            let until = backoff.until.unwrap();
+            backoff.failed(until, until);
+        }
+        assert_eq!(backoff.wait, LAST_WAIT);
+        backoff.succeeded();
+        assert_eq!(backoff.until(now), None);
+        assert_eq!(backoff.wait, Duration::ZERO);
+    }
 
     #[test]
     fn lists_channels_by_category() {

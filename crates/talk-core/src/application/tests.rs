@@ -39,6 +39,7 @@ fn connected() -> Application {
             ],
             discord: false,
             muted: false,
+            unavailable: false,
             icon: None,
         }],
     }));
@@ -107,6 +108,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
             channels: vec!["general".into(), "secret".into()],
             discord: false,
             muted: false,
+            unavailable: false,
             icon: None,
         }],
     }));
@@ -1978,6 +1980,56 @@ fn discord_dm_calls_start_ring_and_are_answered() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn do_not_disturb_shows_a_call_without_notifying() {
+    use talk_discord::service::{Conversation, DO_NOT_DISTURB, Snapshot, Status, VoiceMember};
+    let ann = VoiceMember {
+        user_id: "2".into(),
+        name: "Ann".into(),
+        avatar: "2.png".into(),
+        muted: false,
+        deafened: false,
+        streaming: false,
+    };
+    let mut app = Application::default();
+    let effects = app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        presence: DO_NOT_DISTURB.into(),
+        conversations: vec![Conversation {
+            id: "30".into(),
+            name: "Ann".into(),
+            people: 2,
+            person: Some("2".into()),
+            ringing: vec![VoiceMember {
+                user_id: "1".into(),
+                name: "Me".into(),
+                ..ann.clone()
+            }],
+            ..Default::default()
+        }],
+        voice: [("30".to_owned(), vec![ann])].into(),
+        ..Default::default()
+    }));
+    assert!(app.state.do_not_disturb());
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Notify(_))),
+        "Do Not Disturb doesn't notify"
+    );
+    let room = app
+        .state
+        .rooms
+        .iter()
+        .find(|room| room.id == "discord:@me:30");
+    assert!(
+        room.is_some_and(|room| room.incoming),
+        "the call still shows"
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn links_discord_by_qr_code_and_unlinks_it() {
     use crate::discord_link::Progress;
     use talk_discord::service::{Snapshot, Status};
@@ -2127,6 +2179,55 @@ fn adds_friends_by_username_and_sets_the_custom_status() {
         .as_slice(),
         [Effect::Backend(Command::SetCustomStatus(None))]
     ));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_dialogs_stop_waiting_when_the_backend_cant_answer() {
+    use talk_discord::service::{Snapshot, Status};
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        ..Default::default()
+    }));
+    app.dispatch(Action::OpenAddFriend);
+    let effects = app.dispatch(Action::AddFriend("erin".into()));
+    let [Effect::Backend(command)] = effects.as_slice() else {
+        panic!("the request goes to Discord");
+    };
+    app.backend_failed(command);
+    let dialog = app.state.add_friend.as_ref().expect("still open");
+    assert!(!dialog.sending);
+    assert!(matches!(&dialog.outcome, Some(Err(_))));
+
+    // The backend stopping ends the status editor's and a profile's waits.
+    app.dispatch(Action::OpenStatusEditor);
+    app.dispatch(Action::SetCustomStatus {
+        emoji: None,
+        text: "Hi".into(),
+        clear_after: ClearAfter::Never,
+    });
+    assert!(
+        app.state
+            .status_editor
+            .as_ref()
+            .is_some_and(|editor| editor.saving)
+    );
+    app.state.profile = Some(ProfileView {
+        profile: Profile {
+            id: "2".into(),
+            ..Default::default()
+        },
+        large: false,
+        loading: true,
+        note: None,
+    });
+    app.stopped();
+    let editor = app.state.status_editor.as_ref().expect("still open");
+    assert!(!editor.saving && editor.error.is_some());
+    let profile = app.state.profile.as_ref().expect("still open");
+    assert!(!profile.loading && profile.note.is_some());
 }
 
 #[test]

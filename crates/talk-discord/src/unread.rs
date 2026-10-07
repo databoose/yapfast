@@ -271,8 +271,9 @@ impl Unreads {
     /// settings as Discord's clients do. A DM notifies unless it's muted. In a server,
     /// the channel's level applies, else its category's, the account's for the server,
     /// then the server's default: every message, mentions only, or nothing. Muting a
-    /// server, category or channel leaves only mentions. Only people's own messages and
-    /// replies notify, not joins, pins and the like.
+    /// server, category or channel leaves only mentions. Only written messages notify:
+    /// people's messages and replies, and apps' answers to their commands, but not joins,
+    /// pins and the like.
     pub fn notifies(
         &self,
         message: &Value,
@@ -280,10 +281,8 @@ impl Unreads {
         roles: &HashMap<String, Vec<String>>,
         category: Option<&str>,
     ) -> bool {
-        const DEFAULT: u64 = 0;
-        const REPLY: u64 = 19;
-        let kind = message["type"].as_u64().unwrap_or(DEFAULT);
-        if message["author"]["id"] == me || !matches!(kind, DEFAULT | REPLY) {
+        let kind = message["type"].as_u64().unwrap_or_default();
+        if message["author"]["id"] == me || !crate::message::written(kind) {
             return false;
         }
         let Some(channel) = message["channel_id"].as_str() else {
@@ -498,6 +497,15 @@ mod tests {
             &message(Some("10"), "11", json!({"type": 7})),
             None
         ));
+        // An app's answer to a slash command or a context menu command
+        // notifies as a message does: here, when it mentions this account.
+        for kind in [20, 23] {
+            let answer = json!({"type": kind, "author": {"id": "3", "bot": true},
+                "mentions": [{"id": "1"}]});
+            assert!(notifies(&message(Some("20"), "21", answer), None));
+            let quiet = json!({"type": kind, "author": {"id": "3", "bot": true}});
+            assert!(!notifies(&message(Some("20"), "21", quiet), None));
+        }
     }
 
     #[test]

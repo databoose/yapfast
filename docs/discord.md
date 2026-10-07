@@ -144,7 +144,11 @@ one attempt. The `rsa` crate carries the Marvin timing advisory
 (RUSTSEC-2023-0071), which needs an attacker to time many decryptions; Talk
 decrypts three messages from Discord per attempt. Linking connects Discord at
 once, without restarting: voice reaches it through a slot the chat backend
-fills. Discord may still ask for a captcha when trading the ticket, which Talk
+fills. When Discord can't start then, or as Talk starts, such as when the
+credential store can't be read, Talk says why. What waits on Discord, such as
+a friend request, the custom status or a profile, fails with that reason
+rather than waiting, as it does when the chat backend stops. Discord may
+still ask for a captcha when trading the ticket, which Talk
 reports as an error for now; a fallback through a small embedded web view is
 still open.
 
@@ -178,6 +182,14 @@ through it on 2026-10-06. Audio uses PulseAudio and libwebrtc's processing
 module, so Windows needs its own audio backend. songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
+
+Discord may move a call to another voice server, saying so with a new
+`VOICE_SERVER_UPDATE` while the call is connected. Talk connects the call
+there and it goes on. The old server may drop the connection before that
+word comes, so a dropped connection waits five seconds for it before the
+call ends. A stream moves the same way, with a new `STREAM_CREATE` and
+`STREAM_SERVER_UPDATE`: sharing sends to the new server, after waiting up to
+five seconds for it when the old connection ends, and watching connects again.
 
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
@@ -232,7 +244,8 @@ A call ringing this account shows a card at the top of the window with the
 DM's picture, Decline and Accept, and Talk rings: a rising arpeggio
 synthesized in `ring.rs` and played through PulseAudio on the call's speakers
 until the call is answered, declined or stops ringing. While Talk isn't in
-front a desktop notification says who is calling. Accepting opens the DM and
+front a desktop notification says who is calling. On Do Not Disturb the card
+shows without the ring or the notification. Accepting opens the DM and
 joins, leaving any other call without asking, since answering already chose.
 Declining posts `POST /channels/{id}/call/stop-ringing` with this account,
 which leaves the call to the others. The DM's own call shows the same choice
@@ -522,12 +535,20 @@ an error.
   from `guild_folders` in its settings, and follow it when it changes
   elsewhere. A folder's servers show in its place, without the folder. A
   server the settings don't list yet, such as one just joined, goes first.
+- A server out of reach in a Discord outage (`GUILD_DELETE` with
+  `unavailable`, or READY listing it so) stays in the rail, faded, as last
+  known, until its `GUILD_CREATE` brings it back. Only a `GUILD_DELETE`
+  without `unavailable`, as when the account leaves, removes it.
 - Server icons and avatars come from Discord's CDN, which needs no login.
   Talk asks for each one once it shows: in the rail, beside people in a
   voice channel of the open server, in the call, or beside a message. A
   member's server avatar wins over their own. Talk decodes them at 128px
   before the UI sees them. Initials show until a picture arrives or when it
-  fails. A server without an icon keeps its initials, and a person without
+  fails. A download that may work later, when the CDN is out of reach,
+  fails or answers 429, is tried up to six times; every download then waits
+  together, 10 seconds and doubling up to five minutes, so a CDN in trouble
+  hears from Talk rarely. One Discord refuses, such as a 404, isn't tried
+  again. A server without an icon keeps its initials, and a person without
   an avatar gets Discord's default avatar for their account.
 - Messages support text, replies, edits, deletions, reactions, mentions and
   attachments. Up to ten files go with a message, uploaded to Discord's
@@ -584,7 +605,10 @@ an error.
 - Desktop notifications follow the person's Discord settings: each channel's,
   category's or server's level (every message, mentions only or nothing),
   falling back to the server's default, with mutes leaving only mentions. DMs
-  notify unless muted; message requests and spam don't. They show while Talk
+  notify unless muted; message requests and spam don't. Apps' answers to
+  slash commands and context menu commands notify as people's messages do;
+  joins, pins and call notices don't. Nothing notifies while the account's
+  status is Do Not Disturb. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
 - Mentions in messages are links on a light fill, in the role's colour or the

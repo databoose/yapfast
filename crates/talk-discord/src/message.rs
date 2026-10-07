@@ -224,12 +224,21 @@ fn lasted(ms: u64) -> String {
     }
 }
 
+/// Whether a message of this kind was written, by a person or by an app
+/// answering one's command, rather than a notice such as a join or a pin.
+pub(crate) fn written(kind: u64) -> bool {
+    matches!(
+        kind,
+        DEFAULT | REPLY | CHAT_INPUT_COMMAND | CONTEXT_MENU_COMMAND
+    )
+}
+
 /// A message object, from the API or the gateway. Kinds Talk doesn't show,
 /// such as boosts and thread notices, give `None`.
 pub fn parse(value: &Value) -> Option<Message> {
     let kind = value["type"].as_u64().unwrap_or(DEFAULT);
     let system = match kind {
-        DEFAULT | REPLY | CHAT_INPUT_COMMAND | CONTEXT_MENU_COMMAND => None,
+        kind if written(kind) => None,
         MEMBER_JOIN => Some("joined the server.".to_owned()),
         PINNED => Some("pinned a message.".to_owned()),
         // Discord updates it with when the call ended.

@@ -165,9 +165,12 @@ impl Application {
                 &mut self.discord_rooms,
                 &mut self.discord_servers,
             );
-            // A call that starts ringing this account notifies once.
+            // A call that starts ringing this account notifies once, unless
+            // it's set to Do Not Disturb.
+            let silent = self.state.do_not_disturb();
             for room in &self.discord_rooms {
                 if room.incoming
+                    && !silent
                     && !rung.contains(&room.id)
                     && self.state.voice.room.as_ref() != Some(&room.id)
                 {
