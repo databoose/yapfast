@@ -26,11 +26,20 @@ Its local preview uses the same model and emits no network effects.
 A client sends an `Action` to `Application::dispatch` and applies backend events
 with `Application::apply`. These methods return effects for starting a session
 or sending a backend command. `AppState` supplies ordinary Rust data for rendering,
-including shared timeline storage through `Arc<Vec<ChatMessage>>`.
+including shared timeline storage through `Arc<Vec<ChatMessage>>`. `dispatch`
+routes each action to a method in the module for its area, under
+[`application/`](../crates/talk-core/src/application): `compose`, `messages`,
+`rooms`, `profiles`, `calls`, `session`, `preview` and `discord_account`.
 
 The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`ui/talk.slint`](../ui/talk.slint) owns input widgets, password
 masking, focus, filtering, scroll position, list virtualization, device selectors,
-window state, theme and icons. It updates widgets after model changes. A programmatic
+window state, theme and icons. `Adapter::refresh`, in
+[`src/ui/refresh.rs`](../src/ui/refresh.rs), shows the application's state one
+area at a time: the workspace, sidebar, account, header, member lists, dialogs,
+composer, messages and call. `ui/talk.slint` holds the window and imports its
+parts from the files beside it: the theme, controls, rail, composer, messages,
+people, friends, voice, dialogs, settings, sign-in and Discord pieces. It updates
+widgets after model changes. A programmatic
 composer update uses the new room's draft, so it cannot overwrite that draft with
 the previous room's text.
 
