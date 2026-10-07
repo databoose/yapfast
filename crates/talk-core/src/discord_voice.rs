@@ -120,6 +120,8 @@ async fn started(starting: &mut Starting) -> Result<StreamServer> {
 /// Watching someone's stream: Discord's answer, then a worker showing it.
 struct Watch {
     key: String,
+    /// Whose stream it is, by Discord user id.
+    user: String,
     opening: Starting,
     worker: Option<(Worker, mpsc::UnboundedReceiver<Report>)>,
 }
@@ -129,6 +131,22 @@ impl Watch {
     fn hear(watch: &mut Option<Self>, hearing: bool) {
         if let Some((worker, _)) = watch.as_mut().and_then(|watch| watch.worker.as_mut())
             && let Err(error) = worker.hear(hearing)
+        {
+            tracing::warn!(
+                error = format!("{error:#}"),
+                "could not tell the stream worker"
+            );
+        }
+    }
+
+    /// Plays the stream's sound at the volume chosen for it.
+    fn volume(watch: &mut Option<Self>) {
+        if let Some(watching) = watch.as_mut()
+            && let Some((worker, _)) = watching.worker.as_mut()
+            && let Err(error) = worker.volume(crate::volume::get(
+                crate::volume::Kind::Stream,
+                &watching.user,
+            ))
         {
             tracing::warn!(
                 error = format!("{error:#}"),
@@ -153,6 +171,7 @@ impl Watch {
         let (discord, asked) = (discord.clone(), key.clone());
         Self {
             key,
+            user: user.to_owned(),
             opening: Some(Box::pin(async move { discord.watch(&asked).await })),
             worker: None,
         }
@@ -265,6 +284,7 @@ pub(crate) async fn call(
         state.phase = Phase::Connected;
         let mut ticks = tokio::time::interval(Duration::from_millis(150));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut volumes = crate::volume::changes();
         loop {
             let talking = capture.as_ref().is_some_and(Capture::talking);
             let participants = discord_participants(
@@ -446,13 +466,15 @@ pub(crate) async fn call(
                     }
                     snapshots.send_replace(state.clone());
                 }
+                Ok(()) = volumes.changed() => Watch::volume(&mut watch),
                 event = watch_event(&mut watch) => {
                     let mut stop = None;
                     match event {
                         WatchEvent::Opened(Ok(server)) => {
                             if let Some(watching) = watch.as_mut() {
                                 watching.opening = None;
-                                match Worker::watch(&server, state.speaker.clone(), state.deafened) {
+                                let volume = crate::volume::get(crate::volume::Kind::Stream, &watching.user);
+                                match Worker::watch(&server, state.speaker.clone(), state.deafened, volume) {
                                     Ok((worker, frames, reports)) => {
                                         watching.worker = Some((worker, reports));
                                         if let Some(shown) = state.watching.as_mut() {
@@ -593,6 +615,7 @@ fn discord_participants(
             Participant {
                 id: member.user_id.clone(),
                 user: member.name.clone(),
+                person: member.user_id.clone(),
                 local,
                 muted: if local { state.muted } else { member.muted },
                 deafened: if local {

@@ -19,7 +19,10 @@
 #include <algorithm>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "api/audio_options.h"
 #include "api/audio/audio_frame.h"
@@ -55,15 +58,63 @@ inline AudioSourceOptions to_rust_audio_options(
   return options;
 }
 
+// Talk: every audio track wrapper by its track's id, so the application can
+// set how loud a remote one plays; LiveKit's Rust API has no such call.
+namespace {
+webrtc::Mutex& tracks_mutex() {
+  static webrtc::Mutex mutex;
+  return mutex;
+}
+std::multimap<std::string, const AudioTrack*>& tracks() {
+  static std::multimap<std::string, const AudioTrack*> tracks;
+  return tracks;
+}
+}  // namespace
+
 AudioTrack::AudioTrack(std::shared_ptr<RtcRuntime> rtc_runtime,
                        webrtc::scoped_refptr<webrtc::AudioTrackInterface> track)
-    : MediaStreamTrack(rtc_runtime, std::move(track)) {}
+    : MediaStreamTrack(rtc_runtime, std::move(track)) {
+  webrtc::MutexLock lock(&tracks_mutex());
+  tracks().emplace(track_->id(), this);
+}
 
 AudioTrack::~AudioTrack() {
+  {
+    webrtc::MutexLock lock(&tracks_mutex());
+    for (auto it = tracks().begin(); it != tracks().end();) {
+      it = it->second == this ? tracks().erase(it) : std::next(it);
+    }
+  }
   webrtc::MutexLock lock(&mutex_);
   for (auto& sink : sinks_) {
     track()->RemoveSink(sink.get());
   }
+}
+
+bool set_audio_track_volume(rust::Str id, double volume) {
+  // References, taken under the lock, keep each track alive after it.
+  std::vector<std::pair<std::shared_ptr<RtcRuntime>,
+                        webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>>>
+      found;
+  {
+    webrtc::MutexLock lock(&tracks_mutex());
+    auto [first, last] = tracks().equal_range(std::string(id));
+    for (auto it = first; it != last; ++it) {
+      found.emplace_back(it->second->runtime(), it->second->rtc_track());
+    }
+  }
+  // Outside the lock: the call waits on the signaling thread, which may be
+  // creating or dropping a track meanwhile. A remote source passes the volume
+  // to its receiver, which expects that thread.
+  for (auto& [runtime, track] : found) {
+    runtime->signaling_thread()->BlockingCall([&] {
+      auto* audio = static_cast<webrtc::AudioTrackInterface*>(track.get());
+      if (auto* source = audio->GetSource()) {
+        source->SetVolume(volume);
+      }
+    });
+  }
+  return !found.empty();
 }
 
 void AudioTrack::add_sink(const std::shared_ptr<NativeAudioSink>& sink) const {

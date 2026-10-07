@@ -327,6 +327,9 @@ async fn connected(
         let mut missing_since: HashMap<String, Instant> = HashMap::new();
         let mut checks = tokio::time::interval(KEY_CHECK_INTERVAL);
         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut volumes = crate::volume::changes();
+        // The volume each remote audio track plays at, by track id.
+        let mut volumes_set: HashMap<String, f32> = HashMap::new();
         state.phase = Phase::Connected;
         loop {
             let people = roster.borrow_and_update().clone();
@@ -363,7 +366,7 @@ async fn connected(
                     None
                 };
                 Participant {
-                    id: person.member_id.clone(), user: person.user_id.clone(), local: person.is_local,
+                    id: person.member_id.clone(), user: person.user_id.clone(), person: person.user_id.clone(), local: person.is_local,
                     muted: if person.is_local { state.muted } else { person.streams.iter().filter(|stream| stream.kind == MediaStreamKind::Microphone).all(|stream| stream.muted) },
                     deafened: person.is_local && state.deafened,
                     speaking: speaking.contains(&person.member_id),
@@ -374,6 +377,10 @@ async fn connected(
                 }
             }).collect();
             state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));
+            let users: HashMap<String, String> = people.iter()
+                .filter_map(|person| Some((identity(&person.user_id, person.device_id.as_deref()?, &person.member_id), person.user_id.clone())))
+                .collect();
+            set_volumes(&call, &users, &mut volumes_set);
             state.warning = state.participants.iter().find_map(|person| person.problem.as_ref().map(|problem| format!("{}: {problem}", person.user)));
             snapshots.send_replace(state.clone());
             tokio::select! {
@@ -475,6 +482,8 @@ async fn connected(
                     Some(RoomEvent::Disconnected { .. }) | None => bail!("Voice disconnected. Check your connection and join again."),
                     _ => {}
                 },
+                // The next turn plays everyone at their new volumes.
+                Ok(()) = volumes.changed() => {}
                 _ = reconnect_timeout(reconnect_deadline) => bail!("Voice could not reconnect within 60 seconds. Join again when your connection returns."),
             }
         }
@@ -601,6 +610,30 @@ async fn reconnect_timeout(deadline: Option<Instant>) {
 }
 
 /// Plays or silences everyone else in the call.
+/// Plays each person's audio at the volume chosen for them, telling WebRTC
+/// only of changes. `users` maps LiveKit identities to Matrix user ids.
+fn set_volumes(call: &Call, users: &HashMap<String, String>, set: &mut HashMap<String, f32>) {
+    let mut open = HashSet::new();
+    for (identity, participant) in call.session().room().remote_participants() {
+        let Some(user) = users.get(identity.as_str()) else {
+            continue;
+        };
+        let volume = crate::volume::get(crate::volume::Kind::Voice, user);
+        for publication in participant.track_publications().values() {
+            if let Some(RemoteTrack::Audio(track)) = publication.track() {
+                let id = track.rtc_track().id();
+                if set.get(&id) != Some(&volume)
+                    && webrtc_sys::audio_track::ffi::set_audio_track_volume(&id, f64::from(volume))
+                {
+                    set.insert(id.clone(), volume);
+                }
+                open.insert(id);
+            }
+        }
+    }
+    set.retain(|id, _| open.contains(id));
+}
+
 fn set_hearing(call: &Call, hearing: bool) {
     for person in call.session().room().remote_participants().values() {
         for publication in person.track_publications().values() {

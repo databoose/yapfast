@@ -173,16 +173,44 @@ pub struct Player {
     thread: Option<JoinHandle<()>>,
 }
 
+/// How loud a watched stream plays, which Talk can change while it does.
+#[derive(Debug)]
+pub struct Volume(std::sync::atomic::AtomicU32);
+
+impl Volume {
+    pub fn new(volume: f32) -> Self {
+        Self(std::sync::atomic::AtomicU32::new(volume.to_bits()))
+    }
+
+    pub fn set(&self, volume: f32) {
+        self.0.store(volume.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
+/// `pcm` at `volume`, clipping at full scale.
+fn scaled(pcm: &[i16], volume: f32) -> impl Iterator<Item = i16> + '_ {
+    pcm.iter().map(move |sample| {
+        (f32::from(*sample) * volume)
+            .round()
+            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+    })
+}
+
 impl Player {
-    /// Plays `sounds` on `speakers`, or the default output, while `hearing`
-    /// is set: being deafened silences streams too.
+    /// Plays `sounds` on `speakers`, or the default output, at `volume`, while
+    /// `hearing` is set: being deafened silences streams too.
     pub fn start(
         sounds: std::sync::mpsc::Receiver<Vec<u8>>,
         speakers: Option<String>,
         hearing: Arc<AtomicBool>,
+        volume: Arc<Volume>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
-        let thread = platform::play(sounds, speakers, hearing, stop.clone())?;
+        let thread = platform::play(sounds, speakers, hearing, volume, stop.clone())?;
         Ok(Self {
             stop,
             thread: Some(thread),
@@ -211,6 +239,7 @@ mod platform {
         _sounds: std::sync::mpsc::Receiver<Vec<u8>>,
         _speakers: Option<String>,
         _hearing: Arc<AtomicBool>,
+        _volume: Arc<Volume>,
         _stop: Arc<AtomicBool>,
     ) -> Result<JoinHandle<()>> {
         anyhow::bail!("Talk plays streams' sound on Linux only for now")
@@ -265,6 +294,7 @@ mod platform {
         sounds: mpsc::Receiver<Vec<u8>>,
         speakers: Option<String>,
         hearing: Arc<AtomicBool>,
+        volume: Arc<Volume>,
         stop: Arc<AtomicBool>,
     ) -> Result<JoinHandle<()>> {
         use libpulse_binding::stream::Direction;
@@ -335,9 +365,8 @@ mod platform {
                     }
                     match decoder.decode(&opus, &mut pcm, false) {
                         Ok(samples) => {
-                            let bytes: Vec<u8> = pcm[..samples * CHANNELS]
-                                .iter()
-                                .flat_map(|sample| sample.to_le_bytes())
+                            let bytes: Vec<u8> = scaled(&pcm[..samples * CHANNELS], volume.get())
+                                .flat_map(i16::to_le_bytes)
                                 .collect();
                             if let Err(error) = output.write(&bytes) {
                                 tracing::warn!(%error, "stopped playing the stream's sound");
@@ -770,6 +799,22 @@ mod tests {
 
     /// Plays 400 ms of Opus silence on the default speakers, then ends with
     /// the sound.
+    #[test]
+    fn plays_a_stream_at_its_volume() {
+        let volume = Volume::new(0.5);
+        let pcm = [1000i16, -1000, 30_000];
+        assert_eq!(
+            scaled(&pcm, volume.get()).collect::<Vec<_>>(),
+            [500, -500, 15_000]
+        );
+        volume.set(2.0);
+        assert_eq!(
+            scaled(&pcm, volume.get()).collect::<Vec<_>>(),
+            [2000, -2000, i16::MAX],
+            "louder clips at full scale"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore]
@@ -780,7 +825,13 @@ mod tests {
         }
         drop(sounds);
         let started = Instant::now();
-        let mut player = Player::start(heard, None, Arc::new(AtomicBool::new(true))).unwrap();
+        let mut player = Player::start(
+            heard,
+            None,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(Volume::new(1.0)),
+        )
+        .unwrap();
         player.thread.take().unwrap().join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(3));
     }

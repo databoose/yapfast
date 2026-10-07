@@ -36,6 +36,9 @@ pub struct Device {
 pub struct Participant {
     pub id: String,
     pub user: String,
+    /// Who they are across calls, by Discord user id or Matrix user id, as
+    /// [`crate::volume`] remembers them.
+    pub person: String,
     pub local: bool,
     pub muted: bool,
     /// Not hearing the call. MatrixRTC doesn't share this, so in Talk calls

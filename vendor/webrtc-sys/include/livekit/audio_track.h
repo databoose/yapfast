@@ -57,6 +57,9 @@ class AudioTrack : public MediaStreamTrack {
   void add_sink(const std::shared_ptr<NativeAudioSink>& sink) const;
   void remove_sink(const std::shared_ptr<NativeAudioSink>& sink) const;
 
+  // Talk: the runtime, so set_audio_track_volume can reach its threads.
+  std::shared_ptr<RtcRuntime> runtime() const { return rtc_runtime_; }
+
  private:
   webrtc::AudioTrackInterface* track() const {
     return static_cast<webrtc::AudioTrackInterface*>(track_.get());
@@ -184,6 +187,9 @@ std::shared_ptr<AudioTrackSource> new_audio_track_source(
     int sample_rate,
     int num_channels,
     int queue_size_ms);
+
+// Talk: sets the volume of every open audio track with this id.
+bool set_audio_track_volume(rust::Str id, double volume);
 
 static std::shared_ptr<MediaStreamTrack> audio_to_media(
     std::shared_ptr<AudioTrack> track) {

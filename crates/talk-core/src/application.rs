@@ -2202,6 +2202,7 @@ impl Application {
                         participants: vec![voice::Participant {
                             id: "preview-you".into(),
                             user: "You".into(),
+                            person: "preview-you".into(),
                             local: true,
                             muted: true,
                             deafened: false,

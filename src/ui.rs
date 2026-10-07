@@ -378,6 +378,11 @@ struct Layout {
     unmute_on_join: bool,
     /// Your voice is evened out in calls; on unless turned off.
     level_voice: Option<bool>,
+    /// How loud people sound in calls, and their streams, by Discord or
+    /// Matrix user id; see [`talk_core::volume`]. Unlisted people are as they
+    /// come.
+    volumes: std::collections::BTreeMap<String, f32>,
+    stream_volumes: std::collections::BTreeMap<String, f32>,
     /// Others see when this account is typing; on unless turned off.
     share_typing: Option<bool>,
     /// Desktop notifications, their sound, and whether they say what messages say; on
@@ -406,6 +411,12 @@ impl Layout {
         window.set_unmute_on_join(self.unmute_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
         talk_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
+        for (person, volume) in &self.volumes {
+            talk_core::volume::set(talk_core::volume::Kind::Voice, person, *volume);
+        }
+        for (person, volume) in &self.stream_volumes {
+            talk_core::volume::set(talk_core::volume::Kind::Stream, person, *volume);
+        }
         window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
         window.set_notification_sound(self.notification_sound.unwrap_or(true));
@@ -1592,6 +1603,7 @@ impl Adapter {
                         muted: person.muted,
                         deafened: person.deafened,
                         live: person.streaming,
+                        person: person.person.clone().into(),
                         picture: cached_picture(
                             &mut self.pictures,
                             state,
@@ -1926,6 +1938,39 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         adapter.layout.write(&adapter.root);
         adapter.restyle = true;
         adapter.refresh(&window);
+    });
+    window.on_volume_of(|person, stream| {
+        let kind = if stream {
+            talk_core::volume::Kind::Stream
+        } else {
+            talk_core::volume::Kind::Voice
+        };
+        (talk_core::volume::get(kind, &person) * 100.0).round() as i32
+    });
+    let state = adapter.clone();
+    window.on_volume_changed(move |person, stream, percent, done| {
+        let volume = percent as f32 / 100.0;
+        let kind = if stream {
+            talk_core::volume::Kind::Stream
+        } else {
+            talk_core::volume::Kind::Voice
+        };
+        talk_core::volume::set(kind, &person, volume);
+        // The drag's last step is remembered, rather than every one.
+        if done {
+            let mut adapter = state.borrow_mut();
+            let volumes = if stream {
+                &mut adapter.layout.stream_volumes
+            } else {
+                &mut adapter.layout.volumes
+            };
+            if percent == 100 {
+                volumes.remove(person.as_str());
+            } else {
+                volumes.insert(person.into(), volume);
+            }
+            adapter.layout.write(&adapter.root);
+        }
     });
     let state = adapter.clone();
     let weak = window.as_weak();

@@ -79,7 +79,8 @@ impl Listener for Hearing {
         };
         // A full queue means the speakers are behind; dropping a frame keeps
         // the delay from growing.
-        if let Err(TrySendError::Disconnected(_)) = output.try_send(mix(voices)) {
+        let volume = |user: u64| crate::volume::get(crate::volume::Kind::Voice, &user.to_string());
+        if let Err(TrySendError::Disconnected(_)) = output.try_send(mix(voices, volume)) {
             tracing::warn!("Discord speakers stopped");
         }
     }
@@ -89,16 +90,25 @@ impl Listener for Hearing {
     }
 }
 
-/// Sums everyone's 20 ms of interleaved stereo, clipping at full scale.
-fn mix(voices: &[(u64, &[i16])]) -> Vec<i16> {
-    let mut sum = vec![0i32; FRAME * usize::from(CHANNELS)];
-    for (_, samples) in voices {
+/// Sums everyone's 20 ms of interleaved stereo, each at the volume chosen
+/// for them, clipping at full scale.
+fn mix(voices: &[(u64, &[i16])], volume: impl Fn(u64) -> f32) -> Vec<i16> {
+    let mut sum = vec![0f32; FRAME * usize::from(CHANNELS)];
+    for (user, samples) in voices {
+        let gain = volume(*user);
+        if gain == 0.0 {
+            continue;
+        }
         for (total, sample) in sum.iter_mut().zip(samples.iter()) {
-            *total += i32::from(*sample);
+            *total += f32::from(*sample) * gain;
         }
     }
     sum.into_iter()
-        .map(|sample| sample.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
+        .map(|sample| {
+            sample
+                .round()
+                .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+        })
         .collect()
 }
 
@@ -562,11 +572,15 @@ mod tests {
     fn mixing_adds_voices_and_clips() {
         let loud = vec![30_000i16; FRAME * 2];
         let quiet = vec![100i16; FRAME * 2];
-        let mixed = mix(&[(1, &loud), (2, &loud), (3, &quiet)]);
+        let as_they_come = |_| 1.0;
+        let mixed = mix(&[(1, &loud), (2, &loud), (3, &quiet)], as_they_come);
         assert_eq!(mixed.len(), FRAME * 2);
         assert_eq!(mixed[0], i16::MAX);
-        assert_eq!(mix(&[(3, &quiet)])[0], 100);
-        assert!(mix(&[]).iter().all(|sample| *sample == 0));
+        assert_eq!(mix(&[(3, &quiet)], as_they_come)[0], 100);
+        assert!(mix(&[], as_they_come).iter().all(|sample| *sample == 0));
+        // Each voice at its own volume.
+        let chosen = |user| if user == 3 { 1.5 } else { 0.0 };
+        assert_eq!(mix(&[(1, &loud), (3, &quiet)], chosen)[0], 150);
     }
 
     #[test]

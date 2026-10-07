@@ -47,6 +47,7 @@ pub mod stream_worker;
 pub mod voice;
 #[cfg(feature = "matrix")]
 pub mod voice_demo;
+pub mod volume;
 
 /// Install the TLS provider before starting Matrix or calling services.
 pub fn init_tls() -> anyhow::Result<()> {

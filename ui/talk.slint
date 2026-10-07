@@ -735,6 +735,84 @@ component SettingsHeading inherits Text {
 
 // A marigold switch, with its label beside it and what it does below. A click on
 // either, or Space or Enter with the keyboard, toggles it.
+// How loud someone sounds, from 0% to 200% as Discord allows: a marigold fill
+// up to the value over a mark at 100%, which a drag snaps to nearby. Dragging
+// reports each step through `changed` and the last through `committed`; the
+// arrow keys move 5% at a time.
+component VolumeSlider inherits Rectangle {
+    in property <string> label;
+    in-out property <int> value: 100;
+    callback changed(int);
+    callback committed(int);
+    height: column.preferred-height;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 200;
+    accessible-value-step: 5;
+    accessible-action-increment => { root.step(5); }
+    accessible-action-decrement => { root.step(-5); }
+    forward-focus: focus;
+    function set(value: int) {
+        let clamped = max(0, min(200, value));
+        if clamped != root.value {
+            root.value = clamped;
+            root.changed(clamped);
+        }
+    }
+    function step(by: int) {
+        root.set(root.value + by);
+        root.committed(root.value);
+    }
+    function point(x: length) {
+        let value = round(max(0, min(1, x / track.width)) * 200);
+        root.set(abs(value - 100) <= 4 ? 100 : value);
+    }
+    column := VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            Text { text: root.label; color: Theme.secondary; font-size: 13px; font-weight: 600; horizontal-stretch: 1; }
+            Text { text: root.value + "%"; color: Theme.text; font-size: 13px; font-weight: 600; }
+        }
+        track := Rectangle {
+            height: 18px;
+            Rectangle { y: (parent.height - self.height) / 2; height: 4px; border-radius: 2px; background: Theme.field; }
+            Rectangle {
+                x: 0; y: (parent.height - self.height) / 2; width: parent.width * root.value / 200; height: 4px;
+                border-radius: 2px; background: Theme.accent;
+            }
+            Rectangle { x: parent.width / 2 - 1px; y: (parent.height - self.height) / 2; width: 2px; height: 10px; background: Theme.secondary; }
+            Rectangle {
+                x: parent.width * root.value / 200 - self.width / 2; y: (parent.height - self.height) / 2;
+                width: 14px; height: 14px; border-radius: 7px; background: Theme.text;
+                border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
+            }
+            touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        focus.focus();
+                        root.point(self.mouse-x);
+                    }
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.committed(root.value);
+                    }
+                }
+                moved => { if self.pressed { root.point(self.mouse-x); } }
+            }
+        }
+    }
+    focus := FocusScope {
+        width: 0; height: 0;
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow || event.text == Key.DownArrow { root.step(-5); return accept; }
+            if event.text == Key.RightArrow || event.text == Key.UpArrow { root.step(5); return accept; }
+            return reject;
+        }
+    }
+}
+
 component SettingsSwitch inherits Rectangle {
     in property <string> text;
     in property <string> description;
@@ -1179,6 +1257,9 @@ export struct PersonRow {
     live: bool,
     /// This account, in a call.
     local: bool,
+    /// Who they are across calls, by Discord or Matrix user id, which their
+    /// volumes are remembered by.
+    person: string,
 }
 
 // Marks someone sharing their screen, as Discord's red LIVE tag does.
@@ -1536,6 +1617,26 @@ export component TalkWindow inherits Window {
     callback stream-tick;
     /// Watch the participant with this id's stream.
     callback watch-stream(string);
+    // Someone's volumes, from a right click on them in a call, as percentages.
+    callback volume-of(string, bool) -> int;
+    /// A person, whether it's their stream, the volume, and whether it's
+    /// the last of a drag, which is when it's remembered.
+    callback volume-changed(string, bool, int, bool);
+    property <string> volume-person;
+    property <string> volume-name;
+    property <bool> volume-live;
+    property <int> voice-volume: 100;
+    property <int> stream-volume: 100;
+    function open-volume(person: PersonRow, x: length, y: length) {
+        if person.local || person.person == "" { return; }
+        root.anchor(x, y, 0px, 0px, true);
+        root.volume-person = person.person;
+        root.volume-name = person.name;
+        root.volume-live = person.live;
+        root.voice-volume = root.volume-of(person.person, false);
+        root.stream-volume = root.volume-of(person.person, true);
+        volume-menu.show();
+    }
     callback stop-watching;
     callback leave-voice;
     callback confirm-switch;
@@ -1863,6 +1964,33 @@ export component TalkWindow inherits Window {
     }
     // A message's actions, from its hover bar's "More" button or a right click.
     property <bool> menu-can-react: root.menu-message.can-react && root.composer-enabled;
+    volume-menu := PopupWindow {
+        width: 260px; height: volume-content.preferred-height;
+        x: max(8px, min(root.width - self.width - 8px, root.anchor-x));
+        y: root.anchor-y + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            accessible-role: groupbox; accessible-label: root.volume-name + "'s volume";
+            volume-content := VerticalLayout {
+                padding: 12px; spacing: 12px;
+                Text { text: root.volume-name; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
+                VolumeSlider {
+                    label: "User volume";
+                    value <=> root.voice-volume;
+                    changed(volume) => { root.volume-changed(root.volume-person, false, volume, false); }
+                    committed(volume) => { root.volume-changed(root.volume-person, false, volume, true); }
+                }
+                if root.volume-live: VolumeSlider {
+                    label: "Stream volume";
+                    value <=> root.stream-volume;
+                    changed(volume) => { root.volume-changed(root.volume-person, true, volume, false); }
+                    committed(volume) => { root.volume-changed(root.volume-person, true, volume, true); }
+                }
+            }
+        }
+    }
     message-menu := PopupWindow {
         width: 224px; height: menu-content.preferred-height;
         x: max(8px, min(root.width - self.width - 8px, root.anchor-pointer ? root.anchor-x : root.anchor-x + root.anchor-width - self.width));
@@ -2089,27 +2217,39 @@ export component TalkWindow inherits Window {
                                         }
                                         if room.voice && room.id == root.voice-channel: VerticalLayout {
                                             padding-left: 32px; padding-bottom: 4px; spacing: 0px;
-                                            for person in root.participants: HorizontalLayout {
-                                                height: 30px; spacing: 8px; padding-left: 4px; padding-right: 8px;
-                                                Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; speaking: person.speaking; } }
-                                                Text {
-                                                    text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
-                                                    color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
-                                                    vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
-                                                }
-                                                if person.live: Middle {
-                                                    LivePill {
-                                                        clickable: !person.local; label: "Watch " + person.name + "'s stream";
-                                                        clicked => { root.watch-stream(person.id); }
+                                            for person in root.participants: Rectangle {
+                                                height: 30px; border-radius: 4px;
+                                                background: !person.local && participant-touch.has-hover ? Theme.hover : transparent;
+                                                // A right click sets their volumes.
+                                                participant-touch := TouchArea {
+                                                    pointer-event(event) => {
+                                                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                                            root.open-volume(person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                                        }
                                                     }
                                                 }
-                                                if person.muted || person.deafened: Image {
-                                                    source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
-                                                    colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
-                                                }
-                                                if person.deafened: Image {
-                                                    source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
-                                                    colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
+                                                HorizontalLayout {
+                                                    spacing: 8px; padding-left: 4px; padding-right: 8px;
+                                                    Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; speaking: person.speaking; } }
+                                                    Text {
+                                                        text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
+                                                        color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
+                                                        vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                                                    }
+                                                    if person.live: Middle {
+                                                        LivePill {
+                                                            clickable: !person.local; label: "Watch " + person.name + "'s stream";
+                                                            clicked => { root.watch-stream(person.id); }
+                                                        }
+                                                    }
+                                                    if person.muted || person.deafened: Image {
+                                                        source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
+                                                        colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
+                                                    }
+                                                    if person.deafened: Image {
+                                                        source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
+                                                        colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
+                                                    }
                                                 }
                                             }
                                         }
@@ -2396,9 +2536,15 @@ export component TalkWindow inherits Window {
                                             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2 - 8px;
                                             opacity: person.connected ? 1 : 0.5;
                                         }
-                                        if person.live && !person.local: TouchArea {
-                                            mouse-cursor: MouseCursor.pointer;
-                                            clicked => { root.watch-stream(person.id); }
+                                        // A click watches someone's stream; a right click sets their volumes.
+                                        TouchArea {
+                                            mouse-cursor: person.live && !person.local ? MouseCursor.pointer : MouseCursor.default;
+                                            clicked => { if person.live && !person.local { root.watch-stream(person.id); } }
+                                            pointer-event(event) => {
+                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                                    root.open-volume(person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                                }
+                                            }
                                         }
                                         if person.live && !person.local: Rectangle {
                                             x: parent.width - self.width - 10px; y: 10px; height: 26px;

@@ -29,6 +29,15 @@ WebRTC's PulseAudio devices report no GUID, and LiveKit selects devices only by
 GUID, which always chose the first device. Talk names such devices `name:` and
 their reported name, and selects them by their current index instead.
 
+Right-clicking someone in a call, in the sidebar or on their tile, sets how
+loud they sound from 0% to 200%, and their stream's sound too while they're
+live. A drag snaps to 100% near it. Talk remembers both by Discord or Matrix
+user id in `layout.json`, so they hold in every call and after a restart. Discord
+voice scales each person as it mixes the call, and a watched stream's worker
+scales its sound. Talk calls play remote audio inside WebRTC, which LiveKit's
+Rust API can't adjust per track, so Talk's patch to `webrtc-sys` sets each
+track's volume through WebRTC's `SetVolume` by track id.
+
 Settings' "Even out your voice", on unless turned off, levels the microphone
 after WebRTC's processing. Talk follows your usual speaking level over the last
 half minute or so, and undoes up to 8 dB of drift from it as you lean towards

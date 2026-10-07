@@ -64,7 +64,7 @@ const THUMBNAIL_WIDTH: u32 = 512;
 const THUMBNAIL_HEIGHT: u32 = 288;
 const THUMBNAIL_EVERY: Duration = Duration::from_secs(5 * 60);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Job {
     /// Captures `source`, writing frames that fit `width` by `height` to the
@@ -90,6 +90,9 @@ pub enum Job {
         /// Deafened in the call, so the stream's sound stays quiet.
         #[serde(default)]
         deafened: bool,
+        /// How loud its sound plays; see [`crate::volume`].
+        #[serde(default = "as_it_comes")]
+        volume: f32,
     },
 }
 
@@ -103,13 +106,19 @@ pub enum Source {
 }
 
 /// What Talk tells a running job.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Control {
     /// Send the video to the server Discord started the stream on.
     Send(StreamServer),
     /// Play a watched stream's sound, or not, as being deafened changes.
     Hear(bool),
+    /// Play a watched stream's sound this loud.
+    Volume(f32),
+}
+
+fn as_it_comes() -> f32 {
+    1.0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,6 +216,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             height,
             speakers,
             deafened,
+            volume,
         } => {
             let writer = Writer::open(&frames)?;
             report(Report::Ready);
@@ -214,6 +224,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             let sound = Sound {
                 speakers,
                 hearing,
+                volume: Arc::new(stream_audio::Volume::new(volume)),
                 controls: received,
             };
             watch(server, writer, (width, height), sound, &stop, report)
@@ -403,6 +414,7 @@ fn thumbnail(picture: &mut I420Buffer) -> Result<String> {
 struct Sound {
     speakers: Option<String>,
     hearing: Arc<AtomicBool>,
+    volume: Arc<stream_audio::Volume>,
     controls: channel::Receiver<Control>,
 }
 
@@ -418,11 +430,14 @@ fn watch(
 ) -> Result<()> {
     let mut receiver = StreamReceiver::start(server)?;
     let _player = receiver.take_sounds().and_then(|sounds| {
-        stream_audio::Player::start(sounds, sound.speakers, sound.hearing.clone())
-            .inspect_err(|error| {
-                tracing::warn!(error = format!("{error:#}"), "watching without sound")
-            })
-            .ok()
+        stream_audio::Player::start(
+            sounds,
+            sound.speakers,
+            sound.hearing.clone(),
+            sound.volume.clone(),
+        )
+        .inspect_err(|error| tracing::warn!(error = format!("{error:#}"), "watching without sound"))
+        .ok()
     });
     let mut decoder: Option<Decoder> = None;
     let mut rgba = vec![];
@@ -430,8 +445,10 @@ fn watch(
     let mut failures = 0u64;
     while !stop.load(Ordering::Relaxed) {
         while let Ok(control) = sound.controls.try_recv() {
-            if let Control::Hear(hearing) = control {
-                sound.hearing.store(hearing, Ordering::Relaxed);
+            match control {
+                Control::Hear(hearing) => sound.hearing.store(hearing, Ordering::Relaxed),
+                Control::Volume(volume) => sound.volume.set(volume),
+                Control::Send(_) => {}
             }
         }
         if let Link::Ended(reason) = receiver.link() {
@@ -780,6 +797,7 @@ impl Worker {
         server: &StreamServer,
         speakers: Option<String>,
         deafened: bool,
+        volume: f32,
     ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
         let frames = Frames::create(WATCH_WIDTH, WATCH_HEIGHT)?;
         let job = Job::Watch {
@@ -789,6 +807,7 @@ impl Worker {
             height: WATCH_HEIGHT,
             speakers,
             deafened,
+            volume,
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -797,6 +816,11 @@ impl Worker {
     /// Tells a watching worker whether to play the stream's sound.
     pub fn hear(&mut self, hearing: bool) -> Result<()> {
         self.control(&Control::Hear(hearing))
+    }
+
+    /// Tells a watching worker how loud to play the stream's sound.
+    pub fn volume(&mut self, volume: f32) -> Result<()> {
+        self.control(&Control::Volume(volume))
     }
 
     /// Hands the worker the server Discord started the stream on.
