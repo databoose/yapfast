@@ -420,6 +420,24 @@ impl Layout {
         }
         if !self.link_previews.unwrap_or(true) {
             row.embeds = ModelRc::default();
+            // A bot's card can be the whole message; say it's there.
+            if message.body.trim().is_empty()
+                && !message
+                    .attachments
+                    .iter()
+                    .any(|attachment| matches!(attachment.placement, Placement::Message))
+                && let Some(embed) = message.embeds.first()
+            {
+                row.hidden_card = if embed.title.is_empty() {
+                    "A card, hidden while link previews are off.".into()
+                } else {
+                    format!(
+                        "A card, \"{}\", hidden while link previews are off.",
+                        embed.title
+                    )
+                    .into()
+                };
+            }
         }
         row
     }
@@ -2681,6 +2699,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         gallery_height,
         files: ModelRc::new(VecModel::from(files)),
         embeds: ModelRc::new(VecModel::from(embeds)),
+        hidden_card: SharedString::default(),
         delivery: delivery.into(),
         delivery_failed: message.delivery == Delivery::Failed,
         can_retry,
@@ -2859,6 +2878,34 @@ mod tests {
         assert_eq!(row.time_styled, slint::StyledText::from_plain_text(&time));
         assert_eq!(row.short_time, time.split(' ').next().unwrap());
         assert_eq!(row.embeds.row_count(), 0);
+        // A message that is only a card says it's hidden; one with text doesn't.
+        assert_eq!(
+            row.hidden_card,
+            "A card, hidden while link previews are off."
+        );
+        let titled = ChatMessage {
+            embeds: vec![talk_core::chat::Embed {
+                title: "Server status".into(),
+                ..Default::default()
+            }],
+            ..message.clone()
+        };
+        assert!(
+            layout
+                .restyle(&titled, message_row(&titled))
+                .hidden_card
+                .contains("\"Server status\"")
+        );
+        let with_text = ChatMessage {
+            body: "Look".into(),
+            ..message.clone()
+        };
+        assert!(
+            layout
+                .restyle(&with_text, message_row(&with_text))
+                .hidden_card
+                .is_empty()
+        );
 
         let window = TalkWindow::new().unwrap();
         layout.apply(&window);

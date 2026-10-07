@@ -1,4 +1,4 @@
-import { ComboBox, ScrollView, ListView, Palette, Switch } from "std-widgets.slint";
+import { ComboBox, ScrollView, ListView, Palette } from "std-widgets.slint";
 import "fonts/Satoshi-Regular.ttf";
 import "fonts/Satoshi-Italic.ttf";
 import "fonts/Satoshi-Medium.ttf";
@@ -733,15 +733,66 @@ component SettingsHeading inherits Text {
     color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
 }
 
-component SettingsSwitch inherits VerticalLayout {
+// A marigold switch, with its label beside it and what it does below. A click on
+// either, or Space or Enter with the keyboard, toggles it.
+component SettingsSwitch inherits Rectangle {
     in property <string> text;
     in property <string> description;
     in-out property <bool> checked;
     in property <bool> enabled: true;
     callback toggled(bool);
-    spacing: 4px;
-    Switch { text: root.text; enabled: root.enabled; checked <=> root.checked; toggled => { root.toggled(self.checked); } }
-    if root.description != "": Label { text: root.description; }
+    height: column.preferred-height;
+    function toggle() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+    column := VerticalLayout {
+        spacing: 4px;
+        row := HorizontalLayout {
+            spacing: 12px;
+            Middle {
+                Rectangle {
+                    width: 40px; height: 22px; border-radius: 11px;
+                    background: !root.enabled ? Theme.field : root.checked ? (pointer.has-hover ? Theme.accent-hover : Theme.accent) : (pointer.has-hover ? Theme.active : Theme.field);
+                    border-width: focus.has-focus ? 2px : 1px;
+                    border-color: focus.has-focus ? Theme.text : root.checked && root.enabled ? transparent : Theme.line;
+                    animate background { duration: Theme.quick; }
+                    Rectangle {
+                        x: root.checked ? parent.width - self.width - 3px : 3px;
+                        width: 16px; height: 16px; border-radius: 8px;
+                        background: !root.enabled ? Theme.faint : root.checked ? Theme.on-accent : Theme.secondary;
+                        animate x, background { duration: Theme.quick; easing: ease-out; }
+                    }
+                }
+            }
+            Text {
+                text: root.text; color: root.enabled ? Theme.text : Theme.muted; font-size: 15px;
+                vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1;
+            }
+        }
+        if root.description != "": Label { text: root.description; }
+    }
+    focus := FocusScope {
+        x: 0px; y: 0px; width: root.width; height: row.height;
+        enabled: root.enabled;
+        accessible-role: switch;
+        accessible-label: root.text;
+        accessible-description: root.description;
+        accessible-checkable: true;
+        accessible-checked: root.checked;
+        accessible-enabled: root.enabled;
+        accessible-action-default => { root.toggle(); }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.toggle(); return accept; }
+            return reject;
+        }
+        pointer := TouchArea {
+            enabled: root.enabled; mouse-cursor: MouseCursor.pointer;
+            clicked => { root.toggle(); }
+        }
+    }
 }
 
 component Choices inherits Rectangle {
@@ -1193,6 +1244,8 @@ export struct MessageRow {
     images: [ImageCell], gallery-width: int, gallery-height: int,
     files: [FileCell],
     embeds: [EmbedCard],
+    /// Says a card is hidden, for a message that is only one, with link previews off.
+    hidden-card: string,
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
     can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
 }
@@ -2057,19 +2110,14 @@ export component TalkWindow inherits Window {
                                 clicked => { root.leave-voice(); }
                             }
                         }
+                        // Wrapped in the dock's width; a scroll view would neither wrap nor stay short.
                         if root.voice-warning != "" && root.voice-error == "": HorizontalLayout {
                             padding-left: 64px;
-                            ScrollView {
-                                max-height: 64px;
-                                Label { text: root.voice-warning; color: Theme.accent; }
-                            }
+                            Label { text: root.voice-warning; color: Theme.accent; }
                         }
                         if root.voice-error != "": HorizontalLayout {
                             padding-left: 64px;
-                            ScrollView {
-                                max-height: 48px;
-                                Text { text: root.voice-error; color: Theme.text; font-size: 14px; wrap: word-wrap; }
-                            }
+                            Text { text: root.voice-error; color: Theme.text; font-size: 14px; wrap: word-wrap; }
                         }
                         if !root.voice-active: HorizontalLayout {
                             padding-left: 54px;
@@ -2599,6 +2647,9 @@ export component TalkWindow inherits Window {
                                                                 }
                                                             }
                                                             Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                        if message.hidden-card != "": Text {
+                                                            text: message.hidden-card; color: Theme.muted; font-size: root.message-font-size * 0.875; font-italic: true; wrap: word-wrap;
                                                         }
                                                         // Link previews and bot cards, behind a bar of their colour.
                                                         for embed in message.embeds: HorizontalLayout {
