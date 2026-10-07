@@ -100,12 +100,139 @@ fn voice_person(member: &talk_discord::service::VoiceMember) -> VoicePerson {
 /// read-only. Channels hidden from it are listed locked only with
 /// `show_hidden`.
 pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<ChatServer>) {
-    let premium = snapshot
-        .account
-        .as_ref()
-        .map_or(0, |account| account.premium_type);
-    let me = snapshot.user_id.as_deref().unwrap_or_default();
-    let mut rooms: Vec<_> = snapshot
+    let mut index = Index::default();
+    let (mut rooms, mut servers) = (Vec::new(), Vec::new());
+    index.update(snapshot, show_hidden, &mut rooms, &mut servers);
+    (rooms, servers)
+}
+
+/// [`index`], kept between snapshots: each server's rooms are made again
+/// only when the server, who is in its voice channels or its listed member
+/// count changed, so a large account's thousands of channels aren't remade
+/// for every change.
+#[cfg(feature = "discord")]
+#[derive(Default)]
+pub struct Index {
+    servers: Vec<Indexed>,
+}
+
+/// One server's rooms, and what they were made from.
+#[cfg(feature = "discord")]
+struct Indexed {
+    source: Arc<talk_discord::ready::Server>,
+    show_hidden: bool,
+    premium: u8,
+    /// Who was in each of its voice channels with anyone in it, by channel id.
+    voice: Vec<(String, Vec<talk_discord::service::VoiceMember>)>,
+    /// The member count of its channel whose list was on screen.
+    listed: Option<(String, u64)>,
+    rooms: Vec<ChatRoom>,
+    server: ChatServer,
+}
+
+#[cfg(feature = "discord")]
+impl Indexed {
+    fn voice<'a>(
+        snapshot: &'a Snapshot,
+        server: &'a talk_discord::ready::Server,
+    ) -> impl Iterator<Item = (&'a String, &'a Vec<talk_discord::service::VoiceMember>)> {
+        server.voice_channels.iter().filter_map(|channel| {
+            snapshot
+                .voice
+                .get_key_value(&channel.id)
+                .filter(|(_, members)| !members.is_empty())
+        })
+    }
+
+    fn listed<'a>(
+        snapshot: &'a Snapshot,
+        server: &talk_discord::ready::Server,
+    ) -> Option<&'a (String, u64)> {
+        snapshot
+            .listed
+            .as_ref()
+            .filter(|(channel, _)| server.text_channels.iter().any(|text| &text.id == channel))
+    }
+
+    /// Whether these rooms still show `server` in `snapshot`.
+    fn current(
+        &self,
+        snapshot: &Snapshot,
+        server: &Arc<talk_discord::ready::Server>,
+        show_hidden: bool,
+        premium: u8,
+    ) -> bool {
+        Arc::ptr_eq(&self.source, server)
+            && self.show_hidden == show_hidden
+            && self.premium == premium
+            && self.listed.as_ref() == Self::listed(snapshot, server)
+            && Self::voice(snapshot, server)
+                .map(Some)
+                .chain(std::iter::once(None))
+                .zip(self.voice.iter().map(Some).chain(std::iter::once(None)))
+                .all(|(now, then)| match (now, then) {
+                    (Some((id, members)), Some((was_id, was))) => id == was_id && members == was,
+                    (None, None) => true,
+                    _ => false,
+                })
+    }
+}
+
+#[cfg(feature = "discord")]
+impl Index {
+    /// Lists `snapshot` into `rooms` and `servers`, changing only the rows
+    /// that differ from what they held.
+    pub fn update(
+        &mut self,
+        snapshot: &Snapshot,
+        show_hidden: bool,
+        rooms: &mut Vec<ChatRoom>,
+        servers: &mut Vec<ChatServer>,
+    ) {
+        let premium = snapshot
+            .account
+            .as_ref()
+            .map_or(0, |account| account.premium_type);
+        let me = snapshot.user_id.as_deref().unwrap_or_default();
+        let mut kept: std::collections::HashMap<String, Indexed> =
+            std::mem::take(&mut self.servers)
+                .into_iter()
+                .map(|indexed| (indexed.source.id.clone(), indexed))
+                .collect();
+        for server in &snapshot.servers {
+            let indexed = match kept.remove(&server.id) {
+                Some(indexed) if indexed.current(snapshot, server, show_hidden, premium) => indexed,
+                _ => {
+                    let (made, listed) = server_rooms(snapshot, server, show_hidden, premium);
+                    Indexed {
+                        source: server.clone(),
+                        show_hidden,
+                        premium,
+                        voice: Indexed::voice(snapshot, server)
+                            .map(|(id, members)| (id.clone(), members.clone()))
+                            .collect(),
+                        listed: Indexed::listed(snapshot, server).cloned(),
+                        rooms: made,
+                        server: listed,
+                    }
+                }
+            };
+            self.servers.push(indexed);
+        }
+        let dms = dm_rooms(snapshot, premium, me);
+        chat::sync_list(
+            rooms,
+            dms.iter()
+                .chain(self.servers.iter().flat_map(|indexed| &indexed.rooms)),
+        );
+        chat::sync_list(servers, self.servers.iter().map(|indexed| &indexed.server));
+    }
+}
+
+/// The DMs and group DMs to list, the latest first.
+#[cfg(feature = "discord")]
+fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
+    snapshot
         .conversations
         .iter()
         .map(|dm| ChatRoom {
@@ -141,105 +268,107 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
             presence: dm.presence.map(presence),
             activity: dm.activity.clone(),
         })
+        .collect()
+}
+
+/// A server's channels to list, in Discord's order, and the server.
+#[cfg(feature = "discord")]
+fn server_rooms(
+    snapshot: &Snapshot,
+    server: &talk_discord::ready::Server,
+    show_hidden: bool,
+    premium: u8,
+) -> (Vec<ChatRoom>, ChatServer) {
+    let mut rooms = Vec::new();
+    let text = server.text_channels.iter().map(|channel| (false, channel));
+    let voice = server.voice_channels.iter().map(|channel| (true, channel));
+    let mut listed: Vec<_> = text
+        .chain(voice)
+        .filter(|(_, channel)| show_hidden || channel.access != Access::Hidden)
         .collect();
-    let mut servers = Vec::new();
-    for server in &snapshot.servers {
-        let text = server.text_channels.iter().map(|channel| (false, channel));
-        let voice = server.voice_channels.iter().map(|channel| (true, channel));
-        let mut listed: Vec<_> = text
-            .chain(voice)
-            .filter(|(_, channel)| show_hidden || channel.access != Access::Hidden)
-            .collect();
-        listed.sort_by_cached_key(|(voice, channel)| {
-            (
-                server.category_order(channel),
-                *voice,
-                channel.position,
-                channel.id.clone(),
-            )
+    listed.sort_by_cached_key(|(voice, channel)| {
+        (
+            server.category_order(channel),
+            *voice,
+            channel.position,
+            channel.id.clone(),
+        )
+    });
+    let mut channels = Vec::new();
+    for (voice, channel) in listed {
+        let id = room_id(&server.id, &channel.id);
+        let category = server
+            .category(channel)
+            .map(|category| category.name.clone())
+            .unwrap_or_default();
+        rooms.push(if voice {
+            ChatRoom {
+                id: id.clone(),
+                name: channel.name.clone(),
+                direct: false,
+                voice: true,
+                // Discord requires DAVE end-to-end encryption in voice calls.
+                encrypted: true,
+                members: snapshot
+                    .voice
+                    .get(&channel.id)
+                    .map_or(0, |members| members.len() as u64),
+                unread: 0,
+                mentions: 0,
+                locked: channel.access != Access::Join,
+                read_only: false,
+                category,
+                request: false,
+                person: None,
+                people: in_voice(snapshot, &channel.id),
+                ringing: vec![],
+                incoming: false,
+                avatar: None,
+                presence: None,
+                activity: None,
+                upload_limit: talk_discord::api::upload_limit(premium, Some(server.premium_tier)),
+            }
+        } else {
+            ChatRoom {
+                id: id.clone(),
+                name: channel.name.clone(),
+                direct: false,
+                voice: false,
+                // Discord messages aren't end-to-end encrypted.
+                encrypted: false,
+                // Known for the channel whose member list is on screen.
+                members: snapshot
+                    .listed
+                    .as_ref()
+                    .filter(|(listed, _)| *listed == channel.id)
+                    .map_or(0, |(_, count)| *count),
+                unread: u64::from(channel.unread),
+                mentions: channel.mentions,
+                locked: channel.access == Access::Hidden,
+                read_only: channel.access == Access::Locked,
+                category,
+                request: false,
+                person: None,
+                people: vec![],
+                ringing: vec![],
+                incoming: false,
+                avatar: None,
+                presence: None,
+                activity: None,
+                upload_limit: talk_discord::api::upload_limit(premium, Some(server.premium_tier)),
+            }
         });
-        let mut channels = Vec::new();
-        for (voice, channel) in listed {
-            let id = room_id(&server.id, &channel.id);
-            let category = server
-                .category(channel)
-                .map(|category| category.name.clone())
-                .unwrap_or_default();
-            rooms.push(if voice {
-                ChatRoom {
-                    id: id.clone(),
-                    name: channel.name.clone(),
-                    direct: false,
-                    voice: true,
-                    // Discord requires DAVE end-to-end encryption in voice calls.
-                    encrypted: true,
-                    members: snapshot
-                        .voice
-                        .get(&channel.id)
-                        .map_or(0, |members| members.len() as u64),
-                    unread: 0,
-                    mentions: 0,
-                    locked: channel.access != Access::Join,
-                    read_only: false,
-                    category,
-                    request: false,
-                    person: None,
-                    people: in_voice(snapshot, &channel.id),
-                    ringing: vec![],
-                    incoming: false,
-                    avatar: None,
-                    presence: None,
-                    activity: None,
-                    upload_limit: talk_discord::api::upload_limit(
-                        premium,
-                        Some(server.premium_tier),
-                    ),
-                }
-            } else {
-                ChatRoom {
-                    id: id.clone(),
-                    name: channel.name.clone(),
-                    direct: false,
-                    voice: false,
-                    // Discord messages aren't end-to-end encrypted.
-                    encrypted: false,
-                    // Known for the channel whose member list is on screen.
-                    members: snapshot
-                        .listed
-                        .as_ref()
-                        .filter(|(listed, _)| *listed == channel.id)
-                        .map_or(0, |(_, count)| *count),
-                    unread: u64::from(channel.unread),
-                    mentions: channel.mentions,
-                    locked: channel.access == Access::Hidden,
-                    read_only: channel.access == Access::Locked,
-                    category,
-                    request: false,
-                    person: None,
-                    people: vec![],
-                    ringing: vec![],
-                    incoming: false,
-                    avatar: None,
-                    presence: None,
-                    activity: None,
-                    upload_limit: talk_discord::api::upload_limit(
-                        premium,
-                        Some(server.premium_tier),
-                    ),
-                }
-            });
-            channels.push(id);
-        }
-        servers.push(ChatServer {
-            id: server_id(&server.id),
-            name: server.name.clone(),
-            channels,
-            discord: true,
-            muted: server.muted,
-            icon: server.icon.clone(),
-        });
+        channels.push(id);
     }
-    (rooms, servers)
+    let server = ChatServer {
+        id: server_id(&server.id),
+        name: server.name.clone(),
+        channels,
+        discord: true,
+        muted: server.muted,
+        icon: server.icon.clone(),
+    };
+    (rooms, server)
 }
 
 /// Downloads server icons and avatars, and reports each as [`Event::Picture`].
@@ -338,7 +467,7 @@ mod tests {
             ..Default::default()
         };
         let snapshot = Snapshot {
-            servers: vec![server],
+            servers: vec![Arc::new(server)],
             ..Default::default()
         };
         let (rooms, _) = index(&snapshot, false);
@@ -359,6 +488,66 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_index_lists_what_a_new_one_would() {
+        let channel = |id: &str| Channel {
+            id: id.into(),
+            name: id.into(),
+            ..Default::default()
+        };
+        let server = |id: &str, text: &str, voice: &str| {
+            Arc::new(Server {
+                id: id.into(),
+                name: id.into(),
+                text_channels: vec![channel(text)],
+                voice_channels: vec![channel(voice)],
+                ..Default::default()
+            })
+        };
+        let ann = talk_discord::service::VoiceMember {
+            user_id: "2".into(),
+            name: "Ann".into(),
+            avatar: "ann.png".into(),
+            muted: false,
+            deafened: false,
+            streaming: false,
+        };
+        let first = Snapshot {
+            servers: vec![server("10", "11", "12"), server("20", "21", "22")],
+            ..Default::default()
+        };
+        let mut unread = (*first.servers[1]).clone();
+        unread.text_channels[0].unread = true;
+        let changes = [
+            // Someone joins a voice channel.
+            Snapshot {
+                voice: [("12".to_owned(), vec![ann.clone()])].into(),
+                ..first.clone()
+            },
+            // The member list on screen counts its readers.
+            Snapshot {
+                voice: [("12".to_owned(), vec![ann])].into(),
+                listed: Some(("21".into(), 7)),
+                ..first.clone()
+            },
+            // One server changes; another is gone.
+            Snapshot {
+                servers: vec![Arc::new(unread)],
+                ..first.clone()
+            },
+            first.clone(),
+        ];
+        let mut kept = Index::default();
+        let (mut rooms, mut servers) = (Vec::new(), Vec::new());
+        kept.update(&first, false, &mut rooms, &mut servers);
+        for snapshot in &changes {
+            kept.update(snapshot, false, &mut rooms, &mut servers);
+            let (new_rooms, new_servers) = index(snapshot, false);
+            assert!(rooms == new_rooms && servers == new_servers);
+        }
+        assert_eq!(rooms.len(), 4);
+    }
+
+    #[test]
     fn lists_channels_under_their_server() {
         let channel = |id: &str, access| Channel {
             id: id.into(),
@@ -367,7 +556,7 @@ mod tests {
             ..Default::default()
         };
         let snapshot = Snapshot {
-            servers: vec![Server {
+            servers: vec![Arc::new(Server {
                 id: "10".into(),
                 name: "Test".into(),
                 text_channels: vec![
@@ -382,7 +571,7 @@ mod tests {
                 ],
                 icon: Some("icon.png".into()),
                 ..Default::default()
-            }],
+            })],
             voice: [(
                 "11".to_owned(),
                 vec![talk_discord::service::VoiceMember {

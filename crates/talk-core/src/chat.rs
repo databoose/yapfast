@@ -19,7 +19,7 @@ pub const PREVIEW_HEIGHT: u32 = 270;
 pub const VIEW_WIDTH: u32 = 1920;
 pub const VIEW_HEIGHT: u32 = 1200;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChatRoom {
     pub id: String,
     pub name: String,
@@ -163,6 +163,24 @@ pub fn file_size(bytes: u64) -> String {
     }
 }
 
+/// Makes `list` hold `items`, copying only those that differ from what it
+/// held there: comparing a long list costs less than copying it.
+pub fn sync_list<'a, T: Clone + PartialEq + 'a>(
+    list: &mut Vec<T>,
+    items: impl IntoIterator<Item = &'a T>,
+) {
+    let mut count = 0;
+    for item in items {
+        match list.get_mut(count) {
+            Some(held) if held == item => {}
+            Some(held) => held.clone_from(item),
+            None => list.push(item.clone()),
+        }
+        count += 1;
+    }
+    list.truncate(count);
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VoicePerson {
     pub id: String,
@@ -175,7 +193,7 @@ pub struct VoicePerson {
     pub streaming: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChatServer {
     pub id: String,
     pub name: String,
@@ -681,7 +699,7 @@ pub enum Event {
     },
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
-    Discord(talk_discord::service::Snapshot),
+    Discord(Arc<talk_discord::service::Snapshot>),
     /// An image [`Command::ViewImage`] asked for, or why it can't show.
     Image {
         room: String,

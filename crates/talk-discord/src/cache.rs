@@ -63,7 +63,7 @@ static LISTS: Mutex<Vec<MemberList>> = Mutex::new(Vec::new());
 #[derive(Serialize, Deserialize)]
 struct Saved {
     login: String,
-    snapshot: Snapshot,
+    snapshot: Arc<Snapshot>,
     #[serde(default)]
     names: SavedNames,
     #[serde(default)]
@@ -142,7 +142,7 @@ pub(crate) fn load(token: &str) -> Loaded {
     if saved.login != login {
         return Loaded::default();
     }
-    let mut snapshot = saved.snapshot;
+    let mut snapshot = Arc::unwrap_or_clone(saved.snapshot);
     snapshot.status = Status::Connecting;
     for conversation in &mut snapshot.conversations {
         conversation.call = false;
@@ -161,7 +161,7 @@ pub(crate) fn keep_lists(lists: Vec<MemberList>) {
 
 /// Saves the account while connected, a while after it changes, until the
 /// service ends.
-pub(crate) async fn keep(mut snapshots: watch::Receiver<Snapshot>, names: Arc<RwLock<Names>>) {
+pub(crate) async fn keep(mut snapshots: watch::Receiver<Arc<Snapshot>>, names: Arc<RwLock<Names>>) {
     let mut ended = false;
     while !ended {
         ended = snapshots.changed().await.is_err();
@@ -412,11 +412,11 @@ mod tests {
                 avatar: "a.png".into(),
                 premium_type: 0,
             }),
-            servers: vec![Server {
+            servers: vec![Arc::new(Server {
                 id: "10".into(),
                 name: "Server".into(),
                 ..Default::default()
-            }],
+            })],
             conversations: vec![Conversation {
                 id: "20".into(),
                 call: true,
@@ -433,7 +433,7 @@ mod tests {
             &file().unwrap(),
             &Saved {
                 login: hash("token"),
-                snapshot,
+                snapshot: Arc::new(snapshot),
                 names: names.save(),
                 lists: Vec::new(),
             },

@@ -4,7 +4,10 @@
 // in the Lounge voice channel). Run `bun testing/fake_discord.ts --port 18400`,
 // then start Talk with TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400.
 // `--extra N` sets how many history messages follow the four fixture ones
-// (default 56, 60 in all). POST /_control/chat-start makes Bob post in
+// (default 56, 60 in all). `--servers N` adds N - 1 large, quiet servers, as a
+// busy account has, for measuring; POST /_control/busy-start makes Bob post
+// in their channels ten times a second, and /_control/busy-stop stops him.
+// POST /_control/chat-start makes Bob post in
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
 // connects to a voice server here that answers the handshake without DAVE and
@@ -66,6 +69,7 @@ const { values: args } = parseArgs({
     port: { type: "string", default: "18400" },
     host: { type: "string", default: "127.0.0.1" },
     extra: { type: "string", default: "56" },
+    servers: { type: "string", default: "1" },
   },
 });
 
@@ -510,14 +514,14 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
 
 /** The server of a channel as events carry it; DMs have none. */
 function guildOf(channel: string): { guild_id?: string } {
-  return privates.has(channel) ? {} : { guild_id: GUILD };
+  return privates.has(channel) ? {} : { guild_id: fillerChannels.get(channel) ?? GUILD };
 }
 
 /** A message as the gateway dispatches it: with the server and the author's member. */
 function dispatched(message: Message, origin: string) {
   if (privates.has(message.channel)) return wireMessage(message, origin);
   const { user: _, ...profile } = member(message.author);
-  return { ...wireMessage(message, origin), guild_id: GUILD, member: profile };
+  return { ...wireMessage(message, origin), ...guildOf(message.channel), member: profile };
 }
 
 /** A DM or group DM as READY lists it, with user ids, or as an event carries it. */
@@ -761,6 +765,93 @@ function guild() {
   };
 }
 
+// --- Filler servers -------------------------------------------------------
+
+// What a large account's other servers hold, each: channels, in categories of
+// ten, roles and custom emoji.
+const FILLER_CHANNELS = 50;
+const FILLER_ROLES = 50;
+const FILLER_EMOJI = 50;
+const FILLER_START = 1_500_000_000_000_000_000n;
+
+/** The filler servers' text channels, with the server each is in. */
+const fillerChannels = new Map<string, string>();
+
+function fillerId(server: number, item: number): string {
+  return (FILLER_START + BigInt(server) * 1000n + BigInt(item)).toString();
+}
+
+const fillers = Array.from({ length: Math.max(0, Number(args.servers) - 1) }, (_, index) => {
+  const id = fillerId(index, 0);
+  const role = (n: number) => fillerId(index, 300 + n);
+  const channels = [];
+  for (let n = 0; n < FILLER_CHANNELS; n++) {
+    const category = fillerId(index, 900 + Math.floor(n / 10));
+    if (n % 10 === 0) {
+      channels.push({ id: category, type: 4, name: `Group ${n / 10 + 1}`, position: n / 10, parent_id: null, guild_id: id, flags: 0, permission_overwrites: [] });
+    }
+    const channel = fillerId(index, 1 + n);
+    fillerChannels.set(channel, id);
+    messages.set(channel, []);
+    channels.push({
+      id: channel,
+      type: 0,
+      name: `channel-${n + 1}`,
+      position: n % 10,
+      parent_id: category,
+      guild_id: id,
+      flags: 0,
+      topic: null,
+      nsfw: false,
+      rate_limit_per_user: 0,
+      last_message_id: null,
+      permission_overwrites: [
+        { id: role(n % FILLER_ROLES), type: 0, allow: String(bit(11)), deny: "0" },
+        { id: role((n + 7) % FILLER_ROLES), type: 0, allow: "0", deny: String(bit(10)) },
+      ],
+    });
+  }
+  return {
+    id,
+    properties: { id, name: `Filler ${index + 2}`, owner_id: users.bob.id, icon: null, banner: null, premium_tier: index % 4 },
+    channels,
+    roles: [
+      { id, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+      ...Array.from({ length: FILLER_ROLES - 1 }, (_, n) => ({
+        id: role(n + 1),
+        name: `Role ${n + 1}`,
+        permissions: "0",
+        position: n + 1,
+        color: (n * 2654435761) % 0xffffff,
+        hoist: n % 5 === 0,
+        managed: false,
+        mentionable: n % 3 === 0,
+        flags: 0,
+      })),
+    ],
+    emojis: Array.from({ length: FILLER_EMOJI }, (_, n) => ({
+      id: fillerId(index, 600 + n),
+      name: `emoji_${n}`,
+      animated: n % 7 === 0,
+      available: true,
+      managed: false,
+      require_colons: true,
+      roles: [],
+    })),
+    stickers: [],
+    threads: [],
+    stage_instances: [],
+    guild_scheduled_events: [],
+    activity_instances: [],
+    member_count: 1000 + index,
+    // Joined before "Server", so it lists first.
+    joined_at: "2025-01-01T09:00:00.000000+00:00",
+    large: true,
+    lazy: true,
+  };
+});
+const fillerList = [...fillerChannels.keys()];
+
 function ready(ws: Socket) {
   const { user: _, ...alice } = member(users.alice);
   return {
@@ -778,8 +869,8 @@ function ready(ws: Socket) {
       nsfw_allowed: true,
     },
     users: [...Object.values(users), ...Object.values(strangers)].filter((user) => user.id !== ALICE).map(wireUser),
-    guilds: [guild()],
-    merged_members: [[alice]],
+    guilds: [guild(), ...fillers],
+    merged_members: [[alice], ...fillers.map((filler) => [{ ...alice, roles: [filler.roles[1]!.id, filler.roles[4]!.id] }])],
     read_state: {
       entries: [...readStates].map(([id, read]) => ({
         id,
@@ -2305,6 +2396,8 @@ function postShowcase(origin: string) {
 // --- Control ----------------------------------------------------------------
 
 let chat: ReturnType<typeof setInterval> | undefined;
+let busy: ReturnType<typeof setInterval> | undefined;
+let busyCount = 0;
 // Channels Alice said she was typing in, oldest first.
 const typed: string[] = [];
 let chatCount = 0;
@@ -2538,6 +2631,21 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/typed") {
       return Response.json(typed);
+    }
+    if (req.method === "POST" && path === "/_control/busy-start") {
+      if (fillerList.length === 0) return new Response("no filler servers; start with --servers N\n", { status: 400 });
+      clearInterval(busy);
+      busy = setInterval(() => {
+        const channel = fillerList[(busyCount * 7919) % fillerList.length]!;
+        busyCount++;
+        dispatch("MESSAGE_CREATE", dispatched(post(channel, users.bob, `Busy ${busyCount}`, Date.now()), origin));
+      }, 100);
+      return new Response("busy started\n");
+    }
+    if (req.method === "POST" && path === "/_control/busy-stop") {
+      clearInterval(busy);
+      busy = undefined;
+      return new Response("busy stopped\n");
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

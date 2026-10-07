@@ -2950,18 +2950,20 @@ export component TalkWindow inherits Window {
                                 alignment: center;
                                 Rectangle { width: 32px; height: 2px; border-radius: 1px; background: Theme.line; }
                             }
-                            ScrollView {
+                            // A list view makes only the servers in sight, which
+                            // matters on accounts in many servers.
+                            ListView {
                                 vertical-stretch: 1;
-                                VerticalLayout {
-                                    spacing: 8px;
-                                    for server in root.servers: RailItem {
+                                for server in root.servers: Rectangle {
+                                    height: 48px + 8px;
+                                    RailItem {
+                                        y: 0px;
                                         initial: server.initial; picture: server.picture;
                                         label: server.name + (server.discord ? ", Discord" : "") + (server.unread ? ", unread" : "");
                                         tip: server.discord ? server.name + " (Discord)" : server.name;
                                         selected: server.selected; unread: server.unread; discord: server.discord;
                                         clicked => { root.navigate-server(server.id); }
                                     }
-                                    Rectangle { vertical-stretch: 1; }
                                 }
                             }
                         }

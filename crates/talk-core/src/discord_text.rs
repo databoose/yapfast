@@ -692,7 +692,8 @@ impl OpenChannel {
         let server = snapshot
             .servers
             .iter()
-            .find(|server| server.id == self.guild);
+            .find(|server| server.id == self.guild)
+            .map(Arc::as_ref);
         let name = |user: &str, fallback: &str| {
             discord
                 .name(&self.guild, user)
@@ -969,7 +970,7 @@ fn save(saved: Option<(String, Vec<Message>)>) {
 
 /// What woke the Discord side of the chat actor.
 pub(crate) enum Wake {
-    Snapshot(Option<Snapshot>),
+    Snapshot(Option<Arc<Snapshot>>),
     Live(Option<Result<Live, RecvError>>),
     Finished(Done),
     /// Time to put changed channels on disk.
@@ -981,7 +982,7 @@ pub(crate) enum Wake {
 pub(crate) struct Chat {
     discord: Discord,
     // Each becomes None once the connection is gone.
-    states: Option<watch::Receiver<Snapshot>>,
+    states: Option<watch::Receiver<Arc<Snapshot>>>,
     live: Option<broadcast::Receiver<Live>>,
     online: bool,
     channels: Channels,
@@ -1097,7 +1098,7 @@ impl Chat {
 }
 
 /// The next snapshot, or never after the connection is gone.
-async fn changed(states: &mut Option<watch::Receiver<Snapshot>>) -> Option<Snapshot> {
+async fn changed(states: &mut Option<watch::Receiver<Arc<Snapshot>>>) -> Option<Arc<Snapshot>> {
     let Some(receiver) = states else {
         return std::future::pending().await;
     };
@@ -1700,7 +1701,9 @@ pub fn finished(
 /// and what it says, or what it carries when it has no text.
 fn notification(discord: &Discord, guild: Option<&str>, message: &Message) -> Notification {
     let snapshot = discord.snapshots().borrow().clone();
-    let server = guild.and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild));
+    let server = guild
+        .and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild))
+        .map(Arc::as_ref);
     let author = discord
         .name(
             guild.unwrap_or(talk_discord::ready::PRIVATE),
@@ -1942,7 +1945,11 @@ fn chat_profile(
     profile: talk_discord::profile::Profile,
 ) -> Profile {
     let snapshot = discord.snapshots().borrow().clone();
-    let server = snapshot.servers.iter().find(|server| server.id == guild);
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == guild)
+        .map(Arc::as_ref);
     Profile {
         name: profile.name,
         avatar: Some(profile.avatar),

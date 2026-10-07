@@ -20,7 +20,7 @@ use crate::{
     member_list::{self, ListedMember, MemberList, Presence},
     message::{self, Message, Names},
     profile::{self, Profile},
-    ready::{self, PRIVATE, Private, Server},
+    ready::{self, Access, PRIVATE, Private, Server},
     settings::{self, CustomStatus},
     stream::{self, Opening, StreamServer},
     unread::Unreads,
@@ -136,7 +136,9 @@ pub struct Snapshot {
     pub status: Status,
     pub user_id: Option<String>,
     pub account: Option<Account>,
-    pub servers: Vec<Server>,
+    /// Shared between snapshots while unchanged, so publishing one copies
+    /// only the servers that changed.
+    pub servers: Vec<Arc<Server>>,
     /// DMs and group DMs, the latest conversation first.
     pub conversations: Vec<Conversation>,
     /// The account's friends, by user id.
@@ -286,7 +288,7 @@ enum Request {
 #[derive(Clone)]
 pub struct Discord {
     requests: mpsc::UnboundedSender<Request>,
-    snapshots: watch::Receiver<Snapshot>,
+    snapshots: watch::Receiver<Arc<Snapshot>>,
     live: broadcast::Sender<Live>,
     api: Arc<Api>,
     names: Arc<RwLock<Names>>,
@@ -328,7 +330,7 @@ impl Discord {
             cached.custom_status.as_ref(),
             now_ms(),
         );
-        let (snapshots, watcher) = watch::channel(cached);
+        let (snapshots, watcher) = watch::channel(Arc::new(cached));
         let (live, _) = broadcast::channel(LIVE_BACKLOG);
         let names = Arc::new(RwLock::new(names));
         tokio::spawn(cache::keep(watcher.clone(), names.clone()));
@@ -357,7 +359,7 @@ impl Discord {
         })
     }
 
-    pub fn snapshots(&self) -> watch::Receiver<Snapshot> {
+    pub fn snapshots(&self) -> watch::Receiver<Arc<Snapshot>> {
         self.snapshots.clone()
     }
 
@@ -637,7 +639,7 @@ impl Discord {
     /// an empty query, the friends alone.
     pub fn find_people(&self, query: &str) -> Vec<Person> {
         let snapshot = self.snapshots.borrow().clone();
-        let me = snapshot.user_id.unwrap_or_default();
+        let me = snapshot.user_id.clone().unwrap_or_default();
         let names = self.read_names();
         let person = |id: &String, friend: bool| Person {
             id: id.clone(),
@@ -790,13 +792,16 @@ const INCOMING_REQUEST: u64 = 3;
 const OUTGOING_REQUEST: u64 = 4;
 /// How long a member search waits for Discord.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Snapshots go out at most this often: the first change after a quiet
+/// spell at once, and a burst of them together.
+const PUBLISH_GAP: Duration = Duration::from_millis(100);
 /// Reads within this long go to Discord as one acknowledgement per channel.
 const ACK_DELAY: Duration = Duration::from_secs(1);
 const FIRST_RETRY: Duration = Duration::from_secs(2);
 const LAST_RETRY: Duration = Duration::from_secs(60);
 
 struct Shared {
-    snapshots: watch::Sender<Snapshot>,
+    snapshots: watch::Sender<Arc<Snapshot>>,
     live: broadcast::Sender<Live>,
     names: Arc<RwLock<Names>>,
     api: Arc<Api>,
@@ -888,7 +893,7 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
     let snapshots = shared.snapshots.clone();
     let mut retry = FIRST_RETRY;
     loop {
-        snapshots.send_modify(|snapshot| snapshot.status = Status::Connecting);
+        snapshots.send_modify(|snapshot| Arc::make_mut(snapshot).status = Status::Connecting);
         let connected = tokio::select! {
             connected = Gateway::connect(&token, shared.presence.clone()) => connected,
             () = snapshots.closed() => return,
@@ -907,6 +912,7 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
         tracing::warn!(%error, "Discord connection ended");
         if closed.is_some_and(Closed::is_final) {
             snapshots.send_modify(|snapshot| {
+                let snapshot = Arc::make_mut(snapshot);
                 snapshot.status = Status::Offline(
                     "Discord refused the saved login. Link your Discord account again.".into(),
                 );
@@ -919,6 +925,7 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
             return;
         }
         snapshots.send_modify(|snapshot| {
+            let snapshot = Arc::make_mut(snapshot);
             snapshot.status = Status::Offline("Can't reach Discord. Reconnecting...".into());
             snapshot.voice.clear();
         });
@@ -993,9 +1000,9 @@ fn show_kept_members(shared: &Shared, guild: &str, channel: &str) {
         members,
     });
     if let Some(count) = list.count() {
-        shared
-            .snapshots
-            .send_modify(|snapshot| snapshot.listed = Some((channel.to_owned(), count)));
+        shared.snapshots.send_modify(|snapshot| {
+            Arc::make_mut(snapshot).listed = Some((channel.to_owned(), count))
+        });
     }
 }
 
@@ -1115,7 +1122,7 @@ async fn connected_session(
         return Ended::Failed(anyhow!("Discord's READY had no user"));
     };
     let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
-    shared.snapshots.send_replace(tracker.snapshot());
+    shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
     // This session shows the status the settings hold, as Discord's own apps do.
     if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
         return Ended::Failed(error);
@@ -1156,8 +1163,26 @@ async fn connected_session(
     // When the custom status ends by itself.
     let status_ends = tokio::time::sleep(status_left(&tracker));
     tokio::pin!(status_ends);
+    // The account changed since the last snapshot; one goes out when
+    // `publish_at` comes, PUBLISH_GAP after the last.
+    let mut stale = false;
+    let mut scheduled = false;
+    let mut published = tokio::time::Instant::now();
+    let publish_at = tokio::time::sleep(Duration::ZERO);
+    tokio::pin!(publish_at);
     loop {
+        if stale && !scheduled {
+            publish_at
+                .as_mut()
+                .reset((published + PUBLISH_GAP).max(tokio::time::Instant::now()));
+            scheduled = true;
+        }
         tokio::select! {
+            () = &mut publish_at, if scheduled => {
+                shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
+                published = tokio::time::Instant::now();
+                (stale, scheduled) = (false, false);
+            }
             request = requests.recv() => {
                 let Some(request) = request else {
                     gateway.close().await;
@@ -1209,7 +1234,7 @@ async fn connected_session(
                                 if tracker.list.as_ref().is_some_and(MemberList::synced) {
                                     publish_members(&tracker, shared);
                                 }
-                                shared.snapshots.send_replace(tracker.snapshot());
+                                stale = true;
                                 let sent = refresh_list(&mut gateway, &mut tracker, &mut subscribed, list_stale.as_mut()).await;
                                 if new && !subscribed.contains_key(&guild) {
                                     gateway.subscribe(&guild, None).await.and(sent)
@@ -1223,7 +1248,7 @@ async fn connected_session(
                     }
                     Request::MarkRead { guild, channel, sync } => {
                         if let Some(message) = tracker.unreads.mark_read(&guild, &channel) {
-                            shared.snapshots.send_replace(tracker.snapshot());
+                            stale = true;
                             if sync {
                                 if acks.is_empty() {
                                     ack_at.as_mut().reset(tokio::time::Instant::now() + ACK_DELAY);
@@ -1286,7 +1311,7 @@ async fn connected_session(
                         // The settings update that follows says the same; this
                         // shows it without waiting.
                         tracker.custom_status = custom;
-                        shared.snapshots.send_replace(tracker.snapshot());
+                        stale = true;
                         status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
                         show_presence(&mut gateway, &tracker, shared).await
                     }
@@ -1314,7 +1339,7 @@ async fn connected_session(
             }
             () = &mut status_ends, if tracker.custom_status.as_ref().is_some_and(|custom| custom.expires_at_ms.is_some()) => {
                 tracker.custom_status = None;
-                shared.snapshots.send_replace(tracker.snapshot());
+                stale = true;
                 if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
                     return Ended::Failed(error);
                 }
@@ -1407,7 +1432,7 @@ async fn connected_session(
                         publish_members(&tracker, shared);
                     }
                     if counted {
-                        shared.snapshots.send_replace(tracker.snapshot());
+                        stale = true;
                     }
                 }
                 if event.name == "GUILD_MEMBERS_CHUNK"
@@ -1435,7 +1460,7 @@ async fn connected_session(
                     let _ = shared.live.send(Live::Notify { guild, message });
                 }
                 if tracker.apply(&event.name, &event.data) {
-                    shared.snapshots.send_replace(tracker.snapshot());
+                    stale = true;
                 }
                 if event.name == "USER_SETTINGS_PROTO_UPDATE" {
                     status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
@@ -1476,7 +1501,11 @@ struct Tracker {
     me: String,
     /// This account's Nitro, as [`Account::premium_type`].
     premium: u8,
-    servers: Vec<Server>,
+    /// Changed through [`Self::server_mut`], which copies one a snapshot
+    /// still shares.
+    servers: Vec<Arc<Server>>,
+    /// Each server as the last snapshot marked it, by id.
+    published: HashMap<String, Published>,
     names: Arc<RwLock<Names>>,
     /// Where each user is in voice, by server and user id; DM and group DM
     /// calls go under [`PRIVATE`].
@@ -1519,7 +1548,8 @@ impl Tracker {
         let mut tracker = Self {
             me,
             premium: premium_type(&ready["user"]),
-            servers: ready::servers(ready),
+            servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
+            published: HashMap::new(),
             names,
             voice: HashMap::new(),
             calls: HashMap::new(),
@@ -1638,7 +1668,7 @@ impl Tracker {
                     self.learn_member(&server.id, member);
                 }
                 self.servers.retain(|known| known.id != server.id);
-                self.servers.push(server);
+                self.servers.push(Arc::new(server));
                 self.sort_servers();
                 true
             }
@@ -1665,7 +1695,7 @@ impl Tracker {
             "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" | "GUILD_ROLE_DELETE" => {
                 let Some(server) = data["guild_id"]
                     .as_str()
-                    .and_then(|guild| self.servers.iter_mut().find(|server| server.id == guild))
+                    .and_then(|guild| self.server_mut(guild))
                 else {
                     return false;
                 };
@@ -1689,7 +1719,7 @@ impl Tracker {
             "GUILD_EMOJIS_UPDATE" => {
                 let Some(server) = data["guild_id"]
                     .as_str()
-                    .and_then(|guild| self.servers.iter_mut().find(|server| server.id == guild))
+                    .and_then(|guild| self.server_mut(guild))
                 else {
                     return false;
                 };
@@ -1700,9 +1730,7 @@ impl Tracker {
             "GUILD_UPDATE" => {
                 let (Some(update), Some(known)) = (
                     ready::server(data),
-                    data["id"]
-                        .as_str()
-                        .and_then(|id| self.servers.iter_mut().find(|server| server.id == id)),
+                    data["id"].as_str().and_then(|id| self.server_mut(id)),
                 ) else {
                     return false;
                 };
@@ -1784,7 +1812,7 @@ impl Tracker {
                 else {
                     return false;
                 };
-                let Some(server) = self.servers.iter_mut().find(|server| server.id == guild) else {
+                let Some(server) = self.server_mut(guild) else {
                     return false;
                 };
                 if name == "CHANNEL_DELETE" {
@@ -1987,6 +2015,14 @@ impl Tracker {
     /// Orders the servers as the account's server list does. Those its
     /// settings don't list yet go first, the latest joined first, as Discord
     /// shows a server just joined.
+    /// A server to change, copied first if a snapshot shares it.
+    fn server_mut(&mut self, id: &str) -> Option<&mut Server> {
+        self.servers
+            .iter_mut()
+            .find(|server| server.id == id)
+            .map(Arc::make_mut)
+    }
+
     fn sort_servers(&mut self) {
         let place: HashMap<&str, usize> = self
             .order
@@ -2202,7 +2238,7 @@ impl Tracker {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&mut self) -> Snapshot {
         let names = self
             .names
             .read()
@@ -2229,26 +2265,38 @@ impl Tracker {
                     .then_with(|| a.user_id.cmp(&b.user_id))
             });
         }
-        // Mark what this account may do in each channel.
-        let servers = self
-            .servers
-            .iter()
-            .map(|server| {
-                let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
-                let mut marked = server.clone();
-                for channel in marked
-                    .text_channels
-                    .iter_mut()
-                    .chain(&mut marked.voice_channels)
-                {
-                    channel.access = server.access(channel, &self.me, roles);
-                    channel.mention_everyone =
-                        server.may_mention_everyone(channel, &self.me, roles);
-                }
-                self.unreads.mark(&mut marked);
-                marked
-            })
-            .collect();
+        // Mark what this account may do in each channel, reusing the servers
+        // the last snapshot marked the same.
+        let mut published = HashMap::with_capacity(self.servers.len());
+        let mut servers = Vec::with_capacity(self.servers.len());
+        for server in &self.servers {
+            let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
+            let last = self
+                .published
+                .remove(&server.id)
+                .filter(|last| Arc::ptr_eq(&last.source, server) && last.roles == roles);
+            // What the account may do stays while the server and its roles do.
+            let marks = match &last {
+                Some(last) => last.marks.unread(server, &self.unreads),
+                None => Marks::new(server, &self.me, roles, &self.unreads),
+            };
+            let (marked, roles) = match last {
+                Some(last) if last.marks == marks => (last.marked, last.roles),
+                Some(last) => (Arc::new(marks.apply(server)), last.roles),
+                None => (Arc::new(marks.apply(server)), roles.to_vec()),
+            };
+            servers.push(marked.clone());
+            published.insert(
+                server.id.clone(),
+                Published {
+                    source: server.clone(),
+                    roles,
+                    marks,
+                    marked,
+                },
+            );
+        }
+        self.published = published;
         Snapshot {
             status: Status::Online,
             user_id: Some(self.me.clone()),
@@ -2277,6 +2325,96 @@ impl Tracker {
     }
 }
 
+/// A server as a snapshot published it: marked from `source` with `marks`,
+/// for an account with `roles` there.
+struct Published {
+    source: Arc<Server>,
+    roles: Vec<String>,
+    marks: Marks,
+    marked: Arc<Server>,
+}
+
+/// What [`Tracker::snapshot`] sets on a server for this account: whether
+/// it's muted, then for each text channel and each voice channel, in order,
+/// what [`ChannelMarks`] holds.
+#[derive(PartialEq, Eq)]
+struct Marks {
+    muted: bool,
+    channels: Vec<ChannelMarks>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChannelMarks {
+    access: Access,
+    mention_everyone: bool,
+    muted: bool,
+    unread: bool,
+    mentions: u64,
+}
+
+impl Marks {
+    fn new(server: &Server, me: &str, roles: &[String], unreads: &Unreads) -> Self {
+        let mut channels =
+            Vec::with_capacity(server.text_channels.len() + server.voice_channels.len());
+        for channel in &server.text_channels {
+            let access = server.access(channel, me, roles);
+            let (muted, unread, mentions) = unreads.channel(&server.id, channel, access);
+            channels.push(ChannelMarks {
+                access,
+                mention_everyone: server.may_mention_everyone(channel, me, roles),
+                muted,
+                unread,
+                mentions,
+            });
+        }
+        for channel in &server.voice_channels {
+            channels.push(ChannelMarks {
+                access: server.access(channel, me, roles),
+                mention_everyone: server.may_mention_everyone(channel, me, roles),
+                muted: channel.muted,
+                unread: channel.unread,
+                mentions: channel.mentions,
+            });
+        }
+        Self {
+            muted: unreads.server_muted(&server.id),
+            channels,
+        }
+    }
+
+    /// These marks with the unread state of `server`'s text channels as
+    /// it is now.
+    fn unread(&self, server: &Server, unreads: &Unreads) -> Self {
+        let mut channels = self.channels.clone();
+        for (channel, marks) in server.text_channels.iter().zip(&mut channels) {
+            (marks.muted, marks.unread, marks.mentions) =
+                unreads.channel(&server.id, channel, marks.access);
+        }
+        Self {
+            muted: unreads.server_muted(&server.id),
+            channels,
+        }
+    }
+
+    /// A copy of `server` with these marks.
+    fn apply(&self, server: &Server) -> Server {
+        let mut marked = server.clone();
+        marked.muted = self.muted;
+        let channels = marked
+            .text_channels
+            .iter_mut()
+            .chain(&mut marked.voice_channels);
+        for (channel, marks) in channels.zip(&self.channels) {
+            channel.access = marks.access;
+            channel.mention_everyone = marks.mention_everyone;
+            channel.muted = marks.muted;
+            channel.unread = marks.unread;
+            channel.mentions = marks.mentions;
+        }
+        marked
+    }
+}
+
 /// The members of the group DM on screen.
 fn publish_group(tracker: &Tracker, shared: &Shared) {
     let Some(channel) = &shared.group else {
@@ -2297,7 +2435,8 @@ fn publish_members(tracker: &Tracker, shared: &Shared) {
     let server = tracker
         .servers
         .iter()
-        .find(|server| server.id == list.guild());
+        .find(|server| server.id == list.guild())
+        .map(Arc::as_ref);
     let names = shared
         .names
         .read()
@@ -2680,7 +2819,7 @@ mod tests {
             ],
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
-        let listed = |tracker: &Tracker| -> Vec<(String, bool, bool)> {
+        let listed = |tracker: &mut Tracker| -> Vec<(String, bool, bool)> {
             tracker
                 .snapshot()
                 .friend_requests
@@ -2689,7 +2828,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            listed(&tracker),
+            listed(&mut tracker),
             [
                 ("spam".to_owned(), true, true),
                 ("bob".to_owned(), true, false),
@@ -2705,7 +2844,7 @@ mod tests {
         );
         tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "4", "type": 4}));
         tracker.apply("RELATIONSHIP_UPDATE", &json!({"id": "5", "nickname": "x"}));
-        assert_eq!(listed(&tracker), [("spam".to_owned(), true, true)]);
+        assert_eq!(listed(&mut tracker), [("spam".to_owned(), true, true)]);
         assert_eq!(tracker.snapshot().friends, ["2", "3"]);
         let friends: Vec<_> = tracker
             .snapshot()
@@ -2771,7 +2910,7 @@ mod tests {
             "read_state": {"entries": [{"id": "21", "last_message_id": "550", "mention_count": 1}]},
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
-        let listed = |tracker: &Tracker| -> Vec<(String, bool, u64)> {
+        let listed = |tracker: &mut Tracker| -> Vec<(String, bool, u64)> {
             tracker
                 .snapshot()
                 .conversations
@@ -2781,7 +2920,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            listed(&tracker),
+            listed(&mut tracker),
             [
                 ("Ann, bob".into(), true, 1),
                 ("Ann".into(), false, 0),
@@ -2818,12 +2957,12 @@ mod tests {
         let message = |id: &str| json!({"id": id, "channel_id": "20", "author": {"id": "2"}});
         assert!(tracker.apply("MESSAGE_CREATE", &message("700")));
         tracker.apply("MESSAGE_CREATE", &message("701"));
-        assert_eq!(listed(&tracker)[0], ("Ann".into(), true, 2));
+        assert_eq!(listed(&mut tracker)[0], ("Ann".into(), true, 2));
         assert_eq!(
             tracker.unreads.mark_read(PRIVATE, "20").as_deref(),
             Some("701")
         );
-        assert_eq!(listed(&tracker)[0], ("Ann".into(), false, 0));
+        assert_eq!(listed(&mut tracker)[0], ("Ann".into(), false, 0));
 
         // A muted DM shows nothing.
         tracker.apply(
@@ -2831,14 +2970,14 @@ mod tests {
             &json!({"guild_id": null, "channel_overrides": [{"channel_id": "20", "muted": true}]}),
         );
         tracker.apply("MESSAGE_CREATE", &message("702"));
-        assert_eq!(listed(&tracker)[0], ("Ann".into(), false, 0));
+        assert_eq!(listed(&mut tracker)[0], ("Ann".into(), false, 0));
 
         // DMs open, close and change their people.
         tracker.apply(
             "CHANNEL_CREATE",
             &json!({"id": "800", "type": 1, "recipients": [{"id": "4", "username": "cat"}]}),
         );
-        assert_eq!(listed(&tracker)[0].0, "cat");
+        assert_eq!(listed(&mut tracker)[0].0, "cat");
         tracker.apply("CHANNEL_DELETE", &json!({"id": "800", "type": 1}));
         tracker.apply(
             "CHANNEL_RECIPIENT_ADD",
@@ -2936,7 +3075,7 @@ mod tests {
             "merged_members": [[{"user_id": "1", "roles": []}]],
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
-        let channels = |tracker: &Tracker| -> Vec<String> {
+        let channels = |tracker: &mut Tracker| -> Vec<String> {
             tracker.snapshot().servers[0]
                 .voice_channels
                 .iter()
@@ -2944,11 +3083,50 @@ mod tests {
                 .map(|channel| channel.name.clone())
                 .collect()
         };
-        assert_eq!(channels(&tracker), ["Lounge"]);
+        assert_eq!(channels(&mut tracker), ["Lounge"]);
         tracker.apply(
             "GUILD_MEMBER_UPDATE",
             &json!({"guild_id": "10", "user": {"id": "1"}, "roles": ["20"]}),
         );
-        assert_eq!(channels(&tracker), ["Lounge", "Staff"]);
+        assert_eq!(channels(&mut tracker), ["Lounge", "Staff"]);
+    }
+
+    #[test]
+    fn snapshots_share_the_servers_that_stay_the_same() {
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [
+                {"id": "10", "properties": {"name": "One"}, "joined_at": "2026-01-02T00:00:00+00:00",
+                 "channels": [{"id": "11", "name": "general", "type": 0, "position": 0}]},
+                {"id": "20", "properties": {"name": "Two"}, "joined_at": "2026-01-01T00:00:00+00:00",
+                 "channels": [{"id": "21", "name": "general", "type": 0, "position": 0}]},
+            ],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let first = tracker.snapshot();
+        let same = tracker.snapshot();
+        assert!(Arc::ptr_eq(&first.servers[0], &same.servers[0]));
+        assert!(Arc::ptr_eq(&first.servers[1], &same.servers[1]));
+
+        // A message marks one server's channel unread; the other stays shared.
+        tracker.apply(
+            "MESSAGE_CREATE",
+            &json!({"id": "900", "channel_id": "21", "guild_id": "20", "author": {"id": "2"}}),
+        );
+        let unread = tracker.snapshot();
+        assert!(Arc::ptr_eq(&first.servers[0], &unread.servers[0]));
+        assert!(!Arc::ptr_eq(&first.servers[1], &unread.servers[1]));
+        assert!(unread.servers[1].text_channels[0].unread);
+        assert!(
+            !first.servers[1].text_channels[0].unread,
+            "published ones don't change"
+        );
+
+        // Changing a server copies it rather than the one a snapshot holds.
+        tracker.apply("GUILD_UPDATE", &json!({"id": "10", "name": "Renamed"}));
+        let renamed = tracker.snapshot();
+        assert_eq!(renamed.servers[0].name, "Renamed");
+        assert_eq!(unread.servers[0].name, "One");
+        assert!(Arc::ptr_eq(&unread.servers[1], &renamed.servers[1]));
     }
 }

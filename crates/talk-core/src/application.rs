@@ -336,6 +336,26 @@ impl AppState {
         }
     }
 
+    /// The rooms [`Self::in_scope`], in order. It finds the server once, so
+    /// it suits going through every room, as [`Self::in_scope`] for each
+    /// doesn't with many servers.
+    pub fn scoped_rooms(&self) -> impl Iterator<Item = &ChatRoom> {
+        let channels: Option<HashSet<&str>> = match &self.navigation {
+            Navigation::DirectMessages => None,
+            Navigation::Server(id) => Some(
+                self.servers
+                    .iter()
+                    .find(|server| &server.id == id)
+                    .map(|server| server.channels.iter().map(String::as_str).collect())
+                    .unwrap_or_default(),
+            ),
+        };
+        self.rooms.iter().filter(move |room| match &channels {
+            None => room.direct,
+            Some(channels) => !room.direct && channels.contains(room.id.as_str()),
+        })
+    }
+
     /// Who else is typing in the open conversation, as the composer says it; empty
     /// when nobody is.
     pub fn typing_line(&self) -> String {
@@ -704,7 +724,10 @@ pub struct Application {
     discord_rooms: Vec<ChatRoom>,
     discord_servers: Vec<ChatServer>,
     #[cfg(feature = "discord")]
-    discord: Option<talk_discord::service::Snapshot>,
+    discord: Option<Arc<talk_discord::service::Snapshot>>,
+    /// What makes `discord_rooms` and `discord_servers` from `discord`.
+    #[cfg(feature = "discord")]
+    discord_index: discord::Index,
     last_selected: HashMap<Navigation, String>,
     samples: HashMap<String, Vec<ChatMessage>>,
     /// How often this device added each reaction.
@@ -826,9 +849,7 @@ impl Application {
             .chain(state.account_avatar.as_deref())
             .chain(
                 state
-                    .rooms
-                    .iter()
-                    .filter(|room| state.in_scope(room))
+                    .scoped_rooms()
                     .filter_map(|room| room.avatar.as_deref())
                     .take(LISTED_PICTURES),
             )
@@ -872,9 +893,7 @@ impl Application {
             )
             .chain(
                 state
-                    .rooms
-                    .iter()
-                    .filter(|room| state.in_scope(room))
+                    .scoped_rooms()
                     .flat_map(|room| &room.people)
                     .filter_map(|person| person.avatar.as_deref()),
             )
@@ -1962,6 +1981,7 @@ impl Application {
                 #[cfg(feature = "discord")]
                 {
                     self.discord = None;
+                    self.discord_index = discord::Index::default();
                 }
                 self.discord_rooms.clear();
                 self.discord_servers.clear();
@@ -2204,12 +2224,7 @@ impl Application {
             .iter()
             .find(|room| Some(&room.id) == remembered && self.state.in_scope(room))
             // A message request opens only when chosen.
-            .or_else(|| {
-                self.state
-                    .rooms
-                    .iter()
-                    .find(|room| self.state.in_scope(room) && !room.request)
-            })
+            .or_else(|| self.state.scoped_rooms().find(|room| !room.request))
             .map(|room| room.id.clone());
         if let Some(id) = next {
             self.select(id)
@@ -2285,8 +2300,12 @@ impl Application {
                 .filter(|room| room.incoming)
                 .map(|room| room.id.clone())
                 .collect();
-            (self.discord_rooms, self.discord_servers) =
-                discord::index(snapshot, self.state.show_hidden_channels);
+            self.discord_index.update(
+                snapshot,
+                self.state.show_hidden_channels,
+                &mut self.discord_rooms,
+                &mut self.discord_servers,
+            );
             // A call that starts ringing this account notifies once.
             for room in &self.discord_rooms {
                 if room.incoming
@@ -2319,18 +2338,14 @@ impl Application {
     /// Shows the Matrix and Discord lists together, leaving a server or
     /// conversation that disappeared.
     fn show_lists(&mut self) -> Vec<Effect> {
-        self.state.rooms = self
-            .matrix_rooms
-            .iter()
-            .chain(&self.discord_rooms)
-            .cloned()
-            .collect();
-        self.state.servers = self
-            .matrix_servers
-            .iter()
-            .chain(&self.discord_servers)
-            .cloned()
-            .collect();
+        chat::sync_list(
+            &mut self.state.rooms,
+            self.matrix_rooms.iter().chain(&self.discord_rooms),
+        );
+        chat::sync_list(
+            &mut self.state.servers,
+            self.matrix_servers.iter().chain(&self.discord_servers),
+        );
         if let Navigation::Server(id) = &self.state.navigation
             && !self.state.servers.iter().any(|server| &server.id == id)
         {
@@ -3170,6 +3185,11 @@ fn has_markdown(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "discord")]
+    fn discord_event(snapshot: talk_discord::service::Snapshot) -> Event {
+        Event::Discord(Arc::new(snapshot))
+    }
     use crate::chat::RoomIndex;
 
     fn connected() -> Application {
@@ -4117,9 +4137,9 @@ mod tests {
             service::{Snapshot, Status},
         };
         let mut app = connected();
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Online,
-            servers: vec![Server {
+            servers: vec![Arc::new(Server {
                 id: "10".into(),
                 name: "Test".into(),
                 voice_channels: vec![
@@ -4136,7 +4156,7 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            }],
+            })],
             ..Default::default()
         }));
         assert!(app.state.servers.iter().any(|server| server.discord));
@@ -4254,7 +4274,7 @@ mod tests {
         };
         let snapshot = |member: &str| Snapshot {
             status: Status::Online,
-            servers: vec![Server {
+            servers: vec![Arc::new(Server {
                 id: "10".into(),
                 name: "Test".into(),
                 icon: Some("icon.png".into()),
@@ -4264,7 +4284,7 @@ mod tests {
                     ..Default::default()
                 }],
                 ..Default::default()
-            }],
+            })],
             voice: [(
                 "11".to_owned(),
                 vec![VoiceMember {
@@ -4290,7 +4310,7 @@ mod tests {
         };
         let mut app = connected();
         assert_eq!(
-            asked(app.apply(Event::Discord(snapshot("ann")))),
+            asked(app.apply(discord_event(snapshot("ann")))),
             ["icon.png"],
             "a voice channel's people show only in its server"
         );
@@ -4298,9 +4318,9 @@ mod tests {
             asked(app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())))),
             ["ann.png"]
         );
-        assert!(asked(app.apply(Event::Discord(snapshot("ann")))).is_empty());
+        assert!(asked(app.apply(discord_event(snapshot("ann")))).is_empty());
         assert_eq!(
-            asked(app.apply(Event::Discord(snapshot("bob")))),
+            asked(app.apply(discord_event(snapshot("bob")))),
             ["bob.png"]
         );
         app.apply(Event::Picture {
@@ -4500,9 +4520,9 @@ mod tests {
             service::{Snapshot, Status},
         };
         let mut app = connected();
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Online,
-            servers: vec![Server {
+            servers: vec![Arc::new(Server {
                 id: "10".into(),
                 name: "Test".into(),
                 text_channels: vec![Channel {
@@ -4511,7 +4531,7 @@ mod tests {
                     ..Default::default()
                 }],
                 ..Default::default()
-            }],
+            })],
             ..Default::default()
         }));
         app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
@@ -4574,7 +4594,7 @@ mod tests {
         };
         let snapshot = |unread: bool| Snapshot {
             status: Status::Online,
-            servers: vec![Server {
+            servers: vec![Arc::new(Server {
                 id: "10".into(),
                 name: "Test".into(),
                 text_channels: vec![
@@ -4592,13 +4612,13 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            }],
+            })],
             ..Default::default()
         };
         let mut app = connected();
         app.state.trusted = false;
         app.dispatch(Action::SyncDiscordReads(true));
-        app.apply(Event::Discord(snapshot(true)));
+        app.apply(discord_event(snapshot(true)));
         app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
         let effects = app.dispatch(Action::SelectRoom("discord:10:21".into()));
         assert!(matches!(
@@ -4616,7 +4636,7 @@ mod tests {
         assert!(app.state.can_write(), "Discord doesn't need Matrix trust");
         assert!(app.state.can_attach());
         assert!(
-            app.apply(Event::Discord(snapshot(false))).is_empty(),
+            app.apply(discord_event(snapshot(false))).is_empty(),
             "a read channel isn't marked again"
         );
 
@@ -4649,7 +4669,7 @@ mod tests {
             room: "discord:10:21".into(),
             messages: vec![],
         });
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Offline("Reconnecting".into()),
             ..snapshot(false)
         }));
@@ -4662,7 +4682,7 @@ mod tests {
         use talk_discord::service::{Conversation, Snapshot, Status};
         let mut app = connected();
         app.state.trusted = false;
-        let effects = app.apply(Event::Discord(Snapshot {
+        let effects = app.apply(discord_event(Snapshot {
             status: Status::Online,
             conversations: vec![
                 Conversation {
@@ -4693,9 +4713,8 @@ mod tests {
         );
         let listed: Vec<_> = app
             .state
-            .rooms
-            .iter()
-            .filter(|room| app.state.in_scope(room) && discord::is_discord(&room.id))
+            .scoped_rooms()
+            .filter(|room| discord::is_discord(&room.id))
             .map(|room| (room.id.as_str(), room.members, room.mentions))
             .collect();
         assert_eq!(
@@ -4775,7 +4794,7 @@ mod tests {
     fn discord_profiles_load_the_rest_from_discord() {
         use talk_discord::service::{Conversation, Snapshot, Status};
         let mut app = Application::default();
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Online,
             conversations: vec![Conversation {
                 id: "30".into(),
@@ -4879,7 +4898,7 @@ mod tests {
             ..Default::default()
         };
         let mut app = Application::default();
-        app.apply(Event::Discord(snapshot(&[("30", "2")])));
+        app.apply(discord_event(snapshot(&[("30", "2")])));
         assert_eq!(
             app.state.friends[0],
             chat::Friend {
@@ -4910,7 +4929,7 @@ mod tests {
             [Effect::Backend(Command::StartDm { id, discord: true })] if id == "3"
         ));
         app.apply(Event::DmStarted(Ok("discord:@me:31".into())));
-        app.apply(Event::Discord(snapshot(&[("30", "2"), ("31", "3")])));
+        app.apply(discord_event(snapshot(&[("30", "2"), ("31", "3")])));
         assert_eq!(app.state.selected.as_deref(), Some("discord:@me:31"));
         assert!(
             app.dispatch(Action::MessageFriend("9".into())).is_empty(),
@@ -4919,7 +4938,7 @@ mod tests {
 
         // A DM that couldn't start says why.
         app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
-        app.apply(Event::Discord(snapshot(&[])));
+        app.apply(discord_event(snapshot(&[])));
         app.dispatch(Action::MessageFriend("2".into()));
         app.apply(Event::DmStarted(Err("Could not start the DM".into())));
         assert_eq!(app.state.notice.as_deref(), Some("Could not start the DM"));
@@ -4938,7 +4957,7 @@ mod tests {
             ..Default::default()
         };
         let mut app = Application::default();
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Online,
             conversations: vec![dm("30", "7", 2), dm("31", "8", 2), dm("32", "9", 3)],
             ..Default::default()
@@ -5039,7 +5058,7 @@ mod tests {
             ..Default::default()
         };
         let mut app = Application::default();
-        app.apply(Event::Discord(snapshot(true)));
+        app.apply(discord_event(snapshot(true)));
         assert_eq!(app.state.selected, None, "a request opens only when chosen");
         let room = &app.state.rooms[0];
         assert!(room.request && room.read_only && room.category == discord::REQUESTS);
@@ -5054,7 +5073,7 @@ mod tests {
             effects.as_slice(),
             [Effect::Backend(Command::AnswerRequest { room, accept: true })] if room == "discord:@me:40"
         ));
-        app.apply(Event::Discord(snapshot(false)));
+        app.apply(discord_event(snapshot(false)));
         assert!(app.state.can_write(), "an accepted request is a DM");
         assert!(
             app.dispatch(Action::AnswerRequest(false)).is_empty(),
@@ -5098,7 +5117,7 @@ mod tests {
             ..Default::default()
         };
         let mut app = Application::default();
-        app.apply(Event::Discord(snapshot(vec![], vec![])));
+        app.apply(discord_event(snapshot(vec![], vec![])));
         let dm = "discord:@me:30".to_owned();
         assert!(app.state.can_join_voice(&dm), "a DM has a call");
         assert!(
@@ -5107,7 +5126,7 @@ mod tests {
         );
 
         // Ann calls: the DM rings once, with a notification, until answered.
-        let effects = app.apply(Event::Discord(snapshot(
+        let effects = app.apply(discord_event(snapshot(
             vec![person("1", "Me")],
             vec![person("2", "Ann")],
         )));
@@ -5125,7 +5144,7 @@ mod tests {
         assert!(room.incoming && room.ringing.is_empty());
         assert_eq!(room.people[0].name, "Ann");
         assert!(
-            !app.apply(Event::Discord(snapshot(
+            !app.apply(discord_event(snapshot(
                 vec![person("1", "Me")],
                 vec![person("2", "Ann")],
             )))
@@ -5196,7 +5215,7 @@ mod tests {
         );
 
         // Unlinking forgets everything Discord showed.
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
             friends: vec!["2".into()],
@@ -5235,7 +5254,7 @@ mod tests {
     fn adds_friends_by_username_and_sets_the_custom_status() {
         use talk_discord::service::{Snapshot, Status};
         let mut app = Application::default();
-        app.apply(Event::Discord(Snapshot {
+        app.apply(discord_event(Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
             ..Default::default()
@@ -5327,7 +5346,7 @@ mod tests {
             spam: false,
         };
         let mut app = Application::default();
-        let effects = app.apply(Event::Discord(Snapshot {
+        let effects = app.apply(discord_event(Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
             friends: vec!["2".into()],

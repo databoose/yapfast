@@ -1204,6 +1204,11 @@ impl Adapter {
             }
             .into(),
         );
+        let rooms_by_id: HashMap<&str, &talk_core::chat::ChatRoom> = state
+            .rooms
+            .iter()
+            .map(|room| (room.id.as_str(), room))
+            .collect();
         update_model(
             &self.models.servers,
             state
@@ -1215,11 +1220,14 @@ impl Adapter {
                     initial: initials(&server.name),
                     picture: cached_picture(&mut self.pictures, state, server.icon.as_deref()),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
-                    unread: state.rooms.iter().any(|room| {
-                        (room.mentions > 0 || (room.unread > 0 && !server.muted))
-                            && !room.direct
-                            && server.channels.contains(&room.id)
-                    }),
+                    unread: server
+                        .channels
+                        .iter()
+                        .filter_map(|channel| rooms_by_id.get(channel.as_str()))
+                        .any(|room| {
+                            (room.mentions > 0 || (room.unread > 0 && !server.muted))
+                                && !room.direct
+                        }),
                     discord: server.discord,
                 })
                 .collect(),
@@ -1228,9 +1236,8 @@ impl Adapter {
         let mut listed_voice = false;
         let mut category: Option<&str> = None;
         let mut listed: Vec<_> = state
-            .rooms
-            .iter()
-            .filter(|room| state.in_scope(room) && room.name.to_lowercase().contains(&query))
+            .scoped_rooms()
+            .filter(|room| room.name.to_lowercase().contains(&query))
             .collect();
         let direct = state.navigation == Navigation::DirectMessages;
         // Friend requests, message requests and spam have their own screen.
@@ -1260,9 +1267,8 @@ impl Adapter {
         update_model(&self.models.friend_requests, requests);
         let waiting = |name: &str| {
             state
-                .rooms
-                .iter()
-                .filter(|room| state.in_scope(room) && room.category == name)
+                .scoped_rooms()
+                .filter(|room| room.category == name)
                 .collect::<Vec<_>>()
         };
         let (message_requests, spam) = (waiting(discord::REQUESTS), waiting(discord::SPAM));
@@ -1430,7 +1436,7 @@ impl Adapter {
             })
             .collect();
         window.set_sidebar_empty(if !rows.is_empty() { "" }
-            else if state.rooms.iter().any(|room| state.in_scope(room)) { "No matching conversations." }
+            else if state.scoped_rooms().next().is_some() { "No matching conversations." }
             else if state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." }
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
         // A voice channel's people come as a new list each time; the one on

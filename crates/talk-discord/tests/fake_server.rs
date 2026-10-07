@@ -2,7 +2,7 @@
 //! server, then run with TALK_DISCORD_TEST_SERVER pointing at it:
 //! `cargo test -p talk-discord --test fake_server -- --ignored`.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use talk_discord::{
     client,
@@ -153,7 +153,7 @@ async fn presence_where(server: &str, check: impl Fn(&serde_json::Value) -> bool
 }
 
 /// The first snapshot that passes `check`.
-async fn snapshot_where(discord: &Discord, check: impl Fn(&Snapshot) -> bool) -> Snapshot {
+async fn snapshot_where(discord: &Discord, check: impl Fn(&Snapshot) -> bool) -> Arc<Snapshot> {
     let mut snapshots = discord.snapshots();
     timeout(WAIT, async {
         loop {
@@ -994,8 +994,9 @@ async fn talks_to_the_fake_server() {
     })
     .await
     .conversations
-    .into_iter()
+    .iter()
     .find(|found| found.name == "Dave")
+    .cloned()
     .unwrap();
     let (dave, dave_user) = (dave.id, dave.person.unwrap());
     let assigned = discord.join(PRIVATE, &dave).await.unwrap();
@@ -1073,6 +1074,7 @@ async fn talks_to_the_fake_server() {
     let custom = snapshot_where(&discord, |snapshot| snapshot.custom_status.is_some())
         .await
         .custom_status
+        .clone()
         .unwrap();
     assert_eq!(
         (custom.text.as_str(), custom.emoji_name.as_deref()),
