@@ -71,11 +71,14 @@ Talk follows the rules Discord documents for every client:
   with `d: true`, and when a heartbeat goes unacknowledged. It identifies again
   only when Discord won't resume: op 9 with `d: false`, close codes 4007 and
   4009, or three failed attempts. After op 9 it waits a random one to five
-  seconds first. Talk drops a connection without a close frame, because a
-  close with 1000 or 1001 ends the session.
+  seconds first. Opening a connection, Discord's HELLO and each send give up
+  after 10 seconds, so a dead connection fails rather than hangs. Talk drops a
+  connection without a close frame, because a close with 1000 or 1001 ends the
+  session.
 - **Gateway send limit.** A connection may send 120 commands a minute and is
   closed with 4008 past that. Talk holds commands back at 110, so heartbeats
-  always fit.
+  always fit. The connection runs in a task of its own, so heartbeats go on
+  time while commands wait.
 - **Backoff.** Reconnects back off from 2 to 60 seconds. Each wait is a random
   50% to 100% of the step, so clients cut off together don't return together.
   The first heartbeat comes after a random part of the interval, as Discord
