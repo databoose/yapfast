@@ -25,9 +25,16 @@ use crate::{
 
 mod live;
 mod marks;
+mod member_lists;
+mod member_search;
+mod publisher;
+mod read_acks;
 mod session;
+mod stream_openings;
 mod tracker;
+mod voice_join;
 
+use member_lists::MemberLists;
 use session::Shared;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -368,10 +375,7 @@ impl Discord {
                 live: live.clone(),
                 names: names.clone(),
                 api: api.clone(),
-                viewing: HashSet::new(),
-                listing: None,
-                lists,
-                group: None,
+                lists: MemberLists::new(lists, live.clone(), names.clone()),
                 presence,
             },
         ));

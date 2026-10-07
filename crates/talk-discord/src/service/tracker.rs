@@ -15,7 +15,7 @@ use super::{
     now_ms, server,
 };
 use crate::{
-    member_list::{self, ListedMember, MemberList, Presence},
+    member_list::{self, ListedMember, Presence},
     message::Names,
     ready::{self, PRIVATE, Private, Server},
     settings::{self, CustomStatus},
@@ -58,8 +58,6 @@ pub(super) struct Tracker {
     /// This account's roles, by server id.
     my_roles: HashMap<String, Vec<String>>,
     pub(super) unreads: Unreads,
-    /// The member list of the channel on screen.
-    pub(super) list: Option<MemberList>,
     /// DMs and group DMs.
     private: Vec<Private>,
     /// What friends are doing, for group DM member lists.
@@ -100,7 +98,6 @@ impl Tracker {
             calls: HashMap::new(),
             my_roles: HashMap::new(),
             unreads: Unreads::from_ready(ready),
-            list: None,
             private: Vec::new(),
             presences: HashMap::new(),
             friends: Vec::new(),
@@ -878,6 +875,8 @@ impl Tracker {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The account as it is now, but for [`Snapshot::listed`], which the
+    /// member lists know.
     pub(super) fn snapshot(&mut self) -> Snapshot {
         let names = self
             .names
@@ -957,10 +956,7 @@ impl Tracker {
                 .filter(|custom| !custom.expired(now_ms())),
             friend_requests: self.friend_requests(&names),
             voice,
-            listed: self
-                .list
-                .as_ref()
-                .and_then(|list| Some((list.channel().to_owned(), list.count()?))),
+            listed: None,
         }
     }
 }

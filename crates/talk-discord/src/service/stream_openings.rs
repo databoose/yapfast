@@ -1,0 +1,186 @@
+//! Streams being started or watched: each waits for Discord to name its
+//! server, or gives up after a while.
+
+use std::{collections::HashMap, pin::Pin};
+
+use anyhow::{Result, anyhow};
+use serde_json::Value;
+use tokio::{
+    sync::oneshot,
+    time::{Duration, Instant, Sleep},
+};
+
+use super::{server, tracker::Tracker};
+use crate::{
+    gateway::{Dispatch, Gateway},
+    stream::{self, Opening, StreamServer},
+};
+
+/// How long a stream waits for Discord to assign its server.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The streams waiting for their server, by stream key.
+pub(super) struct StreamOpenings {
+    waiting: HashMap<String, PendingStream>,
+    deadline: Pin<Box<Sleep>>,
+}
+
+/// A stream started or watched, waiting for its server.
+struct PendingStream {
+    guild: String,
+    reply: oneshot::Sender<Result<StreamServer>>,
+    opening: Opening,
+}
+
+impl StreamOpenings {
+    pub(super) fn new() -> Self {
+        Self {
+            waiting: HashMap::new(),
+            deadline: Box::pin(tokio::time::sleep(OPEN_TIMEOUT)),
+        }
+    }
+
+    pub(super) fn waiting(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
+    /// Starts sharing to the voice channel this account is in.
+    pub(super) async fn go_live(
+        &mut self,
+        gateway: &mut Gateway,
+        tracker: &Tracker,
+        guild: String,
+        channel: String,
+        reply: oneshot::Sender<Result<StreamServer>>,
+    ) -> Result<()> {
+        if tracker
+            .voice_channel(&guild)
+            .is_none_or(|current| current != channel)
+        {
+            let _ = reply.send(Err(anyhow!("Join the call before going live.")));
+            return Ok(());
+        }
+        let key = stream::key(&guild, &channel, &tracker.me);
+        self.wait(
+            key.clone(),
+            guild.clone(),
+            reply,
+            "Going live again replaced this attempt.",
+        );
+        // Unpaused straight away, as Discord-video-stream
+        // does: viewers of a paused stream get no video.
+        match gateway.create_stream(server(&guild), &channel).await {
+            Ok(()) => gateway.pause_stream(&key, false).await,
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Starts watching a stream in the voice channel this account is in.
+    pub(super) async fn watch(
+        &mut self,
+        gateway: &mut Gateway,
+        tracker: &Tracker,
+        stream_key: String,
+        reply: oneshot::Sender<Result<StreamServer>>,
+    ) -> Result<()> {
+        match stream::parse(&stream_key) {
+            Some((guild, channel, _)) if tracker.voice_channel(guild) == Some(channel) => {
+                let guild = guild.to_owned();
+                self.wait(
+                    stream_key.clone(),
+                    guild,
+                    reply,
+                    "Watching again replaced this attempt.",
+                );
+                gateway.watch_stream(&stream_key).await
+            }
+            Some(_) => {
+                let _ = reply.send(Err(anyhow!("Join the call to watch its streams.")));
+                Ok(())
+            }
+            None => {
+                let _ = reply.send(Err(anyhow!("That isn't a stream Talk knows how to watch.")));
+                Ok(())
+            }
+        }
+    }
+
+    fn wait(
+        &mut self,
+        key: String,
+        guild: String,
+        reply: oneshot::Sender<Result<StreamServer>>,
+        replaced: &str,
+    ) {
+        self.deadline.as_mut().reset(Instant::now() + OPEN_TIMEOUT);
+        let waiting = PendingStream {
+            guild,
+            reply,
+            opening: Opening::default(),
+        };
+        if let Some(previous) = self.waiting.insert(key, waiting) {
+            let _ = previous.reply.send(Err(anyhow!("{replaced}")));
+        }
+    }
+
+    /// Ends this account's stream, or stops watching someone else's.
+    pub(super) async fn end(&mut self, gateway: &mut Gateway, stream_key: &str) -> Result<()> {
+        if let Some(waiting) = self.waiting.remove(stream_key) {
+            let _ = waiting
+                .reply
+                .send(Err(anyhow!("The stream was stopped before it started.")));
+        }
+        gateway.delete_stream(stream_key).await
+    }
+
+    /// Whether a stream server update is for a stream waiting here, rather
+    /// than one moving a stream under way.
+    pub(super) fn awaits(&self, data: &Value) -> bool {
+        data["stream_key"]
+            .as_str()
+            .is_some_and(|key| self.waiting.contains_key(key))
+    }
+
+    /// Passes a stream dispatch to the streams being opened, and answers those
+    /// that are now ready or that Discord refused.
+    pub(super) fn apply(&mut self, tracker: &Tracker, event: &Dispatch) {
+        let (name, data) = (event.name.as_str(), &event.data);
+        let Some(key) = data["stream_key"].as_str() else {
+            return;
+        };
+        let Some(mut waiting) = self.waiting.remove(key) else {
+            return;
+        };
+        if name == "STREAM_DELETE" {
+            let reason = match data["reason"].as_str() {
+                Some("stream_full") => "The stream is full.",
+                Some("unauthorized") => "You aren't allowed to stream or watch here.",
+                _ => "The stream ended before it started.",
+            };
+            let _ = waiting.reply.send(Err(anyhow!(reason)));
+            return;
+        }
+        waiting.opening.apply(key, name, data);
+        let session = tracker.voice_session(&waiting.guild);
+        match session.and_then(|session| waiting.opening.server(key, &tracker.me, session)) {
+            Some(server) => {
+                let _ = waiting.reply.send(Ok(server));
+            }
+            None => {
+                self.waiting.insert(key.to_owned(), waiting);
+            }
+        }
+    }
+
+    /// Gives up on every stream once Discord took too long to assign one.
+    pub(super) async fn timed_out(&mut self) {
+        self.deadline.as_mut().await;
+        self.fail("Discord didn't assign a stream server. Try again.");
+    }
+
+    pub(super) fn fail(&mut self, message: &str) {
+        for (_, waiting) in self.waiting.drain() {
+            let _ = waiting.reply.send(Err(anyhow!("{message}")));
+        }
+    }
+}
