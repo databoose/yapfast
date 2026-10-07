@@ -458,19 +458,23 @@ impl Api {
                 .execute(request)
                 .await
                 .context("Can't reach Discord.")?;
-            self.limits
-                .update(&route, response.status(), response.headers());
-            match again {
-                Some(next) if response.status() == StatusCode::TOO_MANY_REQUESTS => {
-                    tracing::warn!(
-                        route,
-                        "Discord limited a request; sending it again after the wait"
-                    );
-                    request = next;
-                    retried = true;
-                }
-                _ => return checked(response).await,
+            let status = response.status();
+            if status != StatusCode::TOO_MANY_REQUESTS {
+                self.limits.update(&route, response.headers());
+                return checked(response).await;
             }
+            let headers = response.headers().clone();
+            let body = body(response).await;
+            self.limits.limited(&route, &headers, &body);
+            let Some(next) = again else {
+                return Err(refusal(status, &body));
+            };
+            tracing::warn!(
+                route,
+                "Discord limited a request; sending it again after the wait"
+            );
+            request = next;
+            retried = true;
         }
     }
 }
@@ -481,16 +485,25 @@ async fn checked(response: Response) -> Result<Response> {
     if status.is_success() {
         return Ok(response);
     }
-    let body: Value = match response.bytes().await {
+    Err(refusal(status, &body(response).await))
+}
+
+/// An answer's JSON body, or null.
+async fn body(response: Response) -> Value {
+    match response.bytes().await {
         Ok(body) => serde_json::from_slice(&body).unwrap_or_default(),
         Err(_) => Value::Null,
-    };
+    }
+}
+
+/// A refusal with this status and body, as an error a person can act on.
+fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
     // Discord's own words go in the error's chain, for logs: `{:#}` shows them.
     let detail = match (body["code"].as_u64(), body["message"].as_str()) {
         (Some(code), Some(message)) => anyhow!("Discord answered {status}, code {code}: {message}"),
         _ => anyhow!("Discord answered {status}"),
     };
-    Err(detail.context(match (status, body["code"].as_u64()) {
+    detail.context(match (status, body["code"].as_u64()) {
         (_, Some(UNKNOWN_USERNAME)) => anyhow!("Discord has nobody by that username."),
         (_, Some(REQUESTS_CLOSED)) => {
             anyhow!("They don't take friend requests from people they don't know.")
@@ -517,7 +530,7 @@ async fn checked(response: Response) -> Result<Response> {
                 None => anyhow!("Discord answered {status}."),
             },
         },
-    }))
+    })
 }
 
 /// Discord's error codes that Talk words itself.

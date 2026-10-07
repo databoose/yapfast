@@ -53,11 +53,14 @@ without affecting Matrix.
 Talk follows the rules Discord documents for every client:
 
 - **HTTP rate limits.** Each request's route maps to the bucket Discord names in
-  `X-RateLimit-Bucket`. A bucket's major ID is the channel, server or webhook,
-  so each channel gets its own bucket. Talk waits for an empty bucket to reset
-  before it asks again. It also waits after a global 429. If Discord still
-  answers 429, Talk waits `Retry-After` and tries once more. A wait longer than
-  a minute fails at once, with a message to try again later.
+  `X-RateLimit-Bucket`. Discord counts a bucket apart for each major ID, the
+  channel, server or webhook, so Talk keys its count by both: sending in one
+  channel doesn't hold back another. Talk waits for an empty bucket to reset
+  before it asks again. It also waits after a global 429, marked so in the
+  headers or the body. If Discord still answers 429, Talk waits the body's
+  `retry_after`, or `Retry-After`, or a second when Discord names neither, and
+  tries once more. A wait longer than a minute fails at once, with a message to
+  try again later.
 - **Invalid requests.** Discord bans an IP that sends 10,000 requests in a
   10-minute window answered 401, 403 or 429. Talk doesn't ask for what it knows
   will be refused: a channel the account's roles hide shows a notice instead
@@ -68,15 +71,20 @@ Talk follows the rules Discord documents for every client:
   with `d: true`, and when a heartbeat goes unacknowledged. It identifies again
   only when Discord won't resume: op 9 with `d: false`, close codes 4007 and
   4009, or three failed attempts. After op 9 it waits a random one to five
-  seconds first. Talk drops a connection without a close frame, because a
-  close with 1000 or 1001 ends the session.
+  seconds first, or longer when sessions keep ending. Opening a connection,
+  Discord's HELLO and each send give up after 10 seconds, so a dead connection
+  fails rather than hangs. Talk drops a connection without a close frame,
+  because a close with 1000 or 1001 ends the session.
 - **Gateway send limit.** A connection may send 120 commands a minute and is
   closed with 4008 past that. Talk holds commands back at 110, so heartbeats
-  always fit.
-- **Backoff.** Reconnects back off from 2 to 60 seconds. Each wait is a random
-  50% to 100% of the step, so clients cut off together don't return together.
-  The first heartbeat comes after a random part of the interval, as Discord
-  asks.
+  always fit. The connection runs in a task of its own, so heartbeats go on
+  time while commands wait.
+- **Backoff.** Reconnects back off from 2 to 60 seconds, and start over only
+  once a session has stayed up for a minute. Each wait is a random 50% to 100%
+  of the step, so clients cut off together don't return together. Talk sends
+  at most 10 IDENTIFYs an hour: an account that keeps identifying gets flagged,
+  so past that Talk stops reconnecting and says so until it restarts. The first
+  heartbeat comes after a random part of the interval, as Discord asks.
 - **Typing.** Mention search waits 300 ms after the last key before it asks
   Discord for members, so typing a name sends one search, not one per letter.
 - **Cookies.** Talk keeps the cookies Discord's servers set and sends them
