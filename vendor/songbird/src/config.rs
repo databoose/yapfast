@@ -362,6 +362,9 @@ impl Config {
 
     /// Ensures a global disposer has been set, initializing one if not.
     #[must_use]
+    // Talk: only the serenity and twilight managers call this; Talk uses
+    // neither, so the warning would print in every build.
+    #[cfg_attr(not(any(feature = "serenity", feature = "twilight")), allow(dead_code))]
     pub(crate) fn initialise_disposer(self) -> Self {
         if self.disposer.is_some() {
             self
