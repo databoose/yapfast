@@ -33,7 +33,9 @@ impl Application {
         {
             return vec![];
         }
-        vec![Effect::Backend(Command::SearchMembers { room, query })]
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::SearchMembers { room, query },
+        ))]
     }
 
     pub(super) fn set_draft(&mut self, body: String) -> Vec<Effect> {

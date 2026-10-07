@@ -1115,7 +1115,7 @@ fn asks_once_for_the_pictures_on_screen() {
         effects
             .into_iter()
             .flat_map(|effect| match effect {
-                Effect::Backend(Command::Pictures(urls)) => urls,
+                Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) => urls,
                 _ => vec![],
             })
             .collect()
@@ -1368,7 +1368,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
     // Few listed members match, so the server is searched, once per name.
     assert!(matches!(
         app.dispatch(Action::MentionQuery(Some("Bo".into()))).as_slice(),
-        [Effect::Backend(Command::SearchMembers { query, .. })] if query == "Bo"
+        [Effect::Backend(Command::Discord(DiscordCommand::SearchMembers { query, .. }))] if query == "Bo"
     ));
     assert!(
         app.dispatch(Action::MentionQuery(Some("bo".into())))
@@ -1443,7 +1443,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     });
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::MarkDiscordRead { room, sync: true })] if room == "discord:10:21"
+        [Effect::Backend(Command::Discord(DiscordCommand::MarkRead { room, sync: true }))] if room == "discord:10:21"
     ));
     assert!(app.state.can_write(), "Discord doesn't need Matrix trust");
     assert!(app.state.can_attach());
@@ -1519,7 +1519,7 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
     assert!(
         effects.iter().any(|effect| matches!(
             effect,
-            Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "ann.png")
+            Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "ann.png")
         )),
         "the DM list's avatars download"
     );
@@ -1545,7 +1545,7 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
     });
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::MarkDiscordRead { room, .. })] if room == "discord:@me:30"
+        [Effect::Backend(Command::Discord(DiscordCommand::MarkRead { room, .. }))] if room == "discord:@me:30"
     ));
     assert!(app.state.can_write(), "Discord DMs don't need Matrix trust");
     assert!(!app.state.lists_members(), "a DM lists no members");
@@ -1576,9 +1576,10 @@ fn matrix_profiles_show_what_the_member_list_knows() {
         large: false,
     });
     assert!(
-        !effects
-            .iter()
-            .any(|effect| matches!(effect, Effect::Backend(Command::Profile { .. }))),
+        !effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(Command::Discord(DiscordCommand::Profile { .. }))
+        )),
         "Matrix has nothing more to fetch"
     );
     let view = app.state.profile.as_ref().unwrap();
@@ -1622,7 +1623,7 @@ fn discord_profiles_load_the_rest_from_discord() {
     assert!(
         effects.iter().any(|effect| matches!(
             effect,
-            Effect::Backend(Command::Profile { room, user }) if room == "discord:@me:30" && user == "7"
+            Effect::Backend(Command::Discord(DiscordCommand::Profile { room, user })) if room == "discord:@me:30" && user == "7"
         )),
         "Discord's profile is fetched"
     );
@@ -1652,7 +1653,7 @@ fn discord_profiles_load_the_rest_from_discord() {
     assert!(
         effects.iter().any(|effect| matches!(
             effect,
-            Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "ann-banner.png")
+            Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "ann-banner.png")
         )),
         "the banner downloads"
     );
@@ -1726,7 +1727,7 @@ fn discord_friends_are_listed_and_messaged() {
     assert!(
         effects.iter().any(|effect| matches!(
             effect,
-            Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "3.png")
+            Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "3.png")
         )),
         "the friends' avatars download"
     );
@@ -1781,7 +1782,9 @@ fn a_one_to_one_dm_shows_its_persons_profile_beside_it() {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                Effect::Backend(Command::Profile { user, .. }) => Some(user.clone()),
+                Effect::Backend(Command::Discord(DiscordCommand::Profile { user, .. })) => {
+                    Some(user.clone())
+                }
                 _ => None,
             })
             .collect()
@@ -1832,7 +1835,7 @@ fn a_one_to_one_dm_shows_its_persons_profile_beside_it() {
     });
     assert!(effects.iter().any(|effect| matches!(
         effect,
-        Effect::Backend(Command::Profile { room, user }) if room == "discord:@me:30" && user == "7"
+        Effect::Backend(Command::Discord(DiscordCommand::Profile { room, user })) if room == "discord:@me:30" && user == "7"
     )));
     let view = app.state.profile.as_ref().unwrap();
     assert!(!view.large && view.profile.name == "Ann");
@@ -1883,7 +1886,7 @@ fn discord_message_requests_are_answered_not_written_to() {
     let effects = app.dispatch(Action::AnswerRequest(true));
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::AnswerRequest { room, accept: true })] if room == "discord:@me:40"
+        [Effect::Backend(Command::Discord(DiscordCommand::AnswerRequest { room, accept: true }))] if room == "discord:@me:40"
     ));
     app.apply(discord_event(snapshot(false)));
     assert!(app.state.can_write(), "an accepted request is a DM");
@@ -1964,7 +1967,7 @@ fn discord_dm_calls_start_ring_and_are_answered() {
     );
     assert!(matches!(
         app.dispatch(Action::DeclineCall(dm.clone())).as_slice(),
-        [Effect::Backend(Command::DeclineCall { room })] if *room == dm
+        [Effect::Backend(Command::Discord(DiscordCommand::DeclineCall { room }))] if *room == dm
     ));
     let effects = app.dispatch(Action::AcceptCall(dm.clone()));
     assert_eq!(
@@ -2065,7 +2068,7 @@ fn links_discord_by_qr_code_and_unlinks_it() {
     );
     assert!(matches!(
         app.linking(Progress::Linked).as_slice(),
-        [Effect::Backend(Command::StartDiscord)]
+        [Effect::Backend(Command::Discord(DiscordCommand::Start))]
     ));
     assert_eq!(app.state.discord_link, None);
     assert!(app.state.discord_linked);
@@ -2083,7 +2086,7 @@ fn links_discord_by_qr_code_and_unlinks_it() {
     }));
     assert!(matches!(
         app.dispatch(Action::UnlinkDiscord).as_slice(),
-        [Effect::Backend(Command::UnlinkDiscord)]
+        [Effect::Backend(Command::Discord(DiscordCommand::Unlink))]
     ));
     app.apply(Event::DiscordUnlinked);
     assert!(!app.state.discord_linked);
@@ -2123,7 +2126,7 @@ fn adds_friends_by_username_and_sets_the_custom_status() {
     app.dispatch(Action::OpenAddFriend);
     assert!(matches!(
         app.dispatch(Action::AddFriend(" @Erin ".into())).as_slice(),
-        [Effect::Backend(Command::AddFriend { username })] if username == "erin"
+        [Effect::Backend(Command::Discord(DiscordCommand::AddFriend { username }))] if username == "erin"
     ));
     assert!(
         app.dispatch(Action::AddFriend("erin".into())).is_empty(),
@@ -2158,7 +2161,9 @@ fn adds_friends_by_username_and_sets_the_custom_status() {
         text: " Fixing the bridge ".into(),
         clear_after: ClearAfter::Minutes(30),
     });
-    let [Effect::Backend(Command::SetCustomStatus(Some(status)))] = effects.as_slice() else {
+    let [Effect::Backend(Command::Discord(DiscordCommand::SetCustomStatus(Some(status))))] =
+        effects.as_slice()
+    else {
         panic!("the status goes to Discord");
     };
     assert_eq!(status.text, "Fixing the bridge");
@@ -2177,7 +2182,9 @@ fn adds_friends_by_username_and_sets_the_custom_status() {
             clear_after: ClearAfter::Today,
         })
         .as_slice(),
-        [Effect::Backend(Command::SetCustomStatus(None))]
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::SetCustomStatus(None)
+        ))]
     ));
 }
 
@@ -2265,7 +2272,7 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
     assert!(
         effects.iter().any(|effect| matches!(
             effect,
-            Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "3.png")
+            Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "3.png")
         )),
         "the requests' avatars download"
     );
@@ -2285,7 +2292,9 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
     );
     let sent = |effects: Vec<Effect>| -> Option<(String, bool)> {
         match effects.as_slice() {
-            [Effect::Backend(Command::Friend { user, add })] => Some((user.clone(), *add)),
+            [Effect::Backend(Command::Discord(DiscordCommand::Friend { user, add }))] => {
+                Some((user.clone(), *add))
+            }
             _ => None,
         }
     };

@@ -383,6 +383,10 @@ impl Matrix {
             Command::Open(id) => {
                 *open = None;
                 self.updates = Box::pin(futures_util::stream::pending());
+                // Another network's room opening closes this one, and that's all.
+                if crate::discord::is_discord(&id) {
+                    return true;
+                }
                 let room = client.get_room(&match OwnedRoomId::try_from(id.clone()) {
                     Ok(id) => id,
                     Err(_) => return true,
@@ -629,20 +633,8 @@ impl Matrix {
                     }
                 }
             }
-            // The chat actor handles voice, and Discord takes its own commands first.
-            Command::Voice(_)
-            | Command::MarkDiscordRead { .. }
-            | Command::SearchMembers { .. }
-            | Command::RoleMembers { .. }
-            | Command::AnswerRequest { .. }
-            | Command::DeclineCall { .. }
-            | Command::Friend { .. }
-            | Command::AddFriend { .. }
-            | Command::SetCustomStatus(_)
-            | Command::StartDiscord
-            | Command::UnlinkDiscord
-            | Command::Profile { .. }
-            | Command::Pictures(_) => {}
+            // `Command::route` sends these elsewhere.
+            Command::Voice(_) | Command::Discord(_) => {}
         }
         true
     }
@@ -2215,6 +2207,129 @@ mod tests {
                 _ => None,
             })
             .await;
+            drop(commands);
+            tokio::time::timeout(Duration::from_secs(10), actor)
+                .await
+                .unwrap()
+                .unwrap();
+        });
+    }
+
+    /// Opening a Discord channel closes the Matrix room that was open, so
+    /// that room's new messages stay unread. Run it with the fake Discord:
+    /// `bun testing/fake_discord.ts --port 18400` and
+    /// `TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400`.
+    #[cfg(feature = "discord")]
+    #[test]
+    #[ignore = "requires scripts/test-stack up and testing/fake_discord.ts; creates disposable accounts"]
+    fn opening_a_discord_channel_leaves_the_matrix_room_unread() {
+        assert!(
+            talk_discord::client::test_server().is_some(),
+            "set TALK_DISCORD_TEST_SERVER to the fake Discord"
+        );
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        crate::logging::init();
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let data = root.path().join("alice");
+            let alice = Session::login(
+                data.clone(),
+                HOMESERVER,
+                &register().await,
+                "talk-test-only",
+            )
+            .await
+            .unwrap();
+            let bob = Session::login(
+                root.path().join("bob"),
+                HOMESERVER,
+                &register().await,
+                "talk-test-only",
+            )
+            .await
+            .unwrap();
+            alice.synchronize().await.unwrap();
+            bob.synchronize().await.unwrap();
+            let encrypted = encrypted_room(&alice, "Left for Discord").await;
+            alice
+                .client
+                .get_room(&encrypted)
+                .unwrap()
+                .invite_user_by_id(bob.client.user_id().unwrap())
+                .await
+                .unwrap();
+            bob.client.join_room_by_id(&encrypted).await.unwrap();
+            alice.synchronize().await.unwrap();
+            drop(alice);
+            let (commands, mut events, actor) = start(&data).await;
+            receive(&mut events, |event| match event {
+                Event::Sync(true) => Some(()),
+                _ => None,
+            })
+            .await;
+            commands.send(Command::Open(encrypted.to_string())).unwrap();
+            timeline_where(&mut events, |_| true).await;
+            receive(&mut events, |event| match event {
+                Event::Discord(snapshot)
+                    if snapshot.status == talk_discord::service::Status::Online =>
+                {
+                    Some(())
+                }
+                _ => None,
+            })
+            .await;
+            // The fake's #general.
+            let general = crate::discord::room_id("1400000000000000100", "1400000000000000102");
+            commands.send(Command::Open(general.clone())).unwrap();
+            receive(&mut events, |event| match event {
+                Event::Timeline { room, .. } if room == general => Some(()),
+                Event::RoomError { message, .. } => panic!("{message}"),
+                _ => None,
+            })
+            .await;
+
+            bob.synchronize().await.unwrap();
+            bob.client
+                .get_room(&encrypted)
+                .unwrap()
+                .send(
+                    RoomMessageEventContentWithoutRelation::text_plain("while on Discord")
+                        .with_relation(None),
+                )
+                .await
+                .unwrap();
+            let unread = |index: &RoomIndex| {
+                index
+                    .rooms
+                    .iter()
+                    .find(|room| room.id == encrypted.as_str())
+                    .map(|room| room.unread)
+            };
+            // A room still open would show the message, then read it.
+            let shown = "the closed Matrix room showed a new message";
+            receive(&mut events, |event| match event {
+                Event::Rooms(index) if unread(&index) > Some(0) => Some(()),
+                Event::Timeline { room, .. } if room == encrypted.as_str() => panic!("{shown}"),
+                _ => None,
+            })
+            .await;
+            let settle = tokio::time::sleep(Duration::from_secs(3));
+            tokio::pin!(settle);
+            loop {
+                tokio::select! {
+                    () = &mut settle => break,
+                    event = events.recv() => match event.expect("the chat actor stopped") {
+                        Event::Timeline { room, .. } if room == encrypted.as_str() => {
+                            panic!("{shown}")
+                        }
+                        Event::Rooms(index) if unread(&index) == Some(0) => {
+                            panic!("the closed Matrix room was marked read")
+                        }
+                        _ => {}
+                    },
+                }
+            }
             drop(commands);
             tokio::time::timeout(Duration::from_secs(10), actor)
                 .await

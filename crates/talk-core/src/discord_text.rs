@@ -26,10 +26,10 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Embed,
-        EmbedField, Event, MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture,
-        Placement, Profile, ProfileFriend, ProfileRole, ProfileServer, Reaction, Reply, Role,
-        decode_preview, decode_view, plain_snippet,
+        Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery,
+        DiscordCommand, Embed, EmbedField, Event, MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup,
+        Notification, Picture, Placement, Profile, ProfileFriend, ProfileRole, ProfileServer,
+        Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
     discord,
     mention::{Mentioned, Target},
@@ -1041,14 +1041,10 @@ impl Chat {
         self.discord.clone()
     }
 
-    pub(crate) fn command(
-        &mut self,
-        command: Command,
-        events: &UnboundedSender<Event>,
-    ) -> Option<Command> {
-        if let Command::Pictures(urls) = command {
+    pub(crate) fn command(&mut self, command: Command, events: &UnboundedSender<Event>) {
+        if let Command::Discord(DiscordCommand::Pictures(urls)) = command {
             self.pictures.fetch(&self.discord, urls, events);
-            return None;
+            return;
         }
         self::command(
             command,
@@ -1056,7 +1052,7 @@ impl Chat {
             &mut self.channels,
             &self.done,
             events,
-        )
+        );
     }
 
     /// Waits for Discord. Cancel safe: the chat actor handles what it returns.
@@ -1134,36 +1130,31 @@ pub(crate) const NOT_LINKED: &str = "Discord isn't linked on this device.";
 /// Why a Discord command fails for a room that isn't Discord's.
 const NOT_DISCORD: &str = "That isn't a Discord room.";
 
-/// Answers a command while Discord isn't running, which `why` explains:
-/// those for Discord fail, so nothing waits on them, and the rest are given
-/// back for Matrix.
-pub(crate) fn without(
-    command: Command,
-    why: &str,
-    events: &UnboundedSender<Event>,
-) -> Option<Command> {
+/// Answers a command for Discord while Discord isn't running, which `why`
+/// explains: it fails, so nothing waits on it.
+pub(crate) fn without(command: Command, why: &str, events: &UnboundedSender<Event>) {
     let (done, _) = tokio::sync::mpsc::unbounded_channel();
-    self::command(command, Err(why), &mut Channels::default(), &done, events)
+    self::command(command, Err(why), &mut Channels::default(), &done, events);
 }
 
-/// Carries out a command for a Discord room, and gives back commands for
-/// Matrix rooms. Opening any room closes the open Discord channel. Without
-/// Discord, the error says why, and Discord commands fail with it.
+/// Carries out a command [`Command::route`] sends to Discord. Opening any
+/// room closes the open Discord channel. Without Discord, the error says
+/// why, and Discord commands fail with it.
 pub fn command(
     command: Command,
     discord: Result<&Discord, &str>,
     channels: &mut Channels,
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
-) -> Option<Command> {
+) {
     if matches!(command, Command::Open(_) | Command::CloseRoom) {
         channels.close();
     }
-    if let Command::MarkDiscordRead { room, sync } = &command {
+    if let Command::Discord(DiscordCommand::MarkRead { room, sync }) = &command {
         if let (Ok(discord), Some((guild, channel))) = (discord, discord::parse_room(room)) {
             discord.mark_read(guild, channel, *sync);
         }
-        return None;
+        return;
     }
     if let Command::Typing { room, typing } = &command
         && discord::is_discord(room)
@@ -1186,7 +1177,7 @@ pub fn command(
                 }
             });
         }
-        return None;
+        return;
     }
     // Matrix looks for people too.
     if let Command::FindPeople { query } = &command {
@@ -1212,14 +1203,14 @@ pub fn command(
                 people,
             });
         }
-        return Some(command);
+        return;
     }
     if let Command::StartDm { id, discord: true } = command {
         let discord = match discord {
             Ok(discord) => discord,
             Err(why) => {
                 let _ = events.send(Event::DmStarted(Err(why.into())));
-                return None;
+                return;
             }
         };
         let (discord, events) = (discord.clone(), events.clone());
@@ -1231,9 +1222,9 @@ pub fn command(
                 .map_err(|error| format!("Could not start the DM: {error}"));
             let _ = events.send(Event::DmStarted(result));
         });
-        return None;
+        return;
     }
-    if let Command::RoleMembers { room, role } = command {
+    if let Command::Discord(DiscordCommand::RoleMembers { room, role }) = command {
         if let (Ok(discord), Some((guild, _))) = (discord, discord::parse_room(&room)) {
             let snapshot = discord.snapshots().borrow().clone();
             let server = snapshot.servers.iter().find(|server| server.id == guild);
@@ -1265,9 +1256,9 @@ pub fn command(
                 members,
             });
         }
-        return None;
+        return;
     }
-    if let Command::SearchMembers { room, query } = command {
+    if let Command::Discord(DiscordCommand::SearchMembers { room, query }) = command {
         if let (Ok(discord), Some((guild, _))) = (discord, discord::parse_room(&room))
             && guild != talk_discord::ready::PRIVATE
         {
@@ -1309,9 +1300,9 @@ pub fn command(
                 });
             });
         }
-        return None;
+        return;
     }
-    if let Command::Profile { room, user } = command {
+    if let Command::Discord(DiscordCommand::Profile { room, user }) = command {
         match (discord, discord::parse_room(&room)) {
             (Ok(discord), Some((guild, _))) => {
                 let (discord, events, guild) = (discord.clone(), events.clone(), guild.to_owned());
@@ -1334,9 +1325,9 @@ pub fn command(
                 });
             }
         }
-        return None;
+        return;
     }
-    if let Command::Friend { user, add } = command {
+    if let Command::Discord(DiscordCommand::Friend { user, add }) = command {
         match discord {
             Ok(discord) => {
                 let (discord, events) = (discord.clone(), events.clone());
@@ -1363,9 +1354,9 @@ pub fn command(
                 let _ = events.send(Event::Error(why.into()));
             }
         }
-        return None;
+        return;
     }
-    if let Command::AddFriend { username } = command {
+    if let Command::Discord(DiscordCommand::AddFriend { username }) = command {
         match discord {
             Ok(discord) => {
                 let (discord, events) = (discord.clone(), events.clone());
@@ -1388,9 +1379,9 @@ pub fn command(
                 let _ = events.send(Event::FriendAdded(Err(why.into())));
             }
         }
-        return None;
+        return;
     }
-    if let Command::SetCustomStatus(custom) = command {
+    if let Command::Discord(DiscordCommand::SetCustomStatus(custom)) = command {
         match discord {
             Ok(discord) => {
                 let (discord, events) = (discord.clone(), events.clone());
@@ -1415,9 +1406,9 @@ pub fn command(
                 let _ = events.send(Event::CustomStatusSet(Err(why.into())));
             }
         }
-        return None;
+        return;
     }
-    if let Command::DeclineCall { room } = command {
+    if let Command::Discord(DiscordCommand::DeclineCall { room }) = command {
         if let (Ok(discord), Some((_, channel))) = (discord, discord::parse_room(&room)) {
             let (discord, events, channel) = (discord.clone(), events.clone(), channel.to_owned());
             // The call stops ringing when Discord confirms it.
@@ -1430,9 +1421,9 @@ pub fn command(
                 }
             });
         }
-        return None;
+        return;
     }
-    if let Command::AnswerRequest { room, accept } = command {
+    if let Command::Discord(DiscordCommand::AnswerRequest { room, accept }) = command {
         match (discord, discord::parse_room(&room)) {
             (Ok(discord), Some((_, channel))) => {
                 let (discord, events, channel) =
@@ -1457,7 +1448,7 @@ pub fn command(
                 });
             }
         }
-        return None;
+        return;
     }
     let room = match &command {
         Command::Open(room)
@@ -1477,12 +1468,13 @@ pub fn command(
                 room: target.clone(),
                 result: Err("Talk can't forward Discord messages yet."),
             });
-            return None;
+            return;
         }
-        _ => return Some(command),
+        _ => return,
     };
+    // Opening another network's room only closes the channel here.
     if !discord::is_discord(&room) {
-        return Some(command);
+        return;
     }
     let discord = match discord {
         Ok(discord) => discord,
@@ -1491,7 +1483,7 @@ pub fn command(
                 room,
                 message: why.into(),
             });
-            return None;
+            return;
         }
     };
     if let Command::Open(_) = command {
@@ -1507,7 +1499,7 @@ pub fn command(
                 publish(&mut channel, discord, done, events);
             }
             channels.open = Some(channel);
-            return None;
+            return;
         }
         match OpenChannel::open(discord, &room, done) {
             // The member list follows as Live::Members.
@@ -1525,7 +1517,7 @@ pub fn command(
                 });
             }
         }
-        return None;
+        return;
     }
     let Some(channel) = channels
         .open
@@ -1547,7 +1539,7 @@ pub fn command(
             Command::Earlier(room) => events.send(Event::HistoryLoaded(room)),
             _ => Ok(()),
         };
-        return None;
+        return;
     };
     match command {
         Command::Send {
@@ -1596,7 +1588,6 @@ pub fn command(
         }
         _ => {}
     }
-    None
 }
 
 /// Applies background work that finished.
@@ -2110,16 +2101,16 @@ mod tests {
         let why = "Discord couldn't start: the credential store is locked";
         // What dialogs wait for fails, so they stop waiting.
         for command in [
-            Command::AddFriend {
+            DiscordCommand::AddFriend {
                 username: "ann".into(),
             },
-            Command::SetCustomStatus(None),
-            Command::Profile {
+            DiscordCommand::SetCustomStatus(None),
+            DiscordCommand::Profile {
                 room: "discord:10:11".into(),
                 user: "2".into(),
             },
         ] {
-            assert!(without(command, why, &events).is_none());
+            without(Command::Discord(command), why, &events);
         }
         assert!(matches!(
             received.try_recv(),
@@ -2132,11 +2123,6 @@ mod tests {
         assert!(matches!(
             received.try_recv(),
             Ok(Event::Profile { result: Err(error), .. }) if error == why
-        ));
-        // Matrix's commands go on to Matrix.
-        assert!(matches!(
-            without(Command::Open("!room:example.org".into()), why, &events),
-            Some(Command::Open(_))
         ));
     }
 

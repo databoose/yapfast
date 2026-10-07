@@ -83,7 +83,9 @@ impl Application {
         if wanted.is_empty() || self.state.preview {
             vec![]
         } else {
-            vec![Effect::Backend(Command::Pictures(wanted))]
+            vec![Effect::Backend(Command::Discord(DiscordCommand::Pictures(
+                wanted,
+            )))]
         }
     }
 
