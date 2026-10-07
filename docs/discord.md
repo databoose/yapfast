@@ -360,6 +360,12 @@ and DM is visible without copying anything into Matrix.
   notify unless muted; message requests and spam don't. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
+- Typing `@` suggests who to mention: the channel's listed members, those who
+  wrote lately, and server members a search by name finds (the gateway's
+  member request with a query, as Discord's client does), then the roles
+  anyone may mention, and every role with @everyone and @here for those
+  allowed to mention everyone. Sending turns each `@Name` into Discord's
+  `<@id>` or `<@&id>`.
 - Who else is typing shows under the composer, for ten seconds after Discord
   last said so or until their message arrives. Writing tells Discord Alice is
   typing, at most every eight seconds, unless a setting turns it off.

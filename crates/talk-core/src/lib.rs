@@ -34,6 +34,7 @@ pub mod logging;
 mod matrix_chat;
 #[cfg(feature = "matrix")]
 mod matrix_voice;
+pub mod mention;
 pub mod meter;
 pub mod runtime;
 #[cfg(feature = "matrix")]

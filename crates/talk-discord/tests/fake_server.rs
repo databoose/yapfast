@@ -501,6 +501,25 @@ async fn talks_to_the_fake_server() {
     let typed: Vec<String> = serde_json::from_str(&typed).unwrap();
     assert_eq!(typed, vec![general.clone()]);
 
+    // Mentions: a search finds members by name, and only Mods may be mentioned,
+    // since Alice can't mention everyone.
+    let found = discord.search_members(&guild, "car").await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(discord.name(&guild, &found[0]).as_deref(), Some("Carol"));
+    let listed = discord.snapshots().borrow().servers[0].clone();
+    assert!(!listed.text_channels[0].mention_everyone);
+    let mentionable: Vec<_> = listed
+        .mentionable(false)
+        .into_iter()
+        .map(|(_, name, _)| name)
+        .collect();
+    assert_eq!(mentionable, ["Mods"]);
+    assert_eq!(
+        listed.mentionable(true).len(),
+        2,
+        "Bots too, for those who may"
+    );
+
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
     let asked = discord.history(PRIVATE, &erin, None).await.unwrap();

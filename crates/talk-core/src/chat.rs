@@ -140,6 +140,16 @@ pub struct ChatMember {
     pub activity: Option<String>,
 }
 
+/// A role or group a message can mention, such as a Discord role or @everyone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MentionGroup {
+    pub name: String,
+    /// How a message says it on its network, such as `<@&20>` or `@everyone`.
+    pub mention: String,
+    /// The RGB colour of the role.
+    pub color: Option<u32>,
+}
+
 /// Whether a Discord member is around, as their status dot shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {
@@ -343,6 +353,12 @@ pub enum Command {
         item: String,
         index: usize,
     },
+    /// Look for the room's members whose names start with `query`, beyond those
+    /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
+    SearchMembers {
+        room: String,
+        query: String,
+    },
     /// This account is typing in a room, or stopped. Backends tell others no more
     /// often than their network expects.
     Typing {
@@ -399,6 +415,17 @@ pub enum Event {
     },
     /// A new message to notify the person of.
     Notify(Notification),
+    /// The roles and groups a message in a room may mention.
+    MentionGroups {
+        room: String,
+        groups: Vec<MentionGroup>,
+    },
+    /// Members whose names start with `query`, for mentioning.
+    MemberMatches {
+        room: String,
+        query: String,
+        members: Vec<ChatMember>,
+    },
     /// Who else is typing in a room now, by name.
     Typing {
         room: String,
@@ -700,6 +727,7 @@ pub async fn run(
                     }
                     // Discord commands never reach Matrix.
                     Command::MarkDiscordRead { .. }
+                    | Command::SearchMembers { .. }
                     | Command::AnswerRequest { .. }
                     | Command::Profile { .. }
                     | Command::Pictures(_) => {}

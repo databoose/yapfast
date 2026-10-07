@@ -52,6 +52,8 @@ const CATEGORY = "1400000000000000101";
 const GENERAL = "1400000000000000102";
 const LOUNGE = "1400000000000000103";
 const MODS = "1400000000000000110";
+// Only those who may mention everyone can mention Bots.
+const BOTS = "1400000000000000111";
 const DM_BOB = "1400000000000000120";
 const WEEKEND = "1400000000000000121";
 const DM_DAVE = "1400000000000000122";
@@ -581,6 +583,7 @@ function guild() {
     roles: [
       { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
       { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
+      { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
     ],
     emojis: [],
     stickers: [],
@@ -851,7 +854,21 @@ function gatewayMessage(ws: Socket, text: string) {
       send(ws, 9, false);
       break;
     case 8: {
-      // Request guild members
+      // Request guild members: a search by name, or these users.
+      if (typeof d.query === "string") {
+        const query = d.query.toLowerCase();
+        const found = Object.values(users)
+          .filter((user) => [user.username, user.global_name].some((name) => name.toLowerCase().startsWith(query)))
+          .slice(0, d.limit || 100);
+        dispatch("GUILD_MEMBERS_CHUNK", {
+          guild_id: GUILD,
+          members: found.map((user) => member(user)),
+          chunk_index: 0,
+          chunk_count: 1,
+          ...(d.nonce ? { nonce: d.nonce } : {}),
+        });
+        break;
+      }
       const ids: string[] = d.user_ids ?? [];
       const found = ids.map((id) => userById.get(id)).filter((user) => user !== undefined);
       dispatch("GUILD_MEMBERS_CHUNK", {

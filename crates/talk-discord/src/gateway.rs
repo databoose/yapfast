@@ -240,6 +240,28 @@ impl Gateway {
         .await
     }
 
+    /// Asks for up to `limit` members whose names start with `query`; they arrive as a
+    /// GUILD_MEMBERS_CHUNK carrying `nonce`.
+    pub async fn search_members(
+        &mut self,
+        guild_id: &str,
+        query: &str,
+        limit: u64,
+        nonce: &str,
+    ) -> Result<()> {
+        self.send(
+            REQUEST_GUILD_MEMBERS,
+            json!({
+                "guild_id": [guild_id],
+                "query": query,
+                "limit": limit,
+                "presences": false,
+                "nonce": nonce,
+            }),
+        )
+        .await
+    }
+
     /// The next dispatched event, sending heartbeats while waiting.
     pub async fn next(&mut self) -> Result<Dispatch> {
         loop {

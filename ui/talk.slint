@@ -340,9 +340,17 @@ component Composer inherits Rectangle {
     in property <bool> enabled: true;
     in property <string> label;
     in property <length> text-size: 16px;
+    // Mention suggestions show, so the arrow keys, Tab, Enter and Escape go to them.
+    in property <bool> suggesting;
     callback edited(string);
     callback accepted;
+    // The text and the cursor's byte offset in it, after an edit or a move.
+    callback caret(string, int);
+    callback suggestion-moved(int);
+    callback suggestion-chosen;
+    callback suggestion-dismissed;
     public function focus-input() { input.focus(); }
+    public function place-caret(offset: int) { input.set-selection-offsets(offset, offset); }
     property <length> pad: 12px;
     property <length> line: root.text-size * 1.5;
     horizontal-stretch: 1;
@@ -356,6 +364,12 @@ component Composer inherits Rectangle {
     FocusScope {
         x: 6px; y: root.pad; width: root.width - 12px; height: root.height - 2 * root.pad;
         capture-key-pressed(event) => {
+            if root.suggesting {
+                if event.text == Key.UpArrow { root.suggestion-moved(-1); return accept; }
+                if event.text == Key.DownArrow { root.suggestion-moved(1); return accept; }
+                if (event.text == Key.Return || event.text == Key.Tab) && !event.modifiers.shift { root.suggestion-chosen(); return accept; }
+                if event.text == Key.Escape { root.suggestion-dismissed(); return accept; }
+            }
             if event.text == Key.Return && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt {
                 root.accepted();
                 return accept;
@@ -376,8 +390,9 @@ component Composer inherits Rectangle {
                 selection-background-color: Theme.accent.with-alpha(0.35);
                 selection-foreground-color: Theme.text;
                 accessible-label: root.label;
-                edited => { root.edited(self.text); }
+                edited => { root.edited(self.text); root.caret(self.text, self.cursor-position-byte-offset); }
                 cursor-position-changed(position) => {
+                    root.caret(self.text, self.cursor-position-byte-offset);
                     if position.y + flick.content-y < 0px {
                         flick.content-y = -position.y;
                     } else if position.y + root.line + flick.content-y > flick.height {
@@ -824,6 +839,17 @@ component HeaderToggle inherits Rectangle {
 }
 
 /// A member of the open room. A heading starts each role's group.
+// Someone or something the `@` word being typed may mention.
+export struct MentionRow {
+    name: string, initial: string, tint: color, picture: image,
+    // The name's colour, from a coloured Discord role.
+    color: color, has-color: bool,
+    // A role or a group such as @everyone, rather than a person.
+    group: bool,
+    // What a group reaches, such as "Everyone in this channel"; for roles, "Role".
+    detail: string,
+}
+
 export struct MemberRow {
     id: string, name: string, initial: string, tint: color, picture: image, heading: string,
     /// Discord's presence: "online", "idle", "dnd" or "offline"; empty for Matrix.
@@ -1242,6 +1268,12 @@ export component TalkWindow inherits Window {
     in property <string> composer-hint;
     // Who else is typing in the open conversation; it takes the hint's place.
     in property <string> typing;
+    // Who the `@` word being typed may mention; the chosen one is highlighted.
+    in property <[MentionRow]> mentions;
+    in-out property <int> mention-index;
+    callback composer-caret(string, int);
+    callback mention-chosen(int);
+    callback mention-dismissed;
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
@@ -1417,6 +1449,7 @@ export component TalkWindow inherits Window {
     callback sidebar-resized(length);
 
     public function focus-composer() { composer.focus-input(); }
+    public function place-composer-caret(offset: int) { composer.place-caret(offset); }
     public function focus-sign-in() { username-field.focus-input(); }
     public function timeline-at-end() -> bool { return root.follow-latest; }
     // How far the newest message is below the view; zero at the end.
@@ -2677,6 +2710,11 @@ export component TalkWindow inherits Window {
                                         placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
                                         edited(text) => { root.draft-edited(text); }
                                         accepted => { root.send(); }
+                                        suggesting: root.mentions.length > 0;
+                                        caret(text, offset) => { root.composer-caret(text, offset); }
+                                        suggestion-moved(step) => { root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length); }
+                                        suggestion-chosen => { root.mention-chosen(root.mention-index); }
+                                        suggestion-dismissed => { root.mention-dismissed(); }
                                     }
                                     VerticalLayout {
                                         alignment: end; padding-bottom: 8px;
@@ -2792,6 +2830,48 @@ export component TalkWindow inherits Window {
     // An image shown large over everything. Arrow keys or the side buttons
     // step through the message's images; Escape, the close button or a click
     // outside the image closes it.
+    // Mention suggestions, just above the composer: Up and Down choose, Tab or Enter
+    // or a click mentions, Escape closes them.
+    if root.mentions.length > 0 && root.composer-enabled: Rectangle {
+        x: composer.absolute-position.x - 6px;
+        width: min(composer.width + 12px, 420px);
+        height: suggestions.preferred-height;
+        y: composer.absolute-position.y - self.height - 12px;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+        drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+        suggestions := VerticalLayout {
+            padding: 6px; spacing: 0px;
+            Text {
+                text: "MENTION"; color: Theme.muted; font-size: 11px; font-weight: 700;
+                height: 22px; vertical-alignment: center;
+            }
+            for mention[index] in root.mentions: Rectangle {
+                height: 36px; border-radius: 6px;
+                background: index == root.mention-index ? Theme.active : pick.has-hover ? Theme.hover : transparent;
+                pick := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.mention-chosen(index); }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 10px; spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        if !mention.group: Avatar { size: 24px; initial: mention.initial; tint: mention.tint; picture: mention.picture; }
+                        if mention.group: Rectangle {
+                            width: 24px; height: 24px; border-radius: 12px;
+                            background: (mention.has-color ? mention.color : Theme.muted).with-alpha(0.2);
+                            Text { text: "@"; color: mention.has-color ? mention.color : Theme.secondary; font-size: 13px; font-weight: 700; }
+                        }
+                    }
+                    Text {
+                        text: mention.name; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                        color: mention.has-color ? mention.color : Theme.text; font-size: 14px; font-weight: 600;
+                    }
+                    Text { text: mention.detail; vertical-alignment: center; color: Theme.muted; font-size: 12px; }
+                }
+            }
+        }
+    }
     // Settings cover the window: sections on the left, the chosen one on the right.
     // Escape or the close button returns to the conversation.
     if root.settings-open: Rectangle {

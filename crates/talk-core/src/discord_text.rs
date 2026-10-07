@@ -27,8 +27,8 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, Command, Delivery, Embed, EmbedField, Event,
-        MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture, Placement, Presence, Profile,
-        ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
+        MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture, Placement, Presence,
+        Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
     discord,
 };
@@ -1061,6 +1061,43 @@ pub fn command(
         }
         return None;
     }
+    if let Command::SearchMembers { room, query } = command {
+        if let (Some(discord), Some((guild, _))) = (discord, discord::parse_room(&room))
+            && guild != talk_discord::ready::PRIVATE
+        {
+            let (discord, events, guild) = (discord.clone(), events.clone(), guild.to_owned());
+            tokio::spawn(async move {
+                let found = match discord.search_members(&guild, &query).await {
+                    Ok(found) => found,
+                    Err(error) => {
+                        tracing::debug!(%error, "could not search Discord members");
+                        return;
+                    }
+                };
+                let snapshot = discord.snapshots().borrow().clone();
+                let server = snapshot.servers.iter().find(|server| server.id == guild);
+                let members = found
+                    .into_iter()
+                    .map(|user| ChatMember {
+                        name: discord.name(&guild, &user).unwrap_or_else(|| user.clone()),
+                        avatar: Some(discord.avatar(Some(&guild), &user)),
+                        color: server.and_then(|server| discord.color(server, &user)),
+                        role: Role::Member,
+                        group: None,
+                        presence: None,
+                        activity: None,
+                        id: user,
+                    })
+                    .collect();
+                let _ = events.send(Event::MemberMatches {
+                    room,
+                    query,
+                    members,
+                });
+            });
+        }
+        return None;
+    }
     if let Command::Profile { room, user } = command {
         match (discord, discord::parse_room(&room)) {
             (Some(discord), Some((guild, _))) => {
@@ -1147,6 +1184,10 @@ pub fn command(
         return None;
     };
     if let Command::Open(_) = command {
+        let _ = events.send(Event::MentionGroups {
+            room: room.clone(),
+            groups: mention_groups(discord, &room),
+        });
         // Shown at once as it was kept, while the latest page loads.
         if let Some(mut channel) = channels.reopen(&room) {
             discord.view(&channel.guild, Some(&channel.channel));
@@ -1484,6 +1525,44 @@ pub fn live(
         }
         Err(_) => channel.refresh(discord, done),
     }
+}
+
+/// The roles a message in a server channel may mention, after @everyone and @here
+/// for those allowed them.
+fn mention_groups(discord: &Discord, room: &str) -> Vec<MentionGroup> {
+    let Some((guild, channel)) = discord::parse_room(room) else {
+        return vec![];
+    };
+    let snapshot = discord.snapshots().borrow().clone();
+    let Some(server) = snapshot.servers.iter().find(|server| server.id == guild) else {
+        return vec![];
+    };
+    let everyone = server
+        .text_channels
+        .iter()
+        .find(|text| text.id == channel)
+        .is_some_and(|text| text.mention_everyone);
+    let mut groups = Vec::new();
+    if everyone {
+        for name in ["everyone", "here"] {
+            groups.push(MentionGroup {
+                name: name.into(),
+                mention: format!("@{name}"),
+                color: None,
+            });
+        }
+    }
+    groups.extend(
+        server
+            .mentionable(everyone)
+            .into_iter()
+            .map(|(id, name, color)| MentionGroup {
+                name,
+                mention: format!("<@&{id}>"),
+                color,
+            }),
+    );
+    groups
 }
 
 /// A Discord profile as Talk's profile card shows it, with the server's role

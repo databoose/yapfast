@@ -179,6 +179,11 @@ enum Request {
         guild: String,
         users: Vec<String>,
     },
+    Search {
+        guild: String,
+        query: String,
+        reply: oneshot::Sender<Vec<String>>,
+    },
     MarkRead {
         guild: String,
         channel: String,
@@ -441,6 +446,23 @@ impl Discord {
         self.read_names().avatar(guild.and_then(server), user)
     }
 
+    /// The ids of up to ten server members whose names start with `query`, whose
+    /// names, avatars and roles are known once it answers.
+    pub async fn search_members(&self, guild: &str, query: &str) -> Result<Vec<String>> {
+        let (reply, found) = oneshot::channel();
+        self.requests
+            .send(Request::Search {
+                guild: guild.into(),
+                query: query.into(),
+                reply,
+            })
+            .map_err(|_| anyhow!("Discord is offline."))?;
+        tokio::time::timeout(SEARCH_TIMEOUT, found)
+            .await
+            .map_err(|_| anyhow!("Discord didn't answer the search."))?
+            .map_err(|_| anyhow!("Discord disconnected during the search."))
+    }
+
     /// The RGB colour of a member's name in a server: their highest coloured
     /// role's, once their roles are known.
     pub fn color(&self, server: &Server, user: &str) -> Option<u32> {
@@ -547,6 +569,8 @@ fn server(guild: &str) -> Option<&str> {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a member search waits for Discord.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Reads within this long go to Discord as one acknowledgement per channel.
 const ACK_DELAY: Duration = Duration::from_secs(1);
 const FIRST_RETRY: Duration = Duration::from_secs(2);
@@ -769,6 +793,9 @@ async fn connected_session(
     tokio::pin!(stream_deadline);
     // The newest read message per channel, waiting to be acknowledged.
     let mut acks: HashMap<String, String> = HashMap::new();
+    // Member searches waiting for their answer, by nonce.
+    let mut searches: HashMap<String, oneshot::Sender<Vec<String>>> = HashMap::new();
+    let mut search_nonce = 0u64;
     let ack_at = tokio::time::sleep(ACK_DELAY);
     tokio::pin!(ack_at);
     loop {
@@ -890,6 +917,14 @@ async fn connected_session(
                     Request::PauseStream { stream_key, paused } => {
                         gateway.pause_stream(&stream_key, paused).await
                     }
+                    Request::Search { guild, query, reply } => {
+                        search_nonce += 1;
+                        let nonce = format!("talk-search-{search_nonce}");
+                        // Unanswered searches are dropped, so their callers stop waiting.
+                        searches.retain(|_, reply| !reply.is_closed());
+                        searches.insert(nonce.clone(), reply);
+                        gateway.search_members(&guild, &query, 10, &nonce).await
+                    }
                     Request::Members { guild, users } => {
                         // Discord answers at most 100 users per request.
                         let mut sent = Ok(());
@@ -970,6 +1005,20 @@ async fn connected_session(
                     if counted {
                         shared.snapshots.send_replace(tracker.snapshot());
                     }
+                }
+                if event.name == "GUILD_MEMBERS_CHUNK"
+                    && let Some(reply) = event.data["nonce"].as_str().and_then(|nonce| searches.remove(nonce))
+                {
+                    // Learn the members before answering, so their names are known.
+                    tracker.apply(&event.name, &event.data);
+                    let found = event.data["members"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|member| member["user"]["id"].as_str())
+                        .map(str::to_owned)
+                        .collect();
+                    let _ = reply.send(found);
                 }
                 for live in live_events(&me, &shared.names, &event.name, &event.data) {
                     let _ = shared.live.send(live);
@@ -1515,6 +1564,8 @@ impl Tracker {
                     .chain(&mut marked.voice_channels)
                 {
                     channel.access = server.access(channel, &self.me, roles);
+                    channel.mention_everyone =
+                        server.may_mention_everyone(channel, &self.me, roles);
                 }
                 self.unreads.mark(&mut marked);
                 marked

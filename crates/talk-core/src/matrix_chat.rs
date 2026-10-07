@@ -18,7 +18,7 @@ use matrix_sdk::{
         OwnedEventId, OwnedRoomId, OwnedTransactionId, UInt, UserId,
         api::client::receipt::create_receipt::v3::ReceiptType,
         events::{
-            SyncStateEvent,
+            Mentions, SyncStateEvent,
             room::{
                 MediaSource,
                 member::RoomMemberEventContent,
@@ -618,6 +618,7 @@ impl Matrix {
             // The chat actor handles voice, and Discord takes its own commands first.
             Command::Voice(_)
             | Command::MarkDiscordRead { .. }
+            | Command::SearchMembers { .. }
             | Command::AnswerRequest { .. }
             | Command::Profile { .. }
             | Command::Pictures(_) => {}
@@ -895,7 +896,8 @@ async fn send(
 ) -> Result<(), &'static str> {
     check_text(body)?;
     let timeline = writable(session, open, room).await?;
-    let content = RoomMessageEventContentWithoutRelation::text_markdown(body);
+    let mut content = RoomMessageEventContentWithoutRelation::text_markdown(body);
+    content.mentions = Some(mentioned(body));
     let queued = match reply {
         Some(item) => {
             let Some(TimelineEventItemId::EventId(event)) = parse_item(item) else {
@@ -921,13 +923,23 @@ async fn edit(
     check_text(body)?;
     let timeline = writable(session, open, room).await?;
     let id = parse_item(item).ok_or("This message can no longer be edited.")?;
+    let mut content = RoomMessageEventContentWithoutRelation::text_markdown(body);
+    content.mentions = Some(mentioned(body));
     timeline
-        .edit(
-            &id,
-            EditedContent::RoomMessage(RoomMessageEventContentWithoutRelation::text_markdown(body)),
-        )
+        .edit(&id, EditedContent::RoomMessage(content))
         .await
         .map_err(|_| "This message can no longer be edited.")
+}
+
+/// The people a message's Markdown links to, as the composer's mentions do, so
+/// they're mentioned on purpose and notified.
+fn mentioned(body: &str) -> Mentions {
+    const LINK: &str = "](https://matrix.to/#/";
+    let users = body.match_indices(LINK).filter_map(|(at, _)| {
+        let rest = &body[at + LINK.len()..];
+        UserId::parse(&rest[..rest.find(')')?]).ok()
+    });
+    Mentions::with_user_ids(users)
 }
 
 /// Forward a message's current content, without its reply or edit relations,
@@ -1534,6 +1546,17 @@ mod tests {
     };
 
     const HOMESERVER: &str = "http://localhost:18008";
+
+    #[test]
+    fn mentions_are_the_people_linked() {
+        let mentions = mentioned(
+            "[Sam](https://matrix.to/#/@sam:test) and [Riley](https://matrix.to/#/@riley:test), \
+             not [a room](https://matrix.to/#/#games:test)",
+        );
+        let users: Vec<_> = mentions.user_ids.iter().map(|user| user.as_str()).collect();
+        assert_eq!(users, ["@riley:test", "@sam:test"]);
+        assert!(!mentions.room);
+    }
 
     async fn receive<T>(
         events: &mut UnboundedReceiver<Event>,

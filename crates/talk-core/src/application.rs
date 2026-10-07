@@ -7,12 +7,16 @@ use std::{
 
 use crate::{
     chat::{
-        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, Picture, Profile,
-        ProfileRole, Reaction, Reply, Role,
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, MentionGroup, Picture,
+        Profile, ProfileRole, Reaction, Reply, Role,
     },
     discord,
+    mention::{self, Candidate},
     voice::{self, Phase},
 };
+
+/// How many suggestions the composer offers for an `@` word.
+const MENTION_SUGGESTIONS: usize = 8;
 
 const STOPPED: &str = "The connection has stopped. Restart Talk to restore your session.";
 
@@ -93,6 +97,14 @@ pub struct AppState {
     pub servers: Vec<ChatServer>,
     /// Who else is typing, by room.
     pub typing: HashMap<String, Vec<String>>,
+    /// The `@` word being typed in the composer, if any.
+    pub mention_query: Option<String>,
+    /// What the selected room's messages may mention besides people: Discord's
+    /// roles, @everyone and @here.
+    pub mention_groups: Vec<MentionGroup>,
+    /// Members of the selected room a search found for mentioning, beyond those
+    /// listed.
+    pub found_members: Vec<ChatMember>,
     /// Server icons and avatars that arrived, by address.
     pub pictures: HashMap<String, Arc<Picture>>,
     pub navigation: Navigation,
@@ -201,6 +213,71 @@ impl AppState {
         }
     }
 
+    /// Who and what a message in the selected room may mention: its members, those
+    /// found by name and those who wrote lately, then its roles and groups.
+    pub fn mention_candidates(&self) -> Vec<Candidate> {
+        let Some(room) = self.selected.as_deref() else {
+            return vec![];
+        };
+        let on_discord = discord::is_discord(room);
+        let mut seen = HashSet::new();
+        let mut candidates = Vec::new();
+        let listed = self.members.iter().flatten().flatten();
+        let people = listed.chain(&self.found_members).map(|member| {
+            (
+                member.id.as_str(),
+                &member.name,
+                &member.avatar,
+                member.color,
+            )
+        });
+        let authors = self.messages.iter().map(|message| {
+            (
+                message.sender.as_str(),
+                &message.author,
+                &message.avatar,
+                message.color,
+            )
+        });
+        for (id, name, avatar, color) in people.chain(authors) {
+            let id = id.strip_prefix("discord:").unwrap_or(id);
+            if id.is_empty() || name.is_empty() || !seen.insert(id.to_owned()) {
+                continue;
+            }
+            candidates.push(Candidate {
+                name: name.clone(),
+                mention: if on_discord {
+                    format!("<@{id}>")
+                } else {
+                    let name = name.replace(['[', ']'], "");
+                    format!("[{name}](https://matrix.to/#/{id})")
+                },
+                avatar: avatar.clone(),
+                color,
+                group: false,
+            });
+        }
+        candidates.extend(self.mention_groups.iter().map(|group| Candidate {
+            name: group.name.clone(),
+            mention: group.mention.clone(),
+            avatar: None,
+            color: group.color,
+            group: true,
+        }));
+        candidates
+    }
+
+    /// What the `@` word being typed may mean, best first.
+    pub fn mention_suggestions(&self) -> Vec<Candidate> {
+        let Some(query) = &self.mention_query else {
+            return vec![];
+        };
+        mention::matching(&self.mention_candidates(), query, MENTION_SUGGESTIONS)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
     pub fn can_send(&self) -> bool {
         self.can_write() && self.sending.is_none() && !self.draft().trim().is_empty()
     }
@@ -237,6 +314,8 @@ pub enum Action {
     /// Go to wherever a conversation is listed and open it, as a notification does.
     Open(String),
     SetDraft(String),
+    /// The `@` word being typed in the composer changed, or there's none now.
+    MentionQuery(Option<String>),
     Send,
     Reply(String),
     Edit(String),
@@ -334,6 +413,11 @@ pub struct Application {
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
+    /// Names searched for in the selected room, lowercased.
+    searched: HashSet<String>,
+    /// The composer text of the message being sent, which `Event::SendResult` clears
+    /// once sent; the backend has it with its mentions in the network's form.
+    sent_draft: Option<String>,
     /// Discord channels shown lately, newest last: their timeline and
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.
@@ -438,6 +522,7 @@ impl Application {
                     .iter()
                     .flatten()
                     .flatten()
+                    .chain(&state.found_members)
                     .filter_map(|member| member.avatar.as_deref()),
             );
         let mut wanted = Vec::new();
@@ -496,6 +581,24 @@ impl Application {
                     effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
                 }
                 effects
+            }
+            Action::MentionQuery(query) => {
+                self.state.mention_query = query.clone();
+                // Discord servers list only some members; ask for the rest by name.
+                let (Some(room), Some(query)) = (self.state.selected.clone(), query) else {
+                    return vec![];
+                };
+                let in_server =
+                    discord::parse_room(&room).is_some_and(|(guild, _)| guild != discord::DM_GUILD);
+                if self.state.preview
+                    || !in_server
+                    || query.is_empty()
+                    || self.state.mention_suggestions().len() >= MENTION_SUGGESTIONS
+                    || !self.searched.insert(query.to_lowercase())
+                {
+                    return vec![];
+                }
+                vec![Effect::Backend(Command::SearchMembers { room, query })]
             }
             Action::SetDraft(body) => {
                 let Some(id) = self.state.selected.clone() else {
@@ -1123,6 +1226,25 @@ impl Application {
                     self.state.members = Some(members);
                 }
             }
+            Event::MentionGroups { room, groups } => {
+                if self.state.selected.as_ref() == Some(&room) {
+                    self.state.mention_groups = groups;
+                }
+            }
+            Event::MemberMatches { room, members, .. } => {
+                if self.state.selected.as_ref() == Some(&room) {
+                    for member in members {
+                        if !self
+                            .state
+                            .found_members
+                            .iter()
+                            .any(|known| known.id == member.id)
+                        {
+                            self.state.found_members.push(member);
+                        }
+                    }
+                }
+            }
             Event::HistoryLoaded(room) => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.loading_history = false;
@@ -1132,9 +1254,10 @@ impl Application {
                 if self.state.sending.as_ref() == Some(&room) {
                     self.state.sending = None;
                 }
+                let sent = self.sent_draft.take().unwrap_or(body);
                 match result {
                     Ok(()) => {
-                        if self.state.drafts.get(&room) == Some(&body) {
+                        if self.state.drafts.get(&room) == Some(&sent) {
                             self.state.drafts.remove(&room);
                         }
                         if matches!(self.state.compose.get(&room), Some(Compose::Reply { .. })) {
@@ -1401,6 +1524,10 @@ impl Application {
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
         // Typing is followed only in the open conversation, so what's known of others is stale.
         self.state.typing.clear();
+        self.state.mention_query = None;
+        self.state.mention_groups.clear();
+        self.state.found_members.clear();
+        self.searched.clear();
         if self.state.preview {
             if !voice_room {
                 self.state.messages = Arc::new(self.samples.get(&id).cloned().unwrap_or_default());
@@ -1419,7 +1546,12 @@ impl Application {
             return vec![];
         }
         let id = self.state.selected.clone().expect("selected room exists");
-        let body = self.state.draft().to_owned();
+        let draft = self.state.draft().to_owned();
+        let body = if self.state.preview {
+            draft.clone()
+        } else {
+            mention::wire(&draft, &self.state.mention_candidates())
+        };
         if body.len() > chat::MAX_MESSAGE_BYTES {
             self.state.notice = Some("Keep messages under 16 KB.".into());
             return vec![];
@@ -1464,6 +1596,8 @@ impl Application {
         }
         self.state.sending = Some(id.clone());
         self.state.notice = None;
+        self.state.mention_query = None;
+        self.sent_draft = Some(draft);
         match compose {
             Some(Compose::Edit { item, .. }) => vec![Effect::Backend(Command::Edit {
                 room: id,
@@ -2908,6 +3042,125 @@ mod tests {
             }),
         });
         assert!(app.state.pictures.contains_key("icon.png"));
+    }
+
+    fn member(id: &str, name: &str) -> ChatMember {
+        ChatMember {
+            id: id.into(),
+            name: name.into(),
+            role: Role::Member,
+            avatar: None,
+            group: None,
+            presence: None,
+            color: None,
+            activity: None,
+        }
+    }
+
+    #[test]
+    fn matrix_mentions_link_to_the_person() {
+        let mut app = connected();
+        app.apply(Event::Members {
+            room: "dm".into(),
+            members: Ok(vec![member("@sam:test", "Sam")]),
+        });
+        // Matrix lists every member, so nothing is searched for.
+        assert!(
+            app.dispatch(Action::MentionQuery(Some("s".into())))
+                .is_empty()
+        );
+        let names: Vec<_> = app
+            .state
+            .mention_suggestions()
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect();
+        assert_eq!(names, ["Sam"]);
+        app.dispatch(Action::SetDraft("@Sam are you in?".into()));
+        let Command::Send { body, .. } = send_command(app.dispatch(Action::Send)) else {
+            unreachable!()
+        };
+        assert_eq!(body, "[Sam](https://matrix.to/#/@sam:test) are you in?");
+        assert_eq!(app.state.mention_query, None);
+        app.apply(Event::SendResult {
+            room: "dm".into(),
+            body,
+            result: Ok(()),
+        });
+        assert_eq!(app.state.draft(), "", "the sent draft is cleared");
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_mentions_search_the_server_and_name_roles() {
+        use talk_discord::{
+            ready::{Channel, Server},
+            service::{Snapshot, Status},
+        };
+        let mut app = connected();
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            servers: vec![Server {
+                id: "10".into(),
+                name: "Test".into(),
+                text_channels: vec![Channel {
+                    id: "21".into(),
+                    name: "general".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+        app.dispatch(Action::SelectRoom("discord:10:21".into()));
+        let room = "discord:10:21".to_owned();
+        app.apply(Event::Timeline {
+            room: room.clone(),
+            messages: vec![],
+        });
+        app.apply(Event::Members {
+            room: room.clone(),
+            members: Ok(vec![member("2", "Bob")]),
+        });
+        app.apply(Event::MentionGroups {
+            room: room.clone(),
+            groups: vec![MentionGroup {
+                name: "Mods".into(),
+                mention: "<@&30>".into(),
+                color: Some(0x3498db),
+            }],
+        });
+        // Few listed members match, so the server is searched, once per name.
+        assert!(matches!(
+            app.dispatch(Action::MentionQuery(Some("Bo".into()))).as_slice(),
+            [Effect::Backend(Command::SearchMembers { query, .. })] if query == "Bo"
+        ));
+        assert!(
+            app.dispatch(Action::MentionQuery(Some("bo".into())))
+                .is_empty()
+        );
+        app.apply(Event::MemberMatches {
+            room: room.clone(),
+            query: "bo".into(),
+            members: vec![member("2", "Bob"), member("9", "Bobby")],
+        });
+        let names: Vec<_> = app
+            .state
+            .mention_suggestions()
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect();
+        assert_eq!(names, ["Bob", "Bobby"]);
+        app.dispatch(Action::SetDraft("@Bobby and @mods, look".into()));
+        let Command::Send { body, .. } = send_command(app.dispatch(Action::Send)) else {
+            unreachable!()
+        };
+        assert_eq!(body, "<@9> and <@&30>, look");
+        // Another conversation starts afresh.
+        app.dispatch(Action::Navigate(Navigation::DirectMessages));
+        app.dispatch(Action::SelectRoom("dm".into()));
+        assert!(app.state.mention_groups.is_empty() && app.state.found_members.is_empty());
     }
 
     #[test]

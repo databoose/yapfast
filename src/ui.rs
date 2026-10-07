@@ -19,7 +19,7 @@ use talk_core::{
         ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
         ProfileRole, Role,
     },
-    discord, links,
+    discord, links, mention,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
     voice::{self, Phase},
@@ -444,6 +444,7 @@ struct Models {
     rooms: Rc<VecModel<RoomRow>>,
     messages: Rc<VecModel<MessageRow>>,
     roster: Rc<VecModel<MemberRow>>,
+    mentions: Rc<VecModel<MentionRow>>,
     bar_reactions: Rc<VecModel<EmojiCell>>,
     menu_reactions: Rc<VecModel<EmojiCell>>,
     emoji_rows: Rc<VecModel<EmojiRow>>,
@@ -459,6 +460,7 @@ impl Models {
         window.set_rooms(ModelRc::from(self.rooms.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
+        window.set_mentions(ModelRc::from(self.mentions.clone()));
         window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
         window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
         window.set_emoji_rows(ModelRc::from(self.emoji_rows.clone()));
@@ -502,6 +504,11 @@ struct Adapter {
     pictures_seen: usize,
     /// The preferences that shape message rows changed, so they're built again.
     restyle: bool,
+    /// Where the `@` of the word being mentioned is in the composer text.
+    mention_at: Option<usize>,
+    /// Suggestions for the `@` here were closed with Escape; they stay closed until
+    /// the cursor leaves the word.
+    mention_dismissed: Option<usize>,
     notifier: crate::notify::Notifier,
     /// The viewer's image, converted for Slint while it shows.
     viewer_image: Option<(Arc<Picture>, slint::Image)>,
@@ -557,6 +564,8 @@ impl Adapter {
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 restyle: false,
+                mention_at: None,
+                mention_dismissed: None,
                 notifier: crate::notify::Notifier::start(open_from_notification),
                 viewer_image: None,
                 viewer_size: None,
@@ -1230,6 +1239,30 @@ impl Adapter {
         });
         window.set_sending(state.sending.is_some());
         window.set_typing(state.typing_line().into());
+        let mentions: Vec<MentionRow> = state
+            .mention_suggestions()
+            .into_iter()
+            .map(|candidate| MentionRow {
+                initial: initial(&candidate.name),
+                tint: tint(&candidate.name),
+                picture: cached_picture(&mut self.pictures, state, candidate.avatar.as_deref()),
+                color: role_color(candidate.color),
+                has_color: candidate.color.is_some(),
+                group: candidate.group,
+                detail: match (candidate.group, candidate.mention.as_str()) {
+                    (false, _) => "",
+                    (true, "@everyone") => "Everyone in this channel",
+                    (true, "@here") => "Everyone online here",
+                    (true, _) => "Role",
+                }
+                .into(),
+                name: candidate.name.into(),
+            })
+            .collect();
+        if window.get_mention_index() >= mentions.len() as i32 {
+            window.set_mention_index(0);
+        }
+        update_model(&self.models.mentions, mentions);
         window.set_loading_history(state.loading_history);
         window.set_composer_hint(
             if room.is_none() {
@@ -1839,6 +1872,77 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                 .borrow_mut()
                 .action(&window, Action::SelectRoom(id.into()));
         }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_composer_caret(move |text, offset| {
+        let Some(window) = weak.upgrade() else { return };
+        // Choosing a suggestion moves the cursor while it's being handled.
+        let Ok(mut adapter) = state.try_borrow_mut() else {
+            return;
+        };
+        // The cursor moves before the edit is reported; take the text first, so the
+        // refresh below doesn't put back the text before it.
+        if adapter.app.state.draft() != text.as_str() {
+            adapter.action(&window, Action::SetDraft(text.to_string()));
+        }
+        let found = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| mention::query(&text, offset));
+        if found.is_none() {
+            adapter.mention_dismissed = None;
+        }
+        let found = found.filter(|(at, _)| adapter.mention_dismissed != Some(*at));
+        adapter.mention_at = found.map(|(at, _)| at);
+        let query = found.map(|(_, query)| query.to_owned());
+        if adapter.app.state.mention_query != query {
+            window.set_mention_index(0);
+            adapter.action(&window, Action::MentionQuery(query));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_mention_chosen(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let caret = {
+            let mut adapter = state.borrow_mut();
+            let chosen = usize::try_from(index).ok().and_then(|index| {
+                adapter
+                    .app
+                    .state
+                    .mention_suggestions()
+                    .into_iter()
+                    .nth(index)
+            });
+            let (Some(chosen), Some(at), Some(query)) = (
+                chosen,
+                adapter.mention_at,
+                adapter.app.state.mention_query.clone(),
+            ) else {
+                return;
+            };
+            let text = adapter.app.state.draft().to_owned();
+            let end = at + 1 + query.len();
+            if text.get(at..end) != Some(format!("@{query}").as_str()) {
+                return;
+            }
+            let inserted = format!("@{} ", chosen.name);
+            let text = format!("{}{inserted}{}", &text[..at], &text[end..]);
+            adapter.mention_at = None;
+            adapter.action(&window, Action::MentionQuery(None));
+            adapter.action(&window, Action::SetDraft(text));
+            at + inserted.len()
+        };
+        window.invoke_place_composer_caret(i32::try_from(caret).unwrap_or(i32::MAX));
+        window.invoke_focus_composer();
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_mention_dismissed(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        adapter.mention_dismissed = adapter.mention_at.take();
+        adapter.action(&window, Action::MentionQuery(None));
     });
     let state = adapter.clone();
     let weak = window.as_weak();

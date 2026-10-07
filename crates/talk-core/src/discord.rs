@@ -36,6 +36,9 @@ const PICTURE_SIZE: u32 = 128;
 #[cfg(feature = "discord")]
 const PARALLEL_DOWNLOADS: usize = 4;
 
+/// The server part of a DM's room id.
+pub const DM_GUILD: &str = "@me";
+
 pub fn server_id(guild: &str) -> String {
     format!("{PREFIX}{guild}")
 }

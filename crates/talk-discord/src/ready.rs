@@ -2,7 +2,7 @@
 //! different shape from bots, and capability bits change it further, so read
 //! fields defensively.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -23,6 +23,7 @@ const GUILD_STAGE_VOICE: u64 = 13;
 const ADMINISTRATOR: u64 = 1 << 3;
 const VIEW_CHANNEL: u64 = 1 << 10;
 const SEND_MESSAGES: u64 = 1 << 11;
+const MENTION_EVERYONE: u64 = 1 << 17;
 const CONNECT: u64 = 1 << 20;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -46,6 +47,8 @@ pub struct Server {
     pub role_colors: HashMap<String, (i64, u32)>,
     /// Each role's position, by id: higher roles list first.
     pub role_positions: HashMap<String, i64>,
+    /// Roles anyone may mention, by id.
+    pub mentionable_roles: HashSet<String>,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -62,6 +65,9 @@ pub struct Channel {
     /// What this account may do here, and the rest below, are set when the
     /// service publishes it.
     pub access: Access,
+    /// This account may mention @everyone, @here and every role here; set when
+    /// the service publishes it.
+    pub mention_everyone: bool,
     /// A text channel with messages this account hasn't read.
     pub unread: bool,
     /// Unread messages that mention this account.
@@ -335,6 +341,11 @@ impl Server {
             if let Some(name) = value["name"].as_str() {
                 self.role_names.insert(id.clone(), name.to_owned());
             }
+            if value["mentionable"].as_bool() == Some(true) {
+                self.mentionable_roles.insert(id.clone());
+            } else {
+                self.mentionable_roles.remove(&id);
+            }
             self.role_positions
                 .insert(id.clone(), value["position"].as_i64().unwrap_or_default());
             match value["color"].as_u64().filter(|color| *color != 0) {
@@ -357,6 +368,33 @@ impl Server {
         self.role_names.remove(id);
         self.role_colors.remove(id);
         self.role_positions.remove(id);
+        self.mentionable_roles.remove(id);
+    }
+
+    /// Whether `user`, holding `roles`, may mention @everyone, @here and every role
+    /// in `channel`.
+    pub fn may_mention_everyone(&self, channel: &Channel, user: &str, roles: &[String]) -> bool {
+        !self.roles.is_empty() && self.permissions(channel, user, roles) & MENTION_EVERYONE != 0
+    }
+
+    /// The roles a message in a channel may mention, highest first, with their ids and
+    /// colours: every named role with `everyone`, else those anyone may mention.
+    pub fn mentionable(&self, everyone: bool) -> Vec<(String, String, Option<u32>)> {
+        let mut roles: Vec<_> = self
+            .role_names
+            .iter()
+            .filter(|(id, _)| **id != self.id && (everyone || self.mentionable_roles.contains(*id)))
+            .map(|(id, name)| {
+                let position = self.role_positions.get(id).copied().unwrap_or_default();
+                let color = self.role_colors.get(id).map(|(_, color)| *color);
+                (std::cmp::Reverse(position), id.clone(), name.clone(), color)
+            })
+            .collect();
+        roles.sort();
+        roles
+            .into_iter()
+            .map(|(_, id, name, color)| (id, name, color))
+            .collect()
     }
 
     /// A member's named roles, highest first, each with its colour if it has one.
