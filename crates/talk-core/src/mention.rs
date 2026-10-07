@@ -22,6 +22,8 @@ pub struct Mentioned {
     /// The text in the message, such as `@Bob`.
     pub text: String,
     pub target: Target,
+    /// The RGB colour of the role, or of the person's name.
+    pub color: Option<u32>,
 }
 
 /// Who a mention points at: a user, by Discord or Matrix id, or a Discord role.
@@ -60,7 +62,11 @@ pub fn target(link: &str) -> Option<Target> {
     (user.starts_with('@') && user.contains(':')).then_some(Target::User(user))
 }
 
-/// Markdown with each mention's text, outside code, linked to its target.
+/// The colour of a mention without one of its own: that of a link.
+const LINK_COLOR: u32 = 0x7cc4ff;
+
+/// Markdown with each mention's text, outside code, linked to its target and in
+/// its colour, which the message draws behind it too.
 pub fn linked(markdown: &str, mentions: &[Mentioned]) -> String {
     if mentions.is_empty() {
         return markdown.to_owned();
@@ -76,7 +82,11 @@ pub fn linked(markdown: &str, mentions: &[Mentioned]) -> String {
         }
         if !code && let Some(mention) = sorted.iter().find(|m| rest.starts_with(&m.text)) {
             let text = mention.text.replace('[', "\\[").replace(']', "\\]");
-            out.push_str(&format!("[{text}](<{}>)", link(&mention.target)));
+            let color = mention.color.unwrap_or(LINK_COLOR) & 0xff_ffff;
+            out.push_str(&format!(
+                "<font color=\"#{color:06x}\">[{text}](<{}>)</font>",
+                link(&mention.target)
+            ));
             rest = &rest[mention.text.len()..];
             continue;
         }
@@ -185,15 +195,18 @@ mod tests {
             Mentioned {
                 text: "@Bob".into(),
                 target: Target::User("2".into()),
+                color: None,
             },
             Mentioned {
                 text: "@Mods".into(),
                 target: Target::Role("30".into()),
+                color: Some(0x3498db),
             },
         ];
         assert_eq!(
             linked("hi @Bob, ask @Mods but not `@Bob`", &mentions),
-            "hi [@Bob](<talk:user/2>), ask [@Mods](<talk:role/30>) but not `@Bob`"
+            "hi <font color=\"#7cc4ff\">[@Bob](<talk:user/2>)</font>, \
+             ask <font color=\"#3498db\">[@Mods](<talk:role/30>)</font> but not `@Bob`"
         );
         assert_eq!(target("talk:user/2"), Some(Target::User("2".into())));
         assert_eq!(target("talk:role/30"), Some(Target::Role("30".into())));

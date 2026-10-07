@@ -1872,9 +1872,18 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_open_link(move |link| {
-        // A mention opens the person's card, or the role's members, by the pointer.
+        // A mention opens the person's card, or the role's members, beside the
+        // mention, or by the pointer when the link's place isn't known.
         if let Some(target) = mention::target(&link) {
             let Some(window) = weak.upgrade() else { return };
+            if let Some(rect) = i_slint_core::talk_selection::clicked_link() {
+                window.invoke_anchor_link(
+                    rect.origin.x,
+                    rect.origin.y,
+                    rect.size.width,
+                    rect.size.height,
+                );
+            }
             let action = match target {
                 mention::Target::User(user) => {
                     window.set_profile_at_pointer(true);

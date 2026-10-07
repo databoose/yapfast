@@ -3391,10 +3391,12 @@ mod tests {
                     Mentioned {
                         text: "@Riley".into(),
                         target: Target::User("@riley:test".into()),
+                        color: None,
                     },
                     Mentioned {
                         text: "@Mods".into(),
                         target: Target::Role("30".into()),
+                        color: Some(0x3498db),
                     },
                 ],
                 ..message("e:$bob", false)

@@ -119,6 +119,17 @@ std::thread_local! {
     static CHANGES: Pin<Box<Property<u32>>> = Box::pin(Property::new(0));
     static ROW_TEXT: RefCell<Option<Box<dyn Fn(usize) -> Option<String>>>> =
         const { RefCell::new(None) };
+    static CLICKED_LINK: core::cell::Cell<Option<LogicalRect>> = const { core::cell::Cell::new(None) };
+}
+
+/// Where in the window the link a styled text's `link-clicked` reports is, on the line
+/// clicked: read it in the callback, so a popup it opens can sit beside the link.
+pub fn clicked_link() -> Option<LogicalRect> {
+    CLICKED_LINK.with(core::cell::Cell::get)
+}
+
+pub(crate) fn set_clicked_link(rect: Option<LogicalRect>) {
+    CLICKED_LINK.with(|clicked| clicked.set(rect));
 }
 
 /// Sets how a row of the list a selection runs through is copied when all of it is selected,

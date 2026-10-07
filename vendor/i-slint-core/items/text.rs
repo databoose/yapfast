@@ -341,6 +341,20 @@ impl Item for StyledTextItem {
                 None,
             )
         };
+        #[cfg(feature = "shared-parley")]
+        let find_link_box = |position: &LogicalPoint| {
+            let window_inner = WindowInner::from_pub(window_adapter.window());
+            let scale_factor = crate::lengths::ScaleFactor::new(window_inner.scale_factor());
+            crate::textlayout::sharedparley::link_box_under_cursor(
+                scale_factor,
+                self,
+                self_rc,
+                LogicalSize::from_lengths(self.width(), self.height()),
+                *position * scale_factor,
+                window_adapter.window(),
+                None,
+            )
+        };
         // Talk: pressing and dragging selects, as in a read-only `TextInput`, on through the
         // texts and pictures around it; see `crate::talk_selection`. A double press selects by
         // word and a triple press by paragraph. A click that selects nothing still follows a link.
@@ -380,9 +394,19 @@ impl Item for StyledTextItem {
             MouseEvent::Released { position, button: PointerEventButton::Left, .. } => {
                 self.pressed.set(false);
                 if !crate::talk_selection::release(window_adapter)
-                    && let Some(link) = find_link(position)
+                    && let Some((link, rect)) = find_link_box(position)
                 {
+                    // Talk: where the link is, for a popup it opens; see `clicked_link`.
+                    let scale_factor = crate::lengths::ScaleFactor::new(
+                        WindowInner::from_pub(window_adapter.window()).scale_factor(),
+                    );
+                    let rect = rect / scale_factor;
+                    let origin = self_rc.map_to_window(
+                        self_rc.geometry().origin + rect.origin.to_vector(),
+                    );
+                    crate::talk_selection::set_clicked_link(Some(LogicalRect::new(origin, rect.size)));
                     Self::FIELD_OFFSETS.link_clicked().apply_pin(self).call(&(link.into(),));
+                    crate::talk_selection::set_clicked_link(None);
                 }
                 point(position);
                 InputEventResult::EventAccepted

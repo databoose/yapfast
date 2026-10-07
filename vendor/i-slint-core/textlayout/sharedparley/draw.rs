@@ -134,6 +134,7 @@ impl TextParagraph {
         };
 
         self.draw_inline_code_backgrounds(item_renderer, para_y, default_text_color, last_drawn);
+        self.draw_mention_backgrounds(item_renderer, para_y, last_drawn);
 
         for (index, line) in self.layout.lines().enumerate() {
             // Stop once we are past the last kept line of the last kept paragraph.
@@ -358,6 +359,57 @@ impl TextParagraph {
                     .platform_brush_for_color(&border)
                     .map(|brush| RectangleBorder { brush, width: border_width });
                 item_renderer.fill_rectangle(bg_rect, fill_brush, radius, border_brush);
+            }
+        }
+    }
+
+    /// Talk: paints a translucent pill of a mention's colour under each line of it.
+    fn draw_mention_backgrounds<R: GlyphRenderer>(
+        &self,
+        item_renderer: &mut R,
+        para_y: PhysicalLength,
+        last_drawn: usize,
+    ) {
+        const RADIUS: LogicalLength = LogicalLength::new(4.0);
+        // A little room either side of the text, and a little less height than the line.
+        const PADDING: LogicalLength = LogicalLength::new(2.0);
+        const INSET_RATIO: f32 = 0.08;
+        let scale_factor = item_renderer.scale_factor();
+        let padding = (PADDING * scale_factor).get();
+        for (range, color) in &self.mentions {
+            let start =
+                parley::editing::Cursor::from_byte_index(&self.layout, range.start, Default::default());
+            let end =
+                parley::editing::Cursor::from_byte_index(&self.layout, range.end, Default::default());
+            let fill = color.with_alpha(0.16);
+            let Some(fill_brush) = item_renderer.platform_brush_for_color(&fill) else {
+                continue;
+            };
+            let mut boxes = alloc::vec::Vec::new();
+            parley::Selection::new(start, end).geometry_with(&self.layout, |bounding_box, line| {
+                if line <= last_drawn {
+                    boxes.push(bounding_box);
+                }
+            });
+            for bounding_box in boxes {
+                let height = (bounding_box.y1 - bounding_box.y0) as f32;
+                let inset = height * INSET_RATIO;
+                let rect = PhysicalRect::new(
+                    PhysicalPoint::from_lengths(
+                        PhysicalLength::new(bounding_box.x0 as f32 - padding),
+                        PhysicalLength::new(bounding_box.y0 as f32 + inset) + para_y,
+                    ),
+                    PhysicalSize::new(
+                        (bounding_box.x1 - bounding_box.x0) as f32 + 2.0 * padding,
+                        (height - 2.0 * inset).max(1.0),
+                    ),
+                );
+                item_renderer.fill_rectangle(
+                    rect,
+                    fill_brush.clone(),
+                    RADIUS * scale_factor,
+                    None,
+                );
             }
         }
     }

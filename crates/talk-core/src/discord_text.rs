@@ -1618,13 +1618,23 @@ fn mentions(
     discord
         .mentions(server, content)
         .into_iter()
-        .map(|(text, role, id)| Mentioned {
-            text,
-            target: if role {
-                Target::Role(id)
-            } else {
-                Target::User(id)
-            },
+        .map(|(text, role, id)| {
+            let color = server.and_then(|server| {
+                if role {
+                    server.role_colors.get(&id).map(|(_, color)| *color)
+                } else {
+                    discord.color(server, &id)
+                }
+            });
+            Mentioned {
+                text,
+                target: if role {
+                    Target::Role(id)
+                } else {
+                    Target::User(id)
+                },
+                color,
+            }
         })
         .collect()
 }

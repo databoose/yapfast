@@ -172,7 +172,10 @@ impl LayoutWithoutLineBreaksBuilder {
             let mut builder = self.ranged_builder(layout_ctx, font_context, text);
 
             // filter empty ranges otherwise parley will panic on assert
-            for span in formatting.into_iter().filter(|s| !s.range.is_empty()) {
+            let formatting: alloc::vec::Vec<_> =
+                formatting.into_iter().filter(|s| !s.range.is_empty()).collect();
+            let pills = mention_ranges(&formatting);
+            for span in formatting {
                 match span.style {
                     Style::Emphasis => {
                         builder.push(
@@ -211,6 +214,19 @@ impl LayoutWithoutLineBreaksBuilder {
                     Style::Underline => {
                         builder.push(parley::StyleProperty::Underline(true), span.range);
                     }
+                    // Talk: a link in a colour is a mention, drawn in its colour on a pill of
+                    // it (see `TextParagraph::mentions`), without the underline.
+                    Style::Link if pills.iter().any(|(range, _)| range == &span.range) => {
+                        let color = pills.iter().find(|(range, _)| range == &span.range).map(|(_, c)| *c);
+                        builder.push(
+                            parley::StyleProperty::Brush(Brush {
+                                override_fill_color: color,
+                                stroke: self.stroke,
+                                link_color: None,
+                            }),
+                            span.range,
+                        );
+                    }
                     Style::Link => {
                         builder.push(parley::StyleProperty::Underline(true), span.range.clone());
                         builder.push(
@@ -222,6 +238,8 @@ impl LayoutWithoutLineBreaksBuilder {
                             span.range,
                         );
                     }
+                    // Its link sets the colour of a mention.
+                    Style::Color(_) if pills.iter().any(|(range, _)| span.range.start <= range.start && range.end <= span.range.end) => {}
                     Style::Color(color) => {
                         builder.push(
                             parley::StyleProperty::Brush(Brush {
@@ -288,9 +306,10 @@ pub(super) fn create_text_paragraphs(
                 .map(|s| s.range.clone())
                 .collect();
 
+            let mentions = mention_ranges(&formatting);
             let layout = layout_builder.build(font_context, text, formatting, Some(link_color));
 
-            TextParagraph { range, y: PhysicalLength::default(), layout, links, code_ranges }
+            TextParagraph { range, y: PhysicalLength::default(), layout, links, code_ranges, mentions }
         };
 
     let mut paragraphs = Vec::with_capacity(1);
@@ -403,4 +422,28 @@ pub(super) struct TextParagraph {
     /// translucent rounded background by `draw` for visual parity with common markdown
     /// renderers.
     pub(super) code_ranges: std::vec::Vec<Range<usize>>,
+    /// Talk: links inside a colour span, which are mentions: drawn in the colour on a
+    /// translucent pill of it.
+    pub(super) mentions: std::vec::Vec<(Range<usize>, Color)>,
+}
+
+/// Talk: the links that lie inside a colour span, each with that colour.
+fn mention_ranges(
+    formatting: &[i_slint_common::styled_text::FormattedSpan],
+) -> std::vec::Vec<(Range<usize>, Color)> {
+    use i_slint_common::styled_text::Style;
+    formatting
+        .iter()
+        .filter(|span| matches!(span.style, Style::Link))
+        .filter_map(|link| {
+            formatting.iter().find_map(|span| match span.style {
+                Style::Color(color)
+                    if span.range.start <= link.range.start && link.range.end <= span.range.end =>
+                {
+                    Some((link.range.clone(), Color::from_argb_encoded(color)))
+                }
+                _ => None,
+            })
+        })
+        .collect()
 }

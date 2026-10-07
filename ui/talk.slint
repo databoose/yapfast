@@ -1409,8 +1409,9 @@ export component TalkWindow inherits Window {
     // Where the role's card opened; a card opened from it moves the anchor, not it.
     property <length> role-x;
     property <length> role-y;
+    property <length> role-width;
     changed role-open => {
-        if root.role-open { root.role-x = root.anchor-x; root.role-y = root.anchor-y; }
+        if root.role-open { root.role-x = root.anchor-x; root.role-y = root.anchor-y; root.role-width = root.anchor-width; }
     }
     /// The member whose card is beside the list, highlighted in it.
     in property <string> profile-member;
@@ -1571,6 +1572,10 @@ export component TalkWindow inherits Window {
     // How far the newest message is below the view; zero at the end.
     public function timeline-below() -> length { return max(0px, timeline.content-y - min(0px, timeline.height - timeline.content-height)); }
     public function timeline-extent() -> length { return timeline.content-height; }
+    /// Where in the window the link just clicked is, so a card it opens sits beside it.
+    public function anchor-link(x: length, y: length, width: length, height: length) {
+        root.anchor(x, y, width, height, false);
+    }
     public function scroll-to-latest() {
         root.follow-latest = true;
         timeline.content-y = min(0px, timeline.height - timeline.content-height);
@@ -1729,6 +1734,11 @@ export component TalkWindow inherits Window {
     function anchor(x: length, y: length, width: length, height: length, pointer: bool) {
         root.anchor-x = x; root.anchor-y = y; root.anchor-width = width; root.anchor-height = height;
         root.anchor-pointer = pointer;
+    }
+    // A card opened from a mention sits right of what was clicked, or left of it
+    // when there isn't room.
+    pure function beside(x: length, width: length, card: length) -> length {
+        return x + width + 8px + card <= root.width - 8px ? x + width + 8px : max(8px, x - card - 8px);
     }
     // Closing a popup ends the handler that closed it, so callers close last.
     function open-picker(item: string) {
@@ -3302,8 +3312,8 @@ export component TalkWindow inherits Window {
         }
         role-card := Rectangle {
             width: 260px; height: min(root.height - 16px, role-content.preferred-height);
-            x: max(8px, min(root.width - self.width - 8px, root.role-x + 12px));
-            y: max(8px, min(root.height - self.height - 8px, root.role-y - 16px));
+            x: root.beside(root.role-x, root.role-width, self.width);
+            y: max(8px, min(root.height - self.height - 8px, root.role-y - 8px));
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
             accessible-role: groupbox;
@@ -3335,7 +3345,7 @@ export component TalkWindow inherits Window {
                             member-touch := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => {
-                                    root.anchor(role-card.x + role-card.width, self.absolute-position.y, 0px, 0px, true);
+                                    root.anchor(role-card.x, self.absolute-position.y, role-card.width, self.height, true);
                                     root.profile-at-pointer = true;
                                     root.show-profile(member.id);
                                 }
@@ -3359,9 +3369,9 @@ export component TalkWindow inherits Window {
         ProfileCard {
             width: 300px; limit: root.height - 16px;
             x: root.profile-at-pointer
-                ? max(8px, min(root.width - self.width - 8px, root.anchor-x + 12px))
+                ? root.beside(root.anchor-x, root.anchor-width, self.width)
                 : root.width - 240px - 8px - self.width;
-            y: max(8px, min(root.height - self.height - 8px, (root.profile-at-pointer ? root.anchor-y : root.profile-y) - 16px));
+            y: max(8px, min(root.height - self.height - 8px, (root.profile-at-pointer ? root.anchor-y - 8px : root.profile-y - 16px)));
             data: root.profile;
             enlarge => { root.enlarge-profile(); }
             close => { root.close-profile(); }

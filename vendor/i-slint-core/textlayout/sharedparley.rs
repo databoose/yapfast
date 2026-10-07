@@ -250,6 +250,21 @@ pub fn link_under_cursor(
     window: &crate::api::Window,
     cache: Option<&TextLayoutCache>,
 ) -> Option<std::string::String> {
+    link_box_under_cursor(scale_factor, text, item_rc, size, cursor, window, cache)
+        .map(|(link, _)| link)
+}
+
+/// Talk: the link under the cursor, with the box of its part on the line there, so a
+/// popup it opens can sit beside it.
+pub fn link_box_under_cursor(
+    scale_factor: ScaleFactor,
+    text: Pin<&dyn crate::item_rendering::RenderText>,
+    item_rc: &crate::item_tree::ItemRc,
+    size: LogicalSize,
+    cursor: PhysicalPoint,
+    window: &crate::api::Window,
+    cache: Option<&TextLayoutCache>,
+) -> Option<(std::string::String, PhysicalRect)> {
     let layout_builder = shaping_builder(text, Some(item_rc), text.wrap(), scale_factor);
 
     let (horizontal_align, vertical_align) = text.alignment();
@@ -344,9 +359,13 @@ pub fn text_range_at(
     .flatten()
 }
 
-fn link_in_layout(layout: &Layout, cursor: PhysicalPoint) -> Option<std::string::String> {
+fn link_in_layout(
+    layout: &Layout,
+    cursor: PhysicalPoint,
+) -> Option<(std::string::String, PhysicalRect)> {
     layout.paragraph_by_y(cursor.y_length()).and_then(|paragraph| {
         let paragraph_y: f64 = paragraph.y.cast::<f64>().get();
+        let mut found = PhysicalRect::default();
 
         paragraph
             .links
@@ -367,16 +386,26 @@ fn link_in_layout(layout: &Layout, cursor: PhysicalPoint) -> Option<std::string:
                 link_range.geometry_with(&paragraph.layout, |mut bounding_box, _line| {
                     bounding_box.y0 += paragraph_y;
                     bounding_box.y1 += paragraph_y;
-                    clicked = bounding_box.union(parley::BoundingBox::new(
+                    let here = bounding_box.union(parley::BoundingBox::new(
                         cursor.x.into(),
                         cursor.y.into(),
                         cursor.x.into(),
                         cursor.y.into(),
                     )) == bounding_box;
+                    if here && !clicked {
+                        found = PhysicalRect::new(
+                            PhysicalPoint::new(bounding_box.x0 as f32, bounding_box.y0 as f32),
+                            PhysicalSize::new(
+                                (bounding_box.x1 - bounding_box.x0) as f32,
+                                (bounding_box.y1 - bounding_box.y0) as f32,
+                            ),
+                        );
+                    }
+                    clicked |= here;
                 });
                 clicked
             })
-            .map(|(_, link)| link.clone())
+            .map(|(_, link)| (link.clone(), found))
     })
 }
 
