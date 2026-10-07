@@ -224,7 +224,8 @@ A call ringing this account shows a card at the top of the window with the
 DM's picture, Decline and Accept, and Talk rings: a rising arpeggio
 synthesized in `ring.rs` and played through PulseAudio on the call's speakers
 until the call is answered, declined or stops ringing. While Talk isn't in
-front a desktop notification says who is calling. Accepting opens the DM and
+front a desktop notification says who is calling. On Do Not Disturb the card
+shows without the ring or the notification. Accepting opens the DM and
 joins, leaving any other call without asking, since answering already chose.
 Declining posts `POST /channels/{id}/call/stop-ringing` with this account,
 which leaves the call to the others. The DM's own call shows the same choice
@@ -582,7 +583,8 @@ an error.
   falling back to the server's default, with mutes leaving only mentions. DMs
   notify unless muted; message requests and spam don't. Apps' answers to
   slash commands and context menu commands notify as people's messages do;
-  joins, pins and call notices don't. They show while Talk
+  joins, pins and call notices don't. Nothing notifies while the account's
+  status is Do Not Disturb. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
 - Mentions in messages are links on a light fill, in the role's colour or the

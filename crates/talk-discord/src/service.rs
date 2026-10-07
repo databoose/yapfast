@@ -784,6 +784,8 @@ fn server(guild: &str) -> Option<&str> {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// The status that silences notifications, as [`Snapshot::presence`] gives it.
+pub const DO_NOT_DISTURB: &str = "dnd";
 /// Relationship types: a friend, someone blocked, and friend requests to and
 /// from this account.
 const FRIEND: u64 = 1;
@@ -2002,8 +2004,11 @@ impl Tracker {
     }
 
     /// Whether a new message should notify this account. Message requests and
-    /// spam don't.
+    /// spam don't, and nothing does while its status is Do Not Disturb.
     fn notifies(&self, message: &Value) -> bool {
+        if self.status == DO_NOT_DISTURB {
+            return false;
+        }
         let channel = message["channel_id"].as_str().unwrap_or_default();
         let category = message["guild_id"].as_str().and_then(|guild| {
             let server = self.servers.iter().find(|server| server.id == guild)?;
@@ -2962,6 +2967,13 @@ mod tests {
         assert!(!tracker.notifies(&from("2")));
         tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "2", "type": 2}));
         assert!(tracker.snapshot().blocked.is_empty());
+        assert!(tracker.notifies(&from("2")));
+
+        // Do Not Disturb silences everyone, until the status changes.
+        tracker.status = DO_NOT_DISTURB.into();
+        assert!(!tracker.notifies(&from("3")));
+        tracker.status = "idle".into();
+        assert!(tracker.notifies(&from("3")));
     }
 
     #[test]

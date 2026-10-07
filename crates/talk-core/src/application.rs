@@ -270,6 +270,12 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The Discord account's status is Do Not Disturb, `dnd`, which silences
+    /// its notifications and ringing.
+    pub fn do_not_disturb(&self) -> bool {
+        self.discord_presence.as_deref() == Some("dnd")
+    }
+
     pub fn selected_room(&self) -> Option<&ChatRoom> {
         self.rooms
             .iter()

@@ -1167,8 +1167,9 @@ impl Adapter {
             .collect();
         update_model(&self.models.call_people, call_people);
         let ringing = show_incoming(window, state, &mut self.pictures);
+        // Do Not Disturb shows the call without ringing.
         #[cfg(feature = "discord")]
-        if !ringing {
+        if !ringing || state.do_not_disturb() {
             self.ringer = None;
         } else if self.ringer.is_none() {
             self.ringer = talk_core::ring::Ringer::start(

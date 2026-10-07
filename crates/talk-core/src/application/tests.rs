@@ -1980,6 +1980,56 @@ fn discord_dm_calls_start_ring_and_are_answered() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn do_not_disturb_shows_a_call_without_notifying() {
+    use talk_discord::service::{Conversation, DO_NOT_DISTURB, Snapshot, Status, VoiceMember};
+    let ann = VoiceMember {
+        user_id: "2".into(),
+        name: "Ann".into(),
+        avatar: "2.png".into(),
+        muted: false,
+        deafened: false,
+        streaming: false,
+    };
+    let mut app = Application::default();
+    let effects = app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        presence: DO_NOT_DISTURB.into(),
+        conversations: vec![Conversation {
+            id: "30".into(),
+            name: "Ann".into(),
+            people: 2,
+            person: Some("2".into()),
+            ringing: vec![VoiceMember {
+                user_id: "1".into(),
+                name: "Me".into(),
+                ..ann.clone()
+            }],
+            ..Default::default()
+        }],
+        voice: [("30".to_owned(), vec![ann])].into(),
+        ..Default::default()
+    }));
+    assert!(app.state.do_not_disturb());
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Notify(_))),
+        "Do Not Disturb doesn't notify"
+    );
+    let room = app
+        .state
+        .rooms
+        .iter()
+        .find(|room| room.id == "discord:@me:30");
+    assert!(
+        room.is_some_and(|room| room.incoming),
+        "the call still shows"
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn links_discord_by_qr_code_and_unlinks_it() {
     use crate::discord_link::Progress;
     use talk_discord::service::{Snapshot, Status};
