@@ -860,6 +860,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             channels: Vec::new(),
             discord: false,
             muted: false,
+            unavailable: false,
             icon: None,
         });
     }

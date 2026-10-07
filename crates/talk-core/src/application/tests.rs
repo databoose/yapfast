@@ -39,6 +39,7 @@ fn connected() -> Application {
             ],
             discord: false,
             muted: false,
+            unavailable: false,
             icon: None,
         }],
     }));
@@ -107,6 +108,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
             channels: vec!["general".into(), "secret".into()],
             discord: false,
             muted: false,
+            unavailable: false,
             icon: None,
         }],
     }));

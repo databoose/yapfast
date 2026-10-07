@@ -202,6 +202,8 @@ pub struct ChatServer {
     pub discord: bool,
     /// Its unread messages don't mark it in the rail; mentions still do.
     pub muted: bool,
+    /// Out of reach in a Discord outage, shown as last known until it's back.
+    pub unavailable: bool,
     /// The address of the server's icon; see [`Command::Pictures`].
     pub icon: Option<String>,
 }

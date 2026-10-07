@@ -198,6 +198,7 @@ impl Adapter {
                                 && !room.direct
                         }),
                     discord: server.discord,
+                    unavailable: server.unavailable,
                 })
                 .collect(),
         );

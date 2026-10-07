@@ -514,6 +514,10 @@ an error.
   from `guild_folders` in its settings, and follow it when it changes
   elsewhere. A folder's servers show in its place, without the folder. A
   server the settings don't list yet, such as one just joined, goes first.
+- A server out of reach in a Discord outage (`GUILD_DELETE` with
+  `unavailable`, or READY listing it so) stays in the rail, faded, as last
+  known, until its `GUILD_CREATE` brings it back. Only a `GUILD_DELETE`
+  without `unavailable`, as when the account leaves, removes it.
 - Server icons and avatars come from Discord's CDN, which needs no login.
   Talk asks for each one once it shows: in the rail, beside people in a
   voice channel of the open server, in the call, or beside a message. A

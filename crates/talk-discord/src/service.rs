@@ -1122,6 +1122,7 @@ async fn connected_session(
         return Ended::Failed(anyhow!("Discord's READY had no user"));
     };
     let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
+    tracker.keep_unavailable(&shared.snapshots.borrow().servers);
     shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
     // This session shows the status the settings hold, as Discord's own apps do.
     if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
@@ -1583,6 +1584,19 @@ impl Tracker {
         tracker
     }
 
+    /// Keeps what `earlier` knew of servers READY gave as unavailable, as it
+    /// gives only their ids.
+    fn keep_unavailable(&mut self, earlier: &[Arc<Server>]) {
+        for server in self.servers.iter_mut().filter(|server| server.unavailable) {
+            if let Some(known) = earlier.iter().find(|known| known.id == server.id) {
+                let mut known = Server::clone(known);
+                known.unavailable = true;
+                *server = Arc::new(known);
+            }
+        }
+        self.sort_servers();
+    }
+
     /// Applies one dispatched event; returns whether anything visible changed.
     fn apply(&mut self, name: &str, data: &Value) -> bool {
         let unreads = self.unreads.apply(name, data, &self.me, &self.my_roles);
@@ -1661,6 +1675,13 @@ impl Tracker {
                 let Some(server) = ready::server(data) else {
                     return false;
                 };
+                // Still out: what was known of it stays.
+                if server.unavailable
+                    && let Some(known) = self.server_mut(&server.id)
+                {
+                    known.unavailable = true;
+                    return true;
+                }
                 for state in data["voice_states"].as_array().into_iter().flatten() {
                     self.voice_state(&server.id, state);
                 }
@@ -1748,11 +1769,19 @@ impl Tracker {
                 self.learn_user(data);
                 changed
             }
+            // An outage, with `unavailable`, keeps the server as last known
+            // until its GUILD_CREATE; without, this account left it.
             "GUILD_DELETE" => {
                 let Some(id) = data["id"].as_str() else {
                     return false;
                 };
-                self.servers.retain(|server| server.id != id);
+                if data["unavailable"].as_bool() == Some(true) {
+                    if let Some(server) = self.server_mut(id) {
+                        server.unavailable = true;
+                    }
+                } else {
+                    self.servers.retain(|server| server.id != id);
+                }
                 self.voice.retain(|(guild, _), _| guild != id);
                 true
             }
@@ -2621,6 +2650,63 @@ mod tests {
                 .is_some_and(|icon| icon.contains("/icons/10/ghi.png"))
         );
         assert_eq!(server.voice_channels.len(), 2, "the channels stay");
+    }
+
+    #[test]
+    fn keeps_servers_through_an_outage() {
+        let guild = |id: &str, name: &str| {
+            json!({"id": id, "properties": {"name": name}, "channels": [
+                {"id": format!("{id}1"), "name": "general", "type": 0, "position": 0},
+            ]})
+        };
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "guilds": [guild("10", "Test"), guild("20", "Other")],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let listed = |tracker: &mut Tracker| -> Vec<(String, bool, usize)> {
+            let mut servers: Vec<_> = tracker
+                .snapshot()
+                .servers
+                .iter()
+                .map(|server| {
+                    let channels = server.text_channels.len();
+                    (server.name.clone(), server.unavailable, channels)
+                })
+                .collect();
+            servers.sort();
+            servers
+        };
+
+        tracker.apply("GUILD_DELETE", &json!({"id": "10", "unavailable": true}));
+        assert_eq!(
+            listed(&mut tracker),
+            [("Other".into(), false, 1), ("Test".into(), true, 1)],
+            "an outage keeps the server as last known"
+        );
+        // READY in the outage gives only its id; what was shown stays.
+        let earlier = tracker.snapshot().servers;
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "guilds": [{"id": "10", "unavailable": true}, guild("20", "Other")],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        tracker.keep_unavailable(&earlier);
+        assert_eq!(
+            listed(&mut tracker),
+            [("Other".into(), false, 1), ("Test".into(), true, 1)]
+        );
+
+        tracker.apply("GUILD_CREATE", &guild("10", "Test"));
+        assert_eq!(
+            listed(&mut tracker),
+            [("Other".into(), false, 1), ("Test".into(), false, 1)],
+            "it's back with its GUILD_CREATE"
+        );
+
+        // Without `unavailable`, this account left the server.
+        tracker.apply("GUILD_DELETE", &json!({"id": "10"}));
+        assert_eq!(listed(&mut tracker), [("Other".into(), false, 1)]);
     }
 
     #[test]

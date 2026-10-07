@@ -367,6 +367,7 @@ fn server_rooms(
         channels,
         discord: true,
         muted: server.muted,
+        unavailable: server.unavailable,
         icon: server.icon.clone(),
     };
     (rooms, server)
