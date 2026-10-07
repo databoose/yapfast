@@ -100,6 +100,20 @@ impl Adapter {
                 .iter()
                 .any(|room| room.direct && room.unread > 0),
         );
+        // As in Discord, the DM home counts DM mentions and the friend
+        // requests waiting for an answer.
+        let dm_mentions: u64 = state
+            .rooms
+            .iter()
+            .filter(|room| room.direct)
+            .map(|room| room.mentions)
+            .sum();
+        let incoming = state
+            .friend_requests
+            .iter()
+            .filter(|request| request.incoming && !request.spam)
+            .count() as u64;
+        window.set_dms_badge(count_badge(dm_mentions + incoming));
         window.set_discord_linked(
             state.discord_linked || state.servers.iter().any(|server| server.discord),
         );
@@ -198,6 +212,15 @@ impl Adapter {
                                 && !room.direct
                         }),
                     discord: server.discord,
+                    badge: count_badge(
+                        server
+                            .channels
+                            .iter()
+                            .filter_map(|channel| rooms_by_id.get(channel.as_str()))
+                            .filter(|room| !room.direct)
+                            .map(|room| room.mentions)
+                            .sum(),
+                    ),
                 })
                 .collect(),
         );

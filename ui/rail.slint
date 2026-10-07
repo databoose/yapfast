@@ -4,7 +4,11 @@ import { Avatar } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { PersonRow, LivePill } from "voice.slint";
 
-export struct ServerRow { id: string, name: string, initial: string, picture: image, selected: bool, unread: bool, discord: bool }
+export struct ServerRow {
+    id: string, name: string, initial: string, picture: image, selected: bool, unread: bool, discord: bool,
+    /// Mentions waiting in its channels, such as "3" or "99+"; empty for none.
+    badge: string,
+}
 
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
@@ -37,6 +41,8 @@ export component RailItem inherits Rectangle {
     in property <image> picture;
     in property <bool> selected;
     in property <bool> unread;
+    /// Mentions waiting, at the bottom right as in Discord; empty for none.
+    in property <string> badge;
     /// Marks a Discord server.
     in property <bool> discord;
     callback clicked;
@@ -83,6 +89,17 @@ export component RailItem inherits Rectangle {
     if root.discord: DiscordBadge {
         x: 12px - 2px; y: (parent.height - 48px) / 2 - 2px;
         size: 16px; ring: Theme.rail;
+    }
+    // The mention count, on a ring of the rail's colour.
+    if root.badge != "": Rectangle {
+        x: 12px + 48px + 4px - self.width; y: (parent.height + 48px) / 2 + 4px - self.height;
+        width: max(16px, badge-text.preferred-width + 8px) + 6px; height: 16px + 6px; border-radius: self.height / 2;
+        background: Theme.rail;
+        Rectangle {
+            width: parent.width - 6px; height: parent.height - 6px; border-radius: self.height / 2;
+            background: Theme.danger;
+            badge-text := Text { text: root.badge; color: #ffffff; font-size: 12px; font-weight: 700; }
+        }
     }
     focus := FocusScope {
         key-pressed(event) => {
@@ -234,6 +251,8 @@ export component ChannelRow inherits Rectangle {
 export component ServerRail inherits Rectangle {
     in property <bool> dms-selected;
     in property <bool> dms-unread;
+    /// DM mentions and incoming friend requests, as a badge on the DM home.
+    in property <string> dms-badge;
     in property <[ServerRow]> servers;
     callback navigate-dms;
     callback navigate-server(string);
@@ -242,8 +261,9 @@ export component ServerRail inherits Rectangle {
         padding-top: 12px; padding-bottom: 12px; spacing: 8px;
         RailItem {
             icon: @image-url("icons/message-circle.svg");
-            label: root.dms-unread ? "Direct messages, unread" : "Direct messages"; tip: "Direct messages";
-            selected: root.dms-selected; unread: root.dms-unread;
+            label: "Direct messages" + (root.dms-badge != "" ? ", " + root.dms-badge + " waiting" : root.dms-unread ? ", unread" : "");
+            tip: "Direct messages";
+            selected: root.dms-selected; unread: root.dms-unread; badge: root.dms-badge;
             clicked => { root.navigate-dms(); }
         }
         HorizontalLayout {
@@ -259,9 +279,10 @@ export component ServerRail inherits Rectangle {
                 RailItem {
                     y: 0px;
                     initial: server.initial; picture: server.picture;
-                    label: server.name + (server.discord ? ", Discord" : "") + (server.unread ? ", unread" : "");
+                    label: server.name + (server.discord ? ", Discord" : "")
+                        + (server.badge != "" ? ", " + server.badge + " mentions" : server.unread ? ", unread" : "");
                     tip: server.discord ? server.name + " (Discord)" : server.name;
-                    selected: server.selected; unread: server.unread; discord: server.discord;
+                    selected: server.selected; unread: server.unread; badge: server.badge; discord: server.discord;
                     clicked => { root.navigate-server(server.id); }
                 }
             }

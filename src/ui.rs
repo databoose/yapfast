@@ -1051,7 +1051,12 @@ fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
 }
 
 fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
-    match room.mentions {
+    count_badge(room.mentions)
+}
+
+/// A count as a badge shows it: nothing for none, and at most "99+".
+fn count_badge(count: u64) -> SharedString {
+    match count {
         0 => SharedString::default(),
         count if count > 99 => "99+".into(),
         count => count.to_string().into(),

@@ -456,6 +456,8 @@ and fits in the same way.
 
 Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
+Each server in the rail shows its mentions as a count, and the DM button
+counts DM mentions and the friend requests waiting for an answer.
 Showing an unread channel marks it read, and with the "Mark messages read on
 Discord" setting, on by default, acknowledges it on Discord within a second.
 The open text channel lists its members on the right as Discord's sidebar

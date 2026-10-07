@@ -50,6 +50,7 @@ export component TalkWindow inherits Window {
     in property <bool> restore-available;
     in property <bool> dms-selected;
     in property <bool> dms-unread;
+    in property <string> dms-badge;
     // The dialog for starting a DM: who it found, and whether one is starting.
     // Adding a Discord friend by username: whether the request went, and what to say.
     in property <bool> add-friend-open;
@@ -759,7 +760,7 @@ export component TalkWindow inherits Window {
                     vertical-stretch: 1; spacing: 0px;
                     // Server rail.
                     ServerRail {
-                        dms-selected: root.dms-selected; dms-unread: root.dms-unread; servers: root.servers;
+                        dms-selected: root.dms-selected; dms-unread: root.dms-unread; dms-badge: root.dms-badge; servers: root.servers;
                         navigate-dms => { root.navigate-dms(); }
                         navigate-server(id) => { root.navigate-server(id); }
                     }
