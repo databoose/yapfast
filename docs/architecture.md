@@ -1,8 +1,13 @@
 # Application core and client UI
 
-Talk uses two workspace packages. The `talk` executable contains the Slint client
-and command-line entry point. `talk-core` contains application behavior and the
-native Matrix and voice backend. Both run in the same process.
+Talk's Cargo workspace has four packages, all in one process. The root `talk`
+package is the executable: the Slint adapter and the command-line entry point.
+[`crates/talk-core`](../crates/talk-core) holds application behavior and the
+native Matrix, Discord and voice backend.
+[`crates/talk-discord`](../crates/talk-discord) holds the Discord protocol:
+login, the gateway, the HTTP API and voice. [`crates/talk-ui`](../crates/talk-ui)
+compiles `ui/talk.slint` and the files it imports in its `build.rs`, so editing
+any `.slint` file rebuilds only that crate.
 
 ```mermaid
 flowchart LR
@@ -31,17 +36,54 @@ routes each action to a method in the module for its area, under
 [`application/`](../crates/talk-core/src/application): `compose`, `messages`,
 `rooms`, `profiles`, `calls`, `session`, `preview` and `discord_account`.
 
-The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`ui/talk.slint`](../ui/talk.slint) owns input widgets, password
-masking, focus, filtering, scroll position, list virtualization, device selectors,
-window state, theme and icons. `Adapter::refresh`, in
+The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`src/ui/`](../src/ui), with
+the interface in [`ui/*.slint`](../ui), owns input widgets, password masking,
+focus, filtering, scroll position, list virtualization, device selectors, window
+state, theme and icons. `Adapter::refresh`, in
 [`src/ui/refresh.rs`](../src/ui/refresh.rs), shows the application's state one
-area at a time: the workspace, sidebar, account, header, member lists, dialogs,
-composer, messages and call. `ui/talk.slint` holds the window and imports its
-parts from the files beside it: the theme, controls, rail, composer, messages,
-people, friends, voice, dialogs, settings, sign-in and Discord pieces. It updates
-widgets after model changes. A programmatic
+area at a time: the image viewer, profile, workspace, sidebar, account, header,
+member lists, dialogs, composer, messages and call. `ui/talk.slint` holds the
+window and imports its parts from the files beside it: the theme, controls, rail,
+composer, messages, people, friends, voice, dialogs, settings, sign-in and
+Discord pieces. The adapter updates widgets after model changes. A programmatic
 composer update uses the new room's draft, so it cannot overwrite that draft with
 the previous room's text.
+
+## How a UI change flows through the code
+
+A visible change usually touches each of these steps:
+
+1. **Slint.** A component in `ui/<area>.slint` declares a property or callback.
+   Rust sees only `TalkWindow` in `ui/talk.slint` and the structs it exports, so
+   `TalkWindow` declares a matching property or callback and binds it to the
+   component. The areas are `theme`, `controls`, `rail`, `composer`, `messages`,
+   `people`, `friends`, `voice`, `dialogs`, `settings`, `sign-in` and `discord`.
+2. **State to window.** `Adapter::refresh` calls one `show_<area>` method in
+   `src/ui/refresh.rs` per area (`show_viewer`, `show_profile`,
+   `show_workspace`, `show_sidebar`, `show_account`, `show_header`,
+   `show_members`, `show_dialogs`, `show_composer`, `show_messages`,
+   `show_voice`), which sets the window's properties from `AppState`. Message
+   rows are built in `src/ui/messages.rs`, profile rows in `src/ui/profile.rs`
+   and pictures in `src/ui/pictures.rs`.
+3. **Input.** `bind_callbacks` in `src/ui/callbacks.rs` registers an `on_*`
+   handler for each window callback. Most turn the input into an `Action` and
+   pass it to `Adapter::action` in `src/ui.rs`.
+4. **Application.** `Adapter::action` calls `Application::dispatch`, executes
+   the returned effects, then refreshes the window. A composer keystroke
+   (`SetDraft` or `MentionQuery`) refreshes only the composer. `Action` and
+   `dispatch` are in `crates/talk-core/src/application.rs`, which routes each
+   action to the module for its area in `crates/talk-core/src/application/`:
+   `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `calls.rs`,
+   `session.rs`, `preview.rs` or `discord_account.rs`.
+5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to
+   the chat actor in `crates/talk-core/src/chat.rs`, which routes it to the
+   network or to voice. Matrix lives
+   in `matrix_chat.rs` and `matrix_voice.rs`; Discord in `discord.rs`,
+   `discord_text.rs`, `discord_voice.rs`, `discord_audio.rs` and
+   `discord_link.rs`, all under `crates/talk-core/src/`. The Discord protocol
+   itself is in `crates/talk-discord`, whose gateway session is
+   `crates/talk-discord/src/service.rs`. Backend events come back through
+   `Application::apply`.
 
 ## Native backend ownership
 
@@ -86,9 +128,10 @@ implement their own drafts, send handling or voice lifecycle.
 ## Checks and packaging
 
 `cargo run --locked` and `--preview` keep their existing behavior. The headless
-variant uses `--no-default-features --features matrix,discord`. Run `scripts/check` inside the Nix
-development shell to check both workspace packages. Ignored chat and voice tests
-now belong to `talk-core`, so select them with `cargo test -p talk-core`.
+variant uses `--no-default-features --features matrix,discord`. `scripts/check`
+checks the whole workspace; see [building](building.md#checks). Ignored chat and
+voice tests now belong to `talk-core`, so select them with
+`cargo test -p talk-core`.
 
 The Windows source archive includes `crates/` and `ui/`. Existing session storage paths and
 formats are unchanged. Library tests keep disposable fixtures under the workspace's

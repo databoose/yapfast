@@ -73,10 +73,12 @@ verified JPEG symbol namespace needed to link it alongside WebRTC. Rustup uses
 the version in `rust-toolchain.toml`.
 
 ```sh
-scripts/check
-cargo run --locked --no-default-features --features matrix,discord -- --smoke-test
+scripts/check --fast
 cargo build --locked --release
 ```
+
+`scripts/check` enters the Nix shell itself; [building](docs/building.md#checks)
+lists what it covers.
 
 With the local stack running, check the desktop messaging backend with:
 
@@ -90,9 +92,10 @@ refusal of plaintext rooms and unverified devices. Current native UI validation
 is in [the Slint client report](docs/slint-client.md); the earlier GPUI checks
 remain in [the chat UI report](docs/chat-ui.md).
 
-Run those commands inside the Nix shell. The headless build still includes the
-Matrix and native media libraries. The smoke check allocates a synthetic audio
-source. It does not sign in, connect to a server, or access the microphone.
+Run the `cargo` commands inside the Nix shell. The headless build still includes
+the Matrix and native media libraries. The smoke check allocates a synthetic
+audio source. It does not sign in, connect to a server, or access the
+microphone.
 
 ## Local integration services
 

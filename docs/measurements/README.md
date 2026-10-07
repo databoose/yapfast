@@ -1,7 +1,38 @@
 # Resource measurements
 
-[Linux starter baseline, 2026-10-01](2026-10-01-linux-starter.json) measures the
-empty release build-check window after 15 seconds of warm-up, inactive at a
+This file holds dated measurement records, oldest first, each with its JSON
+beside it. A record describes the code on its date; a later record of the same
+thing replaces it. The current references are the newest:
+[Matrix, Discord or both, 2026-10-06](2026-10-06-linux-networks.json) for idle
+memory by build, and
+[renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
+for a call with Skia Software, the default renderer.
+
+Measurements use `fast` builds, as the owner decided on 2026-10-06, unless the
+question is the shipped build's absolute number; then use `release`. The
+[2026-10-05 profile comparison](2026-10-05-linux-fast-profile.json) found the
+two equivalent.
+
+How to reproduce: run every command from the repository root. The isolated
+runs need `scripts/test-stack up` first; `nix-shell --impure
+experiments/frameworks/shell.nix` adds Weston, PulseAudio and the ALSA plugins
+to the development shell, and `scripts/run-framework-isolated` gives the run a
+private display, D-Bus and audio. The scripts measure `target/release/talk`
+unless `--exe` names another build, such as `target/fast/talk`; the networks
+comparison takes its builds from a folder instead. `TEST_BIN`
+below is the `talk-core` test binary that runs the other participants and
+seeds history. Build it with `nix develop path:./nix --command cargo test
+--profile fast --locked -p talk-core --no-run --message-format short`, which
+prints its path on the `Executable unittests src/lib.rs
+(target/fast/deps/talk_core-HASH)` line.
+
+`scripts/measure-process` samples once a second and reports the mean and the
+highest of those samples. For the process's lifetime peak, read `VmHWM` from
+`/proc/PID/status`.
+
+[Linux starter baseline, 2026-10-01](2026-10-01-linux-starter.json) is
+historical: it measured the GPUI starter, which Slint has replaced. It measures
+the empty release build-check window after 15 seconds of warm-up, inactive at a
 760x560 window size. It samples the process for 30 seconds through `/proc`.
 
 | Metric | Result |
@@ -22,15 +53,19 @@ do not verify the beta's idle or ten-person-call targets, behavior on older
 integrated graphics, battery use, or savings compared with Discord. GPU counters
 were unavailable, so this check also does not establish inactive rendering cost.
 
-Reproduce process sampling with `scripts/measure-process PID --seconds 30`.
-Record a new profile when real account sync and calling are active. Keep hardware,
-workload, warm-up, window activity, and memory metric attached to every result.
+Reproduce: the GPUI build is gone; its process was sampled with
+`scripts/measure-process PID --seconds 30`. Keep hardware, workload, warm-up,
+window activity, and memory metric attached to every result.
 
 [Native voice audio, 2026-10-02](2026-10-02-linux-voice-audio.json) is a
 functional two-process virtual-device result, rather than a performance sample.
 It checks encrypted capture/playback after a 30-second wait alone, both audio
 directions, mute/deafen and clean departure. Physical listening and Windows
 remain untested.
+
+Reproduce: `scripts/test-stack up`, then `nix develop path:./nix --command
+scripts/test-voice --fast` in a desktop session with PipeWire; it adds and
+removes its own null devices.
 
 [Waiting alone in voice, debug build, 2026-10-02](2026-10-02-linux-voice-waiting-debug.json)
 samples a real account with one muted participant after confirming encryption
@@ -40,6 +75,9 @@ This debug build uses line-table symbols. It cannot be compared directly with
 the empty release starter above and does not establish the beta budgets,
 battery behavior or game interference. Release measurements on the reference
 Linux and Windows machines remain needed.
+
+Reproduce: not exactly, since it used a real account. Sample a debug build
+waiting in voice with `scripts/measure-process PID --seconds 30`.
 
 [Connected release client, 2026-10-03](2026-10-03-linux-connected.json) samples
 the Slint release build with a real account on the local stack, on a private
@@ -68,6 +106,9 @@ This is one Linux host with generated audio and a local homeserver. Windows,
 older or integrated GPUs, a large account, physical devices and game
 interference remain unmeasured. The client measured predates the Milestone 2
 chat features.
+
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_connected.py --load-executable TEST_BIN --output .local/measure-connected'`.
+It measures both renderers unless `--renderer` names one.
 
 [Connected client after Milestone 2 and the UI overhaul, 2026-10-04](2026-10-04-linux-connected-overhaul.json)
 repeats the 2026-10-03 run on the same host, with the same workload, warm-up and
@@ -103,6 +144,8 @@ both renderers, and so does Software RSS. GPU RSS is now 6.3 MiB over with an
 empty channel and 19.6 MiB over with the seeded history; it was 2.8 MiB over
 before. RSS counts shared graphics-driver libraries in full. The measurement
 limits listed for the 2026-10-03 run still apply.
+
+Reproduce: the 2026-10-03 command above; add `--seed` for the seeded rows.
 
 [Joining a 20-person voice channel, 2026-10-05](2026-10-05-linux-voice-join-20.json)
 measures joins with one process per person (`testing/join_voice.py`). Alice runs
@@ -143,6 +186,9 @@ key during joins. Talk now shows a missing key only once it has lasted beyond th
 On a real network every round trip adds latency, so absolute join times will be
 longer than here. Windows, real devices and a remote homeserver remain unmeasured.
 
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/join.weston.log -- python3 testing/join_voice.py --participant-executable TEST_BIN --output .local/join-voice'`.
+Current code gives the one-peer-connection column.
+
 [A call with the window hidden or destroyed, 2026-10-05](2026-10-05-linux-window-background.json)
 measures what a tray could save (`testing/measure_background.py`). Talk has no
 tray yet, so a test-only window control (`TALK_UI_TEST_CONTROL`) hides the window,
@@ -176,6 +222,9 @@ and trimming the heap saves about a tenth. A small background process for the
 session and call, with the window in a separate process started on demand,
 would come close to the headless figures.
 
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/background.weston.log -- python3 testing/measure_background.py --participant-executable TEST_BIN --people 10 --output .local/measure-background'`.
+It renders with Skia GPU unless given `--renderer software`.
+
 [Where the memory goes: renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
 repeats the window measurement with glibc's allocator statistics (`malloc_stats`)
 and a full smaps dump at each sample. It compares GPU rendering, GPU rendering
@@ -205,6 +254,10 @@ about 10 MiB between runs of the same build, so the allocator columns are the
 better comparison. Lock contention in real-time audio threads was not measured
 beyond CPU and a clean call.
 
+Reproduce: the window command above three times, as is, with
+`--talk-env MALLOC_ARENA_MAX=2` and with `--renderer software`. The built-in cap
+row is the first command on a build since the cap.
+
 [Scrolling a long history with each renderer, 2026-10-05](2026-10-05-linux-scroll-renderers.json)
 checks whether Skia Software keeps up with the GPU when it has to redraw
 (`testing/measure_scroll.py`). Bob posts the sample conversation and 300 more
@@ -231,6 +284,12 @@ list measured newly visible rows, Talk snapped back to the end before it saw the
 scroll. The timeline now checks the position before following new messages, and
 `scrolling_up_leaves_the_latest_message` covers it.
 
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'TALK_FRAMEWORK_SURFACE_LOG=.local/measure-scroll-surface.ndjson scripts/run-framework-isolated --no-services --compositor-log .local/scroll.weston.log -- python3 testing/measure_scroll.py --fixture-executable TEST_BIN --output .local/measure-scroll --size 1120x760 --scale 1'`,
+then `python3 testing/measure_scroll.py --frames .local/measure-scroll/results.json
+.local/measure-scroll-surface.ndjson` for the buffer rates. For the large rows,
+give `scripts/run-framework-isolated` `--width 3840 --height 2160 --scale 2` and
+the script `--size 3600x2000 --scale 2`.
+
 [Release and fast builds, 2026-10-05](2026-10-05-linux-fast-profile.json)
 measures the same source built with the `release` profile (thin LTO) and the
 `fast` profile (no LTO, incremental), back to back.
@@ -243,9 +302,12 @@ measures the same source built with the `release` profile (thin LTO) and the
 | Scrolling, Software, 1120×760: PSS | 104 MiB | 100 MiB |
 | Scrolling, Software, 1120×760: CPU | 2.8% | 3.0% |
 
-The differences are within the run-to-run variation of each build. Tests and
-local checks can use the `fast` profile. Recorded measurements still use
-`release`, which is what people run.
+The differences are within the run-to-run variation of each build. Tests,
+local checks and measurements use the `fast` profile; `release`, which is what
+people run, is for the shipped build's absolute numbers.
+
+Reproduce: build both profiles, then run the window command above and the
+scroll command with `--exe target/release/talk` and with `--exe target/fast/talk`.
 
 [Matrix, Discord or both, 2026-10-06](2026-10-06-linux-networks.json) compares
 builds with only Matrix, only Discord, or both, made with the `matrix` and
@@ -279,3 +341,9 @@ The test data is small on both sides: one server and 60 messages. A real
 Discord account's READY snapshot, which Talk keeps, and a real Matrix account's
 stores both grow with the account. Voice isn't measured, because the fake has
 no voice server, and Discord calls also load libwebrtc's audio processing.
+
+Reproduce: with the test stack up, build each feature set with `--profile fast`
+(`--no-default-features --features desktop,matrix`, then `desktop,discord`,
+then the default) and copy each `target/fast/talk` to `target/networks/` as
+`talk-matrix`, `talk-discord` and `talk-combined`. Then `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
+The script starts the fake Discord itself.

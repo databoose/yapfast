@@ -116,7 +116,9 @@ fixtures disable D-Bus service activation, exercise the existing Linux private-f
 credential fallback and use disposable local accounts. They open no audio devices
 and never access the user's cursor, focus or desktop session.
 
-The capture script is `testing/probe_slint_ui.py`. Preview captures exercise local
+The capture script is `testing/probe_slint_ui.py`. It covers only the Matrix
+fixtures: the local preview, or with `--connected` a disposable account on the
+local stack. It has no Discord fixture. Preview captures exercise local
 sending, scoped navigation, draft restoration, voice persistence, mute/deafen,
 the device popover, sign-out and password masking. Coordinate actions are checked
 against their screenshots; a successful capture alone is not a functional result.
@@ -170,9 +172,17 @@ nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework
 
 Use `--renderer software --size 800x560` for the minimum-size capture. GUI evidence
 lives under the ignored `.impeccable/review` directory, with binary hashes and
-assertion results in `actions.json`. Required checks finish with a headless build,
-so rebuild with default features before starting a GUI probe.
-Add `--connected --long-name` to exercise long labels against the local stack.
+assertion results in `actions.json`. The probe runs `target/debug/talk` unless
+`--exe` names another build. `scripts/check` runs the desktop smoke test last, so
+`target/debug/talk`, or `target/fast/talk` after `scripts/check --fast`, is the
+desktop build when it finishes. Add `--connected --long-name` to exercise long
+labels against the local stack.
+
+For screenshots and checks by hand, `scripts/ui-session` runs Talk, or a
+Discord-only build against `testing/fake_discord.ts`, on the same kind of
+private display and drives it from the command line;
+[Seeing the app](building.md#seeing-the-app) shows it, and `--help` lists its
+commands.
 
 The previous two-machine messaging/audio report belongs to the GPUI beta.
 The Slint package still needs actual Windows rendering, keyboard/IME/copy-paste,
