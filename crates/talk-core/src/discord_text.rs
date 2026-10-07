@@ -6,6 +6,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use talk_discord::{
@@ -38,6 +39,10 @@ pub const MAX_CHARS: usize = 2000;
 /// previews kept: a preview is about 400 KB decoded.
 const RECENT: usize = 16;
 const KEPT_MESSAGES: usize = 100;
+/// How long someone shows as typing after Discord says they started.
+const TYPING: Duration = Duration::from_secs(10);
+/// How often Discord hears that this account is still typing.
+const TYPING_AGAIN: Duration = Duration::from_secs(8);
 const KEPT_PREVIEWS: usize = 12;
 /// Saving a file holds it in memory first.
 const MAX_SAVE_BYTES: usize = 100 * 1024 * 1024;
@@ -84,6 +89,8 @@ pub enum Done {
     },
     /// An action failed; the reason is for the person.
     Failed { room: String, message: String },
+    /// Someone may have stopped typing.
+    Typing { room: String },
 }
 
 struct Pending {
@@ -826,9 +833,31 @@ pub struct Channels {
     open: Option<OpenChannel>,
     /// Newest last.
     recent: Vec<OpenChannel>,
+    /// Who is typing in each channel, by user id, with their name and until when.
+    typing: HashMap<String, HashMap<String, (String, Instant)>>,
+    /// Where this account last told Discord it's typing, and when.
+    typed: Option<(String, Instant)>,
 }
 
 impl Channels {
+    /// Forgets who stopped typing in `room`, and says who still is.
+    fn typing_changed(&mut self, room: &str, events: &UnboundedSender<Event>) {
+        let now = Instant::now();
+        let mut names = Vec::new();
+        if let Some(typing) = self.typing.get_mut(room) {
+            typing.retain(|_, (_, until)| *until > now);
+            names = typing.values().map(|(name, _)| name.clone()).collect();
+            names.sort();
+            if typing.is_empty() {
+                self.typing.remove(room);
+            }
+        }
+        let _ = events.send(Event::Typing {
+            room: room.to_owned(),
+            names,
+        });
+    }
+
     fn close(&mut self) {
         if let Some(mut channel) = self.open.take() {
             channel.shelve();
@@ -1009,6 +1038,29 @@ pub fn command(
         }
         return None;
     }
+    if let Command::Typing { room, typing } = &command
+        && discord::is_discord(room)
+    {
+        let now = Instant::now();
+        let again = channels
+            .typed
+            .as_ref()
+            .is_none_or(|(typed, at)| typed != room || now.duration_since(*at) >= TYPING_AGAIN);
+        if !typing {
+            channels.typed = None;
+        } else if again
+            && let (Some(discord), Some((_, channel))) = (discord, discord::parse_room(room))
+        {
+            channels.typed = Some((room.clone(), now));
+            let (discord, channel) = (discord.clone(), channel.to_owned());
+            tokio::spawn(async move {
+                if let Err(error) = discord.typing(&channel).await {
+                    tracing::debug!(%error, "could not say this account is typing");
+                }
+            });
+        }
+        return None;
+    }
     if let Command::Profile { room, user } = command {
         match (discord, discord::parse_room(&room)) {
             (Some(discord), Some((guild, _))) => {
@@ -1145,6 +1197,8 @@ pub fn command(
     };
     match command {
         Command::Send { room, body, reply } => {
+            // Discord ends the typing a message follows.
+            channels.typed = None;
             let result = channel.send(discord, done, body.clone(), reply);
             publish(channel, discord, done, events);
             let _ = events.send(Event::SendResult { room, body, result });
@@ -1208,6 +1262,10 @@ pub fn finished(
         | Done::Image { room, .. }
         | Done::Saved { room, .. }
         | Done::Failed { room, .. } => room.clone(),
+        Done::Typing { room } => {
+            channels.typing_changed(room, events);
+            return;
+        }
     };
     let shown = channels.is_open(&room);
     // Closed channels kept lately take what finished too.
@@ -1293,6 +1351,8 @@ pub fn finished(
         (Done::Failed { message, .. }, Some(_)) => {
             let _ = events.send(Event::RoomError { room, message });
         }
+        // Handled above.
+        (Done::Typing { .. }, Some(_)) => {}
     }
     if changed
         && shown
@@ -1356,6 +1416,46 @@ pub fn live(
             message,
         )));
         return;
+    }
+    if let Ok(Live::Typing {
+        guild,
+        channel,
+        user,
+        name,
+    }) = &event
+    {
+        let room = discord::room_id(
+            guild.as_deref().unwrap_or(talk_discord::ready::PRIVATE),
+            channel,
+        );
+        channels
+            .typing
+            .entry(room.clone())
+            .or_default()
+            .insert(user.clone(), (name.clone(), Instant::now() + TYPING));
+        channels.typing_changed(&room, events);
+        let done = done.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(TYPING).await;
+            let _ = done.send(Done::Typing { room });
+        });
+        return;
+    }
+    // A message ends its author's typing.
+    if let Ok(Live::Created(message)) = &event {
+        let room = channels
+            .typing
+            .keys()
+            .find(|room| {
+                discord::parse_room(room).is_some_and(|(_, channel)| channel == message.channel_id)
+            })
+            .cloned();
+        if let Some(room) = room
+            && let Some(typing) = channels.typing.get_mut(&room)
+            && typing.remove(&message.author_id).is_some()
+        {
+            channels.typing_changed(&room, events);
+        }
     }
     if let Ok(event) = &event {
         for kept in &mut channels.recent {

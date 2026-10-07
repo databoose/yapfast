@@ -224,6 +224,12 @@ impl Api {
         self.empty(self.request(method, &path)).await
     }
 
+    /// Shows others that this account is typing in `channel`.
+    pub async fn typing(&self, channel: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/typing");
+        self.empty(self.request(Method::POST, &path)).await
+    }
+
     /// Shows `thumbnail`, a JPEG as a data URI, as the preview of this
     /// account's live stream, as Discord's client does every few minutes.
     pub async fn stream_preview(&self, stream_key: &str, thumbnail: &str) -> Result<()> {

@@ -73,8 +73,8 @@ Opening one shows its messages with Accept and Ignore in place of the
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Talk never opens a request on its
-own when it picks a conversation. Forwarding, typing, DM calls and starting a
-new DM are still open.
+own when it picks a conversation. Forwarding, DM calls and starting a new DM
+are still open.
 
 Clicking someone in a channel's member list shows their profile in a small
 card beside it, which "View full profile" enlarges into a centred one;
@@ -360,6 +360,9 @@ and DM is visible without copying anything into Matrix.
   notify unless muted; message requests and spam don't. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
+- Who else is typing shows under the composer, for ten seconds after Discord
+  last said so or until their message arrives. Writing tells Discord Alice is
+  typing, at most every eight seconds, unless a setting turns it off.
 - Reading a message in Talk marks it read on Discord, so the phone app agrees.
   A setting turns this off.
 - Talk sets the online, idle and do-not-disturb status on Discord. Closing Talk

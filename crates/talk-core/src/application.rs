@@ -91,6 +91,8 @@ pub struct AppState {
     pub notice: Option<String>,
     pub rooms: Vec<ChatRoom>,
     pub servers: Vec<ChatServer>,
+    /// Who else is typing, by room.
+    pub typing: HashMap<String, Vec<String>>,
     /// Server icons and avatars that arrived, by address.
     pub pictures: HashMap<String, Arc<Picture>>,
     pub navigation: Navigation,
@@ -178,6 +180,24 @@ impl AppState {
                         .iter()
                         .any(|server| &server.id == id && server.channels.contains(&room.id))
             }
+        }
+    }
+
+    /// Who else is typing in the open conversation, as the composer says it; empty
+    /// when nobody is.
+    pub fn typing_line(&self) -> String {
+        let names = self
+            .selected
+            .as_ref()
+            .and_then(|room| self.typing.get(room))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        match names {
+            [] => String::new(),
+            [one] => format!("{one} is typing..."),
+            [one, two] => format!("{one} and {two} are typing..."),
+            [one, two, three] => format!("{one}, {two} and {three} are typing..."),
+            _ => "Several people are typing...".into(),
         }
     }
 
@@ -496,7 +516,14 @@ impl Application {
                 {
                     vec![]
                 } else {
-                    vec![Effect::Backend(Command::SaveDraft { room: id, body })]
+                    let typing = !body.trim().is_empty();
+                    vec![
+                        Effect::Backend(Command::Typing {
+                            room: id.clone(),
+                            typing,
+                        }),
+                        Effect::Backend(Command::SaveDraft { room: id, body }),
+                    ]
                 }
             }
             Action::Send => self.send(),
@@ -1024,6 +1051,13 @@ impl Application {
                 self.state.pictures.insert(url, picture);
             }
             Event::Notify(notification) => return vec![Effect::Notify(self.alert(notification))],
+            Event::Typing { room, names } => {
+                if names.is_empty() {
+                    self.state.typing.remove(&room);
+                } else {
+                    self.state.typing.insert(room, names);
+                }
+            }
             #[cfg(feature = "discord")]
             Event::Discord(snapshot) => {
                 self.state.discord_online =
@@ -1365,6 +1399,8 @@ impl Application {
             self.state.room_ready = true;
         }
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
+        // Typing is followed only in the open conversation, so what's known of others is stale.
+        self.state.typing.clear();
         if self.state.preview {
             if !voice_room {
                 self.state.messages = Arc::new(self.samples.get(&id).cloned().unwrap_or_default());
@@ -1957,6 +1993,39 @@ mod tests {
     }
 
     #[test]
+    fn typing_shows_for_the_open_conversation() {
+        let mut app = connected();
+        let typing = |app: &mut Application, room: &str, names: &[&str]| {
+            app.apply(Event::Typing {
+                room: room.into(),
+                names: names.iter().map(|name| (*name).to_owned()).collect(),
+            });
+            app.state.typing_line()
+        };
+        assert_eq!(typing(&mut app, "dm", &["Sam"]), "Sam is typing...");
+        assert_eq!(
+            typing(&mut app, "dm", &["Sam", "Riley"]),
+            "Sam and Riley are typing..."
+        );
+        assert_eq!(
+            typing(&mut app, "dm", &["A", "B", "C", "D"]),
+            "Several people are typing..."
+        );
+        // Typing elsewhere doesn't show here.
+        assert_eq!(
+            typing(&mut app, "games", &["Sam"]),
+            "Several people are typing..."
+        );
+        assert_eq!(typing(&mut app, "dm", &[]), "");
+        // Clearing the draft says this account stopped.
+        app.dispatch(Action::SetDraft("Hi".into()));
+        assert!(matches!(
+            app.dispatch(Action::SetDraft(String::new())).as_slice(),
+            [Effect::Backend(Command::Typing { typing: false, .. }), ..]
+        ));
+    }
+
+    #[test]
     fn notifications_name_the_place_and_open_it() {
         let mut app = connected();
         let notify = |app: &mut Application, room: &str| {
@@ -2194,7 +2263,10 @@ mod tests {
         let mut app = connected();
         assert!(matches!(
             app.dispatch(Action::SetDraft("First".into())).as_slice(),
-            [Effect::Backend(Command::SaveDraft { room, body })] if room == "dm" && body == "First"
+            [
+                Effect::Backend(Command::Typing { room: typing, typing: true }),
+                Effect::Backend(Command::SaveDraft { room, body }),
+            ] if typing == "dm" && room == "dm" && body == "First"
         ));
         assert!(app.dispatch(Action::SetDraft("First".into())).is_empty());
         assert!(matches!(

@@ -16,7 +16,8 @@ use talk_core::{
     application::{Action, Application, Compose, Effect, Navigation},
     backend::Backend,
     chat::{
-        ChatMessage, Delivery, EmbedField, Event, Picture, Placement, Presence, ProfileRole, Role,
+        ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
+        ProfileRole, Role,
     },
     discord, links,
     meter::{self, InputMeter},
@@ -375,6 +376,8 @@ struct Layout {
     link_previews: Option<bool>,
     /// Joining a call turns the microphone on.
     unmute_on_join: bool,
+    /// Others see when this account is typing; on unless turned off.
+    share_typing: Option<bool>,
     /// Desktop notifications, their sound, and whether they say what messages say; on
     /// unless turned off.
     notifications: Option<bool>,
@@ -399,6 +402,7 @@ impl Layout {
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
         window.set_unmute_on_join(self.unmute_on_join);
+        window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
         window.set_notification_sound(self.notification_sound.unwrap_or(true));
         window.set_notification_text(self.notification_text.unwrap_or(true));
@@ -662,6 +666,8 @@ impl Adapter {
                         self.notifier.show(alert, style);
                     }
                 }
+                Effect::Backend(Command::Typing { .. })
+                    if !self.layout.share_typing.unwrap_or(true) => {}
                 Effect::Backend(command) => {
                     let result = match &self.backend {
                         Some(backend) => backend.send(command),
@@ -1223,6 +1229,7 @@ impl Adapter {
             None => SharedString::default(),
         });
         window.set_sending(state.sending.is_some());
+        window.set_typing(state.typing_line().into());
         window.set_loading_history(state.loading_history);
         window.set_composer_hint(
             if room.is_none() {
@@ -1709,6 +1716,7 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
         layout.unmute_on_join = window.get_unmute_on_join();
+        layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_sound = Some(window.get_notification_sound());
         layout.notification_text = Some(window.get_notification_text());

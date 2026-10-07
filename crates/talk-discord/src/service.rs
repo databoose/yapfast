@@ -119,6 +119,13 @@ pub enum Live {
         message: String,
         key: Option<String>,
     },
+    /// Someone else started typing; it lasts about ten seconds unless they type on.
+    Typing {
+        guild: Option<String>,
+        channel: String,
+        user: String,
+        name: String,
+    },
     /// Names were learned, so mentions and authors may render differently.
     Names,
     /// The member list of the channel last viewed, as it stands now.
@@ -407,6 +414,11 @@ impl Discord {
     /// Adds or removes this account's reaction; `emoji` is in the API's form.
     pub async fn react(&self, channel: &str, id: &str, emoji: &str, add: bool) -> Result<()> {
         self.api.react(channel, id, emoji, add).await
+    }
+
+    /// Shows others that this account is typing in `channel`, for about ten seconds.
+    pub async fn typing(&self, channel: &str) -> Result<()> {
+        self.api.typing(channel).await
     }
 
     /// Uploads the preview Discord shows of this account's live stream: a
@@ -1615,6 +1627,31 @@ fn live_events(me: &str, names: &RwLock<Names>, name: &str, data: &Value) -> Vec
             })
             .into_iter()
             .collect(),
+        "TYPING_START" => {
+            let Some(user) = data["user_id"].as_str().filter(|user| *user != me) else {
+                return vec![];
+            };
+            let guild = data["guild_id"].as_str();
+            let mut names = names
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(guild) = guild
+                && data["member"].is_object()
+            {
+                names.learn_member(guild, &data["member"]);
+            }
+            let name = guild
+                .and_then(|guild| names.name(guild, user))
+                .or_else(|| names.user_name(user))
+                .unwrap_or("Someone")
+                .to_owned();
+            vec![Live::Typing {
+                guild: guild.map(str::to_owned),
+                channel: channel(),
+                user: user.to_owned(),
+                name,
+            }]
+        }
         // Answers to the member requests history makes.
         "GUILD_MEMBERS_CHUNK" => vec![Live::Names],
         "STREAM_CREATE" | "STREAM_UPDATE" => data["stream_key"]

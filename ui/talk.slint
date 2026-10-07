@@ -1240,6 +1240,8 @@ export component TalkWindow inherits Window {
     in property <bool> sending;
     in property <bool> loading-history;
     in property <string> composer-hint;
+    // Who else is typing in the open conversation; it takes the hint's place.
+    in property <string> typing;
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
@@ -1338,6 +1340,7 @@ export component TalkWindow inherits Window {
     in-out property <int> text-size: 1;
     in-out property <bool> link-previews: true;
     in-out property <bool> unmute-on-join;
+    in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
     in-out property <bool> notification-sound: true;
     in-out property <bool> notification-text: true;
@@ -2689,7 +2692,7 @@ export component TalkWindow inherits Window {
                             HorizontalLayout {
                                 height: 28px; spacing: 6px; padding-left: 4px;
                                 if root.room-encrypted || root.preview: Image { source: @image-url("icons/lock.svg"); width: 12px; image-fit: contain; colorize: Theme.muted; }
-                                Text { text: root.attaching ? "Attaching..." : root.composer-hint; color: Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                Text { text: root.attaching ? "Attaching..." : root.typing != "" ? root.typing : root.composer-hint; color: root.typing != "" && !root.attaching ? Theme.text : Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                             }
                         }
                     }
@@ -2944,6 +2947,12 @@ export component TalkWindow inherits Window {
                                         text: "Show link previews";
                                         description: "Cards for links, videos and bots under messages. Linked pictures still show.";
                                         checked <=> root.link-previews;
+                                        toggled => { root.preferences-changed(); }
+                                    }
+                                    SettingsSwitch {
+                                        text: "Let others see when you're typing";
+                                        description: "Discord and Matrix show \"typing...\" while you write. Others still show here when they type.";
+                                        checked <=> root.share-typing;
                                         toggled => { root.preferences-changed(); }
                                     }
                                 }

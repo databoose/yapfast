@@ -343,6 +343,12 @@ pub enum Command {
         item: String,
         index: usize,
     },
+    /// This account is typing in a room, or stopped. Backends tell others no more
+    /// often than their network expects.
+    Typing {
+        room: String,
+        typing: bool,
+    },
     /// Store a room's composer text in the encrypted session store; empty text clears it.
     SaveDraft {
         room: String,
@@ -393,6 +399,11 @@ pub enum Event {
     },
     /// A new message to notify the person of.
     Notify(Notification),
+    /// Who else is typing in a room now, by name.
+    Typing {
+        room: String,
+        names: Vec<String>,
+    },
     /// A picture [`Command::Pictures`] asked for, decoded.
     Picture {
         url: String,

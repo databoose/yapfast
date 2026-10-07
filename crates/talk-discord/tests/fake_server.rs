@@ -469,6 +469,38 @@ async fn talks_to_the_fake_server() {
         notified.1
     );
 
+    // Bob starts typing, and Talk says Alice is typing.
+    control
+        .post(format!("{server}/_control/typing"))
+        .send()
+        .await
+        .unwrap();
+    let typing = live_where(&mut live, |event| match event {
+        Live::Typing {
+            guild,
+            channel,
+            name,
+            ..
+        } => Some((guild, channel, name)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        typing,
+        (Some(guild.clone()), general.clone(), "Bob".to_owned())
+    );
+    discord.typing(&general).await.unwrap();
+    let typed = control
+        .get(format!("{server}/_control/typed"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let typed: Vec<String> = serde_json::from_str(&typed).unwrap();
+    assert_eq!(typed, vec![general.clone()]);
+
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
     let asked = discord.history(PRIVATE, &erin, None).await.unwrap();

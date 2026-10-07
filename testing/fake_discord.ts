@@ -18,6 +18,8 @@
 // /_control/mention makes Bob mention her in #general. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
+// POST /_control/typing makes Bob start typing in #general; GET
+// /_control/typed lists the channels Alice said she was typing in.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
 // banner and a server bio, Carol a banner colour, and the rest nothing more.
 // POST /_control/embeds makes Bob post an article link, whose preview arrives
@@ -1553,6 +1555,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return empty();
   }
 
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/typing$/))) {
+    if (!messages.has(m[1]!)) return notFound("Unknown Channel", 10003);
+    typed.push(m[1]!);
+    return empty();
+  }
+
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)\/ack$/))) {
     if (!messages.has(m[1]!)) return notFound("Unknown Channel", 10003);
     readStates.set(m[1]!, { last: m[2]!, mentions: 0 });
@@ -1744,6 +1752,8 @@ function postEmbeds(origin: string) {
 // --- Control ----------------------------------------------------------------
 
 let chat: ReturnType<typeof setInterval> | undefined;
+// Channels Alice said she was typing in, oldest first.
+const typed: string[] = [];
 let chatCount = 0;
 
 function chatTick(origin: string) {
@@ -1849,6 +1859,19 @@ const server = Bun.serve<SocketData>({
       const message = post(GENERAL, users.bob, `<@${users.alice.id}> are you in for co-op tonight?`, Date.now());
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
       return new Response("Bob mentioned Alice\n");
+    }
+    if (req.method === "POST" && path === "/_control/typing") {
+      dispatch("TYPING_START", {
+        channel_id: GENERAL,
+        guild_id: GUILD,
+        user_id: users.bob.id,
+        timestamp: Math.floor(Date.now() / 1000),
+        member: member(users.bob),
+      });
+      return new Response("Bob is typing\n");
+    }
+    if (req.method === "GET" && path === "/_control/typed") {
+      return Response.json(typed);
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

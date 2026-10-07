@@ -416,6 +416,7 @@ impl Matrix {
                             members: None,
                         };
                         load_members(&mut active, events);
+                        watch_typing(&mut active, &room, events);
                         publish_timeline(&mut active, client, &self.media_sender, events).await;
                         // Sync often delivers only the latest event; fill the first screen.
                         if active.timeline.items().await.len() < 30 {
@@ -433,7 +434,9 @@ impl Matrix {
                     }
                 }
             }
+            Command::Typing { room, typing } => typing_notice(client, &room, typing),
             Command::Send { room, body, reply } => {
+                typing_notice(client, &room, false);
                 let result = send(session, open.as_ref(), &room, &body, reply.as_deref()).await;
                 let _ = events.send(Event::SendResult { room, body, result });
             }
@@ -629,6 +632,51 @@ impl Matrix {
         self.client.remove_event_handler(self.space_handler);
         self.client.remove_event_handler(self.member_handler);
     }
+}
+
+/// Says who else is typing in the open room until it closes.
+fn watch_typing(active: &mut OpenRoom, room: &Room, events: &UnboundedSender<Event>) {
+    let (room, events) = (room.clone(), events.clone());
+    active.tasks.spawn(async move {
+        let (_guard, mut typing) = room.subscribe_to_typing_notifications();
+        let id = room.room_id().to_string();
+        loop {
+            let users = match typing.recv().await {
+                Ok(users) => users,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            };
+            let mut names = Vec::new();
+            for user in users {
+                let name = match room.get_member_no_sync(&user).await {
+                    Ok(Some(member)) => member.name().to_owned(),
+                    _ => user.localpart().to_owned(),
+                };
+                names.push(name);
+            }
+            names.sort();
+            let _ = events.send(Event::Typing {
+                room: id.clone(),
+                names,
+            });
+        }
+    });
+}
+
+/// Tells the room this account is typing, or stopped; matrix-sdk sends it only
+/// when the room needs to hear it again.
+fn typing_notice(client: &Client, room: &str, typing: bool) {
+    let Some(room) = OwnedRoomId::try_from(room)
+        .ok()
+        .and_then(|id| client.get_room(&id))
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        if let Err(error) = room.typing_notice(typing).await {
+            tracing::debug!(%error, "could not send a typing notice");
+        }
+    });
 }
 
 /// Read the open room's joined members in the background. The first read fetches
