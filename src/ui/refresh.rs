@@ -886,6 +886,30 @@ impl Adapter {
             }
             .into(),
         );
+        // A sent message, or another room's draft, ends the `:name` word.
+        if let Some((at, name)) = &self.emoji_word
+            && self.app.state.draft().get(*at..at + 1 + name.len())
+                != Some(format!(":{name}").as_str())
+        {
+            self.emoji_word = None;
+            self.show_emoji_suggestions(window);
+        }
+    }
+
+    /// Emoji for the `:name` being typed, or none.
+    pub(super) fn show_emoji_suggestions(&mut self, window: &TalkWindow) {
+        let (query, cells) = match &self.emoji_word {
+            Some((_, name)) => (
+                name.as_str(),
+                emoji::suggestions(name, &self.app.usable_emoji(), EMOJI_SUGGESTIONS),
+            ),
+            None => ("", Vec::new()),
+        };
+        window.set_emoji_suggestion_query(query.into());
+        if window.get_emoji_suggestion_index() >= cells.len() as i32 {
+            window.set_emoji_suggestion_index(0);
+        }
+        update_model(&self.models.emoji_suggestions, cells);
     }
 
     /// The messages, built again only where they changed, and where the list
@@ -927,6 +951,9 @@ impl Adapter {
             );
             if added {
                 self.restyle = true;
+                if self.emoji_word.is_some() {
+                    self.show_emoji_suggestions(window);
+                }
                 if !window.get_react_item().is_empty() {
                     update_model(
                         &self.models.emoji_rows,

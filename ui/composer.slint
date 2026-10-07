@@ -1,5 +1,6 @@
 import { Theme, Middle } from "theme.slint";
 import { ActionButton, IconButton, Avatar } from "controls.slint";
+import { EmojiCell } from "messages.slint";
 
 /// A file waiting to go with the next message.
 export struct StagedFile { name: string, size: string, has-picture: bool, picture: image }
@@ -44,7 +45,8 @@ export component Composer inherits Rectangle {
     in property <bool> enabled: true;
     in property <string> label;
     in property <length> text-size: 16px;
-    // Mention suggestions show, so the arrow keys, Tab, Enter and Escape go to them.
+    // Mention or emoji suggestions show, so the arrow keys, Tab, Enter and Escape
+    // go to them.
     in property <bool> suggesting;
     callback edited(string);
     callback accepted;
@@ -186,6 +188,43 @@ export component MentionList inherits SuggestionFrame {
                         text: mention.detail; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
                         color: Theme.muted; font-size: 13px;
                     }
+                }
+            }
+        }
+    }
+}
+
+// Emoji for the `:name` being typed, each with its name.
+export component EmojiSuggestions inherits SuggestionFrame {
+    in property <[EmojiCell]> emoji;
+    /// The name typed so far, without its colon.
+    in property <string> query;
+    /// The highlighted one.
+    in property <int> emoji-index;
+    in property <string> emoji-font;
+    callback emoji-chosen(int);
+    height: suggestions.preferred-height;
+    suggestions := VerticalLayout {
+        padding: 6px; spacing: 0px;
+        HorizontalLayout { padding-left: 6px; SuggestionHeading { text: "EMOJI MATCHING :" + root.query; } }
+        for cell[index] in root.emoji: Rectangle {
+            height: 36px; border-radius: 6px;
+            background: index == root.emoji-index ? Theme.active : pick.has-hover ? Theme.hover : transparent;
+            pick := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.emoji-chosen(index); }
+            }
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 10px; spacing: 10px;
+                // A custom emoji shows its name until its picture arrives.
+                Text {
+                    width: 24px; text: cell.glyph != cell.name ? cell.glyph : "";
+                    font-family: root.emoji-font; font-size: 20px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                Text {
+                    text: cell.name; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                    color: Theme.text; font-size: 14px; font-weight: 600;
                 }
             }
         }

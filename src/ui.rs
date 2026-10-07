@@ -579,6 +579,7 @@ struct Models {
     bar_reactions: Rc<VecModel<EmojiCell>>,
     menu_reactions: Rc<VecModel<EmojiCell>>,
     emoji_rows: Rc<VecModel<EmojiRow>>,
+    emoji_suggestions: Rc<VecModel<EmojiCell>>,
     forward_targets: Rc<VecModel<ForwardRow>>,
     participants: Rc<VecModel<PersonRow>>,
     /// Who is in the open DM's call, shown above its messages.
@@ -606,6 +607,7 @@ impl Models {
         window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
         window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
         window.set_emoji_rows(ModelRc::from(self.emoji_rows.clone()));
+        window.set_emoji_suggestions(ModelRc::from(self.emoji_suggestions.clone()));
         window.set_forward_targets(ModelRc::from(self.forward_targets.clone()));
         window.set_participants(ModelRc::from(self.participants.clone()));
         window.set_call_people(ModelRc::from(self.call_people.clone()));
@@ -660,6 +662,10 @@ struct Adapter {
     /// Suggestions for the `@` here were closed with Escape; they stay closed until
     /// the cursor leaves the word.
     mention_dismissed: Option<usize>,
+    /// The `:name` being typed in the composer: where its `:` is, and the name.
+    emoji_word: Option<(usize, String)>,
+    /// Like `mention_dismissed`, for the `:` here.
+    emoji_dismissed: Option<usize>,
     /// The room whose composer last reported its cursor, and the cursor's byte
     /// offset, where the picker's emoji go.
     caret: Option<(String, usize)>,
@@ -740,6 +746,8 @@ impl Adapter {
                 restyle: false,
                 mention_at: None,
                 mention_dismissed: None,
+                emoji_word: None,
+                emoji_dismissed: None,
                 caret: None,
                 notifier: crate::notify::Notifier::start(open_from_notification),
                 viewer_image: None,
@@ -1166,6 +1174,9 @@ const PROFILE_LARGE_WIDTH: f32 = 600. - 2. * 24.;
 
 /// The most custom emoji the picker fetches pictures for at once.
 const MAX_PICKER_EMOJI: usize = 600;
+
+/// How many emoji the composer suggests for a `:name` word.
+const EMOJI_SUGGESTIONS: usize = 10;
 
 /// The link that shows a blocked message, followed by its item.
 const BLOCKED_LINK: &str = "talk:blocked/";

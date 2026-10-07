@@ -13,7 +13,7 @@ import { Theme, Tip, Middle } from "theme.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, MenuItem, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
-import { StagedFile, StagedTile, Composer, MentionRow, MentionList, RequestBar } from "composer.slint";
+import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
@@ -171,6 +171,12 @@ export component TalkWindow inherits Window {
     callback composer-caret(string, int);
     callback mention-chosen(int);
     callback mention-dismissed;
+    // Emoji for the `:name` being typed, the chosen one highlighted.
+    in property <[EmojiCell]> emoji-suggestions;
+    in property <string> emoji-suggestion-query;
+    in-out property <int> emoji-suggestion-index;
+    callback emoji-suggestion-chosen(int);
+    callback emoji-suggestion-dismissed;
     // An emoji from the picker, by its reaction key, goes in at the composer's cursor.
     callback insert-emoji(string);
     /// "Replying to …" or "Editing your message"; empty for a new message.
@@ -1462,11 +1468,22 @@ export component TalkWindow inherits Window {
                                             placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
                                             edited(text) => { root.draft-edited(text); }
                                             accepted => { root.send(); }
-                                            suggesting: root.mentions.length > 0;
+                                            suggesting: root.mentions.length > 0 || root.emoji-suggestions.length > 0;
                                             caret(text, offset) => { root.composer-caret(text, offset); }
-                                            suggestion-moved(step) => { root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length); }
-                                            suggestion-chosen => { root.mention-chosen(root.mention-index); }
-                                            suggestion-dismissed => { root.mention-dismissed(); }
+                                            suggestion-moved(step) => {
+                                                if root.mentions.length > 0 {
+                                                    root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length);
+                                                } else {
+                                                    root.emoji-suggestion-index = Math.mod(root.emoji-suggestion-index + step + root.emoji-suggestions.length, root.emoji-suggestions.length);
+                                                }
+                                            }
+                                            suggestion-chosen => {
+                                                if root.mentions.length > 0 { root.mention-chosen(root.mention-index); }
+                                                else { root.emoji-suggestion-chosen(root.emoji-suggestion-index); }
+                                            }
+                                            suggestion-dismissed => {
+                                                if root.mentions.length > 0 { root.mention-dismissed(); } else { root.emoji-suggestion-dismissed(); }
+                                            }
                                             up-from-empty => { root.edit-last(); }
                                             up-to-messages => { root.browse-messages(); }
                                             paste => { root.paste-into-composer(); }
@@ -1582,6 +1599,15 @@ export component TalkWindow inherits Window {
         y: composer-box.absolute-position.y - (root.compose-label != "" ? 36px : 0px) - self.height - 8px;
         mentions: root.mentions; mention-index: root.mention-index;
         mention-chosen(index) => { root.mention-chosen(index); }
+    }
+    // Emoji suggestions, in the same place; see EmojiSuggestions.
+    if root.emoji-suggestions.length > 0 && root.mentions.length == 0 && root.composer-enabled: EmojiSuggestions {
+        x: composer-box.absolute-position.x;
+        width: composer-box.width;
+        y: composer-box.absolute-position.y - (root.compose-label != "" ? 36px : 0px) - self.height - 8px;
+        emoji: root.emoji-suggestions; query: root.emoji-suggestion-query;
+        emoji-index: root.emoji-suggestion-index; emoji-font: root.emoji-font;
+        emoji-chosen(index) => { root.emoji-suggestion-chosen(index); }
     }
     // Settings cover the window, showing one section.
     if root.settings-open: SettingsScreen {
