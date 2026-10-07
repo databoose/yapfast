@@ -56,6 +56,7 @@ use crate::{
         Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view, notification_text,
         plain_snippet, sort_members,
     },
+    network::Network,
     session::Session,
     voice,
 };
@@ -384,7 +385,7 @@ impl Matrix {
                 *open = None;
                 self.updates = Box::pin(futures_util::stream::pending());
                 // Another network's room opening closes this one, and that's all.
-                if crate::discord::is_discord(&id) {
+                if Network::of(&id) == Network::Discord {
                     return true;
                 }
                 let room = client.get_room(&match OwnedRoomId::try_from(id.clone()) {
@@ -874,6 +875,8 @@ async fn room_index(client: &Client) -> RoomIndex {
         };
         result.push(ChatRoom {
             id: room.room_id().to_string(),
+            network: Network::Matrix,
+            capabilities: Network::Matrix.capabilities(),
             name: room
                 .cached_display_name()
                 .map(|name| name.to_string())

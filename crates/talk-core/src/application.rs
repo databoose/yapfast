@@ -12,6 +12,7 @@ use crate::{
     },
     discord,
     mention::{self, Candidate, Target},
+    network::Network,
     voice::{self, Phase},
 };
 
@@ -328,7 +329,7 @@ impl AppState {
     pub fn writable(&self, room: &ChatRoom) -> bool {
         if room.voice {
             false
-        } else if discord::is_discord(&room.id) {
+        } else if room.network == Network::Discord {
             self.discord_online && !room.locked && !room.read_only
         } else {
             self.preview || (self.trusted && room.encrypted)
@@ -418,7 +419,7 @@ impl AppState {
             return Some(member.clone());
         }
         let sender = |message: &&ChatMessage| {
-            message.sender == user || message.sender.strip_prefix("discord:") == Some(user)
+            message.sender == user || discord::sender_user(&message.sender) == Some(user)
         };
         if let Some(message) = self.messages.iter().rev().find(sender) {
             return Some(ChatMember {
@@ -462,7 +463,7 @@ impl AppState {
         let Some(room) = self.selected.as_deref() else {
             return vec![];
         };
-        let on_discord = discord::is_discord(room);
+        let on_discord = Network::of(room) == Network::Discord;
         let mut seen: HashSet<String> = [&self.discord_user, &self.account]
             .into_iter()
             .flatten()
@@ -489,7 +490,7 @@ impl AppState {
             )
         });
         for (id, name, username, avatar, color) in people.chain(authors) {
-            let id = id.strip_prefix("discord:").unwrap_or(id);
+            let id = discord::sender_user(id).unwrap_or(id);
             if id.is_empty() || name.is_empty() || !seen.insert(id.to_owned()) {
                 continue;
             }
@@ -555,7 +556,7 @@ impl AppState {
     /// Whether a message can be forwarded into this conversation from this
     /// device. Forwarding doesn't cross into Discord yet.
     pub fn can_forward_to(&self, room: &ChatRoom) -> bool {
-        !self.busy && !discord::is_discord(&room.id) && self.writable(room)
+        !self.busy && room.capabilities.forward && self.writable(room)
     }
 
     /// How this Discord account stands with a Discord user.
@@ -582,9 +583,10 @@ impl AppState {
             && self.rooms.iter().any(|room| {
                 room.id == id
                     // A Discord DM or group DM has a call; a request waits for an answer.
-                    && (room.voice || (room.direct && discord::is_discord(id) && !room.request))
+                    && (room.voice
+                        || (room.direct && room.capabilities.dm_calls && !room.request))
                     && !room.locked
-                    && if discord::is_discord(id) {
+                    && if room.network == Network::Discord {
                         self.discord_online && !self.busy
                     } else {
                         self.preview
@@ -1619,7 +1621,11 @@ impl Application {
             return;
         };
         let text = self.state.selected_room().is_some_and(|room| !room.voice);
-        if !text || !self.state.room_ready || self.state.preview || !discord::is_discord(&room) {
+        if !text
+            || !self.state.room_ready
+            || self.state.preview
+            || Network::of(&room) != Network::Discord
+        {
             return;
         }
         self.shown.retain(|shown| shown.room != room);

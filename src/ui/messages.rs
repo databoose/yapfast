@@ -164,7 +164,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     let jumbo = message.formatted && custom_emoji::only_emoji(&body);
     let styled = if message.formatted {
         let linked = mention::linked(&body, &message.mentions);
-        if message.sender.starts_with("discord:") {
+        if message.spoilers {
             markdown(&spoiler::mark(&linked, &message.item, |index| {
                 revealed.contains(&format!("{}/{index}", message.item))
             }))

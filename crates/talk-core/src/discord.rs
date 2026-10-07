@@ -21,9 +21,12 @@ use tokio::{
 };
 
 #[cfg(feature = "discord")]
-use crate::chat::{self, ChatRoom, ChatServer, Event, VoicePerson};
+use crate::{
+    chat::{self, ChatRoom, ChatServer, Event, VoicePerson},
+    network::Network,
+};
 
-const PREFIX: &str = "discord:";
+pub(crate) const PREFIX: &str = "discord:";
 /// Discord channels kept after closing, so going back to one shows it at
 /// once, and of each, the newest messages and image previews kept: a preview
 /// is about 400 KB decoded. Previews come back from the disk quickly, so few
@@ -66,8 +69,14 @@ pub fn room_id(guild: &str, channel: &str) -> String {
     format!("{PREFIX}{guild}:{channel}")
 }
 
-pub fn is_discord(id: &str) -> bool {
-    id.starts_with(PREFIX)
+/// The sender of a Discord user's messages in Talk's timeline.
+pub fn sender_id(user: &str) -> String {
+    format!("{PREFIX}{user}")
+}
+
+/// The Discord user a timeline message's sender names; none for Matrix.
+pub fn sender_user(sender: &str) -> Option<&str> {
+    sender.strip_prefix(PREFIX)
 }
 
 /// The Discord server and channel of a channel's room id.
@@ -257,6 +266,8 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
         .iter()
         .map(|dm| ChatRoom {
             id: room_id(PRIVATE, &dm.id),
+            network: Network::Discord,
+            capabilities: Network::Discord.capabilities(),
             name: dm.name.clone(),
             direct: true,
             voice: false,
@@ -324,6 +335,8 @@ fn server_rooms(
         rooms.push(if voice {
             ChatRoom {
                 id: id.clone(),
+                network: Network::Discord,
+                capabilities: Network::Discord.capabilities(),
                 name: channel.name.clone(),
                 direct: false,
                 voice: true,
@@ -351,6 +364,8 @@ fn server_rooms(
         } else {
             ChatRoom {
                 id: id.clone(),
+                network: Network::Discord,
+                capabilities: Network::Discord.capabilities(),
                 name: channel.name.clone(),
                 direct: false,
                 voice: false,
@@ -708,6 +723,8 @@ mod tests {
             "a listed text channel counts its readers"
         );
         assert_eq!(rooms[0].id, "discord:10:21");
+        assert!(rooms.iter().all(|room| room.network == Network::Discord));
+        assert!(rooms[0].capabilities.categories && !rooms[0].capabilities.forward);
         assert_eq!(
             rooms[2].people[0].name, "Ann",
             "who is in voice shows without joining"

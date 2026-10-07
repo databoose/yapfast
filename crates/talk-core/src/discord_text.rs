@@ -33,6 +33,7 @@ use crate::{
     },
     discord::{self, KEPT_CHANNELS, KEPT_MESSAGES, KEPT_PREVIEWS},
     mention::{Mentioned, Target},
+    network::Network,
 };
 
 /// Discord's message length limit without Nitro, in characters.
@@ -756,7 +757,8 @@ impl OpenChannel {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
                 author: me_name.clone(),
-                sender: format!("discord:{me}"),
+                sender: discord::sender_id(&me),
+                spoilers: true,
                 avatar: Some(me_avatar.clone()),
                 color: me_color,
                 // Sent with its mentions in Discord's form, shown with their names.
@@ -887,7 +889,8 @@ impl OpenChannel {
             id,
             item: format!("d:{}", message.id),
             author,
-            sender: format!("discord:{}", message.author_id),
+            sender: discord::sender_id(&message.author_id),
+            spoilers: true,
             avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
             color: server.and_then(|server| discord.color(server, &message.author_id)),
             bot: message.bot,
@@ -1253,7 +1256,7 @@ pub fn command(
         return;
     }
     if let Command::Typing { room, typing } = &command
-        && discord::is_discord(room)
+        && Network::of(room) == Network::Discord
     {
         let now = Instant::now();
         let again = channels
@@ -1578,7 +1581,7 @@ pub fn command(
         | Command::ViewImage { room, .. }
         | Command::Earlier(room) => room.clone(),
         Command::Forward { room, target, .. }
-            if discord::is_discord(room) || discord::is_discord(target) =>
+            if Network::of(room) == Network::Discord || Network::of(target) == Network::Discord =>
         {
             let _ = events.send(Event::Forwarded {
                 room: target.clone(),
@@ -1589,7 +1592,7 @@ pub fn command(
         _ => return,
     };
     // Opening another network's room only closes the channel here.
-    if !discord::is_discord(&room) {
+    if Network::of(&room) != Network::Discord {
         return;
     }
     let discord = match discord {

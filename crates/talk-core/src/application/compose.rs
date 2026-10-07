@@ -131,7 +131,7 @@ impl Application {
             draft.clone()
         } else {
             let wired = mention::wire(&draft, &self.state.mention_candidates());
-            if discord::is_discord(&id) {
+            if Network::of(&id) == Network::Discord {
                 let usable: Vec<chat::CustomEmoji> = self
                     .usable_emoji()
                     .into_iter()

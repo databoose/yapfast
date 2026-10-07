@@ -24,6 +24,7 @@ use talk_core::{
     },
     discord, links, mention,
     meter::{self, InputMeter},
+    network::Network,
     runtime::BackgroundRuntime,
     spoiler,
     voice::{self, Phase},
@@ -1163,7 +1164,7 @@ const STICKER_SIZE: i32 = 160;
 /// The line under a Discord DM in the list: the person's custom status or
 /// what they're doing on one line, or a group's size.
 fn dm_detail(room: &talk_core::chat::ChatRoom) -> String {
-    if !room.direct || !discord::is_discord(&room.id) {
+    if !room.direct || room.network != Network::Discord {
         return String::new();
     }
     if room.person.is_none() {

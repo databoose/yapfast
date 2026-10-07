@@ -1580,7 +1580,7 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
     let listed: Vec<_> = app
         .state
         .scoped_rooms()
-        .filter(|room| discord::is_discord(&room.id))
+        .filter(|room| room.network == Network::Discord)
         .map(|room| (room.id.as_str(), room.members, room.mentions))
         .collect();
     assert_eq!(

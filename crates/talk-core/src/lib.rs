@@ -39,6 +39,7 @@ mod matrix_chat;
 mod matrix_voice;
 pub mod mention;
 pub mod meter;
+pub mod network;
 #[cfg(feature = "discord")]
 pub mod ring;
 pub mod runtime;

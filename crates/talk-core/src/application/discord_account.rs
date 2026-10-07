@@ -119,7 +119,7 @@ impl Application {
         {
             return vec![];
         }
-        let fetch = discord::is_discord(&room.id) && !self.state.preview;
+        let fetch = room.network == Network::Discord && !self.state.preview;
         let (room, profile) = (room.id.clone(), dm_profile(room, person.clone()));
         self.state.panel_profile = Some(ProfileView {
             profile,
@@ -143,7 +143,7 @@ impl Application {
         match self.state.selected_room() {
             Some(room)
                 if self.state.room_ready
-                    && discord::is_discord(&room.id)
+                    && room.network == Network::Discord
                     && (room.unread > 0 || room.mentions > 0) =>
             {
                 vec![Effect::Backend(Command::Discord(

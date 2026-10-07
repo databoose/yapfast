@@ -11,7 +11,7 @@ impl Application {
             return vec![];
         };
         let member = &member;
-        let discord = discord::is_discord(&room.id);
+        let discord = room.network == Network::Discord;
         let role = match member.role {
             Role::Admin => Some("Admin"),
             Role::Moderator => Some("Moderator"),
@@ -117,7 +117,7 @@ impl Application {
             color: None,
             members: None,
         });
-        if self.state.preview || !discord::is_discord(&room) {
+        if self.state.preview || Network::of(&room) != Network::Discord {
             return vec![];
         }
         vec![Effect::Backend(Command::Discord(
@@ -133,7 +133,7 @@ impl Application {
         profile: Profile,
         large: bool,
     ) -> Vec<Effect> {
-        let fetch = discord::is_discord(&room) && !self.state.preview;
+        let fetch = Network::of(&room) == Network::Discord && !self.state.preview;
         let user = profile.id.clone();
         self.state.profile = Some(ProfileView {
             profile,
@@ -182,7 +182,7 @@ pub(super) fn dm_profile(room: &ChatRoom, person: String) -> Profile {
     Profile {
         name: room.name.clone(),
         // A Discord username comes with the profile.
-        handle: if discord::is_discord(&room.id) {
+        handle: if room.network == Network::Discord {
             String::new()
         } else {
             person.clone()

@@ -6,7 +6,10 @@ use std::{path::PathBuf, sync::Arc};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::voice;
+use crate::{
+    network::{Capabilities, Network},
+    voice,
+};
 
 /// The text limit Talk enforces before queueing a message or an edit.
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
@@ -22,6 +25,10 @@ pub const VIEW_HEIGHT: u32 = 1200;
 #[derive(Clone, PartialEq, Eq)]
 pub struct ChatRoom {
     pub id: String,
+    /// The network it's on, which its id names too.
+    pub network: Network,
+    /// What its network lets Talk do here.
+    pub capabilities: Capabilities,
     pub name: String,
     pub direct: bool,
     pub voice: bool,
@@ -512,6 +519,8 @@ pub struct ChatMessage {
     pub author: String,
     /// The author's Matrix user ID, which tells apart people sharing a display name.
     pub sender: String,
+    /// Its text hides what's between `||` until clicked, as Discord's does.
+    pub spoilers: bool,
     /// The address of the author's avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// The RGB colour of the author's name, from their highest coloured
@@ -704,12 +713,9 @@ impl Command {
     /// Which network a command is for: the one whose room or account it
     /// names, or every network when it changes which room is open.
     pub(crate) fn route(&self) -> Route {
-        let network = |room: &str| {
-            if crate::discord::is_discord(room) {
-                Route::Discord
-            } else {
-                Route::Matrix
-            }
+        let network = |room: &str| match Network::of(room) {
+            Network::Discord => Route::Discord,
+            Network::Matrix => Route::Matrix,
         };
         match self {
             Command::Voice(_) => Route::Voice,
@@ -1306,7 +1312,7 @@ fn unlink_discord(
         .borrow()
         .room
         .as_deref()
-        .is_some_and(crate::discord::is_discord)
+        .is_some_and(|room| Network::of(room) == Network::Discord)
     {
         voice.command(voice::Command::Leave);
     }

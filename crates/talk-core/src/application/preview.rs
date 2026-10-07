@@ -163,6 +163,8 @@ impl Application {
 pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
     ChatRoom {
         id: id.into(),
+        network: Network::of(id),
+        capabilities: Network::of(id).capabilities(),
         name: name.into(),
         direct,
         voice: false,

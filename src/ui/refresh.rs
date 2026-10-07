@@ -469,7 +469,7 @@ impl Adapter {
             .map(|room| {
                 let heading = if direct {
                     String::new()
-                } else if discord::is_discord(&room.id) {
+                } else if room.capabilities.categories {
                     // Discord channels sit under their categories, as in Discord.
                     if category.replace(&room.category) != Some(&room.category) {
                         room.category.to_uppercase()
@@ -506,7 +506,7 @@ impl Adapter {
                     initial: initial(&room.name),
                     tint: tint(&room.id),
                     picture: cached_picture(&mut self.pictures, state, room.avatar.as_deref()),
-                    discord: room.direct && discord::is_discord(&room.id),
+                    discord: room.direct && room.network == Network::Discord,
                     locked: room.locked,
                     person: room.person.is_some(),
                     people: if room.people.is_empty() {
@@ -537,7 +537,7 @@ impl Adapter {
                     call: room.direct && !room.people.is_empty(),
                     // Discord sends only friends' presence; anyone else in a
                     // one-to-one DM shows offline, as in Discord's DM list.
-                    presence: if room.person.is_some() && discord::is_discord(&room.id) {
+                    presence: if room.person.is_some() && room.network == Network::Discord {
                         presence_name(room.presence.or(Some(Presence::Offline)))
                     } else {
                         presence_name(room.presence)
@@ -937,7 +937,7 @@ impl Adapter {
         window.set_room_encrypted(room.is_some_and(|room| room.encrypted));
         window.set_room_ready(state.room_ready);
         window.set_draft(state.draft().into());
-        let discord_room = room.is_some_and(|room| discord::is_discord(&room.id));
+        let discord_room = room.is_some_and(|room| room.network == Network::Discord);
         // An unverified Matrix device can type; the hint says why it can't send.
         window.set_composer_enabled(
             state.room_ready
@@ -1234,7 +1234,7 @@ impl Adapter {
                 && voice
                     .room
                     .as_deref()
-                    .is_some_and(talk_core::discord::is_discord),
+                    .is_some_and(|room| Network::of(room) == Network::Discord),
         );
         window.set_sharing(voice.sharing.is_some());
         window.set_share_resolution(match voice.quality.resolution {
@@ -1324,7 +1324,7 @@ impl Adapter {
         );
         let present = room.map_or(&[][..], |room| room.people.as_slice());
         // A Discord DM's call, shown above its messages.
-        let dm_call = room.filter(|room| room.direct && discord::is_discord(&room.id));
+        let dm_call = room.filter(|room| room.direct && room.capabilities.dm_calls);
         let dm_person = dm_call.and_then(|room| room.person.as_deref());
         window.set_dm_person(dm_person.unwrap_or_default().into());
         window.set_dm_friend(dm_person.map_or(0, |person| match state.relation(person) {

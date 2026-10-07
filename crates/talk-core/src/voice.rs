@@ -376,7 +376,7 @@ async fn join(
     remembered: Option<&Path>,
 ) -> Result<()> {
     #[cfg(feature = "discord")]
-    if crate::discord::is_discord(&id) {
+    if crate::network::Network::of(&id) == crate::network::Network::Discord {
         let discord = calls.discord.borrow().clone();
         return match (discord, crate::discord::parse_room(&id)) {
             (Some(discord), Some((guild, channel))) => {
