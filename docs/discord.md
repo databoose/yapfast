@@ -53,11 +53,14 @@ without affecting Matrix.
 Talk follows the rules Discord documents for every client:
 
 - **HTTP rate limits.** Each request's route maps to the bucket Discord names in
-  `X-RateLimit-Bucket`. A bucket's major ID is the channel, server or webhook,
-  so each channel gets its own bucket. Talk waits for an empty bucket to reset
-  before it asks again. It also waits after a global 429. If Discord still
-  answers 429, Talk waits `Retry-After` and tries once more. A wait longer than
-  a minute fails at once, with a message to try again later.
+  `X-RateLimit-Bucket`. Discord counts a bucket apart for each major ID, the
+  channel, server or webhook, so Talk keys its count by both: sending in one
+  channel doesn't hold back another. Talk waits for an empty bucket to reset
+  before it asks again. It also waits after a global 429, marked so in the
+  headers or the body. If Discord still answers 429, Talk waits the body's
+  `retry_after`, or `Retry-After`, or a second when Discord names neither, and
+  tries once more. A wait longer than a minute fails at once, with a message to
+  try again later.
 - **Invalid requests.** Discord bans an IP that sends 10,000 requests in a
   10-minute window answered 401, 403 or 429. Talk doesn't ask for what it knows
   will be refused: a channel the account's roles hide shows a notice instead
