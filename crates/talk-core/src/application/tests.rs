@@ -2326,3 +2326,106 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
         "not unfriending"
     );
 }
+
+#[test]
+fn the_timeline_is_gone_through_for_pictures_only_once_it_changed() {
+    let asked = |effects: Vec<Effect>| -> Vec<String> {
+        effects
+            .into_iter()
+            .flat_map(|effect| match effect {
+                Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) => urls,
+                _ => vec![],
+            })
+            .collect()
+    };
+    let mut app = connected();
+    let first = ChatMessage {
+        avatar: Some("ann.png".into()),
+        ..message("e:$ann", false)
+    };
+    let timeline = |messages| Event::Timeline {
+        room: "dm".into(),
+        messages,
+    };
+    assert_eq!(asked(app.apply(timeline(vec![first.clone()]))), ["ann.png"]);
+    // As though it had gone: the same timeline isn't gone through again,
+    // and a keystroke asks for nothing.
+    app.requested_pictures.remove("ann.png");
+    let typing = Event::Typing {
+        room: "dm".into(),
+        names: vec!["Ann".into()],
+    };
+    assert!(asked(app.apply(typing)).is_empty());
+    assert!(asked(app.dispatch(Action::SetDraft("Hi".into()))).is_empty());
+    assert_eq!(asked(app.apply(timeline(vec![first]))), ["ann.png"]);
+}
+
+#[test]
+fn closed_channels_keep_their_newest_messages_and_previews() {
+    let picture = Arc::new(Picture::default());
+    let with_picture = |index: usize| ChatMessage {
+        attachments: vec![crate::chat::Attachment {
+            name: "a.png".into(),
+            size: None,
+            image: true,
+            dimensions: None,
+            preview: Some(picture.clone()),
+            preview_failed: false,
+            placement: crate::chat::Placement::Message,
+            spoiler: false,
+        }],
+        ..message(&format!("e:${index}"), false)
+    };
+    let timeline: Vec<_> = (0..discord::KEPT_MESSAGES + 50).map(with_picture).collect();
+    let kept = shelved(&timeline);
+    assert_eq!(kept.len(), discord::KEPT_MESSAGES);
+    assert_eq!(kept[0].id, "e:$50", "the oldest went");
+    let previews: Vec<bool> = kept
+        .iter()
+        .map(|message| message.attachments[0].preview.is_some())
+        .collect();
+    assert!(
+        previews[..discord::KEPT_MESSAGES - discord::KEPT_PREVIEWS]
+            .iter()
+            .all(|shown| !shown)
+    );
+    assert!(
+        previews[discord::KEPT_MESSAGES - discord::KEPT_PREVIEWS..]
+            .iter()
+            .all(|shown| *shown)
+    );
+}
+
+#[test]
+fn pictures_off_screen_go_once_many_have_arrived() {
+    let mut app = connected();
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: vec![ChatMessage {
+            avatar: Some("ann.png".into()),
+            ..message("e:$ann", false)
+        }],
+    });
+    let arrive = |app: &mut Application, url: String| {
+        app.apply(Event::Picture {
+            url,
+            picture: Arc::new(Picture::default()),
+        });
+    };
+    arrive(&mut app, "ann.png".into());
+    for index in 0..KEPT_PICTURES {
+        app.requested_pictures.insert(format!("{index}.png"));
+        arrive(&mut app, format!("{index}.png"));
+    }
+    assert_eq!(
+        app.state.pictures.len(),
+        1,
+        "all but the one on screen went"
+    );
+    assert!(app.state.pictures.contains_key("ann.png"));
+    assert!(
+        !app.requested_pictures.contains("1.png"),
+        "asked for again when shown"
+    );
+    assert_eq!(app.state.picture_changes, KEPT_PICTURES as u64 + 1);
+}

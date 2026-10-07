@@ -31,22 +31,16 @@ use crate::{
         Notification, Picture, Placement, Profile, ProfileFriend, ProfileRole, ProfileServer,
         Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
-    discord,
+    discord::{self, KEPT_CHANNELS, KEPT_MESSAGES, KEPT_PREVIEWS},
     mention::{Mentioned, Target},
 };
 
 /// Discord's message length limit without Nitro, in characters.
 pub const MAX_CHARS: usize = 2000;
-/// Channels kept after closing, and of each, the newest messages and image
-/// previews kept: a preview is about 400 KB decoded. Previews come back from
-/// the disk quickly, so few are kept.
-const RECENT: usize = 40;
-const KEPT_MESSAGES: usize = 200;
 /// How long someone shows as typing after Discord says they started.
 const TYPING: Duration = Duration::from_secs(10);
 /// How often Discord hears that this account is still typing.
 const TYPING_AGAIN: Duration = Duration::from_secs(8);
-const KEPT_PREVIEWS: usize = 4;
 /// How often changed channels' newest messages go to disk; see
 /// [`talk_discord::cache`].
 const SAVE_EVERY: Duration = Duration::from_secs(20);
@@ -130,6 +124,11 @@ pub struct OpenChannel {
     dirty: bool,
     pictures: HashMap<String, Option<Arc<Picture>>>,
     requested: HashSet<String>,
+    /// Loaded messages as the timeline last showed them, by snowflake, so a
+    /// change renders only the messages it changed. A message leaves when it
+    /// changes, and all leave when what they were rendered with changes.
+    rendered: HashMap<u64, ChatMessage>,
+    rendered_with: Rendering,
     // Loading goes on after the channel closes, and dropping the set when
     // it leaves the recent channels cancels it. What the person did, such
     // as sending, finishes on its own.
@@ -165,6 +164,8 @@ impl OpenChannel {
             dirty: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
+            rendered: HashMap::new(),
+            rendered_with: Rendering::default(),
             tasks: JoinSet::new(),
         })
     }
@@ -273,6 +274,8 @@ impl OpenChannel {
             .collect();
         self.pictures.retain(|url, _| shown.contains(url));
         self.requested.retain(|url| shown.contains(url));
+        // Rendered messages hold their previews; they render again on opening.
+        self.rendered = HashMap::new();
     }
 
     /// Its newest messages to keep on disk, once they've changed.
@@ -295,6 +298,7 @@ impl OpenChannel {
         if let Some(nonce) = &message.nonce {
             self.pending.retain(|pending| &pending.nonce != nonce);
         }
+        self.rendered.remove(&message.order());
         self.messages.insert(message.order(), message);
     }
 
@@ -315,6 +319,7 @@ impl OpenChannel {
                 let Some(known) = self.messages.get_mut(&message.order()) else {
                     return false;
                 };
+                self.rendered.remove(&message.order());
                 // Updates don't always carry reactions; keep the counted ones.
                 let reactions = std::mem::take(&mut known.reactions);
                 *known = Message {
@@ -335,10 +340,11 @@ impl OpenChannel {
                 me,
                 added,
             } if channel == &self.channel => {
-                let Some(known) = self.messages.get_mut(&message.parse().unwrap_or_default())
-                else {
+                let order = message.parse().unwrap_or_default();
+                let Some(known) = self.messages.get_mut(&order) else {
                     return false;
                 };
+                self.rendered.remove(&order);
                 known.react(key, emoji, *me, *added);
                 true
             }
@@ -347,15 +353,17 @@ impl OpenChannel {
                 message,
                 key,
             } if channel == &self.channel => {
-                let Some(known) = self.messages.get_mut(&message.parse().unwrap_or_default())
-                else {
+                let order = message.parse().unwrap_or_default();
+                let Some(known) = self.messages.get_mut(&order) else {
                     return false;
                 };
+                self.rendered.remove(&order);
                 known
                     .reactions
                     .retain(|reaction| key.as_ref().is_some_and(|key| &reaction.key != key));
                 true
             }
+            // Rendered with what Names has, which publishing checks.
             Live::Names => true,
             _ => false,
         }
@@ -599,6 +607,15 @@ impl OpenChannel {
         if !self.requested.contains(&url) {
             return;
         }
+        for (order, message) in &self.messages {
+            if message
+                .attachments
+                .iter()
+                .any(|attachment| attachment.preview_url.as_ref() == Some(&url))
+            {
+                self.rendered.remove(order);
+            }
+        }
         self.pictures.insert(url, picture);
     }
 
@@ -685,7 +702,9 @@ impl OpenChannel {
         });
     }
 
-    /// The channel as Talk's timeline. Starts downloading image previews it lacks.
+    /// The channel as Talk's timeline. Starts downloading image previews it
+    /// lacks. Messages that didn't change since the last time come from
+    /// [`OpenChannel::rendered`].
     pub fn publish(&mut self, discord: &Discord, done: &UnboundedSender<Done>) -> Vec<ChatMessage> {
         let snapshot = discord.snapshots().borrow().clone();
         let me = snapshot.user_id.clone().unwrap_or_default();
@@ -693,7 +712,18 @@ impl OpenChannel {
             .servers
             .iter()
             .find(|server| server.id == self.guild)
-            .map(Arc::as_ref);
+            .cloned();
+        let rendering = Rendering {
+            names: discord.names_version(),
+            me: me.clone(),
+            blocked: snapshot.blocked.clone(),
+            server: server.clone(),
+        };
+        if !rendering.alike(&self.rendered_with) {
+            self.rendered.clear();
+        }
+        self.rendered_with = rendering;
+        let server = server.as_deref();
         let name = |user: &str, fallback: &str| {
             discord
                 .name(&self.guild, user)
@@ -701,112 +731,18 @@ impl OpenChannel {
         };
         let mut wanted = Vec::new();
         let mut rows = Vec::with_capacity(self.messages.len() + self.pending.len());
-        for message in self.messages.values() {
-            let own = message.author_id == me;
-            let sent_here = message
-                .nonce
-                .as_ref()
-                .is_some_and(|nonce| self.sent.contains(nonce));
-            let author = name(&message.author_id, &message.author);
-            let body = match &message.system {
-                Some(system) => format!("{author} {system}"),
-                None => discord.render(server, &message.content),
+        let mut kept = std::mem::take(&mut self.rendered);
+        for (order, message) in &self.messages {
+            let id = match &message.nonce {
+                Some(nonce) if self.sent.contains(nonce) => format!("n:{nonce}"),
+                _ => format!("d:{}", message.id),
             };
-            let attachments = message
-                .attachments
-                .iter()
-                .map(|attachment| {
-                    let preview = attachment.preview_url.as_ref().and_then(|url| {
-                        match self.pictures.get(url) {
-                            Some(picture) => Some(picture.clone()),
-                            None => {
-                                wanted.push(url.clone());
-                                None
-                            }
-                        }
-                    });
-                    Attachment {
-                        name: attachment.name.clone(),
-                        size: attachment.size,
-                        image: attachment.image && attachment.preview_url.is_some(),
-                        dimensions: attachment.dimensions,
-                        preview_failed: matches!(preview, Some(None)),
-                        preview: preview.flatten(),
-                        placement: match attachment.shown {
-                            Shown::Message => Placement::Message,
-                            Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
-                            Shown::Thumbnail(index) => Placement::Thumbnail(index),
-                            Shown::Sticker => Placement::Sticker,
-                        },
-                        spoiler: attachment.spoiler,
-                    }
-                })
-                .collect();
-            let embeds = message
-                .embeds
-                .iter()
-                .map(|embed| chat_embed(discord, server, embed))
-                .collect();
-            let reply = message.reply.as_ref().map(|reply| match reply {
-                DiscordReply::Message {
-                    id,
-                    author_id,
-                    author,
-                    content,
-                } => Reply {
-                    author: name(author_id, author),
-                    avatar: Some(discord.avatar(Some(&self.guild), author_id)),
-                    body: plain_snippet(&crate::spoiler::hide(&discord.render(server, content))),
-                    item: Some(format!("d:{id}")),
-                },
-                DiscordReply::Deleted => Reply {
-                    author: String::new(),
-                    avatar: None,
-                    body: "The original message was deleted.".into(),
-                    item: None,
-                },
-            });
-            let timestamp = message.timestamp();
-            let ordinary = message.system.is_none();
-            rows.push(ChatMessage {
-                id: match &message.nonce {
-                    Some(nonce) if sent_here => format!("n:{nonce}"),
-                    _ => format!("d:{}", message.id),
-                },
-                item: format!("d:{}", message.id),
-                author,
-                sender: format!("discord:{}", message.author_id),
-                avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
-                color: server.and_then(|server| discord.color(server, &message.author_id)),
-                body,
-                formatted: ordinary,
-                time: crate::clock::time(timestamp),
-                timestamp,
-                own,
-                edited: message.edited,
-                deleted: false,
-                blocked: snapshot.blocked.contains(&message.author_id),
-                delivery: Delivery::Sent,
-                reply,
-                reactions: message
-                    .reactions
-                    .iter()
-                    .map(|reaction| Reaction {
-                        key: reaction.key.clone(),
-                        count: reaction.count,
-                        mine: reaction.me,
-                    })
-                    .collect(),
-                attachments,
-                embeds,
-                mentions: mentions(discord, server, &message.content),
-                emoji: custom_emoji(message),
-                can_reply: ordinary,
-                can_edit: own && message.editable,
-                can_delete: own,
-                can_react: ordinary,
-                can_forward: false,
-            });
+            let row = match kept.remove(order) {
+                Some(row) if row.id == id => row,
+                _ => self.render(discord, &snapshot, server, message, id, &mut wanted),
+            };
+            self.rendered.insert(*order, row.clone());
+            rows.push(row);
         }
         let me_name = name(&me, "You");
         let me_avatar = discord.avatar(Some(&self.guild), &me);
@@ -863,6 +799,124 @@ impl OpenChannel {
         rows
     }
 
+    /// A loaded message as the timeline shows it, with `id` for its row.
+    /// Previews it lacks go in `wanted`.
+    fn render(
+        &self,
+        discord: &Discord,
+        snapshot: &Snapshot,
+        server: Option<&talk_discord::ready::Server>,
+        message: &Message,
+        id: String,
+        wanted: &mut Vec<String>,
+    ) -> ChatMessage {
+        let me = snapshot.user_id.as_deref().unwrap_or_default();
+        let name = |user: &str, fallback: &str| {
+            discord
+                .name(&self.guild, user)
+                .unwrap_or_else(|| fallback.to_owned())
+        };
+        let own = message.author_id == me;
+        let author = name(&message.author_id, &message.author);
+        let body = match &message.system {
+            Some(system) => format!("{author} {system}"),
+            None => discord.render(server, &message.content),
+        };
+        let attachments =
+            message
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    let preview = attachment.preview_url.as_ref().and_then(|url| {
+                        match self.pictures.get(url) {
+                            Some(picture) => Some(picture.clone()),
+                            None => {
+                                wanted.push(url.clone());
+                                None
+                            }
+                        }
+                    });
+                    Attachment {
+                        name: attachment.name.clone(),
+                        size: attachment.size,
+                        image: attachment.image && attachment.preview_url.is_some(),
+                        dimensions: attachment.dimensions,
+                        preview_failed: matches!(preview, Some(None)),
+                        preview: preview.flatten(),
+                        placement: match attachment.shown {
+                            Shown::Message => Placement::Message,
+                            Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
+                            Shown::Thumbnail(index) => Placement::Thumbnail(index),
+                            Shown::Sticker => Placement::Sticker,
+                        },
+                        spoiler: attachment.spoiler,
+                    }
+                })
+                .collect();
+        let embeds = message
+            .embeds
+            .iter()
+            .map(|embed| chat_embed(discord, server, embed))
+            .collect();
+        let reply = message.reply.as_ref().map(|reply| match reply {
+            DiscordReply::Message {
+                id,
+                author_id,
+                author,
+                content,
+            } => Reply {
+                author: name(author_id, author),
+                avatar: Some(discord.avatar(Some(&self.guild), author_id)),
+                body: plain_snippet(&crate::spoiler::hide(&discord.render(server, content))),
+                item: Some(format!("d:{id}")),
+            },
+            DiscordReply::Deleted => Reply {
+                author: String::new(),
+                avatar: None,
+                body: "The original message was deleted.".into(),
+                item: None,
+            },
+        });
+        let timestamp = message.timestamp();
+        let ordinary = message.system.is_none();
+        ChatMessage {
+            id,
+            item: format!("d:{}", message.id),
+            author,
+            sender: format!("discord:{}", message.author_id),
+            avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
+            color: server.and_then(|server| discord.color(server, &message.author_id)),
+            body,
+            formatted: ordinary,
+            time: crate::clock::time(timestamp),
+            timestamp,
+            own,
+            edited: message.edited,
+            deleted: false,
+            blocked: snapshot.blocked.contains(&message.author_id),
+            delivery: Delivery::Sent,
+            reply,
+            reactions: message
+                .reactions
+                .iter()
+                .map(|reaction| Reaction {
+                    key: reaction.key.clone(),
+                    count: reaction.count,
+                    mine: reaction.me,
+                })
+                .collect(),
+            attachments,
+            embeds,
+            mentions: mentions(discord, server, &message.content),
+            emoji: custom_emoji(message),
+            can_reply: ordinary,
+            can_edit: own && message.editable,
+            can_delete: own,
+            can_react: ordinary,
+            can_forward: false,
+        }
+    }
+
     fn fetch_picture(&mut self, discord: &Discord, done: &UnboundedSender<Done>, url: String) {
         if !self.requested.insert(url.clone()) {
             return;
@@ -880,6 +934,43 @@ impl OpenChannel {
             };
             let _ = done.send(Done::Picture { room, url, picture });
         });
+    }
+}
+
+/// What rendering a message depends on besides the message and its
+/// previews: the names known, who this account is and blocks, and the
+/// server's roles and channels, which mentions show by name.
+#[derive(Default)]
+struct Rendering {
+    names: u64,
+    me: String,
+    blocked: Vec<String>,
+    server: Option<Arc<talk_discord::ready::Server>>,
+}
+
+impl Rendering {
+    /// Whether messages render the same with either. A server changes with
+    /// its channels' unread marks, which messages don't show.
+    fn alike(&self, other: &Self) -> bool {
+        fn channels(
+            server: &talk_discord::ready::Server,
+        ) -> impl Iterator<Item = (&String, &String)> {
+            server
+                .text_channels
+                .iter()
+                .chain(&server.voice_channels)
+                .map(|channel| (&channel.id, &channel.name))
+        }
+        let server = match (&self.server, &other.server) {
+            (Some(one), Some(other)) => {
+                Arc::ptr_eq(one, other)
+                    || (one.role_names == other.role_names
+                        && one.role_colors == other.role_colors
+                        && channels(one).eq(channels(other)))
+            }
+            (one, other) => one.is_none() && other.is_none(),
+        };
+        self.names == other.names && self.me == other.me && self.blocked == other.blocked && server
     }
 }
 
@@ -925,7 +1016,7 @@ impl Channels {
         if let Some(mut channel) = self.open.take() {
             channel.shelve();
             self.recent.push(channel);
-            if self.recent.len() > RECENT {
+            if self.recent.len() > KEPT_CHANNELS {
                 let mut gone = self.recent.remove(0);
                 save(gone.take_changes());
             }
@@ -2280,6 +2371,100 @@ mod tests {
     }
 
     #[test]
+    fn changes_render_again_only_the_messages_they_change() {
+        let mut open = OpenChannel::new("discord:10:11").unwrap();
+        let with_image = Message {
+            attachments: vec![talk_discord::message::Attachment {
+                name: "a.png".into(),
+                size: None,
+                url: String::new(),
+                image: true,
+                dimensions: None,
+                preview_url: Some("preview/9".into()),
+                view_url: None,
+                shown: Shown::Message,
+                spoiler: false,
+            }],
+            ..message("9", None)
+        };
+        open.loaded(false, [page([3, 5, 7]), vec![with_image]].concat());
+        let show = |open: &mut OpenChannel| {
+            for order in [3, 5, 7, 9] {
+                open.rendered.insert(order, ChatMessage::default());
+            }
+        };
+        let kept = |open: &OpenChannel| {
+            let mut kept: Vec<u64> = open.rendered.keys().copied().collect();
+            kept.sort();
+            kept
+        };
+        show(&mut open);
+        open.live(&Live::Reaction {
+            channel: "11".into(),
+            message: "5".into(),
+            key: "👍".into(),
+            emoji: "👍".into(),
+            me: false,
+            added: true,
+        });
+        assert_eq!(kept(&open), [3, 7, 9]);
+        show(&mut open);
+        open.edited(Message {
+            content: "changed".into(),
+            ..message("7", None)
+        });
+        open.live(&Live::Created(message("11", None)));
+        assert_eq!(kept(&open), [3, 5, 9], "an edit, and a new message");
+        show(&mut open);
+        open.requested.insert("preview/9".into());
+        open.picture("preview/9".into(), None);
+        assert_eq!(kept(&open), [3, 5, 7], "its preview arrived");
+        open.live(&Live::Names);
+        assert_eq!(kept(&open), [3, 5, 7], "publishing checks for new names");
+        open.shelve();
+        assert!(open.rendered.is_empty(), "closed, it keeps fewer previews");
+    }
+
+    #[test]
+    fn messages_render_again_once_what_they_show_changes() {
+        let server = |name: &str, unread: bool| {
+            Some(Arc::new(talk_discord::ready::Server {
+                id: "10".into(),
+                text_channels: vec![talk_discord::ready::Channel {
+                    id: "11".into(),
+                    name: name.into(),
+                    unread,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }))
+        };
+        let rendering = |names: u64, server| Rendering {
+            names,
+            me: "1".into(),
+            blocked: vec![],
+            server,
+        };
+        let shown = rendering(1, server("general", false));
+        assert!(
+            shown.alike(&rendering(1, server("general", true))),
+            "unread"
+        );
+        assert!(
+            !shown.alike(&rendering(1, server("chat", false))),
+            "renamed"
+        );
+        assert!(
+            !shown.alike(&rendering(2, server("general", false))),
+            "names"
+        );
+        assert!(!shown.alike(&Rendering {
+            blocked: vec!["2".into()],
+            ..rendering(1, server("general", false))
+        }));
+    }
+
+    #[test]
     fn channels_go_to_disk_once_they_change() {
         let mut open = OpenChannel::new("discord:10:11").unwrap();
         assert!(open.take_changes().is_none(), "nothing to save yet");
@@ -2320,11 +2505,11 @@ mod tests {
         assert_eq!(ids(&again), [3, 5, 7]);
         assert!(again.loaded);
         assert!(channels.reopen("discord:10:11").is_none(), "taken out");
-        for channel in 0..=RECENT as u64 {
+        for channel in 0..=KEPT_CHANNELS as u64 {
             channels.open = OpenChannel::new(&format!("discord:10:{channel}"));
             channels.close();
         }
-        assert_eq!(channels.recent.len(), RECENT);
+        assert_eq!(channels.recent.len(), KEPT_CHANNELS);
         assert!(
             channels.get_mut("discord:10:0").is_none(),
             "the oldest went"

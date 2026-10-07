@@ -8,7 +8,13 @@
 // busy account has, for measuring; POST /_control/busy-start makes Bob post
 // in their channels ten times a second, and /_control/busy-stop stops him.
 // `--dms N` adds N older DMs, each with a person of its own, every other one
-// a friend, as a busy account has.
+// a friend, as a busy account has. `--images N` attaches a picture of its own
+// to every Nth extra history message, for a channel heavy with previews.
+// `--channels N` adds text channels room-1 to room-N to "Server", each with 60
+// messages, every third with a picture, written in turn by `--authors N`
+// people of their own (Bob without it), for a long session across channels.
+// POST /_control/crowd-start makes someone new post in the last of them, or
+// in #general, 50 times a second, and /_control/crowd-stop stops them.
 // POST /_control/chat-start makes Bob post in
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
@@ -31,8 +37,10 @@
 // POST /_control/call makes Bob call her; see "DM calls" below.
 // Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
 // Carol, whom she has none with yet.
-// POST /_control/typing makes Bob start typing in #general; GET
-// /_control/typed lists the channels Alice said she was typing in.
+// POST /_control/typing makes Bob start typing in #general, or with ?dm in
+// his DM; GET /_control/typed lists the channels Alice said she was typing in.
+// POST /_control/react makes Carol add or take back a reaction on the newest
+// message in #general.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
 // banner and a server bio, Carol a banner colour, and the rest nothing more.
 // POST /_control/embeds makes Bob post an article link, whose preview arrives
@@ -77,6 +85,9 @@ const { values: args } = parseArgs({
     extra: { type: "string", default: "56" },
     servers: { type: "string", default: "1" },
     dms: { type: "string", default: "0" },
+    images: { type: "string", default: "0" },
+    channels: { type: "string", default: "0" },
+    authors: { type: "string", default: "0" },
   },
 });
 
@@ -593,9 +604,59 @@ function sample(index: number): string {
 }
 
 const extra = Number(args.extra);
+const imageEvery = Number(args.images);
 for (let index = 0; index < extra; index++) {
-  post(GENERAL, users.bob, sample(index), HISTORY_START + (4 + index) * 60_000);
+  const ms = HISTORY_START + (4 + index) * 60_000;
+  const files: File[] = [];
+  if (imageEvery > 0 && index % imageEvery === 0) {
+    const shade = [(index * 37) % 200, (index * 71) % 200, 160];
+    const draw = (w: number, h: number) =>
+      png(w, h, (x, y) => [shade[0]! + Math.floor((55 * x) / w), shade[1]! + Math.floor((55 * y) / h), shade[2]!, 255]);
+    files.push(addFile({ id: snowflake(ms, 1), channel: GENERAL, filename: `photo-${index}.png`, contentType: "image/png", data: draw(480, 320), width: 480, height: 320, draw }));
+  }
+  post(GENERAL, users.bob, sample(index), ms, { files });
 }
+
+// The channels of `--channels`, written by the people of `--authors`.
+const authors: User[] = Array.from({ length: Number(args.authors) }, (_, n) => ({
+  id: (1_700_000_000_000_000_000n + BigInt(n)).toString(),
+  username: `writer${n}`,
+  global_name: `Writer ${n}`,
+  avatar: `w${n}`,
+}));
+for (const author of authors) userById.set(author.id, author);
+const ROOM_HISTORY = 60;
+const rooms = Array.from({ length: Number(args.channels) }, (_, n) => {
+  const id = (1_400_000_000_000_010_000n + BigInt(n)).toString();
+  messages.set(id, []);
+  for (let index = 0; index < ROOM_HISTORY; index++) {
+    const ms = HISTORY_START + (n * ROOM_HISTORY + index) * 1000;
+    const author = authors.length ? authors[(n * 7 + index) % authors.length]! : users.bob;
+    const files: File[] = [];
+    if (index % 3 === 0) {
+      const shade = [(n * 53 + index * 11) % 200, (n * 29 + index * 37) % 200, 120];
+      const draw = (w: number, h: number) =>
+        png(w, h, (x, y) => [shade[0]! + Math.floor((55 * x) / w), shade[1]! + Math.floor((55 * y) / h), shade[2]!, 255]);
+      let data: Uint8Array | undefined;
+      files.push(addFile({
+        id: snowflake(ms, 1),
+        channel: id,
+        filename: `room-${n + 1}-${index}.png`,
+        contentType: "image/png",
+        get data() {
+          return (data ??= draw(480, 320));
+        },
+        width: 480,
+        height: 320,
+        draw,
+      }));
+    }
+    post(id, author, `room-${n + 1} message ${index}: ${sample(index)}`, ms, { files });
+  }
+  return id;
+});
+let crowd: ReturnType<typeof setInterval> | undefined;
+let crowdCount = 0;
 
 // The extra DMs of `--dms`, older than the fixture's.
 const fillerPeople: User[] = [];
@@ -762,6 +823,7 @@ function guild() {
       channel(CATEGORY, "Channels", 4, 0, null),
       channel(GENERAL, "general", 0, 0, CATEGORY),
       channel(LOUNGE, "Lounge", 2, 1, CATEGORY),
+      ...rooms.map((id, n) => channel(id, `room-${n + 1}`, 0, 2 + n, CATEGORY)),
     ],
     roles: [
       { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
@@ -2680,14 +2742,34 @@ const server = Bun.serve<SocketData>({
       return new Response("Bob mentioned Alice\n");
     }
     if (req.method === "POST" && path === "/_control/typing") {
+      const dm = url.searchParams.has("dm");
       dispatch("TYPING_START", {
-        channel_id: GENERAL,
-        guild_id: GUILD,
+        channel_id: dm ? DM_BOB : GENERAL,
+        ...(dm ? {} : { guild_id: GUILD, member: member(users.bob) }),
         user_id: users.bob.id,
         timestamp: Math.floor(Date.now() / 1000),
-        member: member(users.bob),
       });
       return new Response("Bob is typing\n");
+    }
+    if (req.method === "POST" && path === "/_control/react") {
+      const message = messages.get(GENERAL)!.at(-1)!;
+      let reaction = message.reactions.find((r) => r.name === "🎉" && r.id === null);
+      if (!reaction) message.reactions.push((reaction = { name: "🎉", id: null, users: new Set() }));
+      const add = !reaction.users.has(users.carol.id);
+      if (add) reaction.users.add(users.carol.id);
+      else reaction.users.delete(users.carol.id);
+      if (reaction.users.size === 0) message.reactions.splice(message.reactions.indexOf(reaction), 1);
+      dispatch(add ? "MESSAGE_REACTION_ADD" : "MESSAGE_REACTION_REMOVE", {
+        user_id: users.carol.id,
+        channel_id: GENERAL,
+        message_id: message.id,
+        guild_id: GUILD,
+        emoji: { id: null, name: "🎉" },
+        burst: false,
+        type: 0,
+        ...(add ? { member: member(users.carol), message_author_id: message.author.id } : {}),
+      });
+      return new Response(add ? "Carol reacted\n" : "Carol took her reaction back\n");
     }
     if (req.method === "GET" && path === "/_control/typed") {
       return Response.json(typed);
@@ -2706,6 +2788,26 @@ const server = Bun.serve<SocketData>({
       clearInterval(busy);
       busy = undefined;
       return new Response("busy stopped\n");
+    }
+    if (req.method === "POST" && path === "/_control/crowd-start") {
+      clearInterval(crowd);
+      crowd = setInterval(() => {
+        const n = crowdCount++;
+        const person: User = {
+          id: (1_800_000_000_000_000_000n + BigInt(n)).toString(),
+          username: `crowd${n}`,
+          global_name: `Crowd ${n}`,
+          avatar: `c${n}`,
+        };
+        const message = post(rooms.at(-1) ?? GENERAL, person, `Hello from ${person.global_name}`, Date.now());
+        dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      }, 20);
+      return new Response("crowd started\n");
+    }
+    if (req.method === "POST" && path === "/_control/crowd-stop") {
+      clearInterval(crowd);
+      crowd = undefined;
+      return new Response(`crowd stopped after ${crowdCount}\n`);
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

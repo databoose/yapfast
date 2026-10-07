@@ -622,6 +622,11 @@ impl Discord {
         Ok(data)
     }
 
+    /// Changes whenever a name, avatar or role that messages show changes.
+    pub fn names_version(&self) -> u64 {
+        self.read_names().version()
+    }
+
     /// A user's name in a server: their nickname, display name or username.
     pub fn name(&self, guild: &str, user: &str) -> Option<String> {
         self.read_names().name(guild, user).map(str::to_owned)

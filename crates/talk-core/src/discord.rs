@@ -24,6 +24,13 @@ use tokio::{
 use crate::chat::{self, ChatRoom, ChatServer, Event, VoicePerson};
 
 const PREFIX: &str = "discord:";
+/// Discord channels kept after closing, so going back to one shows it at
+/// once, and of each, the newest messages and image previews kept: a preview
+/// is about 400 KB decoded. Previews come back from the disk quickly, so few
+/// are kept.
+pub const KEPT_CHANNELS: usize = 40;
+pub const KEPT_MESSAGES: usize = 200;
+pub const KEPT_PREVIEWS: usize = 4;
 /// The categories message requests are listed under in the DM list.
 pub const REQUESTS: &str = "Message requests";
 pub const SPAM: &str = "Spam";

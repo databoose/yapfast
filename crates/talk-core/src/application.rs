@@ -236,8 +236,12 @@ pub struct AppState {
     /// Members of the selected room a search found for mentioning, beyond those
     /// listed.
     pub found_members: Vec<ChatMember>,
-    /// Server icons and avatars that arrived, by address.
+    /// Server icons and avatars that arrived, by address; those off screen
+    /// go once many have.
     pub pictures: HashMap<String, Arc<Picture>>,
+    /// Counts pictures arriving and going, so a client can tell when its own
+    /// copies of them are out of date.
+    pub picture_changes: u64,
     pub navigation: Navigation,
     pub selected: Option<String>,
     pub room_ready: bool,
@@ -753,6 +757,11 @@ pub struct Application {
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
+    /// The timeline whose pictures were asked for, so an unchanged one isn't
+    /// gone through again.
+    pictured_timeline: Arc<Vec<ChatMessage>>,
+    /// How many pictures were kept the last time those off screen went.
+    pictures_kept: usize,
     /// Names searched for in the selected room, lowercased.
     searched: HashSet<String>,
     /// A conversation to open once it's listed, such as a DM just started.
@@ -781,16 +790,154 @@ struct Shown {
 
 /// Discord channels whose last view is kept, as many as the Discord side
 /// keeps loaded.
-const SHOWN: usize = 40;
+const SHOWN: usize = discord::KEPT_CHANNELS;
 /// DM pictures downloaded for the list. An account can have hundreds of
 /// DMs, and the ones further down keep their initials.
 const LISTED_PICTURES: usize = 150;
+/// Server icons and avatars kept beyond those on screen. One is 64 KB
+/// decoded, and the window keeps a copy of each it shows. The rail, the DMs
+/// listed, a member list and a timeline show a few hundred at most.
+const KEPT_PICTURES: usize = 400;
+
+/// The server icons and avatars on screen: the rail, the first DMs listed,
+/// the people in the listed voice channels, the call, `timeline` and the
+/// member list, profiles and people to start a DM with.
+fn pictures_on_screen<'a>(
+    state: &'a AppState,
+    timeline: &'a [ChatMessage],
+) -> impl Iterator<Item = &'a str> {
+    state
+        .servers
+        .iter()
+        .filter_map(|server| server.icon.as_deref())
+        .chain(state.account_avatar.as_deref())
+        .chain(
+            state
+                .scoped_rooms()
+                .filter_map(|room| room.avatar.as_deref())
+                .take(LISTED_PICTURES),
+        )
+        .chain(
+            state
+                .selected_room()
+                .and_then(|room| room.avatar.as_deref()),
+        )
+        .chain(
+            state
+                .friend_requests
+                .iter()
+                .filter(|_| state.navigation == Navigation::DirectMessages)
+                .filter_map(|request| request.avatar.as_deref()),
+        )
+        .chain(
+            state
+                .friends
+                .iter()
+                .filter(|_| state.dm_screen == Some(DmScreen::Friends))
+                .filter_map(|friend| friend.avatar.as_deref()),
+        )
+        .chain(
+            state
+                .profile
+                .iter()
+                .chain(&state.panel_profile)
+                .flat_map(|view| {
+                    let profile = &view.profile;
+                    [&profile.avatar, &profile.banner]
+                        .into_iter()
+                        .chain(
+                            profile
+                                .servers
+                                .iter()
+                                .flat_map(|server| [&server.icon, &server.banner]),
+                        )
+                        .chain(profile.friends.iter().map(|friend| &friend.avatar))
+                        .filter_map(Option::as_deref)
+                }),
+        )
+        .chain(
+            state
+                .scoped_rooms()
+                .flat_map(|room| &room.people)
+                .filter_map(|person| person.avatar.as_deref()),
+        )
+        .chain(
+            state
+                .voice
+                .participants
+                .iter()
+                .filter_map(|person| person.avatar.as_deref()),
+        )
+        .chain(
+            timeline
+                .iter()
+                .flat_map(|message| {
+                    let reply = message
+                        .reply
+                        .as_ref()
+                        .and_then(|reply| reply.avatar.as_deref());
+                    message.avatar.as_deref().into_iter().chain(reply)
+                })
+                .chain(
+                    timeline.iter().flat_map(|message| {
+                        message.emoji.iter().map(|emoji| emoji.picture.as_str())
+                    }),
+                ),
+        )
+        .chain(
+            state
+                .members
+                .iter()
+                .flatten()
+                .flatten()
+                .chain(&state.found_members)
+                .chain(
+                    state
+                        .role
+                        .iter()
+                        .flat_map(|role| role.members.iter().flatten()),
+                )
+                .filter_map(|member| member.avatar.as_deref()),
+        )
+        .chain(
+            state
+                .new_dm
+                .iter()
+                .flat_map(NewDm::people)
+                .filter_map(|person| person.avatar.as_deref()),
+        )
+}
+
+/// A closed channel's timeline as it's kept to show again: what the Discord
+/// side keeps of it, its newest messages and the previews of their newest
+/// images. The others show as loading until the channel sends them again.
+fn shelved(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    let mut kept = messages[messages.len().saturating_sub(discord::KEPT_MESSAGES)..].to_vec();
+    let mut previews = discord::KEPT_PREVIEWS;
+    for attachment in kept
+        .iter_mut()
+        .rev()
+        .flat_map(|message| message.attachments.iter_mut().rev())
+        .filter(|attachment| attachment.preview.is_some())
+    {
+        if previews > 0 {
+            previews -= 1;
+        } else {
+            attachment.preview = None;
+        }
+    }
+    kept
+}
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
+        // A keystroke in the composer shows no picture that wasn't on screen.
+        let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let mut effects = self.dispatch_action(action);
         effects.extend(self.show_panel_profile());
-        effects.extend(self.request_pictures());
+        if !composing {
+            effects.extend(self.request_pictures());
+        }
         effects
     }
 
@@ -809,118 +956,46 @@ impl Application {
     }
 
     /// Asks for the server icons and avatars on screen that weren't asked
-    /// for before: the rail, the first DMs listed, the people in the listed
-    /// voice channels, the call, the open timeline and its member list.
+    /// for before; see [`pictures_on_screen`]. The timeline, which can hold
+    /// thousands of messages, is gone through only when it changed.
     fn request_pictures(&mut self) -> Option<Effect> {
         let state = &self.state;
-        let shown = state
-            .servers
-            .iter()
-            .filter_map(|server| server.icon.as_deref())
-            .chain(state.account_avatar.as_deref())
-            .chain(
-                state
-                    .scoped_rooms()
-                    .filter_map(|room| room.avatar.as_deref())
-                    .take(LISTED_PICTURES),
-            )
-            .chain(
-                state
-                    .selected_room()
-                    .and_then(|room| room.avatar.as_deref()),
-            )
-            .chain(
-                state
-                    .friend_requests
-                    .iter()
-                    .filter(|_| state.navigation == Navigation::DirectMessages)
-                    .filter_map(|request| request.avatar.as_deref()),
-            )
-            .chain(
-                state
-                    .friends
-                    .iter()
-                    .filter(|_| state.dm_screen == Some(DmScreen::Friends))
-                    .filter_map(|friend| friend.avatar.as_deref()),
-            )
-            .chain(
-                state
-                    .profile
-                    .iter()
-                    .chain(&state.panel_profile)
-                    .flat_map(|view| {
-                        let profile = &view.profile;
-                        [&profile.avatar, &profile.banner]
-                            .into_iter()
-                            .chain(
-                                profile
-                                    .servers
-                                    .iter()
-                                    .flat_map(|server| [&server.icon, &server.banner]),
-                            )
-                            .chain(profile.friends.iter().map(|friend| &friend.avatar))
-                            .filter_map(Option::as_deref)
-                    }),
-            )
-            .chain(
-                state
-                    .scoped_rooms()
-                    .flat_map(|room| &room.people)
-                    .filter_map(|person| person.avatar.as_deref()),
-            )
-            .chain(
-                state
-                    .voice
-                    .participants
-                    .iter()
-                    .filter_map(|person| person.avatar.as_deref()),
-            )
-            .chain(
-                state
-                    .messages
-                    .iter()
-                    .flat_map(|message| {
-                        let reply = message
-                            .reply
-                            .as_ref()
-                            .and_then(|reply| reply.avatar.as_deref());
-                        message.avatar.as_deref().into_iter().chain(reply)
-                    })
-                    .chain(state.messages.iter().flat_map(|message| {
-                        message.emoji.iter().map(|emoji| emoji.picture.as_str())
-                    })),
-            )
-            .chain(
-                state
-                    .members
-                    .iter()
-                    .flatten()
-                    .flatten()
-                    .chain(&state.found_members)
-                    .chain(
-                        state
-                            .role
-                            .iter()
-                            .flat_map(|role| role.members.iter().flatten()),
-                    )
-                    .filter_map(|member| member.avatar.as_deref()),
-            )
-            .chain(
-                state
-                    .new_dm
-                    .iter()
-                    .flat_map(NewDm::people)
-                    .filter_map(|person| person.avatar.as_deref()),
-            );
+        let timeline = if Arc::ptr_eq(&self.pictured_timeline, &state.messages) {
+            &[][..]
+        } else {
+            state.messages.as_slice()
+        };
         let mut wanted = Vec::new();
-        for url in shown {
-            if self.requested_pictures.insert(url.to_owned()) {
+        for url in pictures_on_screen(state, timeline) {
+            if !self.requested_pictures.contains(url) {
+                self.requested_pictures.insert(url.to_owned());
                 wanted.push(url.to_owned());
             }
         }
+        self.pictured_timeline = self.state.messages.clone();
         (!wanted.is_empty()).then_some(Effect::Backend(Command::Discord(DiscordCommand::Pictures(
             wanted,
         ))))
+    }
+
+    /// Keeps a picture that arrived, and once more than [`KEPT_PICTURES`]
+    /// have, forgets those off screen, which are asked for again when they
+    /// show. So that pictures on screen don't make it go through them each
+    /// time one arrives, it waits for twice as many as it kept last.
+    fn keep_picture(&mut self, url: String, picture: Arc<Picture>) {
+        self.state.pictures.insert(url, picture);
+        self.state.picture_changes += 1;
+        if self.state.pictures.len() <= KEPT_PICTURES.max(2 * self.pictures_kept) {
+            return;
+        }
+        let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages)
+            .map(str::to_owned)
+            .collect();
+        self.state.pictures.retain(|url, _| shown.contains(url));
+        let pictures = &self.state.pictures;
+        self.requested_pictures
+            .retain(|url| shown.contains(url) || pictures.contains_key(url));
+        self.pictures_kept = self.state.pictures.len();
     }
 
     fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
@@ -1207,9 +1282,7 @@ impl Application {
                     viewer.pictures.insert(index, Some(picture));
                 }
             }
-            Event::Picture { url, picture } => {
-                self.state.pictures.insert(url, picture);
-            }
+            Event::Picture { url, picture } => self.keep_picture(url, picture),
             Event::Notify(notification) => return vec![Effect::Notify(self.alert(notification))],
             Event::Typing { room, names } => {
                 if names.is_empty() {
@@ -1504,7 +1577,7 @@ impl Application {
         self.shown.retain(|shown| shown.room != room);
         self.shown.push(Shown {
             room,
-            messages: self.state.messages.clone(),
+            messages: Arc::new(shelved(&self.state.messages)),
             members: self.state.members.clone(),
         });
         if self.shown.len() > SHOWN {

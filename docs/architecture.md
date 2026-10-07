@@ -70,7 +70,11 @@ A visible change usually touches each of these steps:
    pass it to `Adapter::action` in `src/ui.rs`.
 4. **Application.** `Adapter::action` calls `Application::dispatch`, executes
    the returned effects, then refreshes the window. A composer keystroke
-   (`SetDraft` or `MentionQuery`) refreshes only the composer. `Action` and
+   (`SetDraft` or `MentionQuery`) refreshes only the composer. A backend event
+   shows only what it can change: who's typing shows only the composer, and
+   the call, with who's speaking, only the call's views (`Reach` in
+   `src/ui/refresh.rs`). The sidebar is built again only once what it shows
+   changed. `Action` and
    `dispatch` are in `crates/talk-core/src/application.rs`, which routes each
    action to the module for its area in `crates/talk-core/src/application/`:
    `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `calls.rs`,
