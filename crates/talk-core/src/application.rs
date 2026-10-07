@@ -747,6 +747,9 @@ pub struct Application {
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
+    /// The timeline whose pictures were asked for, so an unchanged one isn't
+    /// gone through again.
+    pictured_timeline: Arc<Vec<ChatMessage>>,
     /// Names searched for in the selected room, lowercased.
     searched: HashSet<String>,
     /// A conversation to open once it's listed, such as a DM just started.
@@ -782,9 +785,13 @@ const LISTED_PICTURES: usize = 150;
 
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
+        // A keystroke in the composer shows no picture that wasn't on screen.
+        let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let mut effects = self.dispatch_action(action);
         effects.extend(self.show_panel_profile());
-        effects.extend(self.request_pictures());
+        if !composing {
+            effects.extend(self.request_pictures());
+        }
         effects
     }
 
@@ -804,9 +811,16 @@ impl Application {
 
     /// Asks for the server icons and avatars on screen that weren't asked
     /// for before: the rail, the first DMs listed, the people in the listed
-    /// voice channels, the call, the open timeline and its member list.
+    /// voice channels, the call, the open timeline and its member list. The
+    /// timeline, which can hold thousands of messages, is gone through only
+    /// when it changed.
     fn request_pictures(&mut self) -> Option<Effect> {
         let state = &self.state;
+        let timeline = if Arc::ptr_eq(&self.pictured_timeline, &state.messages) {
+            &[][..]
+        } else {
+            state.messages.as_slice()
+        };
         let shown = state
             .servers
             .iter()
@@ -870,8 +884,7 @@ impl Application {
                     .filter_map(|person| person.avatar.as_deref()),
             )
             .chain(
-                state
-                    .messages
+                timeline
                     .iter()
                     .flat_map(|message| {
                         let reply = message
@@ -880,7 +893,7 @@ impl Application {
                             .and_then(|reply| reply.avatar.as_deref());
                         message.avatar.as_deref().into_iter().chain(reply)
                     })
-                    .chain(state.messages.iter().flat_map(|message| {
+                    .chain(timeline.iter().flat_map(|message| {
                         message.emoji.iter().map(|emoji| emoji.picture.as_str())
                     })),
             )
@@ -908,10 +921,12 @@ impl Application {
             );
         let mut wanted = Vec::new();
         for url in shown {
-            if self.requested_pictures.insert(url.to_owned()) {
+            if !self.requested_pictures.contains(url) {
+                self.requested_pictures.insert(url.to_owned());
                 wanted.push(url.to_owned());
             }
         }
+        self.pictured_timeline = self.state.messages.clone();
         (!wanted.is_empty()).then_some(Effect::Backend(Command::Pictures(wanted)))
     }
 

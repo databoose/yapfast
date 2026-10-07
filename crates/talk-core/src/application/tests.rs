@@ -2216,3 +2216,36 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
         "not unfriending"
     );
 }
+
+#[test]
+fn the_timeline_is_gone_through_for_pictures_only_once_it_changed() {
+    let asked = |effects: Vec<Effect>| -> Vec<String> {
+        effects
+            .into_iter()
+            .flat_map(|effect| match effect {
+                Effect::Backend(Command::Pictures(urls)) => urls,
+                _ => vec![],
+            })
+            .collect()
+    };
+    let mut app = connected();
+    let first = ChatMessage {
+        avatar: Some("ann.png".into()),
+        ..message("e:$ann", false)
+    };
+    let timeline = |messages| Event::Timeline {
+        room: "dm".into(),
+        messages,
+    };
+    assert_eq!(asked(app.apply(timeline(vec![first.clone()]))), ["ann.png"]);
+    // As though it had gone: the same timeline isn't gone through again,
+    // and a keystroke asks for nothing.
+    app.requested_pictures.remove("ann.png");
+    let typing = Event::Typing {
+        room: "dm".into(),
+        names: vec!["Ann".into()],
+    };
+    assert!(asked(app.apply(typing)).is_empty());
+    assert!(asked(app.dispatch(Action::SetDraft("Hi".into()))).is_empty());
+    assert_eq!(asked(app.apply(timeline(vec![first]))), ["ann.png"]);
+}
