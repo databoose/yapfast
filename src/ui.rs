@@ -337,6 +337,14 @@ struct Layout {
     show_hidden_channels: bool,
     /// Reading in Talk marks Discord channels read on Discord; on unless turned off.
     sync_discord_reads: Option<bool>,
+    /// Message times as 9:41 PM rather than 21:41.
+    twelve_hour_clock: bool,
+    /// Message text: 0 small, 1 default, 2 large.
+    text_size: Option<i32>,
+    /// Link previews under messages; on unless turned off.
+    link_previews: Option<bool>,
+    /// Joining a call turns the microphone on.
+    unmute_on_join: bool,
 }
 
 impl Layout {
@@ -352,6 +360,26 @@ impl Layout {
             window.set_sidebar_width(width);
         }
         window.set_member_list(!self.members_hidden);
+        window.set_twelve_hour_clock(self.twelve_hour_clock);
+        window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
+        window.set_link_previews(self.link_previews.unwrap_or(true));
+        window.set_unmute_on_join(self.unmute_on_join);
+    }
+
+    /// A message's row as these preferences show it: its time on the chosen clock, and its
+    /// link previews only when they're on.
+    fn restyle(&self, message: &ChatMessage, mut row: MessageRow) -> MessageRow {
+        if message.timestamp != 0 {
+            let time = talk_core::clock::time_on(message.timestamp, self.twelve_hour_clock);
+            // The gutter beside a grouped message is narrow, so it leaves out AM and PM.
+            row.short_time = time.split_whitespace().next().unwrap_or_default().into();
+            row.time_styled = slint::StyledText::from_plain_text(&time);
+            row.time = time.into();
+        }
+        if !self.link_previews.unwrap_or(true) {
+            row.embeds = ModelRc::default();
+        }
+        row
     }
 
     /// A lost layout only costs the person their arrangement; it never stops Talk.
@@ -430,6 +458,8 @@ struct Adapter {
     pictures: HashMap<String, slint::Image>,
     /// How many pictures had arrived when the message rows were last built.
     pictures_seen: usize,
+    /// The preferences that shape message rows changed, so they're built again.
+    restyle: bool,
     /// The viewer's image, converted for Slint while it shows.
     viewer_image: Option<(Arc<Picture>, slint::Image)>,
     /// The size the viewer opened an image at, by item and attachment, kept
@@ -483,6 +513,7 @@ impl Adapter {
                 rows: HashMap::new(),
                 pictures: HashMap::new(),
                 pictures_seen: 0,
+                restyle: false,
                 viewer_image: None,
                 viewer_size: None,
                 dialog: None,
@@ -750,7 +781,7 @@ impl Adapter {
         if reset {
             window.set_password(SharedString::default());
             window.set_recovery(SharedString::default());
-            window.set_audio_settings(false);
+            window.set_settings_open(false);
         }
         let messages_changed = !Arc::ptr_eq(&self.messages, &state.messages);
         let at_end = window.invoke_timeline_at_end();
@@ -1168,7 +1199,8 @@ impl Adapter {
         // Avatars that arrived since show on rows built before them.
         let pictures_arrived = self.pictures_seen != state.pictures.len();
         self.pictures_seen = state.pictures.len();
-        if messages_changed || selection_changed || reset || pictures_arrived {
+        let restyle = std::mem::take(&mut self.restyle);
+        if messages_changed || selection_changed || reset || pictures_arrived || restyle {
             if selection_changed || reset {
                 window.set_react_item(SharedString::default());
                 window.set_active_item(SharedString::default());
@@ -1180,8 +1212,8 @@ impl Adapter {
                 .iter()
                 .map(|message| {
                     let mut row = match previous.remove(&message.id) {
-                        Some((old, row)) if &old == message => row,
-                        _ => message_row(message),
+                        Some((old, row)) if &old == message && !restyle => row,
+                        _ => self.layout.restyle(message, message_row(message)),
                     };
                     self.rows
                         .insert(message.id.clone(), (message.clone(), row.clone()));
@@ -1601,6 +1633,20 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         {
             tracing::warn!(%error, "could not open a link");
         }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_preferences_changed(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        let layout = &mut adapter.layout;
+        layout.twelve_hour_clock = window.get_twelve_hour_clock();
+        layout.text_size = Some(window.get_text_size());
+        layout.link_previews = Some(window.get_link_previews());
+        layout.unmute_on_join = window.get_unmute_on_join();
+        adapter.layout.write(&adapter.root);
+        adapter.restyle = true;
+        adapter.refresh(&window);
     });
     let state = adapter.clone();
     let weak = window.as_weak();
@@ -2432,6 +2478,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preferences_set_the_clock_text_size_previews_and_unmuting() {
+        i_slint_backend_testing::init_no_event_loop();
+        let message = ChatMessage {
+            timestamp: 1_791_329_400,
+            time: "23:30".into(),
+            embeds: vec![talk_core::chat::Embed::default()],
+            ..Default::default()
+        };
+        // Missing preferences take their defaults: 24 hours, default text, previews.
+        let defaults: Layout = serde_json::from_str("{}").unwrap();
+        let row = defaults.restyle(&message, message_row(&message));
+        assert_eq!(
+            row.time,
+            talk_core::clock::time_on(message.timestamp, false)
+        );
+        assert_eq!(row.embeds.row_count(), 1);
+        let layout = Layout {
+            twelve_hour_clock: true,
+            text_size: Some(2),
+            link_previews: Some(false),
+            unmute_on_join: true,
+            ..Default::default()
+        };
+        let row = layout.restyle(&message, message_row(&message));
+        let time = talk_core::clock::time_on(message.timestamp, true);
+        assert!(time.ends_with(" AM") || time.ends_with(" PM"));
+        assert_eq!(row.time, time);
+        assert_eq!(row.time_styled, slint::StyledText::from_plain_text(&time));
+        assert_eq!(row.short_time, time.split(' ').next().unwrap());
+        assert_eq!(row.embeds.row_count(), 0);
+
+        let window = TalkWindow::new().unwrap();
+        layout.apply(&window);
+        assert!(window.get_twelve_hour_clock() && !window.get_link_previews());
+        assert_eq!(window.get_message_font_size(), 18.);
+        // Joining a call turns the microphone on once it connects.
+        let unmuted = Rc::new(Cell::new(false));
+        let record = unmuted.clone();
+        window.on_toggle_mute(move || record.set(true));
+        window.set_muted(true);
+        window.set_voice_ready(true);
+        slint::platform::update_timers_and_animations();
+        assert!(unmuted.get());
+    }
+
+    #[test]
     fn embed_fields_share_rows_three_inline_at_a_time() {
         let field = |name: &str, inline| EmbedField {
             name: name.into(),
@@ -3171,11 +3263,11 @@ mod tests {
         assert!(window.get_muted() && window.get_deafened());
         window.set_password("secret that must be cleared".into());
         window.set_recovery("recovery that must be cleared".into());
-        window.set_audio_settings(true);
+        window.set_settings_open(true);
         window.invoke_logout();
         assert!(!window.get_workspace() && !window.get_voice_active());
         assert!(window.get_password().is_empty() && window.get_recovery().is_empty());
-        assert!(!window.get_audio_settings());
+        assert!(!window.get_settings_open());
     }
 
     #[test]

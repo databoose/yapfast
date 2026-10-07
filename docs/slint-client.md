@@ -25,8 +25,8 @@ No remote push is part of this migration.
   and voice connection. Preview voice never opens an audio device.
 - A Discord-style layout set in Satoshi (see [Chat UI](chat-ui.md#layout-and-look)),
   Lucide SVG icons, custom text fields, and window sizing from 1120×760 down to
-  800×560. Settings, including audio devices, open in a popover above the account
-  panel, dismissed by its close button, Escape or clicking outside.
+  800×560. Settings cover the window in sections: account, voice and audio, messages
+  (text size, clock and link previews) and Discord, closed by its close button or Escape.
 
 `ui/talk.slint` defines the controls and layout; `src/ui.rs` adapts application
 state and effects. The `talk-ui` crate compiles the interface. Its generated code

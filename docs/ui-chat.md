@@ -57,8 +57,8 @@ Preview content and messages stay local and disappear when the preview closes.
 At 800 by 560 retain navigation, visible errors, and the composer. Capture Linux
 at both sizes. Windows build and rendering require the Windows tester.
 
-Audio device settings open above the footer as a native popover. The channel
-list keeps at least 96px at the minimum window size; voice errors scroll within
-48px. While voice is active, the account footer shows account, sync status and
-actions, with the storage explanation returning after departure. Leave also
-cancels a pending join before it can become connected.
+Audio device settings are in the Settings screen, which covers the window. The
+channel list keeps at least 96px at the minimum window size; voice errors scroll
+within 48px. While voice is active, the account footer shows account, sync
+status and actions, with the storage explanation returning after departure. Leave
+also cancels a pending join before it can become connected.
