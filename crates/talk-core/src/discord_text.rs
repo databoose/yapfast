@@ -31,6 +31,7 @@ use crate::{
         Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
     discord,
+    mention::{Mentioned, Target},
 };
 
 /// Discord's message length limit without Nitro, in characters.
@@ -750,6 +751,7 @@ impl OpenChannel {
                     .collect(),
                 attachments,
                 embeds,
+                mentions: mentions(discord, server, &message.content),
                 can_reply: ordinary,
                 can_edit: own && message.editable,
                 can_delete: own,
@@ -768,7 +770,9 @@ impl OpenChannel {
                 sender: format!("discord:{me}"),
                 avatar: Some(me_avatar.clone()),
                 color: me_color,
-                body: pending.body.clone(),
+                // Sent with its mentions in Discord's form, shown with their names.
+                body: discord.render(server, &pending.body),
+                mentions: mentions(discord, server, &pending.body),
                 formatted: true,
                 own: true,
                 delivery: if pending.failed {
@@ -1103,6 +1107,40 @@ pub fn command(
                 .map_err(|error| format!("Could not start the DM: {error}"));
             let _ = events.send(Event::DmStarted(result));
         });
+        return None;
+    }
+    if let Command::RoleMembers { room, role } = command {
+        if let (Some(discord), Some((guild, _))) = (discord, discord::parse_room(&room)) {
+            let snapshot = discord.snapshots().borrow().clone();
+            let server = snapshot.servers.iter().find(|server| server.id == guild);
+            let mut members: Vec<ChatMember> = discord
+                .members_with_role(guild, &role)
+                .into_iter()
+                .map(|user| ChatMember {
+                    name: discord.name(guild, &user).unwrap_or_else(|| user.clone()),
+                    avatar: Some(discord.avatar(Some(guild), &user)),
+                    color: server.and_then(|server| discord.color(server, &user)),
+                    role: Role::Member,
+                    group: None,
+                    presence: None,
+                    activity: None,
+                    id: user,
+                })
+                .collect();
+            members.sort_by_key(|member| member.name.to_lowercase());
+            let _ = events.send(Event::RoleMembers {
+                name: server
+                    .and_then(|server| server.role_names.get(&role))
+                    .cloned()
+                    .unwrap_or_else(|| "role".into()),
+                color: server
+                    .and_then(|server| server.role_colors.get(&role))
+                    .map(|(_, color)| *color),
+                room,
+                role,
+                members,
+            });
+        }
         return None;
     }
     if let Command::SearchMembers { room, query } = command {
@@ -1569,6 +1607,26 @@ pub fn live(
         }
         Err(_) => channel.refresh(discord, done),
     }
+}
+
+/// Who and what a message mentions, as its rendered body shows them.
+fn mentions(
+    discord: &Discord,
+    server: Option<&talk_discord::ready::Server>,
+    content: &str,
+) -> Vec<Mentioned> {
+    discord
+        .mentions(server, content)
+        .into_iter()
+        .map(|(text, role, id)| Mentioned {
+            text,
+            target: if role {
+                Target::Role(id)
+            } else {
+                Target::User(id)
+            },
+        })
+        .collect()
 }
 
 /// The roles a message in a server channel may mention, after @everyone and @here

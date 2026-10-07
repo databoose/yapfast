@@ -11,7 +11,7 @@ use crate::{
         Picture, Profile, ProfileRole, Reaction, Reply, Role,
     },
     discord,
-    mention::{self, Candidate},
+    mention::{self, Candidate, Target},
     voice::{self, Phase},
 };
 
@@ -76,6 +76,16 @@ pub struct ProfileView {
     pub loading: bool,
     /// Why Discord didn't give the rest.
     pub note: Option<String>,
+}
+
+/// A role someone clicked in a message: its name and the members known to have it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoleView {
+    pub id: String,
+    pub name: String,
+    pub color: Option<u32>,
+    /// `None` while they're on their way.
+    pub members: Option<Vec<ChatMember>>,
 }
 
 /// What the composer's next send does in a room, besides sending a new message.
@@ -145,6 +155,7 @@ pub struct AppState {
     pub viewer: Option<Viewer>,
     /// The profile card that's open.
     pub profile: Option<ProfileView>,
+    pub role: Option<RoleView>,
     /// Changes when selecting a room, including selecting the same room to retry opening it.
     pub selection_version: u64,
     /// Changes after logout so adapters can clear their inputs and focus sign-in.
@@ -231,6 +242,60 @@ impl AppState {
             [one, two, three] => format!("{one}, {two} and {three} are typing..."),
             _ => "Several people are typing...".into(),
         }
+    }
+
+    /// Someone in the selected room, as far as Talk knows them: listed, found by a
+    /// search, holding a role on show, writing lately, or only mentioned.
+    pub fn person(&self, user: &str) -> Option<ChatMember> {
+        let known = self
+            .members
+            .iter()
+            .flatten()
+            .flatten()
+            .chain(&self.found_members)
+            .chain(
+                self.role
+                    .iter()
+                    .flat_map(|role| role.members.iter().flatten()),
+            )
+            .find(|member| member.id == user);
+        if let Some(member) = known {
+            return Some(member.clone());
+        }
+        let sender = |message: &&ChatMessage| {
+            message.sender == user || message.sender.strip_prefix("discord:") == Some(user)
+        };
+        if let Some(message) = self.messages.iter().rev().find(sender) {
+            return Some(ChatMember {
+                id: user.to_owned(),
+                name: message.author.clone(),
+                role: Role::Member,
+                avatar: message.avatar.clone(),
+                group: None,
+                presence: None,
+                color: message.color,
+                activity: None,
+            });
+        }
+        let target = Target::User(user.to_owned());
+        let mentioned = self
+            .messages
+            .iter()
+            .flat_map(|message| &message.mentions)
+            .find(|mention| mention.target == target)
+            .map(|mention| mention.text.trim_start_matches('@').to_owned());
+        // Matrix links name no one; their id does.
+        let name = mentioned.or_else(|| user.starts_with('@').then(|| user.to_owned()))?;
+        Some(ChatMember {
+            id: user.to_owned(),
+            name,
+            role: Role::Member,
+            avatar: None,
+            group: None,
+            presence: None,
+            color: None,
+            activity: None,
+        })
     }
 
     /// Who and what a message in the selected room may mention: its members, those
@@ -412,6 +477,9 @@ pub enum Action {
     /// Show the open profile card large.
     EnlargeProfile,
     CloseProfile,
+    /// Show the members of a role mentioned in a message, or stop.
+    ShowRole(String),
+    CloseRole,
 }
 
 /// An adapter executes these effects with the shared backend, then applies its events.
@@ -560,6 +628,12 @@ impl Application {
                     .flatten()
                     .flatten()
                     .chain(&state.found_members)
+                    .chain(
+                        state
+                            .role
+                            .iter()
+                            .flat_map(|role| role.members.iter().flatten()),
+                    )
                     .filter_map(|member| member.avatar.as_deref()),
             )
             .chain(
@@ -1089,14 +1163,13 @@ impl Application {
                 vec![]
             }
             Action::ShowProfile { user, large } => {
-                let (Some(room), Some(Ok(members))) =
-                    (self.state.selected_room(), &self.state.members)
-                else {
+                let Some(room) = self.state.selected_room() else {
                     return vec![];
                 };
-                let Some(member) = members.iter().find(|member| member.id == user) else {
+                let Some(member) = self.state.person(&user) else {
                     return vec![];
                 };
+                let member = &member;
                 let discord = discord::is_discord(&room.id);
                 let role = match member.role {
                     Role::Admin => Some("Admin"),
@@ -1160,6 +1233,34 @@ impl Application {
             }
             Action::CloseProfile => {
                 self.state.profile = None;
+                vec![]
+            }
+            Action::ShowRole(role) => {
+                let Some(room) = self.state.selected.clone() else {
+                    return vec![];
+                };
+                // Named as the message shows it, until the backend answers.
+                let name = self
+                    .state
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.mentions)
+                    .find(|mention| mention.target == Target::Role(role.clone()))
+                    .map(|mention| mention.text.trim_start_matches('@').to_owned())
+                    .unwrap_or_default();
+                self.state.role = Some(RoleView {
+                    id: role.clone(),
+                    name,
+                    color: None,
+                    members: None,
+                });
+                if self.state.preview || !discord::is_discord(&room) {
+                    return vec![];
+                }
+                vec![Effect::Backend(Command::RoleMembers { room, role })]
+            }
+            Action::CloseRole => {
+                self.state.role = None;
                 vec![]
             }
             Action::AnswerRequest(accept) => match self.state.selected_room() {
@@ -1341,6 +1442,21 @@ impl Application {
                 if let Some(new_dm) = &mut self.state.new_dm {
                     new_dm.starting = false;
                     new_dm.error = Some(error);
+                }
+            }
+            Event::RoleMembers {
+                room,
+                role,
+                name,
+                color,
+                members,
+            } => {
+                if self.state.selected.as_ref() == Some(&room)
+                    && let Some(view) = self.state.role.as_mut().filter(|view| view.id == role)
+                {
+                    view.name = name;
+                    view.color = color;
+                    view.members = Some(members);
                 }
             }
             Event::MentionGroups { room, groups } => {
@@ -1649,6 +1765,7 @@ impl Application {
         self.state.mention_query = None;
         self.state.mention_groups.clear();
         self.state.found_members.clear();
+        self.state.role = None;
         self.searched.clear();
         if self.state.preview {
             if !voice_room {
@@ -3260,6 +3377,70 @@ mod tests {
                 .iter()
                 .any(|effect| matches!(effect, Effect::Backend(Command::Open(id)) if id == "!sam"))
         );
+    }
+
+    #[test]
+    fn clicked_mentions_show_people_and_roles() {
+        use crate::mention::{Mentioned, Target};
+        let mut app = connected();
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![ChatMessage {
+                body: "@Riley ask @Mods".into(),
+                mentions: vec![
+                    Mentioned {
+                        text: "@Riley".into(),
+                        target: Target::User("@riley:test".into()),
+                    },
+                    Mentioned {
+                        text: "@Mods".into(),
+                        target: Target::Role("30".into()),
+                    },
+                ],
+                ..message("e:$bob", false)
+            }],
+        });
+        // Riley isn't listed, but the mention names them.
+        app.dispatch(Action::ShowProfile {
+            user: "@riley:test".into(),
+            large: false,
+        });
+        let view = app.state.profile.as_ref().expect("a card");
+        assert_eq!(view.profile.name, "Riley");
+        assert_eq!(view.profile.handle, "@riley:test");
+        app.dispatch(Action::CloseProfile);
+
+        // A role shows by the name the message gives it; Matrix asks no backend.
+        assert!(app.dispatch(Action::ShowRole("30".into())).is_empty());
+        let role = app.state.role.clone().expect("a role card");
+        assert_eq!((role.name.as_str(), role.members), ("Mods", None));
+        app.apply(Event::RoleMembers {
+            room: "dm".into(),
+            role: "30".into(),
+            name: "Mods".into(),
+            color: Some(0x3498db),
+            members: vec![member("@sam:test", "Sam")],
+        });
+        assert_eq!(
+            app.state
+                .role
+                .as_ref()
+                .unwrap()
+                .members
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        // Someone on the role's list opens over it.
+        app.dispatch(Action::ShowProfile {
+            user: "@sam:test".into(),
+            large: false,
+        });
+        assert_eq!(app.state.profile.as_ref().unwrap().profile.name, "Sam");
+        assert!(app.state.role.is_some());
+        app.dispatch(Action::CloseRole);
+        assert!(app.state.role.is_none());
     }
 
     #[test]

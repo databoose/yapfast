@@ -293,6 +293,8 @@ pub struct ChatMessage {
     /// pictures of `embeds`. Matrix messages carry at most one.
     pub attachments: Vec<Attachment>,
     pub embeds: Vec<Embed>,
+    /// Who and what the body mentions, which it links to.
+    pub mentions: Vec<crate::mention::Mentioned>,
     pub can_reply: bool,
     pub can_edit: bool,
     pub can_delete: bool,
@@ -377,6 +379,12 @@ pub enum Command {
         id: String,
         discord: bool,
     },
+    /// The members of a Discord role in the room's server, as far as they're known;
+    /// [`Event::RoleMembers`] follows.
+    RoleMembers {
+        room: String,
+        role: String,
+    },
     /// Look for the room's members whose names start with `query`, beyond those
     /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
     SearchMembers {
@@ -439,6 +447,14 @@ pub enum Event {
     },
     /// A new message to notify the person of.
     Notify(Notification),
+    /// A role's name, colour and the members known to have it.
+    RoleMembers {
+        room: String,
+        role: String,
+        name: String,
+        color: Option<u32>,
+        members: Vec<ChatMember>,
+    },
     /// People to start a DM with, from Discord or from Matrix.
     People {
         query: String,
@@ -760,6 +776,7 @@ pub async fn run(
                     // Discord commands never reach Matrix.
                     Command::MarkDiscordRead { .. }
                     | Command::SearchMembers { .. }
+                    | Command::RoleMembers { .. }
                     | Command::AnswerRequest { .. }
                     | Command::Profile { .. }
                     | Command::Pictures(_) => {}

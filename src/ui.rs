@@ -464,6 +464,7 @@ struct Models {
     roster: Rc<VecModel<MemberRow>>,
     mentions: Rc<VecModel<MentionRow>>,
     new_dm_people: Rc<VecModel<ContactRow>>,
+    role_members: Rc<VecModel<MemberRow>>,
     bar_reactions: Rc<VecModel<EmojiCell>>,
     menu_reactions: Rc<VecModel<EmojiCell>>,
     emoji_rows: Rc<VecModel<EmojiRow>>,
@@ -481,6 +482,7 @@ impl Models {
         window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_mentions(ModelRc::from(self.mentions.clone()));
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
+        window.set_role_members(ModelRc::from(self.role_members.clone()));
         window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
         window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
         window.set_emoji_rows(ModelRc::from(self.emoji_rows.clone()));
@@ -729,6 +731,7 @@ impl Adapter {
         let state = &self.app.state;
         window.set_profile_open(state.profile.is_some());
         let Some(view) = &state.profile else {
+            window.set_profile_member(SharedString::default());
             return;
         };
         window.set_profile_large(view.large);
@@ -1178,6 +1181,39 @@ impl Adapter {
                 .map(|key| emoji::cell(key))
                 .collect(),
         );
+        let role = state.role.as_ref();
+        window.set_role_open(role.is_some());
+        if let Some(role) = role {
+            window.set_role_name(role.name.clone().into());
+            window.set_role_color(role_color(role.color));
+            window.set_role_has_color(role.color.is_some());
+            window.set_role_note(
+                match &role.members {
+                    None => "Loading...",
+                    Some(members) if members.is_empty() => {
+                        "Talk hasn't seen anyone with this role yet."
+                    }
+                    Some(_) => "",
+                }
+                .into(),
+            );
+        }
+        let role_members: Vec<MemberRow> = role
+            .and_then(|role| role.members.as_ref())
+            .into_iter()
+            .flatten()
+            .map(|member| MemberRow {
+                id: member.id.clone().into(),
+                name: member.name.clone().into(),
+                initial: initial(&member.name),
+                tint: tint(&member.name),
+                picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                color: role_color(member.color),
+                has_color: member.color.is_some(),
+                ..Default::default()
+            })
+            .collect();
+        update_model(&self.models.role_members, role_members);
         let new_dm = state.new_dm.as_ref();
         if new_dm.is_some() && !window.get_new_dm_open() {
             window.set_new_dm_query(SharedString::default());
@@ -1754,6 +1790,7 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind_item!(on_start_forward, Action::StartForward);
     bind_item!(on_forward_to, Action::Forward);
     bind!(on_open_new_dm, Action::OpenNewDm);
+    bind!(on_close_role, Action::CloseRole);
     bind!(on_close_new_dm, Action::CloseNewDm);
     let state = adapter.clone();
     let weak = window.as_weak();
@@ -1832,7 +1869,22 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
             adapter.action(&window, Action::ShowHiddenChannels(shown));
         }
     });
-    window.on_open_link(|link| {
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_open_link(move |link| {
+        // A mention opens the person's card, or the role's members, by the pointer.
+        if let Some(target) = mention::target(&link) {
+            let Some(window) = weak.upgrade() else { return };
+            let action = match target {
+                mention::Target::User(user) => {
+                    window.set_profile_at_pointer(true);
+                    Action::ShowProfile { user, large: false }
+                }
+                mention::Target::Role(role) => Action::ShowRole(role),
+            };
+            state.borrow_mut().action(&window, action);
+            return;
+        }
         // Only web pages open; a message can't start other programs.
         if links::openable(&link)
             && let Err(error) = webbrowser::open(&link)
@@ -2552,8 +2604,9 @@ fn role_color(rgb: Option<u32>) -> slint::Color {
 
 fn message_row(message: &ChatMessage) -> MessageRow {
     // Plain text shows as typed, its web addresses linked.
+    // Mentions link to who they mention, which opens their card.
     let styled = if message.formatted {
-        markdown(&message.body)
+        markdown(&mention::linked(&message.body, &message.mentions))
     } else {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))

@@ -520,6 +520,16 @@ impl Discord {
         server.color(self.read_names().roles(&server.id, user))
     }
 
+    /// The users and roles a message mentions: `(text, role, id)`.
+    pub fn mentions(&self, server: Option<&Server>, content: &str) -> Vec<(String, bool, String)> {
+        self.read_names().mentions(server, content)
+    }
+
+    /// The members known to hold `role` in a server, by user id.
+    pub fn members_with_role(&self, guild: &str, role: &str) -> Vec<String> {
+        self.read_names().members_with_role(guild, role)
+    }
+
     /// Discord Markdown for Talk, with mentions, custom emoji and times as text.
     pub fn render(&self, server: Option<&Server>, content: &str) -> String {
         self.read_names().render(server, content)

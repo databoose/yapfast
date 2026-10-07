@@ -16,6 +16,76 @@ pub struct Candidate {
     pub group: bool,
 }
 
+/// Someone or something a message mentions, as the message shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mentioned {
+    /// The text in the message, such as `@Bob`.
+    pub text: String,
+    pub target: Target,
+}
+
+/// Who a mention points at: a user, by Discord or Matrix id, or a Discord role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    User(String),
+    Role(String),
+}
+
+const USER_LINK: &str = "talk:user/";
+const ROLE_LINK: &str = "talk:role/";
+const MATRIX_TO: &str = "https://matrix.to/#/";
+
+/// The address a mention links to in a message; clicking it opens the person or role.
+pub fn link(target: &Target) -> String {
+    match target {
+        Target::User(id) => format!("{USER_LINK}{id}"),
+        Target::Role(id) => format!("{ROLE_LINK}{id}"),
+    }
+}
+
+/// Who a clicked link mentions: Talk's mention links, and Matrix's links to a user.
+pub fn target(link: &str) -> Option<Target> {
+    if let Some(id) = link.strip_prefix(USER_LINK) {
+        return Some(Target::User(id.to_owned()));
+    }
+    if let Some(id) = link.strip_prefix(ROLE_LINK) {
+        return Some(Target::Role(id.to_owned()));
+    }
+    let user = link.strip_prefix(MATRIX_TO)?;
+    let user = user.split(['?', '/']).next()?;
+    let user = user
+        .replace("%40", "@")
+        .replace("%3A", ":")
+        .replace("%3a", ":");
+    (user.starts_with('@') && user.contains(':')).then_some(Target::User(user))
+}
+
+/// Markdown with each mention's text, outside code, linked to its target.
+pub fn linked(markdown: &str, mentions: &[Mentioned]) -> String {
+    if mentions.is_empty() {
+        return markdown.to_owned();
+    }
+    let mut sorted: Vec<&Mentioned> = mentions.iter().filter(|m| !m.text.is_empty()).collect();
+    sorted.sort_by_key(|mention| std::cmp::Reverse(mention.text.len()));
+    let mut out = String::with_capacity(markdown.len() + 32 * mentions.len());
+    let mut code = false;
+    let mut rest = markdown;
+    while let Some(next) = rest.chars().next() {
+        if next == '`' {
+            code = !code;
+        }
+        if !code && let Some(mention) = sorted.iter().find(|m| rest.starts_with(&m.text)) {
+            let text = mention.text.replace('[', "\\[").replace(']', "\\]");
+            out.push_str(&format!("[{text}](<{}>)", link(&mention.target)));
+            rest = &rest[mention.text.len()..];
+            continue;
+        }
+        out.push(next);
+        rest = &rest[next.len_utf8()..];
+    }
+    out
+}
+
 /// Names longer than this aren't looked up while typing.
 const MAX_QUERY: usize = 32;
 
@@ -107,6 +177,36 @@ mod tests {
             color: None,
             group: false,
         }
+    }
+
+    #[test]
+    fn mentions_link_to_who_they_mention() {
+        let mentions = [
+            Mentioned {
+                text: "@Bob".into(),
+                target: Target::User("2".into()),
+            },
+            Mentioned {
+                text: "@Mods".into(),
+                target: Target::Role("30".into()),
+            },
+        ];
+        assert_eq!(
+            linked("hi @Bob, ask @Mods but not `@Bob`", &mentions),
+            "hi [@Bob](<talk:user/2>), ask [@Mods](<talk:role/30>) but not `@Bob`"
+        );
+        assert_eq!(target("talk:user/2"), Some(Target::User("2".into())));
+        assert_eq!(target("talk:role/30"), Some(Target::Role("30".into())));
+        assert_eq!(
+            target("https://matrix.to/#/@sam:test?via=test"),
+            Some(Target::User("@sam:test".into()))
+        );
+        assert_eq!(
+            target("https://matrix.to/#/%40sam%3Atest"),
+            Some(Target::User("@sam:test".into()))
+        );
+        assert_eq!(target("https://matrix.to/#/#games:test"), None);
+        assert_eq!(target("https://example.com"), None);
     }
 
     #[test]

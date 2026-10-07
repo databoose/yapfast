@@ -1395,6 +1395,23 @@ export component TalkWindow inherits Window {
     in property <ProfileData> profile;
     /// Where the member whose card is open is listed.
     property <length> profile-y;
+    /// The card opened from a mention or a role's list, beside the pointer rather
+    /// than the member list.
+    in-out property <bool> profile-at-pointer;
+    /// A role mentioned in a message, with the members known to have it.
+    in property <bool> role-open;
+    in property <string> role-name;
+    in property <color> role-color;
+    in property <bool> role-has-color;
+    in property <[MemberRow]> role-members;
+    in property <string> role-note;
+    callback close-role();
+    // Where the role's card opened; a card opened from it moves the anchor, not it.
+    property <length> role-x;
+    property <length> role-y;
+    changed role-open => {
+        if root.role-open { root.role-x = root.anchor-x; root.role-y = root.anchor-y; }
+    }
     /// The member whose card is beside the list, highlighted in it.
     in property <string> profile-member;
     callback show-profile(string);
@@ -2597,7 +2614,11 @@ export component TalkWindow inherits Window {
                                                         if message.body != "": StyledText {
                                                             text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
                                                             default-font-size: root.message-font-size;
-                                                            link-clicked(link) => { root.open-link(link); }
+                                                            // A mention's card opens beside the pointer.
+                                                            link-clicked(link) => {
+                                                                root.anchor(row-pointer.absolute-position.x + row-pointer.mouse-x, row-pointer.absolute-position.y + row-pointer.mouse-y, 0px, 0px, true);
+                                                                root.open-link(link);
+                                                            }
                                                             accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
                                                         }
                                                         if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
@@ -2910,7 +2931,7 @@ export component TalkWindow inherits Window {
                     }
                     if root.members-docked: MemberPanel {
                         width: 240px; rows: root.roster; note: root.roster-note; selected: root.profile-member;
-                        open-profile(id, y) => { root.profile-y = y; root.show-profile(id); }
+                        open-profile(id, y) => { root.profile-y = y; root.profile-at-pointer = false; root.show-profile(id); }
                     }
                 }
             }
@@ -3268,6 +3289,63 @@ export component TalkWindow inherits Window {
             }
         }
     }
+    // A role mentioned in a message: who Talk knows has it. Clicking someone opens
+    // their card over it; Escape or a click outside closes it.
+    if root.role-open: Rectangle {
+        TouchArea { clicked => { root.close-role(); } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-role(); return accept; }
+                return reject;
+            }
+        }
+        role-card := Rectangle {
+            width: 260px; height: min(root.height - 16px, role-content.preferred-height);
+            x: max(8px, min(root.width - self.width - 8px, root.role-x + 12px));
+            y: max(8px, min(root.height - self.height - 8px, root.role-y - 16px));
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            accessible-role: groupbox;
+            accessible-label: "Role " + root.role-name;
+            TouchArea { }
+            role-content := VerticalLayout {
+                padding: 12px; spacing: 4px;
+                HorizontalLayout {
+                    spacing: 8px; padding-bottom: 4px;
+                    Middle { Rectangle { width: 12px; height: 12px; border-radius: 6px; background: root.role-has-color ? root.role-color : Theme.muted; } }
+                    Text { text: "@" + root.role-name; color: root.role-has-color ? root.role-color : Theme.text; font-size: 16px; font-weight: 700; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                }
+                if root.role-note != "": Label { text: root.role-note; }
+                ScrollView {
+                    max-height: 320px;
+                    VerticalLayout {
+                        spacing: 0px; alignment: start;
+                        for member in root.role-members: Rectangle {
+                            height: 40px; border-radius: 6px;
+                            background: member-touch.has-hover ? Theme.hover : transparent;
+                            accessible-role: button;
+                            accessible-label: member.name;
+                            accessible-action-default => { root.profile-at-pointer = true; root.show-profile(member.id); }
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 6px; spacing: 10px;
+                                Middle { Avatar { size: 28px; initial: member.initial; tint: member.tint; picture: member.picture; } }
+                                Text { text: member.name; color: member.has-color ? member.color : Theme.text; font-size: 15px; font-weight: 500; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                            }
+                            member-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => {
+                                    root.anchor(role-card.x + role-card.width, self.absolute-position.y, 0px, 0px, true);
+                                    root.profile-at-pointer = true;
+                                    root.show-profile(member.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // A member's card, beside the member list. Escape or a click outside closes it.
     if root.profile-open && !root.profile-large: Rectangle {
         TouchArea { clicked => { root.close-profile(); } }
@@ -3280,8 +3358,10 @@ export component TalkWindow inherits Window {
         }
         ProfileCard {
             width: 300px; limit: root.height - 16px;
-            x: root.width - 240px - 8px - self.width;
-            y: max(8px, min(root.height - self.height - 8px, root.profile-y - 16px));
+            x: root.profile-at-pointer
+                ? max(8px, min(root.width - self.width - 8px, root.anchor-x + 12px))
+                : root.width - 240px - 8px - self.width;
+            y: max(8px, min(root.height - self.height - 8px, (root.profile-at-pointer ? root.anchor-y : root.profile-y) - 16px));
             data: root.profile;
             enlarge => { root.enlarge-profile(); }
             close => { root.close-profile(); }

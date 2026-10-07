@@ -60,6 +60,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   message; Alt+Up moves into the messages, where arrows step, Enter opens the
   menu, + reacts, R replies, E edits, Delete deletes, C copies, F forwards and
   Escape returns to the composer.
+- Clicking a mention, a link to a Matrix user, opens their profile card.
 - Mention someone by typing `@` and picking from the room's members. The
   message links to them (`[Name](https://matrix.to/#/@user:server)`) and lists
   them in `m.mentions`, so their client notifies them. Who else is typing

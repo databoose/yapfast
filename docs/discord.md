@@ -364,6 +364,9 @@ and DM is visible without copying anything into Matrix.
   notify unless muted; message requests and spam don't. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
+- Mentions in messages are links: a person's opens their profile card, and a
+  role's lists the members Talk has seen with it (from member lists, messages
+  and member requests), each opening their card in turn.
 - Typing `@` suggests who to mention: the channel's listed members, those who
   wrote lately, and server members a search by name finds (the gateway's
   member request with a query, as Discord's client does), then the roles

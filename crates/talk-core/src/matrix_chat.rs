@@ -621,6 +621,7 @@ impl Matrix {
             Command::Voice(_)
             | Command::MarkDiscordRead { .. }
             | Command::SearchMembers { .. }
+            | Command::RoleMembers { .. }
             | Command::AnswerRequest { .. }
             | Command::Profile { .. }
             | Command::Pictures(_) => {}

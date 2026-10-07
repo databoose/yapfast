@@ -427,6 +427,44 @@ impl Names {
         self.members.insert(key);
     }
 
+    /// The members known to hold `role` in a server, by user id.
+    pub fn members_with_role(&self, guild: &str, role: &str) -> Vec<String> {
+        let mut members: Vec<String> = self
+            .roles
+            .iter()
+            .filter(|((server, _), roles)| server == guild && roles.iter().any(|held| held == role))
+            .map(|((_, user), _)| user.clone())
+            .collect();
+        members.sort();
+        members
+    }
+
+    /// The users and roles a message mentions, each with the text [`Names::render`]
+    /// shows for it: `(text, role, id)`.
+    pub fn mentions(&self, server: Option<&Server>, content: &str) -> Vec<(String, bool, String)> {
+        let guild = server.map_or("", |server| server.id.as_str());
+        let mut found: Vec<(String, bool, String)> = Vec::new();
+        let mut rest = content;
+        while let Some(start) = rest.find("<@") {
+            rest = &rest[start..];
+            let Some(end) = rest.find('>') else {
+                break;
+            };
+            let tag = &rest[1..end];
+            let (role, id) = match tag.strip_prefix("@&") {
+                Some(id) => (true, id),
+                None => (false, tag.strip_prefix("@!").unwrap_or(&tag[1..])),
+            };
+            if let Some(text) = self.tag(server, guild, tag)
+                && !found.iter().any(|(_, _, known)| known == id)
+            {
+                found.push((text, role, id.to_owned()));
+            }
+            rest = &rest[end + 1..];
+        }
+        found
+    }
+
     /// A member's roles in a server, as far as they're known.
     pub fn roles(&self, guild: &str, user: &str) -> &[String] {
         self.roles
@@ -713,6 +751,16 @@ mod tests {
             )
         );
         assert!(names.knows_member("10", "2") && !names.knows_member("10", "1"));
+        assert_eq!(
+            names.mentions(Some(&server), "<@2> and <@!2>, <@&30>, <#11> <@x"),
+            [
+                ("@Annie".to_owned(), false, "2".to_owned()),
+                ("@Mods".to_owned(), true, "30".to_owned())
+            ]
+        );
+        names.learn_member("10", &json!({"user_id": "2", "roles": ["30"]}));
+        names.learn_member("10", &json!({"user_id": "3", "roles": ["31"]}));
+        assert_eq!(names.members_with_role("10", "30"), ["2"]);
     }
 
     #[test]
