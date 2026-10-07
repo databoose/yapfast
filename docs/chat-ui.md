@@ -174,7 +174,10 @@ destructive actions, and green only for live voice. Avatars get one of eight
 tints from the person's name.
 
 Network operations run on the existing two-worker Tokio runtime. The UI receives
-SDK events, and the message list virtualizes its rows. There is no UI polling loop.
+SDK events, and the message list virtualizes its rows. Rows keep their place by
+message id: a change rebuilds only the rows of the messages it changed, and
+older messages go in above the rows shown, which stay where they are on screen.
+There is no UI polling loop.
 Only joined Spaces and their joined channels appear. DMs stay in the DM list even
 if linked to a Space. Standalone rooms outside Spaces, channel discovery, room
 creation, mentions with autocomplete, jumping to the first unread message,

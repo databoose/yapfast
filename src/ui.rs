@@ -642,9 +642,10 @@ struct Adapter {
     forwarding: bool,
     selection_version: u64,
     reset_version: u64,
+    /// The timeline shown, which tells the messages that changed since.
     messages: Arc<Vec<ChatMessage>>,
-    /// Rows already built for unchanged messages, so the list keeps their state.
-    rows: HashMap<String, (ChatMessage, MessageRow)>,
+    /// The rows built for those messages, by id, so the list keeps their state.
+    rows: HashMap<String, MessageRow>,
     /// Server icons and avatars already handed to Slint, by address.
     pictures: HashMap<String, slint::Image>,
     /// How many pictures had arrived when the message rows were last built.
@@ -1206,6 +1207,35 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
     }
     for row in rows.into_iter().skip(common) {
         model.push(row);
+    }
+}
+
+/// Updates a list of rows that have ids, keeping each row in its place:
+/// rows that came or went before or after the rest are inserted or removed,
+/// so loading older messages above leaves the rows below untouched, and the
+/// rest are set only where they changed.
+fn update_model_by_id<T: Clone + PartialEq + 'static>(
+    model: &VecModel<T>,
+    rows: Vec<T>,
+    id: impl Fn(&T) -> SharedString,
+) {
+    let shown: Vec<SharedString> = model.iter().map(|row| id(&row)).collect();
+    let same = |old: usize, new: usize| shown[old] == id(&rows[new]);
+    let common = shown.len().min(rows.len());
+    let before = (0..common).take_while(|&index| same(index, index)).count();
+    let after = (0..common - before)
+        .take_while(|&back| same(shown.len() - 1 - back, rows.len() - 1 - back))
+        .count();
+    for _ in before..shown.len() - after {
+        model.remove(before);
+    }
+    let added = rows.len() - after;
+    for (index, row) in rows.into_iter().enumerate() {
+        if (before..added).contains(&index) {
+            model.insert(index, row);
+        } else if model.row_data(index).as_ref() != Some(&row) {
+            model.set_row_data(index, row);
+        }
     }
 }
 

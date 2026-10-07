@@ -9,29 +9,16 @@ pub(super) struct Changes {
     messages: bool,
     /// The newest message was in view.
     at_end: bool,
-    /// How tall the timeline was.
-    old_extent: f32,
-    /// Older messages arrived above those shown.
-    prepended: bool,
 }
 
 impl Changes {
     fn read(adapter: &Adapter, window: &TalkWindow) -> Self {
         let state = &adapter.app.state;
-        let selection = adapter.selection_version != state.selection_version;
-        let messages = !Arc::ptr_eq(&adapter.messages, &state.messages);
         Self {
             reset: adapter.reset_version != state.reset_version,
-            selection,
-            messages,
+            selection: adapter.selection_version != state.selection_version,
+            messages: !Arc::ptr_eq(&adapter.messages, &state.messages),
             at_end: window.invoke_timeline_at_end(),
-            old_extent: window.invoke_timeline_extent(),
-            prepended: messages
-                && !selection
-                && adapter.messages.first().is_some_and(|first| {
-                    state.messages.first().is_some_and(|new| first.id != new.id)
-                        && state.messages.iter().any(|message| message.id == first.id)
-                }),
         }
     }
 }
@@ -887,8 +874,6 @@ impl Adapter {
             selection: selection_changed,
             messages: messages_changed,
             at_end,
-            old_extent,
-            prepended,
         } = changes;
         let state = &self.app.state;
         // Avatars that arrived since show on rows built before them.
@@ -938,20 +923,27 @@ impl Adapter {
                 window.set_active_item(SharedString::default());
                 window.set_jump_item(SharedString::default());
             }
+            // Rows are built again only for messages that changed since the
+            // timeline shown.
+            let shown: HashMap<&str, &ChatMessage> = self
+                .messages
+                .iter()
+                .map(|message| (message.id.as_str(), message))
+                .collect();
             let mut previous = std::mem::take(&mut self.rows);
             let mut before: Option<&ChatMessage> = None;
             let rows = state
                 .messages
                 .iter()
                 .map(|message| {
+                    let unchanged = !restyle && shown.get(message.id.as_str()) == Some(&message);
                     let mut row = match previous.remove(&message.id) {
-                        Some((old, row)) if &old == message && !restyle => row,
+                        Some(row) if unchanged => row,
                         _ => self
                             .layout
                             .restyle(message, message_row(message, &self.revealed)),
                     };
-                    self.rows
-                        .insert(message.id.clone(), (message.clone(), row.clone()));
+                    self.rows.insert(message.id.clone(), row.clone());
                     let day = day(message.timestamp);
                     let new_day = !day.is_empty()
                         && before.is_none_or(|before| self::day(before.timestamp) != day);
@@ -978,7 +970,9 @@ impl Adapter {
                     row
                 })
                 .collect();
-            update_model(&self.models.messages, rows);
+            // Older messages go in above the rows shown, and the list keeps
+            // those where they are.
+            update_model_by_id(&self.models.messages, rows, |row| row.id.clone());
             // A jump to a message places the list itself, even one made after
             // this refresh; see `show_message`.
             let weak = window.as_weak();
@@ -990,14 +984,6 @@ impl Adapter {
                 slint::Timer::single_shot(Duration::ZERO, move || {
                     if let Some(window) = jumped() {
                         window.invoke_scroll_to_latest();
-                    }
-                });
-            } else if prepended {
-                slint::Timer::single_shot(Duration::ZERO, move || {
-                    if let Some(window) = jumped() {
-                        window.invoke_preserve_history_position(
-                            (window.invoke_timeline_extent() - old_extent).max(0.),
-                        );
                     }
                 });
             }

@@ -540,7 +540,6 @@ export component TalkWindow inherits Window {
         root.settle-lead();
         if root.follow-latest { root.scroll-to-latest(); }
     }
-    public function preserve-history-position(delta: length) { timeline.content-y = timeline.content-y - delta; }
     // Formatted messages are not selectable, so Copy goes through a hidden text field.
     function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
     clipboard := TextInput { visible: false; width: 0px; height: 0px; }

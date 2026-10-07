@@ -509,6 +509,25 @@ pub struct Names {
     member_avatars: HashMap<(String, String), String>,
     /// Members' roles by server and user id, for the colour of their name.
     roles: HashMap<(String, String), Vec<String>>,
+    /// Changes whenever a name, avatar or role changes, so what was shown
+    /// with them can tell it's out of date.
+    version: u64,
+}
+
+/// Sets `key` to `value`, or removes it for none; whether that changed it.
+fn changed<K: std::hash::Hash + Eq, V: PartialEq>(
+    map: &mut HashMap<K, V>,
+    key: K,
+    value: Option<V>,
+) -> bool {
+    match value {
+        Some(value) if map.get(&key) == Some(&value) => false,
+        Some(value) => {
+            map.insert(key, value);
+            true
+        }
+        None => map.remove(&key).is_some(),
+    }
 }
 
 impl Names {
@@ -554,26 +573,33 @@ impl Names {
                 .into_iter()
                 .map(|(guild, user, roles)| ((guild, user), roles))
                 .collect(),
+            version: 0,
         }
+    }
+
+    /// Changes whenever what [`Names::name`], [`Names::avatar`],
+    /// [`Names::roles`] or [`Names::render`] give may have.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn learn_user(&mut self, user: &Value) {
         let Some(id) = user["id"].as_str() else {
             return;
         };
+        let mut learned = false;
         if let Some(name) = ready::display_name(user) {
-            self.users.insert(id.to_owned(), name.to_owned());
+            learned |= changed(&mut self.users, id.to_owned(), Some(name.to_owned()));
         }
         // Partial user objects leave the avatar out; null removes it.
         match user.get("avatar") {
             Some(Value::String(hash)) => {
-                self.avatars.insert(id.to_owned(), hash.clone());
+                learned |= changed(&mut self.avatars, id.to_owned(), Some(hash.clone()));
             }
-            Some(Value::Null) => {
-                self.avatars.remove(id);
-            }
+            Some(Value::Null) => learned |= changed(&mut self.avatars, id.to_owned(), None),
             _ => {}
         }
+        self.version += u64::from(learned);
     }
 
     /// Learns a member object; its user id is in `user` or `user_id`.
@@ -586,31 +612,20 @@ impl Names {
             return;
         };
         let key = (guild.to_owned(), user.to_owned());
-        match member["nick"].as_str() {
-            Some(nick) => {
-                self.nicknames.insert(key.clone(), nick.to_owned());
-            }
-            None => {
-                self.nicknames.remove(&key);
-            }
-        }
-        match member["avatar"].as_str() {
-            Some(hash) => {
-                self.member_avatars.insert(key.clone(), hash.to_owned());
-            }
-            None => {
-                self.member_avatars.remove(&key);
-            }
-        }
+        let nick = member["nick"].as_str().map(str::to_owned);
+        let mut learned = changed(&mut self.nicknames, key.clone(), nick);
+        let avatar = member["avatar"].as_str().map(str::to_owned);
+        learned |= changed(&mut self.member_avatars, key.clone(), avatar);
         // Some member objects leave the roles out.
         if let Some(roles) = member["roles"].as_array() {
             let roles = roles
                 .iter()
                 .filter_map(|role| role.as_str().map(str::to_owned))
                 .collect();
-            self.roles.insert(key.clone(), roles);
+            learned |= changed(&mut self.roles, key.clone(), Some(roles));
         }
         self.members.insert(key);
+        self.version += u64::from(learned);
     }
 
     /// The members known to hold `role` in a server, by user id.
@@ -1057,6 +1072,25 @@ mod tests {
         names.learn_member("10", &json!({"user_id": "2", "roles": ["30"]}));
         names.learn_member("10", &json!({"user_id": "3", "roles": ["31"]}));
         assert_eq!(names.members_with_role("10", "30"), ["2"]);
+    }
+
+    #[test]
+    fn the_version_changes_only_with_what_names_show() {
+        let mut names = Names::default();
+        let ann = json!({"id": "2", "username": "ann", "avatar": "abc"});
+        names.learn_user(&ann);
+        let learned = names.version();
+        names.learn_user(&ann);
+        names.learn_member("10", &json!({"user": ann, "nick": null, "roles": []}));
+        let member = names.version();
+        assert!(
+            member > learned,
+            "a server profile, though without a nickname"
+        );
+        names.learn_member("10", &json!({"user": ann, "nick": null, "roles": []}));
+        assert_eq!(names.version(), member, "the same again");
+        names.learn_member("10", &json!({"user_id": "2", "nick": "Annie", "roles": []}));
+        assert!(names.version() > member, "a nickname");
     }
 
     #[test]

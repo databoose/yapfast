@@ -8,7 +8,8 @@
 // busy account has, for measuring; POST /_control/busy-start makes Bob post
 // in their channels ten times a second, and /_control/busy-stop stops him.
 // `--dms N` adds N older DMs, each with a person of its own, every other one
-// a friend, as a busy account has.
+// a friend, as a busy account has. `--images N` attaches a picture of its own
+// to every Nth extra history message, for a channel heavy with previews.
 // POST /_control/chat-start makes Bob post in
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
@@ -27,8 +28,10 @@
 // POST /_control/call makes Bob call her; see "DM calls" below.
 // Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
 // Carol, whom she has none with yet.
-// POST /_control/typing makes Bob start typing in #general; GET
-// /_control/typed lists the channels Alice said she was typing in.
+// POST /_control/typing makes Bob start typing in #general, or with ?dm in
+// his DM; GET /_control/typed lists the channels Alice said she was typing in.
+// POST /_control/react makes Carol add or take back a reaction on the newest
+// message in #general.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
 // banner and a server bio, Carol a banner colour, and the rest nothing more.
 // POST /_control/embeds makes Bob post an article link, whose preview arrives
@@ -73,6 +76,7 @@ const { values: args } = parseArgs({
     extra: { type: "string", default: "56" },
     servers: { type: "string", default: "1" },
     dms: { type: "string", default: "0" },
+    images: { type: "string", default: "0" },
   },
 });
 
@@ -589,8 +593,17 @@ function sample(index: number): string {
 }
 
 const extra = Number(args.extra);
+const imageEvery = Number(args.images);
 for (let index = 0; index < extra; index++) {
-  post(GENERAL, users.bob, sample(index), HISTORY_START + (4 + index) * 60_000);
+  const ms = HISTORY_START + (4 + index) * 60_000;
+  const files: File[] = [];
+  if (imageEvery > 0 && index % imageEvery === 0) {
+    const shade = [(index * 37) % 200, (index * 71) % 200, 160];
+    const draw = (w: number, h: number) =>
+      png(w, h, (x, y) => [shade[0]! + Math.floor((55 * x) / w), shade[1]! + Math.floor((55 * y) / h), shade[2]!, 255]);
+    files.push(addFile({ id: snowflake(ms, 1), channel: GENERAL, filename: `photo-${index}.png`, contentType: "image/png", data: draw(480, 320), width: 480, height: 320, draw }));
+  }
+  post(GENERAL, users.bob, sample(index), ms, { files });
 }
 
 // The extra DMs of `--dms`, older than the fixture's.
@@ -2636,14 +2649,34 @@ const server = Bun.serve<SocketData>({
       return new Response("Bob mentioned Alice\n");
     }
     if (req.method === "POST" && path === "/_control/typing") {
+      const dm = url.searchParams.has("dm");
       dispatch("TYPING_START", {
-        channel_id: GENERAL,
-        guild_id: GUILD,
+        channel_id: dm ? DM_BOB : GENERAL,
+        ...(dm ? {} : { guild_id: GUILD, member: member(users.bob) }),
         user_id: users.bob.id,
         timestamp: Math.floor(Date.now() / 1000),
-        member: member(users.bob),
       });
       return new Response("Bob is typing\n");
+    }
+    if (req.method === "POST" && path === "/_control/react") {
+      const message = messages.get(GENERAL)!.at(-1)!;
+      let reaction = message.reactions.find((r) => r.name === "🎉" && r.id === null);
+      if (!reaction) message.reactions.push((reaction = { name: "🎉", id: null, users: new Set() }));
+      const add = !reaction.users.has(users.carol.id);
+      if (add) reaction.users.add(users.carol.id);
+      else reaction.users.delete(users.carol.id);
+      if (reaction.users.size === 0) message.reactions.splice(message.reactions.indexOf(reaction), 1);
+      dispatch(add ? "MESSAGE_REACTION_ADD" : "MESSAGE_REACTION_REMOVE", {
+        user_id: users.carol.id,
+        channel_id: GENERAL,
+        message_id: message.id,
+        guild_id: GUILD,
+        emoji: { id: null, name: "🎉" },
+        burst: false,
+        type: 0,
+        ...(add ? { member: member(users.carol), message_author_id: message.author.id } : {}),
+      });
+      return new Response(add ? "Carol reacted\n" : "Carol took her reaction back\n");
     }
     if (req.method === "GET" && path === "/_control/typed") {
       return Response.json(typed);

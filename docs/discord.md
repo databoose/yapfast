@@ -454,6 +454,13 @@ the startup cache below describes, so a channel
 opened after a restart shows its saved messages while the latest page loads
 and fits in the same way.
 
+The open channel renders each message for the timeline once, with its
+author's name, colour and avatar and its mentions as names, and keeps it. A
+new message, an edit, a reaction or a preview that arrived renders only that
+message again; new names, roles or channel names, or a change to who's
+blocked, render them all. A closed channel drops its rendered messages,
+since they hold its previews.
+
 Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
 Showing an unread channel marks it read, and with the "Mark messages read on
