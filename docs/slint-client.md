@@ -23,7 +23,7 @@ No remote push is part of this migration.
   leave, mute/deafen, native device selection and explicit channel-switch
   confirmation. Browsing text, DMs or another server retains the backend session
   and voice connection. Preview voice never opens an audio device.
-- A Discord-style layout set in Satoshi (see [Chat UI](chat-ui.md#layout-and-look)),
+- A Discord-style layout set in Atkinson Hyperlegible Next (see [Chat UI](chat-ui.md#layout-and-look)),
   Lucide SVG icons, custom text fields, and window sizing from 1120×760 down to
   800×560. Settings cover the window in sections: account, voice and audio, messages
   (text size, clock and link previews), notifications and Discord, closed by its close

@@ -1,8 +1,8 @@
 //! Discord's custom emoji as text: each emoji whose picture has arrived gets a
 //! code point in the Supplementary Private Use Area B, drawn by a font made for
 //! it; see [`crate::emoji_font`]. Each batch of new emoji is a font of its own,
-//! which text falls back to first after Satoshi. Icon fonts such as Nerd Fonts
-//! take code points in area A, so these stay clear of them.
+//! which text falls back to first after the UI typeface. Icon fonts such as
+//! Nerd Fonts take code points in area A, so these stay clear of them.
 //!
 //! Only emoji in message text need glyphs. The picker, suggestions and
 //! reaction buttons show an emoji's picture as an image, so the hundreds a
@@ -103,7 +103,7 @@ pub fn add<'a>(arrived: impl IntoIterator<Item = (&'a str, &'a Picture)>) -> boo
             tracing::warn!("could not register a font of custom emoji");
             return false;
         };
-        // Text falls back from Satoshi to these families first; see
+        // Text falls back from the UI typeface to these families first; see
         // `emoji::prefer_for_text`.
         for generic in [
             fontique::GenericFamily::SansSerif,

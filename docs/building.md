@@ -18,7 +18,7 @@ Three Nix shells cover the work:
 Talk pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
 the complete Rust graph. `vendor/i-slint-renderer-skia` is Slint's Skia
 renderer 1.18.1 with one change: glyphs use Skia's slight (vertical-only)
-hinting, because the default hinting spaces Satoshi's letters unevenly. Copy the
+hinting, because the default hinting spaced Satoshi's letters unevenly. Copy the
 matching release over it, and reapply that line, when upgrading Slint.
 
 `vendor/i-slint-core` is Slint's core 1.18.1 with `StyledText` made selectable,

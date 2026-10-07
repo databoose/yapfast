@@ -167,8 +167,9 @@ The window follows Discord's arrangement:
 - A voice stage with participant tiles, a green border while someone speaks,
   and round mute, deafen and leave controls.
 
-Satoshi (ITF Free Font License, embedded in the binary; see `ui/fonts/README.md`)
-sets all text in four weights. The palette is layered graphite with one
+Atkinson Hyperlegible Next (SIL Open Font License, embedded in the binary; see
+`ui/fonts/README.md`) sets all text in four weights. Satoshi, the second choice,
+stays in `ui/fonts` with its imports commented out. The palette is layered graphite with one
 marigold accent for selection and primary actions, red only for mentions and
 destructive actions, and green only for live voice. Avatars get one of eight
 tints from the person's name.
@@ -225,7 +226,7 @@ left reactions blank. On Linux Talk now finds an installed emoji font with CBDT
 or sbix bitmaps and no COLR table, maps it and registers it with Slint as "Talk
 Color Emoji". That font also leads the sans-serif and UI fallback lists, ahead
 of display fonts that carry a few monochrome emoji, so emoji in message text
-draw in color too; symbols Satoshi lacks that have an emoji form, such as ♥,
+draw in color too; symbols the UI typeface lacks that have an emoji form, such as ♥,
 then show as emoji. Windows uses "Segoe UI Emoji".
 
 Linux native checks cover sign-in, restoration, device trust, encrypted sending,

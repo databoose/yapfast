@@ -304,11 +304,12 @@ fn register_bitmap_font() -> bool {
     false
 }
 
-/// Text falls back from Satoshi through the system's sans-serif and UI families
-/// before the generic emoji family. Fontconfig can list emoji fonts Slint can't
-/// draw there, and display fonts with a few monochrome emoji ahead of them. So
-/// `emoji` leads both lists, and their other emoji fonts are dropped. Symbols
-/// Satoshi lacks that have an emoji form, such as ♥, then show as color emoji.
+/// Text falls back from the UI typeface through the system's sans-serif and UI
+/// families before the generic emoji family. Fontconfig can list emoji fonts
+/// Slint can't draw there, and display fonts with a few monochrome emoji ahead
+/// of them. So `emoji` leads both lists, and their other emoji fonts are
+/// dropped. Symbols the typeface lacks that have an emoji form, such as ♥, then
+/// show as color emoji.
 fn prefer_for_text(collection: &mut fontique::Collection, emoji: fontique::FamilyId) {
     use fontique::GenericFamily;
     for generic in [GenericFamily::SansSerif, GenericFamily::SystemUi] {

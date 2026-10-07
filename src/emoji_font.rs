@@ -1,22 +1,26 @@
 //! A colour bitmap font made at runtime, so Discord's custom emoji show inline
 //! in message text: Slint's `StyledText` draws only glyphs. Each emoji is a PNG
 //! in a CBDT table, the format of the Noto Color Emoji build Talk already draws,
-//! at a Private Use Area code point. The font's vertical metrics are Satoshi's,
-//! so a line with an emoji keeps its baseline.
+//! at a Private Use Area code point. The font's vertical metrics are the UI
+//! typeface's, Atkinson Hyperlegible Next's, so a line with an emoji keeps its
+//! baseline.
 
-/// Font units per em, as in Satoshi.
+/// Font units per em, as in Atkinson Hyperlegible Next and Satoshi.
 const UNITS_PER_EM: u16 = 1000;
-/// Satoshi's ascender, descender and line gap, in font units.
-const ASCENDER: i16 = 1010;
-const DESCENDER: i16 = -240;
-const LINE_GAP: i16 = 100;
+/// Atkinson Hyperlegible Next's ascender, descender and line gap, in font
+/// units. Satoshi's, the second choice of typeface, are 1010, -240 and 100.
+const ASCENDER: i16 = 984;
+const DESCENDER: i16 = -316;
+const LINE_GAP: i16 = 0;
 /// The pixels per em of the bitmaps. Text draws them scaled to its size.
 const PPEM: u8 = 100;
 /// The side of each emoji's square bitmap: 1.36 em, Discord's 22 pixels in 16
 /// pixel text. It spans the line, its foot just below the descenders.
 pub const SIDE: u32 = 136;
 const BEARING_X: i8 = 2;
-const BEARING_Y: i8 = 107;
+/// The bitmap's top, in pixels above the baseline. With Satoshi's shallower
+/// descender it was 107.
+const BEARING_Y: i8 = 102;
 const ADVANCE: u8 = 140;
 
 /// A font with each PNG of `glyphs`, which must be [`SIDE`] pixels square, at

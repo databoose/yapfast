@@ -1,10 +1,20 @@
 import { ListView, Palette } from "std-widgets.slint";
-import "fonts/Satoshi-Regular.ttf";
-import "fonts/Satoshi-Italic.ttf";
-import "fonts/Satoshi-Medium.ttf";
-import "fonts/Satoshi-Bold.ttf";
-import "fonts/Satoshi-BoldItalic.ttf";
-import "fonts/Satoshi-Black.ttf";
+// The UI's typeface, Atkinson Hyperlegible Next; ExtraBold serves weight 900.
+import "fonts/AtkinsonHyperlegibleNext-Regular.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Italic.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Medium.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Bold.ttf";
+import "fonts/AtkinsonHyperlegibleNext-BoldItalic.ttf";
+import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
+// The second choice, Satoshi: to switch back, import these instead, set
+// `default-font-family` below to "Satoshi", and use Satoshi's metrics in
+// src/emoji_font.rs.
+// import "fonts/Satoshi-Regular.ttf";
+// import "fonts/Satoshi-Italic.ttf";
+// import "fonts/Satoshi-Medium.ttf";
+// import "fonts/Satoshi-Bold.ttf";
+// import "fonts/Satoshi-BoldItalic.ttf";
+// import "fonts/Satoshi-Black.ttf";
 
 // Talk's window. Its parts live beside it, by area: theme.slint, controls.slint,
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
@@ -36,8 +46,10 @@ export component TalkWindow inherits Window {
     preferred-width: 1120px; preferred-height: 760px;
     min-width: 800px; min-height: 560px;
     background: Theme.chat;
-    default-font-family: "Satoshi";
-    // Satoshi's x-height is small, so text defaults to 16px.
+    default-font-family: "Atkinson Hyperlegible Next";
+    // default-font-family: "Satoshi";
+    // Both faces' x-heights are about half their size, small, so text
+    // defaults to 16px.
     default-font-size: 16px;
     init => {
         Palette.color-scheme = ColorScheme.dark;

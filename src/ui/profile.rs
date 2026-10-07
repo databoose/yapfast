@@ -165,7 +165,8 @@ pub(super) fn presence_name(presence: Option<Presence>) -> &'static str {
 }
 
 /// Roles as chips, a row at a time. Slint has no wrapping layout, so chips
-/// are measured roughly: Satoshi Medium at 13px averages under 7px a letter.
+/// are measured roughly: Atkinson Hyperlegible Next Medium at 13px averages
+/// under 7px a letter, as Satoshi Medium does.
 pub(super) fn role_rows(roles: &[ProfileRole], width: f32) -> ModelRc<ProfileRoleRow> {
     const GAP: f32 = 4.;
     // Padding, the colour dot and the space after it.
