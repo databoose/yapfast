@@ -520,6 +520,31 @@ async fn talks_to_the_fake_server() {
         "Bots too, for those who may"
     );
 
+    // New DMs: friends come first, others by name, and opening a DM with
+    // Carol starts one, which the DM list gains; opening it again finds it.
+    let friends: Vec<_> = discord
+        .find_people("")
+        .into_iter()
+        .map(|person| (person.name, person.friend))
+        .collect();
+    assert_eq!(
+        friends,
+        [("Bob".to_owned(), true), ("Carol".to_owned(), true)]
+    );
+    let found = discord.find_people("da");
+    assert_eq!(found[0].name, "Dave");
+    assert!(!found[0].friend);
+    let carol_id = discord.find_people("carol")[0].id.clone();
+    let carol_dm = discord.open_dm(&carol_id).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == carol_dm)
+    })
+    .await;
+    assert_eq!(discord.open_dm(&carol_id).await.unwrap(), carol_dm);
+
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
     let asked = discord.history(PRIVATE, &erin, None).await.unwrap();

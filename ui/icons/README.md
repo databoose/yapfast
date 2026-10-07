@@ -5,7 +5,7 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
   forward from gpui-kit-assets 0.7.0.
 - bell, check, chevron-down, circle-plus, copy, download, file, headphone-off, history, lock, log-out, pencil,
   phone-off, refresh-cw, reply, screen-share, screen-share-off, send-horizontal,
-  smile-plus, trash-2, triangle-alert, user, users and x come unmodified from
+  smile-plus, square-pen, trash-2, triangle-alert, user, users and x come unmodified from
   lucide-static 1.51.0.
 - chevron-left, chevron-right, ellipsis, forward and search follow
   lucide-static 1.51.0's paths in the same wrapper.

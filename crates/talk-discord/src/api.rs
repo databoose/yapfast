@@ -224,6 +224,21 @@ impl Api {
         self.empty(self.request(method, &path)).await
     }
 
+    /// Opens the DM with `user`, or finds the one already open; returns its channel id.
+    pub async fn open_dm(&self, user: &str) -> Result<String> {
+        let body = json!({"recipients": [user]});
+        let channel = self
+            .json(with_json(
+                self.request(Method::POST, "/users/@me/channels"),
+                &body,
+            ))
+            .await?;
+        channel["id"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord didn't open the DM.")
+    }
+
     /// Shows others that this account is typing in `channel`.
     pub async fn typing(&self, channel: &str) -> Result<()> {
         let path = format!("/channels/{channel}/typing");

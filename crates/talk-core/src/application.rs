@@ -7,8 +7,8 @@ use std::{
 
 use crate::{
     chat::{
-        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Event, MentionGroup, Picture,
-        Profile, ProfileRole, Reaction, Reply, Role,
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Event, MentionGroup,
+        Picture, Profile, ProfileRole, Reaction, Reply, Role,
     },
     discord,
     mention::{self, Candidate},
@@ -28,6 +28,25 @@ pub enum Navigation {
     #[default]
     DirectMessages,
     Server(String),
+}
+
+/// The dialog for starting a DM, while it's open.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewDm {
+    pub query: String,
+    /// Who each network found for the query.
+    pub discord: Vec<Contact>,
+    pub matrix: Vec<Contact>,
+    /// A DM is starting.
+    pub starting: bool,
+    pub error: Option<String>,
+}
+
+impl NewDm {
+    /// Everyone found, Discord's first.
+    pub fn people(&self) -> impl Iterator<Item = &Contact> {
+        self.discord.iter().chain(&self.matrix)
+    }
 }
 
 /// A message being forwarded, and the conversations it went to.
@@ -121,6 +140,7 @@ pub struct AppState {
     pub attaching: bool,
     /// The selected room's message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
+    pub new_dm: Option<NewDm>,
     /// The image viewer, open over the selected room.
     pub viewer: Option<Viewer>,
     /// The profile card that's open.
@@ -316,6 +336,11 @@ pub enum Action {
     SetDraft(String),
     /// The `@` word being typed in the composer changed, or there's none now.
     MentionQuery(Option<String>),
+    /// Open the dialog for starting a DM, look for people in it, start one, or close it.
+    OpenNewDm,
+    NewDmQuery(String),
+    StartDm(Contact),
+    CloseNewDm,
     Send,
     Reply(String),
     Edit(String),
@@ -415,6 +440,8 @@ pub struct Application {
     requested_pictures: HashSet<String>,
     /// Names searched for in the selected room, lowercased.
     searched: HashSet<String>,
+    /// A conversation to open once it's listed, such as a DM just started.
+    pending_open: Option<String>,
     /// The composer text of the message being sent, which `Event::SendResult` clears
     /// once sent; the backend has it with its mentions in the network's form.
     sent_draft: Option<String>,
@@ -446,6 +473,13 @@ impl Application {
 
     pub fn apply(&mut self, event: Event) -> Vec<Effect> {
         let mut effects = self.apply_event(event);
+        // A DM just started opens once the lists have it.
+        if let Some(room) = self
+            .pending_open
+            .take_if(|room| self.state.rooms.iter().any(|listed| &listed.id == room))
+        {
+            effects.extend(self.dispatch(Action::Open(room)));
+        }
         effects.extend(self.request_pictures());
         effects
     }
@@ -524,6 +558,13 @@ impl Application {
                     .flatten()
                     .chain(&state.found_members)
                     .filter_map(|member| member.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .new_dm
+                    .iter()
+                    .flat_map(NewDm::people)
+                    .filter_map(|person| person.avatar.as_deref()),
             );
         let mut wanted = Vec::new();
         for url in shown {
@@ -581,6 +622,39 @@ impl Application {
                     effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
                 }
                 effects
+            }
+            Action::OpenNewDm => {
+                if self.state.preview {
+                    return vec![];
+                }
+                self.state.new_dm = Some(NewDm::default());
+                vec![Effect::Backend(Command::FindPeople {
+                    query: String::new(),
+                })]
+            }
+            Action::NewDmQuery(query) => {
+                let Some(new_dm) = &mut self.state.new_dm else {
+                    return vec![];
+                };
+                new_dm.query = query.clone();
+                new_dm.error = None;
+                vec![Effect::Backend(Command::FindPeople { query })]
+            }
+            Action::StartDm(contact) => {
+                let Some(new_dm) = self.state.new_dm.as_mut().filter(|new_dm| !new_dm.starting)
+                else {
+                    return vec![];
+                };
+                new_dm.starting = true;
+                new_dm.error = None;
+                vec![Effect::Backend(Command::StartDm {
+                    id: contact.id,
+                    discord: contact.discord,
+                })]
+            }
+            Action::CloseNewDm => {
+                self.state.new_dm = None;
+                vec![]
             }
             Action::MentionQuery(query) => {
                 self.state.mention_query = query.clone();
@@ -1226,6 +1300,33 @@ impl Application {
                     self.state.members = Some(members);
                 }
             }
+            Event::People {
+                query,
+                discord,
+                people,
+            } => {
+                if let Some(new_dm) = &mut self.state.new_dm
+                    && new_dm.query.trim() == query.trim()
+                {
+                    if discord {
+                        new_dm.discord = people;
+                    } else {
+                        new_dm.matrix = people;
+                    }
+                }
+            }
+            Event::DmStarted(Ok(room)) => {
+                if self.state.new_dm.is_some() {
+                    self.state.new_dm = None;
+                    self.pending_open = Some(room);
+                }
+            }
+            Event::DmStarted(Err(error)) => {
+                if let Some(new_dm) = &mut self.state.new_dm {
+                    new_dm.starting = false;
+                    new_dm.error = Some(error);
+                }
+            }
             Event::MentionGroups { room, groups } => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.mention_groups = groups;
@@ -1347,6 +1448,11 @@ impl Application {
             Command::Earlier(room) => {
                 if self.state.selected.as_ref() == Some(room) {
                     self.state.loading_history = false;
+                }
+            }
+            Command::StartDm { .. } => {
+                if let Some(new_dm) = &mut self.state.new_dm {
+                    new_dm.starting = false;
                 }
             }
             Command::Recover(_) | Command::RefreshTrust | Command::Logout => {
@@ -3055,6 +3161,71 @@ mod tests {
             color: None,
             activity: None,
         }
+    }
+
+    #[test]
+    fn new_dms_find_people_on_both_networks_and_open_once_listed() {
+        let mut app = connected();
+        assert!(matches!(
+            app.dispatch(Action::OpenNewDm).as_slice(),
+            [Effect::Backend(Command::FindPeople { query })] if query.is_empty()
+        ));
+        app.dispatch(Action::NewDmQuery("sa".into()));
+        let contact = |id: &str, name: &str, discord: bool| Contact {
+            id: id.into(),
+            name: name.into(),
+            avatar: None,
+            detail: String::new(),
+            discord,
+        };
+        app.apply(Event::People {
+            query: "sa".into(),
+            discord: false,
+            people: vec![contact("@sam:test", "Sam", false)],
+        });
+        app.apply(Event::People {
+            query: "sa".into(),
+            discord: true,
+            people: vec![contact("5", "Sasha", true)],
+        });
+        // An answer to an older query is dropped.
+        app.apply(Event::People {
+            query: "s".into(),
+            discord: true,
+            people: vec![contact("6", "Sid", true)],
+        });
+        let new_dm = app.state.new_dm.clone().unwrap();
+        let names: Vec<_> = new_dm.people().map(|person| person.name.as_str()).collect();
+        assert_eq!(names, ["Sasha", "Sam"]);
+        assert!(matches!(
+            app.dispatch(Action::StartDm(new_dm.matrix[0].clone())).as_slice(),
+            [Effect::Backend(Command::StartDm { id, discord: false })] if id == "@sam:test"
+        ));
+        assert!(
+            app.dispatch(Action::StartDm(new_dm.matrix[0].clone()))
+                .is_empty(),
+            "one at a time"
+        );
+        app.apply(Event::DmStarted(Err("offline".into())));
+        let new_dm = app.state.new_dm.as_ref().unwrap();
+        assert!(!new_dm.starting && new_dm.error.as_deref() == Some("offline"));
+        app.dispatch(Action::StartDm(contact("@sam:test", "Sam", false)));
+        // The room isn't listed yet; it opens when it is.
+        app.apply(Event::DmStarted(Ok("!sam".into())));
+        assert!(app.state.new_dm.is_none());
+        assert_eq!(app.state.selected.as_deref(), Some("dm"));
+        let mut rooms = app.state.rooms.clone();
+        rooms.push(preview_room("!sam", "Sam", true, 2));
+        let effects = app.apply(Event::Rooms(RoomIndex {
+            rooms,
+            servers: app.state.servers.clone(),
+        }));
+        assert_eq!(app.state.selected.as_deref(), Some("!sam"));
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Backend(Command::Open(id)) if id == "!sam"))
+        );
     }
 
     #[test]

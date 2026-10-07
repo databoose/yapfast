@@ -75,6 +75,16 @@ pub struct Conversation {
     pub mentions: u64,
 }
 
+/// Someone this account can start a DM with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+    pub avatar: String,
+    /// A Discord friend, rather than someone known from a server or a message.
+    pub friend: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub status: Status,
@@ -83,6 +93,8 @@ pub struct Snapshot {
     pub servers: Vec<Server>,
     /// DMs and group DMs, the latest conversation first.
     pub conversations: Vec<Conversation>,
+    /// The account's friends, by user id.
+    pub friends: Vec<String>,
     /// Who is in each voice channel, by channel id and then by name.
     pub voice: HashMap<String, Vec<VoiceMember>>,
     /// The channel whose member list is on screen, and how many people can
@@ -463,6 +475,45 @@ impl Discord {
             .map_err(|_| anyhow!("Discord disconnected during the search."))
     }
 
+    /// Opens the DM with `user`, or finds the one already open; returns its channel
+    /// id. The DM list has it once Discord's CHANNEL_CREATE arrives.
+    pub async fn open_dm(&self, user: &str) -> Result<String> {
+        self.api.open_dm(user).await
+    }
+
+    /// People to start a DM with whose names start with `query`, friends first; with
+    /// an empty query, the friends alone.
+    pub fn find_people(&self, query: &str) -> Vec<Person> {
+        let snapshot = self.snapshots.borrow().clone();
+        let me = snapshot.user_id.unwrap_or_default();
+        let names = self.read_names();
+        let person = |id: &String, friend: bool| Person {
+            id: id.clone(),
+            name: names.user_name(id).unwrap_or("Discord user").to_owned(),
+            avatar: names.avatar(None, id),
+            friend,
+        };
+        let matches = |name: &str| {
+            let (name, query) = (name.to_lowercase(), query.to_lowercase());
+            name.starts_with(&query) || name.split_whitespace().any(|word| word.starts_with(&query))
+        };
+        let mut people: Vec<Person> = snapshot
+            .friends
+            .iter()
+            .map(|id| person(id, true))
+            .filter(|person| matches(&person.name))
+            .collect();
+        people.sort_by_key(|person| person.name.to_lowercase());
+        if !query.is_empty() {
+            for id in names.find_users(query) {
+                if id != me && !snapshot.friends.contains(&id) {
+                    people.push(person(&id, false));
+                }
+            }
+        }
+        people
+    }
+
     /// The RGB colour of a member's name in a server: their highest coloured
     /// role's, once their roles are known.
     pub fn color(&self, server: &Server, user: &str) -> Option<u32> {
@@ -569,6 +620,8 @@ fn server(guild: &str) -> Option<&str> {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// A relationship's type when the other person is a friend.
+const FRIEND: u64 = 1;
 /// How long a member search waits for Discord.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Reads within this long go to Discord as one acknowledgement per channel.
@@ -1077,6 +1130,8 @@ struct Tracker {
     private: Vec<Private>,
     /// What friends are doing, for group DM member lists.
     presences: HashMap<String, (Presence, Option<String>)>,
+    /// The account's friends, by user id.
+    friends: Vec<String>,
 }
 
 impl Tracker {
@@ -1091,7 +1146,11 @@ impl Tracker {
             list: None,
             private: Vec::new(),
             presences: HashMap::new(),
+            friends: Vec::new(),
         };
+        for relationship in ready["relationships"].as_array().into_iter().flatten() {
+            tracker.relationship(relationship);
+        }
         tracker.learn_user(&ready["user"]);
         for user in ready["users"].as_array().into_iter().flatten() {
             tracker.learn_user(user);
@@ -1160,6 +1219,15 @@ impl Tracker {
                 self.servers.retain(|known| known.id != server.id);
                 self.servers.push(server);
                 ready::sort_servers(&mut self.servers);
+                true
+            }
+            "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
+                self.relationship(data);
+                true
+            }
+            "RELATIONSHIP_REMOVE" => {
+                let id = data["id"].as_str().or_else(|| data["user_id"].as_str());
+                self.friends.retain(|friend| Some(friend.as_str()) != id);
                 true
             }
             "GUILD_MEMBER_UPDATE" => {
@@ -1438,6 +1506,23 @@ impl Tracker {
     }
 
     /// DMs and group DMs, the latest conversation first.
+    /// Learns a relationship object: a friend, or someone who no longer is one.
+    fn relationship(&mut self, relationship: &Value) {
+        if relationship["user"].is_object() {
+            self.learn_user(&relationship["user"]);
+        }
+        let Some(id) = relationship["id"]
+            .as_str()
+            .or_else(|| relationship["user_id"].as_str())
+        else {
+            return;
+        };
+        self.friends.retain(|friend| friend != id);
+        if relationship["type"].as_u64() == Some(FRIEND) {
+            self.friends.push(id.to_owned());
+        }
+    }
+
     fn conversations(&self, names: &Names) -> Vec<Conversation> {
         let mut private = self.private.clone();
         // Discord orders by the newest message, or when the DM opened.
@@ -1580,6 +1665,7 @@ impl Tracker {
             }),
             servers,
             conversations: self.conversations(&names),
+            friends: self.friends.clone(),
             voice,
             listed: self
                 .list

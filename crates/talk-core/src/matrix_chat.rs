@@ -51,9 +51,9 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Delivery, Event,
-        MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture, Placement, Reaction,
-        Reply, Role, RoomIndex, Start, decode_preview, decode_view, notification_text,
+        Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Delivery,
+        Event, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture, Placement,
+        Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view, notification_text,
         plain_snippet, sort_members,
     },
     session::Session,
@@ -435,6 +435,8 @@ impl Matrix {
                 }
             }
             Command::Typing { room, typing } => typing_notice(client, &room, typing),
+            Command::FindPeople { query } => find_people(client, query, events),
+            Command::StartDm { id, .. } => start_dm(client, id, events),
             Command::Send { room, body, reply } => {
                 typing_notice(client, &room, false);
                 let result = send(session, open.as_ref(), &room, &body, reply.as_deref()).await;
@@ -661,6 +663,86 @@ fn watch_typing(active: &mut OpenRoom, room: &Room, events: &UnboundedSender<Eve
                 names,
             });
         }
+    });
+}
+
+/// Looks for people to start a DM with in the homeserver's user directory; a full
+/// Matrix id is offered even when the directory doesn't list it.
+fn find_people(client: &Client, query: String, events: &UnboundedSender<Event>) {
+    let query = query.trim().to_owned();
+    if query.is_empty() {
+        let _ = events.send(Event::People {
+            query,
+            discord: false,
+            people: vec![],
+        });
+        return;
+    }
+    let (client, events) = (client.clone(), events.clone());
+    tokio::spawn(async move {
+        let me = client.user_id().map(ToOwned::to_owned);
+        let mut people: Vec<Contact> = match client.search_users(&query, 10).await {
+            Ok(found) => found
+                .results
+                .into_iter()
+                .filter(|user| Some(&user.user_id) != me.as_ref())
+                .map(|user| Contact {
+                    name: user
+                        .display_name
+                        .unwrap_or_else(|| user.user_id.localpart().to_owned()),
+                    detail: user.user_id.to_string(),
+                    id: user.user_id.to_string(),
+                    avatar: None,
+                    discord: false,
+                })
+                .collect(),
+            Err(error) => {
+                tracing::debug!(%error, "could not search the Matrix user directory");
+                vec![]
+            }
+        };
+        if let Ok(user) = UserId::parse(&query)
+            && Some(&user) != me.as_ref()
+            && !people.iter().any(|person| person.id == user.as_str())
+        {
+            people.insert(
+                0,
+                Contact {
+                    name: user.localpart().to_owned(),
+                    detail: user.to_string(),
+                    id: user.to_string(),
+                    avatar: None,
+                    discord: false,
+                },
+            );
+        }
+        let _ = events.send(Event::People {
+            query,
+            discord: false,
+            people,
+        });
+    });
+}
+
+/// Opens the DM with someone, starting an encrypted one if there's none yet.
+fn start_dm(client: &Client, id: String, events: &UnboundedSender<Event>) {
+    let (client, events) = (client.clone(), events.clone());
+    tokio::spawn(async move {
+        let result = match UserId::parse(&id) {
+            Ok(user) => match client.get_dm_room(&user) {
+                Some(room) => Ok(room.room_id().to_string()),
+                None => client
+                    .create_dm(&user)
+                    .await
+                    .map(|room| room.room_id().to_string())
+                    .map_err(|error| {
+                        tracing::warn!(%error, "could not start a Matrix DM");
+                        "Could not start the DM. Check the Matrix id and your connection.".into()
+                    }),
+            },
+            Err(_) => Err("That isn't a Matrix id, such as @name:example.org.".into()),
+        };
+        let _ = events.send(Event::DmStarted(result));
     });
 }
 

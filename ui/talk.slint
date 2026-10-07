@@ -1189,6 +1189,11 @@ export struct MessageRow {
     can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
 }
 /// A conversation a message can be forwarded to.
+// Someone the new conversation dialog found.
+export struct ContactRow {
+    name: string, detail: string, initial: string, tint: color, picture: image, discord: bool,
+}
+
 export struct ForwardRow {
     id: string, name: string, place: string, icon: image, direct: bool, initial: string, tint: color,
     /// The message went there during this forward.
@@ -1214,6 +1219,16 @@ export component TalkWindow inherits Window {
     in property <bool> restore-available;
     in property <bool> dms-selected;
     in property <bool> dms-unread;
+    // The dialog for starting a DM: who it found, and whether one is starting.
+    in property <bool> new-dm-open;
+    in-out property <string> new-dm-query;
+    in property <[ContactRow]> new-dm-people;
+    in property <bool> new-dm-starting;
+    in property <string> new-dm-note;
+    callback open-new-dm;
+    callback new-dm-search;
+    callback start-dm(int);
+    callback close-new-dm;
     in property <string> sidebar-title;
     in property <string> filter-placeholder;
     in property <string> sidebar-empty;
@@ -1891,7 +1906,12 @@ export component TalkWindow inherits Window {
                             spacing: 0px;
                             Rectangle {
                                 height: 48px;
-                                Text { x: 16px; width: parent.width - 32px; text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                Text { x: 16px; width: parent.width - (root.dms-selected && !root.preview ? 56px : 32px); text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                if root.dms-selected && !root.preview: IconButton {
+                                    x: parent.width - self.width - 10px;
+                                    icon: @image-url("icons/square-pen.svg"); label: "New message"; size: 28px; glyph: 18px; tip-side: 2;
+                                    clicked => { root.open-new-dm(); }
+                                }
                                 Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
                             }
                             HorizontalLayout {
@@ -3200,6 +3220,78 @@ export component TalkWindow inherits Window {
     }
     // Forwarding a message: pick conversations to send it to, one click each.
     // Clicking outside or Escape closes it.
+    // Starting a DM: find someone on Discord or Matrix, then open the conversation
+    // with them, which starts it if there's none yet.
+    if root.new-dm-open: Rectangle {
+        background: #00000099;
+        TouchArea { clicked => { root.close-new-dm(); } }
+        Rectangle {
+            width: min(440px, root.width - 48px); height: min(520px, root.height - 48px);
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+            drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+            accessible-role: groupbox;
+            accessible-label: "New message";
+            TouchArea { }
+            FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.close-new-dm(); return accept; }
+                    return reject;
+                }
+                VerticalLayout {
+                    padding: 20px; spacing: 12px;
+                    HorizontalLayout {
+                        Text { text: "New message"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                        IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-new-dm(); } }
+                    }
+                    TextField {
+                        init => { self.focus-input(); }
+                        min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                        placeholder: "Find a friend, or type a Matrix id"; label: "Find people"; text <=> root.new-dm-query;
+                        edited => { root.new-dm-search(); }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px; alignment: start;
+                            for person[index] in root.new-dm-people: Rectangle {
+                                height: 48px; border-radius: 6px;
+                                background: person-touch.has-hover && !root.new-dm-starting ? Theme.hover : transparent;
+                                accessible-role: button;
+                                accessible-label: "Message " + person.name + ", " + person.detail;
+                                accessible-action-default => { root.start-dm(index); }
+                                HorizontalLayout {
+                                    padding-left: 8px; padding-right: 8px; spacing: 12px;
+                                    Middle {
+                                        Rectangle {
+                                            width: 36px; height: 32px;
+                                            Avatar { x: 0; y: 0; size: 32px; initial: person.initial; tint: person.tint; picture: person.picture; }
+                                            if person.discord: DiscordBadge { x: 18px; y: 16px; size: 14px; ring: Theme.raised; }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1;
+                                        Text { text: person.name; color: Theme.text; font-size: 16px; font-weight: 500; overflow: elide; }
+                                        Text { text: person.detail; color: Theme.muted; font-size: 13px; overflow: elide; }
+                                    }
+                                    Middle {
+                                        ActionButton { text: "Message"; small: true; primary: person-touch.has-hover; enabled: !root.new-dm-starting; clicked => { root.start-dm(index); } }
+                                    }
+                                }
+                                person-touch := TouchArea {
+                                    enabled: !root.new-dm-starting; mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.start-dm(index); }
+                                }
+                            }
+                            if root.new-dm-note != "": HorizontalLayout {
+                                padding: 8px;
+                                Label { text: root.new-dm-note; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if root.forward-open: Rectangle {
         background: #00000099;
         TouchArea { clicked => { root.close-forward(); } }

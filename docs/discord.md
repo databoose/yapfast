@@ -73,8 +73,12 @@ Opening one shows its messages with Accept and Ignore in place of the
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Talk never opens a request on its
-own when it picks a conversation. Forwarding, DM calls and starting a new DM
-are still open.
+own when it picks a conversation. Forwarding and DM calls are still open.
+
+The pen in the DM list's header starts a DM: it lists the account's friends
+(from READY's relationships), then anyone else Talk knows by name, and
+opening one posts to `/users/@me/channels`, which finds the DM with them or
+starts one. Talk opens it once its CHANNEL_CREATE lists it.
 
 Clicking someone in a channel's member list shows their profile in a small
 card beside it, which "View full profile" enlarges into a centred one;

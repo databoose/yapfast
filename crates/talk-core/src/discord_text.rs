@@ -26,7 +26,7 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, Command, Delivery, Embed, EmbedField, Event,
+        Attachment, ChatMember, ChatMessage, Command, Contact, Delivery, Embed, EmbedField, Event,
         MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture, Placement, Presence,
         Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
@@ -1059,6 +1059,50 @@ pub fn command(
                 }
             });
         }
+        return None;
+    }
+    // Matrix looks for people too.
+    if let Command::FindPeople { query } = &command {
+        if let Some(discord) = discord {
+            let people = discord
+                .find_people(query)
+                .into_iter()
+                .map(|person| Contact {
+                    detail: if person.friend {
+                        "Discord friend".into()
+                    } else {
+                        "On Discord".into()
+                    },
+                    id: person.id,
+                    name: person.name,
+                    avatar: Some(person.avatar),
+                    discord: true,
+                })
+                .collect();
+            let _ = events.send(Event::People {
+                query: query.clone(),
+                discord: true,
+                people,
+            });
+        }
+        return Some(command);
+    }
+    if let Command::StartDm { id, discord: true } = command {
+        let Some(discord) = discord else {
+            let _ = events.send(Event::DmStarted(Err(
+                "Discord isn't linked on this device.".into(),
+            )));
+            return None;
+        };
+        let (discord, events) = (discord.clone(), events.clone());
+        tokio::spawn(async move {
+            let result = discord
+                .open_dm(&id)
+                .await
+                .map(|channel| discord::room_id(talk_discord::ready::PRIVATE, &channel))
+                .map_err(|error| format!("Could not start the DM: {error}"));
+            let _ = events.send(Event::DmStarted(result));
+        });
         return None;
     }
     if let Command::SearchMembers { room, query } = command {

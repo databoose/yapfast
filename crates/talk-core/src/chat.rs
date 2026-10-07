@@ -140,6 +140,19 @@ pub struct ChatMember {
     pub activity: Option<String>,
 }
 
+/// Someone to start a DM with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Contact {
+    /// Their Discord or Matrix user id.
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// Who they are to this account, such as "Discord friend", or their Matrix id.
+    pub detail: String,
+    pub discord: bool,
+}
+
 /// A role or group a message can mention, such as a Discord role or @everyone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MentionGroup {
@@ -353,6 +366,17 @@ pub enum Command {
         item: String,
         index: usize,
     },
+    /// Look for people to start a DM with; each network answers with
+    /// [`Event::People`].
+    FindPeople {
+        query: String,
+    },
+    /// Open the DM with someone [`Event::People`] found, starting it if there's none;
+    /// [`Event::DmStarted`] follows.
+    StartDm {
+        id: String,
+        discord: bool,
+    },
     /// Look for the room's members whose names start with `query`, beyond those
     /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
     SearchMembers {
@@ -415,6 +439,14 @@ pub enum Event {
     },
     /// A new message to notify the person of.
     Notify(Notification),
+    /// People to start a DM with, from Discord or from Matrix.
+    People {
+        query: String,
+        discord: bool,
+        people: Vec<Contact>,
+    },
+    /// The DM [`Command::StartDm`] asked for, by room id, or why it couldn't start.
+    DmStarted(Result<String, String>),
     /// The roles and groups a message in a room may mention.
     MentionGroups {
         room: String,

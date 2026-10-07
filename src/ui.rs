@@ -13,7 +13,7 @@ use slint::{
     ComponentHandle, Model, ModelRc, SharedString, VecModel, winit_030::WinitWindowAccessor,
 };
 use talk_core::{
-    application::{Action, Application, Compose, Effect, Navigation},
+    application::{Action, Application, Compose, Effect, Navigation, NewDm},
     backend::Backend,
     chat::{
         ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
@@ -445,6 +445,7 @@ struct Models {
     messages: Rc<VecModel<MessageRow>>,
     roster: Rc<VecModel<MemberRow>>,
     mentions: Rc<VecModel<MentionRow>>,
+    new_dm_people: Rc<VecModel<ContactRow>>,
     bar_reactions: Rc<VecModel<EmojiCell>>,
     menu_reactions: Rc<VecModel<EmojiCell>>,
     emoji_rows: Rc<VecModel<EmojiRow>>,
@@ -461,6 +462,7 @@ impl Models {
         window.set_messages(ModelRc::from(self.messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_mentions(ModelRc::from(self.mentions.clone()));
+        window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
         window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
         window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
         window.set_emoji_rows(ModelRc::from(self.emoji_rows.clone()));
@@ -1158,6 +1160,36 @@ impl Adapter {
                 .map(|key| emoji::cell(key))
                 .collect(),
         );
+        let new_dm = state.new_dm.as_ref();
+        if new_dm.is_some() && !window.get_new_dm_open() {
+            window.set_new_dm_query(SharedString::default());
+        }
+        window.set_new_dm_open(new_dm.is_some());
+        window.set_new_dm_starting(new_dm.is_some_and(|new_dm| new_dm.starting));
+        let people: Vec<ContactRow> = new_dm
+            .into_iter()
+            .flat_map(|new_dm| new_dm.people())
+            .map(|person| ContactRow {
+                name: person.name.clone().into(),
+                detail: person.detail.clone().into(),
+                initial: initial(&person.name),
+                tint: tint(&person.name),
+                picture: cached_picture(&mut self.pictures, state, person.avatar.as_deref()),
+                discord: person.discord,
+            })
+            .collect();
+        window.set_new_dm_note(match new_dm {
+            Some(NewDm { error: Some(error), .. }) => error.as_str().into(),
+            Some(NewDm { starting: true, .. }) => "Starting the conversation...".into(),
+            Some(new_dm) if people.is_empty() && new_dm.query.trim().is_empty() => {
+                "Type a name to find people you know on Discord, or a full Matrix id such as @name:example.org.".into()
+            }
+            Some(_) if people.is_empty() => {
+                "No one found. For Matrix, type a full id such as @name:example.org.".into()
+            }
+            _ => SharedString::default(),
+        });
+        update_model(&self.models.new_dm_people, people);
         let forwarding = state.forwarding.as_ref();
         window.set_forward_open(forwarding.is_some());
         if forwarding.is_some() != self.forwarding {
@@ -1681,6 +1713,35 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind_item!(on_cancel_send, Action::CancelSend);
     bind_item!(on_start_forward, Action::StartForward);
     bind_item!(on_forward_to, Action::Forward);
+    bind!(on_open_new_dm, Action::OpenNewDm);
+    bind!(on_close_new_dm, Action::CloseNewDm);
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_new_dm_search(move || {
+        if let Some(window) = weak.upgrade() {
+            let query = window.get_new_dm_query().to_string();
+            state
+                .borrow_mut()
+                .action(&window, Action::NewDmQuery(query));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_start_dm(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        let contact = usize::try_from(index).ok().and_then(|index| {
+            adapter
+                .app
+                .state
+                .new_dm
+                .as_ref()
+                .and_then(|new_dm| new_dm.people().nth(index).cloned())
+        });
+        if let Some(contact) = contact {
+            adapter.action(&window, Action::StartDm(contact));
+        }
+    });
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_forward_search(move || {

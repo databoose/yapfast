@@ -18,6 +18,8 @@
 // /_control/mention makes Bob mention her in #general. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
+// Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
+// Carol, whom she has none with yet.
 // POST /_control/typing makes Bob start typing in #general; GET
 // /_control/typed lists the channels Alice said she was typing in.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
@@ -652,7 +654,8 @@ function ready(ws: Socket) {
       version: 1,
     },
     private_channels: [...privates].map(([id, channel]) => wirePrivate(id, channel, "ids")),
-    relationships: [],
+    // Bob and Carol are Alice's friends.
+    relationships: [users.bob, users.carol].map((user) => ({ id: user.id, type: 1, nickname: null, user_id: user.id, since: JOINED_AT })),
     connected_accounts: [],
     guild_join_requests: [],
     experiments: [],
@@ -1475,6 +1478,21 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     const user = userById.get(m[1]!);
     if (!user) return notFound("Unknown User", 10013);
     return json(wireProfile(user, url.searchParams.get("guild_id")));
+  }
+
+  // Opening a DM finds the one Alice has with them, or starts one.
+  if (method === "POST" && path === "/users/@me/channels") {
+    const body: any = await req.json();
+    const user = userById.get(String(body.recipients?.[0]));
+    if (!user || (body.recipients?.length ?? 0) !== 1) return json({ message: "Invalid Recipient(s)", code: 50033 }, 400);
+    const known = [...privates].find(([, channel]) => channel.type === 1 && channel.recipients[0] === user);
+    if (known) return json(wirePrivate(known[0], known[1], "objects"));
+    const id = snowflake(Date.now(), 77);
+    const channel: Private = { type: 1, recipients: [user] };
+    privates.set(id, channel);
+    messages.set(id, []);
+    dispatch("CHANNEL_CREATE", wirePrivate(id, channel, "objects"));
+    return json(wirePrivate(id, channel, "objects"));
   }
 
   if (method === "GET" && path === "/users/@me") {

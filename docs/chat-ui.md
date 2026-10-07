@@ -52,6 +52,10 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Write Markdown. Messages with formatting render bold, italic, code and links;
   Slint's subset has no headings, so those show as typed. Formatted text isn't
   selectable, so every message has a Copy action.
+- Start a DM from the pen in the DM list's header: type a name to search the
+  homeserver's user directory, or a full Matrix id. Talk opens the DM you
+  already have with them, or starts an encrypted one and opens it once sync
+  lists it.
 - Mention someone by typing `@` and picking from the room's members. The
   message links to them (`[Name](https://matrix.to/#/@user:server)`) and lists
   them in `m.mentions`, so their client notifies them. Who else is typing

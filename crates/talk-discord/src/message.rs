@@ -456,6 +456,27 @@ impl Names {
         self.members.contains(&(guild.to_owned(), user.to_owned()))
     }
 
+    /// Known users whose name starts with `query`, or has a later word that does,
+    /// by id; any letter case.
+    pub fn find_users(&self, query: &str) -> Vec<String> {
+        let query = query.to_lowercase();
+        let mut found: Vec<(bool, &String, &String)> = self
+            .users
+            .iter()
+            .filter_map(|(id, name)| {
+                let lower = name.to_lowercase();
+                let starts = lower.starts_with(&query);
+                let later = lower
+                    .split_whitespace()
+                    .skip(1)
+                    .any(|word| word.starts_with(&query));
+                (starts || later).then_some((!starts, name, id))
+            })
+            .collect();
+        found.sort();
+        found.into_iter().map(|(_, _, id)| id.clone()).collect()
+    }
+
     /// A user's display name or username, outside any server.
     pub fn user_name(&self, user: &str) -> Option<&str> {
         self.users.get(user).map(String::as_str)
