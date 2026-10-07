@@ -74,8 +74,82 @@ pub fn cell(key: &str) -> EmojiCell {
 }
 
 /// A custom emoji's reaction key, Discord's `name:id`.
-fn custom_key(emoji: &talk_core::chat::CustomEmoji) -> String {
+pub fn custom_key(emoji: &talk_core::chat::CustomEmoji) -> String {
     format!("{}:{}", emoji.text.trim_matches(':'), emoji.id)
+}
+
+/// What an emoji puts in the composer: the emoji itself, or a custom emoji's
+/// `:name:`, which goes out in Discord's form; see `talk_core::chat::wire_emoji`.
+pub fn composer_text(key: &str) -> String {
+    match key.split_once(':') {
+        Some((name, _)) => format!(":{name}:"),
+        None => key.to_owned(),
+    }
+}
+
+/// Emoji names shorter than this aren't looked up while typing, as on Discord.
+const MIN_QUERY: usize = 2;
+const MAX_QUERY: usize = 32;
+
+/// The `:name` word ending at `cursor`, a byte offset into `text`: where its
+/// `:` is, and the name so far, of at least two letters.
+pub fn query(text: &str, cursor: usize) -> Option<(usize, &str)> {
+    let before = text.get(..cursor)?;
+    let colon = before.rfind(':')?;
+    let query = &before[colon + 1..];
+    let starts_word = before[..colon]
+        .chars()
+        .next_back()
+        .is_none_or(|previous| previous.is_whitespace() || "([{\"'".contains(previous));
+    let name = |c: char| c.is_ascii_alphanumeric() || "_+-".contains(c);
+    (starts_word && (MIN_QUERY..=MAX_QUERY).contains(&query.len()) && query.chars().all(name))
+        .then_some((colon, query))
+}
+
+/// Suggestions for a `:name` being typed, at most `limit`: emoji whose name
+/// starts with `query`, then those whose name contains it, a server's custom
+/// emoji first. Each is named by its `:name:`.
+pub fn suggestions(query: &str, custom: &[EmojiSet], limit: usize) -> Vec<EmojiCell> {
+    let query = query.to_lowercase();
+    // The emoji's rank and the name it matched by.
+    let rank = |name: &str| {
+        let lower = name.to_lowercase();
+        if lower == query {
+            Some(0)
+        } else if lower.starts_with(&query) {
+            Some(1)
+        } else if lower.contains(&query) {
+            Some(2)
+        } else {
+            None
+        }
+    };
+    let mut found: Vec<(u8, bool, String, String)> = Vec::new();
+    for emoji in custom.iter().flat_map(|set| &set.emoji) {
+        let name = emoji.text.trim_matches(':');
+        if let Some(rank) = rank(name) {
+            found.push((rank, false, name.to_owned(), custom_key(emoji)));
+        }
+    }
+    for emoji in emojis::iter().filter(|emoji| emoji.unicode_version() <= NEWEST) {
+        if let Some((rank, code)) = emoji
+            .shortcodes()
+            .filter_map(|code| Some((rank(code)?, code)))
+            .min_by_key(|(rank, _)| *rank)
+        {
+            found.push((rank, true, code.to_owned(), emoji.as_str().to_owned()));
+        }
+    }
+    // Stable, so each rank keeps custom emoji, then Unicode's own order.
+    found.sort_by_key(|(rank, unicode, ..)| (*rank, *unicode));
+    found
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, name, key)| EmojiCell {
+            name: format!(":{name}:").into(),
+            ..cell(&key)
+        })
+        .collect()
 }
 
 /// The picker's rows: with no query, frequently used emoji, the custom emoji of
@@ -293,6 +367,9 @@ mod tests {
         assert_eq!(found[0].cells.row_data(0).unwrap().glyph, "🍕");
         assert!(rows("no such emoji", &[], &[]).is_empty());
         assert_eq!(cell("👍").name, "Thumbs up");
+        // The composer gets the emoji, or a custom emoji's name.
+        assert_eq!(composer_text("👍"), "👍");
+        assert_eq!(composer_text("pog:5"), ":pog:");
 
         // A server's custom emoji follow those used often, and match by name.
         let custom = [EmojiSet {
@@ -312,6 +389,42 @@ mod tests {
             rows("po", &[], &custom)[0].cells.row_data(0).unwrap().key,
             "pog:5"
         );
+    }
+
+    #[test]
+    fn suggests_emoji_for_the_name_being_typed() {
+        assert_eq!(query("look :thu", 9), Some((5, "thu")));
+        assert_eq!(query(":+1", 3), Some((0, "+1")));
+        assert_eq!(query("(:pizza", 7), Some((1, "pizza")));
+        assert_eq!(query("look :t", 7), None, "two letters at least");
+        assert_eq!(query("at 10:30", 8), None, "not after a letter or digit");
+        assert_eq!(query(":thumbs up", 10), None, "a space ends it");
+        assert_eq!(query(":pog:", 5), None, "a closed name");
+
+        let custom = [EmojiSet {
+            server: "Games".into(),
+            emoji: vec![talk_core::chat::CustomEmoji {
+                text: ":thunk:".into(),
+                id: "5".into(),
+                animated: false,
+                picture: String::new(),
+            }],
+        }];
+        let found = suggestions("thu", &custom, 10);
+        assert_eq!(found[0].key, "thunk:5", "a server's emoji first");
+        assert_eq!(found[0].name, ":thunk:");
+        assert!(
+            found[1..]
+                .iter()
+                .any(|cell| cell.glyph == "👍" && cell.name == ":thumbsup:")
+        );
+        assert!(found.len() <= 10);
+        let exact = suggestions("pizza", &[], 10);
+        assert_eq!(
+            (exact[0].glyph.as_str(), exact[0].name.as_str()),
+            ("🍕", ":pizza:")
+        );
+        assert!(suggestions("zzzzzz", &[], 10).is_empty());
     }
 
     #[test]

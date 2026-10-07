@@ -28,7 +28,13 @@ impl Application {
         if self.state.preview
             || !in_server
             || query.is_empty()
-            || self.state.mention_suggestions().len() >= MENTION_SUGGESTIONS
+            || self
+                .state
+                .mention_suggestions()
+                .iter()
+                .filter(|candidate| !candidate.group)
+                .count()
+                >= MENTION_SUGGESTIONS
             || !self.searched.insert(query.to_lowercase())
         {
             return vec![];

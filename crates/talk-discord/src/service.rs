@@ -642,6 +642,11 @@ impl Discord {
         self.read_names().name(guild, user).map(str::to_owned)
     }
 
+    /// A user's username, such as `ann`.
+    pub fn username(&self, user: &str) -> Option<String> {
+        self.read_names().username(user).map(str::to_owned)
+    }
+
     /// The address of a user's avatar, in a server or in DMs.
     pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
         self.read_names().avatar(guild.and_then(server), user)
@@ -2096,6 +2101,7 @@ impl Tracker {
                 ListedMember {
                     user_id: user.clone(),
                     name: names.user_name(user).unwrap_or("Discord user").to_owned(),
+                    username: names.username(user).map(str::to_owned),
                     avatar: names.avatar(None, user),
                     group: heading.clone(),
                     presence,

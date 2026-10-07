@@ -18,6 +18,7 @@ pub const ROWS: usize = 100;
 pub struct ListedMember {
     pub user_id: String,
     pub name: String,
+    pub username: Option<String>,
     /// The address of the avatar Discord shows for them on this server.
     pub avatar: String,
     /// The heading they're listed under, with its size, such as `Mods — 2`.
@@ -287,6 +288,7 @@ impl MemberList {
                             .name(&self.guild, user)
                             .unwrap_or("Discord user")
                             .to_owned(),
+                        username: names.username(user).map(str::to_owned),
                         avatar: names.avatar(Some(&self.guild), user),
                         group: group
                             .as_ref()

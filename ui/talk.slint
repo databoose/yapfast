@@ -13,7 +13,7 @@ import { Theme, Tip, Middle } from "theme.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, MenuItem, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
-import { StagedFile, StagedTile, Composer, MentionRow, MentionList, RequestBar } from "composer.slint";
+import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
@@ -176,6 +176,14 @@ export component TalkWindow inherits Window {
     callback composer-caret(string, int);
     callback mention-chosen(int);
     callback mention-dismissed;
+    // Emoji for the `:name` being typed, the chosen one highlighted.
+    in property <[EmojiCell]> emoji-suggestions;
+    in property <string> emoji-suggestion-query;
+    in-out property <int> emoji-suggestion-index;
+    callback emoji-suggestion-chosen(int);
+    callback emoji-suggestion-dismissed;
+    // An emoji from the picker, by its reaction key, goes in at the composer's cursor.
+    callback insert-emoji(string);
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
@@ -699,12 +707,19 @@ export component TalkWindow inherits Window {
         message-menu.show();
     }
     property <bool> picker-open: emoji-picker.is-open;
-    changed picker-open => { if !root.picker-open { root.react-item = ""; } }
+    changed picker-open => {
+        if !root.picker-open {
+            if root.react-item == "talk:composer" { root.focus-composer(); }
+            root.react-item = "";
+        }
+    }
     property <EmojiCell> emoji-hover;
     // The status dialog borrows the picker for its emoji.
     function pick(cell: EmojiCell) {
         if root.react-item == "talk:status" {
             root.status-emoji = cell;
+        } else if root.react-item == "talk:composer" {
+            root.insert-emoji(cell.key);
         } else {
             root.react(root.react-item, cell.key);
         }
@@ -1446,7 +1461,7 @@ export component TalkWindow inherits Window {
                                     IconButton { icon: @image-url("icons/x.svg"); label: root.is-editing ? "Cancel editing" : "Cancel reply"; size: 28px; glyph: 16px; clicked => { root.cancel-compose(); } }
                                 }
                             }
-                            Rectangle {
+                            composer-box := Rectangle {
                                 visible: !root.room-request;
                                 min-height: root.room-request ? 0px : 48px; max-height: root.room-request ? 0px : 100000px;
                                 background: Theme.field;
@@ -1483,14 +1498,37 @@ export component TalkWindow inherits Window {
                                             placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
                                             edited(text) => { root.draft-edited(text); }
                                             accepted => { root.send(); }
-                                            suggesting: root.mentions.length > 0;
+                                            suggesting: root.mentions.length > 0 || root.emoji-suggestions.length > 0;
                                             caret(text, offset) => { root.composer-caret(text, offset); }
-                                            suggestion-moved(step) => { root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length); }
-                                            suggestion-chosen => { root.mention-chosen(root.mention-index); }
-                                            suggestion-dismissed => { root.mention-dismissed(); }
+                                            suggestion-moved(step) => {
+                                                if root.mentions.length > 0 {
+                                                    root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length);
+                                                } else {
+                                                    root.emoji-suggestion-index = Math.mod(root.emoji-suggestion-index + step + root.emoji-suggestions.length, root.emoji-suggestions.length);
+                                                }
+                                            }
+                                            suggestion-chosen => {
+                                                if root.mentions.length > 0 { root.mention-chosen(root.mention-index); }
+                                                else { root.emoji-suggestion-chosen(root.emoji-suggestion-index); }
+                                            }
+                                            suggestion-dismissed => {
+                                                if root.mentions.length > 0 { root.mention-dismissed(); } else { root.emoji-suggestion-dismissed(); }
+                                            }
                                             up-from-empty => { root.edit-last(); }
                                             up-to-messages => { root.browse-messages(); }
                                             paste => { root.paste-into-composer(); }
+                                        }
+                                        VerticalLayout {
+                                            alignment: end; padding-bottom: 8px;
+                                            IconButton {
+                                                icon: @image-url("icons/smile.svg"); label: "Add an emoji";
+                                                glyph: 22px; enabled: root.composer-enabled;
+                                                tint: root.react-item == "talk:composer" ? Theme.text : Theme.secondary;
+                                                clicked => {
+                                                    root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
+                                                    root.open-picker("talk:composer");
+                                                }
+                                            }
                                         }
                                         VerticalLayout {
                                             alignment: end; padding-bottom: 8px;
@@ -1583,13 +1621,23 @@ export component TalkWindow inherits Window {
         cancel-switch => { root.cancel-switch(); }
         confirm-switch => { root.confirm-switch(); }
     }
-    // Mention suggestions, just above the composer; see MentionList.
+    // Mention suggestions, just above the composer and as wide as it, over a
+    // reply's or an edit's bar; see MentionList.
     if root.mentions.length > 0 && root.composer-enabled: MentionList {
-        x: composer.absolute-position.x - 6px;
-        width: min(composer.width + 12px, 420px);
-        y: composer.absolute-position.y - self.height - 12px;
+        x: composer-box.absolute-position.x;
+        width: composer-box.width;
+        y: composer-box.absolute-position.y - (root.compose-label != "" ? 36px : 0px) - self.height - 8px;
         mentions: root.mentions; mention-index: root.mention-index;
         mention-chosen(index) => { root.mention-chosen(index); }
+    }
+    // Emoji suggestions, in the same place; see EmojiSuggestions.
+    if root.emoji-suggestions.length > 0 && root.mentions.length == 0 && root.composer-enabled: EmojiSuggestions {
+        x: composer-box.absolute-position.x;
+        width: composer-box.width;
+        y: composer-box.absolute-position.y - (root.compose-label != "" ? 36px : 0px) - self.height - 8px;
+        emoji: root.emoji-suggestions; query: root.emoji-suggestion-query;
+        emoji-index: root.emoji-suggestion-index; emoji-font: root.emoji-font;
+        emoji-chosen(index) => { root.emoji-suggestion-chosen(index); }
     }
     // Settings cover the window, showing one section.
     if root.settings-open: SettingsScreen {

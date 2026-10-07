@@ -28,8 +28,10 @@ use compose::has_markdown;
 use preview::{preview_members, sample_actions};
 use profiles::dm_profile;
 
-/// How many suggestions the composer offers for an `@` word.
+/// How many people the composer suggests for an `@` word, and how many roles
+/// and groups after them.
 const MENTION_SUGGESTIONS: usize = 8;
+const MENTION_GROUPS: usize = 4;
 
 /// How many pages of history a jump to a message loads looking for it.
 const MAX_SEEK_PAGES: u32 = 20;
@@ -422,6 +424,7 @@ impl AppState {
             return Some(ChatMember {
                 id: user.to_owned(),
                 name: message.author.clone(),
+                username: None,
                 role: Role::Member,
                 avatar: message.avatar.clone(),
                 group: None,
@@ -442,6 +445,7 @@ impl AppState {
         Some(ChatMember {
             id: user.to_owned(),
             name,
+            username: None,
             role: Role::Member,
             avatar: None,
             group: None,
@@ -452,19 +456,25 @@ impl AppState {
     }
 
     /// Who and what a message in the selected room may mention: its members, those
-    /// found by name and those who wrote lately, then its roles and groups.
+    /// found by name and those who wrote lately, then its roles and groups. This
+    /// account isn't one of them.
     pub fn mention_candidates(&self) -> Vec<Candidate> {
         let Some(room) = self.selected.as_deref() else {
             return vec![];
         };
         let on_discord = discord::is_discord(room);
-        let mut seen = HashSet::new();
+        let mut seen: HashSet<String> = [&self.discord_user, &self.account]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
         let mut candidates = Vec::new();
         let listed = self.members.iter().flatten().flatten();
         let people = listed.chain(&self.found_members).map(|member| {
             (
                 member.id.as_str(),
                 &member.name,
+                member.username.as_ref(),
                 &member.avatar,
                 member.color,
             )
@@ -473,17 +483,24 @@ impl AppState {
             (
                 message.sender.as_str(),
                 &message.author,
+                None,
                 &message.avatar,
                 message.color,
             )
         });
-        for (id, name, avatar, color) in people.chain(authors) {
+        for (id, name, username, avatar, color) in people.chain(authors) {
             let id = id.strip_prefix("discord:").unwrap_or(id);
             if id.is_empty() || name.is_empty() || !seen.insert(id.to_owned()) {
                 continue;
             }
             candidates.push(Candidate {
                 name: name.clone(),
+                // Matrix names people by their user id.
+                username: if on_discord {
+                    username.cloned()
+                } else {
+                    Some(id.to_owned())
+                },
                 mention: if on_discord {
                     format!("<@{id}>")
                 } else {
@@ -497,6 +514,7 @@ impl AppState {
         }
         candidates.extend(self.mention_groups.iter().map(|group| Candidate {
             name: group.name.clone(),
+            username: None,
             mention: group.mention.clone(),
             avatar: None,
             color: group.color,
@@ -505,15 +523,19 @@ impl AppState {
         candidates
     }
 
-    /// What the `@` word being typed may mean, best first.
+    /// What the `@` word being typed may mean: people, best first, then roles
+    /// and groups.
     pub fn mention_suggestions(&self) -> Vec<Candidate> {
         let Some(query) = &self.mention_query else {
             return vec![];
         };
-        mention::matching(&self.mention_candidates(), query, MENTION_SUGGESTIONS)
+        let (groups, people): (Vec<Candidate>, Vec<Candidate>) = self
+            .mention_candidates()
             .into_iter()
-            .cloned()
-            .collect()
+            .partition(|candidate| candidate.group);
+        let people = mention::matching(&people, query, MENTION_SUGGESTIONS);
+        let groups = mention::matching(&groups, query, MENTION_GROUPS);
+        people.into_iter().chain(groups).cloned().collect()
     }
 
     /// Text, or files to go with it; an edit changes only the text.

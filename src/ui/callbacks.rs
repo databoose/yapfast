@@ -576,9 +576,42 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         if adapter.app.state.draft() != text.as_str() {
             adapter.action(&window, Action::SetDraft(text.to_string()));
         }
-        let found = usize::try_from(offset)
-            .ok()
-            .and_then(|offset| mention::query(&text, offset));
+        let offset = usize::try_from(offset).ok();
+        adapter.caret = adapter.app.state.selected.clone().zip(offset);
+        // The `:name` word, unless its suggestions were closed.
+        let word = offset.and_then(|offset| emoji::query(&text, offset));
+        if word.is_none() {
+            adapter.emoji_dismissed = None;
+        }
+        let word = word
+            .filter(|(at, _)| adapter.emoji_dismissed != Some(*at))
+            .map(|(at, name)| (at, name.to_owned()));
+        if adapter.emoji_word != word {
+            adapter.emoji_word = word;
+            window.set_emoji_suggestion_index(0);
+            adapter.show_emoji_suggestions(&window);
+            // Custom emoji show their pictures once they arrive.
+            let wanted: Vec<String> = adapter
+                .app
+                .usable_emoji()
+                .into_iter()
+                .flat_map(|set| set.emoji)
+                .filter(|custom| {
+                    let key = emoji::custom_key(custom);
+                    !adapter.app.state.pictures.contains_key(&custom.picture)
+                        && adapter
+                            .models
+                            .emoji_suggestions
+                            .iter()
+                            .any(|cell| cell.key == key)
+                })
+                .map(|custom| custom.picture)
+                .collect();
+            if !wanted.is_empty() {
+                adapter.action(&window, Action::LoadPictures(wanted));
+            }
+        }
+        let found = offset.and_then(|offset| mention::query(&text, offset));
         if found.is_none() {
             adapter.mention_dismissed = None;
         }
@@ -620,6 +653,64 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             let text = format!("{}{inserted}{}", &text[..at], &text[end..]);
             adapter.mention_at = None;
             adapter.action(&window, Action::MentionQuery(None));
+            adapter.action(&window, Action::SetDraft(text));
+            at + inserted.len()
+        };
+        window.invoke_place_composer_caret(i32::try_from(caret).unwrap_or(i32::MAX));
+        window.invoke_focus_composer();
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_emoji_suggestion_chosen(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let caret = {
+            let mut adapter = state.borrow_mut();
+            let chosen = usize::try_from(index)
+                .ok()
+                .and_then(|index| adapter.models.emoji_suggestions.row_data(index));
+            let word = adapter.emoji_word.take();
+            adapter.show_emoji_suggestions(&window);
+            let (Some(chosen), Some((at, name))) = (chosen, word) else {
+                return;
+            };
+            let text = adapter.app.state.draft().to_owned();
+            let end = at + 1 + name.len();
+            if text.get(at..end) != Some(format!(":{name}").as_str()) {
+                return;
+            }
+            let inserted = format!("{} ", emoji::composer_text(&chosen.key));
+            let text = format!("{}{inserted}{}", &text[..at], &text[end..]);
+            adapter.action(&window, Action::SetDraft(text));
+            at + inserted.len()
+        };
+        window.invoke_place_composer_caret(i32::try_from(caret).unwrap_or(i32::MAX));
+        window.invoke_focus_composer();
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_emoji_suggestion_dismissed(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        adapter.emoji_dismissed = adapter.emoji_word.take().map(|(at, _)| at);
+        adapter.show_emoji_suggestions(&window);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_insert_emoji(move |key| {
+        let Some(window) = weak.upgrade() else { return };
+        let caret = {
+            let mut adapter = state.borrow_mut();
+            let text = adapter.app.state.draft().to_owned();
+            // At the cursor this room's composer last had, else at the end.
+            let at = adapter
+                .caret
+                .as_ref()
+                .filter(|(room, _)| adapter.app.state.selected.as_ref() == Some(room))
+                .map(|&(_, at)| at)
+                .filter(|&at| text.is_char_boundary(at))
+                .unwrap_or(text.len());
+            let inserted = emoji::composer_text(&key);
+            let text = format!("{}{inserted}{}", &text[..at], &text[at..]);
             adapter.action(&window, Action::SetDraft(text));
             at + inserted.len()
         };

@@ -963,24 +963,33 @@ impl Adapter {
         });
         window.set_sending(state.sending.is_some());
         window.set_typing(state.typing_line().into());
-        let mentions: Vec<MentionRow> = state
-            .mention_suggestions()
-            .into_iter()
-            .map(|candidate| MentionRow {
-                initial: initial(&candidate.name),
-                tint: tint(&candidate.name),
-                picture: cached_picture(&mut self.pictures, state, candidate.avatar.as_deref()),
-                color: role_color(candidate.color),
-                has_color: candidate.color.is_some(),
-                group: candidate.group,
-                detail: match (candidate.group, candidate.mention.as_str()) {
-                    (false, _) => "",
-                    (true, "@everyone") => "Everyone in this channel",
-                    (true, "@here") => "Everyone online here",
-                    (true, _) => "Role",
+        let suggestions = state.mention_suggestions();
+        let mentions: Vec<MentionRow> = suggestions
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                // People come first, then roles and groups, each under a heading.
+                let starts_section = index == 0 || suggestions[index - 1].group != candidate.group;
+                MentionRow {
+                    heading: match (starts_section, candidate.group) {
+                        (false, _) => "",
+                        (true, false) => "MEMBERS",
+                        (true, true) => "ROLES",
+                    }
+                    .into(),
+                    initial: initial(&candidate.name),
+                    tint: tint(&candidate.name),
+                    picture: cached_picture(&mut self.pictures, state, candidate.avatar.as_deref()),
+                    color: role_color(candidate.color),
+                    has_color: candidate.color.is_some(),
+                    group: candidate.group,
+                    detail: match candidate.mention.as_str() {
+                        "@everyone" => "Everyone in this channel".into(),
+                        "@here" => "Everyone online here".into(),
+                        _ => candidate.username.clone().unwrap_or_default().into(),
+                    },
+                    name: candidate.name.as_str().into(),
                 }
-                .into(),
-                name: candidate.name.into(),
             })
             .collect();
         if window.get_mention_index() >= mentions.len() as i32 {
@@ -1019,6 +1028,30 @@ impl Adapter {
             }
             .into(),
         );
+        // A sent message, or another room's draft, ends the `:name` word.
+        if let Some((at, name)) = &self.emoji_word
+            && self.app.state.draft().get(*at..at + 1 + name.len())
+                != Some(format!(":{name}").as_str())
+        {
+            self.emoji_word = None;
+            self.show_emoji_suggestions(window);
+        }
+    }
+
+    /// Emoji for the `:name` being typed, or none.
+    pub(super) fn show_emoji_suggestions(&mut self, window: &TalkWindow) {
+        let (query, cells) = match &self.emoji_word {
+            Some((_, name)) => (
+                name.as_str(),
+                emoji::suggestions(name, &self.app.usable_emoji(), EMOJI_SUGGESTIONS),
+            ),
+            None => ("", Vec::new()),
+        };
+        window.set_emoji_suggestion_query(query.into());
+        if window.get_emoji_suggestion_index() >= cells.len() as i32 {
+            window.set_emoji_suggestion_index(0);
+        }
+        update_model(&self.models.emoji_suggestions, cells);
     }
 
     /// The messages, built again only where they changed, and where the list
@@ -1063,6 +1096,9 @@ impl Adapter {
             );
             if added {
                 self.restyle = true;
+                if self.emoji_word.is_some() {
+                    self.show_emoji_suggestions(window);
+                }
                 if !window.get_react_item().is_empty() {
                     update_model(
                         &self.models.emoji_rows,

@@ -16,6 +16,8 @@ export component EmojiButton inherits Rectangle {
     in property <length> glyph: 20px;
     in property <color> fill: transparent;
     in property <bool> tip: true;
+    /// What clicking does with the emoji, for screen readers.
+    in property <string> verb: "React with";
     callback clicked;
     callback hovered;
     width: root.size; height: root.size;
@@ -25,7 +27,7 @@ export component EmojiButton inherits Rectangle {
     border-width: focus.has-focus ? 2px : 0px;
     border-color: Theme.accent;
     accessible-role: button;
-    accessible-label: "React with " + root.emoji.name;
+    accessible-label: root.verb + " " + root.emoji.name;
     accessible-action-default => { root.clicked(); }
     forward-focus: focus;
     Text {
@@ -153,7 +155,8 @@ export component EmojiPicker inherits Rectangle {
     in-out property <string> emoji-query;
     in-out property <EmojiCell> emoji-hover;
     in property <string> emoji-font;
-    /// What the emoji is for: a message's item, or "talk:status" for the custom status.
+    /// What the emoji is for: a message's item, "talk:status" for the custom
+    /// status, or "talk:composer" for the message being written.
     in property <string> react-item;
     callback emoji-search(string);
     callback pick(EmojiCell);
@@ -196,6 +199,7 @@ export component EmojiPicker inherits Rectangle {
                         alignment: start; padding-top: 2px;
                         for cell in row.cells: EmojiButton {
                             emoji: cell; font: root.emoji-font; size: 40px; glyph: 26px; tip: false;
+                            verb: root.react-item == "talk:status" ? "Choose" : root.react-item == "talk:composer" ? "Insert" : "React with";
                             hovered => { root.emoji-hover = cell; }
                             clicked => { root.pick(cell); }
                         }
@@ -214,7 +218,8 @@ export component EmojiPicker inherits Rectangle {
                     if root.emoji-hover.glyph != "": Text { text: root.emoji-hover.glyph; font-family: root.emoji-font; font-size: 26px; vertical-alignment: center; }
                     Text {
                         text: root.emoji-hover.glyph != "" ? root.emoji-hover.name
-                            : root.react-item == "talk:status" ? "Pick an emoji for your status." : "Pick an emoji to react with.";
+                            : root.react-item == "talk:status" ? "Pick an emoji for your status."
+                            : root.react-item == "talk:composer" ? "Pick an emoji for your message." : "Pick an emoji to react with.";
                         color: root.emoji-hover.glyph != "" ? Theme.text : Theme.muted; font-size: 15px;
                         font-weight: root.emoji-hover.glyph != "" ? 700 : 400;
                         vertical-alignment: center; overflow: elide; horizontal-stretch: 1;

@@ -508,6 +508,8 @@ pub struct SavedNames {
     avatars: Vec<(String, String)>,
     member_avatars: Vec<(String, String, String)>,
     roles: Vec<(String, String, Vec<String>)>,
+    #[serde(default)]
+    usernames: Vec<(String, String)>,
 }
 
 /// Who is who, learned from the gateway and from messages.
@@ -515,6 +517,8 @@ pub struct SavedNames {
 pub struct Names {
     /// Display names by user id.
     users: HashMap<String, String>,
+    /// Usernames by user id, such as `ann` for Ann.
+    usernames: HashMap<String, String>,
     /// Server nicknames by server and user id.
     nicknames: HashMap<(String, String), String>,
     /// Members whose server profile is known, with or without a nickname.
@@ -581,6 +585,7 @@ impl Names {
                 .iter()
                 .map(|((guild, user), roles)| (guild.clone(), user.clone(), roles.clone()))
                 .collect(),
+            usernames: pair(&self.usernames),
         }
     }
 
@@ -601,6 +606,7 @@ impl Names {
                 .into_iter()
                 .map(|(guild, user, roles)| ((guild, user), roles))
                 .collect(),
+            usernames: saved.usernames.into_iter().collect(),
             ..Self::default()
         };
         // Those kept from before go before anyone learned since.
@@ -608,6 +614,7 @@ impl Names {
             .users
             .keys()
             .chain(names.avatars.keys())
+            .chain(names.usernames.keys())
             .chain(names.members.iter().map(|(_, user)| user))
             .cloned()
             .collect();
@@ -656,6 +663,7 @@ impl Names {
         self.seen.retain(|_, at| *at.get_mut() > until);
         let seen = &self.seen;
         self.users.retain(|user, _| seen.contains_key(user));
+        self.usernames.retain(|user, _| seen.contains_key(user));
         self.avatars.retain(|user, _| seen.contains_key(user));
         self.nicknames
             .retain(|(_, user), _| seen.contains_key(user));
@@ -679,6 +687,9 @@ impl Names {
         let mut learned = false;
         if let Some(name) = ready::display_name(user) {
             learned |= changed(&mut self.users, id.to_owned(), Some(name.to_owned()));
+        }
+        if let Some(username) = user["username"].as_str() {
+            self.usernames.insert(id.to_owned(), username.to_owned());
         }
         // Partial user objects leave the avatar out; null removes it.
         match user.get("avatar") {
@@ -817,6 +828,11 @@ impl Names {
     pub fn user_name(&self, user: &str) -> Option<&str> {
         self.touch(user);
         self.users.get(user).map(String::as_str)
+    }
+
+    /// A user's username, such as `ann`.
+    pub fn username(&self, user: &str) -> Option<&str> {
+        self.usernames.get(user).map(String::as_str)
     }
 
     pub fn name(&self, guild: &str, user: &str) -> Option<&str> {
