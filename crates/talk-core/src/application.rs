@@ -134,6 +134,15 @@ pub struct ProfileView {
     pub note: Option<String>,
 }
 
+/// A screen the top of the DM list opens in place of a conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmScreen {
+    /// The Discord friends list.
+    Friends,
+    /// Friend requests, message requests and spam.
+    Requests,
+}
+
 /// A role someone clicked in a message: its name and the members known to have it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoleView {
@@ -168,6 +177,8 @@ pub struct AppState {
     pub discord_presence: Option<String>,
     /// Its friends, by user id, and friend requests waiting for an answer.
     pub discord_friends: Vec<String>,
+    /// The same friends by name, as the friends list shows them.
+    pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
     /// The Discord account's custom status, while it lasts.
     pub custom_status: Option<chat::CustomStatus>,
@@ -176,9 +187,12 @@ pub struct AppState {
     pub discord_linked: bool,
     pub discord_link: Option<DiscordLink>,
     pub add_friend: Option<AddFriend>,
-    /// The requests screen is open in place of a conversation: friend
-    /// requests, message requests and spam.
-    pub requests_open: bool,
+    /// A screen of the DM list open in place of a conversation.
+    pub dm_screen: Option<DmScreen>,
+    /// Whether a one-to-one DM shows its other person's profile beside it.
+    pub profile_panel: bool,
+    /// That profile, for the open DM.
+    pub panel_profile: Option<ProfileView>,
     pub status_editor: Option<StatusEditor>,
     /// Whether Discord channels hidden from this account are listed, locked.
     pub show_hidden_channels: bool,
@@ -301,6 +315,12 @@ impl AppState {
     pub fn lists_members(&self) -> bool {
         self.selected_room()
             .is_some_and(|room| !room.voice && !(room.direct && room.members <= 2))
+    }
+
+    /// The open one-to-one DM, whose other person has a profile.
+    pub fn one_to_one(&self) -> Option<&ChatRoom> {
+        self.selected_room()
+            .filter(|room| room.direct && room.members <= 2 && room.person.is_some())
     }
 
     pub fn in_scope(&self, room: &ChatRoom) -> bool {
@@ -599,8 +619,12 @@ pub enum Action {
     DeclineCall(String),
     /// Send a Discord user a friend request, or accept theirs.
     Befriend(String),
-    /// Show the requests screen in place of the conversation.
-    OpenRequests,
+    /// Show a screen of the DM list in place of the conversation.
+    OpenDmScreen(DmScreen),
+    /// Open the DM with a Discord friend, starting one if there's none.
+    MessageFriend(String),
+    /// Show or hide the other person's profile beside a one-to-one DM.
+    ShowProfilePanel(bool),
     /// Ignore a Discord user's friend request, or cancel this account's.
     RemoveFriendRequest(String),
     /// Open the dialog that adds a friend by Discord username, send the
@@ -641,6 +665,12 @@ pub enum Action {
     },
     /// Show the profile of the other person in a one-to-one DM, large.
     ShowDmProfile(String),
+    /// Show the profile of a friend a profile lists as mutual, by Discord
+    /// user id: as a card, or large.
+    ShowFriendProfile {
+        user: String,
+        large: bool,
+    },
     /// Show the open profile card large.
     EnlargeProfile,
     CloseProfile,
@@ -685,6 +715,8 @@ pub struct Application {
     searched: HashSet<String>,
     /// A conversation to open once it's listed, such as a DM just started.
     pending_open: Option<String>,
+    /// A DM with a friend is starting, to open once it has.
+    starting_dm: bool,
     /// The composer text of the message being sent, which `Event::SendResult` clears
     /// once sent; the backend has it with its mentions in the network's form.
     sent_draft: Option<String>,
@@ -715,6 +747,7 @@ const LISTED_PICTURES: usize = 150;
 impl Application {
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
         let mut effects = self.dispatch_action(action);
+        effects.extend(self.show_panel_profile());
         effects.extend(self.request_pictures());
         effects
     }
@@ -728,8 +761,40 @@ impl Application {
         {
             effects.extend(self.dispatch(Action::Open(room)));
         }
+        effects.extend(self.show_panel_profile());
         effects.extend(self.request_pictures());
         effects
+    }
+
+    /// Keeps the profile beside a one-to-one DM to the open DM's other
+    /// person, fetching the rest of a Discord profile once per person.
+    fn show_panel_profile(&mut self) -> Vec<Effect> {
+        let room = self.state.one_to_one().filter(|_| self.state.profile_panel);
+        let Some((room, person)) = room.and_then(|room| Some((room, room.person.clone()?))) else {
+            self.state.panel_profile = None;
+            return vec![];
+        };
+        if self
+            .state
+            .panel_profile
+            .as_ref()
+            .is_some_and(|view| view.profile.id == person)
+        {
+            return vec![];
+        }
+        let fetch = discord::is_discord(&room.id) && !self.state.preview;
+        let (room, profile) = (room.id.clone(), dm_profile(room, person.clone()));
+        self.state.panel_profile = Some(ProfileView {
+            profile,
+            large: false,
+            loading: fetch,
+            note: None,
+        });
+        if fetch {
+            vec![Effect::Backend(Command::Profile { room, user: person })]
+        } else {
+            vec![]
+        }
     }
 
     /// Downloads the viewer's image at viewing size, unless it has it or is
@@ -779,11 +844,32 @@ impl Application {
                     .filter(|_| state.navigation == Navigation::DirectMessages)
                     .filter_map(|request| request.avatar.as_deref()),
             )
-            .chain(state.profile.iter().flat_map(|view| {
-                [&view.profile.avatar, &view.profile.banner]
-                    .into_iter()
-                    .filter_map(Option::as_deref)
-            }))
+            .chain(
+                state
+                    .friends
+                    .iter()
+                    .filter(|_| state.dm_screen == Some(DmScreen::Friends))
+                    .filter_map(|friend| friend.avatar.as_deref()),
+            )
+            .chain(
+                state
+                    .profile
+                    .iter()
+                    .chain(&state.panel_profile)
+                    .flat_map(|view| {
+                        let profile = &view.profile;
+                        [&profile.avatar, &profile.banner]
+                            .into_iter()
+                            .chain(
+                                profile
+                                    .servers
+                                    .iter()
+                                    .flat_map(|server| [&server.icon, &server.banner]),
+                            )
+                            .chain(profile.friends.iter().map(|friend| &friend.avatar))
+                            .filter_map(Option::as_deref)
+                    }),
+            )
             .chain(
                 state
                     .rooms
@@ -803,7 +889,13 @@ impl Application {
                 state
                     .messages
                     .iter()
-                    .filter_map(|message| message.avatar.as_deref())
+                    .flat_map(|message| {
+                        let reply = message
+                            .reply
+                            .as_ref()
+                            .and_then(|reply| reply.avatar.as_deref());
+                        message.avatar.as_deref().into_iter().chain(reply)
+                    })
                     .chain(state.messages.iter().flat_map(|message| {
                         message.emoji.iter().map(|emoji| emoji.picture.as_str())
                     })),
@@ -851,15 +943,41 @@ impl Application {
                     return vec![];
                 }
                 self.state.navigation = navigation;
-                self.state.requests_open = false;
+                self.state.dm_screen = None;
                 self.restore_selection()
             }
-            Action::OpenRequests => {
-                if self.state.requests_open || self.state.navigation != Navigation::DirectMessages {
+            Action::OpenDmScreen(screen) => {
+                if self.state.dm_screen == Some(screen)
+                    || self.state.navigation != Navigation::DirectMessages
+                {
                     return vec![];
                 }
-                self.state.requests_open = true;
-                self.deselect()
+                let open = self.state.dm_screen.is_some();
+                self.state.dm_screen = Some(screen);
+                if open { vec![] } else { self.deselect() }
+            }
+            Action::MessageFriend(user) => {
+                let open = self
+                    .state
+                    .rooms
+                    .iter()
+                    .find(|room| room.direct && room.person.as_ref() == Some(&user))
+                    .map(|room| room.id.clone());
+                if let Some(room) = open {
+                    return self.dispatch(Action::Open(room));
+                }
+                if self.state.preview || !self.state.discord_friends.contains(&user) {
+                    return vec![];
+                }
+                self.starting_dm = true;
+                vec![Effect::Backend(Command::StartDm {
+                    id: user,
+                    discord: true,
+                })]
+            }
+            Action::ShowProfilePanel(shown) => {
+                self.state.profile_panel = shown;
+                self.show_panel_profile()
             }
             Action::Open(id) => {
                 let Some(room) = self.state.rooms.iter().find(|room| room.id == id) else {
@@ -1541,18 +1659,47 @@ impl Application {
                 else {
                     return vec![];
                 };
+                let profile = dm_profile(room, person);
+                self.open_profile(id, profile, true)
+            }
+            Action::ShowFriendProfile { user, large } => {
+                let listed = self
+                    .state
+                    .profile
+                    .iter()
+                    .chain(&self.state.panel_profile)
+                    .flat_map(|view| &view.profile.friends)
+                    .find(|friend| friend.id == user);
+                let friend = self.state.friends.iter().find(|friend| friend.id == user);
+                let Some(name) = friend
+                    .map(|friend| &friend.name)
+                    .or(listed.map(|listed| &listed.name))
+                else {
+                    return vec![];
+                };
                 let profile = Profile {
-                    name: room.name.clone(),
-                    handle: if discord::is_discord(&room.id) {
-                        String::new()
-                    } else {
-                        person.clone()
-                    },
-                    avatar: room.avatar.clone(),
-                    id: person,
+                    id: user.clone(),
+                    name: name.clone(),
+                    avatar: friend
+                        .and_then(|friend| friend.avatar.clone())
+                        .or_else(|| listed.and_then(|listed| listed.avatar.clone())),
+                    presence: friend.and_then(|friend| friend.presence),
+                    activity: friend.and_then(|friend| friend.activity.clone()),
                     ..Default::default()
                 };
-                self.open_profile(id, profile, true)
+                // Their DM's profile is their own; elsewhere, the open
+                // server's, as Discord shows someone clicked there.
+                let room = self
+                    .state
+                    .rooms
+                    .iter()
+                    .find(|room| room.direct && room.person.as_ref() == Some(&user))
+                    .map(|room| room.id.clone())
+                    .or_else(|| self.state.selected.clone());
+                let Some(room) = room else {
+                    return vec![];
+                };
+                self.open_profile(room, profile, large)
             }
             Action::EnlargeProfile => {
                 if let Some(view) = &mut self.state.profile {
@@ -1706,6 +1853,17 @@ impl Application {
                 self.state.discord_presence =
                     Some(snapshot.presence.clone()).filter(|presence| !presence.is_empty());
                 self.state.discord_friends = snapshot.friends.clone();
+                self.state.friends = snapshot
+                    .friend_list
+                    .iter()
+                    .map(|friend| chat::Friend {
+                        id: friend.user_id.clone(),
+                        name: friend.name.clone(),
+                        avatar: Some(friend.avatar.clone()),
+                        presence: friend.presence.map(discord::presence),
+                        activity: friend.activity.clone(),
+                    })
+                    .collect();
                 self.state.custom_status =
                     snapshot
                         .custom_status
@@ -1745,20 +1903,20 @@ impl Application {
                 }
             }
             Event::Profile { user, result } => {
-                if let Some(view) = self
-                    .state
-                    .profile
-                    .as_mut()
-                    .filter(|view| view.profile.id == user)
+                let views = [&mut self.state.profile, &mut self.state.panel_profile];
+                for view in views
+                    .into_iter()
+                    .filter_map(Option::as_mut)
+                    .filter(|view| view.profile.id == user && view.loading)
                 {
                     view.loading = false;
-                    match result {
+                    match &result {
                         // Presence comes from the member list; the profile doesn't carry it.
                         Ok(profile) => {
                             view.profile = Profile {
                                 presence: profile.presence.or(view.profile.presence),
-                                activity: profile.activity.or(view.profile.activity.take()),
-                                ..profile
+                                activity: profile.activity.clone().or(view.profile.activity.take()),
+                                ..profile.clone()
                             };
                         }
                         Err(_) => {
@@ -1789,7 +1947,7 @@ impl Application {
                 }
             }
             Event::DmStarted(Ok(room)) => {
-                if self.state.new_dm.is_some() {
+                if self.state.new_dm.is_some() || std::mem::take(&mut self.starting_dm) {
                     self.state.new_dm = None;
                     self.pending_open = Some(room);
                 }
@@ -1811,6 +1969,7 @@ impl Application {
                 self.state.discord_online = false;
                 self.state.discord_user = None;
                 self.state.discord_friends.clear();
+                self.state.friends.clear();
                 self.state.friend_requests.clear();
                 self.state.custom_status = None;
                 return self.show_lists();
@@ -1828,6 +1987,8 @@ impl Application {
                 if let Some(new_dm) = &mut self.state.new_dm {
                     new_dm.starting = false;
                     new_dm.error = Some(error);
+                } else if std::mem::take(&mut self.starting_dm) {
+                    self.state.notice = Some(error);
                 }
             }
             Event::RoleMembers {
@@ -1972,6 +2133,7 @@ impl Application {
                 if let Some(new_dm) = &mut self.state.new_dm {
                     new_dm.starting = false;
                 }
+                self.starting_dm = false;
             }
             Command::Recover(_) | Command::RefreshTrust | Command::Logout => {
                 self.state.busy = false;
@@ -2174,8 +2336,8 @@ impl Application {
         {
             self.state.navigation = Navigation::DirectMessages;
         }
-        // The requests screen stands in for a conversation.
-        if self.state.requests_open && self.state.navigation == Navigation::DirectMessages {
+        // A screen of the DM list stands in for a conversation.
+        if self.state.dm_screen.is_some() && self.state.navigation == Navigation::DirectMessages {
             return vec![];
         }
         if !self
@@ -2203,7 +2365,7 @@ impl Application {
         self.remember_view();
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
-        self.state.requests_open = false;
+        self.state.dm_screen = None;
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
         self.state.forwarding = None;
@@ -2303,6 +2465,10 @@ impl Application {
                         reply: match compose {
                             Some(Compose::Reply { item, author, body }) => Some(Reply {
                                 author,
+                                avatar: self
+                                    .state
+                                    .message(&item)
+                                    .and_then(|original| original.avatar.clone()),
                                 body,
                                 item: Some(item),
                             }),
@@ -2907,6 +3073,24 @@ impl Application {
     }
 }
 
+/// What a one-to-one DM knows of its other person's profile.
+fn dm_profile(room: &ChatRoom, person: String) -> Profile {
+    Profile {
+        name: room.name.clone(),
+        // A Discord username comes with the profile.
+        handle: if discord::is_discord(&room.id) {
+            String::new()
+        } else {
+            person.clone()
+        },
+        avatar: room.avatar.clone(),
+        presence: room.presence,
+        activity: room.activity.clone(),
+        id: person,
+        ..Default::default()
+    }
+}
+
 fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
     ChatRoom {
         id: id.into(),
@@ -3036,25 +3220,33 @@ mod tests {
         let mut app = connected();
         assert_eq!(app.state.selected.as_deref(), Some("dm"));
         assert!(matches!(
-            app.dispatch(Action::OpenRequests).as_slice(),
+            app.dispatch(Action::OpenDmScreen(DmScreen::Requests))
+                .as_slice(),
             [Effect::Backend(Command::CloseRoom)]
         ));
-        assert!(app.state.requests_open);
+        assert_eq!(app.state.dm_screen, Some(DmScreen::Requests));
         assert_eq!(app.state.selected, None);
         // The lists changing doesn't pick a conversation over it.
         let rooms = app.state.rooms.clone();
         let servers = app.state.servers.clone();
         app.apply(Event::Rooms(RoomIndex { rooms, servers }));
-        assert!(app.state.requests_open);
+        assert_eq!(app.state.dm_screen, Some(DmScreen::Requests));
         assert_eq!(app.state.selected, None);
+        // The friends list takes its place, with no conversation to close.
+        assert!(
+            app.dispatch(Action::OpenDmScreen(DmScreen::Friends))
+                .is_empty()
+        );
+        assert_eq!(app.state.dm_screen, Some(DmScreen::Friends));
         // Choosing a conversation, or a server, closes it.
         app.dispatch(Action::SelectRoom("dm".into()));
-        assert!(!app.state.requests_open);
-        app.dispatch(Action::OpenRequests);
+        assert_eq!(app.state.dm_screen, None);
+        app.dispatch(Action::OpenDmScreen(DmScreen::Requests));
         app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
-        assert!(!app.state.requests_open);
+        assert_eq!(app.state.dm_screen, None);
         assert!(
-            app.dispatch(Action::OpenRequests).is_empty(),
+            app.dispatch(Action::OpenDmScreen(DmScreen::Requests))
+                .is_empty(),
             "only among DMs"
         );
     }
@@ -4647,6 +4839,187 @@ mod tests {
         });
         let view = app.state.profile.as_ref().unwrap();
         assert!(!view.loading && view.note.is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn discord_friends_are_listed_and_messaged() {
+        use talk_discord::{
+            member_list::Presence as Discord,
+            service::{Conversation, Friend, Snapshot, Status},
+        };
+        let friend = |id: &str, name: &str, presence| Friend {
+            user_id: id.into(),
+            name: name.into(),
+            avatar: format!("{id}.png"),
+            presence,
+            activity: None,
+        };
+        let snapshot = |dms: &[(&str, &str)]| Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            friends: vec!["2".into(), "3".into()],
+            friend_list: vec![
+                Friend {
+                    activity: Some("making tea".into()),
+                    ..friend("2", "Ann", Some(Discord::Idle))
+                },
+                friend("3", "Bob", None),
+            ],
+            conversations: dms
+                .iter()
+                .map(|(id, person)| Conversation {
+                    id: (*id).into(),
+                    name: "DM".into(),
+                    person: Some((*person).into()),
+                    people: 2,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut app = Application::default();
+        app.apply(Event::Discord(snapshot(&[("30", "2")])));
+        assert_eq!(
+            app.state.friends[0],
+            chat::Friend {
+                id: "2".into(),
+                name: "Ann".into(),
+                avatar: Some("2.png".into()),
+                presence: Some(chat::Presence::Idle),
+                activity: Some("making tea".into()),
+            }
+        );
+        let effects = app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+        assert_eq!(app.state.selected, None);
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Backend(Command::Pictures(urls)) if urls.iter().any(|url| url == "3.png")
+            )),
+            "the friends' avatars download"
+        );
+
+        // A friend with a DM opens it; one without has it started.
+        app.dispatch(Action::MessageFriend("2".into()));
+        assert_eq!(app.state.selected.as_deref(), Some("discord:@me:30"));
+        assert_eq!(app.state.dm_screen, None);
+        app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+        assert!(matches!(
+            app.dispatch(Action::MessageFriend("3".into())).as_slice(),
+            [Effect::Backend(Command::StartDm { id, discord: true })] if id == "3"
+        ));
+        app.apply(Event::DmStarted(Ok("discord:@me:31".into())));
+        app.apply(Event::Discord(snapshot(&[("30", "2"), ("31", "3")])));
+        assert_eq!(app.state.selected.as_deref(), Some("discord:@me:31"));
+        assert!(
+            app.dispatch(Action::MessageFriend("9".into())).is_empty(),
+            "only friends"
+        );
+
+        // A DM that couldn't start says why.
+        app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+        app.apply(Event::Discord(snapshot(&[])));
+        app.dispatch(Action::MessageFriend("2".into()));
+        app.apply(Event::DmStarted(Err("Could not start the DM".into())));
+        assert_eq!(app.state.notice.as_deref(), Some("Could not start the DM"));
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn a_one_to_one_dm_shows_its_persons_profile_beside_it() {
+        use talk_discord::service::{Conversation, Snapshot, Status};
+        let dm = |id: &str, person: &str, people| Conversation {
+            id: id.into(),
+            name: format!("DM {id}"),
+            person: Some(person.into()),
+            people,
+            group: people > 2,
+            ..Default::default()
+        };
+        let mut app = Application::default();
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            conversations: vec![dm("30", "7", 2), dm("31", "8", 2), dm("32", "9", 3)],
+            ..Default::default()
+        }));
+        assert_eq!(app.state.selected.as_deref(), Some("discord:@me:30"));
+        assert!(app.state.panel_profile.is_none(), "hidden until shown");
+
+        let fetches = |effects: &[Effect]| -> Vec<String> {
+            effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    Effect::Backend(Command::Profile { user, .. }) => Some(user.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            fetches(&app.dispatch(Action::ShowProfilePanel(true))),
+            ["7"]
+        );
+        let view = app.state.panel_profile.as_ref().unwrap();
+        assert!(view.loading && view.profile.name == "DM 30");
+        app.apply(Event::Profile {
+            user: "7".into(),
+            result: Ok(Profile {
+                id: "7".into(),
+                name: "Ann".into(),
+                bio: "Hi".into(),
+                ..Default::default()
+            }),
+        });
+        assert_eq!(app.state.panel_profile.as_ref().unwrap().profile.bio, "Hi");
+        assert!(
+            fetches(&app.dispatch(Action::SelectRoom("discord:@me:30".into()))).is_empty(),
+            "the same person isn't fetched again"
+        );
+
+        // It follows the open DM, and a group DM has none.
+        assert_eq!(
+            fetches(&app.dispatch(Action::SelectRoom("discord:@me:31".into()))),
+            ["8"]
+        );
+        // A mutual friend opens full size, fetched as their DM shows them.
+        app.apply(Event::Profile {
+            user: "8".into(),
+            result: Ok(Profile {
+                id: "8".into(),
+                name: "Bea".into(),
+                friends: vec![chat::ProfileFriend {
+                    id: "7".into(),
+                    name: "Ann".into(),
+                    avatar: Some("ann.png".into()),
+                }],
+                ..Default::default()
+            }),
+        });
+        let effects = app.dispatch(Action::ShowFriendProfile {
+            user: "7".into(),
+            large: false,
+        });
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(Command::Profile { room, user }) if room == "discord:@me:30" && user == "7"
+        )));
+        let view = app.state.profile.as_ref().unwrap();
+        assert!(!view.large && view.profile.name == "Ann");
+        assert_eq!(view.profile.avatar.as_deref(), Some("ann.png"));
+        assert!(
+            app.dispatch(Action::ShowFriendProfile {
+                user: "99".into(),
+                large: true
+            })
+            .is_empty(),
+            "only those listed"
+        );
+
+        app.dispatch(Action::SelectRoom("discord:@me:32".into()));
+        assert!(app.state.panel_profile.is_none());
+        app.dispatch(Action::SelectRoom("discord:@me:31".into()));
+        app.dispatch(Action::ShowProfilePanel(false));
+        assert!(app.state.panel_profile.is_none());
     }
 
     #[test]

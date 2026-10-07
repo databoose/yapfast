@@ -1578,11 +1578,13 @@ async fn publish_timeline(
             message.reply = Some(match &reply.event {
                 TimelineDetails::Ready(embedded) => Reply {
                     author: display_name(&embedded.sender, &embedded.sender_profile),
+                    avatar: None,
                     body: summary(&embedded.content),
                     item,
                 },
                 TimelineDetails::Error(_) => Reply {
                     author: String::new(),
+                    avatar: None,
                     body: "The original message could not be loaded.".into(),
                     item,
                 },
@@ -1597,6 +1599,7 @@ async fn publish_timeline(
                     }
                     Reply {
                         author: String::new(),
+                        avatar: None,
                         body: "Loading the original message...".into(),
                         item,
                     }

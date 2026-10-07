@@ -658,9 +658,14 @@ impl Names {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// Learns the author and the mentioned users of a message object.
+    /// Learns the author and the mentioned users of a message object, and
+    /// those of the message it replies to.
     pub fn learn_message(&mut self, guild: Option<&str>, message: &Value) {
         self.learn_user(&message["author"]);
+        // Discord doesn't nest a reply's original inside the original.
+        if message["referenced_message"].is_object() {
+            self.learn_message(guild, &message["referenced_message"]);
+        }
         if let (Some(guild), Value::Object(member)) = (guild, &message["member"]) {
             let mut member = Value::Object(member.clone());
             member["user"] = message["author"].clone();
@@ -932,6 +937,26 @@ mod tests {
             &json!({"id": "1", "type": 19, "author": {"id": "1"}, "referenced_message": null}),
         );
         assert_eq!(deleted.unwrap().reply, Some(Reply::Deleted));
+    }
+
+    #[test]
+    fn learns_the_author_a_reply_quotes() {
+        let mut names = Names::default();
+        names.learn_message(
+            None,
+            &json!({
+                "id": "1", "type": 19, "author": {"id": "1", "username": "me"},
+                "referenced_message": {
+                    "id": "9", "author": {"id": "2", "username": "ann", "avatar": "abc"},
+                    "content": "hello",
+                },
+            }),
+        );
+        assert!(
+            names
+                .avatar(None, "2")
+                .ends_with("/avatars/2/abc.png?size=128")
+        );
     }
 
     #[test]

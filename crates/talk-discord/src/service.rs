@@ -104,6 +104,20 @@ pub struct FriendRequest {
     pub spam: bool,
 }
 
+/// A friend as the friends list shows them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Friend {
+    pub user_id: String,
+    pub name: String,
+    pub avatar: String,
+    /// Whether they're around and their custom status or what they're doing,
+    /// when Discord says. Not saved, since it's stale by the next start.
+    #[serde(skip)]
+    pub presence: Option<Presence>,
+    #[serde(skip)]
+    pub activity: Option<String>,
+}
+
 /// Someone this account can start a DM with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
@@ -127,6 +141,9 @@ pub struct Snapshot {
     pub conversations: Vec<Conversation>,
     /// The account's friends, by user id.
     pub friends: Vec<String>,
+    /// The same friends by name, as the friends list shows them.
+    #[serde(default)]
+    pub friend_list: Vec<Friend>,
     /// Those this account blocked, by user id. Their messages show collapsed,
     /// and they don't notify.
     pub blocked: Vec<String>,
@@ -1751,11 +1768,16 @@ impl Tracker {
             // Friends' presences; those in servers go to the member list.
             "PRESENCE_UPDATE" if data["guild_id"].is_null() => {
                 let user = data["user"]["id"].as_str();
-                // The DM list shows the person of each one-to-one DM.
+                // The DM list shows the person of each one-to-one DM, and the
+                // friends list each friend.
                 self.presence(user, data)
-                    && self.private.iter().any(|private| {
-                        !private.group && private.recipients.first().map(String::as_str) == user
-                    })
+                    && (self
+                        .friends
+                        .iter()
+                        .any(|friend| Some(friend.as_str()) == user)
+                        || self.private.iter().any(|private| {
+                            !private.group && private.recipients.first().map(String::as_str) == user
+                        }))
             }
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
                 let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
@@ -2051,6 +2073,26 @@ impl Tracker {
             .collect()
     }
 
+    /// The friends by name, with what Discord says of each.
+    fn friend_list(&self, names: &Names) -> Vec<Friend> {
+        let mut friends: Vec<Friend> = self
+            .friends
+            .iter()
+            .map(|user| {
+                let known = self.presences.get(user);
+                Friend {
+                    user_id: user.clone(),
+                    name: names.user_name(user).unwrap_or("Discord user").to_owned(),
+                    avatar: names.avatar(None, user),
+                    presence: known.map(|(presence, _)| *presence),
+                    activity: known.and_then(|(_, activity)| activity.clone()),
+                }
+            })
+            .collect();
+        friends.sort_by_cached_key(|friend| (friend.name.to_lowercase(), friend.user_id.clone()));
+        friends
+    }
+
     fn conversations(&self, names: &Names) -> Vec<Conversation> {
         let mut private = self.private.clone();
         // Discord orders by the newest message, or when the DM opened.
@@ -2218,6 +2260,7 @@ impl Tracker {
             servers,
             conversations: self.conversations(&names),
             friends: self.friends.clone(),
+            friend_list: self.friend_list(&names),
             blocked: self.blocked.clone(),
             presence: self.status.clone(),
             custom_status: self
@@ -2664,6 +2707,26 @@ mod tests {
         tracker.apply("RELATIONSHIP_UPDATE", &json!({"id": "5", "nickname": "x"}));
         assert_eq!(listed(&tracker), [("spam".to_owned(), true, true)]);
         assert_eq!(tracker.snapshot().friends, ["2", "3"]);
+        let friends: Vec<_> = tracker
+            .snapshot()
+            .friend_list
+            .into_iter()
+            .map(|friend| (friend.name, friend.presence))
+            .collect();
+        assert_eq!(
+            friends,
+            [("ann".to_owned(), None), ("bob".to_owned(), None)],
+            "by name"
+        );
+        // A friend's presence changes the friends list, though there's no DM with them.
+        assert!(tracker.apply(
+            "PRESENCE_UPDATE",
+            &json!({"user": {"id": "3"}, "status": "idle", "activities": []}),
+        ));
+        assert_eq!(
+            tracker.snapshot().friend_list[1].presence,
+            Some(Presence::Idle)
+        );
 
         // Blocking Ann ends the friendship, and her messages stop notifying.
         tracker.apply("RELATIONSHIP_ADD", &json!({"id": "2", "type": 2}));

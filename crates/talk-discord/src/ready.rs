@@ -32,6 +32,10 @@ pub struct Server {
     pub name: String,
     /// The address of the server's icon, if it has one.
     pub icon: Option<String>,
+    /// The address of its banner, if it has one.
+    pub banner: Option<String>,
+    /// How many members it has, as of READY or GUILD_CREATE.
+    pub member_count: Option<u64>,
     /// Text and announcement channels, in Discord's order.
     pub text_channels: Vec<Channel>,
     pub voice_channels: Vec<Channel>,
@@ -526,6 +530,10 @@ pub fn server(guild: &Value) -> Option<Server> {
         .as_str()
         .or_else(|| guild["properties"]["icon"].as_str())
         .map(|hash| server_icon(&id, hash));
+    let banner = guild["banner"]
+        .as_str()
+        .or_else(|| guild["properties"]["banner"].as_str())
+        .map(|hash| self::banner(&id, hash));
     let premium_tier = guild["premium_tier"]
         .as_u64()
         .or_else(|| guild["properties"]["premium_tier"].as_u64())
@@ -534,6 +542,8 @@ pub fn server(guild: &Value) -> Option<Server> {
         id,
         name,
         icon,
+        banner,
+        member_count: guild["member_count"].as_u64(),
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
         emojis: emojis(&guild["emojis"]),
@@ -629,7 +639,7 @@ pub fn avatar(user: &str, hash: Option<&str>) -> String {
     }
 }
 
-/// A profile banner, at the profile card's widest.
+/// A profile or server banner, at the profile card's widest.
 pub fn banner(user: &str, hash: &str) -> String {
     format!("{}/banners/{user}/{hash}.png?size=600", cdn())
 }

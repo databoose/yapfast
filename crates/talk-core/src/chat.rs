@@ -89,6 +89,20 @@ pub struct FriendRequest {
     pub spam: bool,
 }
 
+/// A Discord friend, as the friends list shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Friend {
+    /// Their Discord user id.
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+    /// Whether they're around, when Discord says, and their custom status or
+    /// what they're doing.
+    pub presence: Option<Presence>,
+    pub activity: Option<String>,
+}
+
 /// A file waiting in the composer to go with the next message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Staged {
@@ -209,8 +223,34 @@ pub struct Profile {
     /// When they joined this server, as a date.
     pub joined: Option<String>,
     /// The servers and friends this account shares with them.
-    pub servers: Vec<String>,
-    pub friends: Vec<String>,
+    pub servers: Vec<ProfileServer>,
+    pub friends: Vec<ProfileFriend>,
+}
+
+/// A server a profile's person shares with this account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileServer {
+    /// As in [`ChatServer::id`].
+    pub id: String,
+    pub name: String,
+    /// The addresses of its icon and banner; see [`Command::Pictures`].
+    pub icon: Option<String>,
+    pub banner: Option<String>,
+    /// How many members it has, when known, and channels this account sees.
+    pub members: Option<u64>,
+    pub channels: usize,
+    /// The person's nickname there, when they set one.
+    pub nick: Option<String>,
+}
+
+/// A friend a profile's person shares with this account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileFriend {
+    /// Their Discord user id.
+    pub id: String,
+    pub name: String,
+    /// The address of their avatar; see [`Command::Pictures`].
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -291,6 +331,9 @@ pub enum Delivery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reply {
     pub author: String,
+    /// The address of the author's avatar, where the network gives one; see
+    /// [`Command::Pictures`].
+    pub avatar: Option<String>,
     pub body: String,
     /// The original message's item, to jump to it; none when it's gone.
     pub item: Option<String>,

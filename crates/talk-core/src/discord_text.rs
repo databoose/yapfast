@@ -28,8 +28,8 @@ use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Embed,
         EmbedField, Event, MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture,
-        Placement, Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view,
-        plain_snippet,
+        Placement, Profile, ProfileFriend, ProfileRole, ProfileServer, Reaction, Reply, Role,
+        decode_preview, decode_view, plain_snippet,
     },
     discord,
     mention::{Mentioned, Target},
@@ -754,11 +754,13 @@ impl OpenChannel {
                     content,
                 } => Reply {
                     author: name(author_id, author),
+                    avatar: Some(discord.avatar(Some(&self.guild), author_id)),
                     body: plain_snippet(&crate::spoiler::hide(&discord.render(server, content))),
                     item: Some(format!("d:{id}")),
                 },
                 DiscordReply::Deleted => Reply {
                     author: String::new(),
+                    avatar: None,
                     body: "The original message was deleted.".into(),
                     item: None,
                 },
@@ -830,6 +832,7 @@ impl OpenChannel {
                     let original = self.messages.get(&id.parse().unwrap_or_default())?;
                     Some(Reply {
                         author: name(&original.author_id, &original.author),
+                        avatar: Some(discord.avatar(Some(&self.guild), &original.author_id)),
                         body: plain_snippet(&crate::spoiler::hide(
                             &discord.render(server, &original.content),
                         )),
@@ -1960,11 +1963,32 @@ fn chat_profile(
         joined: profile.joined.map(talk_discord::message::date),
         servers: profile
             .mutual_servers
-            .iter()
-            .filter_map(|id| snapshot.servers.iter().find(|server| &server.id == id))
-            .map(|server| server.name.clone())
+            .into_iter()
+            .filter_map(|mutual| {
+                let server = snapshot
+                    .servers
+                    .iter()
+                    .find(|server| server.id == mutual.id)?;
+                Some(ProfileServer {
+                    id: discord::server_id(&server.id),
+                    name: server.name.clone(),
+                    icon: server.icon.clone(),
+                    banner: server.banner.clone(),
+                    members: server.member_count,
+                    channels: server.text_channels.len() + server.voice_channels.len(),
+                    nick: mutual.nick,
+                })
+            })
             .collect(),
-        friends: profile.mutual_friends,
+        friends: profile
+            .mutual_friends
+            .into_iter()
+            .map(|friend| ProfileFriend {
+                id: friend.id,
+                name: friend.name,
+                avatar: Some(friend.avatar),
+            })
+            .collect(),
         handle: profile.username,
         id: profile.user_id,
         // What the member list knows; the profile doesn't say.

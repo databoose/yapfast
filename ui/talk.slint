@@ -1357,6 +1357,15 @@ component MemberPanel inherits Rectangle {
 export struct ProfileRole { name: string, color: color, has-color: bool }
 /// A profile card's roles a row at a time, laid out to fit the card.
 export struct ProfileRoleRow { roles: [ProfileRole] }
+/// A server a profile's person shares with this account, and their nickname there.
+export struct ProfileServerRow {
+    id: string, name: string, initial: string, picture: image, banner: image,
+    /// "12 members", when known, and "4 channels".
+    members: string, channels: string,
+    nick: string,
+}
+/// A friend a profile's person shares with this account; presence as in MemberRow.
+export struct ProfileFriendRow { id: string, name: string, initial: string, tint: color, picture: image, presence: string }
 export struct ProfileData {
     id: string, name: string, initial: string, tint: color, picture: image,
     /// A Discord username or Matrix ID, then pronouns when they give them.
@@ -1369,7 +1378,7 @@ export struct ProfileData {
     role-rows: [ProfileRoleRow], role-rows-large: [ProfileRoleRow],
     /// Dates: on Discord since, and in this server since.
     created: string, joined: string,
-    servers: [string], friends: [string],
+    servers: [ProfileServerRow], friends: [ProfileFriendRow],
     /// Loading, or why there's no more.
     note: string,
     /// Friendship on Discord: 0 nothing to offer, 1 send a friend request,
@@ -1381,30 +1390,164 @@ component ProfileHeading inherits Text {
     color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
 }
 
-// A person's profile: a card beside the member list, or large over the
-// window, where it scrolls once it's taller than the window allows.
+// A server a profile lists as mutual, as a card: what it is, and a way in.
+component ServerCard inherits Rectangle {
+    in property <ProfileServerRow> server;
+    callback open;
+    height: body.preferred-height;
+    background: Theme.sidebar;
+    border-radius: 12px; border-width: 1px; border-color: Theme.edge;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    accessible-role: groupbox;
+    accessible-label: root.server.name;
+    // Clicks on the card stay on it, instead of closing it.
+    TouchArea { }
+    Rectangle {
+        border-radius: 12px; clip: true;
+        body := VerticalLayout {
+            padding-bottom: 16px; spacing: 0px;
+            // The banner, with the icon hanging over its lower edge.
+            Rectangle {
+                height: 90px + 32px + 8px;
+                Rectangle {
+                    y: 0px; height: 90px; background: Theme.raised;
+                    if root.server.banner.width > 0: Image {
+                        width: parent.width; height: parent.height; source: root.server.banner; image-fit: cover;
+                    }
+                }
+                Rectangle {
+                    x: 10px; y: 90px - 32px - 6px; width: 76px; height: 76px; border-radius: 22px;
+                    background: Theme.sidebar;
+                    Rectangle {
+                        width: 64px; height: 64px; border-radius: 18px; clip: true;
+                        background: root.server.picture.width > 0 ? transparent : Theme.raised;
+                        if root.server.picture.width == 0: Text {
+                            text: root.server.initial; color: Theme.text; font-size: 24px; font-weight: 700;
+                        }
+                        if root.server.picture.width > 0: Image { source: root.server.picture; width: 64px; height: 64px; image-fit: cover; }
+                    }
+                }
+            }
+            VerticalLayout {
+                padding-left: 16px; padding-right: 16px; spacing: 14px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: root.server.name; color: Theme.text; font-size: 20px; font-weight: 700; overflow: elide; }
+                    HorizontalLayout {
+                        spacing: 14px; alignment: start;
+                        if root.server.members != "": HorizontalLayout {
+                            spacing: 6px;
+                            Middle { Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.faint; } }
+                            Text { text: root.server.members; color: Theme.secondary; font-size: 13px; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Middle { Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.faint; } }
+                            Text { text: root.server.channels; color: Theme.secondary; font-size: 13px; }
+                        }
+                    }
+                }
+                if root.server.nick != "": VerticalLayout {
+                    spacing: 4px;
+                    ProfileHeading { text: "THEIR NICKNAME"; }
+                    Text { text: root.server.nick; color: Theme.text; font-size: 14px; overflow: elide; }
+                }
+                ActionButton { text: "Go to server"; primary: true; clicked => { root.open(); } }
+            }
+        }
+    }
+}
+
+// A mutual server or friend in a profile. Clicking it goes there.
+component ProfileListRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <string> initial;
+    in property <color> tint: Theme.raised;
+    in property <image> picture;
+    /// A person, drawn round with their status dot; else a server, drawn as
+    /// a rounded square.
+    in property <bool> person;
+    in property <string> presence;
+    in property <string> label;
+    callback clicked;
+    height: root.detail != "" ? 46px : 40px; border-radius: 6px;
+    background: pointer.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.quick; }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 12px;
+        Middle {
+            Rectangle {
+                width: 32px; height: 32px;
+                if root.person: Avatar { size: 32px; initial: root.initial; tint: root.tint; picture: root.picture; }
+                if root.person && root.presence != "": StatusDot {
+                    x: 20px; y: 20px; presence: root.presence; ring: pointer.has-hover ? Theme.hover : Theme.sidebar;
+                }
+                if !root.person: Rectangle {
+                    border-radius: 10px; clip: true;
+                    background: root.picture.width > 0 ? transparent : Theme.raised;
+                    if root.picture.width == 0: Text {
+                        text: root.initial; color: Theme.text; font-size: 13px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    if root.picture.width > 0: Image { source: root.picture; width: 32px; height: 32px; image-fit: cover; }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 0px; horizontal-stretch: 1;
+            Text { text: root.name; color: Theme.text; font-size: 15px; font-weight: 500; overflow: elide; }
+            if root.detail != "": Text { text: root.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    }
+}
+
+// A person's profile: a card beside the member list, large over the
+// window, where it scrolls once it's taller than the window allows, or
+// docked beside a one-to-one DM, where it fills the height.
 component ProfileCard inherits Rectangle {
     in property <ProfileData> data;
     in property <bool> large;
+    in property <bool> docked;
+    /// It shows everything: the bio in full, and mutual servers and friends.
+    property <bool> full: root.large || root.docked;
     /// The tallest the card may be.
     in property <length> limit: 100000px;
     callback enlarge;
     callback close;
     callback open-link(string);
     callback befriend;
-    property <length> banner-height: root.large ? 210px : 105px;
+    /// A mutual server or friend was clicked, with where its row is in the window.
+    callback open-server(ProfileServerRow, length, length, length, length);
+    callback open-friend(string, length, length, length, length);
+    property <length> banner-height: root.large ? 210px : root.docked ? 120px : 105px;
     property <length> avatar-size: root.large ? 120px : 80px;
     property <length> pad: root.large ? 24px : 16px;
     height: min(body.preferred-height, root.limit);
     background: Theme.sidebar;
-    border-radius: 12px; border-width: 1px; border-color: Theme.edge;
-    drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+    border-radius: root.docked ? 0px : 12px; border-width: root.docked ? 0px : 1px; border-color: Theme.edge;
+    drop-shadow-blur: root.docked ? 0px : 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: root.docked ? 0px : 8px;
     accessible-role: groupbox;
     accessible-label: root.data.name + "'s profile";
     // Clicks on the card stay on it, instead of closing it.
     TouchArea { }
     Rectangle {
-        border-radius: 12px; clip: true;
+        border-radius: root.docked ? 0px : 12px; clip: true;
         // Sized by what the card wants rather than the least it can take, so a
         // long one scrolls to its end.
         ScrollView {
@@ -1463,7 +1606,7 @@ component ProfileCard inherits Rectangle {
                         // A fixed height, since the text would otherwise stretch it past its limit.
                         Rectangle {
                             clip: true;
-                            height: root.large ? bio-text.preferred-height : min(110px, bio-text.preferred-height);
+                            height: root.full ? bio-text.preferred-height : min(110px, bio-text.preferred-height);
                             VerticalLayout {
                                 bio-text := StyledText {
                                     text: root.data.bio; default-color: Theme.text; link-color: Theme.link;
@@ -1502,15 +1645,31 @@ component ProfileCard inherits Rectangle {
                             }
                         }
                     }
-                    if root.large && root.data.servers.length > 0: VerticalLayout {
+                    if root.full && root.data.servers.length > 0: VerticalLayout {
                         spacing: 6px;
                         ProfileHeading { text: "MUTUAL SERVERS — " + root.data.servers.length; }
-                        for server in root.data.servers: Text { text: server; color: Theme.secondary; font-size: 15px; font-weight: 500; overflow: elide; }
+                        VerticalLayout {
+                            spacing: 0px;
+                            for server in root.data.servers: ProfileListRow {
+                                name: server.name; initial: server.initial; picture: server.picture;
+                                detail: server.nick;
+                                label: "Open " + server.name + (server.nick != "" ? ", where they're " + server.nick : "");
+                                clicked => { root.open-server(server, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                            }
+                        }
                     }
-                    if root.large && root.data.friends.length > 0: VerticalLayout {
+                    if root.full && root.data.friends.length > 0: VerticalLayout {
                         spacing: 6px;
                         ProfileHeading { text: "MUTUAL FRIENDS — " + root.data.friends.length; }
-                        for friend in root.data.friends: Text { text: friend; color: Theme.secondary; font-size: 15px; font-weight: 500; overflow: elide; }
+                        VerticalLayout {
+                            spacing: 0px;
+                            for friend in root.data.friends: ProfileListRow {
+                                person: true; name: friend.name; initial: friend.initial; tint: friend.tint;
+                                picture: friend.picture; presence: friend.presence;
+                                label: friend.name + "'s profile";
+                                clicked => { root.open-friend(friend.id, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                            }
+                        }
                     }
                     if root.data.note != "": Text { text: root.data.note; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
                     if !root.large: ActionButton { text: "View full profile"; small: true; clicked => { root.enlarge(); } }
@@ -1589,6 +1748,135 @@ component RequestsHeading inherits HorizontalLayout {
     in property <string> text;
     padding-left: 8px; height: 36px;
     Text { text: root.text; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+}
+
+export struct FriendRow {
+    id: string, name: string, initial: string, tint: color, picture: image,
+    /// As in MemberRow: "online", "idle", "dnd" or "offline".
+    presence: string,
+    /// Their custom status or what they're doing.
+    activity: string,
+}
+
+// A friend in the friends list. Clicking it opens your DM with them.
+component FriendItem inherits Rectangle {
+    in property <FriendRow> friend;
+    callback message;
+    property <string> status: root.friend.presence == "dnd" ? "Do Not Disturb" : root.friend.presence == "idle" ? "Idle" : root.friend.presence == "online" ? "Online" : "Offline";
+    property <brush> surface: pointer.has-hover ? Theme.hover : Theme.chat;
+    height: 62px; border-radius: 8px;
+    background: pointer.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.friend.name + ", " + root.status + (root.friend.activity != "" ? ", " + root.friend.activity : "") + ", message";
+    accessible-action-default => { root.message(); }
+    // Rows are ruled apart, as in Discord's list; hovering a row hides its rule.
+    if !pointer.has-hover: Rectangle { x: 10px; y: 0px; width: parent.width - 20px; height: 1px; background: Theme.line; }
+    pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.message(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 12px;
+        Middle {
+            Rectangle {
+                width: 32px; height: 32px;
+                Avatar { size: 32px; initial: root.friend.initial; tint: root.friend.tint; picture: root.friend.picture; }
+                StatusDot { x: 20px; y: 20px; presence: root.friend.presence; ring: root.surface; }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 1px; horizontal-stretch: 1;
+            Text { text: root.friend.name; color: Theme.text; font-size: 16px; font-weight: 700; overflow: elide; }
+            Text { text: root.friend.activity != "" ? root.friend.activity : root.status; color: Theme.muted; font-size: 13px; overflow: elide; }
+        }
+        Middle {
+            IconButton {
+                icon: @image-url("icons/message-circle.svg"); label: "Message"; size: 36px; glyph: 20px; radius: 18px;
+                fill: Theme.raised; tip-side: 2;
+                clicked => { root.message(); }
+            }
+        }
+    }
+}
+
+/// The Discord friends list, in place of a conversation: those around, or all.
+component FriendsScreen inherits Rectangle {
+    in property <[FriendRow]> rows;
+    in property <bool> all;
+    /// Friends in all, before the search.
+    in property <int> total;
+    in-out property <string> filter;
+    callback filter-edited;
+    callback message(string);
+    callback add-friend;
+    if root.total == 0: VerticalLayout {
+        padding: 32px; spacing: 10px; alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 80px; height: 80px; border-radius: 40px; background: Theme.raised;
+                Image { source: @image-url("icons/users.svg"); width: 36px; height: 36px; colorize: Theme.secondary; }
+            }
+        }
+        Text { text: "No friends yet"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+        Text { text: "Add someone with their Discord username."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: center;
+            ActionButton { text: "Add a friend"; primary: true; clicked => { root.add-friend(); } }
+        }
+    }
+    if root.total > 0: VerticalLayout {
+        padding: 16px; padding-bottom: 0px; spacing: 8px;
+        TextField {
+            min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken; ring: false;
+            placeholder: "Search"; label: "Search friends"; text <=> root.filter;
+            edited => { root.filter-edited(); }
+        }
+        RequestsHeading { text: (root.all ? "ALL FRIENDS — " : "ONLINE — ") + root.rows.length; }
+        if root.rows.length == 0: HorizontalLayout {
+            padding-left: 8px;
+            Label {
+                text: root.filter != "" ? "No friend's name matches that." : "None of your friends are around right now.";
+            }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-bottom: 16px; spacing: 0px; alignment: start;
+                for friend in root.rows: FriendItem {
+                    friend: friend;
+                    message => { root.message(friend.id); }
+                }
+            }
+        }
+    }
+}
+
+// A tab in the friends list's header.
+component HeaderTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    width: tab-text.preferred-width + 20px; height: 28px; border-radius: 6px;
+    background: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.quick; }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    tab-text := Text {
+        text: root.text; font-size: 15px; font-weight: 500;
+        color: root.selected || pointer.has-hover ? Theme.text : Theme.secondary;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    }
 }
 
 /// Friend requests, message requests and spam, in place of a conversation.
@@ -1681,7 +1969,7 @@ export struct MessageRow {
     /// through all three. A body of nothing but emoji shows them large.
     jumbo: bool,
     styled: styled-text, author-styled: styled-text, time-styled: styled-text, edited: bool, deleted: bool,
-    reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, has-reply: bool,
+    reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, reply-picture: image, has-reply: bool,
     /// The original message's item; clicking the reply jumps to it.
     reply-item: string,
     reactions: [ReactionChip],
@@ -1786,7 +2074,22 @@ export component TalkWindow inherits Window {
     in property <image> room-picture;
     in property <string> members;
     /// The open room lists its members: a text channel or a group DM.
+    /// The zoom level, such as "110%", shown for a moment after it changes.
+    in property <string> zoom-note;
     in property <bool> members-available;
+    /// A one-to-one DM is open, whose other person's profile can show beside it.
+    in property <bool> profile-available;
+    /// Whether it does: shown until someone hides it.
+    in-out property <bool> profile-panel: true;
+    callback profile-panel-toggled(bool);
+    /// That profile, once Talk has it.
+    in property <bool> panel-profile-shown;
+    in property <ProfileData> panel-profile;
+    callback enlarge-panel-profile;
+    /// A one-to-one DM's other person, as in RoomRow: whether they're around,
+    /// and their custom status or what they're doing.
+    in property <string> room-presence;
+    in property <string> room-activity;
     in property <[MemberRow]> roster;
     in property <string> roster-note;
     /// Whether the member list is wanted beside the conversation; Talk stores it.
@@ -1905,6 +2208,16 @@ export component TalkWindow inherits Window {
     in property <string> profile-member;
     callback show-profile(string);
     callback show-dm-profile(string);
+    /// Show a mutual friend's profile, by Discord user id: as a card, or large.
+    callback show-friend-profile(string, bool);
+    /// A mutual server's card, beside the profile that lists it.
+    property <bool> server-card-open;
+    property <ProfileServerRow> server-card;
+    function open-server-card(server: ProfileServerRow, x: length, y: length, width: length, height: length) {
+        root.anchor(x, y, width, height, false);
+        root.server-card = server;
+        root.server-card-open = true;
+    }
     callback enlarge-profile();
     callback close-profile();
     in property <bool> viewer-open;
@@ -1975,6 +2288,19 @@ export component TalkWindow inherits Window {
     in property <[RoomRow]> message-requests;
     in property <[RoomRow]> spam-rooms;
     in property <bool> requests-open;
+    /// The Discord friends list, the friends around in it, and how many
+    /// friends there are before its search.
+    in property <bool> friends-open;
+    in property <[FriendRow]> friends;
+    in property <[FriendRow]> friends-online;
+    in property <int> friend-count;
+    in-out property <string> friend-filter;
+    /// The list shows all friends rather than those around.
+    in-out property <bool> friends-all;
+    callback friend-filter-edited;
+    callback open-friends;
+    /// Open the DM with a friend, by user id.
+    callback message-friend(string);
     /// The requests screen, or a request from it, is on screen.
     in property <bool> requests-current;
     /// Requests waiting for an answer, as a badge.
@@ -2189,6 +2515,13 @@ export component TalkWindow inherits Window {
 
     // The member list is a second sidebar, on the right of the conversation.
     property <bool> members-docked: root.members-available && root.member-list;
+    // Rows remade under the pointer show their tooltip again; it goes with the screen.
+    changed friends-open => { Tip.text = ""; }
+    property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown;
+    function toggle-profile-panel() {
+        root.profile-panel = !root.profile-panel;
+        root.profile-panel-toggled(root.profile-panel);
+    }
     function toggle-members() {
         root.member-list = !root.member-list;
         root.member-list-toggled(root.member-list);
@@ -2667,9 +3000,16 @@ export component TalkWindow inherits Window {
                                 min-height: 96px; vertical-stretch: 1;
                                 VerticalLayout {
                                     padding-left: 8px; padding-right: 8px; padding-bottom: 12px; spacing: 2px;
-                                    // Friend requests, message requests and spam open on their own screen.
+                                    // The friends list, and friend requests, message requests
+                                    // and spam, open on their own screens.
                                     if root.dms-selected && root.discord-linked && !root.preview: VerticalLayout {
-                                        padding-top: 6px; padding-bottom: 6px;
+                                        padding-top: 6px; padding-bottom: 6px; spacing: 2px;
+                                        ChannelRow {
+                                            text: "Friends";
+                                            icon: @image-url("icons/users.svg");
+                                            selected: root.friends-open;
+                                            clicked => { root.open-friends(); }
+                                        }
                                         ChannelRow {
                                             text: "Requests";
                                             label: "Requests" + (root.requests-badge != "" ? ", " + root.requests-badge + " waiting" : "");
@@ -2895,22 +3235,66 @@ export component TalkWindow inherits Window {
                     height: 48px;
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 16px; spacing: 10px;
-                        if root.room-direct: Middle { Avatar { size: 26px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; } }
+                        if root.room-direct: Middle {
+                            Rectangle {
+                                width: 26px; height: 26px;
+                                Avatar { size: 26px; initial: root.room-initial; tint: root.room-tint; picture: root.room-picture; }
+                                if root.room-presence != "": StatusDot {
+                                    x: 14px; y: 14px; width: 14px; height: 14px; presence: root.room-presence; ring: Theme.chat;
+                                }
+                            }
+                        }
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.requests-open: Image { source: @image-url("icons/inbox.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
-                        Text { text: root.room-selected ? root.room-name : root.requests-open ? "Requests" : root.sidebar-title; color: root.room-selected || root.requests-open ? Theme.text : Theme.secondary; font-size: 16px; font-weight: 700; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        if root.friends-open: Image { source: @image-url("icons/users.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
+                        Text {
+                            text: root.room-selected ? root.room-name : root.requests-open ? "Requests" : root.friends-open ? "Friends" : root.sidebar-title;
+                            color: root.room-selected || root.requests-open || root.friends-open ? Theme.text : Theme.secondary;
+                            font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center;
+                            // The name gives way to what follows it, and fills the bar when nothing does.
+                            horizontal-stretch: (root.room-activity != "" && root.room-direct) || root.friends-open ? 0 : 1;
+                        }
+                        // What they're up to, as a bubble beside their name.
+                        if root.room-direct && root.room-activity != "": Middle {
+                            horizontal-stretch: 1;
+                            HorizontalLayout {
+                                alignment: start;
+                                Rectangle {
+                                    height: 24px; border-radius: 12px; background: Theme.raised;
+                                    accessible-role: text; accessible-label: "Status: " + root.room-activity;
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px;
+                                        Text {
+                                            text: root.room-activity; color: Theme.secondary; font-size: 13px; font-weight: 500;
+                                            overflow: elide; vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if root.friends-open: Middle { Rectangle { width: 1px; height: 24px; background: Theme.line; } }
+                        if root.friends-open: Middle {
+                            HeaderTab { text: "Online"; selected: !root.friends-all; clicked => { root.friends-all = false; } }
+                        }
+                        if root.friends-open: Middle {
+                            HeaderTab { text: "All"; selected: root.friends-all; clicked => { root.friends-all = true; } }
+                        }
+                        if root.friends-open: Middle {
+                            ActionButton { text: "Add Friend"; small: true; primary: true; clicked => { root.open-add-friend(); } }
+                        }
+                        if root.friends-open: Rectangle { horizontal-stretch: 1; }
                         if root.dm-friend == 1 || root.dm-friend == 3: Middle {
                             IconButton {
                                 icon: @image-url("icons/user-plus.svg");
                                 label: root.dm-friend == 1 ? "Send friend request" : "Accept friend request";
-                                size: 32px; glyph: 20px; emphasis: root.dm-friend == 3;
+                                size: 32px; glyph: 20px; emphasis: root.dm-friend == 3; tip-side: 2;
                                 clicked => { root.befriend(root.dm-person); }
                             }
                         }
                         if root.can-call: Middle {
                             IconButton {
                                 icon: @image-url("icons/phone.svg"); label: root.call-going ? "Join the call" : "Start a call";
-                                size: 32px; glyph: 20px; enabled: root.can-join;
+                                size: 32px; glyph: 20px; enabled: root.can-join; tip-side: 2;
                                 clicked => { root.start-call(); }
                             }
                         }
@@ -2921,7 +3305,14 @@ export component TalkWindow inherits Window {
                                 clicked => { root.toggle-members(); }
                             }
                         }
-                        if !root.members-available && root.members != "": HorizontalLayout {
+                        if root.profile-available: Middle {
+                            IconButton {
+                                icon: @image-url("icons/user.svg"); label: root.profile-panel ? "Hide profile" : "Show profile";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                clicked => { root.toggle-profile-panel(); }
+                            }
+                        }
+                        if !root.members-available && !root.profile-available && root.members != "": HorizontalLayout {
                             spacing: 6px;
                             Image { source: @image-url("icons/users.svg"); width: 18px; image-fit: contain; colorize: Theme.muted; }
                             Text { text: root.members; color: Theme.muted; font-size: 14px; font-weight: 500; vertical-alignment: center; }
@@ -3302,7 +3693,7 @@ export component TalkWindow inherits Window {
                                             }
                                             col := VerticalLayout {
                                                 padding-top: message.day != "" ? 12px : message.first ? 14px : 1px;
-                                                padding-bottom: index == root.messages.length - 1 ? 16px : 1px;
+                                                padding-bottom: index == root.messages.length - 1 ? 20px : 1px;
                                                 spacing: 0px;
                                                 // History starts with a way to load more of it.
                                                 if index == 0 && !root.preview && root.room-ready: HorizontalLayout {
@@ -3359,7 +3750,7 @@ export component TalkWindow inherits Window {
                                                             accessible-action-default => { if message.reply-item != "" { root.jump-to(message.reply-item); } }
                                                             HorizontalLayout {
                                                                 spacing: 6px;
-                                                                if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; } }
+                                                                if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; picture: message.reply-picture; } }
                                                                 if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                                                 Text {
                                                                     text: message.reply-body; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
@@ -3614,8 +4005,17 @@ export component TalkWindow inherits Window {
                                 remove(id) => { root.remove-friend-request(id); }
                                 open(id) => { root.select-room(id); }
                             }
+                            if root.friends-open: FriendsScreen {
+                                width: parent.width; height: parent.height;
+                                rows: root.friends-all ? root.friends : root.friends-online;
+                                all: root.friends-all; total: root.friend-count;
+                                filter <=> root.friend-filter;
+                                filter-edited => { root.friend-filter-edited(); }
+                                message(id) => { root.message-friend(id); }
+                                add-friend => { root.open-add-friend(); }
+                            }
                             // The conversation's opening, or what to do when none is chosen.
-                            if !root.room-selected && !root.requests-open: VerticalLayout {
+                            if !root.room-selected && !root.requests-open && !root.friends-open: VerticalLayout {
                                 width: parent.width; height: parent.height;
                                 padding: 32px; spacing: 10px; alignment: center;
                                 HorizontalLayout {
@@ -3647,6 +4047,21 @@ export component TalkWindow inherits Window {
                                     text: root.room-direct ? "This is the beginning of your messages with " + root.room-name + "."
                                         : "This is the start of #" + root.room-name + ". No messages here yet.";
                                     color: Theme.secondary; wrap: word-wrap;
+                                }
+                            }
+                            // Who else is typing, just above the composer in the room the
+                            // last message leaves under it, so the timeline doesn't move.
+                            // Its text lines up with the messages' (16px, a 40px avatar
+                            // and 16px in), and it breathes gently while they type.
+                            if root.typing != "" && root.room-selected && !root.voice-room: Rectangle {
+                                x: 72px - 4px; y: parent.height - self.height;
+                                width: min(parent.width - 72px - 12px, typing-text.preferred-width + 8px); height: 20px;
+                                background: Theme.chat;
+                                typing-text := Text {
+                                    x: 4px; width: parent.width - 8px;
+                                    text: root.typing; color: Theme.text; font-size: 13px; font-weight: 500;
+                                    vertical-alignment: center; overflow: elide;
+                                    opacity: 0.75 + 0.25 * sin(animation-tick() / 1ms * 0.25deg);
                                 }
                             }
                         }
@@ -3739,16 +4154,35 @@ export component TalkWindow inherits Window {
                                     }
                                 }
                             }
-                            HorizontalLayout {
-                                height: 28px; spacing: 6px; padding-left: 4px;
+                            // A hint under the field when there is one; otherwise as much
+                            // room below it as beside it.
+                            if root.composer-hint != "": HorizontalLayout {
+                                height: 22px; spacing: 6px; padding-left: 4px;
                                 if root.room-encrypted || root.preview: Image { source: @image-url("icons/lock.svg"); width: 12px; image-fit: contain; colorize: Theme.muted; }
-                                Text { text: root.typing != "" ? root.typing : root.composer-hint; color: root.typing != "" ? Theme.text : Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                Text { text: root.composer-hint; color: Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                             }
+                            if root.composer-hint == "": Rectangle { height: 16px; }
                         }
                     }
                     if root.members-docked: MemberPanel {
                         width: 240px; rows: root.roster; note: root.roster-note; selected: root.profile-member;
                         open-profile(id, y) => { root.profile-y = y; root.profile-at-pointer = false; root.show-profile(id); }
+                    }
+                    if root.profile-docked: Rectangle {
+                        width: 300px;
+                        ProfileCard {
+                            docked: true; width: parent.width; height: parent.height;
+                            data: root.panel-profile;
+                            enlarge => { root.enlarge-panel-profile(); }
+                            befriend => { root.befriend(root.panel-profile.id); }
+                            open-link(link) => { root.open-link(link); }
+                            open-server(server, x, y, width, height) => { root.open-server-card(server, x, y, width, height); }
+                            open-friend(id, x, y, width, height) => {
+                                root.anchor(x, y, width, height, false);
+                                root.profile-at-pointer = true;
+                                root.show-friend-profile(id, false);
+                            }
+                        }
                     }
                 }
             }
@@ -3766,7 +4200,7 @@ export component TalkWindow inherits Window {
         mouse-cursor: ew-resize;
         moved => {
             if self.pressed {
-                root.sidebar-width = max(180px, min(380px, root.width - 72px - 420px - (root.members-docked ? 240px : 0px), root.sidebar-shown + self.mouse-x - self.pressed-x));
+                root.sidebar-width = max(180px, min(380px, root.width - 72px - 420px - (root.members-docked ? 240px : 0px) - (root.profile-docked ? 300px : 0px), root.sidebar-shown + self.mouse-x - self.pressed-x));
             }
         }
         pointer-event(event) => {
@@ -4275,6 +4709,32 @@ export component TalkWindow inherits Window {
             close => { root.close-profile(); }
             befriend => { root.befriend(root.profile.id); }
             open-link(link) => { root.open-link(link); }
+            open-server(server, x, y, width, height) => { root.open-server-card(server, x, y, width, height); }
+            // In the full profile, a friend's opens full too.
+            open-friend(id, x, y, width, height) => { root.show-friend-profile(id, true); }
+        }
+    }
+    // A mutual server's card, over the profile that lists it. Clicking
+    // outside or Escape closes it.
+    if root.server-card-open: Rectangle {
+        TouchArea { clicked => { root.server-card-open = false; } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.server-card-open = false; return accept; }
+                return reject;
+            }
+        }
+        ServerCard {
+            width: 300px;
+            x: root.beside(root.anchor-x, root.anchor-width, self.width);
+            y: max(8px, min(root.height - self.height - 8px, root.anchor-y - 8px));
+            server: root.server-card;
+            open => {
+                root.server-card-open = false;
+                root.close-profile();
+                root.navigate-server(root.server-card.id);
+            }
         }
     }
     if root.viewer-open: Rectangle {
@@ -4633,6 +5093,15 @@ export component TalkWindow inherits Window {
                 }
             }
         }
+    }
+    // The zoom level, for a moment after it changes.
+    if root.zoom-note != "": Rectangle {
+        x: (root.width - self.width) / 2; y: 12px;
+        width: zoom-text.preferred-width + 28px; height: 36px;
+        border-radius: 18px; background: #0b0c0e;
+        drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
+        accessible-role: text; accessible-label: "Zoom " + root.zoom-note;
+        zoom-text := Text { text: root.zoom-note; color: Theme.text; font-size: 15px; font-weight: 700; }
     }
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 20px;

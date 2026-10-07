@@ -15,6 +15,8 @@ mod notify;
 mod paste;
 #[cfg(feature = "desktop")]
 mod ui;
+#[cfg(feature = "desktop")]
+mod zoom;
 
 use anyhow::{Context, Result, bail};
 use talk_core::{cli, logging, runtime::BackgroundRuntime};

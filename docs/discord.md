@@ -75,13 +75,25 @@ without a read state counts as read, since Discord keeps one for each DM
 with something to read. A one-to-one DM shows its person's status dot, with
 their custom status or what they're doing under the name. Discord sends
 presence only for friends, so anyone else shows the grey offline ring, as in
-Discord's DM list. These follow PRESENCE_UPDATE live. A group DM
+Discord's DM list. These follow PRESENCE_UPDATE live. The header of an open
+one-to-one DM shows the same dot on their avatar, and their custom status or
+what they're doing in a bubble beside the name. A group DM
 shows how many are in it. A group DM lists its members by name, with the
 presence of those who are friends. Talk downloads the pictures of the first
 150 DMs listed; the rest keep their initials.
 
+"Friends", at the top of the DM list, opens the friends list in place of the
+conversation. It lists the account's friends from READY's relationships by
+name, each with their status dot and custom status or activity, under two
+tabs in the header: Online, for those online, idle or on do not disturb, and
+All. A search field filters it by name, and "Add Friend" in the header opens
+the add-friend dialog. Discord sends presence for friends in READY's
+`merged_presences` and in PRESENCE_UPDATE, so the list keeps up with them.
+Clicking a friend, or the message button on their row, opens the DM with
+them, or starts one as the pen does and opens it once Discord lists it.
+
 Friend requests, message requests and spam have their own screen. A
-"Requests" entry at the top of the DM list opens it in place of the
+"Requests" entry below it at the top of the DM list opens it in place of the
 conversation, with a badge counting the incoming friend requests (spam
 excluded) and message requests. Message requests come from people outside the
 account's DMs. Those Discord marks as spam are listed too, under "Spam", so a
@@ -120,7 +132,16 @@ the person clicks. Requests Discord took for spam are listed too, marked
 
 Clicking someone in a channel's member list shows their profile in a small
 card beside it, which "View full profile" enlarges into a centred one;
-right-clicking a DM and choosing "Profile" opens the full one. Talk fetches it
+right-clicking a DM and choosing "Profile" opens the full one. A one-to-one
+DM shows its other person's profile in a panel on the right, with the bio in
+full and the mutual servers and friends. Mutual servers show their icon and
+the person's nickname there; clicking one opens a card beside it with the
+server's banner, member count (from READY's `member_count`), channel count
+and "Go to server". Mutual friends show their avatar and status dot;
+clicking one opens their profile card beside it, or their full profile from
+a full profile; the person icon in the DM's header
+hides or shows it, and Talk remembers the choice in `layout.json`. Talk fetches the
+profile once each time the open DM changes to someone else. Talk fetches it
 from `GET /users/{id}/profile` with the open server's id, so the server's
 nickname, avatar, banner, bio and pronouns win over the person's own, and the
 card lists their roles in role order, when they joined Discord and the server,
@@ -635,7 +656,7 @@ an error.
   anyone may mention, and every role with @everyone and @here for those
   allowed to mention everyone. Sending turns each `@Name` into Discord's
   `<@id>` or `<@&id>`.
-- Who else is typing shows under the composer, for ten seconds after Discord
+- Who else is typing shows above the composer, for ten seconds after Discord
   last said so or until their message arrives. Writing tells Discord Alice is
   typing, at most every eight seconds, unless a setting turns it off.
 - Reading a message in Talk marks it read on Discord, so the phone app agrees.

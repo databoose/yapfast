@@ -642,8 +642,10 @@ async fn talks_to_the_fake_server() {
     );
     assert_eq!(in_server.roles.len(), 1, "Bob is a Mod");
     assert!(in_server.joined.is_some());
-    assert_eq!(in_server.mutual_servers, [guild.as_str()]);
-    assert_eq!(in_server.mutual_friends, ["Carol"]);
+    assert_eq!(in_server.mutual_servers.len(), 1);
+    assert_eq!(in_server.mutual_servers[0].id, guild);
+    assert_eq!(in_server.mutual_friends.len(), 1);
+    assert_eq!(in_server.mutual_friends[0].name, "Carol");
     let own = discord.profile(PRIVATE, &bob).await.unwrap();
     assert!(own.bio.is_some_and(|bio| bio.starts_with("Plays bass")));
     assert!(own.roles.is_empty() && own.joined.is_none());

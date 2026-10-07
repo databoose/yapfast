@@ -40,7 +40,9 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   grouped under ADMINS, MODERATORS and MEMBERS by Matrix power level (100 and
   50), each by name. The first view fetches the full list from the homeserver,
   since sync loads members lazily, and membership changes refresh it. Voice
-  channels and one-to-one DMs have no member list. A Discord text channel
+  channels and one-to-one DMs have no member list; a one-to-one DM shows the
+  other person's profile there instead, which the person icon in its header
+  hides or shows. A Discord text channel
   lists whoever can read it, grouped as in Discord: under hoisted roles, then
   ONLINE and OFFLINE, with counts, avatars, status dots, role colours and
   custom statuses. Talk subscribes to the list's
@@ -64,7 +66,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Mention someone by typing `@` and picking from the room's members. The
   message links to them (`[Name](https://matrix.to/#/@user:server)`) and lists
   them in `m.mentions`, so their client notifies them. Who else is typing
-  shows under the composer, and Talk tells the room while you type unless a
+  shows just above the composer, gently pulsing, and Talk tells the room while you type unless a
   setting turns it off.
 - Hover or click a message for its toolbar: your three most used reactions,
   Add reaction, Edit on your own message or Reply on someone else's, and More.
@@ -125,6 +127,14 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   sign out (which retains encrypted stores) is in settings.
 
 ## Layout and look
+
+Ctrl with + or -, or with the scroll wheel, zooms the whole window, text and
+layout together, from 50% to 200%: 5% a step up to 150%, then 10%. Ctrl+0
+returns to 100%. The level shows
+for a moment at the top and is kept in `layout.json`. Talk multiplies the
+display's scale factor by it, so the window lays out in fewer logical pixels,
+and zooming in stops before those would fall below the window's 800×560
+minimum, which would make it grow.
 
 The window follows Discord's arrangement:
 
