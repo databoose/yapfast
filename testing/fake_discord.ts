@@ -10,6 +10,11 @@
 // `--dms N` adds N older DMs, each with a person of its own, every other one
 // a friend, as a busy account has. `--images N` attaches a picture of its own
 // to every Nth extra history message, for a channel heavy with previews.
+// `--channels N` adds text channels room-1 to room-N to "Server", each with 60
+// messages, every third with a picture, written in turn by `--authors N`
+// people of their own (Bob without it), for a long session across channels.
+// POST /_control/crowd-start makes someone new post in the last of them, or
+// in #general, 50 times a second, and /_control/crowd-stop stops them.
 // POST /_control/chat-start makes Bob post in
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
@@ -77,6 +82,8 @@ const { values: args } = parseArgs({
     servers: { type: "string", default: "1" },
     dms: { type: "string", default: "0" },
     images: { type: "string", default: "0" },
+    channels: { type: "string", default: "0" },
+    authors: { type: "string", default: "0" },
   },
 });
 
@@ -606,6 +613,47 @@ for (let index = 0; index < extra; index++) {
   post(GENERAL, users.bob, sample(index), ms, { files });
 }
 
+// The channels of `--channels`, written by the people of `--authors`.
+const authors: User[] = Array.from({ length: Number(args.authors) }, (_, n) => ({
+  id: (1_700_000_000_000_000_000n + BigInt(n)).toString(),
+  username: `writer${n}`,
+  global_name: `Writer ${n}`,
+  avatar: `w${n}`,
+}));
+for (const author of authors) userById.set(author.id, author);
+const ROOM_HISTORY = 60;
+const rooms = Array.from({ length: Number(args.channels) }, (_, n) => {
+  const id = (1_400_000_000_000_010_000n + BigInt(n)).toString();
+  messages.set(id, []);
+  for (let index = 0; index < ROOM_HISTORY; index++) {
+    const ms = HISTORY_START + (n * ROOM_HISTORY + index) * 1000;
+    const author = authors.length ? authors[(n * 7 + index) % authors.length]! : users.bob;
+    const files: File[] = [];
+    if (index % 3 === 0) {
+      const shade = [(n * 53 + index * 11) % 200, (n * 29 + index * 37) % 200, 120];
+      const draw = (w: number, h: number) =>
+        png(w, h, (x, y) => [shade[0]! + Math.floor((55 * x) / w), shade[1]! + Math.floor((55 * y) / h), shade[2]!, 255]);
+      let data: Uint8Array | undefined;
+      files.push(addFile({
+        id: snowflake(ms, 1),
+        channel: id,
+        filename: `room-${n + 1}-${index}.png`,
+        contentType: "image/png",
+        get data() {
+          return (data ??= draw(480, 320));
+        },
+        width: 480,
+        height: 320,
+        draw,
+      }));
+    }
+    post(id, author, `room-${n + 1} message ${index}: ${sample(index)}`, ms, { files });
+  }
+  return id;
+});
+let crowd: ReturnType<typeof setInterval> | undefined;
+let crowdCount = 0;
+
 // The extra DMs of `--dms`, older than the fixture's.
 const fillerPeople: User[] = [];
 for (let n = 0; n < Number(args.dms); n++) {
@@ -769,6 +817,7 @@ function guild() {
       channel(CATEGORY, "Channels", 4, 0, null),
       channel(GENERAL, "general", 0, 0, CATEGORY),
       channel(LOUNGE, "Lounge", 2, 1, CATEGORY),
+      ...rooms.map((id, n) => channel(id, `room-${n + 1}`, 0, 2 + n, CATEGORY)),
     ],
     roles: [
       { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
@@ -2695,6 +2744,26 @@ const server = Bun.serve<SocketData>({
       clearInterval(busy);
       busy = undefined;
       return new Response("busy stopped\n");
+    }
+    if (req.method === "POST" && path === "/_control/crowd-start") {
+      clearInterval(crowd);
+      crowd = setInterval(() => {
+        const n = crowdCount++;
+        const person: User = {
+          id: (1_800_000_000_000_000_000n + BigInt(n)).toString(),
+          username: `crowd${n}`,
+          global_name: `Crowd ${n}`,
+          avatar: `c${n}`,
+        };
+        const message = post(rooms.at(-1) ?? GENERAL, person, `Hello from ${person.global_name}`, Date.now());
+        dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      }, 20);
+      return new Response("crowd started\n");
+    }
+    if (req.method === "POST" && path === "/_control/crowd-stop") {
+      clearInterval(crowd);
+      crowd = undefined;
+      return new Response(`crowd stopped after ${crowdCount}\n`);
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

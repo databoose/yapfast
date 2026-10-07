@@ -2,7 +2,10 @@
 //! rendering replaces mentions with the names known when it runs, so names
 //! learned later show on messages already loaded.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
+};
 
 use serde_json::Value;
 
@@ -509,10 +512,22 @@ pub struct Names {
     member_avatars: HashMap<(String, String), String>,
     /// Members' roles by server and user id, for the colour of their name.
     roles: HashMap<(String, String), Vec<String>>,
-    /// Changes whenever a name, avatar or role changes, so what was shown
-    /// with them can tell it's out of date.
+    /// Changes whenever a name, avatar or role of someone known changes, so
+    /// what was shown with them can tell it's out of date. Someone new
+    /// changes nothing shown, which was rendered after learning them.
     version: u64,
+    /// When each person was last learned or looked up, by user id, counted
+    /// in `ticks`; those not seen for longest go first once there are too
+    /// many. Looking up only reads, so these count atomically.
+    seen: HashMap<String, AtomicU64>,
+    ticks: AtomicU64,
 }
+
+/// People whose names are kept, at most. Talk shows the authors of the
+/// channels it keeps, 41 of up to 200 messages each, and 40 member lists of
+/// 100 rows; every message Discord sends from any server teaches it one
+/// more. One person takes about 500 bytes.
+const KEPT_PEOPLE: usize = 20_000;
 
 /// Sets `key` to `value`, or removes it for none; whether that changed it.
 fn changed<K: std::hash::Hash + Eq, V: PartialEq>(
@@ -562,7 +577,7 @@ impl Names {
                 .map(|(guild, user, value)| ((guild, user), value))
                 .collect()
         };
-        Self {
+        let mut names = Self {
             users: saved.users.into_iter().collect(),
             nicknames: keyed(saved.nicknames),
             members: saved.members.into_iter().collect(),
@@ -573,8 +588,68 @@ impl Names {
                 .into_iter()
                 .map(|(guild, user, roles)| ((guild, user), roles))
                 .collect(),
-            version: 0,
+            ..Self::default()
+        };
+        // Those kept from before go before anyone learned since.
+        let people: HashSet<String> = names
+            .users
+            .keys()
+            .chain(names.avatars.keys())
+            .chain(names.members.iter().map(|(_, user)| user))
+            .cloned()
+            .collect();
+        names.seen = people
+            .into_iter()
+            .zip(1..)
+            .map(|(user, at)| (user, AtomicU64::new(at)))
+            .collect();
+        names.ticks = AtomicU64::new(names.seen.len() as u64);
+        if names.seen.len() > KEPT_PEOPLE {
+            names.forget();
         }
+        names
+    }
+
+    /// Notes that `user` was looked up just now; whether they were known.
+    fn touch(&self, user: &str) -> bool {
+        let Some(at) = self.seen.get(user) else {
+            return false;
+        };
+        at.store(self.ticks.fetch_add(1, Relaxed) + 1, Relaxed);
+        true
+    }
+
+    /// Notes that `user` was learned just now, and forgets the quarter of
+    /// people not seen for longest once there are too many; whether they
+    /// were known before.
+    fn saw(&mut self, user: &str) -> bool {
+        if self.touch(user) {
+            return true;
+        }
+        let now = self.ticks.fetch_add(1, Relaxed) + 1;
+        self.seen.insert(user.to_owned(), AtomicU64::new(now));
+        if self.seen.len() > KEPT_PEOPLE {
+            self.forget();
+        }
+        false
+    }
+
+    /// Forgets the quarter of people not seen for longest. What was shown
+    /// with them stays as it was, so the version stays.
+    fn forget(&mut self) {
+        let mut times: Vec<u64> = self.seen.values().map(|at| at.load(Relaxed)).collect();
+        let quarter = times.len() / 4;
+        let (_, &mut until, _) = times.select_nth_unstable(quarter);
+        self.seen.retain(|_, at| *at.get_mut() > until);
+        let seen = &self.seen;
+        self.users.retain(|user, _| seen.contains_key(user));
+        self.avatars.retain(|user, _| seen.contains_key(user));
+        self.nicknames
+            .retain(|(_, user), _| seen.contains_key(user));
+        self.members.retain(|(_, user)| seen.contains_key(user));
+        self.member_avatars
+            .retain(|(_, user), _| seen.contains_key(user));
+        self.roles.retain(|(_, user), _| seen.contains_key(user));
     }
 
     /// Changes whenever what [`Names::name`], [`Names::avatar`],
@@ -587,6 +662,7 @@ impl Names {
         let Some(id) = user["id"].as_str() else {
             return;
         };
+        let known = self.saw(id);
         let mut learned = false;
         if let Some(name) = ready::display_name(user) {
             learned |= changed(&mut self.users, id.to_owned(), Some(name.to_owned()));
@@ -599,18 +675,20 @@ impl Names {
             Some(Value::Null) => learned |= changed(&mut self.avatars, id.to_owned(), None),
             _ => {}
         }
-        self.version += u64::from(learned);
+        self.version += u64::from(known && learned);
     }
 
     /// Learns a member object; its user id is in `user` or `user_id`.
     pub fn learn_member(&mut self, guild: &str, member: &Value) {
-        self.learn_user(&member["user"]);
-        let Some(user) = member["user_id"]
+        let user = member["user_id"]
             .as_str()
-            .or_else(|| member["user"]["id"].as_str())
-        else {
+            .or_else(|| member["user"]["id"].as_str());
+        let known = user.is_some_and(|user| self.seen.contains_key(user));
+        self.learn_user(&member["user"]);
+        let Some(user) = user else {
             return;
         };
+        self.saw(user);
         let key = (guild.to_owned(), user.to_owned());
         let nick = member["nick"].as_str().map(str::to_owned);
         let mut learned = changed(&mut self.nicknames, key.clone(), nick);
@@ -625,7 +703,7 @@ impl Names {
             learned |= changed(&mut self.roles, key.clone(), Some(roles));
         }
         self.members.insert(key);
-        self.version += u64::from(learned);
+        self.version += u64::from(known && learned);
     }
 
     /// The members known to hold `role` in a server, by user id.
@@ -668,6 +746,7 @@ impl Names {
 
     /// A member's roles in a server, as far as they're known.
     pub fn roles(&self, guild: &str, user: &str) -> &[String] {
+        self.touch(user);
         self.roles
             .get(&(guild.to_owned(), user.to_owned()))
             .map_or(&[], Vec::as_slice)
@@ -723,10 +802,12 @@ impl Names {
 
     /// A user's display name or username, outside any server.
     pub fn user_name(&self, user: &str) -> Option<&str> {
+        self.touch(user);
         self.users.get(user).map(String::as_str)
     }
 
     pub fn name(&self, guild: &str, user: &str) -> Option<&str> {
+        self.touch(user);
         self.nicknames
             .get(&(guild.to_owned(), user.to_owned()))
             .or_else(|| self.users.get(user))
@@ -736,6 +817,7 @@ impl Names {
     /// The address of the avatar Discord shows for a user: their server
     /// avatar in `guild`, else their own, else a default one.
     pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
+        self.touch(user);
         if let Some(guild) = guild
             && let Some(hash) = self
                 .member_avatars
@@ -1080,6 +1162,7 @@ mod tests {
         let ann = json!({"id": "2", "username": "ann", "avatar": "abc"});
         names.learn_user(&ann);
         let learned = names.version();
+        assert_eq!(learned, 0, "someone new changes nothing shown");
         names.learn_user(&ann);
         names.learn_member("10", &json!({"user": ann, "nick": null, "roles": []}));
         let member = names.version();
@@ -1091,6 +1174,34 @@ mod tests {
         assert_eq!(names.version(), member, "the same again");
         names.learn_member("10", &json!({"user_id": "2", "nick": "Annie", "roles": []}));
         assert!(names.version() > member, "a nickname");
+    }
+
+    #[test]
+    fn forgets_those_learned_longest_ago_once_there_are_too_many() {
+        let mut names = Names::default();
+        let person = |n: usize| json!({"id": n.to_string(), "username": format!("p{n}")});
+        names.learn_member(
+            "10",
+            &json!({"user": person(0), "nick": "Zero", "roles": []}),
+        );
+        names.learn_user(&person(1));
+        for n in 2..=KEPT_PEOPLE {
+            names.learn_user(&person(n));
+            if n == KEPT_PEOPLE / 2 {
+                // Shown, as in a member list, so kept.
+                assert_eq!(names.name("10", "0"), Some("Zero"));
+            }
+        }
+        let version = names.version();
+        names.learn_user(&person(KEPT_PEOPLE + 1));
+        assert_eq!(names.version(), version, "what was shown with them stays");
+        assert!(names.seen.len() <= KEPT_PEOPLE * 3 / 4 + 1);
+        assert_eq!(names.user_name("1"), None, "learned first");
+        assert_eq!(names.name("10", "0"), Some("Zero"));
+        assert!(names.knows_member("10", "0"));
+        assert!(names.user_name(&KEPT_PEOPLE.to_string()).is_some());
+        let restored = Names::restore(names.save());
+        assert_eq!(restored.users.len(), names.users.len());
     }
 
     #[test]

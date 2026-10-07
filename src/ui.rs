@@ -651,8 +651,8 @@ struct Adapter {
     sidebar: Option<SidebarShown>,
     /// Server icons and avatars already handed to Slint, by address.
     pictures: HashMap<String, slint::Image>,
-    /// How many pictures had arrived when the message rows were last built.
-    pictures_seen: usize,
+    /// `AppState::picture_changes` when the message rows were last built.
+    pictures_seen: u64,
     /// The last jump to a message the timeline made; see `AppState::jump`.
     jumped: Option<(String, u64)>,
     /// Spoilers clicked; see `message_row`.

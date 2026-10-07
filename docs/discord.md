@@ -449,7 +449,9 @@ it in: messages kept within the page's span that it lacks were deleted
 meanwhile, and when a full page starts after everything kept, more came than
 a page holds, so only the page stays. The UI keeps the same 40 channels'
 last timeline and member list, so going back shows them before the chat side
-answers, without "Loading messages...". Channels also go to disk, as
+answers, without "Loading messages...". It keeps what the chat side keeps of
+each timeline, the newest 200 messages and 4 previews; the other previews
+show as loading until they come back from disk. Channels also go to disk, as
 the startup cache below describes, so a channel
 opened after a restart shows its saved messages while the latest page loads
 and fits in the same way.
@@ -457,8 +459,8 @@ and fits in the same way.
 The open channel renders each message for the timeline once, with its
 author's name, colour and avatar and its mentions as names, and keeps it. A
 new message, an edit, a reaction or a preview that arrived renders only that
-message again; new names, roles or channel names, or a change to who's
-blocked, render them all. A closed channel drops its rendered messages,
+message again; a change to someone's name, avatar or roles, to the
+server's roles or channel names, or to who's blocked, renders them all. A closed channel drops its rendered messages,
 since they hold its previews.
 
 Unread dots and mention counts follow Discord's read states, mutes and
@@ -487,7 +489,10 @@ Talk starts from Discord as it last saw it, kept in the data directory by
   with their channels, roles and emoji, its DMs, friends, friend requests and
   status. It also holds the names Talk learned (users, server nicknames,
   server avatars and members' roles), which messages and member lists show
-  people by, and the member lists shown lately. It's written at most every 20
+  people by, and the member lists shown lately. Every message Discord sends
+  from any server teaches Talk its author, so it keeps the 20,000 people it
+  learned most lately and forgets a quarter of them, those learned longest
+  ago, once there are more. It's written at most every 20
   seconds while connected. Calls and who is in voice aren't saved. On the
   next start Talk shows it all at once, identifies with the saved status, and
   READY replaces it. A saved member list shows at once, even before Talk
@@ -525,7 +530,8 @@ an error.
   Talk asks for each one once it shows: in the rail, beside people in a
   voice channel of the open server, in the call, or beside a message. A
   member's server avatar wins over their own. Talk decodes them at 128px
-  before the UI sees them. Initials show until a picture arrives or when it
+  before the UI sees them. Once more than 400 have arrived, those off
+  screen go, and Talk asks for them again, from disk, when they show. Initials show until a picture arrives or when it
   fails. A server without an icon keeps its initials, and a person without
   an avatar gets Discord's default avatar for their account.
 - Messages support text, replies, edits, deletions, reactions, mentions and

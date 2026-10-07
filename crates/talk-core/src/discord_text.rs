@@ -31,22 +31,16 @@ use crate::{
         Placement, Profile, ProfileFriend, ProfileRole, ProfileServer, Reaction, Reply, Role,
         decode_preview, decode_view, plain_snippet,
     },
-    discord,
+    discord::{self, KEPT_CHANNELS, KEPT_MESSAGES, KEPT_PREVIEWS},
     mention::{Mentioned, Target},
 };
 
 /// Discord's message length limit without Nitro, in characters.
 pub const MAX_CHARS: usize = 2000;
-/// Channels kept after closing, and of each, the newest messages and image
-/// previews kept: a preview is about 400 KB decoded. Previews come back from
-/// the disk quickly, so few are kept.
-const RECENT: usize = 40;
-const KEPT_MESSAGES: usize = 200;
 /// How long someone shows as typing after Discord says they started.
 const TYPING: Duration = Duration::from_secs(10);
 /// How often Discord hears that this account is still typing.
 const TYPING_AGAIN: Duration = Duration::from_secs(8);
-const KEPT_PREVIEWS: usize = 4;
 /// How often changed channels' newest messages go to disk; see
 /// [`talk_discord::cache`].
 const SAVE_EVERY: Duration = Duration::from_secs(20);
@@ -1022,7 +1016,7 @@ impl Channels {
         if let Some(mut channel) = self.open.take() {
             channel.shelve();
             self.recent.push(channel);
-            if self.recent.len() > RECENT {
+            if self.recent.len() > KEPT_CHANNELS {
                 let mut gone = self.recent.remove(0);
                 save(gone.take_changes());
             }
@@ -2467,11 +2461,11 @@ mod tests {
         assert_eq!(ids(&again), [3, 5, 7]);
         assert!(again.loaded);
         assert!(channels.reopen("discord:10:11").is_none(), "taken out");
-        for channel in 0..=RECENT as u64 {
+        for channel in 0..=KEPT_CHANNELS as u64 {
             channels.open = OpenChannel::new(&format!("discord:10:{channel}"));
             channels.close();
         }
-        assert_eq!(channels.recent.len(), RECENT);
+        assert_eq!(channels.recent.len(), KEPT_CHANNELS);
         assert!(
             channels.get_mut("discord:10:0").is_none(),
             "the oldest went"

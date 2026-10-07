@@ -76,7 +76,7 @@ pub(super) struct SidebarShown {
     dm_screen: Option<DmScreen>,
     filter: SharedString,
     friend_filter: SharedString,
-    pictures: usize,
+    picture_changes: u64,
 }
 
 impl SidebarShown {
@@ -91,7 +91,7 @@ impl SidebarShown {
             dm_screen: state.dm_screen,
             filter: window.get_filter(),
             friend_filter: window.get_friend_filter(),
-            pictures: state.pictures.len(),
+            picture_changes: state.picture_changes,
         }
     }
 
@@ -106,7 +106,7 @@ impl SidebarShown {
             && self.dm_screen == state.dm_screen
             && self.filter == window.get_filter()
             && self.friend_filter == window.get_friend_filter()
-            && self.pictures == state.pictures.len()
+            && self.picture_changes == state.picture_changes
     }
 }
 
@@ -987,8 +987,13 @@ impl Adapter {
         } = changes;
         let state = &self.app.state;
         // Avatars that arrived since show on rows built before them.
-        let pictures_arrived = self.pictures_seen != state.pictures.len();
-        self.pictures_seen = state.pictures.len();
+        let pictures_arrived = self.pictures_seen != state.picture_changes;
+        self.pictures_seen = state.picture_changes;
+        // Those that went off screen go from the window's copies too.
+        if pictures_arrived {
+            self.pictures
+                .retain(|url, _| state.pictures.contains_key(url));
+        }
         // Custom emoji whose pictures arrived get glyphs, and the rows and picker
         // cells that show them by name are built again.
         if pictures_arrived || messages_changed {
