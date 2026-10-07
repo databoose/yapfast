@@ -1591,11 +1591,13 @@ export component TalkWindow inherits Window {
             message-font-size: root.message-font-size;
             twelve-hour-clock <=> root.twelve-hour-clock; text-size <=> root.text-size;
             link-previews <=> root.link-previews; share-typing <=> root.share-typing;
+            matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
         }
         if root.settings-section == 3: NotificationSettings {
             notifications <=> root.notifications; notification-sound <=> root.notification-sound;
             notification-text <=> root.notification-text;
+            matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
         }
         if root.settings-section == 4 && !root.discord-linked: DiscordLinkSettings {
@@ -1738,7 +1740,7 @@ export component TalkWindow inherits Window {
     }
     // Starting a DM; see NewDmDialog.
     if root.new-dm-open: NewDmDialog {
-        new-dm-query <=> root.new-dm-query;
+        new-dm-query <=> root.new-dm-query; matrix: root.matrix-build;
         new-dm-people: root.new-dm-people; new-dm-starting: root.new-dm-starting; new-dm-note: root.new-dm-note;
         new-dm-search => { root.new-dm-search(); }
         start-dm(index) => { root.start-dm(index); }

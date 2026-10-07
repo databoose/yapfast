@@ -123,6 +123,8 @@ export component StatusDialog inherits Rectangle {
 // with them, which starts it if there's none yet.
 export component NewDmDialog inherits Rectangle {
     in-out property <string> new-dm-query;
+    /// Matrix ids can be typed too.
+    in property <bool> matrix;
     /// Who it found, and whether one is starting.
     in property <[ContactRow]> new-dm-people;
     in property <bool> new-dm-starting;
@@ -153,7 +155,7 @@ export component NewDmDialog inherits Rectangle {
                 TextField {
                     init => { self.focus-input(); }
                     min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
-                    placeholder: "Find a friend, or type a Matrix id"; label: "Find people"; text <=> root.new-dm-query;
+                    placeholder: root.matrix ? "Find a friend, or type a Matrix id" : "Find a friend"; label: "Find people"; text <=> root.new-dm-query;
                     edited => { root.new-dm-search(); }
                 }
                 ScrollView {

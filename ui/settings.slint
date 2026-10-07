@@ -291,6 +291,9 @@ export component MessageSettings inherits VerticalLayout {
     in-out property <int> text-size;
     in-out property <bool> link-previews;
     in-out property <bool> share-typing;
+    /// The networks in use, which the descriptions name.
+    in property <bool> matrix;
+    in property <bool> discord;
     callback preferences-changed;
     spacing: 16px;
     SettingsTitle { text: "Messages"; }
@@ -340,7 +343,8 @@ export component MessageSettings inherits VerticalLayout {
     }
     SettingsSwitch {
         text: "Let others see when you're typing";
-        description: "Discord and Matrix show \"typing...\" while you write. Others still show here when they type.";
+        description: (root.matrix && root.discord ? "Discord and Matrix show" : root.matrix ? "Matrix shows" : "Discord shows")
+            + " \"typing...\" while you write. Others still show here when they type.";
         checked <=> root.share-typing;
         toggled => { root.preferences-changed(); }
     }
@@ -351,12 +355,18 @@ export component NotificationSettings inherits VerticalLayout {
     in-out property <bool> notifications;
     in-out property <bool> notification-sound;
     in-out property <bool> notification-text;
+    /// The networks in use, whose rules decide what notifies.
+    in property <bool> matrix;
+    in property <bool> discord;
     callback preferences-changed;
     spacing: 16px;
     SettingsTitle { text: "Notifications"; }
     SettingsSwitch {
         text: "Show desktop notifications";
-        description: "For new messages while Talk isn't in front. Each Discord server's notification settings and your Matrix notification rules decide which: usually DMs and mentions. Clicking one opens the conversation.";
+        description: "For new messages while Talk isn't in front. "
+            + (root.matrix && root.discord ? "Each Discord server's notification settings and your Matrix notification rules decide"
+                : root.matrix ? "Your Matrix notification rules decide" : "Each Discord server's notification settings decide")
+            + " which: usually DMs and mentions. Clicking one opens the conversation.";
         checked <=> root.notifications;
         toggled => { root.preferences-changed(); }
     }

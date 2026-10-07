@@ -430,6 +430,7 @@ impl Adapter {
         window.set_sidebar_empty(if !rows.is_empty() { "" }
             else if state.scoped_rooms().next().is_some() { "No matching conversations." }
             else if state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." }
+            else if state.servers.iter().any(|server| server.discord && state.navigation == Navigation::Server(server.id.clone())) { "No channels in this server that you can see." }
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
         // A voice channel's people come as a new list each time; the one on
         // screen stays while they're the same, so its row counts as unchanged.
@@ -726,11 +727,19 @@ impl Adapter {
             Some(NewDm { error: Some(error), .. }) => error.as_str().into(),
             Some(NewDm { starting: true, .. }) => "Starting the conversation...".into(),
             Some(new_dm) if people.is_empty() && new_dm.query.trim().is_empty() => {
-                "Type a name to find people you know on Discord, or a full Matrix id such as @name:example.org.".into()
+                if cfg!(feature = "matrix") {
+                    "Type a name to find people you know on Discord, or a full Matrix id such as @name:example.org."
+                } else {
+                    "Type a name to find people you know on Discord."
+                }
+                .into()
             }
-            Some(_) if people.is_empty() => {
-                "No one found. For Matrix, type a full id such as @name:example.org.".into()
+            Some(_) if people.is_empty() => if cfg!(feature = "matrix") {
+                "No one found. For Matrix, type a full id such as @name:example.org."
+            } else {
+                "No one found."
             }
+            .into(),
             _ => SharedString::default(),
         });
         update_model(&self.models.new_dm_people, people);
