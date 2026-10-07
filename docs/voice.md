@@ -7,7 +7,10 @@ A caret beside mute and beside deafen opens a menu that chooses the input or
 output device and links to the full settings. Deafen
 also mutes the microphone; undeafening keeps it muted, while unmuting when
 deafened undeafens too. The voice view shows the
-participants and their mute/speaking state. Clicking a voice channel joins it.
+participants and their mute, deafen and speaking state; a deafened person shows
+crossed-out microphone and headphones in the channel list, and only the red
+crossed-out headphones on their tile in the call. MatrixRTC doesn't share
+deafening, so in Talk calls only your own shows. Clicking a voice channel joins it.
 Clicking another one during a call opens a dialog that asks before leaving the
 current one. Coming back to a server that had a voice channel selected shows it
 without joining.

@@ -2077,7 +2077,7 @@ export component TalkWindow inherits Window {
                                                     vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
                                                 }
                                                 if person.live: Middle { LivePill { } }
-                                                if person.muted && !person.deafened: Image {
+                                                if person.muted || person.deafened: Image {
                                                     source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
                                                     colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
                                                 }
@@ -2103,9 +2103,13 @@ export component TalkWindow inherits Window {
                                                         clicked => { root.watch-stream(person.id); }
                                                     }
                                                 }
-                                                if person.muted: Image {
+                                                if person.muted || person.deafened: Image {
                                                     source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
                                                     colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
+                                                }
+                                                if person.deafened: Image {
+                                                    source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
+                                                    colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
                                                 }
                                             }
                                         }
@@ -2410,10 +2414,11 @@ export component TalkWindow inherits Window {
                                             border-radius: 6px; background: #000000a6;
                                             chip := HorizontalLayout {
                                                 padding-left: 8px; padding-right: 8px; spacing: 6px;
-                                                if person.muted: Image { source: @image-url("icons/mic-off.svg"); width: 14px; image-fit: contain; colorize: Theme.danger; }
+                                                if person.muted && !person.deafened: Image { source: @image-url("icons/mic-off.svg"); width: 14px; image-fit: contain; colorize: Theme.danger; }
+                                                if person.deafened: Image { source: @image-url("icons/headphone-off.svg"); width: 14px; image-fit: contain; colorize: Theme.danger; }
                                                 Text { text: person.name; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
                                                 if person.live: Middle { LivePill { } }
-                                                if person.status != "Muted" && person.status != "Speaking" && person.status != "Listening": Text {
+                                                if person.status != "Muted" && person.status != "Deafened" && person.status != "Speaking" && person.status != "Listening": Text {
                                                     text: person.status; color: Theme.accent; font-size: 13px; vertical-alignment: center; overflow: elide;
                                                 }
                                             }

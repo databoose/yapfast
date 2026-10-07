@@ -1579,6 +1579,8 @@ impl Adapter {
                             problem.as_str()
                         } else if !person.connected {
                             "Connection lost"
+                        } else if person.deafened {
+                            "Deafened"
                         } else if person.muted {
                             "Muted"
                         } else if person.speaking {
@@ -1588,7 +1590,7 @@ impl Adapter {
                         }
                         .into(),
                         muted: person.muted,
-                        deafened: false,
+                        deafened: person.deafened,
                         live: person.streaming,
                         picture: cached_picture(
                             &mut self.pictures,

@@ -38,6 +38,9 @@ pub struct Participant {
     pub user: String,
     pub local: bool,
     pub muted: bool,
+    /// Not hearing the call. MatrixRTC doesn't share this, so in Talk calls
+    /// only this account's own shows.
+    pub deafened: bool,
     pub speaking: bool,
     /// False after this participant's media connection disappeared, for
     /// example when their client crashed. Their membership stays listed until

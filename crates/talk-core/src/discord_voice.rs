@@ -595,6 +595,11 @@ fn discord_participants(
                 user: member.name.clone(),
                 local,
                 muted: if local { state.muted } else { member.muted },
+                deafened: if local {
+                    state.deafened
+                } else {
+                    member.deafened
+                },
                 speaking: if local {
                     talking && !state.muted
                 } else {

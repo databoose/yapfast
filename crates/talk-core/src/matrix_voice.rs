@@ -365,6 +365,7 @@ async fn connected(
                 Participant {
                     id: person.member_id.clone(), user: person.user_id.clone(), local: person.is_local,
                     muted: if person.is_local { state.muted } else { person.streams.iter().filter(|stream| stream.kind == MediaStreamKind::Microphone).all(|stream| stream.muted) },
+                    deafened: person.is_local && state.deafened,
                     speaking: speaking.contains(&person.member_id),
                     connected,
                     problem: problem.map(str::to_owned),

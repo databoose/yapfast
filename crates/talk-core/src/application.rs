@@ -2204,6 +2204,7 @@ impl Application {
                             user: "You".into(),
                             local: true,
                             muted: true,
+                            deafened: false,
                             speaking: false,
                             connected: true,
                             problem: None,
