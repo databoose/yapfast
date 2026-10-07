@@ -55,7 +55,6 @@ pub(super) fn notification(
     }
 }
 
-/// Who and what a message mentions, as its rendered body shows them.
 /// The custom emoji in a message's text and reactions.
 pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
     let mut found: Vec<CustomEmoji> = talk_discord::message::custom_emoji(&message.content)
@@ -90,6 +89,7 @@ pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
     found
 }
 
+/// Who and what a message mentions, as its rendered body shows them.
 pub(super) fn mentions(
     discord: &Discord,
     server: Option<&talk_discord::ready::Server>,

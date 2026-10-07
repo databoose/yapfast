@@ -634,7 +634,6 @@ impl Tracker {
                 .notifies(message, &self.me, &self.my_roles, category)
     }
 
-    /// DMs and group DMs, the latest conversation first.
     /// Learns the status from settings, all or some of them, in base64.
     fn settings(&mut self, encoded: &str) {
         let read = settings::read(encoded);
@@ -650,9 +649,6 @@ impl Tracker {
         }
     }
 
-    /// Orders the servers as the account's server list does. Those its
-    /// settings don't list yet go first, the latest joined first, as Discord
-    /// shows a server just joined.
     /// A server to change, copied first if a snapshot shares it.
     fn server_mut(&mut self, id: &str) -> Option<&mut Server> {
         self.servers
@@ -661,6 +657,9 @@ impl Tracker {
             .map(Arc::make_mut)
     }
 
+    /// Orders the servers as the account's server list does. Those its
+    /// settings don't list yet go first, the latest joined first, as Discord
+    /// shows a server just joined.
     fn sort_servers(&mut self) {
         let place: HashMap<&str, usize> = self
             .order
@@ -767,6 +766,7 @@ impl Tracker {
         friends
     }
 
+    /// DMs and group DMs, the latest conversation first.
     fn conversations(&self, names: &Names) -> Vec<Conversation> {
         let mut private = self.private.clone();
         // Discord orders by the newest message, or when the DM opened.

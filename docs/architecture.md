@@ -81,13 +81,22 @@ A visible change usually touches each of these steps:
    `session.rs`, `preview.rs` or `discord_account.rs`.
 5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to
    the chat actor in `crates/talk-core/src/chat.rs`, which routes it to the
-   network or to voice. Matrix lives
+   network its room id names, or to voice. Matrix lives
    in `matrix_chat.rs` and `matrix_voice.rs`; Discord in `discord.rs`,
-   `discord_text.rs`, `discord_voice.rs`, `discord_audio.rs` and
-   `discord_link.rs`, all under `crates/talk-core/src/`. The Discord protocol
-   itself is in `crates/talk-discord`, whose gateway session is
-   `crates/talk-discord/src/service.rs`. Backend events come back through
-   `Application::apply`.
+   `discord_text.rs` with its modules in `discord_text/`, `discord_voice.rs`,
+   `discord_audio.rs` and `discord_link.rs`, all under
+   `crates/talk-core/src/`. The Discord protocol itself is in
+   `crates/talk-discord`: Talk holds the handle in `src/service.rs`, the
+   gateway session and its state machines are in `src/service/`, and
+   `src/event.rs` names the gateway's events. Backend events come back
+   through `Application::apply`.
+
+Each `ChatRoom` carries its `network` and its `capabilities`, such as
+whether its messages can be forwarded or its channels sit under
+categories, which its backend sets
+([`network.rs`](../crates/talk-core/src/network.rs)). The application and
+the UI ask a room for these rather than reading its id; code that holds
+only an id reads its network with `Network::of`.
 
 ## Native backend ownership
 
