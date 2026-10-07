@@ -51,6 +51,34 @@ pub fn upload_limit(premium_type: u8, premium_tier: Option<u8>) -> u64 {
     own.max(boosted)
 }
 
+/// Discord answered a download with this error status.
+#[derive(Debug)]
+pub struct Refused(pub StatusCode);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Discord answered {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether a failed [`Api::download`] may work if tried later: Discord was
+/// out of reach, failed or asked Talk to slow down, rather than refusing the
+/// file or Talk refusing what came.
+pub fn may_work_later(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<Refused>() {
+        Some(Refused(status)) => {
+            status.is_server_error()
+                || matches!(
+                    *status,
+                    StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+                )
+        }
+        None => error.downcast_ref::<reqwest::Error>().is_some(),
+    }
+}
+
 pub struct Api {
     http: Client,
     token: String,
@@ -413,7 +441,7 @@ impl Api {
             .await
             .context("could not reach Discord")?;
         if !response.status().is_success() {
-            bail!("Discord answered {}", response.status());
+            return Err(Refused(response.status()).into());
         }
         let mut data = Vec::new();
         while let Some(chunk) = response.chunk().await.context("the download stopped")? {
@@ -570,6 +598,17 @@ fn discord_file(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn downloads_that_may_work_later() {
+        use super::{Refused, StatusCode, may_work_later};
+        let refused = |status| anyhow::Error::from(Refused(status));
+        assert!(may_work_later(&refused(StatusCode::SERVICE_UNAVAILABLE)));
+        assert!(may_work_later(&refused(StatusCode::TOO_MANY_REQUESTS)));
+        assert!(!may_work_later(&refused(StatusCode::NOT_FOUND)));
+        assert!(!may_work_later(&refused(StatusCode::FORBIDDEN)));
+        assert!(!may_work_later(&anyhow::anyhow!("the file is too large")));
+    }
+
     #[test]
     fn upload_limits_follow_nitro_and_boosts() {
         use super::{MIB, upload_limit};

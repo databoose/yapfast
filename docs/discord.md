@@ -536,7 +536,11 @@ an error.
   voice channel of the open server, in the call, or beside a message. A
   member's server avatar wins over their own. Talk decodes them at 128px
   before the UI sees them. Initials show until a picture arrives or when it
-  fails. A server without an icon keeps its initials, and a person without
+  fails. A download that may work later, when the CDN is out of reach,
+  fails or answers 429, is tried up to six times; every download then waits
+  together, 10 seconds and doubling up to five minutes, so a CDN in trouble
+  hears from Talk rarely. One Discord refuses, such as a 404, isn't tried
+  again. A server without an icon keeps its initials, and a person without
   an avatar gets Discord's default avatar for their account.
 - Messages support text, replies, edits, deletions, reactions, mentions and
   attachments. Up to ten files go with a message, uploaded to Discord's
