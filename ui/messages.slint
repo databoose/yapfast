@@ -371,8 +371,11 @@ export component EmbedView inherits HorizontalLayout {
     callback reveal-attachment(string, int);
     callback view-image(string, int);
     padding-top: 4px;
+    // The card takes its height from its contents' layout, which measures
+    // wrapped text at the width the card gets. A height bound to their
+    // preferred height measured it at another width and cut off the end.
     Rectangle {
-        min-height: embed-body.preferred-height; max-width: 432px; horizontal-stretch: 100;
+        max-width: 432px; horizontal-stretch: 100;
         background: Theme.sidebar; border-radius: 4px; clip: true;
         Rectangle { x: 0px; width: 4px; background: root.embed.has-color ? root.embed.color : Theme.edge; }
         embed-body := HorizontalLayout {
