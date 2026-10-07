@@ -1,0 +1,1117 @@
+use super::*;
+
+fn message_row_plain(message: &ChatMessage) -> MessageRow {
+    message_row(message, &HashSet::new())
+}
+
+#[test]
+fn equal_lists_stay_so_rows_count_as_unchanged() {
+    let shown = ModelRc::new(VecModel::from(vec![1, 2]));
+    let kept = same_list(&shown, ModelRc::new(VecModel::from(vec![1, 2])));
+    assert!(kept == shown, "the list on screen stays");
+    let changed = same_list(&shown, ModelRc::new(VecModel::from(vec![1, 3])));
+    assert!(changed != shown);
+    assert_eq!(changed.row_data(1), Some(3));
+
+    // A profile built again from the same view isn't set again.
+    let view = talk_core::application::ProfileView {
+        profile: talk_core::chat::Profile {
+            id: "@sam:test".into(),
+            name: "Sam".into(),
+            servers: vec![talk_core::chat::ProfileServer {
+                id: "s".into(),
+                name: "Server".into(),
+                icon: None,
+                banner: None,
+                members: Some(4),
+                channels: 2,
+                nick: None,
+            }],
+            roles: vec![ProfileRole {
+                name: "Mod".into(),
+                color: Some(0xff0000),
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let state = talk_core::application::AppState::default();
+    let mut pictures = HashMap::new();
+    let shown = profile_data(&mut pictures, &state, &view);
+    let again = profile_data(&mut pictures, &state, &view);
+    assert!(changed_profile(&shown, again).is_none());
+    let mut renamed = view.clone();
+    renamed.profile.name = "Samuel".into();
+    let changed = changed_profile(&shown, profile_data(&mut pictures, &state, &renamed))
+        .expect("a new name shows");
+    assert!(changed.servers == shown.servers, "its lists stay");
+}
+
+#[test]
+fn blank_lines_between_lines_show() {
+    assert_eq!(keep_blank_lines("a\n\nb"), "a\n\u{a0}\nb");
+    assert_eq!(keep_blank_lines("a\n\n\nb"), "a\n\u{a0}\n\u{a0}\nb");
+    assert_eq!(keep_blank_lines("a\nb"), "a\nb");
+    assert_eq!(
+        keep_blank_lines("\n\na\n\n"),
+        "\n\na\n\n",
+        "only between lines"
+    );
+    assert_eq!(
+        keep_blank_lines("a\n\n```\nx\n\ny\n```\n\nb"),
+        "a\n\u{a0}\n```\nx\n\ny\n```\n\u{a0}\nb",
+        "code keeps its lines"
+    );
+    // A blank line shows as a line of its own, unlike a line break.
+    assert_ne!(markdown("one\n\ntwo"), markdown("one\ntwo"));
+}
+
+#[test]
+fn the_composer_sends_on_enter_and_breaks_lines_on_shift_enter() {
+    use slint::platform::{Key, WindowEvent};
+    let window = one_message("Hi");
+    let sent = Rc::new(Cell::new(0));
+    let count = sent.clone();
+    window.on_send(move || count.set(count.get() + 1));
+    window.invoke_focus_composer();
+    let press = |text: SharedString| {
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    };
+    press("a".into());
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Shift.into(),
+    });
+    press(Key::Return.into());
+    window.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Shift.into(),
+    });
+    press("b".into());
+    assert_eq!(window.get_draft(), "a\nb");
+    assert_eq!(sent.get(), 0);
+    press(Key::Return.into());
+    assert_eq!(sent.get(), 1);
+    assert_eq!(
+        window.get_draft(),
+        "a\nb",
+        "sending is the application's to clear"
+    );
+}
+
+#[test]
+fn the_keyboard_steps_through_messages_and_acts_on_them() {
+    use slint::platform::{Key, WindowEvent};
+    let window = showing(
+        ["One", "Two", "Three"]
+            .into_iter()
+            .map(|body| ChatMessage {
+                author: "Sam".into(),
+                body: body.into(),
+                can_reply: true,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let replied = Rc::new(RefCell::new(String::new()));
+    let reply = replied.clone();
+    window.on_reply(move |item| *reply.borrow_mut() = item.into());
+    let edits = Rc::new(Cell::new(0));
+    let count = edits.clone();
+    window.on_edit_last(move || count.set(count.get() + 1));
+    let key = |text: SharedString, pressed: bool| {
+        window.window().dispatch_event(if pressed {
+            WindowEvent::KeyPressed { text }
+        } else {
+            WindowEvent::KeyReleased { text }
+        });
+    };
+    let press = |text: SharedString| {
+        key(text.clone(), true);
+        key(text, false);
+    };
+    window.invoke_focus_composer();
+    // Up in the empty composer edits; Alt+Up goes to the newest message.
+    press(Key::UpArrow.into());
+    assert_eq!(edits.get(), 1);
+    key(Key::Alt.into(), true);
+    press(Key::UpArrow.into());
+    key(Key::Alt.into(), false);
+    assert_eq!(window.get_active_item(), "i2");
+    press(Key::UpArrow.into());
+    press(Key::UpArrow.into());
+    press(Key::UpArrow.into());
+    assert_eq!(window.get_active_item(), "i0", "the first stays");
+    press(Key::DownArrow.into());
+    assert_eq!(window.get_active_item(), "i1");
+    press("r".into());
+    assert_eq!(*replied.borrow(), "i1");
+    // The reply goes back to the composer, so letters type again.
+    press("x".into());
+    assert_eq!(window.get_draft(), "x");
+}
+
+#[test]
+fn preferences_set_the_clock_text_size_previews_and_unmuting() {
+    i_slint_backend_testing::init_no_event_loop();
+    let message = ChatMessage {
+        timestamp: 1_791_329_400,
+        time: "23:30".into(),
+        embeds: vec![talk_core::chat::Embed::default()],
+        ..Default::default()
+    };
+    // Missing preferences take their defaults: 24 hours, default text, previews.
+    let defaults: Layout = serde_json::from_str("{}").unwrap();
+    let row = defaults.restyle(&message, message_row(&message, &HashSet::new()));
+    assert_eq!(
+        row.time,
+        talk_core::clock::time_on(message.timestamp, false)
+    );
+    assert_eq!(row.embeds.row_count(), 1);
+    let layout = Layout {
+        twelve_hour_clock: true,
+        text_size: Some(2),
+        link_previews: Some(false),
+        unmute_on_join: true,
+        ..Default::default()
+    };
+    let row = layout.restyle(&message, message_row(&message, &HashSet::new()));
+    let time = talk_core::clock::time_on(message.timestamp, true);
+    assert!(time.ends_with(" AM") || time.ends_with(" PM"));
+    assert_eq!(row.time, time);
+    assert_eq!(row.time_styled, slint::StyledText::from_plain_text(&time));
+    assert_eq!(row.short_time, time.split(' ').next().unwrap());
+    assert_eq!(row.embeds.row_count(), 0);
+    // A message that is only a card says it's hidden; one with text doesn't.
+    assert_eq!(
+        row.hidden_card,
+        "A card, hidden while link previews are off."
+    );
+    let titled = ChatMessage {
+        embeds: vec![talk_core::chat::Embed {
+            title: "Server status".into(),
+            ..Default::default()
+        }],
+        ..message.clone()
+    };
+    assert!(
+        layout
+            .restyle(&titled, message_row(&titled, &HashSet::new()))
+            .hidden_card
+            .contains("\"Server status\"")
+    );
+    let with_text = ChatMessage {
+        body: "Look".into(),
+        ..message.clone()
+    };
+    assert!(
+        layout
+            .restyle(&with_text, message_row(&with_text, &HashSet::new()))
+            .hidden_card
+            .is_empty()
+    );
+
+    let window = TalkWindow::new().unwrap();
+    layout.apply(&window);
+    assert!(window.get_twelve_hour_clock() && !window.get_link_previews());
+    assert_eq!(window.get_message_font_size(), 18.);
+    // Joining a call turns the microphone on once it connects.
+    let unmuted = Rc::new(Cell::new(false));
+    let record = unmuted.clone();
+    window.on_toggle_mute(move || record.set(true));
+    window.set_muted(true);
+    window.set_voice_ready(true);
+    slint::platform::update_timers_and_animations();
+    assert!(unmuted.get());
+}
+
+#[test]
+fn embed_fields_share_rows_three_inline_at_a_time() {
+    let field = |name: &str, inline| EmbedField {
+        name: name.into(),
+        value: String::new(),
+        inline,
+    };
+    let rows = field_rows(&[
+        field("a", true),
+        field("b", true),
+        field("c", true),
+        field("d", true),
+        field("e", false),
+        field("f", true),
+    ]);
+    let names: Vec<Vec<slint::StyledText>> = rows
+        .iter()
+        .map(|row| row.fields.iter().map(|field| field.name).collect())
+        .collect();
+    let expected: Vec<Vec<slint::StyledText>> = [&["a", "b", "c"][..], &["d"], &["e"], &["f"]]
+        .iter()
+        .map(|row| row.iter().map(|name| bold(name)).collect())
+        .collect();
+    assert_eq!(names, expected);
+}
+
+/// A window showing one styled message from Sam, with the composer.
+fn one_message(body: &str) -> TalkWindow {
+    messages(&[("Sam", body)])
+}
+
+/// A window showing styled messages, each starting a group, with the composer.
+fn messages(lines: &[(&str, &str)]) -> TalkWindow {
+    showing(
+        lines
+            .iter()
+            .map(|(author, body)| ChatMessage {
+                author: (*author).into(),
+                body: (*body).into(),
+                formatted: true,
+                ..Default::default()
+            })
+            .collect(),
+    )
+}
+
+/// A window showing these messages, each starting a group and sent at 19:2 and its
+/// index, with the composer.
+fn showing(chat: Vec<ChatMessage>) -> TalkWindow {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    copy_whole_messages(&window);
+    // Without the adapter's clipboard reading, Ctrl+V pastes text, as it
+    // does when the clipboard holds no files or picture.
+    let weak = window.as_weak();
+    window.on_paste_into_composer(move || weak.unwrap().invoke_paste_composer_text());
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_composer_enabled(true);
+    // A device that may write, so the verification banner stays away.
+    window.set_trusted(true);
+    let rows: Vec<MessageRow> = chat
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            message_row_plain(&ChatMessage {
+                id: format!("m{index}"),
+                item: format!("i{index}"),
+                time: format!("19:2{index}"),
+                ..message
+            })
+        })
+        .collect();
+    window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    settle(&window);
+    window
+}
+
+fn settle(window: &TalkWindow) {
+    for _ in 0..5 {
+        slint::platform::update_timers_and_animations();
+        let _ = window.invoke_timeline_extent();
+    }
+}
+
+/// For each height down the window, presses there beside the text, drags up past the top
+/// of the list, turning the wheel `wheel` times on the way, lets go and presses Ctrl+C;
+/// then returns the clipboard. The last drag to start on a message starts at the end of
+/// the lowest, so it selects up to the end of that message. The list returns to the newest
+/// message before each.
+fn copy_upwards(window: &TalkWindow, wheel: usize) -> Option<String> {
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
+    let dispatch = |event| window.window().dispatch_event(event);
+    let at = |x, y| slint::LogicalPosition::new(x, y);
+    let button = PointerEventButton::Left;
+    for y in (100..700).step_by(4) {
+        window.invoke_scroll_to_latest();
+        settle(window);
+        let y = y as f32;
+        dispatch(WindowEvent::PointerMoved {
+            position: at(900., y),
+        });
+        dispatch(WindowEvent::PointerPressed {
+            position: at(900., y),
+            button,
+        });
+        dispatch(WindowEvent::PointerMoved {
+            position: at(900., y - 8.),
+        });
+        dispatch(WindowEvent::PointerMoved {
+            position: at(900., 60.),
+        });
+        for _ in 0..wheel {
+            dispatch(WindowEvent::PointerScrolled {
+                position: at(900., 60.),
+                delta_x: 0.,
+                delta_y: 400.,
+            });
+            settle(window);
+        }
+        dispatch(WindowEvent::PointerReleased {
+            position: at(900., 60.),
+            button,
+        });
+        dispatch(WindowEvent::KeyPressed {
+            text: Key::Control.into(),
+        });
+        dispatch(WindowEvent::KeyPressed { text: "c".into() });
+        dispatch(WindowEvent::KeyReleased { text: "c".into() });
+        dispatch(WindowEvent::KeyReleased {
+            text: Key::Control.into(),
+        });
+    }
+    // The composer's single line would turn line breaks into spaces, so
+    // read the clipboard itself.
+    i_slint_core::window::WindowInner::from_pub(window.window())
+        .context()
+        .platform()
+        .clipboard_text(i_slint_core::platform::Clipboard::DefaultClipboard)
+}
+
+#[test]
+fn a_selection_runs_across_messages_with_their_names_and_times() {
+    let window = messages(&[
+        ("Sam", "Thinking **co-op** after nine."),
+        ("Riley", "Yep. I should be free after dinner."),
+    ]);
+    assert_eq!(
+        copy_upwards(&window, 0).as_deref(),
+        Some(
+            "Sam 19:20\nThinking co-op after nine.\nRiley 19:21\nYep. I should be free after dinner."
+        )
+    );
+}
+
+#[test]
+fn pictures_on_their_way_hold_their_place_as_skeletons() {
+    let attachment = |name: &str, preview_failed| talk_core::chat::Attachment {
+        name: name.into(),
+        size: Some(1000),
+        image: true,
+        dimensions: Some((1600, 900)),
+        preview: None,
+        preview_failed,
+        placement: Placement::Message,
+        spoiler: false,
+    };
+    let row = message_row_plain(&ChatMessage {
+        attachments: vec![attachment("wide.png", false)],
+        ..Default::default()
+    });
+    let cell = row.images.row_data(0).unwrap();
+    assert!(cell.loading);
+    // As the 360 by 270 preview will be: 1600 by 900 scaled to fit.
+    assert_eq!((row.gallery_width, row.gallery_height), (360, 203));
+    assert_eq!(row.files.row_count(), 0, "not a file card meanwhile");
+    // One whose preview failed is a file card instead.
+    let row = message_row_plain(&ChatMessage {
+        attachments: vec![attachment("broken.png", true)],
+        ..Default::default()
+    });
+    assert_eq!(row.images.row_count(), 0);
+    assert_eq!(row.files.row_count(), 1);
+}
+
+#[test]
+fn a_selection_copies_the_pictures_it_runs_through() {
+    let picture = Arc::new(Picture {
+        width: 40,
+        height: 30,
+        rgba: vec![128; 40 * 30 * 4],
+        ..Default::default()
+    });
+    let window = showing(vec![
+        ChatMessage {
+            author: "Sam".into(),
+            body: "Look at this.".into(),
+            attachments: vec![talk_core::chat::Attachment {
+                name: "cat.png".into(),
+                size: None,
+                image: true,
+                dimensions: Some((400, 300)),
+                preview: Some(picture),
+                preview_failed: false,
+                placement: Placement::Message,
+                spoiler: false,
+            }],
+            ..Default::default()
+        },
+        ChatMessage {
+            author: "Riley".into(),
+            body: "Nice.".into(),
+            ..Default::default()
+        },
+    ]);
+    assert_eq!(
+        copy_upwards(&window, 0).as_deref(),
+        Some("Sam 19:20\nLook at this.\n[Picture]\nRiley 19:21\nNice.")
+    );
+}
+
+#[test]
+fn a_selection_keeps_the_messages_it_scrolls_past() {
+    let chat: Vec<ChatMessage> = (0..40)
+        .map(|index| ChatMessage {
+            author: "Sam".into(),
+            body: format!("Message {index}."),
+            ..Default::default()
+        })
+        .collect();
+    let window = showing(chat);
+    let expected: Vec<String> = (0..40)
+        .map(|index| format!("Sam 19:2{index}\nMessage {index}."))
+        .collect();
+    assert_eq!(copy_upwards(&window, 40), Some(expected.join("\n")));
+}
+
+#[test]
+fn a_click_on_a_link_in_selectable_text_opens_it() {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let window = one_message("See https://example.com/talk");
+    let opened = Rc::new(RefCell::new(Vec::<String>::new()));
+    let record = opened.clone();
+    window.on_open_link(move |link| record.borrow_mut().push(link.into()));
+    let button = PointerEventButton::Left;
+    // The link starts after "See ", a little way into the text column.
+    for y in (100..700).step_by(4) {
+        let position = slint::LogicalPosition::new(440., y as f32);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+    }
+    let opened = opened.borrow();
+    assert!(!opened.is_empty(), "a click on the link opens it");
+    assert!(opened.iter().all(|link| link == "https://example.com/talk"));
+}
+
+#[test]
+fn styled_messages_select_by_dragging_and_copy_as_plain_text() {
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
+    let window = one_message("Thinking **co-op** after nine, if people are up for it.");
+    let dispatch = |event| window.window().dispatch_event(event);
+    let button = PointerEventButton::Left;
+    let at = |x, y| slint::LogicalPosition::new(x, y);
+    let ctrl = |key: &str| {
+        dispatch(WindowEvent::KeyPressed {
+            text: Key::Control.into(),
+        });
+        dispatch(WindowEvent::KeyPressed { text: key.into() });
+        dispatch(WindowEvent::KeyReleased { text: key.into() });
+        dispatch(WindowEvent::KeyReleased {
+            text: Key::Control.into(),
+        });
+    };
+
+    // Clicking the message without selecting leaves typing in the composer.
+    let click = |x, y| {
+        dispatch(WindowEvent::PointerPressed {
+            position: at(x, y),
+            button,
+        });
+        dispatch(WindowEvent::PointerReleased {
+            position: at(x, y),
+            button,
+        });
+    };
+    let type_key = |key: &str| {
+        dispatch(WindowEvent::KeyPressed { text: key.into() });
+        dispatch(WindowEvent::KeyReleased { text: key.into() });
+    };
+    click(600., 712.);
+    type_key("a");
+    for y in (100..700).step_by(4) {
+        click(500., y as f32);
+    }
+    type_key("b");
+    assert_eq!(window.get_draft(), "ab");
+    window.set_draft(SharedString::default());
+
+    // Without element lookups in this build, drag down the timeline row by
+    // row: from right of the text, past its end, to left of the timeline,
+    // past its start. A drag that lands on the message selects all of it,
+    // and copies it.
+    for y in (100..700).step_by(4) {
+        let y = y as f32;
+        dispatch(WindowEvent::PointerMoved {
+            position: at(900., y),
+        });
+        dispatch(WindowEvent::PointerPressed {
+            position: at(900., y),
+            button,
+        });
+        dispatch(WindowEvent::PointerMoved {
+            position: at(600., y),
+        });
+        dispatch(WindowEvent::PointerMoved {
+            position: at(200., y),
+        });
+        dispatch(WindowEvent::PointerReleased {
+            position: at(200., y),
+            button,
+        });
+        ctrl("c");
+    }
+
+    // Pasting shows what was copied: the text as read, without its Markdown.
+    click(600., 712.);
+    ctrl("v");
+    assert_eq!(
+        window.get_draft(),
+        "Thinking co-op after nine, if people are up for it."
+    );
+}
+
+#[test]
+fn pointer_input_reaches_navigation_buttons() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let click = |x, y| {
+        let position = slint::LogicalPosition::new(x, y);
+        let button = slint::platform::PointerEventButton::Left;
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    };
+    click(32., 36.);
+    assert!(window.get_dms_selected());
+    assert_eq!(window.get_sidebar_title(), "Direct messages");
+    click(32., 101.);
+    assert!(!window.get_dms_selected());
+    assert_eq!(window.get_sidebar_title(), "Friends");
+    window.hide().unwrap();
+}
+
+#[test]
+fn the_input_caret_opens_its_menu_and_measures_only_while_open() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    adapter
+        .borrow_mut()
+        .action(&window, Action::RequestJoinVoice("lounge".into()));
+    let click = |x, y| {
+        let position = slint::LogicalPosition::new(x, y);
+        let button = slint::platform::PointerEventButton::Left;
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    };
+    // The caret sits right of the microphone toggle in the dock.
+    click(206., 732.);
+    assert!(adapter.borrow().meter.is_some());
+    assert!(window.get_muted());
+    click(800., 200.);
+    assert!(adapter.borrow().meter.is_none());
+    window.hide().unwrap();
+}
+
+#[test]
+fn dragging_the_sidebar_edge_resizes_it_within_limits_and_remembers_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let drag = |from: f32, to: f32| {
+        let window = window.window();
+        let button = slint::platform::PointerEventButton::Left;
+        let at = |x| slint::LogicalPosition::new(x, 400.);
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(from) });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position: at(from),
+            button,
+        });
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(to) });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: at(to),
+            button,
+        });
+    };
+    assert_eq!(window.get_sidebar_shown(), 240.);
+    drag(312., 362.);
+    assert_eq!(window.get_sidebar_shown(), 290.);
+    assert_eq!(Layout::read(directory.path()).sidebar_width, Some(290.));
+    // The sidebar stops at 380px, and at 180px.
+    drag(362., 700.);
+    assert_eq!(window.get_sidebar_shown(), 380.);
+    drag(452., 0.);
+    assert_eq!(window.get_sidebar_shown(), 180.);
+    // In a narrow window, dragging keeps 420px for the conversation,
+    // beside the member list when it shows.
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 560.));
+    drag(252., 700.);
+    assert_eq!(window.get_sidebar_shown(), 180.);
+    window.set_member_list(false);
+    drag(252., 700.);
+    assert_eq!(window.get_sidebar_shown(), 308.);
+    drag(380., 252.);
+    // A new window starts at the stored width.
+    let next = TalkWindow::new().unwrap();
+    adapter.borrow_mut().attach(&next);
+    assert_eq!(next.get_sidebar_width(), 180.);
+    window.hide().unwrap();
+}
+
+#[test]
+fn the_member_list_shows_for_text_channels_and_remembers_being_closed() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    assert!(window.get_members_available() && window.get_member_list());
+    let roster = window.get_roster();
+    assert_eq!(roster.row_count(), 4);
+    assert_eq!(roster.row_data(0).unwrap().heading, "ADMINS — 1");
+    assert_eq!(roster.row_data(2).unwrap().heading, "MEMBERS — 2");
+    assert!(roster.row_data(3).unwrap().heading.is_empty());
+    let click = |x, y| {
+        let position = slint::LogicalPosition::new(x, y);
+        let button = slint::platform::PointerEventButton::Left;
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    };
+    // The toggle ends the conversation header.
+    click(1080., 24.);
+    assert!(!window.get_member_list());
+    assert!(Layout::read(directory.path()).members_hidden);
+    click(1080., 24.);
+    assert!(window.get_member_list());
+    // Voice channels and one-to-one DMs have no member list.
+    window.invoke_select_room("lounge".into());
+    assert!(!window.get_members_available());
+    window.invoke_navigate_dms();
+    assert!(!window.get_members_available());
+    window.invoke_select_room("party".into());
+    assert!(window.get_members_available());
+    assert_eq!(window.get_roster().row_count(), 3);
+    window.hide().unwrap();
+}
+
+#[test]
+fn forwarding_and_frequent_reactions_reach_the_window() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    let glyphs =
+        |model: ModelRc<EmojiCell>| model.iter().map(|cell| cell.glyph).collect::<Vec<_>>();
+    assert_eq!(glyphs(window.get_bar_reactions()), ["👍", "❤️", "😂"]);
+    let message = window.get_messages().row_data(0).unwrap();
+    window.invoke_react(message.item.clone(), "🍕".into());
+    assert_eq!(
+        glyphs(window.get_menu_reactions()),
+        ["🍕", "👍", "❤️", "😂"]
+    );
+    assert_eq!(Layout::read(directory.path()).reactions.get("🍕"), Some(&1));
+
+    window.invoke_start_forward(message.item.clone());
+    assert!(window.get_forward_open());
+    assert_eq!(window.get_forward_preview(), "Anyone around tonight?");
+    let targets = window.get_forward_targets();
+    assert!(
+        targets.iter().all(|target| target.id != "lounge"),
+        "voice is no target"
+    );
+    window.set_forward_query("gam".into());
+    window.invoke_forward_search();
+    assert_eq!(window.get_forward_targets().row_count(), 1);
+    window.invoke_forward_to("games".into());
+    assert!(window.get_forward_targets().row_data(0).unwrap().sent);
+    window.invoke_close_forward();
+    assert!(!window.get_forward_open());
+
+    window.invoke_emoji_search("pizza".into());
+    assert_eq!(window.get_emoji_rows().row_count(), 1);
+}
+
+#[test]
+fn scrolling_up_leaves_the_latest_message() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    let rows: Vec<MessageRow> = (0..200)
+        .map(|index| MessageRow {
+            id: format!("m{index}").into(),
+            item: format!("i{index}").into(),
+            author: "Bob".into(),
+            body: if index % 2 == 0 {
+                format!("Message {index}").into()
+            } else {
+                format!("Message {index}, a longer line that wraps across the timeline at ordinary window widths, and then some more words").into()
+            },
+            first: index % 5 == 0,
+            ..Default::default()
+        })
+        .collect();
+    window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let settle = || {
+        for _ in 0..5 {
+            slint::platform::update_timers_and_animations();
+            let _ = window.invoke_timeline_extent();
+        }
+    };
+    settle();
+    window.invoke_scroll_to_latest();
+    settle();
+    assert!(
+        window.invoke_timeline_at_end(),
+        "starts at the latest message"
+    );
+    for _ in 0..8 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: 50.,
+            });
+        settle();
+    }
+    assert!(
+        !window.invoke_timeline_at_end(),
+        "scrolling up leaves the latest message"
+    );
+    window.hide().unwrap();
+}
+
+#[test]
+fn scrolling_up_through_styled_messages_stays_up() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    let rows: Vec<MessageRow> = (0..200)
+        .map(|index| {
+            let body = match index % 4 {
+                0 => format!("**Message** {index}"),
+                1 => format!("Message {index} with https://example.com/{index} and words that wrap across the timeline at ordinary widths, and then *some* more"),
+                2 => format!("line one {index}\nline two\nline three"),
+                _ => format!("Message {index}"),
+            };
+            let mut row = message_row_plain(&ChatMessage {
+                id: format!("m{index}"),
+                item: format!("i{index}"),
+                author: "Bob".into(),
+                body,
+                formatted: true,
+                ..Default::default()
+            });
+            row.first = index % 5 == 0;
+            row
+        })
+        .collect();
+    window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let settle = || {
+        for _ in 0..5 {
+            slint::platform::update_timers_and_animations();
+            let _ = window.invoke_timeline_extent();
+        }
+    };
+    settle();
+    window.invoke_scroll_to_latest();
+    settle();
+    assert!(
+        window.invoke_timeline_at_end(),
+        "starts at the latest message"
+    );
+    for step in 0..8 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: 50.,
+            });
+        settle();
+        assert!(
+            !window.invoke_timeline_at_end() && window.invoke_timeline_below() > 0.,
+            "step {step} stays scrolled up"
+        );
+    }
+    // Scrolling back down resumes following, and later rows stay in view.
+    for _ in 0..40 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: -200.,
+            });
+        settle();
+    }
+    assert!(
+        window.invoke_timeline_at_end(),
+        "back at the latest message"
+    );
+    let messages = window.get_messages();
+    let model = messages
+        .as_any()
+        .downcast_ref::<VecModel<MessageRow>>()
+        .unwrap();
+    model.push(message_row_plain(&ChatMessage {
+        id: "new".into(),
+        item: "new".into(),
+        author: "Ann".into(),
+        body: "A *new* message with https://example.com\nand a second line".into(),
+        formatted: true,
+        ..Default::default()
+    }));
+    settle();
+    assert_eq!(window.invoke_timeline_below(), 0., "the new message shows");
+    window.hide().unwrap();
+}
+
+#[test]
+fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    assert!(window.get_workspace() && window.get_preview());
+    let server = adapter.borrow().app.state.servers[0].id.clone();
+    window.invoke_navigate_server(server.clone().into());
+    let rooms = adapter
+        .borrow()
+        .app
+        .state
+        .rooms
+        .iter()
+        .filter(|room| adapter.borrow().app.state.in_scope(room))
+        .cloned()
+        .collect::<Vec<_>>();
+    let text_rooms = rooms.iter().filter(|room| !room.voice).collect::<Vec<_>>();
+    window.invoke_select_room(text_rooms[0].id.clone().into());
+    window.invoke_draft_edited("Draft survives navigation".into());
+    window.invoke_select_room(text_rooms[1].id.clone().into());
+    window.invoke_draft_edited("Different channel draft".into());
+    window.invoke_select_room(text_rooms[0].id.clone().into());
+    assert_eq!(window.get_draft(), "Draft survives navigation");
+    assert!(window.get_can_send());
+    let count = window.get_messages().row_count();
+    window.invoke_send();
+    assert_eq!(window.get_messages().row_count(), count + 1);
+    assert!(window.get_draft().is_empty());
+    let voice_room = rooms.iter().find(|room| room.voice).unwrap();
+    // Clicking a voice channel joins it.
+    window.invoke_select_room(voice_room.id.clone().into());
+    assert!(window.get_voice_here() && window.get_voice_active() && window.get_muted());
+    window.invoke_navigate_dms();
+    assert!(window.get_voice_active() && window.get_voice_visible());
+    assert!(!window.get_voice_here());
+    assert!(window.get_rooms().iter().all(|row| {
+        adapter
+            .borrow()
+            .app
+            .state
+            .rooms
+            .iter()
+            .any(|room| room.id.as_str() == row.id.as_str() && room.direct)
+    }));
+    window.invoke_toggle_mute();
+    assert!(!window.get_muted());
+    window.invoke_toggle_deafen();
+    assert!(window.get_muted() && window.get_deafened());
+    window.set_password("secret that must be cleared".into());
+    window.set_recovery("recovery that must be cleared".into());
+    window.set_settings_open(true);
+    window.invoke_logout();
+    assert!(!window.get_workspace() && !window.get_voice_active());
+    assert!(window.get_password().is_empty() && window.get_recovery().is_empty());
+    assert!(!window.get_settings_open());
+}
+
+#[test]
+fn message_actions_reach_the_shared_application_in_the_preview() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    let row = |item: &SharedString| {
+        window
+            .get_messages()
+            .iter()
+            .find(|row| row.item == *item)
+            .unwrap()
+    };
+    let own = window.get_messages().iter().find(|row| row.own).unwrap();
+    let other = window.get_messages().iter().find(|row| !row.own).unwrap();
+    assert!(own.can_edit && !other.can_edit && !window.get_can_attach());
+
+    window.invoke_react(other.item.clone(), "👍".into());
+    let reactions = row(&other.item).reactions;
+    assert_eq!(reactions.row_count(), 1);
+    assert!(reactions.row_data(0).unwrap().mine);
+    window.invoke_react(other.item.clone(), "👍".into());
+    assert_eq!(row(&other.item).reactions.row_count(), 0);
+
+    window.invoke_reply(other.item.clone());
+    assert!(window.get_compose_label().starts_with("Replying to Sam"));
+    window.invoke_draft_edited("**Sure**".into());
+    window.invoke_send();
+    let reply = window.get_messages().iter().last().unwrap();
+    assert!(reply.has_reply && reply.reply_author == "Sam");
+    assert!(window.get_compose_label().is_empty() && window.get_draft().is_empty());
+
+    window.invoke_draft_edited("Unsent draft".into());
+    window.invoke_edit(own.item.clone());
+    assert_eq!(window.get_draft(), own.body);
+    assert_eq!(window.get_compose_label(), "Editing your message");
+    window.invoke_draft_edited("Changed".into());
+    window.invoke_send();
+    let edited = row(&own.item);
+    assert!(edited.edited && edited.body == "Changed");
+    assert_eq!(window.get_draft(), "Unsent draft");
+
+    window.invoke_request_delete(other.item.clone());
+    assert!(
+        window.get_confirm_delete().is_empty(),
+        "only own messages can be deleted"
+    );
+    window.invoke_request_delete(own.item.clone());
+    assert_eq!(window.get_confirm_delete(), own.item);
+    window.invoke_confirm_delete_message();
+    assert!(row(&own.item).deleted && window.get_confirm_delete().is_empty());
+}
+
+#[test]
+fn signed_in_controls_keep_trust_and_plaintext_sending_gates() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.state.preview = false;
+        adapter.app.state.account = Some("@test:example.invalid".into());
+        adapter.app.state.trusted = false;
+        adapter.refresh(&window);
+    }
+    window.invoke_draft_edited("Keep encrypted".into());
+    assert!(!window.get_can_send());
+    window.invoke_send();
+    assert!(!window.get_sending());
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.state.trusted = true;
+        let id = adapter.app.state.selected.clone().unwrap();
+        adapter
+            .app
+            .state
+            .rooms
+            .iter_mut()
+            .find(|room| room.id == id)
+            .unwrap()
+            .encrypted = false;
+        adapter.refresh(&window);
+    }
+    assert!(!window.get_composer_enabled() && !window.get_can_send());
+    window.invoke_send();
+    assert_eq!(window.get_draft(), "Keep encrypted");
+    assert!(!window.get_sending());
+}
