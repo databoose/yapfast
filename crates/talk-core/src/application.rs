@@ -338,6 +338,9 @@ pub enum Action {
     MentionQuery(Option<String>),
     /// Open the dialog for starting a DM, look for people in it, start one, or close it.
     OpenNewDm,
+    /// Edit this account's newest message that can be edited, as Up in an empty
+    /// composer does.
+    EditLast,
     NewDmQuery(String),
     StartDm(Contact),
     CloseNewDm,
@@ -622,6 +625,19 @@ impl Application {
                     effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
                 }
                 effects
+            }
+            Action::EditLast => {
+                let last = self
+                    .state
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.own && message.can_edit && !message.deleted)
+                    .map(|message| message.item.clone());
+                match last {
+                    Some(item) => self.dispatch(Action::Edit(item)),
+                    None => vec![],
+                }
             }
             Action::OpenNewDm => {
                 if self.state.preview {
@@ -2538,6 +2554,24 @@ mod tests {
             result: Ok(()),
         });
         assert_eq!(app.state.draft(), "Other room draft");
+    }
+
+    #[test]
+    fn up_in_an_empty_composer_edits_the_newest_own_message() {
+        let mut app = connected();
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![
+                message("e:$old", true),
+                message("e:$mine", true),
+                message("e:$bob", false),
+            ],
+        });
+        app.dispatch(Action::EditLast);
+        assert!(
+            matches!(app.state.compose(), Some(Compose::Edit { item, .. }) if item == "e:$mine")
+        );
+        assert_eq!(app.state.draft(), "Body of e:$mine");
     }
 
     #[test]

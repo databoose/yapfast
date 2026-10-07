@@ -1649,7 +1649,18 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         on_navigate_dms,
         Action::Navigate(Navigation::DirectMessages)
     );
-    bind!(on_send, Action::Send);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_send(move || {
+            let Some(window) = weak.upgrade() else { return };
+            // Sending goes to the newest message, as Discord does, so the sent one shows.
+            if window.get_can_send() {
+                window.invoke_scroll_to_latest();
+            }
+            adapter.borrow_mut().action(&window, Action::Send);
+        });
+    }
     bind!(on_earlier, Action::Earlier);
     bind!(on_accept_request, Action::AnswerRequest(true));
     bind!(on_enlarge_profile, Action::EnlargeProfile);
@@ -1708,6 +1719,17 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         (|user| Action::ShowProfile { user, large: false })
     );
     bind_item!(on_edit, Action::Edit);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_edit_last(move || {
+            let Some(window) = weak.upgrade() else { return };
+            adapter.borrow_mut().action(&window, Action::EditLast);
+            // The message's text, with the cursor after it.
+            let end = window.get_draft().len();
+            window.invoke_place_composer_caret(i32::try_from(end).unwrap_or(i32::MAX));
+        });
+    }
     bind_item!(on_request_delete, Action::RequestDelete);
     bind_item!(on_retry, Action::Retry);
     bind_item!(on_cancel_send, Action::CancelSend);
@@ -2752,6 +2774,58 @@ mod tests {
             "a\nb",
             "sending is the application's to clear"
         );
+    }
+
+    #[test]
+    fn the_keyboard_steps_through_messages_and_acts_on_them() {
+        use slint::platform::{Key, WindowEvent};
+        let window = showing(
+            ["One", "Two", "Three"]
+                .into_iter()
+                .map(|body| ChatMessage {
+                    author: "Sam".into(),
+                    body: body.into(),
+                    can_reply: true,
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        let replied = Rc::new(RefCell::new(String::new()));
+        let reply = replied.clone();
+        window.on_reply(move |item| *reply.borrow_mut() = item.into());
+        let edits = Rc::new(Cell::new(0));
+        let count = edits.clone();
+        window.on_edit_last(move || count.set(count.get() + 1));
+        let key = |text: SharedString, pressed: bool| {
+            window.window().dispatch_event(if pressed {
+                WindowEvent::KeyPressed { text }
+            } else {
+                WindowEvent::KeyReleased { text }
+            });
+        };
+        let press = |text: SharedString| {
+            key(text.clone(), true);
+            key(text, false);
+        };
+        window.invoke_focus_composer();
+        // Up in the empty composer edits; Alt+Up goes to the newest message.
+        press(Key::UpArrow.into());
+        assert_eq!(edits.get(), 1);
+        key(Key::Alt.into(), true);
+        press(Key::UpArrow.into());
+        key(Key::Alt.into(), false);
+        assert_eq!(window.get_active_item(), "i2");
+        press(Key::UpArrow.into());
+        press(Key::UpArrow.into());
+        press(Key::UpArrow.into());
+        assert_eq!(window.get_active_item(), "i0", "the first stays");
+        press(Key::DownArrow.into());
+        assert_eq!(window.get_active_item(), "i1");
+        press("r".into());
+        assert_eq!(*replied.borrow(), "i1");
+        // The reply goes back to the composer, so letters type again.
+        press("x".into());
+        assert_eq!(window.get_draft(), "x");
     }
 
     #[test]

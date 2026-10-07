@@ -349,6 +349,9 @@ component Composer inherits Rectangle {
     callback suggestion-moved(int);
     callback suggestion-chosen;
     callback suggestion-dismissed;
+    // Up in an empty composer, and Alt+Up anywhere in it.
+    callback up-from-empty;
+    callback up-to-messages;
     public function focus-input() { input.focus(); }
     public function place-caret(offset: int) { input.set-selection-offsets(offset, offset); }
     property <length> pad: 12px;
@@ -369,6 +372,11 @@ component Composer inherits Rectangle {
                 if event.text == Key.DownArrow { root.suggestion-moved(1); return accept; }
                 if (event.text == Key.Return || event.text == Key.Tab) && !event.modifiers.shift { root.suggestion-chosen(); return accept; }
                 if event.text == Key.Escape { root.suggestion-dismissed(); return accept; }
+            }
+            if event.text == Key.UpArrow && event.modifiers.alt { root.up-to-messages(); return accept; }
+            if event.text == Key.UpArrow && root.text == "" && !event.modifiers.shift && !event.modifiers.control {
+                root.up-from-empty();
+                return accept;
             }
             if event.text == Key.Return && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt {
                 root.accepted();
@@ -1296,6 +1304,29 @@ export component TalkWindow inherits Window {
     in property <string> confirm-delete;
     in-out property <string> react-item;
     in-out property <string> active-item;
+    // Where the active message is in the timeline, so the keyboard can step from it.
+    in-out property <int> active-index: -1;
+    // The message list has the keyboard: Up and Down step through messages and
+    // letters act on the active one.
+    property <bool> browsing: timeline-keys.has-focus;
+    // A popup the keyboard asked for, "menu" or "react", which the active row opens
+    // beside itself.
+    property <string> keyboard-popup;
+    property <MessageRow> keyed-message: root.active-index >= 0 && root.active-index < root.messages.length ? root.messages[root.active-index] : {};
+    // Room kept around the keyboard's message, so the next one is in view.
+    property <length> keyboard-margin: min(160px, timeline.height / 3);
+    callback edit-last;
+    // Moves the keyboard to the newest message, from the composer.
+    public function browse-messages() {
+        if root.messages.length > 0 {
+            root.step-message(root.messages.length - 1);
+            timeline-keys.focus();
+        }
+    }
+    function step-message(index: int) {
+        root.active-index = max(0, min(root.messages.length - 1, index));
+        root.active-item = root.messages[root.active-index].item;
+    }
     /// The reactions this device uses most: three on the hover bar, four in the menu.
     in property <[EmojiCell]> bar-reactions;
     in property <[EmojiCell]> menu-reactions;
@@ -2358,284 +2389,354 @@ export component TalkWindow inherits Window {
                             min-height: 0px;
                             max-height: root.voice-room ? 0px : 100000px;
                             vertical-stretch: root.voice-room ? 0 : 1;
-                            timeline := ListView {
+                            // Up and Down step through messages; R replies, E edits, Delete deletes,
+                            // C copies, F forwards, + reacts, Enter opens the menu, Escape returns
+                            // to the composer.
+                            timeline-keys := FocusScope {
                                 width: parent.width; height: parent.height;
-                                scrolled => { root.follow-latest = false; }
-                                for message[index] in root.messages: Rectangle {
-                                    property <bool> lit: root.active-item == message.item;
-                                    // The space that holds a short history down stays outside the row.
-                                    property <length> top: index == 0 ? root.lead : 0px;
-                                    height: col.preferred-height + self.top;
-                                    Rectangle { y: parent.top; height: parent.height - parent.top; background: parent.lit ? Theme.row-hover : transparent; }
-                                    // The pointer area wraps the row, so hovering selectable text still counts.
-                                    // The last hovered or clicked message keeps its actions: the list takes
-                                    // the pointer when a press starts, which ends hover, so a hover-only bar
-                                    // would vanish before its button saw the click.
-                                    row-pointer := TouchArea {
-                                        y: parent.top; height: parent.height - parent.top;
-                                        changed has-hover => { if self.has-hover { root.active-item = message.item; } }
-                                        clicked => { root.active-item = message.item; }
-                                        // A right click opens the same menu as the hover bar's More button.
-                                        pointer-event(event) => {
-                                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down
-                                                && !message.deleted && message.delivery == "" {
-                                                root.active-item = message.item;
-                                                root.anchor(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 0px, 0px, true);
-                                                root.open-menu(message);
-                                            }
-                                        }
-                                        col := VerticalLayout {
-                                            padding-top: message.day != "" ? 12px : message.first ? 14px : 1px;
-                                            padding-bottom: index == root.messages.length - 1 ? 16px : 1px;
-                                            spacing: 0px;
-                                            // History starts with a way to load more of it.
-                                            if index == 0 && !root.preview && root.room-ready: HorizontalLayout {
-                                                alignment: center; padding-top: 4px; padding-bottom: 8px;
-                                                Rectangle {
-                                                    width: earlier-content.preferred-width; height: 30px; border-radius: 15px;
-                                                    background: earlier-touch.has-hover && !root.loading-history ? Theme.active : Theme.raised;
-                                                    accessible-role: button; accessible-label: "Earlier messages"; accessible-enabled: !root.loading-history && !root.busy;
-                                                    accessible-action-default => { if !root.loading-history && !root.busy { root.earlier(); } }
-                                                    earlier-content := HorizontalLayout {
-                                                        padding-left: 12px; padding-right: 14px; spacing: 6px;
-                                                        Image { source: @image-url("icons/history.svg"); width: 16px; image-fit: contain; colorize: Theme.secondary; }
-                                                        Text { text: root.loading-history ? "Loading..." : "Earlier messages"; color: Theme.secondary; font-size: 14px; font-weight: 500; vertical-alignment: center; }
-                                                    }
-                                                    earlier-touch := TouchArea { enabled: !root.loading-history && !root.busy; mouse-cursor: MouseCursor.pointer; clicked => { root.earlier(); } }
-                                                }
-                                            }
-                                            if message.day != "": HorizontalLayout {
-                                                padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;
-                                                Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: Theme.line; } }
-                                                Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                                Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: Theme.line; } }
-                                            }
-                                            HorizontalLayout {
-                                                padding-left: 16px; padding-right: 48px; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
-                                                Rectangle {
-                                                    width: 40px;
-                                                    min-height: message.first ? (message.has-reply ? 64px : 40px) : 0px;
-                                                    if message.has-reply: Rectangle {
-                                                        x: 19px; y: 11px; width: 33px; height: 13px; clip: true;
-                                                        Rectangle {
-                                                            x: 0px; y: 0px; width: parent.width + 12px; height: parent.height + 12px;
-                                                            border-width: 2px; border-color: #4a4c56; border-top-left-radius: 6px;
-                                                        }
-                                                    }
-                                                    if message.first: Avatar {
-                                                        x: 0px; y: message.has-reply ? 24px : 2px;
-                                                        initial: message.initial; tint: message.tint; picture: message.picture;
-                                                    }
-                                                    if !message.first && root.active-item == message.item: Text {
-                                                        x: 0px; y: 4px; width: 40px;
-                                                        text: message.short-time; color: Theme.muted; font-size: 12px; font-weight: 500;
-                                                        horizontal-alignment: right; overflow: elide;
-                                                    }
-                                                }
-                                                VerticalLayout {
-                                                    spacing: 3px; horizontal-stretch: 1;
-                                                    if message.has-reply: HorizontalLayout {
-                                                        height: 22px; spacing: 6px;
-                                                        if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; } }
-                                                        if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                        Text { text: message.reply-body; color: Theme.muted; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-                                                    }
-                                                    if message.first: HorizontalLayout {
-                                                        spacing: 8px;
-                                                        StyledText { text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center; }
-                                                        StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    if message.body != "": StyledText {
-                                                        text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
-                                                        default-font-size: root.message-font-size;
-                                                        link-clicked(link) => { root.open-link(link); }
-                                                        accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
-                                                    }
-                                                    if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
-                                                    // Fixed-size children sit beside a spacer, so they do not cap the column's width.
-                                                    // Clicking an image opens it large.
-                                                    if message.images.length > 0: HorizontalLayout {
-                                                        padding-top: 4px;
-                                                        Rectangle {
-                                                            width: message.gallery-width * 1px; height: message.gallery-height * 1px;
-                                                            for cell in message.images: Rectangle {
-                                                                x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
-                                                                border-radius: 8px; clip: true; background: Theme.sunken;
-                                                                Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
-                                                                TouchArea {
-                                                                    mouse-cursor: MouseCursor.pointer;
-                                                                    clicked => { root.view-image(message.item, cell.index); }
-                                                                }
-                                                                if root.active-item == message.item && !root.preview && message.delivery == "": Rectangle {
-                                                                    x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
-                                                                    IconButton {
-                                                                        icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: Theme.text;
-                                                                        clicked => { root.save-attachment(message.item, cell.index); }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    for file in message.files: HorizontalLayout {
-                                                        padding-top: 4px;
-                                                        Rectangle {
-                                                            min-height: file-card.preferred-height; max-width: 432px; horizontal-stretch: 100;
-                                                            background: Theme.sidebar; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
-                                                            file-card := HorizontalLayout {
-                                                                padding: 12px; padding-right: 8px; spacing: 12px;
-                                                                Image { source: @image-url("icons/file.svg"); width: 30px; image-fit: contain; colorize: Theme.accent; }
-                                                                VerticalLayout {
-                                                                    alignment: center; horizontal-stretch: 1;
-                                                                    Text { text: file.name; color: Theme.text; font-weight: 500; overflow: elide; }
-                                                                    if file.detail != "": Label { text: file.detail; }
-                                                                }
-                                                                IconButton {
-                                                                    icon: @image-url("icons/download.svg"); label: "Save " + file.name;
-                                                                    enabled: !root.preview && message.delivery == "";
-                                                                    clicked => { root.save-attachment(message.item, file.index); }
-                                                                }
-                                                            }
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    // Link previews and bot cards, behind a bar of their colour.
-                                                    for embed in message.embeds: HorizontalLayout {
-                                                        padding-top: 4px;
-                                                        Rectangle {
-                                                            min-height: embed-body.preferred-height; max-width: 432px; horizontal-stretch: 100;
-                                                            background: Theme.sidebar; border-radius: 4px; clip: true;
-                                                            Rectangle { x: 0px; width: 4px; background: embed.has-color ? embed.color : Theme.edge; }
-                                                            embed-body := HorizontalLayout {
-                                                                padding: 12px; padding-left: 16px; padding-right: 16px; spacing: 16px;
-                                                                VerticalLayout {
-                                                                    spacing: 8px; horizontal-stretch: 1; alignment: start;
-                                                                    if embed.has-provider: StyledText { text: embed.provider; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; max-lines: 1; }
-                                                                    if embed.has-author: StyledText { text: embed.author; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
-                                                                    if embed.has-title: StyledText {
-                                                                        text: embed.title; default-color: Theme.text; link-color: Theme.link; default-font-size: 16px;
-                                                                        link-clicked(link) => { root.open-link(link); }
-                                                                    }
-                                                                    if embed.has-description: StyledText {
-                                                                        text: embed.description; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
-                                                                        link-clicked(link) => { root.open-link(link); }
-                                                                    }
-                                                                    for row in embed.field-rows: HorizontalLayout {
-                                                                        spacing: 8px;
-                                                                        for field in row.fields: VerticalLayout {
-                                                                            spacing: 2px; horizontal-stretch: 1;
-                                                                            StyledText { text: field.name; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
-                                                                            StyledText {
-                                                                                text: field.value; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
-                                                                                link-clicked(link) => { root.open-link(link); }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    // A video's poster opens the video; other pictures open in the viewer.
-                                                                    if embed.images.length > 0: HorizontalLayout {
-                                                                        Rectangle {
-                                                                            width: embed.gallery-width * 1px; height: embed.gallery-height * 1px;
-                                                                            for cell in embed.images: Rectangle {
-                                                                                x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
-                                                                                border-radius: 4px; clip: true; background: Theme.sunken;
-                                                                                Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
-                                                                                if embed.video: Rectangle {
-                                                                                    width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
-                                                                                    Path {
-                                                                                        width: 18px; height: 20px; x: 17px; y: 14px;
-                                                                                        commands: "M 0 0 L 18 10 L 0 20 Z"; fill: #ffffff;
-                                                                                    }
-                                                                                }
-                                                                                TouchArea {
-                                                                                    mouse-cursor: MouseCursor.pointer;
-                                                                                    clicked => {
-                                                                                        if embed.video { root.open-link(embed.url); } else { root.view-image(message.item, cell.index); }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        Rectangle { horizontal-stretch: 1; }
-                                                                    }
-                                                                    if embed.has-footer: StyledText { text: embed.footer; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; }
-                                                                }
-                                                                if embed.has-thumbnail: VerticalLayout {
-                                                                    alignment: start;
-                                                                    Rectangle {
-                                                                        width: 80px; height: 80px; border-radius: 4px; clip: true;
-                                                                        Image { source: embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Thumbnail"; }
-                                                                        TouchArea {
-                                                                            mouse-cursor: MouseCursor.pointer;
-                                                                            clicked => { root.view-image(message.item, embed.thumbnail-index); }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    if message.reactions.length > 0: HorizontalLayout {
-                                                        spacing: 6px; alignment: start; padding-top: 4px;
-                                                        for reaction in message.reactions: ReactionToggle {
-                                                            key: reaction.key; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
-                                                            enabled: message.can-react && root.composer-enabled;
-                                                            clicked => { root.react(message.item, reaction.key); }
-                                                        }
-                                                    }
-                                                    if message.delivery != "": HorizontalLayout {
-                                                        spacing: 4px; alignment: start;
-                                                        Text { text: message.delivery; color: message.delivery-failed ? Theme.danger : Theme.muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; }
-                                                        if message.can-retry: ActionButton { text: "Retry"; ghost: true; small: true; clicked => { root.retry(message.item); } }
-                                                        if message.can-cancel: ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-send(message.item); } }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                focus-on-click: false;
+                                accessible-role: list;
+                                accessible-label: "Messages";
+                                key-pressed(event) => {
+                                    if root.messages.length == 0 { return reject; }
+                                    if root.confirm-delete != "" && root.confirm-delete == root.active-item {
+                                        if event.text == Key.Return { root.confirm-delete-message(); return accept; }
+                                        if event.text == Key.Escape { root.cancel-delete(); return accept; }
                                     }
-                                    // Actions, the reaction picker and delete confirmation float over the
-                                    // row's top edge, so opening them never moves the timeline.
-                                    if (self.lit || root.react-item == message.item || root.menu-item == message.item || root.confirm-delete == message.item) && !message.deleted && message.delivery == "": Rectangle {
-                                        x: parent.width - self.width - 16px; y: parent.top + (index == 0 ? 4px : -16px);
-                                        width: actions.preferred-width; height: actions.preferred-height;
-                                        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
-                                        drop-shadow-blur: 10px; drop-shadow-color: #00000059; drop-shadow-offset-y: 2px;
-                                        actions := HorizontalLayout {
-                                            padding: 3px; spacing: 0px;
-                                            if root.confirm-delete == message.item: HorizontalLayout {
-                                                spacing: 4px; padding-left: 8px;
-                                                Text { text: "Delete for everyone?"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                ActionButton { text: "Delete"; danger: true; small: true; clicked => { root.confirm-delete-message(); } }
-                                                ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-delete(); } }
+                                    if event.text == Key.UpArrow { root.step-message(root.active-index < 0 ? root.messages.length - 1 : root.active-index - 1); return accept; }
+                                    if event.text == Key.DownArrow { root.step-message(root.active-index < 0 ? root.messages.length - 1 : root.active-index + 1); return accept; }
+                                    if event.text == Key.PageUp { root.step-message(root.active-index - 5); return accept; }
+                                    if event.text == Key.PageDown { root.step-message(root.active-index + 5); return accept; }
+                                    if event.text == Key.Home { root.step-message(0); return accept; }
+                                    if event.text == Key.End { root.step-message(root.messages.length - 1); return accept; }
+                                    if event.text == Key.Escape { root.focus-composer(); return accept; }
+                                    if root.active-index < 0 || root.active-index >= root.messages.length { return reject; }
+                                    if root.keyed-message.deleted || root.keyed-message.delivery != "" { return reject; }
+                                    if event.text == Key.Return || event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                                        root.keyboard-popup = "menu"; return accept;
+                                    }
+                                    if (event.text == "+" || event.text == "=") && root.keyed-message.can-react && root.composer-enabled {
+                                        root.keyboard-popup = "react"; return accept;
+                                    }
+                                    if (event.text == "r" || event.text == "R") && root.keyed-message.can-reply && root.composer-enabled {
+                                        root.reply(root.keyed-message.item); root.focus-composer(); return accept;
+                                    }
+                                    if (event.text == "e" || event.text == "E") && root.keyed-message.own && root.keyed-message.can-edit && root.composer-enabled {
+                                        root.edit(root.keyed-message.item); root.focus-composer(); return accept;
+                                    }
+                                    if (event.text == Key.Delete || event.text == Key.Backspace) && root.keyed-message.can-delete && root.composer-enabled {
+                                        root.request-delete(root.keyed-message.item); return accept;
+                                    }
+                                    if (event.text == "c" || event.text == "C") && root.keyed-message.body != "" {
+                                        root.copy-text(root.keyed-message.body); return accept;
+                                    }
+                                    if (event.text == "f" || event.text == "F") && root.keyed-message.can-forward && (root.trusted || root.preview) {
+                                        root.start-forward(root.keyed-message.item); return accept;
+                                    }
+                                    return reject;
+                                }
+                                timeline := ListView {
+                                    width: parent.width; height: parent.height;
+                                    scrolled => { root.follow-latest = false; }
+                                    for message[index] in root.messages: Rectangle {
+                                        property <bool> lit: root.active-item == message.item;
+                                        // The keyboard's message stays in view, with room for the next one,
+                                        // so stepping on finds it built.
+                                        changed lit => {
+                                            if self.lit && root.browsing {
+                                                root.active-index = index;
+                                                if self.y + timeline.content-y < root.keyboard-margin {
+                                                    root.follow-latest = false;
+                                                    timeline.content-y = min(0px, root.keyboard-margin - self.y);
+                                                } else if self.y + self.height + timeline.content-y > timeline.height - root.keyboard-margin {
+                                                    timeline.content-y = max(min(0px, timeline.height - timeline.content-height), timeline.height - root.keyboard-margin - self.y - self.height);
+                                                }
                                             }
-                                            // Frequent reactions, then the picker, Edit on your own message or
-                                            // Reply on someone else's, and everything else under More.
-                                            if root.confirm-delete != message.item: HorizontalLayout {
+                                        }
+                                        property <bool> keyed: self.lit && root.keyboard-popup != "";
+                                        changed keyed => {
+                                            if self.keyed {
+                                                root.anchor(self.absolute-position.x + self.width - 16px, self.absolute-position.y + self.top - 16px, 0px, 32px, false);
+                                                if root.keyboard-popup == "menu" { root.open-menu(message); } else { root.open-picker(message.item); }
+                                                root.keyboard-popup = "";
+                                            }
+                                        }
+                                        // The space that holds a short history down stays outside the row.
+                                        property <length> top: index == 0 ? root.lead : 0px;
+                                        height: col.preferred-height + self.top;
+                                        Rectangle { y: parent.top; height: parent.height - parent.top; background: parent.lit ? Theme.row-hover : transparent; }
+                                        // The keyboard's message has a marigold edge.
+                                        if self.lit && root.browsing: Rectangle { x: 0px; y: parent.top; width: 3px; height: parent.height - parent.top; background: Theme.accent; }
+                                        // The pointer area wraps the row, so hovering selectable text still counts.
+                                        // The last hovered or clicked message keeps its actions: the list takes
+                                        // the pointer when a press starts, which ends hover, so a hover-only bar
+                                        // would vanish before its button saw the click.
+                                        row-pointer := TouchArea {
+                                            y: parent.top; height: parent.height - parent.top;
+                                            changed has-hover => { if self.has-hover { root.active-item = message.item; root.active-index = index; } }
+                                            clicked => { root.active-item = message.item; root.active-index = index; }
+                                            // A right click opens the same menu as the hover bar's More button.
+                                            pointer-event(event) => {
+                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down
+                                                    && !message.deleted && message.delivery == "" {
+                                                    root.active-item = message.item;
+                                                    root.anchor(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 0px, 0px, true);
+                                                    root.open-menu(message);
+                                                }
+                                            }
+                                            col := VerticalLayout {
+                                                padding-top: message.day != "" ? 12px : message.first ? 14px : 1px;
+                                                padding-bottom: index == root.messages.length - 1 ? 16px : 1px;
                                                 spacing: 0px;
-                                                if message.can-react && root.composer-enabled: HorizontalLayout {
-                                                    spacing: 0px;
-                                                    for cell in root.bar-reactions: EmojiButton {
-                                                        emoji: cell; font: root.emoji-font;
-                                                        clicked => { root.react(message.item, cell.glyph); }
-                                                    }
+                                                // History starts with a way to load more of it.
+                                                if index == 0 && !root.preview && root.room-ready: HorizontalLayout {
+                                                    alignment: center; padding-top: 4px; padding-bottom: 8px;
                                                     Rectangle {
-                                                        width: 9px;
-                                                        Rectangle { width: 1px; height: 20px; background: Theme.line; }
+                                                        width: earlier-content.preferred-width; height: 30px; border-radius: 15px;
+                                                        background: earlier-touch.has-hover && !root.loading-history ? Theme.active : Theme.raised;
+                                                        accessible-role: button; accessible-label: "Earlier messages"; accessible-enabled: !root.loading-history && !root.busy;
+                                                        accessible-action-default => { if !root.loading-history && !root.busy { root.earlier(); } }
+                                                        earlier-content := HorizontalLayout {
+                                                            padding-left: 12px; padding-right: 14px; spacing: 6px;
+                                                            Image { source: @image-url("icons/history.svg"); width: 16px; image-fit: contain; colorize: Theme.secondary; }
+                                                            Text { text: root.loading-history ? "Loading..." : "Earlier messages"; color: Theme.secondary; font-size: 14px; font-weight: 500; vertical-alignment: center; }
+                                                        }
+                                                        earlier-touch := TouchArea { enabled: !root.loading-history && !root.busy; mouse-cursor: MouseCursor.pointer; clicked => { root.earlier(); } }
                                                     }
+                                                }
+                                                if message.day != "": HorizontalLayout {
+                                                    padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;
+                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: Theme.line; } }
+                                                    Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: Theme.line; } }
+                                                }
+                                                HorizontalLayout {
+                                                    padding-left: 16px; padding-right: 48px; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
+                                                    Rectangle {
+                                                        width: 40px;
+                                                        min-height: message.first ? (message.has-reply ? 64px : 40px) : 0px;
+                                                        if message.has-reply: Rectangle {
+                                                            x: 19px; y: 11px; width: 33px; height: 13px; clip: true;
+                                                            Rectangle {
+                                                                x: 0px; y: 0px; width: parent.width + 12px; height: parent.height + 12px;
+                                                                border-width: 2px; border-color: #4a4c56; border-top-left-radius: 6px;
+                                                            }
+                                                        }
+                                                        if message.first: Avatar {
+                                                            x: 0px; y: message.has-reply ? 24px : 2px;
+                                                            initial: message.initial; tint: message.tint; picture: message.picture;
+                                                        }
+                                                        if !message.first && root.active-item == message.item: Text {
+                                                            x: 0px; y: 4px; width: 40px;
+                                                            text: message.short-time; color: Theme.muted; font-size: 12px; font-weight: 500;
+                                                            horizontal-alignment: right; overflow: elide;
+                                                        }
+                                                    }
+                                                    VerticalLayout {
+                                                        spacing: 3px; horizontal-stretch: 1;
+                                                        if message.has-reply: HorizontalLayout {
+                                                            height: 22px; spacing: 6px;
+                                                            if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; } }
+                                                            if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                            Text { text: message.reply-body; color: Theme.muted; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                                        }
+                                                        if message.first: HorizontalLayout {
+                                                            spacing: 8px;
+                                                            StyledText { text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center; }
+                                                            StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                        if message.body != "": StyledText {
+                                                            text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
+                                                            default-font-size: root.message-font-size;
+                                                            link-clicked(link) => { root.open-link(link); }
+                                                            accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
+                                                        }
+                                                        if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
+                                                        // Fixed-size children sit beside a spacer, so they do not cap the column's width.
+                                                        // Clicking an image opens it large.
+                                                        if message.images.length > 0: HorizontalLayout {
+                                                            padding-top: 4px;
+                                                            Rectangle {
+                                                                width: message.gallery-width * 1px; height: message.gallery-height * 1px;
+                                                                for cell in message.images: Rectangle {
+                                                                    x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
+                                                                    border-radius: 8px; clip: true; background: Theme.sunken;
+                                                                    Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
+                                                                    TouchArea {
+                                                                        mouse-cursor: MouseCursor.pointer;
+                                                                        clicked => { root.view-image(message.item, cell.index); }
+                                                                    }
+                                                                    if root.active-item == message.item && !root.preview && message.delivery == "": Rectangle {
+                                                                        x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
+                                                                        IconButton {
+                                                                            icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: Theme.text;
+                                                                            clicked => { root.save-attachment(message.item, cell.index); }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                        for file in message.files: HorizontalLayout {
+                                                            padding-top: 4px;
+                                                            Rectangle {
+                                                                min-height: file-card.preferred-height; max-width: 432px; horizontal-stretch: 100;
+                                                                background: Theme.sidebar; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+                                                                file-card := HorizontalLayout {
+                                                                    padding: 12px; padding-right: 8px; spacing: 12px;
+                                                                    Image { source: @image-url("icons/file.svg"); width: 30px; image-fit: contain; colorize: Theme.accent; }
+                                                                    VerticalLayout {
+                                                                        alignment: center; horizontal-stretch: 1;
+                                                                        Text { text: file.name; color: Theme.text; font-weight: 500; overflow: elide; }
+                                                                        if file.detail != "": Label { text: file.detail; }
+                                                                    }
+                                                                    IconButton {
+                                                                        icon: @image-url("icons/download.svg"); label: "Save " + file.name;
+                                                                        enabled: !root.preview && message.delivery == "";
+                                                                        clicked => { root.save-attachment(message.item, file.index); }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                        // Link previews and bot cards, behind a bar of their colour.
+                                                        for embed in message.embeds: HorizontalLayout {
+                                                            padding-top: 4px;
+                                                            Rectangle {
+                                                                min-height: embed-body.preferred-height; max-width: 432px; horizontal-stretch: 100;
+                                                                background: Theme.sidebar; border-radius: 4px; clip: true;
+                                                                Rectangle { x: 0px; width: 4px; background: embed.has-color ? embed.color : Theme.edge; }
+                                                                embed-body := HorizontalLayout {
+                                                                    padding: 12px; padding-left: 16px; padding-right: 16px; spacing: 16px;
+                                                                    VerticalLayout {
+                                                                        spacing: 8px; horizontal-stretch: 1; alignment: start;
+                                                                        if embed.has-provider: StyledText { text: embed.provider; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; max-lines: 1; }
+                                                                        if embed.has-author: StyledText { text: embed.author; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
+                                                                        if embed.has-title: StyledText {
+                                                                            text: embed.title; default-color: Theme.text; link-color: Theme.link; default-font-size: 16px;
+                                                                            link-clicked(link) => { root.open-link(link); }
+                                                                        }
+                                                                        if embed.has-description: StyledText {
+                                                                            text: embed.description; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                                                                            link-clicked(link) => { root.open-link(link); }
+                                                                        }
+                                                                        for row in embed.field-rows: HorizontalLayout {
+                                                                            spacing: 8px;
+                                                                            for field in row.fields: VerticalLayout {
+                                                                                spacing: 2px; horizontal-stretch: 1;
+                                                                                StyledText { text: field.name; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
+                                                                                StyledText {
+                                                                                    text: field.value; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                                                                                    link-clicked(link) => { root.open-link(link); }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        // A video's poster opens the video; other pictures open in the viewer.
+                                                                        if embed.images.length > 0: HorizontalLayout {
+                                                                            Rectangle {
+                                                                                width: embed.gallery-width * 1px; height: embed.gallery-height * 1px;
+                                                                                for cell in embed.images: Rectangle {
+                                                                                    x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
+                                                                                    border-radius: 4px; clip: true; background: Theme.sunken;
+                                                                                    Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
+                                                                                    if embed.video: Rectangle {
+                                                                                        width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
+                                                                                        Path {
+                                                                                            width: 18px; height: 20px; x: 17px; y: 14px;
+                                                                                            commands: "M 0 0 L 18 10 L 0 20 Z"; fill: #ffffff;
+                                                                                        }
+                                                                                    }
+                                                                                    TouchArea {
+                                                                                        mouse-cursor: MouseCursor.pointer;
+                                                                                        clicked => {
+                                                                                            if embed.video { root.open-link(embed.url); } else { root.view-image(message.item, cell.index); }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            Rectangle { horizontal-stretch: 1; }
+                                                                        }
+                                                                        if embed.has-footer: StyledText { text: embed.footer; link-color: Theme.link; default-color: Theme.muted; default-font-size: 12px; }
+                                                                    }
+                                                                    if embed.has-thumbnail: VerticalLayout {
+                                                                        alignment: start;
+                                                                        Rectangle {
+                                                                            width: 80px; height: 80px; border-radius: 4px; clip: true;
+                                                                            Image { source: embed.thumbnail; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Thumbnail"; }
+                                                                            TouchArea {
+                                                                                mouse-cursor: MouseCursor.pointer;
+                                                                                clicked => { root.view-image(message.item, embed.thumbnail-index); }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                        if message.reactions.length > 0: HorizontalLayout {
+                                                            spacing: 6px; alignment: start; padding-top: 4px;
+                                                            for reaction in message.reactions: ReactionToggle {
+                                                                key: reaction.key; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
+                                                                enabled: message.can-react && root.composer-enabled;
+                                                                clicked => { root.react(message.item, reaction.key); }
+                                                            }
+                                                        }
+                                                        if message.delivery != "": HorizontalLayout {
+                                                            spacing: 4px; alignment: start;
+                                                            Text { text: message.delivery; color: message.delivery-failed ? Theme.danger : Theme.muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; }
+                                                            if message.can-retry: ActionButton { text: "Retry"; ghost: true; small: true; clicked => { root.retry(message.item); } }
+                                                            if message.can-cancel: ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-send(message.item); } }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Actions, the reaction picker and delete confirmation float over the
+                                        // row's top edge, so opening them never moves the timeline.
+                                        if (self.lit || root.react-item == message.item || root.menu-item == message.item || root.confirm-delete == message.item) && !message.deleted && message.delivery == "": Rectangle {
+                                            x: parent.width - self.width - 16px; y: parent.top + (index == 0 ? 4px : -16px);
+                                            width: actions.preferred-width; height: actions.preferred-height;
+                                            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+                                            drop-shadow-blur: 10px; drop-shadow-color: #00000059; drop-shadow-offset-y: 2px;
+                                            actions := HorizontalLayout {
+                                                padding: 3px; spacing: 0px;
+                                                if root.confirm-delete == message.item: HorizontalLayout {
+                                                    spacing: 4px; padding-left: 8px;
+                                                    Text { text: "Delete for everyone?"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                    ActionButton { text: "Delete"; danger: true; small: true; clicked => { root.confirm-delete-message(); } }
+                                                    ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-delete(); } }
+                                                }
+                                                // Frequent reactions, then the picker, Edit on your own message or
+                                                // Reply on someone else's, and everything else under More.
+                                                if root.confirm-delete != message.item: HorizontalLayout {
+                                                    spacing: 0px;
+                                                    if message.can-react && root.composer-enabled: HorizontalLayout {
+                                                        spacing: 0px;
+                                                        for cell in root.bar-reactions: EmojiButton {
+                                                            emoji: cell; font: root.emoji-font;
+                                                            clicked => { root.react(message.item, cell.glyph); }
+                                                        }
+                                                        Rectangle {
+                                                            width: 9px;
+                                                            Rectangle { width: 1px; height: 20px; background: Theme.line; }
+                                                        }
+                                                        IconButton {
+                                                            icon: @image-url("icons/smile-plus.svg"); label: "Add reaction";
+                                                            clicked => {
+                                                                root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
+                                                                root.open-picker(message.item);
+                                                            }
+                                                        }
+                                                    }
+                                                    if message.own && message.can-edit && root.composer-enabled: IconButton { icon: @image-url("icons/pencil.svg"); label: "Edit"; clicked => { root.edit(message.item); root.focus-composer(); } }
+                                                    if !(message.own && message.can-edit) && message.can-reply && root.composer-enabled: IconButton { icon: @image-url("icons/reply.svg"); label: "Reply"; clicked => { root.reply(message.item); root.focus-composer(); } }
                                                     IconButton {
-                                                        icon: @image-url("icons/smile-plus.svg"); label: "Add reaction";
+                                                        icon: @image-url("icons/ellipsis.svg"); label: "More";
                                                         clicked => {
                                                             root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
-                                                            root.open-picker(message.item);
+                                                            root.open-menu(message);
                                                         }
-                                                    }
-                                                }
-                                                if message.own && message.can-edit && root.composer-enabled: IconButton { icon: @image-url("icons/pencil.svg"); label: "Edit"; clicked => { root.edit(message.item); root.focus-composer(); } }
-                                                if !(message.own && message.can-edit) && message.can-reply && root.composer-enabled: IconButton { icon: @image-url("icons/reply.svg"); label: "Reply"; clicked => { root.reply(message.item); root.focus-composer(); } }
-                                                IconButton {
-                                                    icon: @image-url("icons/ellipsis.svg"); label: "More";
-                                                    clicked => {
-                                                        root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
-                                                        root.open-menu(message);
                                                     }
                                                 }
                                             }
@@ -2735,6 +2836,8 @@ export component TalkWindow inherits Window {
                                         suggestion-moved(step) => { root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length); }
                                         suggestion-chosen => { root.mention-chosen(root.mention-index); }
                                         suggestion-dismissed => { root.mention-dismissed(); }
+                                        up-from-empty => { root.edit-last(); }
+                                        up-to-messages => { root.browse-messages(); }
                                     }
                                     VerticalLayout {
                                         alignment: end; padding-bottom: 8px;

@@ -56,6 +56,10 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   homeserver's user directory, or a full Matrix id. Talk opens the DM you
   already have with them, or starts an encrypted one and opens it once sync
   lists it.
+- Use the keyboard for messages: Up in an empty composer edits your last
+  message; Alt+Up moves into the messages, where arrows step, Enter opens the
+  menu, + reacts, R replies, E edits, Delete deletes, C copies, F forwards and
+  Escape returns to the composer.
 - Mention someone by typing `@` and picking from the room's members. The
   message links to them (`[Name](https://matrix.to/#/@user:server)`) and lists
   them in `m.mentions`, so their client notifies them. Who else is typing
