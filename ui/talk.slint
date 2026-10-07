@@ -1416,7 +1416,7 @@ export component TalkWindow inherits Window {
                                     IconButton { icon: @image-url("icons/x.svg"); label: root.is-editing ? "Cancel editing" : "Cancel reply"; size: 28px; glyph: 16px; clicked => { root.cancel-compose(); } }
                                 }
                             }
-                            Rectangle {
+                            composer-box := Rectangle {
                                 visible: !root.room-request;
                                 min-height: root.room-request ? 0px : 48px; max-height: root.room-request ? 0px : 100000px;
                                 background: Theme.field;
@@ -1553,11 +1553,12 @@ export component TalkWindow inherits Window {
         cancel-switch => { root.cancel-switch(); }
         confirm-switch => { root.confirm-switch(); }
     }
-    // Mention suggestions, just above the composer; see MentionList.
+    // Mention suggestions, just above the composer and as wide as it, over a
+    // reply's or an edit's bar; see MentionList.
     if root.mentions.length > 0 && root.composer-enabled: MentionList {
-        x: composer.absolute-position.x - 6px;
-        width: min(composer.width + 12px, 420px);
-        y: composer.absolute-position.y - self.height - 12px;
+        x: composer-box.absolute-position.x;
+        width: composer-box.width;
+        y: composer-box.absolute-position.y - (root.compose-label != "" ? 36px : 0px) - self.height - 8px;
         mentions: root.mentions; mention-index: root.mention-index;
         mention-chosen(index) => { root.mention-chosen(index); }
     }

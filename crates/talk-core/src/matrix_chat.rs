@@ -801,6 +801,7 @@ fn load_members(open: &mut OpenRoom, events: &UnboundedSender<Event>) {
                         name: member
                             .display_name()
                             .map_or_else(|| member.user_id().to_string(), ToOwned::to_owned),
+                        username: None,
                         role: match member.power_level() {
                             UserPowerLevel::Int(level) => match i64::from(level) {
                                 100.. => Role::Admin,

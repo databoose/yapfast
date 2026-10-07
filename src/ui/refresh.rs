@@ -821,24 +821,33 @@ impl Adapter {
         });
         window.set_sending(state.sending.is_some());
         window.set_typing(state.typing_line().into());
-        let mentions: Vec<MentionRow> = state
-            .mention_suggestions()
-            .into_iter()
-            .map(|candidate| MentionRow {
-                initial: initial(&candidate.name),
-                tint: tint(&candidate.name),
-                picture: cached_picture(&mut self.pictures, state, candidate.avatar.as_deref()),
-                color: role_color(candidate.color),
-                has_color: candidate.color.is_some(),
-                group: candidate.group,
-                detail: match (candidate.group, candidate.mention.as_str()) {
-                    (false, _) => "",
-                    (true, "@everyone") => "Everyone in this channel",
-                    (true, "@here") => "Everyone online here",
-                    (true, _) => "Role",
+        let suggestions = state.mention_suggestions();
+        let mentions: Vec<MentionRow> = suggestions
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                // People come first, then roles and groups, each under a heading.
+                let starts_section = index == 0 || suggestions[index - 1].group != candidate.group;
+                MentionRow {
+                    heading: match (starts_section, candidate.group) {
+                        (false, _) => "",
+                        (true, false) => "MEMBERS",
+                        (true, true) => "ROLES",
+                    }
+                    .into(),
+                    initial: initial(&candidate.name),
+                    tint: tint(&candidate.name),
+                    picture: cached_picture(&mut self.pictures, state, candidate.avatar.as_deref()),
+                    color: role_color(candidate.color),
+                    has_color: candidate.color.is_some(),
+                    group: candidate.group,
+                    detail: match candidate.mention.as_str() {
+                        "@everyone" => "Everyone in this channel".into(),
+                        "@here" => "Everyone online here".into(),
+                        _ => candidate.username.clone().unwrap_or_default().into(),
+                    },
+                    name: candidate.name.as_str().into(),
                 }
-                .into(),
-                name: candidate.name.into(),
             })
             .collect();
         if window.get_mention_index() >= mentions.len() as i32 {

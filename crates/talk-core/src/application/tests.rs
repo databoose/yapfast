@@ -242,6 +242,7 @@ fn members_belong_to_the_selected_text_room() {
     let member = ChatMember {
         id: "@bob:test".into(),
         name: "Bob".into(),
+        username: None,
         role: Role::Member,
         avatar: None,
         group: None,
@@ -1149,6 +1150,7 @@ fn member(id: &str, name: &str) -> ChatMember {
     ChatMember {
         id: id.into(),
         name: name.into(),
+        username: None,
         role: Role::Member,
         avatar: None,
         group: None,
@@ -1332,6 +1334,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
     let mut app = connected();
     app.apply(discord_event(Snapshot {
         status: Status::Online,
+        user_id: Some("1".into()),
         servers: vec![Arc::new(Server {
             id: "10".into(),
             name: "Test".into(),
@@ -1353,7 +1356,13 @@ fn discord_mentions_search_the_server_and_name_roles() {
     });
     app.apply(Event::Members {
         room: room.clone(),
-        members: Ok(vec![member("2", "Bob")]),
+        members: Ok(vec![
+            ChatMember {
+                username: Some("bob".into()),
+                ..member("2", "Bob")
+            },
+            member("1", "Alice"),
+        ]),
     });
     app.apply(Event::MentionGroups {
         room: room.clone(),
@@ -1363,6 +1372,21 @@ fn discord_mentions_search_the_server_and_name_roles() {
             color: Some(0x3498db),
         }],
     });
+    // People with their usernames, then roles; never this account.
+    app.dispatch(Action::MentionQuery(Some(String::new())));
+    let suggested: Vec<_> = app
+        .state
+        .mention_suggestions()
+        .into_iter()
+        .map(|candidate| (candidate.name, candidate.username, candidate.group))
+        .collect();
+    assert_eq!(
+        suggested,
+        [
+            ("Bob".into(), Some("bob".into()), false),
+            ("Mods".into(), None, true)
+        ]
+    );
     // Few listed members match, so the server is searched, once per name.
     assert!(matches!(
         app.dispatch(Action::MentionQuery(Some("Bo".into()))).as_slice(),
@@ -1561,6 +1585,7 @@ fn matrix_profiles_show_what_the_member_list_knows() {
         members: Ok(vec![ChatMember {
             id: "@bob:test".into(),
             name: "Bob".into(),
+            username: None,
             role: Role::Moderator,
             avatar: Some("bob.png".into()),
             group: None,

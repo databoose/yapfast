@@ -1219,6 +1219,7 @@ pub fn command(
                 .into_iter()
                 .map(|user| ChatMember {
                     name: discord.name(guild, &user).unwrap_or_else(|| user.clone()),
+                    username: discord.username(&user),
                     avatar: Some(discord.avatar(Some(guild), &user)),
                     color: server.and_then(|server| discord.color(server, &user)),
                     role: Role::Member,
@@ -1270,6 +1271,7 @@ pub fn command(
                     .into_iter()
                     .map(|user| ChatMember {
                         name: discord.name(&guild, &user).unwrap_or_else(|| user.clone()),
+                        username: discord.username(&user),
                         avatar: Some(discord.avatar(Some(&guild), &user)),
                         color: server.and_then(|server| discord.color(server, &user)),
                         role: Role::Member,
@@ -2040,6 +2042,7 @@ fn chat_member(member: ListedMember) -> ChatMember {
     ChatMember {
         id: member.user_id,
         name: member.name,
+        username: member.username,
         role: Role::Member,
         avatar: Some(member.avatar),
         group: Some(member.group),

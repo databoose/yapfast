@@ -6,6 +6,8 @@
 pub struct Candidate {
     /// What follows the `@` in the composer.
     pub name: String,
+    /// What else names them: a Discord username or a Matrix user id.
+    pub username: Option<String>,
     /// How a message says it on its network, such as `<@20>` on Discord.
     pub mention: String,
     /// The address of their avatar; see [`crate::chat::Command::Pictures`].
@@ -114,22 +116,39 @@ pub fn query(text: &str, cursor: usize) -> Option<(usize, &str)> {
 }
 
 /// The candidates `query` may mean, at most `limit`: names that start with it,
-/// then names with a later word that does.
+/// then usernames that do, then names with a later word that does.
 pub fn matching<'a>(candidates: &'a [Candidate], query: &str, limit: usize) -> Vec<&'a Candidate> {
     let query = query.to_lowercase();
-    let starts = |candidate: &&Candidate| candidate.name.to_lowercase().starts_with(&query);
-    let later_word = |candidate: &&Candidate| {
-        candidate
-            .name
-            .to_lowercase()
+    let rank = |candidate: &Candidate| {
+        let name = candidate.name.to_lowercase();
+        if name.starts_with(&query) {
+            Some(0)
+        } else if candidate
+            .username
+            .as_ref()
+            .is_some_and(|username| username.to_lowercase().starts_with(&query))
+        {
+            Some(1)
+        } else if name
             .split_whitespace()
             .skip(1)
             .any(|word| word.starts_with(&query))
+        {
+            Some(2)
+        } else {
+            None
+        }
     };
-    let mut found: Vec<&Candidate> = candidates.iter().filter(starts).collect();
-    found.extend(candidates.iter().filter(|c| !starts(c) && later_word(c)));
-    found.truncate(limit);
+    let mut found: Vec<(u8, &Candidate)> = candidates
+        .iter()
+        .filter_map(|candidate| Some((rank(candidate)?, candidate)))
+        .collect();
+    found.sort_by_key(|(rank, _)| *rank);
     found
+        .into_iter()
+        .take(limit)
+        .map(|(_, candidate)| candidate)
+        .collect()
 }
 
 /// `text` with each `@name` of a candidate, outside code, in its network's form.
@@ -182,6 +201,7 @@ mod tests {
     fn person(name: &str, mention: &str) -> Candidate {
         Candidate {
             name: name.into(),
+            username: None,
             mention: mention.into(),
             avatar: None,
             color: None,
@@ -243,6 +263,10 @@ mod tests {
             person("Status Bot", "<@7>"),
             person("Carol", "<@3>"),
             person("bobby", "<@9>"),
+            Candidate {
+                username: Some("bob_the_builder".into()),
+                ..person("Robert", "<@11>")
+            },
         ];
         let names = |query| -> Vec<&str> {
             matching(&candidates, query, 8)
@@ -250,8 +274,8 @@ mod tests {
                 .map(|candidate| candidate.name.as_str())
                 .collect()
         };
-        assert_eq!(names("bo"), ["Bob", "bobby", "Status Bot"]);
-        assert_eq!(names(""), ["Bob", "Status Bot", "Carol", "bobby"]);
+        assert_eq!(names("bo"), ["Bob", "bobby", "Robert", "Status Bot"]);
+        assert_eq!(names(""), ["Bob", "Status Bot", "Carol", "bobby", "Robert"]);
         assert!(names("x").is_empty());
         assert_eq!(matching(&candidates, "", 2).len(), 2);
     }

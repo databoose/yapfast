@@ -205,6 +205,7 @@ pub(super) fn preview_members(room: &str) -> Vec<ChatMember> {
         .map(|&(name, role)| ChatMember {
             id: format!("@{}:preview.local", name.to_lowercase()),
             name: name.into(),
+            username: None,
             role,
             avatar: None,
             group: None,
