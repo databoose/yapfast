@@ -162,6 +162,23 @@ impl StreamOpenings {
             return;
         }
         waiting.opening.apply(key, &event.event, data);
+        self.finish(tracker, key, waiting);
+    }
+
+    /// Answers the streams whose server Discord already named once this
+    /// account's voice session is known too, as when it arrives after them.
+    pub(super) fn voice_changed(&mut self, tracker: &Tracker) {
+        let keys: Vec<String> = self.waiting.keys().cloned().collect();
+        for key in keys {
+            if let Some(waiting) = self.waiting.remove(&key) {
+                self.finish(tracker, &key, waiting);
+            }
+        }
+    }
+
+    /// Answers a stream once its server and this account's voice session are
+    /// known, or keeps it waiting.
+    fn finish(&mut self, tracker: &Tracker, key: &str, waiting: PendingStream) {
         let session = tracker.voice_session(&waiting.guild);
         match session.and_then(|session| waiting.opening.server(key, &tracker.me, session)) {
             Some(server) => {
@@ -183,5 +200,51 @@ impl StreamOpenings {
         for (_, waiting) in self.waiting.drain() {
             let _ = waiting.reply.send(Err(anyhow!("{message}")));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stream_opens_when_the_voice_session_comes_last() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "guilds": [{"id": "10", "properties": {"name": "Test"}, "channels": [
+                {"id": "11", "name": "Lounge", "type": 2, "position": 0},
+            ]}],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let mut openings = StreamOpenings::new();
+        let (reply, mut answer) = oneshot::channel();
+        let key = "guild:10:11:2";
+        openings.wait(key.into(), "10".into(), reply, "replaced");
+        for (event, data) in [
+            (
+                Event::StreamCreate,
+                json!({"stream_key": key, "rtc_server_id": "99"}),
+            ),
+            (
+                Event::StreamServerUpdate,
+                json!({"stream_key": key, "token": "t", "endpoint": "e"}),
+            ),
+        ] {
+            openings.apply(&tracker, &Dispatch { event, data });
+        }
+        assert!(answer.try_recv().is_err(), "no voice session yet");
+        tracker.apply(
+            &Event::VoiceStateUpdate,
+            &json!({"guild_id": "10", "user_id": "1", "channel_id": "11", "session_id": "s"}),
+        );
+        openings.voice_changed(&tracker);
+        let server = answer.try_recv().expect("answered").expect("opened");
+        assert_eq!(
+            (server.session_id.as_str(), server.rtc_server_id.as_str()),
+            ("s", "99")
+        );
+        assert!(!openings.waiting());
     }
 }

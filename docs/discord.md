@@ -291,7 +291,8 @@ Go Live streams come through Discord's gateway: op 18 starts sharing, op 20
 watches someone, op 22 pauses and op 19 ends either. Discord answers with
 STREAM_CREATE, naming the RTC server, then STREAM_SERVER_UPDATE with an
 endpoint and token. The stream gets a voice connection of its own to that
-server, reusing the call's voice session id. `talk_discord::stream` names
+server, reusing the call's voice session id; a stream waits for that id too,
+if this account's voice state arrives after both answers. `talk_discord::stream` names
 streams by key (`guild:{server}:{channel}:{user}`) and
 `Discord::{go_live, watch, end_stream, pause_stream}` run the signalling. Voice
 states carry `self_stream`, which shows as a LIVE badge beside the person.
@@ -525,7 +526,9 @@ Talk starts from Discord as it last saw it, kept in the data directory by
   seconds while connected. Calls and who is in voice aren't saved. On the
   next start Talk shows it all at once, identifies with the saved status, and
   READY replaces it. A saved member list shows at once, even before Talk
-  connects, and Discord's sync replaces it.
+  connects, and Discord's sync replaces it. The list on screen is kept with
+  them when the connection drops, so it shows again at once after
+  reconnecting.
 - `discord-messages/` holds, for each channel shown lately, its newest 100
   messages, written within 20 seconds of a change, when the channel leaves
   the 40 kept in memory, and when Talk closes. The 300 channels used last are

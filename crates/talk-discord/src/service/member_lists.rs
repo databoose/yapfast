@@ -99,9 +99,13 @@ impl MemberLists {
         Ok(())
     }
 
-    /// Drops what only a session had.
+    /// Drops what only a session had. The list on screen is kept with the
+    /// others, so the next session, or the saved account while offline,
+    /// shows it again at once.
     pub(super) fn disconnected(&mut self) {
-        self.shown = None;
+        if let Some(list) = self.shown.take() {
+            self.keep(list);
+        }
         self.subscribed.clear();
     }
 
@@ -377,5 +381,39 @@ impl MemberLists {
             }
             None => MemberList::new(guild.to_owned(), channel.to_owned(), readers.to_owned()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn the_list_on_screen_is_kept_through_a_disconnect() {
+        let (live, _) = broadcast::channel(8);
+        let mut lists = MemberLists::new(Vec::new(), live, Arc::default());
+        let mut list = MemberList::new("10".into(), "11".into(), "everyone".into());
+        list.apply(
+            &json!({
+                "guild_id": "10", "id": "everyone", "member_count": 1,
+                "groups": [{"id": "online", "count": 1}],
+                "ops": [{"op": "SYNC", "range": [0, 99], "items": [
+                    {"group": {"id": "online", "count": 1}},
+                    {"member": {"user": {"id": "2", "username": "bob"}, "roles": [], "nick": null}},
+                ]}],
+            }),
+            &mut Names::default(),
+        );
+        assert!(list.synced());
+        lists.listing = Some(("10".into(), "11".into()));
+        lists.shown = Some(list);
+        lists.disconnected();
+        assert!(lists.shown.is_none());
+        // The next session takes it up again rather than starting empty.
+        let taken = lists.take("10", "11", "everyone");
+        assert!(taken.synced());
+        assert_eq!(taken.count(), Some(1));
     }
 }

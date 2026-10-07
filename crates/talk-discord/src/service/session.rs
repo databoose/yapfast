@@ -331,6 +331,8 @@ impl Session<'_> {
             _ => true,
         };
         self.join.apply(&self.tracker.me, &dispatch);
+        // Whether the tracker already took this event in, and changed.
+        let mut applied = None;
         match event {
             Event::PresenceUpdate => self.shared.lists.presence(&self.tracker, data),
             Event::GuildMemberListUpdate => {
@@ -338,7 +340,9 @@ impl Session<'_> {
                     self.publisher.changed();
                 }
             }
-            Event::GuildMembersChunk => self.searches.answer(&mut self.tracker, &dispatch),
+            Event::GuildMembersChunk => {
+                applied = self.searches.answer(&mut self.tracker, &dispatch);
+            }
             _ => {}
         }
         // Parsed once, for the timeline and for a notification.
@@ -356,7 +360,7 @@ impl Session<'_> {
             let guild = data["guild_id"].as_str().map(str::to_owned);
             let _ = self.shared.live.send(Live::Notify { guild, message });
         }
-        if self.tracker.apply(event, data) {
+        if applied.unwrap_or_else(|| self.tracker.apply(event, data)) {
             self.publisher.changed();
         }
         if !awaited && let Some(moved) = self.tracker.moved(event, data) {
@@ -367,8 +371,13 @@ impl Session<'_> {
             self.show_presence().await?;
         }
         self.shared.lists.group_event(&self.tracker, &dispatch);
-        if self.streams.waiting() && event.is_stream() {
-            self.streams.apply(&self.tracker, &dispatch);
+        if self.streams.waiting() {
+            if event.is_stream() {
+                self.streams.apply(&self.tracker, &dispatch);
+            } else if *event == Event::VoiceStateUpdate {
+                // This account's voice session may be what a stream waited for.
+                self.streams.voice_changed(&self.tracker);
+            }
         }
         Ok(())
     }

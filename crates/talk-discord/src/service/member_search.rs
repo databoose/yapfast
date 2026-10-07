@@ -36,16 +36,14 @@ impl MemberSearches {
         gateway.search_members(guild, query, FOUND, &nonce).await
     }
 
-    /// Answers the search a chunk of members is for, if any.
-    pub(super) fn answer(&mut self, tracker: &mut Tracker, event: &Dispatch) {
-        let Some(reply) = event.data["nonce"]
+    /// Answers the search a chunk of members is for, if any. Its members are
+    /// learned first, so their names are known; then this returns whether
+    /// that changed the tracker, and the chunk needn't be applied again.
+    pub(super) fn answer(&mut self, tracker: &mut Tracker, event: &Dispatch) -> Option<bool> {
+        let reply = event.data["nonce"]
             .as_str()
-            .and_then(|nonce| self.waiting.remove(nonce))
-        else {
-            return;
-        };
-        // Learn the members before answering, so their names are known.
-        tracker.apply(&event.event, &event.data);
+            .and_then(|nonce| self.waiting.remove(nonce))?;
+        let changed = tracker.apply(&event.event, &event.data);
         let found = event.data["members"]
             .as_array()
             .into_iter()
@@ -54,5 +52,6 @@ impl MemberSearches {
             .map(str::to_owned)
             .collect();
         let _ = reply.send(found);
+        Some(changed)
     }
 }
