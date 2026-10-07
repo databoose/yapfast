@@ -14,7 +14,8 @@
 // with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
 // group DM, "Weekend plans", with Bob and Carol. POST /_control/dm makes Dave
-// write to her, opening a DM with her the first time. Erin, who shares no
+// write to her, opening a DM with her the first time, and POST
+// /_control/mention makes Bob mention her in #general. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
@@ -1843,6 +1844,11 @@ const server = Bun.serve<SocketData>({
       const message = post(DM_DAVE, users.dave, `Hi Alice, it's Dave (${messages.get(DM_DAVE)!.length + 1})`, Date.now());
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
       return new Response("Dave wrote\n");
+    }
+    if (req.method === "POST" && path === "/_control/mention") {
+      const message = post(GENERAL, users.bob, `<@${users.alice.id}> are you in for co-op tonight?`, Date.now());
+      dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      return new Response("Bob mentioned Alice\n");
     }
     if (req.method === "POST" && path === "/_control/chat-stop") {
       clearInterval(chat);

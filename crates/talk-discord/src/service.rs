@@ -94,6 +94,12 @@ pub struct Snapshot {
 #[derive(Clone, Debug)]
 pub enum Live {
     Created(Message),
+    /// A new message that should notify this account, by its notification settings,
+    /// in a server or, with none, a DM.
+    Notify {
+        guild: Option<String>,
+        message: Message,
+    },
     Updated(Message),
     Deleted {
         channel: String,
@@ -956,6 +962,13 @@ async fn connected_session(
                 for live in live_events(&me, &shared.names, &event.name, &event.data) {
                     let _ = shared.live.send(live);
                 }
+                if event.name == "MESSAGE_CREATE"
+                    && tracker.notifies(&event.data)
+                    && let Some(message) = message::parse(&event.data)
+                {
+                    let guild = event.data["guild_id"].as_str().map(str::to_owned);
+                    let _ = shared.live.send(Live::Notify { guild, message });
+                }
                 if tracker.apply(&event.name, &event.data) {
                     shared.snapshots.send_replace(tracker.snapshot());
                 }
@@ -1339,6 +1352,28 @@ impl Tracker {
                 .then_with(|| a.user_id.cmp(&b.user_id))
         });
         Some(members)
+    }
+
+    /// Whether a new message should notify this account. Message requests and
+    /// spam don't.
+    fn notifies(&self, message: &Value) -> bool {
+        let channel = message["channel_id"].as_str().unwrap_or_default();
+        let category = message["guild_id"].as_str().and_then(|guild| {
+            let server = self.servers.iter().find(|server| server.id == guild)?;
+            let channel = server
+                .text_channels
+                .iter()
+                .find(|known| known.id == channel)?;
+            channel.parent.as_deref()
+        });
+        let unwanted = self
+            .private
+            .iter()
+            .any(|private| private.id == channel && (private.request || private.spam));
+        !unwanted
+            && self
+                .unreads
+                .notifies(message, &self.me, &self.my_roles, category)
     }
 
     /// DMs and group DMs, the latest conversation first.

@@ -657,9 +657,10 @@ component SettingsSwitch inherits VerticalLayout {
     in property <string> text;
     in property <string> description;
     in-out property <bool> checked;
+    in property <bool> enabled: true;
     callback toggled(bool);
     spacing: 4px;
-    Switch { text: root.text; checked <=> root.checked; toggled => { root.toggled(self.checked); } }
+    Switch { text: root.text; enabled: root.enabled; checked <=> root.checked; toggled => { root.toggled(self.checked); } }
     if root.description != "": Label { text: root.description; }
 }
 
@@ -1271,7 +1272,7 @@ export component TalkWindow inherits Window {
     in-out property <image> watch-frame;
     in property <string> switch-prompt;
     /// The settings screen covers the window, showing one section: 0 account, 1 voice and
-    /// audio, 2 messages, 3 Discord.
+    /// audio, 2 messages, 3 notifications, 4 Discord.
     in-out property <bool> settings-open;
     in-out property <int> settings-section;
     /// Preferences people set in the settings; preferences-changed reports any change.
@@ -1280,6 +1281,9 @@ export component TalkWindow inherits Window {
     in-out property <int> text-size: 1;
     in-out property <bool> link-previews: true;
     in-out property <bool> unmute-on-join;
+    in-out property <bool> notifications: true;
+    in-out property <bool> notification-sound: true;
+    in-out property <bool> notification-text: true;
     callback preferences-changed();
     out property <length> message-font-size: root.text-size == 0 ? 14px : root.text-size == 2 ? 18px : 16px;
     // The sidebar keeps 180 to 380px. Dragging also leaves the conversation 420px;
@@ -2755,9 +2759,13 @@ export component TalkWindow inherits Window {
                                 text: "Messages"; icon: @image-url("icons/message-circle.svg");
                                 selected: root.settings-section == 2; clicked => { root.settings-section = 2; }
                             }
+                            ChannelRow {
+                                text: "Notifications"; icon: @image-url("icons/bell.svg");
+                                selected: root.settings-section == 3; clicked => { root.settings-section = 3; }
+                            }
                             if root.discord-linked: ChannelRow {
                                 text: "Discord"; icon: @image-url("icons/discord.svg");
-                                selected: root.settings-section == 3; clicked => { root.settings-section = 3; }
+                                selected: root.settings-section == 4; clicked => { root.settings-section = 4; }
                             }
                         }
                     }
@@ -2876,7 +2884,31 @@ export component TalkWindow inherits Window {
                                         toggled => { root.preferences-changed(); }
                                     }
                                 }
-                                if root.settings-section == 3 && root.discord-linked: VerticalLayout {
+                                if root.settings-section == 3: VerticalLayout {
+                                    spacing: 16px;
+                                    SettingsTitle { text: "Notifications"; }
+                                    SettingsSwitch {
+                                        text: "Show desktop notifications";
+                                        description: "For new messages while Talk isn't in front. Each Discord server's notification settings and your Matrix notification rules decide which: usually DMs and mentions. Clicking one opens the conversation.";
+                                        checked <=> root.notifications;
+                                        toggled => { root.preferences-changed(); }
+                                    }
+                                    SettingsSwitch {
+                                        text: "Play a sound";
+                                        description: "Your desktop's message sound, with each notification.";
+                                        checked <=> root.notification-sound;
+                                        enabled: root.notifications;
+                                        toggled => { root.preferences-changed(); }
+                                    }
+                                    SettingsSwitch {
+                                        text: "Show what messages say";
+                                        description: "Off shows only who wrote and where, for a screen others can see.";
+                                        checked <=> root.notification-text;
+                                        enabled: root.notifications;
+                                        toggled => { root.preferences-changed(); }
+                                    }
+                                }
+                                if root.settings-section == 4 && root.discord-linked: VerticalLayout {
                                     spacing: 16px;
                                     SettingsTitle { text: "Discord"; }
                                     SettingsSwitch {

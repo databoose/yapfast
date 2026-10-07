@@ -73,8 +73,8 @@ Opening one shows its messages with Accept and Ignore in place of the
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Talk never opens a request on its
-own when it picks a conversation. Forwarding, typing, desktop notifications,
-DM calls and starting a new DM are still open.
+own when it picks a conversation. Forwarding, typing, DM calls and starting a
+new DM are still open.
 
 Clicking someone in a channel's member list shows their profile in a small
 card beside it, which "View full profile" enlarges into a centred one;
@@ -354,8 +354,12 @@ and DM is visible without copying anything into Matrix.
   message says. GIFs show their first frame. Pictures come through Discord's
   media proxy (`images-ext-*.discordapp.net`), so Talk never contacts the
   linked site, and embeds of a message marked to hide them don't show.
-- Notifications follow the person's Discord settings, including per-server mutes
-  and "mentions only".
+- Desktop notifications follow the person's Discord settings: each channel's,
+  category's or server's level (every message, mentions only or nothing),
+  falling back to the server's default, with mutes leaving only mentions. DMs
+  notify unless muted; message requests and spam don't. They show while Talk
+  isn't in front, titled with who wrote where, and clicking one opens the
+  conversation. On Linux they go to the freedesktop notification service.
 - Reading a message in Talk marks it read on Discord, so the phone app agrees.
   A setting turns this off.
 - Talk sets the online, idle and do-not-disturb status on Discord. Closing Talk

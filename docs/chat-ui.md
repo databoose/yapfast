@@ -113,7 +113,8 @@ The window follows Discord's arrangement:
   knows only its own call's participants.
 - A dock across the rail and sidebar: the voice panel, then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
-  audio devices, message text size, clock and link previews, reconnect, sign out). A caret beside mute and deafen opens a
+  audio devices, message text size, clock and link previews, notifications,
+  reconnect, sign out). A caret beside mute and deafen opens a
   device menu; the input menu shows a local level meter.
 - A conversation with a 48px header. Messages from one person within seven
   minutes are grouped under one avatar and name. Hovering a grouped message

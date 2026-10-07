@@ -214,6 +214,8 @@ impl AppState {
 pub enum Action {
     Navigate(Navigation),
     SelectRoom(String),
+    /// Go to wherever a conversation is listed and open it, as a notification does.
+    Open(String),
     SetDraft(String),
     Send,
     Reply(String),
@@ -289,6 +291,8 @@ pub enum Action {
 pub enum Effect {
     Start(chat::Start),
     Backend(Command),
+    /// Notify the person of a new message, if they aren't looking at Talk.
+    Notify(chat::Alert),
     /// List the system's audio devices for the preview, then report them
     /// through [`Application::preview_devices`].
     ListDevices,
@@ -438,6 +442,25 @@ impl Application {
                 }
                 self.state.navigation = navigation;
                 self.restore_selection()
+            }
+            Action::Open(id) => {
+                let Some(room) = self.state.rooms.iter().find(|room| room.id == id) else {
+                    return vec![];
+                };
+                let navigation = if room.direct {
+                    Some(Navigation::DirectMessages)
+                } else {
+                    self.state
+                        .servers
+                        .iter()
+                        .find(|server| server.channels.contains(&id))
+                        .map(|server| Navigation::Server(server.id.clone()))
+                };
+                let mut effects = navigation
+                    .map(|navigation| self.dispatch(Action::Navigate(navigation)))
+                    .unwrap_or_default();
+                effects.extend(self.select(id));
+                effects
             }
             Action::SelectRoom(id) => {
                 let mut effects = self.select(id.clone());
@@ -933,6 +956,38 @@ impl Application {
         }
     }
 
+    /// A notification titled with who wrote where: the person alone in a DM, else with
+    /// the group, the Matrix room, or the Discord channel and its server.
+    fn alert(&self, notification: chat::Notification) -> chat::Alert {
+        let chat::Notification {
+            room,
+            author,
+            body,
+            avatar,
+        } = notification;
+        let place = self.state.rooms.iter().find(|known| known.id == room);
+        let server = self
+            .state
+            .servers
+            .iter()
+            .find(|server| server.channels.contains(&room));
+        let title = match (place, server) {
+            (Some(place), _) if place.direct && place.person.is_some() => author,
+            (Some(place), Some(server)) if server.discord => {
+                format!("{author} in #{} ({})", place.name, server.name)
+            }
+            (Some(place), _) => format!("{author} in {}", place.name),
+            (None, _) => author,
+        };
+        let picture = avatar.and_then(|avatar| self.state.pictures.get(&avatar).cloned());
+        chat::Alert {
+            room,
+            title,
+            body,
+            picture,
+        }
+    }
+
     fn apply_event(&mut self, event: Event) -> Vec<Effect> {
         match event {
             Event::Voice(state) => self.state.voice = state,
@@ -968,6 +1023,7 @@ impl Application {
             Event::Picture { url, picture } => {
                 self.state.pictures.insert(url, picture);
             }
+            Event::Notify(notification) => return vec![Effect::Notify(self.alert(notification))],
             #[cfg(feature = "discord")]
             Event::Discord(snapshot) => {
                 self.state.discord_online =
@@ -1898,6 +1954,39 @@ mod tests {
             Effect::Backend(command @ Command::Send { .. }) => command,
             _ => panic!("expected send command"),
         }
+    }
+
+    #[test]
+    fn notifications_name_the_place_and_open_it() {
+        let mut app = connected();
+        let notify = |app: &mut Application, room: &str| {
+            let effects = app.apply(Event::Notify(chat::Notification {
+                room: room.into(),
+                author: "Sam".into(),
+                body: "Thinking co-op".into(),
+                avatar: None,
+            }));
+            match effects.as_slice() {
+                [Effect::Notify(alert)] => (alert.room.clone(), alert.title.clone()),
+                _ => panic!("expected one notification"),
+            }
+        };
+        assert_eq!(
+            notify(&mut app, "games"),
+            ("games".into(), "Sam in games".into())
+        );
+        assert_eq!(
+            notify(&mut app, "unknown"),
+            ("unknown".into(), "Sam".into())
+        );
+        // Opening a channel from DMs goes to its server first.
+        assert_eq!(app.state.selected.as_deref(), Some("dm"));
+        app.dispatch(Action::Open("games".into()));
+        assert_eq!(app.state.navigation, Navigation::Server("friends".into()));
+        assert_eq!(app.state.selected.as_deref(), Some("games"));
+        app.dispatch(Action::Open("dm".into()));
+        assert_eq!(app.state.navigation, Navigation::DirectMessages);
+        assert_eq!(app.state.selected.as_deref(), Some("dm"));
     }
 
     #[test]

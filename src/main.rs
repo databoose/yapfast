@@ -6,6 +6,8 @@ mod emoji;
 #[cfg(feature = "desktop")]
 mod graphics;
 #[cfg(feature = "desktop")]
+mod notify;
+#[cfg(feature = "desktop")]
 mod ui;
 
 use anyhow::{Context, Result, bail};

@@ -391,6 +391,8 @@ pub enum Event {
         index: usize,
         picture: Result<Arc<Picture>, &'static str>,
     },
+    /// A new message to notify the person of.
+    Notify(Notification),
     /// A picture [`Command::Pictures`] asked for, decoded.
     Picture {
         url: String,
@@ -518,11 +520,60 @@ pub fn plain_snippet(markdown: &str) -> String {
     text
 }
 
+/// A Markdown body as plain text for a notification: its paragraphs and list items on
+/// lines of their own, cut at about 300 characters.
+pub fn notification_text(markdown: &str) -> String {
+    use pulldown_cmark::{Event, Parser, TagEnd};
+    const LIMIT: usize = 300;
+    let mut text = String::new();
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Text(part) | Event::Code(part) => text.push_str(&part),
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::Heading(_))
+                if !text.is_empty() && !text.ends_with('\n') =>
+            {
+                text.push('\n');
+            }
+            _ => {}
+        }
+    }
+    let text = text.trim_end();
+    match text.char_indices().nth(LIMIT) {
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
+        None => text.to_owned(),
+    }
+}
+
 /// Whether Talk can start without the sign-in screen: with a saved Matrix
 /// session, or always in a build without Matrix, where Discord uses the
 /// account linked on this device.
 pub fn can_restore(root: &std::path::Path) -> bool {
     !cfg!(feature = "matrix") || root.join("active.json").exists()
+}
+
+/// A new message that should notify the person, by their notification settings on its
+/// network.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notification {
+    /// The conversation it came in.
+    pub room: String,
+    pub author: String,
+    /// The message as plain text.
+    pub body: String,
+    /// The address of the author's picture; see [`Command::Pictures`].
+    pub avatar: Option<String>,
+}
+
+/// A notification ready to show: its conversation, a title naming who wrote where, the
+/// message, and the author's picture when Talk has it.
+#[derive(Clone, Debug)]
+pub struct Alert {
+    pub room: String,
+    pub title: String,
+    pub body: String,
+    pub picture: Option<Arc<Picture>>,
 }
 
 /// What woke the actor. Each network's own events are handled by its module.
@@ -689,6 +740,17 @@ mod tests {
             )
             .unwrap();
         data
+    }
+
+    #[test]
+    fn notification_text_keeps_lines_and_cuts_long_messages() {
+        assert_eq!(
+            notification_text("**Bold** start\n\n- one\n- `two`"),
+            "Bold start\none\ntwo"
+        );
+        let long = "word ".repeat(100);
+        let text = notification_text(&long);
+        assert!(text.ends_with('…') && text.chars().count() <= 301);
     }
 
     #[test]

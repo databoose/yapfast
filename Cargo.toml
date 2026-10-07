@@ -16,7 +16,7 @@ default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["talk-core/matrix"]
 discord = ["talk-core/discord"]
-desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core"]
+desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus"]
 
 [dependencies]
 anyhow.workspace = true
@@ -39,6 +39,11 @@ talk-ui = { path = "crates/talk-ui", optional = true }
 # Opens links clicked in messages in the default browser.
 webbrowser = { version = "1", optional = true }
 tracing.workspace = true
+
+# Desktop notifications through the freedesktop service, on the session bus Slint and
+# the keyring already use.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"], optional = true }
 
 [dev-dependencies]
 i-slint-backend-testing = "=1.18.1"

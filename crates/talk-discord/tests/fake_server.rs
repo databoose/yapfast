@@ -442,6 +442,32 @@ async fn talks_to_the_fake_server() {
             && snapshot.conversations[0].mentions == 1
     })
     .await;
+    // His message notifies, as DMs do.
+    let notified = live_where(&mut live, |event| match event {
+        Live::Notify { guild, message } => Some((guild, message.author)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(notified, (None, "Dave".to_owned()));
+    // The server notifies for mentions only: Bob's photos don't, his mention does.
+    for control_path in ["gallery", "mention"] {
+        control
+            .post(format!("{server}/_control/{control_path}"))
+            .send()
+            .await
+            .unwrap();
+    }
+    let notified = live_where(&mut live, |event| match event {
+        Live::Notify { guild, message } => Some((guild, message.content)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(notified.0.as_deref(), Some(guild.as_str()));
+    assert!(
+        notified.1.ends_with("are you in for co-op tonight?"),
+        "{}",
+        notified.1
+    );
 
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.

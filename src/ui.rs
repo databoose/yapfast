@@ -141,6 +141,36 @@ fn prepare(window: &TalkWindow) {
     }
     window.set_emoji_font(emoji::family().into());
     copy_whole_messages(window);
+    // The winit window exists once the event loop runs.
+    let weak = window.as_weak();
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        if let Some(window) = weak.upgrade() {
+            FOCUSED.set(false);
+            window.window().on_winit_window_event(|_, event| {
+                if let slint::winit_030::winit::event::WindowEvent::Focused(focused) = event {
+                    FOCUSED.set(*focused);
+                }
+                slint::winit_030::EventResult::Propagate
+            });
+        }
+    });
+}
+
+thread_local! {
+    /// Whether Talk's window has the keyboard focus, so notifications can wait.
+    static FOCUSED: Cell<bool> = const { Cell::new(false) };
+    /// Opens a conversation from a clicked notification, in the current window.
+    static OPEN: RefCell<Option<OpenRoom>> = const { RefCell::new(None) };
+}
+
+type OpenRoom = Box<dyn Fn(String)>;
+
+fn open_from_notification(room: String) {
+    OPEN.with(|open| {
+        if let Some(open) = open.borrow().as_ref() {
+            open(room);
+        }
+    });
 }
 
 /// Lets a selection of text copy the messages it covers whole, including those scrolled out of
@@ -345,6 +375,11 @@ struct Layout {
     link_previews: Option<bool>,
     /// Joining a call turns the microphone on.
     unmute_on_join: bool,
+    /// Desktop notifications, their sound, and whether they say what messages say; on
+    /// unless turned off.
+    notifications: Option<bool>,
+    notification_sound: Option<bool>,
+    notification_text: Option<bool>,
 }
 
 impl Layout {
@@ -364,6 +399,9 @@ impl Layout {
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
         window.set_unmute_on_join(self.unmute_on_join);
+        window.set_notifications(self.notifications.unwrap_or(true));
+        window.set_notification_sound(self.notification_sound.unwrap_or(true));
+        window.set_notification_text(self.notification_text.unwrap_or(true));
     }
 
     /// A message's row as these preferences show it: its time on the chosen clock, and its
@@ -460,6 +498,7 @@ struct Adapter {
     pictures_seen: usize,
     /// The preferences that shape message rows changed, so they're built again.
     restyle: bool,
+    notifier: crate::notify::Notifier,
     /// The viewer's image, converted for Slint while it shows.
     viewer_image: Option<(Arc<Picture>, slint::Image)>,
     /// The size the viewer opened an image at, by item and attachment, kept
@@ -514,6 +553,7 @@ impl Adapter {
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 restyle: false,
+                notifier: crate::notify::Notifier::start(open_from_notification),
                 viewer_image: None,
                 viewer_size: None,
                 dialog: None,
@@ -610,6 +650,16 @@ impl Adapter {
                     });
                     if let Err(error) = task {
                         tracing::error!(%error, "could not list audio devices for the preview");
+                    }
+                }
+                Effect::Notify(alert) => {
+                    // Only while Talk isn't in front: there the lists show what's new.
+                    if self.layout.notifications.unwrap_or(true) && !FOCUSED.get() {
+                        let style = crate::notify::Style {
+                            text: self.layout.notification_text.unwrap_or(true),
+                            sound: self.layout.notification_sound.unwrap_or(true),
+                        };
+                        self.notifier.show(alert, style);
                     }
                 }
                 Effect::Backend(command) => {
@@ -1492,6 +1542,21 @@ impl Drop for Adapter {
 }
 
 fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let state = Rc::downgrade(adapter);
+    let weak = window.as_weak();
+    OPEN.with(|open| {
+        *open.borrow_mut() = Some(Box::new(move |room| {
+            let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
+                return;
+            };
+            let _ = window.show();
+            window
+                .window()
+                .with_winit_window(|winit| winit.focus_window());
+            window.set_settings_open(false);
+            adapter.borrow_mut().action(&window, Action::Open(room));
+        }));
+    });
     macro_rules! bind {
         ($callback:ident, $action:expr) => {{
             let adapter = adapter.clone();
@@ -1644,6 +1709,9 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
         layout.unmute_on_join = window.get_unmute_on_join();
+        layout.notifications = Some(window.get_notifications());
+        layout.notification_sound = Some(window.get_notification_sound());
+        layout.notification_text = Some(window.get_notification_text());
         adapter.layout.write(&adapter.root);
         adapter.restyle = true;
         adapter.refresh(&window);

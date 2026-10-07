@@ -25,6 +25,30 @@ struct Settings {
     suppress_everyone: bool,
     suppress_roles: bool,
     muted_channels: HashMap<String, bool>,
+    /// Which messages notify in the server, unless the server's default applies.
+    level: Option<Level>,
+    /// Channels' and categories' own levels.
+    channel_levels: HashMap<String, Level>,
+}
+
+/// Which messages notify: Discord's `message_notifications`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Level {
+    All,
+    Mentions,
+    Nothing,
+}
+
+impl Level {
+    /// A level, or none where Discord's 3 means the server's default or the parent's.
+    fn from(value: &Value) -> Option<Self> {
+        match value.as_u64()? {
+            0 => Some(Self::All),
+            1 => Some(Self::Mentions),
+            2 => Some(Self::Nothing),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -37,6 +61,8 @@ pub struct Unreads {
     joined: HashMap<String, u64>,
     /// Notification settings by server.
     settings: HashMap<String, Settings>,
+    /// Each server's default notification level, for accounts that kept it.
+    default_levels: HashMap<String, Level>,
 }
 
 /// Discord sends some lists as `{"entries": [...]}` with versioning capabilities.
@@ -73,9 +99,7 @@ impl Unreads {
     pub fn from_ready(ready: &Value) -> Self {
         let mut unreads = Self::default();
         for guild in ready["guilds"].as_array().into_iter().flatten() {
-            for channel in guild["channels"].as_array().into_iter().flatten() {
-                unreads.learn_channel(channel);
-            }
+            unreads.learn_server(guild);
         }
         for channel in ready["private_channels"].as_array().into_iter().flatten() {
             unreads.learn_channel(channel);
@@ -111,6 +135,18 @@ impl Unreads {
         }
     }
 
+    /// A guild object's channels, and its default notification level.
+    fn learn_server(&mut self, guild: &Value) {
+        for channel in guild["channels"].as_array().into_iter().flatten() {
+            self.learn_channel(channel);
+        }
+        let level = Level::from(&guild["properties"]["default_message_notifications"])
+            .or_else(|| Level::from(&guild["default_message_notifications"]));
+        if let (Some(id), Some(level)) = (guild["id"].as_str(), level) {
+            self.default_levels.insert(id.to_owned(), level);
+        }
+    }
+
     /// This account's member object in a server, for when it joined.
     pub fn learn_own_member(&mut self, guild: &str, member: &Value) {
         if let Some(joined) = member["joined_at"].as_str().and_then(iso_ms) {
@@ -129,6 +165,15 @@ impl Unreads {
                 Some((channel["channel_id"].as_str()?.to_owned(), muted(channel)))
             })
             .collect();
+        let channel_levels = value["channel_overrides"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|channel| {
+                let level = Level::from(&channel["message_notifications"])?;
+                Some((channel["channel_id"].as_str()?.to_owned(), level))
+            })
+            .collect();
         self.settings.insert(
             guild.to_owned(),
             Settings {
@@ -136,6 +181,8 @@ impl Unreads {
                 suppress_everyone: value["suppress_everyone"].as_bool().unwrap_or(false),
                 suppress_roles: value["suppress_roles"].as_bool().unwrap_or(false),
                 muted_channels,
+                level: Level::from(&value["message_notifications"]),
+                channel_levels,
             },
         );
     }
@@ -199,9 +246,7 @@ impl Unreads {
                 true
             }
             "GUILD_CREATE" => {
-                for channel in data["channels"].as_array().into_iter().flatten() {
-                    self.learn_channel(channel);
-                }
+                self.learn_server(data);
                 true
             }
             "USER_GUILD_SETTINGS_UPDATE" => {
@@ -219,6 +264,61 @@ impl Unreads {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Whether a new message should notify this account, following its notification
+    /// settings as Discord's clients do. A DM notifies unless it's muted. In a server,
+    /// the channel's level applies, else its category's, the account's for the server,
+    /// then the server's default: every message, mentions only, or nothing. Muting a
+    /// server, category or channel leaves only mentions. Only people's own messages and
+    /// replies notify, not joins, pins and the like.
+    pub fn notifies(
+        &self,
+        message: &Value,
+        me: &str,
+        roles: &HashMap<String, Vec<String>>,
+        category: Option<&str>,
+    ) -> bool {
+        const DEFAULT: u64 = 0;
+        const REPLY: u64 = 19;
+        let kind = message["type"].as_u64().unwrap_or(DEFAULT);
+        if message["author"]["id"] == me || !matches!(kind, DEFAULT | REPLY) {
+            return false;
+        }
+        let Some(channel) = message["channel_id"].as_str() else {
+            return false;
+        };
+        let Some(guild) = message["guild_id"].as_str() else {
+            return !self
+                .settings
+                .get(PRIVATE)
+                .is_some_and(|settings| settings.muted_channels.get(channel) == Some(&true));
+        };
+        let settings = self.settings.get(guild);
+        let places = [Some(channel), category];
+        let level = settings
+            .and_then(|settings| {
+                places
+                    .iter()
+                    .flatten()
+                    .find_map(|place| settings.channel_levels.get(*place).copied())
+                    .or(settings.level)
+            })
+            .or_else(|| self.default_levels.get(guild).copied())
+            // Large servers default to mentions; a server not yet known is treated so.
+            .unwrap_or(Level::Mentions);
+        let muted = settings.is_some_and(|settings| {
+            settings.muted
+                || places
+                    .iter()
+                    .flatten()
+                    .any(|place| settings.muted_channels.get(*place) == Some(&true))
+        });
+        match level {
+            Level::Nothing => false,
+            Level::All if !muted => true,
+            _ => self.mentions_me(guild, message, me, roles.get(guild)),
         }
     }
 
@@ -323,6 +423,64 @@ mod tests {
 
     use super::*;
     use crate::ready;
+
+    #[test]
+    fn notifies_by_level_mute_and_mention() {
+        let ready = json!({
+            "guilds": [
+                {"id": "10", "properties": {"name": "All", "default_message_notifications": 0}},
+                {"id": "20", "properties": {"name": "Big", "default_message_notifications": 1}},
+            ],
+            "user_guild_settings": {"entries": [
+                {"guild_id": "10", "muted": false, "message_notifications": 3, "channel_overrides": [
+                    {"channel_id": "12", "muted": false, "message_notifications": 2},
+                    {"channel_id": "4", "muted": true, "message_notifications": 3},
+                ]},
+                {"guild_id": null, "channel_overrides": [{"channel_id": "50", "muted": true}]},
+            ]},
+        });
+        let unreads = Unreads::from_ready(&ready);
+        let roles = HashMap::new();
+        let message = |guild: Option<&str>, channel: &str, extra: Value| {
+            let mut message = json!({"id": "600", "channel_id": channel, "author": {"id": "2"}});
+            if let Some(guild) = guild {
+                message["guild_id"] = guild.into();
+            }
+            message
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            message
+        };
+        let notifies = |message: &Value, category: Option<&str>| {
+            unreads.notifies(message, "1", &roles, category)
+        };
+        let ping = json!({"mentions": [{"id": "1"}]});
+        // The server's default: every message.
+        assert!(notifies(&message(Some("10"), "11", json!({})), None));
+        // A channel set to nothing stays quiet, even for a mention.
+        assert!(!notifies(&message(Some("10"), "12", ping.clone()), None));
+        // A muted category leaves mentions only.
+        assert!(!notifies(&message(Some("10"), "13", json!({})), Some("4")));
+        assert!(notifies(
+            &message(Some("10"), "13", ping.clone()),
+            Some("4")
+        ));
+        // A large server defaults to mentions.
+        assert!(!notifies(&message(Some("20"), "21", json!({})), None));
+        assert!(notifies(&message(Some("20"), "21", ping.clone()), None));
+        // DMs notify unless muted; own messages and joins never do.
+        assert!(notifies(&message(None, "40", json!({})), None));
+        assert!(!notifies(&message(None, "50", json!({})), None));
+        assert!(!notifies(
+            &message(None, "40", json!({"author": {"id": "1"}})),
+            None
+        ));
+        assert!(!notifies(
+            &message(Some("10"), "11", json!({"type": 7})),
+            None
+        ));
+    }
 
     #[test]
     fn tracks_unreads_mentions_and_mutes() {

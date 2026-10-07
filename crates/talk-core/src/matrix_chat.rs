@@ -52,8 +52,9 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Delivery, Event,
-        MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Picture, Placement, Reaction, Reply, Role,
-        RoomIndex, Start, decode_preview, decode_view, plain_snippet, sort_members,
+        MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture, Placement, Reaction,
+        Reply, Role, RoomIndex, Start, decode_preview, decode_view, notification_text,
+        plain_snippet, sort_members,
     },
     session::Session,
     voice,
@@ -195,6 +196,22 @@ impl Matrix {
                 }
             },
         );
+        // New messages the account's push rules say should notify. The first sync also
+        // brings messages from before Talk started, which don't.
+        let started = matrix_sdk::ruma::MilliSecondsSinceUnixEpoch::now();
+        let notify = events.clone();
+        client
+            .register_notification_handler(move |notification, room: Room, client: Client| {
+                let events = notify.clone();
+                async move {
+                    if let Some(notification) =
+                        notification_of(notification, &room, &client, started).await
+                    {
+                        let _ = events.send(Event::Notify(notification));
+                    }
+                }
+            })
+            .await;
         let (media_sender, media) = tokio::sync::mpsc::unbounded_channel();
         let _ = events.send(Event::Rooms(room_index(&client).await));
         Self {
@@ -1135,6 +1152,60 @@ fn media_key(source: &MediaSource) -> String {
         MediaSource::Plain(uri) => uri.to_string(),
         MediaSource::Encrypted(file) => file.url.to_string(),
     }
+}
+
+/// A Matrix notification as Talk shows it: a new message the push rules say should
+/// notify, sent by someone else since Talk started.
+async fn notification_of(
+    notification: matrix_sdk::sync::Notification,
+    room: &Room,
+    client: &Client,
+    started: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch,
+) -> Option<Notification> {
+    use matrix_sdk::{
+        deserialized_responses::RawAnySyncOrStrippedTimelineEvent,
+        ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent},
+    };
+    if !notification
+        .actions
+        .iter()
+        .any(|action| action.should_notify())
+    {
+        return None;
+    }
+    let RawAnySyncOrStrippedTimelineEvent::Sync(raw) = &notification.event else {
+        return None;
+    };
+    let event = raw.deserialize().ok()?;
+    if event.origin_server_ts() < started || client.user_id() == Some(event.sender()) {
+        return None;
+    }
+    let AnySyncTimelineEvent::MessageLike(event) = event else {
+        return None;
+    };
+    let body = match &event {
+        AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(message)) => {
+            match &message.content.msgtype {
+                MessageType::Image(_) => "Sent a picture".into(),
+                MessageType::File(_) | MessageType::Video(_) | MessageType::Audio(_) => {
+                    "Sent a file".into()
+                }
+                other => notification_text(other.body()),
+            }
+        }
+        AnySyncMessageLikeEvent::RoomEncrypted(_) => "Encrypted message".into(),
+        _ => return None,
+    };
+    let author = match room.get_member_no_sync(event.sender()).await {
+        Ok(Some(member)) => member.name().to_owned(),
+        _ => event.sender().to_string(),
+    };
+    Some(Notification {
+        room: room.room_id().to_string(),
+        author,
+        body,
+        avatar: None,
+    })
 }
 
 fn display_name(

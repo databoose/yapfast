@@ -26,8 +26,8 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, Command, Delivery, Embed, EmbedField, Event,
-        MAX_PREVIEW_DOWNLOAD_BYTES, Picture, Placement, Presence, Profile, ProfileRole, Reaction,
-        Reply, Role, decode_preview, decode_view, plain_snippet,
+        MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture, Placement, Presence, Profile,
+        ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
     },
     discord,
 };
@@ -1302,6 +1302,44 @@ pub fn finished(
     }
 }
 
+/// A new Discord message as a notification: who wrote it, by their name in the server,
+/// and what it says, or what it carries when it has no text.
+fn notification(discord: &Discord, guild: Option<&str>, message: &Message) -> Notification {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = guild.and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild));
+    let author = discord
+        .name(
+            guild.unwrap_or(talk_discord::ready::PRIVATE),
+            &message.author_id,
+        )
+        .unwrap_or_else(|| message.author.clone());
+    let mut body = crate::chat::notification_text(&discord.render(server, &message.content));
+    if body.is_empty() {
+        body = if message
+            .attachments
+            .iter()
+            .any(|attachment| attachment.image)
+        {
+            "Sent a picture".into()
+        } else if !message.attachments.is_empty() {
+            "Sent a file".into()
+        } else if let Some(title) = message.embeds.iter().find_map(|embed| embed.title.clone()) {
+            title
+        } else {
+            "Sent a message".into()
+        };
+    }
+    Notification {
+        room: crate::discord::room_id(
+            guild.unwrap_or(talk_discord::ready::PRIVATE),
+            &message.channel_id,
+        ),
+        author,
+        body,
+        avatar: Some(discord.avatar(guild, &message.author_id)),
+    }
+}
+
 /// Applies a gateway event to the open channel and those kept. Missed
 /// events reload the open one; the others load again when opened.
 pub fn live(
@@ -1311,6 +1349,14 @@ pub fn live(
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
 ) {
+    if let Ok(Live::Notify { guild, message }) = &event {
+        let _ = events.send(Event::Notify(notification(
+            discord,
+            guild.as_deref(),
+            message,
+        )));
+        return;
+    }
     if let Ok(event) = &event {
         for kept in &mut channels.recent {
             kept.live(event);
