@@ -646,16 +646,17 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    // The filters only narrow the sidebar's lists.
     window.on_filter_edited(move || {
         if let Some(window) = weak.upgrade() {
-            state.borrow_mut().refresh(&window);
+            state.borrow_mut().show_sidebar(&window);
         }
     });
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_friend_filter_edited(move || {
         if let Some(window) = weak.upgrade() {
-            state.borrow_mut().refresh(&window);
+            state.borrow_mut().show_sidebar(&window);
         }
     });
     let state = adapter.clone();

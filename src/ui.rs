@@ -978,9 +978,16 @@ impl Adapter {
     }
 
     fn action(&mut self, window: &TalkWindow, action: Action) {
+        // A keystroke in the composer changes only the composer; the rest of
+        // the window stays as it is.
+        let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let effects = self.app.dispatch(action);
         self.execute(effects);
-        self.refresh(window);
+        if composing {
+            self.show_composer(window);
+        } else {
+            self.refresh(window);
+        }
     }
 
     /// Applies a backend event; the caller refreshes the window after.

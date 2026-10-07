@@ -154,7 +154,7 @@ impl Adapter {
     }
 
     /// The rail, the channel or DM list, and the friends and requests screens.
-    fn show_sidebar(&mut self, window: &TalkWindow) {
+    pub(super) fn show_sidebar(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         let query = window.get_filter().to_lowercase();
         window.set_sidebar_title(match &state.navigation {
@@ -766,7 +766,7 @@ impl Adapter {
 
     /// The composer: what it may do, its files, its reply or edit, mentions and
     /// its hint.
-    fn show_composer(&mut self, window: &TalkWindow) {
+    pub(super) fn show_composer(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         let room = state.selected_room();
         window.set_voice_room(room.is_some_and(|room| room.voice));
