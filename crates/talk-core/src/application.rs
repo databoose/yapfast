@@ -146,8 +146,6 @@ pub struct AppState {
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
     pub confirm_delete: Option<String>,
-    /// A file is being read and queued.
-    pub attaching: bool,
     /// The selected room's message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
     pub new_dm: Option<NewDm>,
@@ -162,6 +160,8 @@ pub struct AppState {
     pub reset_version: u64,
     drafts: HashMap<String, String>,
     compose: HashMap<String, Compose>,
+    /// Files waiting in each room's composer for the next message.
+    staged: HashMap<String, Vec<chat::Staged>>,
 }
 
 impl AppState {
@@ -176,6 +176,18 @@ impl AppState {
             .as_ref()
             .and_then(|id| self.drafts.get(id))
             .map_or("", String::as_str)
+    }
+
+    /// The files waiting in the selected room's composer.
+    pub fn staged(&self) -> &[chat::Staged] {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.staged.get(id))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    fn editing(&self) -> bool {
+        matches!(self.compose(), Some(Compose::Edit { .. }))
     }
 
     pub fn compose(&self) -> Option<&Compose> {
@@ -363,12 +375,18 @@ impl AppState {
             .collect()
     }
 
+    /// Text, or files to go with it; an edit changes only the text.
     pub fn can_send(&self) -> bool {
-        self.can_write() && self.sending.is_none() && !self.draft().trim().is_empty()
+        self.can_write()
+            && self.sending.is_none()
+            && (!self.draft().trim().is_empty() || (!self.editing() && !self.staged().is_empty()))
     }
 
     pub fn can_attach(&self) -> bool {
-        self.can_write() && !self.preview && !self.attaching
+        self.can_write()
+            && !self.preview
+            && !self.editing()
+            && self.staged().len() < chat::MAX_FILES
     }
 
     /// Whether a message can be forwarded into this conversation from this
@@ -427,7 +445,10 @@ pub enum Action {
     CancelDelete,
     Retry(String),
     CancelSend(String),
-    Attach(PathBuf),
+    /// Add files to the selected room's next message.
+    Stage(Vec<PathBuf>),
+    /// Take the file at this index out of the next message.
+    Unstage(usize),
     /// Save the attachment at `index` of an item.
     SaveAttachment {
         item: String,
@@ -516,6 +537,8 @@ pub struct Application {
     /// The composer text of the message being sent, which `Event::SendResult` clears
     /// once sent; the backend has it with its mentions in the network's form.
     sent_draft: Option<String>,
+    /// The files sent with it, which leave the composer once sent.
+    sent_files: Vec<PathBuf>,
     /// Discord channels shown lately, newest last: their timeline and
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.
@@ -959,14 +982,18 @@ impl Application {
             Action::CancelSend(item) => {
                 self.queue_action(item, |room, item| Command::Cancel { room, item })
             }
-            Action::Attach(path) => {
-                if !self.state.can_attach() {
-                    return vec![];
+            Action::Stage(paths) => {
+                self.stage(paths);
+                vec![]
+            }
+            Action::Unstage(index) => {
+                if let Some(id) = self.state.selected.clone()
+                    && let Some(staged) = self.state.staged.get_mut(&id)
+                    && index < staged.len()
+                {
+                    staged.remove(index);
                 }
-                self.state.attaching = true;
-                self.state.notice = None;
-                let room = self.state.selected.clone().expect("selected room exists");
-                vec![Effect::Backend(Command::Attach { room, path })]
+                vec![]
             }
             Action::SaveAttachment { item, index, path } => {
                 if self.state.preview
@@ -1488,10 +1515,14 @@ impl Application {
                     self.state.sending = None;
                 }
                 let sent = self.sent_draft.take().unwrap_or(body);
+                let files = std::mem::take(&mut self.sent_files);
                 match result {
                     Ok(()) => {
                         if self.state.drafts.get(&room) == Some(&sent) {
                             self.state.drafts.remove(&room);
+                        }
+                        if let Some(staged) = self.state.staged.get_mut(&room) {
+                            staged.retain(|file| !files.contains(&file.path));
                         }
                         if matches!(self.state.compose.get(&room), Some(Compose::Reply { .. })) {
                             self.state.compose.remove(&room);
@@ -1523,10 +1554,6 @@ impl Application {
                     }
                     self.state.notice = Some(error.into());
                 }
-            }
-            Event::AttachResult { room: _, result } => {
-                self.state.attaching = false;
-                self.state.notice = result.err().map(str::to_owned);
             }
             Event::Draft { room, body } => {
                 // Text typed since opening the room wins over the saved draft.
@@ -1576,7 +1603,6 @@ impl Application {
                     self.state.sending = None;
                 }
             }
-            Command::Attach { .. } => self.state.attaching = false,
             Command::Earlier(room) => {
                 if self.state.selected.as_ref() == Some(room) {
                     self.state.loading_history = false;
@@ -1602,7 +1628,6 @@ impl Application {
         self.state.busy = false;
         self.state.online = false;
         self.state.sending = None;
-        self.state.attaching = false;
         self.state.loading_history = false;
         if self.state.account.is_some() && (self.state.notice.is_none() || was_busy) {
             self.state.notice = Some(STOPPED.into());
@@ -1843,17 +1868,61 @@ impl Application {
                 item,
                 body,
             })],
-            Some(Compose::Reply { item, .. }) => vec![Effect::Backend(Command::Send {
-                room: id,
-                body,
-                reply: Some(item),
-            })],
-            None => vec![Effect::Backend(Command::Send {
-                room: id,
-                body,
-                reply: None,
-            })],
+            compose => {
+                let files: Vec<PathBuf> = self
+                    .state
+                    .staged()
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect();
+                self.sent_files.clone_from(&files);
+                vec![Effect::Backend(Command::Send {
+                    room: id,
+                    body,
+                    reply: match compose {
+                        Some(Compose::Reply { item, .. }) => Some(item),
+                        _ => None,
+                    },
+                    files,
+                })]
+            }
         }
+    }
+
+    /// Adds files to the selected room's next message, saying why any can't go.
+    fn stage(&mut self, paths: Vec<PathBuf>) {
+        // Checked here rather than with can_attach, which a full message also
+        // turns off, so a paste that can't be added says why.
+        if !self.state.can_write() || self.state.preview || paths.is_empty() {
+            return;
+        }
+        if self.state.editing() {
+            self.state.notice = Some("Files can't be added to a message being edited.".into());
+            return;
+        }
+        let Some((id, limit)) = self
+            .state
+            .selected_room()
+            .map(|room| (room.id.clone(), room.upload_limit))
+        else {
+            return;
+        };
+        let staged = self.state.staged.entry(id).or_default();
+        let mut problem = None;
+        for path in paths {
+            if staged.len() >= chat::MAX_FILES {
+                problem = Some(format!(
+                    "A message carries up to {} files.",
+                    chat::MAX_FILES
+                ));
+                break;
+            }
+            match chat::Staged::read(path, limit) {
+                Ok(file) => staged.push(file),
+                Err(error) => problem = problem.or(Some(error)),
+            }
+        }
+        self.state.notice = problem;
     }
 
     fn forward(&mut self, target: String) -> Vec<Effect> {
@@ -2258,6 +2327,7 @@ fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
         person: (direct && members <= 2).then(|| format!("@{id}:preview")),
         people: vec![],
         avatar: None,
+        upload_limit: 50 * 1024 * 1024,
     }
 }
 
@@ -2795,20 +2865,6 @@ mod tests {
             app.dispatch(Action::React { item: "e:$bob".into(), key: "👍".into() }).as_slice(),
             [Effect::Backend(Command::React { key, .. })] if key == "👍"
         ));
-        assert!(matches!(
-            app.dispatch(Action::Attach("/tmp/a.png".into())).as_slice(),
-            [Effect::Backend(Command::Attach { .. })]
-        ));
-        assert!(
-            app.dispatch(Action::Attach("/tmp/b.png".into())).is_empty(),
-            "one file at a time"
-        );
-        app.apply(Event::AttachResult {
-            room: "dm".into(),
-            result: Err("too large"),
-        });
-        assert!(!app.state.attaching);
-        assert_eq!(app.state.notice.as_deref(), Some("too large"));
         app.state.trusted = false;
         assert!(
             app.dispatch(Action::React {
@@ -2817,7 +2873,66 @@ mod tests {
             })
             .is_empty()
         );
-        assert!(app.dispatch(Action::Attach("/tmp/a.png".into())).is_empty());
+        assert!(!app.state.can_attach());
+    }
+
+    #[test]
+    fn files_wait_in_the_composer_until_sent() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = |name: &str, size: u64| {
+            let path = folder.path().join(name);
+            std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+            path
+        };
+        let (picture, notes) = (file("cat.png", 3), file("notes.txt", 2048));
+        let big = file("big.mov", 51 * 1024 * 1024);
+        let mut app = connected();
+        assert!(!app.state.can_send(), "nothing to send yet");
+        app.dispatch(Action::Stage(vec![picture.clone(), big, notes.clone()]));
+        let staged: Vec<_> = app
+            .state
+            .staged()
+            .iter()
+            .map(|file| (file.name.as_str(), file.image))
+            .collect();
+        assert_eq!(staged, [("cat.png", true), ("notes.txt", false)]);
+        assert_eq!(
+            app.state.notice.as_deref(),
+            Some("big.mov is 51 MB; files here can be up to 50 MB.")
+        );
+        app.dispatch(Action::Unstage(1));
+        app.dispatch(Action::Stage(vec![notes.clone()]));
+        assert!(app.state.can_send(), "files alone make a message");
+        let Command::Send { body, files, .. } = send_command(app.dispatch(Action::Send)) else {
+            unreachable!()
+        };
+        assert_eq!(
+            (body.as_str(), files.clone()),
+            ("", vec![picture.clone(), notes.clone()])
+        );
+        app.apply(Event::SendResult {
+            room: "dm".into(),
+            body,
+            result: Ok(()),
+        });
+        assert!(
+            app.state.staged().is_empty(),
+            "sent files leave the composer"
+        );
+        app.dispatch(Action::Stage(vec![picture.clone(); chat::MAX_FILES + 1]));
+        assert_eq!(app.state.staged().len(), chat::MAX_FILES);
+        assert_eq!(
+            app.state.notice.as_deref(),
+            Some("A message carries up to 10 files.")
+        );
+        assert!(!app.state.can_attach());
+        app.state.notice = None;
+        app.dispatch(Action::Stage(vec![picture]));
+        assert_eq!(
+            app.state.notice.as_deref(),
+            Some("A message carries up to 10 files."),
+            "a paste into a full message says why it's refused"
+        );
     }
 
     #[test]

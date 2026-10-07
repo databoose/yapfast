@@ -437,9 +437,25 @@ impl Matrix {
             Command::Typing { room, typing } => typing_notice(client, &room, typing),
             Command::FindPeople { query } => find_people(client, query, events),
             Command::StartDm { id, .. } => start_dm(client, id, events),
-            Command::Send { room, body, reply } => {
+            Command::Send {
+                room,
+                body,
+                reply,
+                files,
+            } => {
                 typing_notice(client, &room, false);
-                let result = send(session, open.as_ref(), &room, &body, reply.as_deref()).await;
+                // A Matrix message carries one file, so each goes on its own,
+                // then the text.
+                let mut result = Ok(());
+                for path in &files {
+                    result = attach(session, open.as_ref(), &room, path).await;
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                if result.is_ok() && (files.is_empty() || !body.trim().is_empty()) {
+                    result = send(session, open.as_ref(), &room, &body, reply.as_deref()).await;
+                }
                 let _ = events.send(Event::SendResult { room, body, result });
             }
             Command::Edit { room, item, body } => {
@@ -511,10 +527,6 @@ impl Matrix {
                             .into(),
                     });
                 }
-            }
-            Command::Attach { room, path } => {
-                let result = attach(session, open.as_ref(), &room, &path).await;
-                let _ = events.send(Event::AttachResult { room, result });
             }
             // Matrix messages carry one attachment.
             Command::SaveAttachment {
@@ -882,6 +894,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             person,
             people: vec![],
             avatar: None,
+            upload_limit: MAX_ATTACHMENT_BYTES,
         });
     }
     result.sort_by(|a, b| {
@@ -1997,6 +2010,7 @@ mod tests {
                     room: encrypted.to_string(),
                     body: "encrypted chat round trip".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             receive(&mut events, |event| match event {
@@ -2115,6 +2129,7 @@ mod tests {
                     room: encrypted.to_string(),
                     body: "before closing".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -2219,6 +2234,7 @@ mod tests {
                     room: room.clone(),
                     body: "**bold** and `code`".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             let messages = timeline_where(&mut events, |messages| {
@@ -2241,6 +2257,7 @@ mod tests {
                     room: room.clone(),
                     body: "plain reply".into(),
                     reply: Some(original.item.clone()),
+                    files: vec![],
                 })
                 .unwrap();
             let messages = timeline_where(&mut events, |messages| {
@@ -2334,13 +2351,15 @@ mod tests {
                 .save(&picture)
                 .unwrap();
             commands
-                .send(Command::Attach {
+                .send(Command::Send {
                     room: room.clone(),
-                    path: picture.clone(),
+                    body: String::new(),
+                    reply: None,
+                    files: vec![picture.clone()],
                 })
                 .unwrap();
             receive(&mut events, |event| match event {
-                Event::AttachResult { result, .. } => {
+                Event::SendResult { result, .. } => {
                     assert!(result.is_ok());
                     Some(())
                 }
@@ -2446,9 +2465,11 @@ mod tests {
             let file = root.path().join("notes.txt");
             std::fs::write(&file, "attachment text").unwrap();
             commands
-                .send(Command::Attach {
+                .send(Command::Send {
                     room: room.clone(),
-                    path: file,
+                    body: String::new(),
+                    reply: None,
+                    files: vec![file],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -2494,6 +2515,7 @@ mod tests {
                     room: room.clone(),
                     body: "after the draft".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             receive(&mut events, |event| match event {
@@ -2595,6 +2617,7 @@ mod tests {
                     room: room.clone(),
                     body: "written offline".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             receive(&mut events, |event| match event {
@@ -2624,6 +2647,7 @@ mod tests {
                     room: room.clone(),
                     body: "cancel me".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             let messages = timeline_where(&mut events, |messages| {
@@ -2738,6 +2762,7 @@ mod tests {
                     body: "Welcome to **Talk**, with `code` and a [link](https://matrix.org)"
                         .into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             let messages = timeline_where(&mut events, |messages| {
@@ -2754,9 +2779,11 @@ mod tests {
             .save(&picture)
             .unwrap();
             commands
-                .send(Command::Attach {
+                .send(Command::Send {
                     room: room.clone(),
-                    path: picture,
+                    body: String::new(),
+                    reply: None,
+                    files: vec![picture],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -2768,9 +2795,11 @@ mod tests {
             let notes = root.join("trip-notes.txt");
             std::fs::write(&notes, "Bring snacks.").unwrap();
             commands
-                .send(Command::Attach {
+                .send(Command::Send {
                     room: room.clone(),
-                    path: notes,
+                    body: String::new(),
+                    reply: None,
+                    files: vec![notes],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -2784,6 +2813,7 @@ mod tests {
                     room: room.clone(),
                     body: "The welcome has the plan".into(),
                     reply: Some(welcome),
+                    files: vec![],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -2812,6 +2842,7 @@ mod tests {
                         room: room.clone(),
                         body,
                         reply: None,
+                        files: vec![],
                     })
                     .unwrap();
                 // Each wait has its own deadline, so wait for every twentieth message.
@@ -2831,6 +2862,7 @@ mod tests {
                     room: room.clone(),
                     body: "Last message from **Bob** with `code`".into(),
                     reply: None,
+                    files: vec![],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {

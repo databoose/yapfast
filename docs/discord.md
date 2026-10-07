@@ -370,7 +370,14 @@ and DM is visible without copying anything into Matrix.
   fails. A server without an icon keeps its initials, and a person without
   an avatar gets Discord's default avatar for their account.
 - Messages support text, replies, edits, deletions, reactions, mentions and
-  attachments.
+  attachments. Up to ten files go with a message, uploaded to Discord's
+  storage first and then named in the message. Each file is limited as
+  Discord limits it since 13 August 2026: 20 MB without Nitro, 50 MB with
+  Nitro Basic or the old Nitro Classic, and 500 MB with Nitro, by the
+  account's `premium_type`. A server boosted to level 2 allows 50 MB and one
+  at level 3 100 MB to everyone, whichever is higher. Discord sends the
+  server's `premium_tier` in READY and GUILD_UPDATE, and the account's
+  `premium_type` in READY and USER_UPDATE.
 - Link previews and bots' cards show from the embeds Discord adds to a
   message: Discord's servers read the linked page's Open Graph tags, often a
   moment after sending, and the preview arrives in a message update. A card

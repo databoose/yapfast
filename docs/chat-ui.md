@@ -85,8 +85,19 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   redacts the message for everyone. Replies quote the original; edits are marked
   "(edited)". Reply and edit modes show above the composer, with Cancel.
   Cancelling an edit restores the draft it replaced.
-- Attach a file with the system file dialog. The SDK encrypts and uploads it
-  through its send queue, up to 50 MB. Images show a decoded preview of up to
+- Attach files with the system file dialog, or paste them with Ctrl+V: files
+  copied in a file manager, or a picture copied from a browser or a screenshot
+  tool. They wait above the text as tiles, with a preview for pictures and an
+  X to take each out, until the message is sent; text can be typed beside
+  them, and the message may be the files alone. A message carries up to ten
+  files. Each must fit the conversation's limit, and a file that doesn't is
+  refused with its size and the limit. On Wayland the clipboard is read
+  through the data-control protocol, so a picture keeps its copied bytes and a
+  GIF stays animated; elsewhere arboard reads it, and pixels are saved as PNG.
+  Pasted pictures are saved as `image.png` in a temporary folder removed when
+  Talk closes. Text on the clipboard pastes as text. In Matrix the SDK encrypts
+  and uploads each file through its send queue, up to 50 MB, then sends the
+  text after them. Images show a decoded preview of up to
   360×270, decoded with dimension and memory limits, with a save button over the
   picture on hover. Other files show a card with a save button. Saving writes the
   decrypted file where you choose. A Discord message with several images shows

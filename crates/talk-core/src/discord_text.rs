@@ -47,8 +47,6 @@ const TYPING_AGAIN: Duration = Duration::from_secs(8);
 const KEPT_PREVIEWS: usize = 12;
 /// Saving a file holds it in memory first.
 const MAX_SAVE_BYTES: usize = 100 * 1024 * 1024;
-/// Sending a file holds it in memory too; Discord's own limit is often lower.
-const MAX_SEND_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Work for the open channel that finished in the background.
 pub enum Done {
@@ -98,8 +96,8 @@ struct Pending {
     nonce: String,
     body: String,
     reply: Option<String>,
-    /// A file sent as its own message.
-    file: Option<PendingFile>,
+    /// Files sent with it.
+    files: Vec<PendingFile>,
     failed: bool,
 }
 
@@ -327,10 +325,31 @@ impl OpenChannel {
         done: &UnboundedSender<Done>,
         body: String,
         reply: Option<String>,
+        files: Vec<PathBuf>,
     ) -> Result<(), &'static str> {
-        if body.trim().is_empty() || body.chars().count() > MAX_CHARS {
+        if (body.trim().is_empty() && files.is_empty()) || body.chars().count() > MAX_CHARS {
             return Err("Discord messages must contain text and be at most 2,000 characters.");
         }
+        if files.len() > talk_discord::api::MAX_FILES {
+            return Err("A Discord message carries up to 10 files.");
+        }
+        let files = files
+            .into_iter()
+            .map(|path| {
+                let metadata =
+                    std::fs::metadata(&path).map_err(|_| "Talk could not read a file.")?;
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .filter(|_| metadata.is_file())
+                    .ok_or("Choose a file to send.")?;
+                Ok(PendingFile {
+                    path,
+                    name,
+                    size: metadata.len(),
+                })
+            })
+            .collect::<Result<Vec<_>, &'static str>>()?;
         let reply = match reply {
             Some(item) => Some(
                 sent_id(&item)
@@ -339,34 +358,7 @@ impl OpenChannel {
             ),
             None => None,
         };
-        self.queue(discord, done, body, reply, None);
-        Ok(())
-    }
-
-    /// Sends a file as its own message, as Talk does in Matrix rooms.
-    pub fn attach(
-        &mut self,
-        discord: &Discord,
-        done: &UnboundedSender<Done>,
-        path: PathBuf,
-    ) -> Result<(), &'static str> {
-        let metadata = std::fs::metadata(&path).map_err(|_| "Talk could not read that file.")?;
-        if !metadata.is_file() {
-            return Err("Choose a file to send.");
-        }
-        if metadata.len() > MAX_SEND_BYTES {
-            return Err("Files must be 50 MB or smaller.");
-        }
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .ok_or("Choose a file to send.")?;
-        let file = PendingFile {
-            path,
-            name,
-            size: metadata.len(),
-        };
-        self.queue(discord, done, String::new(), None, Some(file));
+        self.queue(discord, done, body, reply, files);
         Ok(())
     }
 
@@ -376,7 +368,7 @@ impl OpenChannel {
         done: &UnboundedSender<Done>,
         body: String,
         reply: Option<String>,
-        file: Option<PendingFile>,
+        files: Vec<PendingFile>,
     ) {
         let nonce = talk_discord::message::nonce();
         self.sent.insert(nonce.clone());
@@ -384,7 +376,7 @@ impl OpenChannel {
             nonce: nonce.clone(),
             body,
             reply,
-            file,
+            files,
             failed: false,
         });
         self.start_send(discord, done, &nonce);
@@ -406,23 +398,22 @@ impl OpenChannel {
             pending.body.clone(),
             pending.reply.clone(),
         );
-        let file = pending
-            .file
-            .as_ref()
-            .map(|file| (file.path.clone(), file.name.clone()));
+        let files: Vec<_> = pending
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.name.clone()))
+            .collect();
         tokio::spawn(async move {
             let result = async {
-                let file = match file {
-                    Some((path, name)) => Some((
-                        name,
-                        tokio::fs::read(&path)
-                            .await
-                            .map_err(|_| "Talk could not read that file.".to_owned())?,
-                    )),
-                    None => None,
-                };
+                let mut read = Vec::with_capacity(files.len());
+                for (path, name) in files {
+                    let data = tokio::fs::read(&path)
+                        .await
+                        .map_err(|_| format!("Talk could not read {name}."))?;
+                    read.push((name, data));
+                }
                 discord
-                    .send(&guild, &channel, &body, &nonce, reply.as_deref(), file)
+                    .send(&guild, &channel, &body, &nonce, reply.as_deref(), read)
                     .await
                     .map_err(|error| error.to_string())
             }
@@ -788,7 +779,7 @@ impl OpenChannel {
                     })
                 }),
                 attachments: pending
-                    .file
+                    .files
                     .iter()
                     .map(|file| Attachment {
                         name: file.name.clone(),
@@ -1240,7 +1231,6 @@ pub fn command(
         | Command::Delete { room, .. }
         | Command::Retry { room, .. }
         | Command::Cancel { room, .. }
-        | Command::Attach { room, .. }
         | Command::SaveAttachment { room, .. }
         | Command::ViewImage { room, .. }
         | Command::Earlier(room) => room.clone(),
@@ -1309,20 +1299,21 @@ pub fn command(
                 item,
                 result: Err(again.into()),
             }),
-            Command::Attach { room, .. } => events.send(Event::AttachResult {
-                room,
-                result: Err(again),
-            }),
             Command::Earlier(room) => events.send(Event::HistoryLoaded(room)),
             _ => Ok(()),
         };
         return None;
     };
     match command {
-        Command::Send { room, body, reply } => {
+        Command::Send {
+            room,
+            body,
+            reply,
+            files,
+        } => {
             // Discord ends the typing a message follows.
             channels.typed = None;
-            let result = channel.send(discord, done, body.clone(), reply);
+            let result = channel.send(discord, done, body.clone(), reply, files);
             publish(channel, discord, done, events);
             let _ = events.send(Event::SendResult { room, body, result });
         }
@@ -1350,11 +1341,6 @@ pub fn command(
                     message: "That message is still sending, so it can't be cancelled.".into(),
                 });
             }
-        }
-        Command::Attach { room, path } => {
-            let result = channel.attach(discord, done, path);
-            publish(channel, discord, done, events);
-            let _ = events.send(Event::AttachResult { room, result });
         }
         Command::SaveAttachment {
             item, index, path, ..
@@ -1845,7 +1831,7 @@ mod tests {
                 nonce: nonce.into(),
                 body: "hi".into(),
                 reply: None,
-                file: None,
+                files: vec![],
                 failed: false,
             });
         }

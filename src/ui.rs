@@ -487,6 +487,7 @@ struct Models {
     participants: Rc<VecModel<PersonRow>>,
     microphones: Rc<VecModel<SharedString>>,
     speakers: Rc<VecModel<SharedString>>,
+    staged: Rc<VecModel<StagedFile>>,
 }
 
 impl Models {
@@ -505,6 +506,7 @@ impl Models {
         window.set_participants(ModelRc::from(self.participants.clone()));
         window.set_microphones(ModelRc::from(self.microphones.clone()));
         window.set_speakers(ModelRc::from(self.speakers.clone()));
+        window.set_staged(ModelRc::from(self.staged.clone()));
     }
 }
 
@@ -556,6 +558,11 @@ struct Adapter {
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
     meter: Option<InputMeter>,
+    /// Previews of the pictures waiting in the composer, by file; `None` while
+    /// one is read, or when it can't be.
+    thumbnails: HashMap<PathBuf, Option<slint::Image>>,
+    /// Where pasted pictures are saved until they're sent; removed as Talk closes.
+    pasted: Option<tempfile::TempDir>,
 }
 
 impl Adapter {
@@ -608,6 +615,8 @@ impl Adapter {
                 viewer_size: None,
                 dialog: None,
                 meter: None,
+                thumbnails: HashMap::new(),
+                pasted: None,
             })
         }))
     }
@@ -617,6 +626,56 @@ impl Adapter {
         self.models.attach(window);
         self.layout.apply(window);
         self.window = window.as_weak();
+    }
+
+    /// Ctrl+V in the composer: files and pictures on the clipboard wait to go
+    /// with the message, and anything else is pasted as text.
+    fn paste(&mut self) {
+        if self.pasted.is_none() {
+            self.pasted = tempfile::Builder::new()
+                .prefix("talk-pasted-")
+                .tempdir()
+                .inspect_err(
+                    |error| tracing::warn!(%error, "could not make a folder for pasted pictures"),
+                )
+                .ok();
+        }
+        let folder = self.pasted.as_ref().map(|dir| dir.path().to_owned());
+        let reading = self
+            .runtime
+            .spawn_blocking(move || match crate::paste::read() {
+                crate::paste::Clipboard::Files(files) => Some(files),
+                crate::paste::Clipboard::Picture(bytes, extension) => {
+                    // A folder for each paste, so each picture is image.png, as in Discord.
+                    let folder = tempfile::Builder::new()
+                        .prefix("")
+                        .tempdir_in(folder?)
+                        .ok()?
+                        .keep();
+                    let path = folder.join(format!("image.{extension}"));
+                    std::fs::write(&path, bytes).ok()?;
+                    Some(vec![path])
+                }
+                crate::paste::Clipboard::Other => None,
+            });
+        let weak = self.weak.clone();
+        let task = slint::spawn_local(async move {
+            let files = reading.await.ok().flatten();
+            let Some(adapter) = weak.upgrade() else {
+                return;
+            };
+            let window = adapter.borrow().window.upgrade();
+            let Some(window) = window else {
+                return;
+            };
+            match files {
+                Some(files) => adapter.borrow_mut().action(&window, Action::Stage(files)),
+                None => window.invoke_paste_composer_text(),
+            }
+        });
+        if let Err(error) = task {
+            tracing::error!(%error, "could not read the clipboard");
+        }
     }
 
     /// Run a native file dialog on Slint's executor, replacing any open one.
@@ -1155,7 +1214,14 @@ impl Adapter {
                     presence: presence_name(member.presence).into(),
                     color: role_color(member.color),
                     has_color: member.color.is_some(),
-                    activity: member.activity.clone().unwrap_or_default().into(),
+                    // One line under the name, as Discord shows it; the profile
+                    // keeps the status's own line breaks.
+                    activity: member
+                        .activity
+                        .as_deref()
+                        .map(|activity| activity.split_whitespace().collect::<Vec<_>>().join(" "))
+                        .unwrap_or_default()
+                        .into(),
                     // Discord names its groups; Matrix members group by role.
                     heading: if let Some(group) = &member.group {
                         if index == 0 || members[index - 1].group.as_ref() != Some(group) {
@@ -1329,7 +1395,29 @@ impl Adapter {
         );
         window.set_can_send(state.can_send());
         window.set_can_attach(state.can_attach());
-        window.set_attaching(state.attaching);
+        let staged = state.staged();
+        self.thumbnails
+            .retain(|path, _| staged.iter().any(|file| &file.path == path));
+        let mut rows = Vec::with_capacity(staged.len());
+        for file in staged {
+            let picture = match self.thumbnails.get(&file.path) {
+                Some(picture) => picture.clone(),
+                None => {
+                    if file.image {
+                        self.thumbnails.insert(file.path.clone(), None);
+                        load_thumbnail(&self.runtime, self.weak.clone(), file.path.clone());
+                    }
+                    None
+                }
+            };
+            rows.push(StagedFile {
+                name: file.name.as_str().into(),
+                size: file_size(file.size).into(),
+                has_picture: picture.is_some(),
+                picture: picture.unwrap_or_default(),
+            });
+        }
+        update_model(&self.models.staged, rows);
         window.set_confirm_delete(state.confirm_delete.clone().unwrap_or_default().into());
         window.set_compose_label(match state.compose() {
             Some(Compose::Reply { author, body, .. }) => {
@@ -1986,20 +2074,28 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     window.on_attach(move || {
         let weak = Rc::downgrade(&state);
         state.borrow_mut().dialog(async move {
-            let file = rfd::AsyncFileDialog::new()
-                .set_title("Attach a file")
-                .pick_file()
+            let files = rfd::AsyncFileDialog::new()
+                .set_title("Attach files")
+                .pick_files()
                 .await;
-            if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {
+            if let (Some(files), Some(adapter)) = (files, weak.upgrade()) {
                 let window = adapter.borrow().window.upgrade();
                 if let Some(window) = window {
-                    adapter
-                        .borrow_mut()
-                        .action(&window, Action::Attach(file.path().to_owned()));
+                    let paths = files.iter().map(|file| file.path().to_owned()).collect();
+                    adapter.borrow_mut().action(&window, Action::Stage(paths));
                 }
             }
         });
     });
+    let state = adapter.clone();
+    window.on_unstage(move |index| {
+        let mut adapter = state.borrow_mut();
+        if let (Ok(index), Some(window)) = (usize::try_from(index), adapter.window.upgrade()) {
+            adapter.action(&window, Action::Unstage(index));
+        }
+    });
+    let state = adapter.clone();
+    window.on_paste_into_composer(move || state.borrow_mut().paste());
     let state = adapter.clone();
     window.on_save_attachment(move |item, index| {
         let item = item.to_string();
@@ -2445,15 +2541,50 @@ fn day(timestamp: u64) -> String {
     talk_core::clock::day(timestamp)
 }
 
-fn file_size(bytes: u64) -> String {
-    match bytes {
-        0..1_024 => format!("{bytes} B"),
-        1_024..1_048_576 => format!("{:.0} KB", bytes as f64 / 1_024.),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.),
+use talk_core::chat::file_size;
+
+/// The picture at `url` once it has arrived, converted for Slint only once.
+/// Reads a picture waiting in the composer off the UI thread, then shows its preview.
+fn load_thumbnail(
+    runtime: &BackgroundRuntime,
+    weak: std::rc::Weak<RefCell<Adapter>>,
+    path: PathBuf,
+) {
+    let reading = {
+        let path = path.clone();
+        runtime.spawn_blocking(move || {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|data| talk_core::chat::decode_picture(&data, 240, 240))
+        })
+    };
+    let task = slint::spawn_local(async move {
+        let picture = reading.await.ok().flatten();
+        let Some(adapter) = weak.upgrade() else {
+            return;
+        };
+        let window = adapter.borrow().window.upgrade();
+        let mut adapter = adapter.borrow_mut();
+        // Unless it was taken out of the composer meanwhile.
+        let Some(slot) = adapter.thumbnails.get_mut(&path) else {
+            return;
+        };
+        *slot = picture.map(|picture| {
+            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                &picture.rgba,
+                picture.width,
+                picture.height,
+            ))
+        });
+        if let Some(window) = window {
+            adapter.refresh(&window);
+        }
+    });
+    if let Err(error) = task {
+        tracing::error!(%error, "could not preview a file to send");
     }
 }
 
-/// The picture at `url` once it has arrived, converted for Slint only once.
 fn cached_picture(
     cache: &mut HashMap<String, slint::Image>,
     state: &talk_core::application::AppState,
@@ -3088,6 +3219,10 @@ mod tests {
         i_slint_backend_testing::init_no_event_loop();
         let window = TalkWindow::new().unwrap();
         copy_whole_messages(&window);
+        // Without the adapter's clipboard reading, Ctrl+V pastes text, as it
+        // does when the clipboard holds no files or picture.
+        let weak = window.as_weak();
+        window.on_paste_into_composer(move || weak.unwrap().invoke_paste_composer_text());
         window.set_workspace(true);
         window.set_room_selected(true);
         window.set_room_ready(true);

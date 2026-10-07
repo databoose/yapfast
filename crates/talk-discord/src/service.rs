@@ -51,6 +51,9 @@ pub struct Account {
     pub name: String,
     /// The address of its avatar.
     pub avatar: String,
+    /// Its Nitro: 0 none, 1 Nitro Classic, 2 Nitro, 3 Nitro Basic; see
+    /// [`crate::api::upload_limit`].
+    pub premium_type: u8,
 }
 
 /// A DM or group DM, as the DM list shows it.
@@ -348,25 +351,28 @@ impl Discord {
         content: &str,
         nonce: &str,
         reply: Option<&str>,
-        file: Option<(String, Vec<u8>)>,
+        files: Vec<(String, Vec<u8>)>,
     ) -> Result<Message> {
-        let upload = match file {
-            Some((name, data)) => Some(self.api.upload(channel, &name, data).await?),
-            None => None,
-        };
+        let mut uploads = Vec::with_capacity(files.len());
+        for (name, data) in files {
+            match self.api.upload(channel, &name, data).await {
+                Ok(upload) => uploads.push(upload),
+                Err(error) => {
+                    for upload in &uploads {
+                        let _ = self.api.discard(upload).await;
+                    }
+                    return Err(error);
+                }
+            }
+        }
         let sent = self
             .api
-            .send(
-                server(guild),
-                channel,
-                content,
-                nonce,
-                reply,
-                upload.as_ref(),
-            )
+            .send(server(guild), channel, content, nonce, reply, &uploads)
             .await;
-        if let (Err(_), Some(upload)) = (&sent, &upload) {
-            let _ = self.api.discard(upload).await;
+        if sent.is_err() {
+            for upload in &uploads {
+                let _ = self.api.discard(upload).await;
+            }
         }
         let value = sent?;
         self.write_names().learn_message(server(guild), &value);
@@ -1127,6 +1133,8 @@ struct VoiceEntry {
 /// The account's servers and voice channels, kept current from gateway events.
 struct Tracker {
     me: String,
+    /// This account's Nitro, as [`Account::premium_type`].
+    premium: u8,
     servers: Vec<Server>,
     names: Arc<RwLock<Names>>,
     /// Where each user is in voice, by server and user id.
@@ -1144,10 +1152,19 @@ struct Tracker {
     friends: Vec<String>,
 }
 
+/// A user's Nitro from their user object, as [`Account::premium_type`].
+fn premium_type(user: &Value) -> u8 {
+    user["premium_type"]
+        .as_u64()
+        .and_then(|premium| u8::try_from(premium).ok())
+        .unwrap_or_default()
+}
+
 impl Tracker {
     fn from_ready(me: String, ready: &Value, names: Arc<RwLock<Names>>) -> Self {
         let mut tracker = Self {
             me,
+            premium: premium_type(&ready["user"]),
             servers: ready::servers(ready),
             names,
             voice: HashMap::new(),
@@ -1275,8 +1292,17 @@ impl Tracker {
                 };
                 known.name = update.name;
                 known.icon = update.icon;
+                known.premium_tier = update.premium_tier;
                 ready::sort_servers(&mut self.servers);
                 true
+            }
+            // This account's Nitro can change while connected.
+            "USER_UPDATE" if data["id"].as_str() == Some(self.me.as_str()) => {
+                let premium = premium_type(data);
+                let changed = premium != self.premium;
+                self.premium = premium;
+                self.learn_user(data);
+                changed
             }
             "GUILD_DELETE" => {
                 let Some(id) = data["id"].as_str() else {
@@ -1672,6 +1698,7 @@ impl Tracker {
             account: names.user_name(&self.me).map(|name| Account {
                 name: name.to_owned(),
                 avatar: names.avatar(None, &self.me),
+                premium_type: self.premium,
             }),
             servers,
             conversations: self.conversations(&names),

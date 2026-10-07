@@ -48,6 +48,71 @@ pub struct ChatRoom {
     /// The address of a Discord DM's picture: the other person's avatar or
     /// the group's icon. See [`Command::Pictures`].
     pub avatar: Option<String>,
+    /// The largest file a message here may carry, in bytes.
+    pub upload_limit: u64,
+}
+
+/// The most files one message carries, as Discord allows.
+pub const MAX_FILES: usize = 10;
+
+/// A file waiting in the composer to go with the next message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Staged {
+    pub path: PathBuf,
+    pub name: String,
+    pub size: u64,
+    /// A picture the composer can preview.
+    pub image: bool,
+}
+
+impl Staged {
+    /// The file at `path`, if it's one a message here may carry: at most
+    /// `limit` bytes.
+    pub fn read(path: PathBuf, limit: u64) -> Result<Self, String> {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let metadata = std::fs::metadata(&path)
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+            .ok_or_else(|| format!("Talk could not read {name}."))?;
+        if metadata.len() > limit {
+            return Err(format!(
+                "{name} is {}; files here can be up to {}.",
+                file_size(metadata.len()),
+                file_size(limit)
+            ));
+        }
+        let image = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                ["png", "jpg", "jpeg", "gif", "webp"].contains(&extension.to_lowercase().as_str())
+            });
+        Ok(Self {
+            path,
+            name,
+            size: metadata.len(),
+            image,
+        })
+    }
+}
+
+/// A file size as people read it: bytes, KB, then MB.
+pub fn file_size(bytes: u64) -> String {
+    match bytes {
+        0..1_024 => format!("{bytes} B"),
+        1_024..1_048_576 => format!("{:.0} KB", bytes as f64 / 1_024.),
+        _ => {
+            let megabytes = bytes as f64 / 1_048_576.;
+            if megabytes.fract() == 0.0 {
+                format!("{megabytes:.0} MB")
+            } else {
+                format!("{megabytes:.1} MB")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -316,11 +381,14 @@ pub enum Command {
     Voice(voice::Command),
     Open(String),
     CloseRoom,
-    /// Queue a Markdown message, optionally replying to an item.
+    /// Queue a Markdown message, optionally replying to an item, with the
+    /// files at `files`. Matrix sends each file as its own message, then the
+    /// text.
     Send {
         room: String,
         body: String,
         reply: Option<String>,
+        files: Vec<PathBuf>,
     },
     Edit {
         room: String,
@@ -349,10 +417,6 @@ pub enum Command {
     Cancel {
         room: String,
         item: String,
-    },
-    Attach {
-        room: String,
-        path: PathBuf,
     },
     /// Save the attachment at `index` in an item's attachments.
     SaveAttachment {
@@ -515,10 +579,6 @@ pub enum Event {
         item: String,
         result: Result<(), String>,
     },
-    AttachResult {
-        room: String,
-        result: Result<(), &'static str>,
-    },
     /// The send queue of `room` accepted or refused a forwarded message.
     Forwarded {
         room: String,
@@ -565,7 +625,7 @@ pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
 /// Decode an image with dimension and allocation limits, shrunk to fit `width`
 /// by `height`. A smaller image keeps its size: enlarging it would blur it
 /// and cost memory, and the viewer sizes images from their own dimensions.
-pub(crate) fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
+pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;

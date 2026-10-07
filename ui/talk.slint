@@ -332,6 +332,41 @@ component TextField inherits Rectangle {
     }
 }
 
+/// A file waiting to go with the next message.
+export struct StagedFile { name: string, size: string, has-picture: bool, picture: image }
+
+// A file waiting to go with the next message: its picture or a file icon, its
+// name and size, and a button that takes it out.
+component StagedTile inherits Rectangle {
+    in property <StagedFile> file;
+    callback remove;
+    width: 120px; height: 140px; border-radius: 8px; background: Theme.raised;
+    accessible-role: groupbox;
+    accessible-label: root.file.name + ", " + root.file.size;
+    VerticalLayout {
+        padding: 6px; spacing: 2px;
+        Rectangle {
+            height: 86px; border-radius: 6px; clip: true; background: Theme.sidebar;
+            if root.file.has-picture: Image { width: parent.width; height: parent.height; source: root.file.picture; image-fit: cover; }
+            if !root.file.has-picture: Image {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: 32px; height: 32px; source: @image-url("icons/file.svg"); colorize: Theme.muted;
+            }
+        }
+        Text { text: root.file.name; color: Theme.text; font-size: 13px; font-weight: 500; overflow: elide; }
+        Text { text: root.file.size; color: Theme.muted; font-size: 12px; overflow: elide; }
+    }
+    Rectangle {
+        x: parent.width - self.width - 4px; y: 4px; width: 28px; height: 28px; border-radius: 14px;
+        background: #000000b3;
+        IconButton {
+            icon: @image-url("icons/x.svg"); label: "Remove " + root.file.name;
+            size: 28px; glyph: 16px; radius: 14px; tint: #ffffff;
+            clicked => { root.remove(); }
+        }
+    }
+}
+
 // The message composer. Text wraps and the field grows to about ten lines, then
 // scrolls to keep the cursor in view. Enter sends; Shift+Enter starts a new line.
 component Composer inherits Rectangle {
@@ -352,6 +387,10 @@ component Composer inherits Rectangle {
     // Up in an empty composer, and Alt+Up anywhere in it.
     callback up-from-empty;
     callback up-to-messages;
+    // Ctrl+V: the clipboard may hold files or a picture rather than text, so the
+    // application looks first and, finding text, pastes it with paste-text.
+    callback paste;
+    public function paste-text() { input.paste(); }
     public function focus-input() { input.focus(); }
     public function place-caret(offset: int) { input.set-selection-offsets(offset, offset); }
     property <length> pad: 12px;
@@ -380,6 +419,10 @@ component Composer inherits Rectangle {
             }
             if event.text == Key.Return && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt {
                 root.accepted();
+                return accept;
+            }
+            if (event.text == "v" || event.text == "V") && event.modifiers.control && !event.modifiers.alt && root.enabled {
+                root.paste();
                 return accept;
             }
             return reject;
@@ -1439,7 +1482,11 @@ export component TalkWindow inherits Window {
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
-    in property <bool> attaching;
+    /// Files waiting to go with the next message.
+    in property <[StagedFile]> staged;
+    callback unstage(int);
+    callback paste-into-composer;
+    public function paste-composer-text() { composer.paste-text(); }
     in property <string> confirm-delete;
     in-out property <string> react-item;
     in-out property <string> active-item;
@@ -3054,37 +3101,53 @@ export component TalkWindow inherits Window {
                                 border-radius: 10px;
                                 border-top-left-radius: root.compose-label != "" ? 0px : 10px;
                                 border-top-right-radius: root.compose-label != "" ? 0px : 10px;
-                                HorizontalLayout {
-                                    padding-left: 10px; padding-right: 8px; spacing: 6px;
-                                    // The buttons stay on the last line as the composer grows.
-                                    VerticalLayout {
-                                        alignment: end; padding-bottom: 8px;
-                                        IconButton {
-                                            icon: @image-url("icons/circle-plus.svg"); label: root.attaching ? "Attaching..." : "Attach a file";
-                                            glyph: 22px;
-                                            enabled: root.can-attach; clicked => { root.attach(); }
+                                VerticalLayout {
+                                    spacing: 0px;
+                                    // Files waiting to go with the message, in a row that scrolls sideways.
+                                    if root.staged.length > 0: Flickable {
+                                        height: 152px;
+                                        content-width: max(self.width, staged-row.preferred-width);
+                                        staged-row := HorizontalLayout {
+                                            padding: 10px; padding-bottom: 2px; spacing: 8px; alignment: start;
+                                            for file[index] in root.staged: StagedTile {
+                                                file: file;
+                                                remove => { root.unstage(index); }
+                                            }
                                         }
                                     }
-                                    composer := Composer {
-                                        text <=> root.draft; enabled: root.composer-enabled; label: "Message";
-                                        placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
-                                        edited(text) => { root.draft-edited(text); }
-                                        accepted => { root.send(); }
-                                        suggesting: root.mentions.length > 0;
-                                        caret(text, offset) => { root.composer-caret(text, offset); }
-                                        suggestion-moved(step) => { root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length); }
-                                        suggestion-chosen => { root.mention-chosen(root.mention-index); }
-                                        suggestion-dismissed => { root.mention-dismissed(); }
-                                        up-from-empty => { root.edit-last(); }
-                                        up-to-messages => { root.browse-messages(); }
-                                    }
-                                    VerticalLayout {
-                                        alignment: end; padding-bottom: 8px;
-                                        IconButton {
-                                            icon: @image-url("icons/send-horizontal.svg");
-                                            label: root.sending ? "Sending..." : root.is-editing ? "Save" : "Send";
-                                            enabled: root.can-send; emphasis: root.can-send;
-                                            clicked => { root.send(); }
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 8px; spacing: 6px;
+                                        // The buttons stay on the last line as the composer grows.
+                                        VerticalLayout {
+                                            alignment: end; padding-bottom: 8px;
+                                            IconButton {
+                                                icon: @image-url("icons/circle-plus.svg"); label: "Attach files";
+                                                glyph: 22px;
+                                                enabled: root.can-attach; clicked => { root.attach(); }
+                                            }
+                                        }
+                                        composer := Composer {
+                                            text <=> root.draft; enabled: root.composer-enabled; label: "Message";
+                                            placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
+                                            edited(text) => { root.draft-edited(text); }
+                                            accepted => { root.send(); }
+                                            suggesting: root.mentions.length > 0;
+                                            caret(text, offset) => { root.composer-caret(text, offset); }
+                                            suggestion-moved(step) => { root.mention-index = Math.mod(root.mention-index + step + root.mentions.length, root.mentions.length); }
+                                            suggestion-chosen => { root.mention-chosen(root.mention-index); }
+                                            suggestion-dismissed => { root.mention-dismissed(); }
+                                            up-from-empty => { root.edit-last(); }
+                                            up-to-messages => { root.browse-messages(); }
+                                            paste => { root.paste-into-composer(); }
+                                        }
+                                        VerticalLayout {
+                                            alignment: end; padding-bottom: 8px;
+                                            IconButton {
+                                                icon: @image-url("icons/send-horizontal.svg");
+                                                label: root.sending ? "Sending..." : root.is-editing ? "Save" : "Send";
+                                                enabled: root.can-send; emphasis: root.can-send;
+                                                clicked => { root.send(); }
+                                            }
                                         }
                                     }
                                 }
@@ -3092,7 +3155,7 @@ export component TalkWindow inherits Window {
                             HorizontalLayout {
                                 height: 28px; spacing: 6px; padding-left: 4px;
                                 if root.room-encrypted || root.preview: Image { source: @image-url("icons/lock.svg"); width: 12px; image-fit: contain; colorize: Theme.muted; }
-                                Text { text: root.attaching ? "Attaching..." : root.typing != "" ? root.typing : root.composer-hint; color: root.typing != "" && !root.attaching ? Theme.text : Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                Text { text: root.typing != "" ? root.typing : root.composer-hint; color: root.typing != "" ? Theme.text : Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                             }
                         }
                     }

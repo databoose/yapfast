@@ -242,7 +242,10 @@ async fn talks_to_the_fake_server() {
     );
     assert_eq!(members[0].color, Some(0x3498db), "the Mods role's blue");
     assert_eq!(members[0].activity.as_deref(), Some("Playing Factorio"));
-    assert_eq!(members[2].activity.as_deref(), Some("🌙 back later"));
+    assert_eq!(
+        members[2].activity.as_deref(),
+        Some("🌙 back later\nafter dinner, probably")
+    );
     assert!(
         members[2].avatar.contains("/guilds/"),
         "Carol's server avatar"
@@ -300,7 +303,7 @@ async fn talks_to_the_fake_server() {
             "hello from Talk",
             &nonce,
             Some(&message.id),
-            None,
+            vec![],
         )
         .await
         .unwrap();
@@ -399,11 +402,21 @@ async fn talks_to_the_fake_server() {
             "On my way",
             &nonce,
             Some(&history[3].id),
-            None,
+            // A message carries several files.
+            vec![
+                ("map.txt".into(), b"left at the lake".to_vec()),
+                ("list.txt".into(), b"snacks".to_vec()),
+            ],
         )
         .await
         .unwrap();
     assert!(sent.reply.is_some());
+    let names: Vec<_> = sent
+        .attachments
+        .iter()
+        .map(|file| file.name.as_str())
+        .collect();
+    assert_eq!(names, ["map.txt", "list.txt"]);
     live_where(&mut live, |event| match event {
         Live::Created(message) if message.id == sent.id => Some(()),
         _ => None,

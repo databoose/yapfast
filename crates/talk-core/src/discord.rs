@@ -65,6 +65,10 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
 /// read-only. Channels hidden from it are listed locked only with
 /// `show_hidden`.
 pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<ChatServer>) {
+    let premium = snapshot
+        .account
+        .as_ref()
+        .map_or(0, |account| account.premium_type);
     let mut rooms: Vec<_> = snapshot
         .conversations
         .iter()
@@ -90,6 +94,7 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
             person: dm.person.clone(),
             people: vec![],
             avatar: dm.avatar.clone(),
+            upload_limit: talk_discord::api::upload_limit(premium, None),
         })
         .collect();
     let mut servers = Vec::new();
@@ -149,6 +154,10 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                         })
                         .collect(),
                     avatar: None,
+                    upload_limit: talk_discord::api::upload_limit(
+                        premium,
+                        Some(server.premium_tier),
+                    ),
                 }
             } else {
                 ChatRoom {
@@ -173,6 +182,10 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
                     person: None,
                     people: vec![],
                     avatar: None,
+                    upload_limit: talk_discord::api::upload_limit(
+                        premium,
+                        Some(server.premium_tier),
+                    ),
                 }
             });
             channels.push(id);

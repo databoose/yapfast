@@ -24,6 +24,29 @@ pub struct Upload {
     pub uploaded_filename: String,
 }
 
+/// The most files one message can carry.
+pub const MAX_FILES: usize = 10;
+
+const MIB: u64 = 1024 * 1024;
+
+/// The largest file this account may send, in bytes: by its Nitro, as
+/// [`crate::service::Account::premium_type`], or in a server boosted to
+/// `premium_tier` 2 or 3, by the server's, whichever allows more. These are
+/// Discord's limits since August 2026.
+pub fn upload_limit(premium_type: u8, premium_tier: Option<u8>) -> u64 {
+    let own = match premium_type {
+        2 => 500 * MIB,
+        1 | 3 => 50 * MIB,
+        _ => 20 * MIB,
+    };
+    let boosted = match premium_tier {
+        Some(3) => 100 * MIB,
+        Some(2) => 50 * MIB,
+        _ => 0,
+    };
+    own.max(boosted)
+}
+
 pub struct Api {
     http: Client,
     token: String,
@@ -84,7 +107,7 @@ impl Api {
         content: &str,
         nonce: &str,
         reply: Option<&str>,
-        upload: Option<&Upload>,
+        uploads: &[Upload],
     ) -> Result<Value> {
         let mut body = json!({
             "mobile_network_type": "unknown",
@@ -93,12 +116,18 @@ impl Api {
             "tts": false,
             "flags": 0,
         });
-        if let Some(upload) = upload {
-            body["attachments"] = json!([{
-                "id": "0",
-                "filename": upload.filename,
-                "uploaded_filename": upload.uploaded_filename,
-            }]);
+        if !uploads.is_empty() {
+            body["attachments"] = uploads
+                .iter()
+                .enumerate()
+                .map(|(index, upload)| {
+                    json!({
+                        "id": index.to_string(),
+                        "filename": upload.filename,
+                        "uploaded_filename": upload.uploaded_filename,
+                    })
+                })
+                .collect();
         }
         if let Some(reply) = reply {
             body["message_reference"] = json!({
@@ -366,6 +395,18 @@ fn discord_file(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn upload_limits_follow_nitro_and_boosts() {
+        use super::{MIB, upload_limit};
+        assert_eq!(upload_limit(0, None), 20 * MIB, "without Nitro");
+        assert_eq!(upload_limit(3, None), 50 * MIB, "Nitro Basic");
+        assert_eq!(upload_limit(2, None), 500 * MIB, "Nitro");
+        assert_eq!(upload_limit(0, Some(1)), 20 * MIB, "level 1 adds nothing");
+        assert_eq!(upload_limit(0, Some(2)), 50 * MIB);
+        assert_eq!(upload_limit(0, Some(3)), 100 * MIB);
+        assert_eq!(upload_limit(2, Some(3)), 500 * MIB, "the larger wins");
+    }
+
     #[test]
     fn encodes_emoji_for_paths() {
         assert_eq!(super::encode("👍"), "%F0%9F%91%8D");

@@ -719,7 +719,7 @@ const presences: Record<string, { status: string; activities: unknown[] }> = {
   [users.bob.id]: { status: "dnd", activities: [{ type: 0, name: "Factorio" }] },
   [users.carol.id]: {
     status: "idle",
-    activities: [{ type: 4, name: "Custom Status", state: "back later", emoji: { name: "🌙", id: null } }],
+    activities: [{ type: 4, name: "Custom Status", state: "back later\nafter dinner, probably", emoji: { name: "🌙", id: null } }],
   },
   [users.dave.id]: { status: "offline", activities: [] },
 };

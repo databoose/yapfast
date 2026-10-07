@@ -52,6 +52,9 @@ pub struct Server {
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
+    /// Its boost level, from 0 to 3, which raises everyone's upload limit
+    /// in it; see [`crate::api::upload_limit`].
+    pub premium_tier: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -467,11 +470,16 @@ pub fn server(guild: &Value) -> Option<Server> {
         .as_str()
         .or_else(|| guild["properties"]["icon"].as_str())
         .map(|hash| server_icon(&id, hash));
+    let premium_tier = guild["premium_tier"]
+        .as_u64()
+        .or_else(|| guild["properties"]["premium_tier"].as_u64())
+        .unwrap_or_default();
     let mut server = Server {
         id,
         name,
         icon,
         owner_id,
+        premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {

@@ -16,7 +16,7 @@ default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["talk-core/matrix"]
 discord = ["talk-core/discord"]
-desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus"]
+desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs"]
 
 [dependencies]
 anyhow.workspace = true
@@ -38,12 +38,19 @@ talk-core = { path = "crates/talk-core", default-features = false }
 talk-ui = { path = "crates/talk-ui", optional = true }
 # Opens links clicked in messages in the default browser.
 webbrowser = { version = "1", optional = true }
+# Files and pictures pasted into the composer. Slint already carries arboard for text.
+arboard = { version = "3.6", default-features = false, features = ["image-data"], optional = true }
+# Saves pictures pasted as pixels to PNG files to attach.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+tempfile = { workspace = true, optional = true }
 tracing.workspace = true
 
 # Desktop notifications through the freedesktop service, on the session bus Slint and
 # the keyring already use.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"], optional = true }
+# Pasted pictures as their copied bytes, through Wayland's data-control protocol.
+wl-clipboard-rs = { version = "0.9.4", optional = true }
 
 [dev-dependencies]
 i-slint-backend-testing = "=1.18.1"
