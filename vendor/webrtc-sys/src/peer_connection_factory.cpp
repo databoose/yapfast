@@ -41,6 +41,8 @@
 #include "livekit/video_decoder_factory.h"
 #include "livekit/video_encoder_factory.h"
 #include "livekit/webrtc.h"
+#include "modules/audio_processing/audio_buffer.h"
+#include "webrtc-sys/src/capture.rs.h"
 #include "rtc_base/thread.h"
 #include "webrtc-sys/src/peer_connection.rs.h"
 #include "webrtc-sys/src/peer_connection_factory.rs.h"
@@ -48,6 +50,44 @@
 namespace livekit_ffi {
 
 class PeerConnectionObserver;
+
+// Talk: hands each block of captured audio to the application's processor,
+// which sets its gain; see capture.rs.
+class CaptureLeveling : public webrtc::CustomProcessing {
+ public:
+  CaptureLeveling() : hook_(new_capture_hook()) {}
+
+  void Initialize(int sample_rate_hz, int num_channels) override {
+    sample_rate_ = sample_rate_hz;
+  }
+
+  void Process(webrtc::AudioBuffer* audio) override {
+    size_t frames = audio->num_frames();
+    if (frames == 0 || audio->num_channels() == 0) {
+      return;
+    }
+    float* const* channels = audio->channels();
+    CaptureRamp ramp = hook_->ramp(
+        rust::Slice<const float>(channels[0], frames), sample_rate_);
+    if (ramp.from == 1.0f && ramp.to == 1.0f) {
+      return;
+    }
+    for (size_t channel = 0; channel < audio->num_channels(); ++channel) {
+      for (size_t i = 0; i < frames; ++i) {
+        channels[channel][i] *=
+            ramp.from + (ramp.to - ramp.from) * float(i + 1) / float(frames);
+      }
+    }
+  }
+
+  std::string ToString() const override { return "TalkLeveling"; }
+
+  void SetRuntimeSetting(webrtc::AudioProcessing::RuntimeSetting) override {}
+
+ private:
+  rust::Box<CaptureHook> hook_;
+  int sample_rate_ = 48000;
+};
 
 PeerConnectionFactory::PeerConnectionFactory(
     std::shared_ptr<RtcRuntime> rtc_runtime)
@@ -75,7 +115,10 @@ PeerConnectionFactory::PeerConnectionFactory(
       std::move(std::make_unique<livekit_ffi::VideoDecoderFactory>());
   dependencies.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
   dependencies.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
-  dependencies.audio_processing_builder = std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
+  // Talk: captured audio goes through Talk's leveling after WebRTC's processing.
+  auto audio_processing = std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
+  audio_processing->SetCapturePostProcessing(std::make_unique<CaptureLeveling>());
+  dependencies.audio_processing_builder = std::move(audio_processing);
 
   webrtc::EnableMedia(dependencies);
   peer_factory_ =

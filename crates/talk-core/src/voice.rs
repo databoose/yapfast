@@ -436,6 +436,7 @@ pub(crate) fn devices(state: &mut State) -> Result<()> {
 }
 
 pub(crate) fn audio() -> Result<PlatformAudio> {
+    crate::leveling::install();
     PlatformAudio::new().map_err(|_| {
         anyhow::anyhow!(
             "Audio devices are unavailable. Check your system's audio service and permissions."

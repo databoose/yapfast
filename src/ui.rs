@@ -376,6 +376,8 @@ struct Layout {
     link_previews: Option<bool>,
     /// Joining a call turns the microphone on.
     unmute_on_join: bool,
+    /// Your voice is evened out in calls; on unless turned off.
+    level_voice: Option<bool>,
     /// Others see when this account is typing; on unless turned off.
     share_typing: Option<bool>,
     /// Desktop notifications, their sound, and whether they say what messages say; on
@@ -402,6 +404,8 @@ impl Layout {
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
         window.set_unmute_on_join(self.unmute_on_join);
+        window.set_level_voice(self.level_voice.unwrap_or(true));
+        talk_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
         window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
         window.set_notification_sound(self.notification_sound.unwrap_or(true));
@@ -1911,6 +1915,8 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
         layout.unmute_on_join = window.get_unmute_on_join();
+        layout.level_voice = Some(window.get_level_voice());
+        talk_core::leveling::set_enabled(window.get_level_voice());
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_sound = Some(window.get_notification_sound());

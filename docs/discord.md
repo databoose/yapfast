@@ -151,8 +151,8 @@ Scope for the beta:
 - DM and group DM calls, both incoming with ringing and outgoing.
 - One connection at a time across Talk and Discord. Joining Discord voice asks
   to leave a Talk call, and the other way round, as in PRODUCT.md.
-- The same devices, push-to-talk, voice activation, noise suppression and echo
-  cancellation as Talk calls.
+- The same devices, push-to-talk, voice activation, noise suppression, echo
+  cancellation and voice leveling as Talk calls.
 
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).

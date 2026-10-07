@@ -1494,6 +1494,7 @@ export component TalkWindow inherits Window {
     in-out property <int> text-size: 1;
     in-out property <bool> link-previews: true;
     in-out property <bool> unmute-on-join;
+    in-out property <bool> level-voice: true;
     in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
     in-out property <bool> notification-sound: true;
@@ -3189,6 +3190,12 @@ export component TalkWindow inherits Window {
                                         text: "Turn on your microphone when you join a call";
                                         description: "Otherwise you join muted, and unmute when you're ready.";
                                         checked <=> root.unmute-on-join;
+                                        toggled => { root.preferences-changed(); }
+                                    }
+                                    SettingsSwitch {
+                                        text: "Even out your voice";
+                                        description: "Keeps your voice steady as you lean towards the microphone or away from it. Whispers and shouts still come through as they are.";
+                                        checked <=> root.level-voice;
                                         toggled => { root.preferences-changed(); }
                                     }
                                 }

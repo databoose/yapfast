@@ -9235,6 +9235,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "webrtc-sys",
  "webrtc-sys-build",
 ]
 

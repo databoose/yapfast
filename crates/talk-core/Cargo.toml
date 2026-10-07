@@ -47,6 +47,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 url = { workspace = true, optional = true }
+# Levels the voice in LiveKit's calls through Talk's patch to its WebRTC bindings.
+webrtc-sys = "=0.3.35"
 
 [build-dependencies]
 # The Go Live codec shims compile against the libvpx, OpenH264 and FFmpeg

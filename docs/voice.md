@@ -26,6 +26,17 @@ WebRTC's PulseAudio devices report no GUID, and LiveKit selects devices only by
 GUID, which always chose the first device. Talk names such devices `name:` and
 their reported name, and selects them by their current index instead.
 
+Settings' "Even out your voice", on unless turned off, levels the microphone
+after WebRTC's processing. Talk follows your usual speaking level over the last
+half minute or so, and undoes up to 8 dB of drift from it as you lean towards
+the microphone or away from it. Drifts of more than 12 dB, such as whispers and
+shouts, pass through as they are, and a shout lets go of any correction at once.
+Pauses hold the gain, and raising never pushes a peak past 90% of full scale.
+Talk calls level inside LiveKit's WebRTC, through a capture hook in Talk's patch
+to `webrtc-sys`. Discord voice levels in its own microphone thread; its voice
+activation gate still opens on the level before leveling, so held gain can't
+lift noise past it.
+
 The input menu's level meter reads the chosen microphone locally through
 PulseAudio, raw and before any processing, only while the menu is open. It
 works while muted, outside calls and in the preview, and it never touches the

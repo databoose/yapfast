@@ -1,7 +1,8 @@
 //! Discord voice's audio on this machine. LiveKit's device module only serves
 //! its own calls, so Discord voice opens the chosen microphone and speakers
 //! itself, through PulseAudio on Linux, and runs the microphone through
-//! WebRTC's echo cancellation, noise suppression and gain control.
+//! WebRTC's echo cancellation, noise suppression and gain control, then Talk's
+//! leveling.
 use std::{
     collections::HashMap,
     sync::{
@@ -298,6 +299,7 @@ mod linux {
                 let mut bytes = vec![0u8; BLOCK * 2];
                 let mut block = vec![0i16; BLOCK];
                 let mut samples = vec![0f32; BLOCK];
+                let mut leveler = crate::leveling::Leveler::default();
                 let mut loud_until: Option<Instant> = None;
                 let mut open_gate = false;
                 while !stopped.load(Ordering::Relaxed) {
@@ -317,6 +319,8 @@ mod linux {
                     }
                     let _ = processing.process_stream(&mut block, SAMPLE_RATE as i32, 1);
                     let now = Instant::now();
+                    // The gate hears the voice before leveling, which could lift
+                    // noise past it.
                     if decibels(&block) > GATE_OPEN {
                         loud_until = Some(now + GATE_HOLD);
                     }
@@ -331,9 +335,13 @@ mod linux {
                             gated_track.pause()
                         };
                     }
+                    for (value, sample) in samples.iter_mut().zip(&block) {
+                        *value = f32::from(*sample);
+                    }
+                    leveler.process(&mut samples, SAMPLE_RATE, crate::leveling::enabled());
                     if open_gate {
-                        for (value, sample) in samples.iter_mut().zip(&block) {
-                            *value = f32::from(*sample) / 32768.0;
+                        for value in &mut samples {
+                            *value /= 32768.0;
                         }
                         out.push(&samples);
                     }
