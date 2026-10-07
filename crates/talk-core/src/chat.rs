@@ -50,7 +50,7 @@ pub struct ChatRoom {
     /// A Discord DM call here is ringing this account.
     pub incoming: bool,
     /// The address of a Discord DM's picture: the other person's avatar or
-    /// the group's icon. See [`Command::Pictures`].
+    /// the group's icon. See [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// The largest file a message here may carry, in bytes.
     pub upload_limit: u64,
@@ -81,7 +81,7 @@ pub struct FriendRequest {
     /// Their Discord user id.
     pub id: String,
     pub name: String,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// Sent to this account, rather than by it.
     pub incoming: bool,
@@ -95,7 +95,7 @@ pub struct Friend {
     /// Their Discord user id.
     pub id: String,
     pub name: String,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// Whether they're around, when Discord says, and their custom status or
     /// what they're doing.
@@ -185,7 +185,7 @@ pub fn sync_list<'a, T: Clone + PartialEq + 'a>(
 pub struct VoicePerson {
     pub id: String,
     pub name: String,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     pub muted: bool,
     pub deafened: bool,
@@ -202,7 +202,7 @@ pub struct ChatServer {
     pub discord: bool,
     /// Its unread messages don't mark it in the rail; mentions still do.
     pub muted: bool,
-    /// The address of the server's icon; see [`Command::Pictures`].
+    /// The address of the server's icon; see [`DiscordCommand::Pictures`].
     pub icon: Option<String>,
 }
 
@@ -223,7 +223,7 @@ pub struct Profile {
     pub name: String,
     /// Their Discord username or Matrix ID.
     pub handle: String,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// The address of their banner, and its colour when there's no picture.
     pub banner: Option<String>,
@@ -251,7 +251,7 @@ pub struct ProfileServer {
     /// As in [`ChatServer::id`].
     pub id: String,
     pub name: String,
-    /// The addresses of its icon and banner; see [`Command::Pictures`].
+    /// The addresses of its icon and banner; see [`DiscordCommand::Pictures`].
     pub icon: Option<String>,
     pub banner: Option<String>,
     /// How many members it has, when known, and channels this account sees.
@@ -267,7 +267,7 @@ pub struct ProfileFriend {
     /// Their Discord user id.
     pub id: String,
     pub name: String,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
 }
 
@@ -284,7 +284,7 @@ pub struct ChatMember {
     /// The display name, or the user ID without one, as on the member's messages.
     pub name: String,
     pub role: Role,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// The heading Discord lists them under, with its size, such as
     /// `Online — 12`. Matrix members are grouped by `role` instead.
@@ -303,7 +303,7 @@ pub struct Contact {
     /// Their Discord or Matrix user id.
     pub id: String,
     pub name: String,
-    /// The address of their avatar; see [`Command::Pictures`].
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// Who they are to this account, such as "Discord friend", or their Matrix id.
     pub detail: String,
@@ -350,7 +350,7 @@ pub enum Delivery {
 pub struct Reply {
     pub author: String,
     /// The address of the author's avatar, where the network gives one; see
-    /// [`Command::Pictures`].
+    /// [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     pub body: String,
     /// The original message's item, to jump to it; none when it's gone.
@@ -365,7 +365,7 @@ pub struct CustomEmoji {
     pub text: String,
     pub id: String,
     pub animated: bool,
-    /// The address of its picture; see [`Command::Pictures`].
+    /// The address of its picture; see [`DiscordCommand::Pictures`].
     pub picture: String,
 }
 
@@ -508,7 +508,7 @@ pub struct ChatMessage {
     pub author: String,
     /// The author's Matrix user ID, which tells apart people sharing a display name.
     pub sender: String,
-    /// The address of the author's avatar; see [`Command::Pictures`].
+    /// The address of the author's avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// The RGB colour of the author's name, from their highest coloured
     /// Discord role.
@@ -552,9 +552,17 @@ pub enum Start {
     },
 }
 
+/// What the UI asks of the networks and voice. [`Command::route`] decides
+/// which of them carries out each one.
+#[derive(Clone)]
 pub enum Command {
     Voice(voice::Command),
+    /// For the linked Discord account alone.
+    Discord(DiscordCommand),
+    /// Show a room. Every network hears it, so each closes its own open room
+    /// when another network's room opens.
     Open(String),
+    /// Close the open room, on every network.
     CloseRoom,
     /// Queue a Markdown message, optionally replying to an item, with the
     /// files at `files`. Matrix sends each file as its own message, then the
@@ -618,18 +626,6 @@ pub enum Command {
         id: String,
         discord: bool,
     },
-    /// The members of a Discord role in the room's server, as far as they're known;
-    /// [`Event::RoleMembers`] follows.
-    RoleMembers {
-        room: String,
-        role: String,
-    },
-    /// Look for the room's members whose names start with `query`, beyond those
-    /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
-    SearchMembers {
-        room: String,
-        query: String,
-    },
     /// This account is typing in a room, or stopped. Backends tell others no more
     /// often than their network expects.
     Typing {
@@ -642,57 +638,103 @@ pub enum Command {
         body: String,
     },
     Earlier(String),
-    /// Mark a Discord channel read in Talk, and on Discord with `sync`.
-    MarkDiscordRead {
-        room: String,
-        sync: bool,
-    },
-    /// Accept a Discord message request, or ignore it.
-    AnswerRequest {
-        room: String,
-        accept: bool,
-    },
-    /// Decline a Discord DM call ringing this account.
-    DeclineCall {
-        room: String,
-    },
-    /// Send a Discord user a friend request or accept theirs, or with
-    /// `add` false, ignore theirs or cancel this account's.
-    Friend {
-        user: String,
-        add: bool,
-    },
-    /// Send a friend request to whoever has this Discord username;
-    /// [`Event::FriendAdded`] follows.
-    AddFriend {
-        username: String,
-    },
-    /// Set the Discord custom status, or clear it with `None`;
-    /// [`Event::CustomStatusSet`] follows.
-    SetCustomStatus(Option<CustomStatus>),
-    /// Connect the Discord account that was just linked.
-    StartDiscord,
-    /// Forget the linked Discord account on this device, ending its session
-    /// on Discord; [`Event::DiscordUnlinked`] follows.
-    UnlinkDiscord,
-    /// Fetch a Discord user's profile, as a member of a room's server or as
-    /// the other person in a DM. It comes back as [`Event::Profile`].
-    Profile {
-        room: String,
-        user: String,
-    },
-    /// Download server icons and avatars by address. Each that arrives comes
-    /// back as [`Event::Picture`]; one that fails doesn't.
-    Pictures(Vec<String>),
     Recover(String),
     RefreshTrust,
     RetrySync,
     Logout,
 }
 
+/// Commands only the linked Discord account carries out.
+#[derive(Clone)]
+pub enum DiscordCommand {
+    /// The members of a Discord role in the room's server, as far as they're known;
+    /// [`Event::RoleMembers`] follows.
+    RoleMembers { room: String, role: String },
+    /// Look for the room's members whose names start with `query`, beyond those
+    /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
+    SearchMembers { room: String, query: String },
+    /// Mark a Discord channel read in Talk, and on Discord with `sync`.
+    MarkRead { room: String, sync: bool },
+    /// Accept a Discord message request, or ignore it.
+    AnswerRequest { room: String, accept: bool },
+    /// Decline a Discord DM call ringing this account.
+    DeclineCall { room: String },
+    /// Send a Discord user a friend request or accept theirs, or with
+    /// `add` false, ignore theirs or cancel this account's.
+    Friend { user: String, add: bool },
+    /// Send a friend request to whoever has this Discord username;
+    /// [`Event::FriendAdded`] follows.
+    AddFriend { username: String },
+    /// Set the Discord custom status, or clear it with `None`;
+    /// [`Event::CustomStatusSet`] follows.
+    SetCustomStatus(Option<CustomStatus>),
+    /// Connect the Discord account that was just linked.
+    Start,
+    /// Forget the linked Discord account on this device, ending its session
+    /// on Discord; [`Event::DiscordUnlinked`] follows.
+    Unlink,
+    /// Fetch a Discord user's profile, as a member of a room's server or as
+    /// the other person in a DM. It comes back as [`Event::Profile`].
+    Profile { room: String, user: String },
+    /// Download server icons and avatars by address. Each that arrives comes
+    /// back as [`Event::Picture`]; one that fails doesn't.
+    Pictures(Vec<String>),
+}
+
+/// Who carries out a command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    Voice,
+    Matrix,
+    Discord,
+    /// Every network, each for its own rooms.
+    Every,
+}
+
+impl Command {
+    /// Which network a command is for: the one whose room or account it
+    /// names, or every network when it changes which room is open.
+    pub(crate) fn route(&self) -> Route {
+        let network = |room: &str| {
+            if crate::discord::is_discord(room) {
+                Route::Discord
+            } else {
+                Route::Matrix
+            }
+        };
+        match self {
+            Command::Voice(_) => Route::Voice,
+            Command::Discord(_) => Route::Discord,
+            Command::Open(_) | Command::CloseRoom | Command::FindPeople { .. } => Route::Every,
+            Command::Send { room, .. }
+            | Command::Edit { room, .. }
+            | Command::React { room, .. }
+            | Command::Delete { room, .. }
+            | Command::Retry { room, .. }
+            | Command::Cancel { room, .. }
+            | Command::SaveAttachment { room, .. }
+            | Command::ViewImage { room, .. }
+            | Command::Typing { room, .. }
+            | Command::SaveDraft { room, .. }
+            | Command::Earlier(room) => network(room),
+            // Discord turns down forwarding from or to its channels.
+            Command::Forward { room, target, .. } => match network(room) {
+                Route::Matrix => network(target),
+                route => route,
+            },
+            Command::StartDm { discord: true, .. } => Route::Discord,
+            Command::StartDm { discord: false, .. } => Route::Matrix,
+            // Signing out of a build without Matrix unlinks Discord instead.
+            Command::Recover(_) | Command::RefreshTrust | Command::RetrySync | Command::Logout => {
+                Route::Matrix
+            }
+        }
+    }
+}
+
 pub enum Event {
     Voice(voice::State),
-    /// A profile [`Command::Profile`] asked for, or why Discord didn't give it.
+    /// A profile [`DiscordCommand::Profile`] asked for, or why Discord didn't give it.
     Profile {
         user: String,
         result: Result<Profile, String>,
@@ -747,7 +789,7 @@ pub enum Event {
         room: String,
         names: Vec<String>,
     },
-    /// A picture [`Command::Pictures`] asked for, decoded.
+    /// A picture [`DiscordCommand::Pictures`] asked for, decoded.
     Picture {
         url: String,
         picture: Arc<Picture>,
@@ -1011,7 +1053,7 @@ pub struct Notification {
     pub author: String,
     /// The message as plain text.
     pub body: String,
-    /// The address of the author's picture; see [`Command::Pictures`].
+    /// The address of the author's picture; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
 }
 
@@ -1126,72 +1168,60 @@ pub async fn run(
         };
         match wake {
             Wake::Command(None) => break,
-            Wake::Command(Some(command)) => {
+            Wake::Command(Some(command)) => match command.route() {
+                Route::Voice => {
+                    if let Command::Voice(command) = command {
+                        voice.command(command);
+                    }
+                }
+                Route::Every => {
+                    #[cfg(feature = "discord")]
+                    if let Some(discord) = discord.as_mut() {
+                        discord.command(command.clone(), &events);
+                    }
+                    #[cfg(feature = "matrix")]
+                    if !matrix.command(command, &mut voice, &events).await {
+                        break;
+                    }
+                }
                 #[cfg(feature = "discord")]
-                let command = match command {
-                    Command::StartDiscord => {
+                Route::Discord => match command {
+                    Command::Discord(DiscordCommand::Start) => {
                         if discord.is_none() {
                             discord = crate::discord_text::Chat::start();
                             linked.send_replace(
                                 discord.as_ref().map(crate::discord_text::Chat::service),
                             );
                         }
-                        continue;
                     }
-                    Command::UnlinkDiscord => {
+                    Command::Discord(DiscordCommand::Unlink) => {
                         unlink_discord(&mut discord, &linked, &voice);
                         let _ = events.send(Event::DiscordUnlinked);
-                        continue;
                     }
-                    #[cfg(not(feature = "matrix"))]
-                    Command::Logout => {
+                    command => match discord.as_mut() {
+                        Some(discord) => discord.command(command, &events),
+                        None => crate::discord_text::unlinked(command, &events),
+                    },
+                },
+                #[cfg(feature = "matrix")]
+                Route::Matrix => {
+                    if !matrix.command(command, &mut voice, &events).await {
+                        break;
+                    }
+                }
+                #[cfg(not(feature = "matrix"))]
+                Route::Matrix => {
+                    if let Command::Logout = command {
+                        #[cfg(feature = "discord")]
                         unlink_discord(&mut discord, &linked, &voice);
                         let _ = events.send(Event::LoggedOut);
                         break;
                     }
-                    command => command,
-                };
-                #[cfg(feature = "discord")]
-                let command = match discord.as_mut() {
-                    Some(discord) => discord.command(command, &events),
-                    None => Some(command),
-                };
-                #[cfg(feature = "discord")]
-                let Some(command) = command else {
-                    continue;
-                };
-                match command {
-                    Command::Voice(command) => {
-                        voice.command(command);
-                    }
-                    // Discord commands never reach Matrix.
-                    Command::MarkDiscordRead { .. }
-                    | Command::SearchMembers { .. }
-                    | Command::RoleMembers { .. }
-                    | Command::AnswerRequest { .. }
-                    | Command::DeclineCall { .. }
-                    | Command::Friend { .. }
-                    | Command::AddFriend { .. }
-                    | Command::SetCustomStatus(_)
-                    | Command::StartDiscord
-                    | Command::UnlinkDiscord
-                    | Command::Profile { .. }
-                    | Command::Pictures(_) => {}
-                    #[cfg(feature = "matrix")]
-                    command => {
-                        if !matrix.command(command, &mut voice, &events).await {
-                            break;
-                        }
-                    }
-                    #[cfg(not(feature = "matrix"))]
-                    Command::Logout => {
-                        let _ = events.send(Event::LoggedOut);
-                        break;
-                    }
-                    #[cfg(not(feature = "matrix"))]
-                    _ => {}
                 }
-            }
+                // This build has no Discord to carry it out.
+                #[cfg(not(feature = "discord"))]
+                Route::Discord => {}
+            },
             Wake::Voice(changed) => {
                 if changed {
                     let _ = events.send(Event::Voice(voice.states.borrow_and_update().clone()));
@@ -1267,6 +1297,44 @@ mod tests {
             }
         }
         data
+    }
+
+    #[test]
+    fn room_changes_reach_every_network_and_the_rest_their_own() {
+        let (matrix, discord) = ("!room:test".to_owned(), "discord:10:21".to_owned());
+        let send = |room: &String| Command::Send {
+            room: room.clone(),
+            body: "hi".into(),
+            reply: None,
+            files: vec![],
+        };
+        let forward = |room: &String, target: &String| Command::Forward {
+            room: room.clone(),
+            item: "1".into(),
+            target: target.clone(),
+        };
+        for (command, route) in [
+            (Command::Open(matrix.clone()), Route::Every),
+            (Command::Open(discord.clone()), Route::Every),
+            (Command::CloseRoom, Route::Every),
+            (send(&matrix), Route::Matrix),
+            (send(&discord), Route::Discord),
+            (Command::Earlier(discord.clone()), Route::Discord),
+            (forward(&matrix, &matrix), Route::Matrix),
+            (forward(&matrix, &discord), Route::Discord),
+            (forward(&discord, &matrix), Route::Discord),
+            (
+                Command::Discord(DiscordCommand::MarkRead {
+                    room: discord.clone(),
+                    sync: true,
+                }),
+                Route::Discord,
+            ),
+            (Command::Voice(voice::Command::Leave), Route::Voice),
+            (Command::Logout, Route::Matrix),
+        ] {
+            assert_eq!(command.route(), route);
+        }
     }
 
     #[test]

@@ -53,7 +53,7 @@ pub struct Participant {
     pub problem: Option<String>,
     /// Sharing their screen.
     pub streaming: bool,
-    /// The address of their avatar; see [`crate::chat::Command::Pictures`].
+    /// The address of their avatar; see [`crate::chat::DiscordCommand::Pictures`].
     pub avatar: Option<String>,
 }
 
@@ -175,6 +175,7 @@ impl State {
     }
 }
 
+#[derive(Clone)]
 pub enum Command {
     Join(String),
     Leave,

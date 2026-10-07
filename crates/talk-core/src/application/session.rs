@@ -63,7 +63,7 @@ impl Application {
     pub fn backend_failed(&mut self, command: &Command) {
         match command {
             // A missing picture leaves an initial; it says nothing new.
-            Command::Pictures(_) => return,
+            Command::Discord(DiscordCommand::Pictures(_)) => return,
             Command::Voice(_) => {
                 self.state.voice.error =
                     Some("Voice is unavailable. Reconnect to Matrix and retry.".into());

@@ -120,7 +120,9 @@ impl Application {
         if self.state.preview || !discord::is_discord(&room) {
             return vec![];
         }
-        vec![Effect::Backend(Command::RoleMembers { room, role })]
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::RoleMembers { room, role },
+        ))]
     }
 
     /// Opens a profile card with what Talk knows, and fetches the rest of a
@@ -140,7 +142,10 @@ impl Application {
             note: None,
         });
         if fetch {
-            vec![Effect::Backend(Command::Profile { room, user })]
+            vec![Effect::Backend(Command::Discord(DiscordCommand::Profile {
+                room,
+                user,
+            }))]
         } else {
             vec![]
         }

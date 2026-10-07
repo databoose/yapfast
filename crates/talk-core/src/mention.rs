@@ -8,7 +8,7 @@ pub struct Candidate {
     pub name: String,
     /// How a message says it on its network, such as `<@20>` on Discord.
     pub mention: String,
-    /// The address of their avatar; see [`crate::chat::Command::Pictures`].
+    /// The address of their avatar; see [`crate::chat::DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// The RGB colour of the name.
     pub color: Option<u32>,

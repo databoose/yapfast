@@ -7,8 +7,8 @@ use std::{
 
 use crate::{
     chat::{
-        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Event, MentionGroup,
-        Picture, Profile, ProfileRole, Reaction, Reply, Role,
+        self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, DiscordCommand,
+        Event, MentionGroup, Picture, Profile, ProfileRole, Reaction, Reply, Role,
     },
     discord,
     mention::{self, Candidate, Target},
@@ -632,7 +632,7 @@ pub enum Action {
     /// history until it's there; see [`AppState::jump`].
     Jump(String),
     /// Download pictures that show outside the state, such as the emoji
-    /// picker's; see [`Command::Pictures`].
+    /// picker's; see [`DiscordCommand::Pictures`].
     LoadPictures(Vec<String>),
     Login {
         homeserver: String,
@@ -912,7 +912,9 @@ impl Application {
                 wanted.push(url.to_owned());
             }
         }
-        (!wanted.is_empty()).then_some(Effect::Backend(Command::Pictures(wanted)))
+        (!wanted.is_empty()).then_some(Effect::Backend(Command::Discord(DiscordCommand::Pictures(
+            wanted,
+        ))))
     }
 
     fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
@@ -1024,16 +1026,24 @@ impl Application {
             Action::Preview => self.start_preview(),
             Action::RequestJoinVoice(id) => self.request_join_voice(id),
             Action::AcceptCall(id) => self.accept_call(id),
-            Action::DeclineCall(room) => vec![Effect::Backend(Command::DeclineCall { room })],
+            Action::DeclineCall(room) => vec![Effect::Backend(Command::Discord(
+                DiscordCommand::DeclineCall { room },
+            ))],
             Action::Befriend(user) => match self.state.relation(&user) {
                 Relation::Stranger | Relation::Incoming => {
-                    vec![Effect::Backend(Command::Friend { user, add: true })]
+                    vec![Effect::Backend(Command::Discord(DiscordCommand::Friend {
+                        user,
+                        add: true,
+                    }))]
                 }
                 _ => vec![],
             },
             Action::RemoveFriendRequest(user) => match self.state.relation(&user) {
                 Relation::Incoming | Relation::Outgoing => {
-                    vec![Effect::Backend(Command::Friend { user, add: false })]
+                    vec![Effect::Backend(Command::Discord(DiscordCommand::Friend {
+                        user,
+                        add: false,
+                    }))]
                 }
                 _ => vec![],
             },
@@ -1050,7 +1060,7 @@ impl Application {
             },
             Action::UnlinkDiscord => {
                 if self.state.discord_linked && self.state.account.is_some() {
-                    vec![Effect::Backend(Command::UnlinkDiscord)]
+                    vec![Effect::Backend(Command::Discord(DiscordCommand::Unlink))]
                 } else {
                     vec![]
                 }

@@ -383,6 +383,10 @@ impl Matrix {
             Command::Open(id) => {
                 *open = None;
                 self.updates = Box::pin(futures_util::stream::pending());
+                // Another network's room opening closes this one, and that's all.
+                if crate::discord::is_discord(&id) {
+                    return true;
+                }
                 let room = client.get_room(&match OwnedRoomId::try_from(id.clone()) {
                     Ok(id) => id,
                     Err(_) => return true,
@@ -629,20 +633,8 @@ impl Matrix {
                     }
                 }
             }
-            // The chat actor handles voice, and Discord takes its own commands first.
-            Command::Voice(_)
-            | Command::MarkDiscordRead { .. }
-            | Command::SearchMembers { .. }
-            | Command::RoleMembers { .. }
-            | Command::AnswerRequest { .. }
-            | Command::DeclineCall { .. }
-            | Command::Friend { .. }
-            | Command::AddFriend { .. }
-            | Command::SetCustomStatus(_)
-            | Command::StartDiscord
-            | Command::UnlinkDiscord
-            | Command::Profile { .. }
-            | Command::Pictures(_) => {}
+            // `Command::route` sends these elsewhere.
+            Command::Voice(_) | Command::Discord(_) => {}
         }
         true
     }

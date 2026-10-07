@@ -49,7 +49,9 @@ impl Application {
         }
         dialog.sending = true;
         dialog.outcome = None;
-        vec![Effect::Backend(Command::AddFriend { username })]
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::AddFriend { username },
+        ))]
     }
 
     pub(super) fn set_custom_status(
@@ -90,10 +92,12 @@ impl Application {
     pub(super) fn answer_request(&mut self, accept: bool) -> Vec<Effect> {
         match self.state.selected_room() {
             Some(room) if room.request && self.state.discord_online => {
-                vec![Effect::Backend(Command::AnswerRequest {
-                    room: room.id.clone(),
-                    accept,
-                })]
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::AnswerRequest {
+                        room: room.id.clone(),
+                        accept,
+                    },
+                ))]
             }
             _ => vec![],
         }
@@ -124,7 +128,10 @@ impl Application {
             note: None,
         });
         if fetch {
-            vec![Effect::Backend(Command::Profile { room, user: person })]
+            vec![Effect::Backend(Command::Discord(DiscordCommand::Profile {
+                room,
+                user: person,
+            }))]
         } else {
             vec![]
         }
@@ -139,10 +146,12 @@ impl Application {
                     && discord::is_discord(&room.id)
                     && (room.unread > 0 || room.mentions > 0) =>
             {
-                vec![Effect::Backend(Command::MarkDiscordRead {
-                    room: room.id.clone(),
-                    sync: self.state.sync_discord_reads,
-                })]
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::MarkRead {
+                        room: room.id.clone(),
+                        sync: self.state.sync_discord_reads,
+                    },
+                ))]
             }
             _ => vec![],
         }
@@ -223,7 +232,7 @@ impl Application {
                 // A running Talk connects the account; one without Matrix
                 // signs in with it.
                 return if self.state.account.is_some() {
-                    vec![Effect::Backend(Command::StartDiscord)]
+                    vec![Effect::Backend(Command::Discord(DiscordCommand::Start))]
                 } else {
                     self.start(chat::Start::Restore)
                 };
@@ -244,7 +253,9 @@ impl Application {
         };
         editor.saving = true;
         editor.error = None;
-        vec![Effect::Backend(Command::SetCustomStatus(status))]
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::SetCustomStatus(status),
+        ))]
     }
 
     /// The custom emoji for a status, by its `:name:` or its `name:id` key,
