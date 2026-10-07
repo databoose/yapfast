@@ -1048,7 +1048,10 @@ component ProfileCard inherits Rectangle {
     TouchArea { }
     Rectangle {
         border-radius: 12px; clip: true;
+        // Sized by what the card wants rather than the least it can take, so a
+        // long one scrolls to its end.
         ScrollView {
+            content-height: body.preferred-height;
             body := VerticalLayout {
                 padding-bottom: root.pad; spacing: 0px;
                 // The banner, with the avatar hanging over its lower edge.
@@ -1092,10 +1095,12 @@ component ProfileCard inherits Rectangle {
                         spacing: 6px;
                         ProfileHeading { text: "ABOUT ME"; }
                         // The card shows the start; the full profile shows it all.
+                        // A fixed height, since the text would otherwise stretch it past its limit.
                         Rectangle {
-                            clip: true; max-height: root.large ? 100000px : 110px;
+                            clip: true;
+                            height: root.large ? bio-text.preferred-height : min(110px, bio-text.preferred-height);
                             VerticalLayout {
-                                StyledText {
+                                bio-text := StyledText {
                                     text: root.data.bio; default-color: Theme.text; link-color: Theme.link;
                                     link-clicked(link) => { root.open-link(link); }
                                 }
