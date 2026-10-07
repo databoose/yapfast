@@ -30,6 +30,14 @@
 // a moment later in a MESSAGE_UPDATE as Discord's does, a YouTube link and a
 // GIF link, and a bot post a card with fields; their pictures come from
 // /external/, standing in for Discord's media proxy.
+// The server has two custom emoji, :talk: and the animated :party:, served
+// from /emojis/, and a sticker from /stickers/. POST /_control/showcase makes
+// Bob post a spoiler, custom emoji, stickers, a GIF, a spoilered picture and a reply
+// to the start of #general's history, and Alice block Dave, who then posts.
+// Alice's custom status, "Testing Talk", is in her settings; PATCH
+// /users/@me/settings-proto/1 replaces it, and GET /_control/presence shows the
+// presence her session last sent with op 3. POST /users/@me/relationships sends
+// a friend request by username: Frank takes none, and unknown names fail.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -63,6 +71,10 @@ const WEEKEND = "1400000000000000121";
 const DM_DAVE = "1400000000000000122";
 const REQUEST_ERIN = "1400000000000000123";
 const SPAM_FRANK = "1400000000000000124";
+const EMOJI_TALK = "1400000000000000300";
+const EMOJI_PARTY = "1400000000000000301";
+const STICKER_WAVE = "1400000000000000310";
+const STICKER_BOUNCE = "1400000000000000311";
 const ALICE = "1400000000000000001";
 
 // Dave has no avatar, so he gets a default one; Carol set another for the server.
@@ -89,6 +101,23 @@ const relationships = new Map<string, number>([
   [strangers.erin!.id, 3],
 ]);
 const FRIEND_ACCEPT_MS = 2000;
+
+// Alice's settings as Discord keeps them: a protobuf message in base64, of
+// which the fake knows only the status, field 11, holding the custom status.
+const protoBytes = (field: number, bytes: Uint8Array) => {
+  const out = [field << 3 | 2];
+  for (let length = bytes.length; ; length >>= 7) {
+    if (length < 0x80) { out.push(length); break; }
+    out.push(length & 0x7f | 0x80);
+  }
+  return new Uint8Array([...out, ...bytes]);
+};
+const text = (value: string) => new TextEncoder().encode(value);
+let settings = Buffer.from(
+  protoBytes(11, protoBytes(2, new Uint8Array([...protoBytes(1, text("Testing Talk")), ...protoBytes(3, text("🧪"))]))),
+).toString("base64");
+// The presence Alice's session last sent, if any.
+let alicePresence: unknown = null;
 
 const HISTORY_START = Date.UTC(2026, 9, 1, 9, 0, 0);
 const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
@@ -225,6 +254,73 @@ function png(width: number, height: number, pixel: (x: number, y: number) => num
   return new Uint8Array(Buffer.concat(parts));
 }
 
+/**
+ * An animated GIF that loops: each frame's pixels as indexes into `palette`,
+ * each shown for `delay` hundredths of a second. Its LZW data is uncompressed:
+ * literal 9-bit codes, with a clear code before the code table would grow.
+ */
+function gif(width: number, height: number, palette: number[][], frames: Uint8Array[], delay: number): Uint8Array {
+  const bytes: number[] = [];
+  const word = (n: number) => bytes.push(n & 255, (n >> 8) & 255);
+  bytes.push(...new TextEncoder().encode("GIF89a"));
+  word(width);
+  word(height);
+  bytes.push(0xf7, 0, 0);
+  for (let i = 0; i < 256; i++) bytes.push(...(palette[i] ?? [0, 0, 0]));
+  bytes.push(0x21, 0xff, 11, ...new TextEncoder().encode("NETSCAPE2.0"), 3, 1, 0, 0, 0);
+  for (const frame of frames) {
+    bytes.push(0x21, 0xf9, 4, 0, delay & 255, delay >> 8, 0, 0);
+    bytes.push(0x2c);
+    word(0);
+    word(0);
+    word(width);
+    word(height);
+    bytes.push(0, 8);
+    const codes: number[] = [];
+    frame.forEach((pixel, index) => {
+      if (index % 250 === 0) codes.push(256);
+      codes.push(pixel);
+    });
+    codes.push(257);
+    const packed: number[] = [];
+    let bits = 0;
+    let pending = 0;
+    for (const code of codes) {
+      pending |= code << bits;
+      bits += 9;
+      while (bits >= 8) {
+        packed.push(pending & 255);
+        pending >>= 8;
+        bits -= 8;
+      }
+    }
+    if (bits > 0) packed.push(pending & 255);
+    for (let i = 0; i < packed.length; i += 255) {
+      const block = packed.slice(i, i + 255);
+      bytes.push(block.length, ...block);
+    }
+    bytes.push(0);
+  }
+  bytes.push(0x3b);
+  return new Uint8Array(bytes);
+}
+
+/** A dot that crosses a square and comes back, in `count` frames. */
+function bouncing(side: number, count: number, color: number[]): Uint8Array {
+  const frames = Array.from({ length: count }, (_, frame) => {
+    const phase = frame / count;
+    const center = side * (0.2 + 0.6 * (phase < 0.5 ? phase * 2 : 2 - phase * 2));
+    const pixels = new Uint8Array(side * side);
+    for (let y = 0; y < side; y++) {
+      for (let x = 0; x < side; x++) {
+        if (Math.hypot(x - center, y - side / 2) < side * 0.15) pixels[y * side + x] = 1;
+      }
+    }
+    return pixels;
+  });
+  return gif(side, side, [[30, 31, 36], color], frames, 10);
+}
+
 type File = {
   id: string;
   channel: string;
@@ -294,6 +390,7 @@ type Message = {
   embeds?: (origin: string) => unknown[];
   /** A DM call's message: who took part, and when it ended. */
   call?: { participants: Set<string>; ended?: number };
+  stickers?: { id: string; name: string; format_type: number }[];
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -363,6 +460,7 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     components: [],
   };
   if (message.nonce) wire.nonce = message.nonce;
+  if (message.stickers) wire.sticker_items = message.stickers;
   if (message.call) {
     wire.call = {
       participants: [...message.call.participants],
@@ -616,7 +714,10 @@ function guild() {
       { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
       { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
     ],
-    emojis: [],
+    emojis: [
+      { id: EMOJI_TALK, name: "talk", animated: false, available: true, managed: false, require_colons: true, roles: [] },
+      { id: EMOJI_PARTY, name: "party", animated: true, available: true, managed: false, require_colons: true, roles: [] },
+    ],
     stickers: [],
     threads: [],
     stage_instances: [],
@@ -703,7 +804,7 @@ function ready(ws: Socket) {
     country_code: "US",
     analytics_token: "fake",
     api_code_version: 1,
-    user_settings_proto: "",
+    user_settings_proto: settings,
     notification_settings: { flags: 0 },
     consents: { personalization: { consented: false } },
     tutorial: null,
@@ -814,6 +915,8 @@ function gatewayMessage(ws: Socket, text: string) {
       for (const channel of calls.keys()) send(ws, 0, wireCall(channel), "CALL_CREATE");
       break;
     case 3: // Presence
+      alicePresence = d;
+      console.log(`gateway: presence ${JSON.stringify(d)}`);
       break;
     case 4: {
       // Voice state: Alice shows in the channel or DM call, and gets its voice server.
@@ -1790,20 +1893,55 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return messages.has(m[1]!) ? empty() : notFound("Unknown Channel", 10003);
   }
 
+  // Alice's settings: Talk changes only the custom status, which every
+  // session hears of.
+  if (method === "PATCH" && path === "/users/@me/settings-proto/1") {
+    const body: any = await req.json().catch(() => ({}));
+    if (typeof body.settings !== "string") return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    settings = body.settings;
+    dispatch("USER_SETTINGS_PROTO_UPDATE", { settings: { type: 1, proto: settings }, partial: true });
+    return json({ settings });
+  }
+
   // Friend requests: sending one, or accepting one, from where Discord's
   // client does it, which it says in X-Context-Properties.
+  const where = () => {
+    try {
+      return JSON.parse(atob(req.headers.get("x-context-properties") ?? "")).location as string | undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const befriend = (user: User, type: number) => {
+    relationships.set(user.id, type);
+    dispatch("RELATIONSHIP_ADD", {
+      id: user.id, type, user: wireUser(user), nickname: null, since: new Date().toISOString(), should_notify: type === 3,
+    });
+  };
+  // Sends Alice's request, or accepts theirs; Dave accepts hers a moment later.
+  const request = (user: User) => {
+    const before = relationships.get(user.id);
+    if (before === 1 || before === 4) return;
+    befriend(user, before === 3 ? 1 : 4);
+    if (before !== 3 && user.id === users.dave.id) {
+      setTimeout(() => relationships.get(user.id) === 4 && befriend(user, 1), FRIEND_ACCEPT_MS);
+    }
+  };
+  if (method === "POST" && path === "/users/@me/relationships") {
+    if (where() !== "Add Friend") return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    const body: any = await req.json().catch(() => ({}));
+    const user = [...userById.values()].find((user) => user.username === body.username && user.id !== ALICE);
+    if (!user) return json({ message: "Unknown User", code: 80004 }, 400);
+    if (relationships.get(user.id) === 1) return json({ message: "You're already friends with that user.", code: 80007 }, 400);
+    if (user.id === strangers.frank!.id) return json({ message: "Friend request failed", code: 80000 }, 400);
+    request(user);
+    return empty();
+  }
   if ((m = path.match(/^\/users\/@me\/relationships\/(\d+)$/)) && (method === "PUT" || method === "DELETE")) {
     const id = m[1]!;
     const user = userById.get(id);
     if (!user || id === ALICE) return notFound("Unknown User", 10013);
-    const where = (() => {
-      try {
-        return JSON.parse(atob(req.headers.get("x-context-properties") ?? "")).location;
-      } catch {
-        return undefined;
-      }
-    })();
-    if (!where) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    if (!where()) return json({ message: "Invalid Form Body", code: 50035 }, 400);
     const before = relationships.get(id);
     if (method === "DELETE") {
       if (before === undefined) return notFound("Unknown Relationship", 10011);
@@ -1811,17 +1949,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       dispatch("RELATIONSHIP_REMOVE", { id, type: before, nickname: null });
       return empty();
     }
-    const befriend = (type: number) => {
-      relationships.set(id, type);
-      dispatch("RELATIONSHIP_ADD", {
-        id, type, user: wireUser(user), nickname: null, since: new Date().toISOString(), should_notify: type === 3,
-      });
-    };
-    if (before === 1 || before === 4) return empty();
-    befriend(before === 3 ? 1 : 4);
-    if (before !== 3 && id === users.dave.id) {
-      setTimeout(() => relationships.get(id) === 4 && befriend(1), FRIEND_ACCEPT_MS);
-    }
+    request(user);
     return empty();
   }
 
@@ -2003,6 +2131,59 @@ function postEmbeds(origin: string) {
   dispatch("MESSAGE_CREATE", dispatched(card, origin));
 }
 
+/** A custom emoji or sticker: a ring of colour picked from its id, transparent around it. */
+function badge(id: string, size: number): Uint8Array {
+  const hue = crc32(new TextEncoder().encode(id));
+  const color = [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160));
+  return png(size, size, (x, y) => {
+    const distance = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2) / (size / 2);
+    if (distance > 1) return [0, 0, 0, 0];
+    if (distance > 0.8) return [...color.map((c) => c >> 1), 255];
+    return distance < 0.35 ? [255, 255, 255, 255] : [...color, 255];
+  });
+}
+
+function postShowcase(origin: string) {
+  const now = Date.now();
+  const send = (message: Message) => dispatch("MESSAGE_CREATE", dispatched(message, origin));
+  send(post(GENERAL, users.bob, "The ending: ||the butler did it||, and ||**nobody** saw it coming||.", now));
+  send(post(GENERAL, users.bob, `Ship it <:talk:${EMOJI_TALK}> today <a:party:${EMOJI_PARTY}>`, now + 1));
+  const jumbo = post(GENERAL, users.bob, `<:talk:${EMOJI_TALK}><a:party:${EMOJI_PARTY}>`, now + 2);
+  jumbo.reactions.push({ name: "talk", id: EMOJI_TALK, users: new Set([users.carol.id]) });
+  send(jumbo);
+  send(post(GENERAL, users.bob, "", now + 3, {
+    stickers: [
+      { id: STICKER_WAVE, name: "Wave", format_type: 1 },
+      { id: STICKER_BOUNCE, name: "Bounce", format_type: 4 },
+    ],
+  }));
+  const dance = addFile({
+    id: snowflake(now + 3, 2),
+    channel: GENERAL,
+    filename: "dance.gif",
+    contentType: "image/gif",
+    data: bouncing(120, 12, [255, 191, 71]),
+    width: 120,
+    height: 120,
+  });
+  send(post(GENERAL, users.bob, "It moves", now + 3, { files: [dance] }));
+  const hidden = addFile({
+    id: snowflake(now + 4, 1),
+    channel: GENERAL,
+    filename: "SPOILER_sunset.png",
+    contentType: "image/png",
+    data: sunset(800, 500),
+    width: 800,
+    height: 500,
+    draw: sunset,
+  });
+  send(post(GENERAL, users.bob, "Don't look", now + 4, { files: [hidden] }));
+  send(post(GENERAL, users.bob, "As the welcome said", now + 5, { reply: messages.get(GENERAL)![0]!.id }));
+  relationships.set(users.dave.id, 2);
+  dispatch("RELATIONSHIP_ADD", { id: users.dave.id, type: 2, nickname: null, user: wireUser(users.dave), since: iso(now) });
+  send(post(GENERAL, users.dave, "Alice, you can't see this", now + 6));
+}
+
 // --- Control ----------------------------------------------------------------
 
 let chat: ReturnType<typeof setInterval> | undefined;
@@ -2057,6 +2238,7 @@ const server = Bun.serve<SocketData>({
       return new Response(null, { status: 200 });
     }
     if (path === "/_control/health") return new Response("ok\n");
+    if (path === "/_control/presence") return Response.json(alicePresence);
     if (path === "/_control/video") {
       return json({
         received: [...received.values()].map(({ key: _, ...stream }) => stream),
@@ -2078,6 +2260,19 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path.startsWith("/external/")) {
       return serveExternal(path, url) ?? notFound();
+    }
+    // Discord's CDN: custom emoji and stickers.
+    const emoji = req.method === "GET" ? path.match(/^\/(emojis|stickers)\/(\d+)\.(png|gif|webp)$/) : null;
+    if (emoji) {
+      const size = Math.min(Number(url.searchParams.get("size")) || 128, 512);
+      if (emoji[3] === "gif") {
+        return new Response(bouncing(size, 10, [124, 196, 255]), { headers: { "content-type": "image/gif" } });
+      }
+      return new Response(badge(emoji[2]!, size), { headers: { "content-type": "image/png" } });
+    }
+    if (req.method === "POST" && path === "/_control/showcase") {
+      postShowcase(origin);
+      return new Response("showcase posted\n");
     }
     if (req.method === "POST" && path === "/_control/embeds") {
       postEmbeds(origin);

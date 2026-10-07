@@ -1,7 +1,7 @@
 //! Slint presentation and event-loop adapter for the shared application.
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     sync::Arc,
@@ -13,7 +13,9 @@ use slint::{
     ComponentHandle, Model, ModelRc, SharedString, VecModel, winit_030::WinitWindowAccessor,
 };
 use talk_core::{
-    application::{Action, Application, Compose, Effect, Navigation, NewDm, Relation},
+    application::{
+        Action, AddFriend, Application, ClearAfter, Compose, Effect, Navigation, NewDm, Relation,
+    },
     backend::Backend,
     chat::{
         ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
@@ -22,10 +24,11 @@ use talk_core::{
     discord, links, mention,
     meter::{self, InputMeter},
     runtime::BackgroundRuntime,
+    spoiler,
     voice::{self, Phase},
 };
 
-use crate::{emoji, graphics};
+use crate::{custom_emoji, emoji, graphics};
 use talk_ui::*;
 
 /// How the desktop window ended.
@@ -129,6 +132,10 @@ fn isolated_display() -> bool {
 }
 
 fn prepare(window: &TalkWindow) {
+    // Without Matrix everything is Discord's, so its badge would say nothing.
+    window
+        .global::<Badges>()
+        .set_discord(cfg!(feature = "matrix"));
     if isolated_display()
         && let Ok(size) = std::env::var("TALK_UI_TEST_SIZE")
         && let Some((width, height)) = size.split_once('x')
@@ -437,10 +444,12 @@ impl Layout {
             row.embeds = ModelRc::default();
             // A bot's card can be the whole message; say it's there.
             if message.body.trim().is_empty()
-                && !message
-                    .attachments
-                    .iter()
-                    .any(|attachment| matches!(attachment.placement, Placement::Message))
+                && !message.attachments.iter().any(|attachment| {
+                    matches!(
+                        attachment.placement,
+                        Placement::Message | Placement::Sticker
+                    )
+                })
                 && let Some(embed) = message.embeds.first()
             {
                 row.hidden_card = if embed.title.is_empty() {
@@ -541,6 +550,10 @@ struct Adapter {
     pictures: HashMap<String, slint::Image>,
     /// How many pictures had arrived when the message rows were last built.
     pictures_seen: usize,
+    /// The last jump to a message the timeline made; see `AppState::jump`.
+    jumped: Option<(String, u64)>,
+    /// Spoilers clicked; see `message_row`.
+    revealed: HashSet<String>,
     /// The preferences that shape message rows changed, so they're built again.
     restyle: bool,
     /// Where the `@` of the word being mentioned is in the composer text.
@@ -610,6 +623,8 @@ impl Adapter {
                 rows: HashMap::new(),
                 pictures: HashMap::new(),
                 pictures_seen: 0,
+                jumped: None,
+                revealed: HashSet::new(),
                 restyle: false,
                 mention_at: None,
                 mention_dismissed: None,
@@ -924,6 +939,9 @@ impl Adapter {
             (None, _) => slint::Image::default(),
         };
         window.set_viewer_image(image);
+        let (frames, delays) = shown.map(animation).unwrap_or_default();
+        window.set_viewer_frames(frames);
+        window.set_viewer_delays(delays);
         window.set_viewer_name(attachment.name.clone().into());
         window.set_viewer_item(viewer.item.clone().into());
         window.set_viewer_index(viewer.index as i32);
@@ -1168,9 +1186,16 @@ impl Adapter {
             state,
             state.account_avatar.as_deref(),
         ));
+        let custom_status = state
+            .custom_status
+            .as_ref()
+            .filter(|_| state.online)
+            .map(status_line);
         window.set_account_status(
             if state.preview {
                 "Local only"
+            } else if let Some(status) = &custom_status {
+                status
             } else if let Some(status) = &state.account_status {
                 status
             } else if state.online {
@@ -1180,6 +1205,7 @@ impl Adapter {
             }
             .into(),
         );
+        window.set_has_custom_status(state.custom_status.is_some());
         window.set_storage(state.storage.unwrap_or_default().into());
         window.set_notice(state.notice.as_deref().unwrap_or_default().into());
         window.set_room_selected(room.is_some());
@@ -1331,6 +1357,50 @@ impl Adapter {
             })
             .collect();
         update_model(&self.models.role_members, role_members);
+        let add_friend = state.add_friend.as_ref();
+        if add_friend.is_some() && !window.get_add_friend_open() {
+            window.set_add_friend_name(SharedString::default());
+        }
+        window.set_add_friend_open(add_friend.is_some());
+        window.set_add_friend_sending(add_friend.is_some_and(|dialog| dialog.sending));
+        let sent = add_friend.is_some_and(|dialog| matches!(dialog.outcome, Some(Ok(_))));
+        // A request that went clears the name, ready for the next.
+        if sent && !window.get_add_friend_sent() {
+            window.set_add_friend_name(SharedString::default());
+        }
+        window.set_add_friend_sent(sent);
+        window.set_add_friend_note(match add_friend {
+            Some(AddFriend { sending: true, .. }) => "Sending...".into(),
+            Some(AddFriend {
+                outcome: Some(Ok(name)),
+                ..
+            }) => format!("Sent {name} a friend request.").into(),
+            Some(AddFriend {
+                outcome: Some(Err(error)),
+                ..
+            }) => error.as_str().into(),
+            _ => SharedString::default(),
+        });
+        let editor = state.status_editor.as_ref();
+        // Opening the dialog starts from the status there is.
+        if editor.is_some() && !window.get_status_open() {
+            let current = state.custom_status.as_ref();
+            window.set_status_text(current.map_or("", |status| status.text.as_str()).into());
+            window.set_status_emoji(
+                current
+                    .and_then(status_key)
+                    .map_or_else(EmojiCell::default, |key| emoji::cell(&key)),
+            );
+            window.set_status_clear_after(0);
+        }
+        window.set_status_open(editor.is_some());
+        window.set_status_saving(editor.is_some_and(|editor| editor.saving));
+        window.set_status_error(
+            editor
+                .and_then(|editor| editor.error.as_deref())
+                .unwrap_or_default()
+                .into(),
+        );
         let new_dm = state.new_dm.as_ref();
         if new_dm.is_some() && !window.get_new_dm_open() {
             window.set_new_dm_query(SharedString::default());
@@ -1514,11 +1584,49 @@ impl Adapter {
         // Avatars that arrived since show on rows built before them.
         let pictures_arrived = self.pictures_seen != state.pictures.len();
         self.pictures_seen = state.pictures.len();
+        // Custom emoji whose pictures arrived get glyphs, and the rows and picker
+        // cells that show them by name are built again.
+        if pictures_arrived || messages_changed {
+            let usable = if pictures_arrived {
+                self.app.usable_emoji()
+            } else {
+                Vec::new()
+            };
+            let state = &self.app.state;
+            let added = custom_emoji::add(
+                state
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.emoji)
+                    .chain(usable.iter().flat_map(|set| &set.emoji))
+                    .filter_map(|emoji| {
+                        Some((
+                            emoji.id.as_str(),
+                            state.pictures.get(&emoji.picture)?.as_ref(),
+                        ))
+                    }),
+            );
+            if added {
+                self.restyle = true;
+                if !window.get_react_item().is_empty() {
+                    update_model(
+                        &self.models.emoji_rows,
+                        emoji::rows(
+                            &window.get_emoji_query(),
+                            &self.app.frequent_reactions(16),
+                            &usable,
+                        ),
+                    );
+                }
+            }
+        }
+        let state = &self.app.state;
         let restyle = std::mem::take(&mut self.restyle);
         if messages_changed || selection_changed || reset || pictures_arrived || restyle {
             if selection_changed || reset {
                 window.set_react_item(SharedString::default());
                 window.set_active_item(SharedString::default());
+                window.set_jump_item(SharedString::default());
             }
             let mut previous = std::mem::take(&mut self.rows);
             let mut before: Option<&ChatMessage> = None;
@@ -1528,7 +1636,9 @@ impl Adapter {
                 .map(|message| {
                     let mut row = match previous.remove(&message.id) {
                         Some((old, row)) if &old == message && !restyle => row,
-                        _ => self.layout.restyle(message, message_row(message)),
+                        _ => self
+                            .layout
+                            .restyle(message, message_row(message, &self.revealed)),
                     };
                     self.rows
                         .insert(message.id.clone(), (message.clone(), row.clone()));
@@ -1536,8 +1646,11 @@ impl Adapter {
                     let new_day = !day.is_empty()
                         && before.is_none_or(|before| self::day(before.timestamp) != day);
                     row.first = new_day || before.is_none_or(|before| !continues(before, message));
-                    row.picture =
-                        cached_picture(&mut self.pictures, state, message.avatar.as_deref());
+                    row.picture = if collapsed(message, &self.revealed) {
+                        slint::Image::default()
+                    } else {
+                        cached_picture(&mut self.pictures, state, message.avatar.as_deref())
+                    };
                     row.day = if new_day {
                         day.into()
                     } else {
@@ -1548,21 +1661,38 @@ impl Adapter {
                 })
                 .collect();
             update_model(&self.models.messages, rows);
+            // A jump to a message places the list itself, even one made after
+            // this refresh; see `show_message`.
             let weak = window.as_weak();
+            let jumped = move || {
+                weak.upgrade()
+                    .filter(|window| window.get_jump_item().is_empty())
+            };
             if selection_changed || at_end {
                 slint::Timer::single_shot(Duration::ZERO, move || {
-                    if let Some(window) = weak.upgrade() {
+                    if let Some(window) = jumped() {
                         window.invoke_scroll_to_latest();
                     }
                 });
             } else if prepended {
                 slint::Timer::single_shot(Duration::ZERO, move || {
-                    if let Some(window) = weak.upgrade() {
+                    if let Some(window) = jumped() {
                         window.invoke_preserve_history_position(
                             (window.invoke_timeline_extent() - old_extent).max(0.),
                         );
                     }
                 });
+            }
+        }
+        if state.jump != self.jumped {
+            self.jumped = state.jump.clone();
+            if let Some((item, _)) = &state.jump
+                && let Some(index) = state
+                    .messages
+                    .iter()
+                    .position(|message| &message.item == item)
+            {
+                show_message(window, index, item);
             }
         }
         window.set_voice_active(voice.active());
@@ -2019,6 +2149,7 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         }};
     }
     bind_item!(on_reply, Action::Reply);
+    bind_item!(on_jump_to, Action::Jump);
     bind_item!(on_show_dm_profile, Action::ShowDmProfile);
     bind_item!(
         on_show_profile,
@@ -2042,6 +2173,30 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind_item!(on_start_forward, Action::StartForward);
     bind_item!(on_forward_to, Action::Forward);
     bind!(on_open_new_dm, Action::OpenNewDm);
+    bind!(on_open_add_friend, Action::OpenAddFriend);
+    bind!(on_close_add_friend, Action::CloseAddFriend);
+    bind_item!(on_add_friend, Action::AddFriend);
+    bind!(on_open_status, Action::OpenStatusEditor);
+    bind!(on_close_status, Action::CloseStatusEditor);
+    bind!(on_clear_status, Action::ClearCustomStatus);
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_save_status(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let key = window.get_status_emoji().key.to_string();
+        let action = Action::SetCustomStatus {
+            emoji: (!key.is_empty()).then_some(key),
+            text: window.get_status_text().to_string(),
+            clear_after: match window.get_status_clear_after() {
+                1 => ClearAfter::Minutes(30),
+                2 => ClearAfter::Minutes(60),
+                3 => ClearAfter::Minutes(240),
+                4 => ClearAfter::Today,
+                _ => ClearAfter::Never,
+            },
+        };
+        state.borrow_mut().action(&window, action);
+    });
     bind!(on_close_role, Action::CloseRole);
     bind!(on_close_new_dm, Action::CloseNewDm);
     let state = adapter.clone();
@@ -2079,11 +2234,24 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         }
     });
     let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_emoji_search(move |query| {
-        let adapter = state.borrow();
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        let custom = adapter.app.usable_emoji();
+        // Opening the picker fetches the custom emoji's pictures.
+        if query.is_empty() {
+            let pictures = custom
+                .iter()
+                .flat_map(|set| &set.emoji)
+                .map(|emoji| emoji.picture.clone())
+                .take(MAX_PICKER_EMOJI)
+                .collect();
+            adapter.action(&window, Action::LoadPictures(pictures));
+        }
         update_model(
             &adapter.models.emoji_rows,
-            emoji::rows(&query, &adapter.app.frequent_reactions(16)),
+            emoji::rows(&query, &adapter.app.frequent_reactions(16), &custom),
         );
     });
     let state = adapter.clone();
@@ -2123,7 +2291,34 @@ fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_reveal_attachment(move |item, index| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        adapter.revealed.insert(format!("{item}/a{index}"));
+        adapter.restyle = true;
+        adapter.refresh(&window);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_open_link(move |link| {
+        // A blocked message shows when asked for.
+        if let Some(item) = link.strip_prefix(BLOCKED_LINK) {
+            let Some(window) = weak.upgrade() else { return };
+            let mut adapter = state.borrow_mut();
+            adapter.revealed.insert(format!("{item}/blocked"));
+            adapter.restyle = true;
+            adapter.refresh(&window);
+            return;
+        }
+        // A spoiler shows what it hides.
+        if let Some((item, index)) = spoiler::target(&link) {
+            let Some(window) = weak.upgrade() else { return };
+            let mut adapter = state.borrow_mut();
+            adapter.revealed.insert(format!("{item}/{index}"));
+            adapter.restyle = true;
+            adapter.refresh(&window);
+            return;
+        }
         // A mention opens the person's card, or the role's members, beside the
         // mention, or by the pointer when the link's place isn't known.
         if let Some(target) = mention::target(&link) {
@@ -2694,6 +2889,29 @@ fn tint(key: &str) -> slint::Color {
 }
 
 /// The readable part of a Matrix ID: `@alice:example.org` becomes `alice`.
+/// The custom status as the account panel shows it: its emoji, then its words.
+fn status_line(status: &talk_core::chat::CustomStatus) -> String {
+    let emoji = match (&status.emoji, &status.emoji_id) {
+        (_, Some(id)) => custom_emoji::glyph(id).map(String::from),
+        (Some(emoji), None) => Some(emoji.clone()),
+        (None, None) => None,
+    };
+    match emoji {
+        Some(emoji) if status.text.is_empty() => emoji,
+        Some(emoji) => format!("{emoji} {}", status.text),
+        None => status.text.clone(),
+    }
+}
+
+/// The picker's key for the custom status's emoji: the emoji, or `name:id`.
+fn status_key(status: &talk_core::chat::CustomStatus) -> Option<String> {
+    match (&status.emoji, &status.emoji_id) {
+        (Some(name), Some(id)) => Some(format!("{name}:{id}")),
+        (Some(emoji), None) => Some(emoji.clone()),
+        _ => None,
+    }
+}
+
 fn display_part(name: &str) -> &str {
     name.strip_prefix('@')
         .and_then(|rest| rest.split_once(':'))
@@ -2820,20 +3038,115 @@ fn picture(picture: &Picture) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+thread_local! {
+    /// Animations' frames handed to Slint, by the picture they're from, so a
+    /// row built again shares them.
+    static FRAMES: RefCell<Vec<(std::sync::Weak<Picture>, ModelRc<slint::Image>)>> =
+        RefCell::default();
+}
+
+/// An animation's frames for Slint and how long each shows, in milliseconds;
+/// both empty for a still picture.
+fn animation(picture: &Arc<Picture>) -> (ModelRc<slint::Image>, ModelRc<i32>) {
+    if picture.frames.len() < 2 {
+        return (ModelRc::default(), ModelRc::default());
+    }
+    let delays = ModelRc::new(VecModel::from(
+        picture
+            .frames
+            .iter()
+            .map(|frame| i32::try_from(frame.delay_ms).unwrap_or(i32::MAX))
+            .collect::<Vec<_>>(),
+    ));
+    let frames = FRAMES.with_borrow_mut(|cache| {
+        cache.retain(|(source, _)| source.strong_count() > 0);
+        if let Some((_, frames)) = cache
+            .iter()
+            .find(|(source, _)| std::ptr::eq(source.as_ptr(), Arc::as_ptr(picture)))
+        {
+            return frames.clone();
+        }
+        let frames = ModelRc::new(VecModel::from(
+            picture
+                .frames
+                .iter()
+                .map(|frame| {
+                    slint::Image::from_rgba8(
+                        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                            &frame.rgba,
+                            picture.width,
+                            picture.height,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ));
+        cache.push((Arc::downgrade(picture), frames.clone()));
+        frames
+    });
+    (frames, delays)
+}
+
+/// A picture shrunk to a few pixels, which Slint smooths into a blur when it's
+/// drawn at full size: a spoiler's picture before it's revealed.
+fn blurred(picture: &Picture) -> slint::Image {
+    const SIDE: u32 = 10;
+    let scale = (picture.width.max(picture.height) / SIDE).max(1);
+    let (width, height) = (
+        picture.width.div_ceil(scale).max(1),
+        picture.height.div_ceil(scale).max(1),
+    );
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0u32; 4];
+            let mut count = 0;
+            for sy in y * scale..((y + 1) * scale).min(picture.height) {
+                for sx in x * scale..((x + 1) * scale).min(picture.width) {
+                    let at = ((sy * picture.width + sx) * 4) as usize;
+                    for (channel, total) in sum.iter_mut().enumerate() {
+                        *total += u32::from(picture.rgba[at + channel]);
+                    }
+                    count += 1;
+                }
+            }
+            rgba.extend(sum.map(|total| (total / count.max(1)) as u8));
+        }
+    }
+    let buffer =
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, width, height);
+    slint::Image::from_rgba8(buffer)
+}
+
 /// A message's previews laid out: one at its own size, several as square
 /// tiles two to a row, together as wide as one preview.
 fn gallery(
-    previews: &[(usize, &talk_core::chat::Attachment, &Picture)],
+    previews: &[(usize, &talk_core::chat::Attachment, &Arc<Picture>)],
+    covered: &dyn Fn(usize) -> bool,
 ) -> (Vec<ImageCell>, i32, i32) {
     const TILE: i32 = 178;
     const GAP: i32 = 4;
-    let cell =
-        |index: usize, attachment: &talk_core::chat::Attachment, preview: &Picture| ImageCell {
+    let cell = |index: usize, attachment: &talk_core::chat::Attachment, preview: &Arc<Picture>| {
+        let spoiler = attachment.spoiler && covered(index);
+        if spoiler {
+            return ImageCell {
+                index: index as i32,
+                name: attachment.name.clone().into(),
+                image: blurred(preview),
+                spoiler,
+                ..Default::default()
+            };
+        }
+        let (frames, delays) = animation(preview);
+        ImageCell {
             index: index as i32,
             name: attachment.name.clone().into(),
             image: picture(preview),
+            frames,
+            delays,
             ..Default::default()
-        };
+        }
+    };
     match previews {
         [] => (vec![], 0, 0),
         [(index, attachment, preview)] => {
@@ -2988,36 +3301,95 @@ fn role_color(rgb: Option<u32>) -> slint::Color {
     })
 }
 
-fn message_row(message: &ChatMessage) -> MessageRow {
+/// The most custom emoji the picker fetches pictures for at once.
+const MAX_PICKER_EMOJI: usize = 600;
+
+/// Scrolls the timeline to the message at `index` and highlights it for a moment. The
+/// list builds rows as they come into view, so the row settles its place a few times
+/// as those around it measure.
+fn show_message(window: &TalkWindow, index: usize, item: &str) {
+    // At once, so the list stops following the newest message before anything
+    // else scrolls it.
+    window.invoke_show_message(i32::try_from(index).unwrap_or(i32::MAX), item.into());
+    for delay in [0, 30, 100, 250] {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(delay), move || {
+            if let Some(window) = weak.upgrade() {
+                window.invoke_settle_jump();
+            }
+        });
+    }
+    let weak = window.as_weak();
+    let shown: SharedString = item.into();
+    slint::Timer::single_shot(Duration::from_millis(2500), move || {
+        if let Some(window) = weak.upgrade()
+            && window.get_jump_item() == shown
+        {
+            window.set_jump_item(SharedString::default());
+        }
+    });
+}
+
+/// A message as the timeline shows it. `revealed` holds the spoilers clicked, as
+/// `{item}/{index}` for text and `{item}/a{index}` for attachments.
+fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> MessageRow {
     // Plain text shows as typed, its web addresses linked.
     // Mentions link to who they mention, which opens their card.
+    // Custom emoji show as their glyphs once they have them.
+    let body = custom_emoji::text(&message.body, &message.emoji);
+    let jumbo = message.formatted && custom_emoji::only_emoji(&body);
     let styled = if message.formatted {
-        markdown(&mention::linked(&message.body, &message.mentions))
+        let linked = mention::linked(&body, &message.mentions);
+        if message.sender.starts_with("discord:") {
+            markdown(&spoiler::mark(&linked, &message.item, |index| {
+                revealed.contains(&format!("{}/{index}", message.item))
+            }))
+        } else {
+            markdown(&linked)
+        }
     } else {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
     };
     // An image with a preview shows in the gallery; any other attachment shows
     // a file card. Embeds' pictures show in their cards.
-    let previews = |placement: Placement| -> Vec<(usize, &talk_core::chat::Attachment, &Picture)> {
-        message
-            .attachments
-            .iter()
-            .enumerate()
-            .filter(|(_, attachment)| attachment.placement == placement)
-            .filter_map(|(index, attachment)| {
-                Some((index, attachment, attachment.preview.as_deref()?))
-            })
-            .collect()
-    };
-    let (images, gallery_width, gallery_height) = gallery(&previews(Placement::Message));
+    let previews =
+        |placement: Placement| -> Vec<(usize, &talk_core::chat::Attachment, &Arc<Picture>)> {
+            message
+                .attachments
+                .iter()
+                .enumerate()
+                .filter(|(_, attachment)| attachment.placement == placement)
+                .filter_map(|(index, attachment)| {
+                    Some((index, attachment, attachment.preview.as_ref()?))
+                })
+                .collect()
+        };
+    let covered = |index: usize| !revealed.contains(&format!("{}/a{index}", message.item));
+    let (images, gallery_width, gallery_height) = gallery(&previews(Placement::Message), &covered);
+    let stickers: Vec<ImageCell> = previews(Placement::Sticker)
+        .into_iter()
+        .map(|(index, attachment, preview)| {
+            let (frames, delays) = animation(preview);
+            ImageCell {
+                index: index as i32,
+                name: attachment.name.clone().into(),
+                image: picture(preview),
+                width: preview.width as i32,
+                height: preview.height as i32,
+                frames,
+                delays,
+                ..Default::default()
+            }
+        })
+        .collect();
     let embeds: Vec<EmbedCard> = message
         .embeds
         .iter()
         .enumerate()
         .map(|(index, embed)| {
             let (images, gallery_width, gallery_height) =
-                gallery(&previews(Placement::Embed(index)));
+                gallery(&previews(Placement::Embed(index)), &covered);
             let thumbnail = previews(Placement::Thumbnail(index)).into_iter().next();
             EmbedCard {
                 color: role_color(embed.color),
@@ -3083,7 +3455,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         .as_ref()
         .map(|reply| reply.author.as_str())
         .unwrap_or_default();
-    MessageRow {
+    let row = MessageRow {
         id: message.id.clone().into(),
         item: message.item.clone().into(),
         author: message.author.clone().into(),
@@ -3107,6 +3479,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         // Grouping depends on the neighbouring messages; refresh sets both.
         first: true,
         day: SharedString::default(),
+        jumbo,
         styled,
         author_styled: bold(&message.author),
         time_styled: slint::StyledText::from_plain_text(&message.time),
@@ -3122,12 +3495,19 @@ fn message_row(message: &ChatMessage) -> MessageRow {
             .map(|reply| reply.body.clone())
             .unwrap_or_default()
             .into(),
+        reply_item: message
+            .reply
+            .as_ref()
+            .and_then(|reply| reply.item.clone())
+            .unwrap_or_default()
+            .into(),
         reactions: ModelRc::new(VecModel::from(
             message
                 .reactions
                 .iter()
                 .map(|reaction| ReactionChip {
                     key: reaction.key.clone().into(),
+                    label: custom_emoji::text(&reaction.key, &message.emoji).into(),
                     count: i32::try_from(reaction.count).unwrap_or(i32::MAX),
                     mine: reaction.mine,
                 })
@@ -3136,6 +3516,7 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         images: ModelRc::new(VecModel::from(images)),
         gallery_width,
         gallery_height,
+        stickers: ModelRc::new(VecModel::from(stickers)),
         files: ModelRc::new(VecModel::from(files)),
         embeds: ModelRc::new(VecModel::from(embeds)),
         hidden_card: SharedString::default(),
@@ -3148,7 +3529,47 @@ fn message_row(message: &ChatMessage) -> MessageRow {
         can_delete: message.can_delete,
         can_react: message.can_react,
         can_forward: message.can_forward,
+    };
+    if collapsed(message, revealed) {
+        // Discord shows nothing of a blocked message until asked.
+        let note = format!(
+            "*Blocked message.* [Show it](<{BLOCKED_LINK}{}>)",
+            message.item
+        );
+        return MessageRow {
+            author: "Blocked user".into(),
+            author_styled: bold("Blocked user"),
+            initial: "?".into(),
+            tint: Default::default(),
+            color: Default::default(),
+            has_color: false,
+            body: "Blocked message.".into(),
+            styled: slint::StyledText::from_markdown(&note)
+                .unwrap_or_else(|_| slint::StyledText::from_plain_text("Blocked message.")),
+            has_reply: false,
+            reactions: ModelRc::default(),
+            images: ModelRc::default(),
+            gallery_width: 0,
+            gallery_height: 0,
+            stickers: ModelRc::default(),
+            files: ModelRc::default(),
+            embeds: ModelRc::default(),
+            can_reply: false,
+            can_edit: false,
+            can_react: false,
+            can_forward: false,
+            ..row
+        };
     }
+    row
+}
+
+/// The link that shows a blocked message, followed by its item.
+const BLOCKED_LINK: &str = "talk:blocked/";
+
+/// Whether a message shows collapsed, being from someone blocked.
+fn collapsed(message: &ChatMessage, revealed: &HashSet<String>) -> bool {
+    message.blocked && !revealed.contains(&format!("{}/blocked", message.item))
 }
 
 fn initial(text: &str) -> SharedString {
@@ -3197,6 +3618,10 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message_row_plain(message: &ChatMessage) -> MessageRow {
+        message_row(message, &HashSet::new())
+    }
 
     #[test]
     fn the_composer_sends_on_enter_and_breaks_lines_on_shift_enter() {
@@ -3297,7 +3722,7 @@ mod tests {
         };
         // Missing preferences take their defaults: 24 hours, default text, previews.
         let defaults: Layout = serde_json::from_str("{}").unwrap();
-        let row = defaults.restyle(&message, message_row(&message));
+        let row = defaults.restyle(&message, message_row(&message, &HashSet::new()));
         assert_eq!(
             row.time,
             talk_core::clock::time_on(message.timestamp, false)
@@ -3310,7 +3735,7 @@ mod tests {
             unmute_on_join: true,
             ..Default::default()
         };
-        let row = layout.restyle(&message, message_row(&message));
+        let row = layout.restyle(&message, message_row(&message, &HashSet::new()));
         let time = talk_core::clock::time_on(message.timestamp, true);
         assert!(time.ends_with(" AM") || time.ends_with(" PM"));
         assert_eq!(row.time, time);
@@ -3331,7 +3756,7 @@ mod tests {
         };
         assert!(
             layout
-                .restyle(&titled, message_row(&titled))
+                .restyle(&titled, message_row(&titled, &HashSet::new()))
                 .hidden_card
                 .contains("\"Server status\"")
         );
@@ -3341,7 +3766,7 @@ mod tests {
         };
         assert!(
             layout
-                .restyle(&with_text, message_row(&with_text))
+                .restyle(&with_text, message_row(&with_text, &HashSet::new()))
                 .hidden_card
                 .is_empty()
         );
@@ -3424,7 +3849,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, message)| {
-                message_row(&ChatMessage {
+                message_row_plain(&ChatMessage {
                     id: format!("m{index}"),
                     item: format!("i{index}"),
                     time: format!("19:2{index}"),
@@ -3524,6 +3949,7 @@ mod tests {
             width: 40,
             height: 30,
             rgba: vec![128; 40 * 30 * 4],
+            ..Default::default()
         });
         let window = showing(vec![
             ChatMessage {
@@ -3537,6 +3963,7 @@ mod tests {
                     preview: Some(picture),
                     preview_failed: false,
                     placement: Placement::Message,
+                    spoiler: false,
                 }],
                 ..Default::default()
             },
@@ -3968,7 +4395,7 @@ mod tests {
                     2 => format!("line one {index}\nline two\nline three"),
                     _ => format!("Message {index}"),
                 };
-                let mut row = message_row(&ChatMessage {
+                let mut row = message_row_plain(&ChatMessage {
                     id: format!("m{index}"),
                     item: format!("i{index}"),
                     author: "Bob".into(),
@@ -4032,7 +4459,7 @@ mod tests {
             .as_any()
             .downcast_ref::<VecModel<MessageRow>>()
             .unwrap();
-        model.push(message_row(&ChatMessage {
+        model.push(message_row_plain(&ChatMessage {
             id: "new".into(),
             item: "new".into(),
             author: "Ann".into(),

@@ -12,6 +12,7 @@ pub mod profile;
 pub mod ready;
 pub mod rtp;
 pub mod service;
+pub mod settings;
 pub mod stream;
 pub mod stream_connection;
 pub mod token;

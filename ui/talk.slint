@@ -473,9 +473,39 @@ component CallButton inherits Rectangle {
     touch := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
 }
 
+// Lies over a spoiler's blurred picture until it's clicked.
+// A picture, or an animation's frames in turn while it shows.
+component Picture inherits Image {
+    in property <image> still;
+    in property <[image]> frames;
+    in property <[int]> delays;
+    property <int> frame;
+    source: root.frames.length > 1 ? root.frames[root.frame] : root.still;
+    Timer {
+        running: root.frames.length > 1;
+        interval: max(20, root.delays[root.frame]) * 1ms;
+        triggered => { root.frame = mod(root.frame + 1, root.frames.length); }
+    }
+}
+
+component SpoilerCover inherits Rectangle {
+    background: #00000059;
+    Rectangle {
+        width: label.preferred-width + 24px; height: 28px; border-radius: 14px; background: #000000b3;
+        label := Text { text: "SPOILER"; color: #ffffff; font-size: 13px; font-weight: 800; letter-spacing: 0.5px; vertical-alignment: center; }
+    }
+}
+
+// Whether Discord's things carry its badge. A build without Matrix shows
+// nothing else, so it leaves them off.
+export global Badges {
+    in property <bool> discord: true;
+}
+
 component DiscordBadge inherits Rectangle {
     in property <length> size;
     in property <color> ring;
+    visible: Badges.discord;
     width: root.size + 4px; height: self.width; border-radius: self.width / 2;
     background: root.ring;
     Rectangle {
@@ -743,7 +773,9 @@ component MenuItem inherits Rectangle {
     }
 }
 
-export struct EmojiCell { glyph: string, name: string }
+/// An emoji: what shows, its name, and the reaction it adds, which for a custom
+/// emoji is Discord's `name:id`.
+export struct EmojiCell { glyph: string, name: string, key: string }
 /// A heading, or up to a row's worth of emoji, in the emoji picker.
 export struct EmojiRow { heading: string, cells: [EmojiCell] }
 
@@ -1019,6 +1051,7 @@ component Choices inherits Rectangle {
 // A reaction under a message: the emoji in a color emoji font, then the count.
 component ReactionToggle inherits Rectangle {
     in property <string> key;
+    in property <string> label: root.key;
     in property <int> count;
     in property <bool> mine;
     in property <bool> enabled;
@@ -1034,7 +1067,7 @@ component ReactionToggle inherits Rectangle {
     accessible-action-default => { if root.enabled { root.clicked(); } }
     chip := HorizontalLayout {
         padding-left: 8px; padding-right: 9px; spacing: 6px;
-        Text { text: root.key; font-family: root.emoji-font; font-size: 16px; vertical-alignment: center; }
+        Text { text: root.label; font-family: root.emoji-font; font-size: 16px; vertical-alignment: center; }
         Text { text: root.count; color: root.mine ? Theme.accent : Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
     }
     pointer := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
@@ -1416,10 +1449,16 @@ export struct RoomRow {
     /// A DM with a call going on.
     call: bool,
 }
-export struct ReactionChip { key: string, count: int, mine: bool }
+/// A reaction: `key` names it, and `label` shows it, with a custom emoji's glyph once it has one.
+export struct ReactionChip { key: string, label: string, count: int, mine: bool }
 /// An image in a message's gallery, placed in pixels; `index` is its place
-/// among the message's attachments.
-export struct ImageCell { index: int, name: string, image: image, x: int, y: int, width: int, height: int }
+/// among the message's attachments. A spoiler's picture shows blurred, under a
+/// SPOILER label, until clicked.
+/// An animation's `frames` show in turn, each for its `delays` in milliseconds.
+export struct ImageCell {
+    index: int, name: string, image: image, x: int, y: int, width: int, height: int, spoiler: bool,
+    frames: [image], delays: [int],
+}
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
 /// An embed's field, and a row of them: inline fields share a row.
@@ -1447,13 +1486,18 @@ export struct MessageRow {
     /// A date divider above this message, when it starts a new day.
     day: string,
     /// The body, and the author and time as selectable text: a selection runs across messages
-    /// through all three.
+    /// through all three. A body of nothing but emoji shows them large.
+    jumbo: bool,
     styled: styled-text, author-styled: styled-text, time-styled: styled-text, edited: bool, deleted: bool,
     reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, has-reply: bool,
+    /// The original message's item; clicking the reply jumps to it.
+    reply-item: string,
     reactions: [ReactionChip],
     /// Images with previews, laid out in a gallery of this size; other
     /// attachments show as file cards.
     images: [ImageCell], gallery-width: int, gallery-height: int,
+    /// Discord stickers, drawn on their own at their size.
+    stickers: [ImageCell],
     files: [FileCell],
     embeds: [EmbedCard],
     /// Says a card is hidden, for a message that is only one, with link previews off.
@@ -1493,6 +1537,28 @@ export component TalkWindow inherits Window {
     in property <bool> dms-selected;
     in property <bool> dms-unread;
     // The dialog for starting a DM: who it found, and whether one is starting.
+    // Adding a Discord friend by username: whether the request went, and what to say.
+    in property <bool> add-friend-open;
+    in property <bool> add-friend-sending;
+    in property <string> add-friend-note;
+    in property <bool> add-friend-sent;
+    in-out property <string> add-friend-name;
+    callback open-add-friend;
+    callback add-friend(string);
+    callback close-add-friend;
+    // The Discord custom status and its dialog. Clear-after picks from
+    // never, 30 minutes, an hour, four hours and today.
+    in property <bool> has-custom-status;
+    in property <bool> status-open;
+    in property <bool> status-saving;
+    in property <string> status-error;
+    in-out property <string> status-text;
+    in-out property <EmojiCell> status-emoji;
+    in-out property <int> status-clear-after;
+    callback open-status;
+    callback save-status;
+    callback clear-status;
+    callback close-status;
     in property <bool> new-dm-open;
     in-out property <string> new-dm-query;
     in property <[ContactRow]> new-dm-people;
@@ -1637,6 +1703,8 @@ export component TalkWindow inherits Window {
     callback close-profile();
     in property <bool> viewer-open;
     in property <image> viewer-image;
+    in property <[image]> viewer-frames;
+    in property <[int]> viewer-delays;
     in property <int> viewer-width;
     in property <int> viewer-height;
     in property <string> viewer-name;
@@ -1848,6 +1916,22 @@ export component TalkWindow inherits Window {
     public function anchor-link(x: length, y: length, width: length, height: length) {
         root.anchor(x, y, width, height, false);
     }
+    // The message a reply's click jumped to, highlighted while it's set.
+    in-out property <string> jump-item;
+    property <int> jump-tick;
+    callback jump-to(string);
+    // Uncovers a spoiler picture: the message's item and the attachment's index.
+    callback reveal-attachment(string, int);
+    /// Brings the message at `index` into view: an estimate first, so the list builds its
+    /// row, then the row places itself on each `settle-jump` as the rows around it measure.
+    public function show-message(index: int, item: string) {
+        root.follow-latest = false;
+        root.jump-item = item;
+        timeline.content-y = max(min(0px, timeline.height - timeline.content-height),
+            min(0px, timeline.height / 3 - timeline.content-height * index / max(1, root.messages.length)));
+        root.jump-tick += 1;
+    }
+    public function settle-jump() { root.jump-tick += 1; }
     public function scroll-to-latest() {
         root.follow-latest = true;
         timeline.content-y = min(0px, timeline.height - timeline.content-height);
@@ -2050,8 +2134,13 @@ export component TalkWindow inherits Window {
     property <bool> picker-open: emoji-picker.is-open;
     changed picker-open => { if !root.picker-open { root.react-item = ""; } }
     property <EmojiCell> emoji-hover;
-    function pick(glyph: string) {
-        root.react(root.react-item, glyph);
+    // The status dialog borrows the picker for its emoji.
+    function pick(cell: EmojiCell) {
+        if root.react-item == "talk:status" {
+            root.status-emoji = cell;
+        } else {
+            root.react(root.react-item, cell.key);
+        }
         emoji-picker.close();
     }
     emoji-picker := PopupWindow {
@@ -2082,7 +2171,7 @@ export component TalkWindow inherits Window {
                             // Enter picks the first match.
                             accepted => {
                                 if root.emoji-query != "" && root.emoji-rows.length > 0 && root.emoji-rows[0].cells.length > 0 {
-                                    root.pick(root.emoji-rows[0].cells[0].glyph);
+                                    root.pick(root.emoji-rows[0].cells[0]);
                                 }
                             }
                         }
@@ -2100,7 +2189,7 @@ export component TalkWindow inherits Window {
                                 for cell in row.cells: EmojiButton {
                                     emoji: cell; font: root.emoji-font; size: 40px; glyph: 26px; tip: false;
                                     hovered => { root.emoji-hover = cell; }
-                                    clicked => { root.pick(cell.glyph); }
+                                    clicked => { root.pick(cell); }
                                 }
                             }
                         }
@@ -2116,7 +2205,8 @@ export component TalkWindow inherits Window {
                             padding-left: 14px; padding-right: 14px; spacing: 10px;
                             if root.emoji-hover.glyph != "": Text { text: root.emoji-hover.glyph; font-family: root.emoji-font; font-size: 26px; vertical-alignment: center; }
                             Text {
-                                text: root.emoji-hover.glyph != "" ? root.emoji-hover.name : "Pick an emoji to react with.";
+                                text: root.emoji-hover.glyph != "" ? root.emoji-hover.name
+                                    : root.react-item == "talk:status" ? "Pick an emoji for your status." : "Pick an emoji to react with.";
                                 color: root.emoji-hover.glyph != "" ? Theme.text : Theme.muted; font-size: 15px;
                                 font-weight: root.emoji-hover.glyph != "" ? 700 : 400;
                                 vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
@@ -2171,7 +2261,7 @@ export component TalkWindow inherits Window {
                     spacing: 4px; padding-bottom: 4px;
                     for cell in root.menu-reactions: EmojiButton {
                         emoji: cell; font: root.emoji-font; size: 50px; height: 40px; glyph: 22px; fill: Theme.field;
-                        clicked => { root.react(root.menu-message.item, cell.glyph); message-menu.close(); }
+                        clicked => { root.react(root.menu-message.item, cell.key); message-menu.close(); }
                     }
                 }
                 if root.menu-can-react: MenuItem {
@@ -2316,7 +2406,12 @@ export component TalkWindow inherits Window {
                             spacing: 0px;
                             Rectangle {
                                 height: 48px;
-                                Text { x: 16px; width: parent.width - (root.dms-selected && !root.preview ? 56px : 32px); text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                Text { x: 16px; width: parent.width - (root.dms-selected && !root.preview ? (root.discord-linked ? 88px : 56px) : 32px); text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                if root.dms-selected && !root.preview && root.discord-linked: IconButton {
+                                    x: parent.width - 2 * self.width - 14px;
+                                    icon: @image-url("icons/user-plus.svg"); label: "Add a friend"; size: 28px; glyph: 18px; tip-side: 2;
+                                    clicked => { root.open-add-friend(); }
+                                }
                                 if root.dms-selected && !root.preview: IconButton {
                                     x: parent.width - self.width - 10px;
                                     icon: @image-url("icons/square-pen.svg"); label: "New message"; size: 28px; glyph: 18px; tip-side: 2;
@@ -2488,7 +2583,7 @@ export component TalkWindow inherits Window {
                     HorizontalLayout {
                         padding-right: 8px; spacing: 2px;
                         Rectangle {
-                            width: 64px;
+                            width: 58px;
                             Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; }
                             Rectangle {
                                 x: 41px; y: parent.height / 2 + 4px; width: 14px; height: 14px; border-radius: 7px; background: Theme.panel;
@@ -2498,10 +2593,23 @@ export component TalkWindow inherits Window {
                                 }
                             }
                         }
-                        VerticalLayout {
-                            alignment: center; horizontal-stretch: 1;
-                            Text { text: root.account-name; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
-                            Text { text: root.account-status; color: Theme.muted; font-size: 13px; overflow: elide; }
+                        // With Discord linked, the name opens the custom status.
+                        Rectangle {
+                            horizontal-stretch: 1; y: 6px; height: parent.height - 12px; border-radius: 6px;
+                            background: account-touch.has-hover ? Theme.hover : transparent;
+                            accessible-role: button;
+                            accessible-enabled: root.discord-linked;
+                            accessible-label: root.account-name + ", " + root.account-status + (root.discord-linked ? ". Set a custom status" : "");
+                            accessible-action-default => { if root.discord-linked { root.open-status(); } }
+                            VerticalLayout {
+                                alignment: center; padding-left: 6px; padding-right: 6px;
+                                Text { text: root.account-name; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
+                                Text { text: root.account-status; color: Theme.muted; font-size: 13px; overflow: elide; }
+                            }
+                            account-touch := TouchArea {
+                                enabled: root.discord-linked; mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.open-status(); }
+                            }
                         }
                         if root.voice-active: DeviceToggle {
                             icon: root.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
@@ -2895,6 +3003,13 @@ export component TalkWindow inherits Window {
                                     scrolled => { root.follow-latest = false; }
                                     for message[index] in root.messages: Rectangle {
                                         property <bool> lit: root.active-item == message.item;
+                                        property <bool> jumped: root.jump-item != "" && root.jump-item == message.item;
+                                        property <int> jump-tick: root.jump-tick;
+                                        changed jump-tick => {
+                                            if self.jumped {
+                                                timeline.content-y = max(min(0px, timeline.height - timeline.content-height), min(0px, timeline.height / 3 - self.y));
+                                            }
+                                        }
                                         // The keyboard's message stays in view, with room for the next one,
                                         // so stepping on finds it built.
                                         changed lit => {
@@ -2919,7 +3034,11 @@ export component TalkWindow inherits Window {
                                         // The space that holds a short history down stays outside the row.
                                         property <length> top: index == 0 ? root.lead : 0px;
                                         height: col.preferred-height + self.top;
-                                        Rectangle { y: parent.top; height: parent.height - parent.top; background: parent.lit ? Theme.row-hover : transparent; }
+                                        Rectangle {
+                                            y: parent.top; height: parent.height - parent.top;
+                                            background: parent.jumped ? Theme.accent.transparentize(0.86) : parent.lit ? Theme.row-hover : transparent;
+                                            animate background { duration: 400ms; }
+                                        }
                                         // The keyboard's message has a marigold edge.
                                         if self.lit && root.browsing: Rectangle { x: 0px; y: parent.top; width: 3px; height: parent.height - parent.top; background: Theme.accent; }
                                         // The pointer area wraps the row, so hovering selectable text still counts.
@@ -2989,11 +3108,27 @@ export component TalkWindow inherits Window {
                                                     }
                                                     VerticalLayout {
                                                         spacing: 3px; horizontal-stretch: 1;
-                                                        if message.has-reply: HorizontalLayout {
-                                                            height: 22px; spacing: 6px;
-                                                            if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; } }
-                                                            if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                            Text { text: message.reply-body; color: Theme.muted; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                                        // Clicking the quote jumps to the message it quotes.
+                                                        if message.has-reply: Rectangle {
+                                                            height: 22px;
+                                                            accessible-role: button;
+                                                            accessible-enabled: message.reply-item != "";
+                                                            accessible-label: "Jump to the original message: " + message.reply-body;
+                                                            accessible-action-default => { if message.reply-item != "" { root.jump-to(message.reply-item); } }
+                                                            HorizontalLayout {
+                                                                spacing: 6px;
+                                                                if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; } }
+                                                                if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                                Text {
+                                                                    text: message.reply-body; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                                                                    color: reply-touch.has-hover ? Theme.text : Theme.muted;
+                                                                }
+                                                            }
+                                                            reply-touch := TouchArea {
+                                                                enabled: message.reply-item != "";
+                                                                mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                                                                clicked => { root.jump-to(message.reply-item); }
+                                                            }
                                                         }
                                                         if message.first: HorizontalLayout {
                                                             spacing: 8px;
@@ -3003,7 +3138,8 @@ export component TalkWindow inherits Window {
                                                         }
                                                         if message.body != "": StyledText {
                                                             text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
-                                                            default-font-size: root.message-font-size;
+                                                            // Discord's large emoji are 48 pixels where text's are 22.
+                                                            default-font-size: message.jumbo ? root.message-font-size * 2.2 : root.message-font-size;
                                                             // A mention's card opens beside the pointer.
                                                             link-clicked(link) => {
                                                                 root.anchor(row-pointer.absolute-position.x + row-pointer.mouse-x, row-pointer.absolute-position.y + row-pointer.mouse-y, 0px, 0px, true);
@@ -3021,12 +3157,15 @@ export component TalkWindow inherits Window {
                                                                 for cell in message.images: Rectangle {
                                                                     x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
                                                                     border-radius: 8px; clip: true; background: Theme.sunken;
-                                                                    Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
+                                                                    Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
+                                                                    if cell.spoiler: SpoilerCover {}
                                                                     TouchArea {
                                                                         mouse-cursor: MouseCursor.pointer;
-                                                                        clicked => { root.view-image(message.item, cell.index); }
+                                                                        clicked => {
+                                                                            if cell.spoiler { root.reveal-attachment(message.item, cell.index); } else { root.view-image(message.item, cell.index); }
+                                                                        }
                                                                     }
-                                                                    if root.active-item == message.item && !root.preview && message.delivery == "": Rectangle {
+                                                                    if root.active-item == message.item && !root.preview && message.delivery == "" && !cell.spoiler: Rectangle {
                                                                         x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
                                                                         IconButton {
                                                                             icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: Theme.text;
@@ -3034,6 +3173,15 @@ export component TalkWindow inherits Window {
                                                                         }
                                                                     }
                                                                 }
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                        if message.stickers.length > 0: HorizontalLayout {
+                                                            padding-top: 4px; spacing: 8px;
+                                                            for cell in message.stickers: Picture {
+                                                                still: cell.image; frames: cell.frames; delays: cell.delays;
+                                                                width: cell.width * 1px; height: cell.height * 1px; image-fit: contain;
+                                                                accessible-role: image; accessible-label: "Sticker: " + cell.name;
                                                             }
                                                             Rectangle { horizontal-stretch: 1; }
                                                         }
@@ -3101,8 +3249,9 @@ export component TalkWindow inherits Window {
                                                                                 for cell in embed.images: Rectangle {
                                                                                     x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
                                                                                     border-radius: 4px; clip: true; background: Theme.sunken;
-                                                                                    Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.name; }
-                                                                                    if embed.video: Rectangle {
+                                                                                    Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
+                                                                                    if cell.spoiler: SpoilerCover {}
+                                                                                    if embed.video && !cell.spoiler: Rectangle {
                                                                                         width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
                                                                                         Path {
                                                                                             width: 18px; height: 20px; x: 17px; y: 14px;
@@ -3112,7 +3261,8 @@ export component TalkWindow inherits Window {
                                                                                     TouchArea {
                                                                                         mouse-cursor: MouseCursor.pointer;
                                                                                         clicked => {
-                                                                                            if embed.video { root.open-link(embed.url); } else { root.view-image(message.item, cell.index); }
+                                                                                            if cell.spoiler { root.reveal-attachment(message.item, cell.index); }
+                                                                                            else if embed.video { root.open-link(embed.url); } else { root.view-image(message.item, cell.index); }
                                                                                         }
                                                                                     }
                                                                                 }
@@ -3139,7 +3289,7 @@ export component TalkWindow inherits Window {
                                                         if message.reactions.length > 0: HorizontalLayout {
                                                             spacing: 6px; alignment: start; padding-top: 4px;
                                                             for reaction in message.reactions: ReactionToggle {
-                                                                key: reaction.key; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
+                                                                key: reaction.key; label: reaction.label; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
                                                                 enabled: message.can-react && root.composer-enabled;
                                                                 clicked => { root.react(message.item, reaction.key); }
                                                             }
@@ -3177,7 +3327,7 @@ export component TalkWindow inherits Window {
                                                         spacing: 0px;
                                                         for cell in root.bar-reactions: EmojiButton {
                                                             emoji: cell; font: root.emoji-font;
-                                                            clicked => { root.react(message.item, cell.glyph); }
+                                                            clicked => { root.react(message.item, cell.key); }
                                                         }
                                                         Rectangle {
                                                             width: 9px;
@@ -3589,6 +3739,10 @@ export component TalkWindow inherits Window {
                                             text: "Reconnect"; icon: @image-url("icons/refresh-cw.svg"); enabled: !root.busy;
                                             clicked => { root.retry-sync(); }
                                         }
+                                        if root.discord-linked: ActionButton {
+                                            text: root.has-custom-status ? "Change custom status" : "Set a custom status"; icon: @image-url("icons/smile-plus.svg");
+                                            clicked => { root.settings-open = false; root.open-status(); }
+                                        }
                                         ActionButton {
                                             text: root.preview ? "Back to sign in" : "Sign out"; icon: @image-url("icons/log-out.svg");
                                             danger: !root.preview; enabled: !root.busy && !root.sending;
@@ -3864,10 +4018,10 @@ export component TalkWindow inherits Window {
             property <length> natural-width: max(1, root.viewer-width) * 1px;
             property <length> natural-height: max(1, root.viewer-height) * 1px;
             property <float> scale: min(1, min(self.room-width / self.natural-width, self.room-height / self.natural-height));
-            Image {
+            Picture {
                 width: viewer-keys.natural-width * viewer-keys.scale; height: viewer-keys.natural-height * viewer-keys.scale;
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                source: root.viewer-image; image-fit: contain;
+                still: root.viewer-image; frames: root.viewer-frames; delays: root.viewer-delays; image-fit: contain;
                 accessible-role: image; accessible-label: root.viewer-name;
                 TouchArea { }
             }
@@ -3911,6 +4065,140 @@ export component TalkWindow inherits Window {
     }
     // Forwarding a message: pick conversations to send it to, one click each.
     // Clicking outside or Escape closes it.
+    // Adding a Discord friend by username. Clicking outside or Escape closes it.
+    if root.add-friend-open: Rectangle {
+        background: #00000099;
+        TouchArea { clicked => { root.close-add-friend(); } }
+        Rectangle {
+            width: min(460px, root.width - 48px); height: add-friend-content.preferred-height;
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+            drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+            accessible-role: groupbox;
+            accessible-label: "Add a friend";
+            TouchArea { }
+            FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.close-add-friend(); return accept; }
+                    return reject;
+                }
+                add-friend-content := VerticalLayout {
+                    padding: 20px; spacing: 12px;
+                    HorizontalLayout {
+                        Text { text: "Add a friend"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                        IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-add-friend(); } }
+                    }
+                    Label { text: "Send someone a friend request on Discord with their username."; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        TextField {
+                            init => { self.focus-input(); }
+                            min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                            placeholder: "Username"; label: "Username"; text <=> root.add-friend-name;
+                            accepted => { root.add-friend(root.add-friend-name); }
+                        }
+                        ActionButton {
+                            text: "Send request"; primary: true;
+                            enabled: !root.add-friend-sending && root.add-friend-name != "";
+                            clicked => { root.add-friend(root.add-friend-name); }
+                        }
+                    }
+                    if root.add-friend-note != "": Text {
+                        text: root.add-friend-note; font-size: 14px; wrap: word-wrap;
+                        color: root.add-friend-sent ? Theme.live : root.add-friend-sending ? Theme.muted : Theme.danger;
+                    }
+                }
+            }
+        }
+    }
+    // The custom status: an emoji from the picker, words, and when it clears.
+    if root.status-open: Rectangle {
+        background: #00000099;
+        TouchArea { clicked => { root.close-status(); } }
+        Rectangle {
+            width: min(460px, root.width - 48px); height: status-content.preferred-height;
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+            drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+            accessible-role: groupbox;
+            accessible-label: "Set a custom status";
+            TouchArea { }
+            FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.close-status(); return accept; }
+                    return reject;
+                }
+                status-content := VerticalLayout {
+                    padding: 20px; spacing: 12px;
+                    HorizontalLayout {
+                        Text { text: "Set a custom status"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                        IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-status(); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 40px; height: 40px; border-radius: 6px;
+                            background: status-emoji-touch.has-hover ? Theme.hover : Theme.sunken;
+                            accessible-role: button;
+                            accessible-label: root.status-emoji.glyph != "" ? "Emoji, " + root.status-emoji.name + ". Change it" : "Pick an emoji";
+                            accessible-action-default => { root.open-picker("talk:status"); }
+                            if root.status-emoji.glyph != "": Text {
+                                text: root.status-emoji.glyph; font-family: root.emoji-font; font-size: 22px;
+                                horizontal-alignment: center; vertical-alignment: center;
+                            }
+                            if root.status-emoji.glyph == "": Image {
+                                source: @image-url("icons/smile-plus.svg"); width: 20px; colorize: Theme.secondary;
+                            }
+                            status-emoji-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => {
+                                    root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, true);
+                                    root.open-picker("talk:status");
+                                }
+                            }
+                            // Taking the emoji off: a small badge on its corner.
+                            if root.status-emoji.glyph != "": Rectangle {
+                                x: parent.width - 12px; y: -6px; width: 18px; height: 18px; border-radius: 9px;
+                                background: remove-touch.has-hover ? Theme.danger : Theme.faint;
+                                border-width: 2px; border-color: Theme.raised;
+                                accessible-role: button;
+                                accessible-label: "Remove the emoji";
+                                accessible-action-default => { root.status-emoji = { glyph: "", name: "", key: "" }; }
+                                Image { source: @image-url("icons/x.svg"); width: 10px; colorize: Theme.text; }
+                                remove-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.status-emoji = { glyph: "", name: "", key: "" }; }
+                                }
+                            }
+                        }
+                        TextField {
+                            init => { self.focus-input(); }
+                            min-height: 40px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                            placeholder: "What's happening?"; label: "Status"; text <=> root.status-text;
+                            accepted => { root.save-status(); }
+                        }
+                    }
+                    Text { text: "CLEAR AFTER"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                    Choices {
+                        label: "Clear after"; options: ["Never", "30 min", "1 hour", "4 hours", "Today"];
+                        current <=> root.status-clear-after;
+                    }
+                    if root.status-error != "": Text { text: root.status-error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 8px; padding-top: 4px;
+                        if root.has-custom-status: ActionButton {
+                            text: "Clear status"; ghost: true; enabled: !root.status-saving;
+                            clicked => { root.clear-status(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        ActionButton { text: "Cancel"; ghost: true; clicked => { root.close-status(); } }
+                        ActionButton {
+                            text: root.status-saving ? "Saving..." : "Save"; primary: true; enabled: !root.status-saving;
+                            clicked => { root.save-status(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Starting a DM: find someone on Discord or Matrix, then open the conversation
     // with them, which starts it if there's none yet.
     if root.new-dm-open: Rectangle {

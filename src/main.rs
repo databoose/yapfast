@@ -2,7 +2,11 @@
 #![recursion_limit = "256"]
 
 #[cfg(feature = "desktop")]
+mod custom_emoji;
+#[cfg(feature = "desktop")]
 mod emoji;
+#[cfg(feature = "desktop")]
+mod emoji_font;
 #[cfg(feature = "desktop")]
 mod graphics;
 #[cfg(feature = "desktop")]

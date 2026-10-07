@@ -55,6 +55,38 @@ pub struct Server {
     /// Its boost level, from 0 to 3, which raises everyone's upload limit
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,
+    /// Its custom emoji, by name.
+    pub emojis: Vec<Emoji>,
+}
+
+/// A server's custom emoji.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Emoji {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+    /// Usable: a server that loses boosts keeps emoji it no longer has room for,
+    /// unavailable.
+    pub available: bool,
+}
+
+/// A server's emoji list, from a guild object or GUILD_EMOJIS_UPDATE.
+pub fn emojis(list: &Value) -> Vec<Emoji> {
+    let mut emojis: Vec<Emoji> = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|emoji| {
+            Some(Emoji {
+                id: emoji["id"].as_str()?.to_owned(),
+                name: emoji["name"].as_str()?.to_owned(),
+                animated: emoji["animated"].as_bool().unwrap_or(false),
+                available: emoji["available"].as_bool().unwrap_or(true),
+            })
+        })
+        .collect();
+    emojis.sort_by_key(|emoji| emoji.name.to_lowercase());
+    emojis
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -480,6 +512,7 @@ pub fn server(guild: &Value) -> Option<Server> {
         icon,
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
+        emojis: emojis(&guild["emojis"]),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {
@@ -532,6 +565,27 @@ pub fn display_name(user: &Value) -> Option<&str> {
 /// Discord's CDN, or the test server.
 fn cdn() -> &'static str {
     client::test_server().unwrap_or("https://cdn.discordapp.com")
+}
+
+/// Discord's media proxy, or the test server.
+fn media() -> &'static str {
+    client::test_server().unwrap_or("https://media.discordapp.net")
+}
+
+/// A sticker's picture at the size Discord shows it. Animated GIF stickers come
+/// from the media proxy, the rest from the CDN.
+pub fn sticker(id: &str, gif: bool) -> String {
+    if gif {
+        format!("{}/stickers/{id}.gif?size=160", media())
+    } else {
+        format!("{}/stickers/{id}.png?size=160", cdn())
+    }
+}
+
+/// A custom emoji's picture, at `size` pixels at most.
+pub fn custom_emoji(id: &str, animated: bool, size: u32) -> String {
+    let format = if animated { "gif" } else { "png" };
+    format!("{}/emojis/{id}.{format}?size={size}", cdn())
 }
 
 pub fn server_icon(guild: &str, hash: &str) -> String {

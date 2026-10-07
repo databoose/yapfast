@@ -5,7 +5,10 @@ use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::client;
+use crate::{
+    client,
+    settings::{self, CustomStatus},
+};
 
 const API: &str = "https://discord.com/api/v9";
 /// The most messages one history request returns.
@@ -284,6 +287,28 @@ impl Api {
             .await
     }
 
+    /// Sends a friend request to whoever has `username`.
+    pub async fn add_friend_by_username(&self, username: &str) -> Result<()> {
+        let body = json!({"username": username, "discriminator": null});
+        let request = with_json(
+            self.request(Method::POST, "/users/@me/relationships"),
+            &body,
+        );
+        self.empty(request.header("X-Context-Properties", context("Add Friend")))
+            .await
+    }
+
+    /// Sets the custom status, or clears it with `None`, in the account's settings.
+    pub async fn set_custom_status(&self, custom: Option<&CustomStatus>) -> Result<()> {
+        let body = json!({"settings": settings::write_custom(custom)});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/1"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// Ignores a friend request, cancels one, or ends a friendship.
     pub async fn remove_relationship(&self, user: &str, place: &str) -> Result<()> {
         let path = format!("/users/@me/relationships/{user}");
@@ -382,26 +407,40 @@ async fn checked(request: RequestBuilder) -> Result<Response> {
         (Some(code), Some(message)) => anyhow!("Discord answered {status}, code {code}: {message}"),
         _ => anyhow!("Discord answered {status}"),
     };
-    Err(detail.context(match status {
-        StatusCode::UNAUTHORIZED => anyhow!("Discord rejected the login. Link Discord again."),
-        StatusCode::FORBIDDEN => anyhow!("Discord says you don't have permission to do that here."),
-        StatusCode::NOT_FOUND => anyhow!("Discord no longer has that message or channel."),
-        StatusCode::PAYLOAD_TOO_LARGE => {
-            anyhow!("Discord says the file is too large for your account.")
+    Err(detail.context(match (status, body["code"].as_u64()) {
+        (_, Some(UNKNOWN_USERNAME)) => anyhow!("Discord has nobody by that username."),
+        (_, Some(REQUESTS_CLOSED)) => {
+            anyhow!("They don't take friend requests from people they don't know.")
         }
-        StatusCode::TOO_MANY_REQUESTS => {
-            let wait = body["retry_after"].as_f64().unwrap_or(1.0).ceil();
-            anyhow!("Discord asks Talk to slow down. Try again in {wait} s.")
-        }
-        _ if body["captcha_key"].is_array() => {
-            anyhow!("Discord asked for a captcha. Do this in the Discord app for now.")
-        }
-        _ => match body["message"].as_str() {
-            Some(message) => anyhow!("Discord refused: {message}"),
-            None => anyhow!("Discord answered {status}."),
+        (_, Some(ALREADY_FRIENDS)) => anyhow!("You're already friends."),
+        _ => match status {
+            StatusCode::UNAUTHORIZED => anyhow!("Discord rejected the login. Link Discord again."),
+            StatusCode::FORBIDDEN => {
+                anyhow!("Discord says you don't have permission to do that here.")
+            }
+            StatusCode::NOT_FOUND => anyhow!("Discord no longer has that message or channel."),
+            StatusCode::PAYLOAD_TOO_LARGE => {
+                anyhow!("Discord says the file is too large for your account.")
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                let wait = body["retry_after"].as_f64().unwrap_or(1.0).ceil();
+                anyhow!("Discord asks Talk to slow down. Try again in {wait} s.")
+            }
+            _ if body["captcha_key"].is_array() => {
+                anyhow!("Discord asked for a captcha. Do this in the Discord app for now.")
+            }
+            _ => match body["message"].as_str() {
+                Some(message) => anyhow!("Discord refused: {message}"),
+                None => anyhow!("Discord answered {status}."),
+            },
         },
     }))
 }
+
+/// Discord's error codes that Talk words itself.
+const REQUESTS_CLOSED: u64 = 80000;
+const UNKNOWN_USERNAME: u64 = 80004;
+const ALREADY_FRIENDS: u64 = 80007;
 
 /// The X-Context-Properties header Discord's client sends: where an action
 /// happened, as base64 JSON.

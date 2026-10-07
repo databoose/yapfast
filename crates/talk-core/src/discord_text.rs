@@ -26,9 +26,10 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, Command, Contact, Delivery, Embed, EmbedField, Event,
-        MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture, Placement, Presence,
-        Profile, ProfileRole, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
+        Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Embed,
+        EmbedField, Event, MAX_PREVIEW_DOWNLOAD_BYTES, MentionGroup, Notification, Picture,
+        Placement, Presence, Profile, ProfileRole, Reaction, Reply, Role, decode_preview,
+        decode_view, plain_snippet,
     },
     discord,
     mention::{Mentioned, Target},
@@ -526,10 +527,12 @@ impl OpenChannel {
         else {
             return;
         };
+        // A custom emoji picked comes as `name:id`, which a reaction shown has
+        // as its API form.
         let known = message
             .reactions
             .iter()
-            .find(|reaction| reaction.key == key);
+            .find(|reaction| reaction.key == key || reaction.emoji == key);
         let emoji = known
             .map_or(key, |reaction| reaction.emoji.as_str())
             .to_owned();
@@ -687,7 +690,9 @@ impl OpenChannel {
                             Shown::Message => Placement::Message,
                             Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
                             Shown::Thumbnail(index) => Placement::Thumbnail(index),
+                            Shown::Sticker => Placement::Sticker,
                         },
+                        spoiler: attachment.spoiler,
                     }
                 })
                 .collect();
@@ -698,16 +703,19 @@ impl OpenChannel {
                 .collect();
             let reply = message.reply.as_ref().map(|reply| match reply {
                 DiscordReply::Message {
+                    id,
                     author_id,
                     author,
                     content,
                 } => Reply {
                     author: name(author_id, author),
-                    body: plain_snippet(&discord.render(server, content)),
+                    body: plain_snippet(&crate::spoiler::hide(&discord.render(server, content))),
+                    item: Some(format!("d:{id}")),
                 },
                 DiscordReply::Deleted => Reply {
                     author: String::new(),
                     body: "The original message was deleted.".into(),
+                    item: None,
                 },
             });
             let timestamp = message.timestamp();
@@ -729,6 +737,7 @@ impl OpenChannel {
                 own,
                 edited: message.edited,
                 deleted: false,
+                blocked: snapshot.blocked.contains(&message.author_id),
                 delivery: Delivery::Sent,
                 reply,
                 reactions: message
@@ -743,6 +752,7 @@ impl OpenChannel {
                 attachments,
                 embeds,
                 mentions: mentions(discord, server, &message.content),
+                emoji: custom_emoji(message),
                 can_reply: ordinary,
                 can_edit: own && message.editable,
                 can_delete: own,
@@ -775,7 +785,10 @@ impl OpenChannel {
                     let original = self.messages.get(&id.parse().unwrap_or_default())?;
                     Some(Reply {
                         author: name(&original.author_id, &original.author),
-                        body: plain_snippet(&discord.render(server, &original.content)),
+                        body: plain_snippet(&crate::spoiler::hide(
+                            &discord.render(server, &original.content),
+                        )),
+                        item: Some(format!("d:{id}")),
                     })
                 }),
                 attachments: pending
@@ -789,6 +802,7 @@ impl OpenChannel {
                         preview: None,
                         preview_failed: false,
                         placement: Placement::Message,
+                        spoiler: false,
                     })
                     .collect(),
                 ..Default::default()
@@ -1225,6 +1239,62 @@ pub fn command(
         }
         return None;
     }
+    if let Command::AddFriend { username } = command {
+        match discord {
+            Some(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .add_friend_by_username(&username)
+                        .await
+                        .map(|()| username)
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not send a friend request by username"
+                            );
+                            error.to_string()
+                        });
+                    let _ = events.send(Event::FriendAdded(result));
+                });
+            }
+            None => {
+                let _ = events.send(Event::FriendAdded(Err(
+                    "Discord isn't linked on this device.".into(),
+                )));
+            }
+        }
+        return None;
+    }
+    if let Command::SetCustomStatus(custom) = command {
+        match discord {
+            Some(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                let custom = custom.map(|custom| talk_discord::settings::CustomStatus {
+                    text: custom.text,
+                    emoji_name: custom.emoji,
+                    emoji_id: custom.emoji_id,
+                    expires_at_ms: custom.expires_at_ms,
+                });
+                tokio::spawn(async move {
+                    let result = discord.set_custom_status(custom).await.map_err(|error| {
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            "could not set the custom status"
+                        );
+                        error.to_string()
+                    });
+                    let _ = events.send(Event::CustomStatusSet(result));
+                });
+            }
+            None => {
+                let _ = events.send(Event::CustomStatusSet(Err(
+                    "Discord isn't linked on this device.".into(),
+                )));
+            }
+        }
+        return None;
+    }
     if let Command::DeclineCall { room } = command {
         if let (Some(discord), Some((_, channel))) = (discord, discord::parse_room(&room)) {
             let (discord, events, channel) = (discord.clone(), events.clone(), channel.to_owned());
@@ -1424,6 +1494,7 @@ pub fn finished(
     // Closed channels kept lately take what finished too.
     let channel = channels.get_mut(&room);
     let mut changed = false;
+    let mut history_loaded = None;
     match (finished, channel) {
         (Done::Edited { item, result, .. }, channel) => {
             let result = match result {
@@ -1471,9 +1542,8 @@ pub fn finished(
                     });
                 }
             }
-            if older {
-                let _ = events.send(Event::HistoryLoaded(room));
-            }
+            // Said once the page is published, so the timeline has it.
+            history_loaded = older.then_some(room);
         }
         (_, None) => {}
         (Done::Sent { nonce, result, .. }, Some(channel)) => {
@@ -1513,6 +1583,9 @@ pub fn finished(
     {
         publish(channel, discord, done, events);
     }
+    if let Some(room) = history_loaded {
+        let _ = events.send(Event::HistoryLoaded(room));
+    }
 }
 
 /// A new Discord message as a notification: who wrote it, by their name in the server,
@@ -1526,9 +1599,17 @@ fn notification(discord: &Discord, guild: Option<&str>, message: &Message) -> No
             &message.author_id,
         )
         .unwrap_or_else(|| message.author.clone());
-    let mut body = crate::chat::notification_text(&discord.render(server, &message.content));
+    let mut body = crate::chat::notification_text(&crate::spoiler::hide(
+        &discord.render(server, &message.content),
+    ));
     if body.is_empty() {
         body = if message
+            .attachments
+            .iter()
+            .any(|attachment| attachment.shown == Shown::Sticker)
+        {
+            "Sent a sticker".into()
+        } else if message
             .attachments
             .iter()
             .any(|attachment| attachment.image)
@@ -1577,6 +1658,10 @@ pub fn live(
         name,
     }) = &event
     {
+        // Nobody blocked is seen typing.
+        if discord.snapshots().borrow().blocked.contains(user) {
+            return;
+        }
         let room = discord::room_id(
             guild.as_deref().unwrap_or(talk_discord::ready::PRIVATE),
             channel,
@@ -1640,6 +1725,40 @@ pub fn live(
 }
 
 /// Who and what a message mentions, as its rendered body shows them.
+/// The custom emoji in a message's text and reactions.
+fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
+    let mut found: Vec<CustomEmoji> = talk_discord::message::custom_emoji(&message.content)
+        .into_iter()
+        .map(|emoji| CustomEmoji {
+            text: format!(":{}:", emoji.name),
+            picture: talk_discord::ready::custom_emoji(
+                &emoji.id,
+                false,
+                crate::chat::EMOJI_PICTURE_SIZE,
+            ),
+            id: emoji.id,
+            animated: emoji.animated,
+        })
+        .collect();
+    for reaction in &message.reactions {
+        if let Some((_, id)) = reaction.emoji.split_once(':')
+            && !found.iter().any(|known| known.id == id)
+        {
+            found.push(CustomEmoji {
+                text: reaction.key.clone(),
+                id: id.to_owned(),
+                animated: false,
+                picture: talk_discord::ready::custom_emoji(
+                    id,
+                    false,
+                    crate::chat::EMOJI_PICTURE_SIZE,
+                ),
+            });
+        }
+    }
+    found
+}
+
 fn mentions(
     discord: &Discord,
     server: Option<&talk_discord::ready::Server>,
@@ -1951,6 +2070,7 @@ mod tests {
                 preview_url: Some(format!("preview/{id}")),
                 view_url: None,
                 shown: Shown::Message,
+                spoiler: false,
             }],
             ..message(&id.to_string(), None)
         };

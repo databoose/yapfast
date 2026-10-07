@@ -18,6 +18,9 @@ use crate::{
 /// How many suggestions the composer offers for an `@` word.
 const MENTION_SUGGESTIONS: usize = 8;
 
+/// How many pages of history a jump to a message loads looking for it.
+const MAX_SEEK_PAGES: u32 = 20;
+
 const STOPPED: &str = "The connection has stopped. Restart Talk to restore your session.";
 
 /// Reactions offered before someone has used any, in order.
@@ -40,6 +43,47 @@ pub struct NewDm {
     /// A DM is starting.
     pub starting: bool,
     pub error: Option<String>,
+}
+
+/// The dialog that sends a friend request by Discord username.
+#[derive(Clone, Debug, Default)]
+pub struct AddFriend {
+    pub sending: bool,
+    /// The last request's outcome: who it went to, or why it didn't.
+    pub outcome: Option<Result<String, String>>,
+}
+
+/// The dialog that sets the Discord custom status.
+#[derive(Clone, Debug, Default)]
+pub struct StatusEditor {
+    pub saving: bool,
+    pub error: Option<String>,
+}
+
+/// When a custom status clears itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearAfter {
+    Never,
+    Minutes(u32),
+    /// At the next local midnight.
+    Today,
+}
+
+impl ClearAfter {
+    /// Unix milliseconds when it clears, from `now`.
+    fn at(self, now: chrono::DateTime<chrono::Local>) -> Option<u64> {
+        let at = match self {
+            ClearAfter::Never => return None,
+            ClearAfter::Minutes(minutes) => now + chrono::Duration::minutes(minutes.into()),
+            ClearAfter::Today => now
+                .date_naive()
+                .succ_opt()?
+                .and_hms_opt(0, 0, 0)?
+                .and_local_timezone(chrono::Local)
+                .earliest()?,
+        };
+        u64::try_from(at.timestamp_millis()).ok()
+    }
 }
 
 impl NewDm {
@@ -110,6 +154,10 @@ pub struct AppState {
     /// Its friends, by user id, and friend requests waiting for an answer.
     pub discord_friends: Vec<String>,
     pub friend_requests: Vec<chat::FriendRequest>,
+    /// The Discord account's custom status, while it lasts.
+    pub custom_status: Option<chat::CustomStatus>,
+    pub add_friend: Option<AddFriend>,
+    pub status_editor: Option<StatusEditor>,
     /// Whether Discord channels hidden from this account are listed, locked.
     pub show_hidden_channels: bool,
     /// Reading a Discord channel in Talk marks it read on Discord too.
@@ -148,6 +196,9 @@ pub struct AppState {
     /// The selected room's joined members, by role and then name; `None` while loading.
     pub members: Option<Result<Vec<ChatMember>, &'static str>>,
     pub loading_history: bool,
+    /// The message the timeline should bring into view and highlight, and a
+    /// count that changes with each jump, even to the same message.
+    pub jump: Option<(String, u64)>,
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
     pub confirm_delete: Option<String>,
@@ -502,6 +553,12 @@ pub enum Action {
     CloseImage,
     DismissNotice,
     Earlier,
+    /// Show the selected room's message with this item, loading earlier
+    /// history until it's there; see [`AppState::jump`].
+    Jump(String),
+    /// Download pictures that show outside the state, such as the emoji
+    /// picker's; see [`Command::Pictures`].
+    LoadPictures(Vec<String>),
     Login {
         homeserver: String,
         username: String,
@@ -522,6 +579,21 @@ pub enum Action {
     Befriend(String),
     /// Ignore a Discord user's friend request, or cancel this account's.
     RemoveFriendRequest(String),
+    /// Open the dialog that adds a friend by Discord username, send the
+    /// request, or close it.
+    OpenAddFriend,
+    AddFriend(String),
+    CloseAddFriend,
+    /// Open the custom status dialog, set the status, clear it, or close it.
+    /// The emoji is a Unicode one or a custom one's `:name:`, which needs Nitro.
+    OpenStatusEditor,
+    SetCustomStatus {
+        emoji: Option<String>,
+        text: String,
+        clear_after: ClearAfter,
+    },
+    ClearCustomStatus,
+    CloseStatusEditor,
     ConfirmVoiceSwitch,
     CancelVoiceSwitch,
     DismissVoiceError,
@@ -584,6 +656,9 @@ pub struct Application {
     sent_draft: Option<String>,
     /// The files sent with it, which leave the composer once sent.
     sent_files: Vec<PathBuf>,
+    /// The message [`Action::Jump`] is loading history to find, and how many
+    /// pages it has loaded.
+    seeking: Option<(String, u32)>,
     /// Discord channels shown lately, newest last: their timeline and
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.
@@ -694,7 +769,10 @@ impl Application {
                 state
                     .messages
                     .iter()
-                    .filter_map(|message| message.avatar.as_deref()),
+                    .filter_map(|message| message.avatar.as_deref())
+                    .chain(state.messages.iter().flat_map(|message| {
+                        message.emoji.iter().map(|emoji| emoji.picture.as_str())
+                    })),
             )
             .chain(
                 state
@@ -1109,6 +1187,21 @@ impl Application {
                 self.state.notice = None;
                 vec![]
             }
+            Action::Jump(item) => {
+                self.seeking = Some((item, 0));
+                self.seek()
+            }
+            Action::LoadPictures(urls) => {
+                let wanted: Vec<String> = urls
+                    .into_iter()
+                    .filter(|url| self.requested_pictures.insert(url.clone()))
+                    .collect();
+                if wanted.is_empty() || self.state.preview {
+                    vec![]
+                } else {
+                    vec![Effect::Backend(Command::Pictures(wanted))]
+                }
+            }
             Action::Earlier => {
                 if self.state.preview
                     || self.state.busy
@@ -1237,6 +1330,77 @@ impl Application {
                 }
                 _ => vec![],
             },
+            Action::OpenAddFriend => {
+                if self.state.discord_user.is_some() {
+                    self.state.add_friend = Some(AddFriend::default());
+                }
+                vec![]
+            }
+            Action::AddFriend(username) => {
+                let username = username.trim().trim_start_matches('@').to_lowercase();
+                let Some(dialog) = self
+                    .state
+                    .add_friend
+                    .as_mut()
+                    .filter(|dialog| !dialog.sending)
+                else {
+                    return vec![];
+                };
+                if username.is_empty() {
+                    return vec![];
+                }
+                dialog.sending = true;
+                dialog.outcome = None;
+                vec![Effect::Backend(Command::AddFriend { username })]
+            }
+            Action::CloseAddFriend => {
+                self.state.add_friend = None;
+                vec![]
+            }
+            Action::OpenStatusEditor => {
+                if self.state.discord_user.is_some() {
+                    self.state.status_editor = Some(StatusEditor::default());
+                }
+                vec![]
+            }
+            Action::SetCustomStatus {
+                emoji,
+                text,
+                clear_after,
+            } => {
+                let text = text.trim().to_owned();
+                let emoji = emoji.filter(|emoji| !emoji.is_empty());
+                if text.is_empty() && emoji.is_none() {
+                    return self.dispatch(Action::ClearCustomStatus);
+                }
+                let (emoji, emoji_id) = match emoji {
+                    Some(name) if name.contains(':') => match self.status_emoji(&name) {
+                        Ok(found) => (
+                            Some(found.text.trim_matches(':').to_owned()),
+                            Some(found.id),
+                        ),
+                        Err(error) => {
+                            if let Some(editor) = &mut self.state.status_editor {
+                                editor.error = Some(error.into());
+                            }
+                            return vec![];
+                        }
+                    },
+                    emoji => (emoji, None),
+                };
+                let status = chat::CustomStatus {
+                    text,
+                    emoji,
+                    emoji_id,
+                    expires_at_ms: clear_after.at(chrono::Local::now()),
+                };
+                self.save_status(Some(status))
+            }
+            Action::ClearCustomStatus => self.save_status(None),
+            Action::CloseStatusEditor => {
+                self.state.status_editor = None;
+                vec![]
+            }
             Action::ConfirmVoiceSwitch => {
                 let Some(id) = self.state.switch_voice.take() else {
                     return vec![];
@@ -1479,6 +1643,16 @@ impl Application {
                 }
                 self.state.discord_user = snapshot.user_id.clone();
                 self.state.discord_friends = snapshot.friends.clone();
+                self.state.custom_status =
+                    snapshot
+                        .custom_status
+                        .as_ref()
+                        .map(|custom| chat::CustomStatus {
+                            text: custom.text.clone(),
+                            emoji: custom.emoji_name.clone(),
+                            emoji_id: custom.emoji_id.clone(),
+                            expires_at_ms: custom.expires_at_ms,
+                        });
                 self.state.friend_requests = snapshot
                     .friend_requests
                     .iter()
@@ -1557,6 +1731,21 @@ impl Application {
                     self.pending_open = Some(room);
                 }
             }
+            Event::FriendAdded(outcome) => {
+                if let Some(dialog) = &mut self.state.add_friend {
+                    dialog.sending = false;
+                    dialog.outcome = Some(outcome);
+                }
+            }
+            Event::CustomStatusSet(Ok(())) => {
+                self.state.status_editor = None;
+            }
+            Event::CustomStatusSet(Err(error)) => {
+                if let Some(editor) = &mut self.state.status_editor {
+                    editor.saving = false;
+                    editor.error = Some(error);
+                }
+            }
             Event::DmStarted(Err(error)) => {
                 if let Some(new_dm) = &mut self.state.new_dm {
                     new_dm.starting = false;
@@ -1600,6 +1789,7 @@ impl Application {
             Event::HistoryLoaded(room) => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.loading_history = false;
+                    return self.seek();
                 }
             }
             Event::SendResult { room, body, result } => {
@@ -1724,6 +1914,36 @@ impl Application {
         if self.state.account.is_some() && (self.state.notice.is_none() || was_busy) {
             self.state.notice = Some(STOPPED.into());
         }
+    }
+
+    /// Brings the message being sought into view once the timeline has it,
+    /// else loads another page of history, up to [`MAX_SEEK_PAGES`].
+    fn seek(&mut self) -> Vec<Effect> {
+        let Some((item, pages)) = self.seeking.take() else {
+            return vec![];
+        };
+        if self
+            .state
+            .messages
+            .iter()
+            .any(|message| message.item == item)
+        {
+            let count = self.state.jump.as_ref().map_or(0, |(_, count)| count + 1);
+            self.state.jump = Some((item, count));
+            return vec![];
+        }
+        if pages >= MAX_SEEK_PAGES {
+            self.state.notice = Some(
+                "Talk couldn't find the original message in this conversation's recent history."
+                    .into(),
+            );
+            return vec![];
+        }
+        let effects = self.dispatch_action(Action::Earlier);
+        if self.state.loading_history {
+            self.seeking = Some((item, pages + 1));
+        }
+        effects
     }
 
     fn start(&mut self, start: chat::Start) -> Vec<Effect> {
@@ -1898,6 +2118,8 @@ impl Application {
         self.state.profile = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
+        self.state.jump = None;
+        self.seeking = None;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.state.members = None;
@@ -1939,7 +2161,17 @@ impl Application {
         let body = if self.state.preview {
             draft.clone()
         } else {
-            mention::wire(&draft, &self.state.mention_candidates())
+            let wired = mention::wire(&draft, &self.state.mention_candidates());
+            if discord::is_discord(&id) {
+                let usable: Vec<chat::CustomEmoji> = self
+                    .usable_emoji()
+                    .into_iter()
+                    .flat_map(|set| set.emoji)
+                    .collect();
+                chat::wire_emoji(&wired, &usable)
+            } else {
+                wired
+            }
         };
         if body.len() > chat::MAX_MESSAGE_BYTES {
             self.state.notice = Some("Keep messages under 16 KB.".into());
@@ -1969,9 +2201,11 @@ impl Application {
                         time: "Local preview".into(),
                         own: true,
                         reply: match compose {
-                            Some(Compose::Reply { author, body, .. }) => {
-                                Some(Reply { author, body })
-                            }
+                            Some(Compose::Reply { item, author, body }) => Some(Reply {
+                                author,
+                                body,
+                                item: Some(item),
+                            }),
                             _ => None,
                         },
                         ..sample_actions()
@@ -2096,6 +2330,106 @@ impl Application {
             item: forwarding.item,
             target,
         })]
+    }
+
+    /// Sends the custom status to Discord from its dialog.
+    fn save_status(&mut self, status: Option<chat::CustomStatus>) -> Vec<Effect> {
+        let Some(editor) = self
+            .state
+            .status_editor
+            .as_mut()
+            .filter(|editor| !editor.saving)
+        else {
+            return vec![];
+        };
+        editor.saving = true;
+        editor.error = None;
+        vec![Effect::Backend(Command::SetCustomStatus(status))]
+    }
+
+    /// The custom emoji for a status, by its `:name:` or its `name:id` key,
+    /// which only Nitro may use.
+    fn status_emoji(&self, name: &str) -> Result<chat::CustomEmoji, &'static str> {
+        #[cfg(feature = "discord")]
+        if let Some(snapshot) = &self.discord {
+            if !snapshot
+                .account
+                .as_ref()
+                .is_some_and(|account| account.premium_type > 0)
+            {
+                return Err("A custom emoji in a status needs Discord Nitro.");
+            }
+            return snapshot
+                .servers
+                .iter()
+                .flat_map(|server| &server.emojis)
+                .find(|emoji| {
+                    emoji.available
+                        && (format!(":{}:", emoji.name) == name
+                            || format!("{}:{}", emoji.name, emoji.id) == name)
+                })
+                .map(|emoji| chat::CustomEmoji {
+                    text: format!(":{}:", emoji.name),
+                    id: emoji.id.clone(),
+                    animated: emoji.animated,
+                    picture: talk_discord::ready::custom_emoji(
+                        &emoji.id,
+                        false,
+                        chat::EMOJI_PICTURE_SIZE,
+                    ),
+                })
+                .ok_or("None of your servers has that emoji.");
+        }
+        let _ = name;
+        Err("Discord isn't linked on this device.")
+    }
+
+    /// The custom emoji this account may use in the selected room, by server, the
+    /// room's own server first: with Nitro every server's, and without it only
+    /// that server's, none animated.
+    pub fn usable_emoji(&self) -> Vec<chat::EmojiSet> {
+        #[cfg(feature = "discord")]
+        if let Some(snapshot) = &self.discord {
+            let here = self
+                .state
+                .selected
+                .as_deref()
+                .and_then(discord::parse_room)
+                .map(|(guild, _)| guild);
+            let nitro = snapshot
+                .account
+                .as_ref()
+                .is_some_and(|account| account.premium_type > 0);
+            let mut servers: Vec<_> = snapshot
+                .servers
+                .iter()
+                .filter(|server| nitro || Some(server.id.as_str()) == here)
+                .collect();
+            servers.sort_by_key(|server| Some(server.id.as_str()) != here);
+            return servers
+                .into_iter()
+                .map(|server| chat::EmojiSet {
+                    server: server.name.clone(),
+                    emoji: server
+                        .emojis
+                        .iter()
+                        .filter(|emoji| emoji.available && (nitro || !emoji.animated))
+                        .map(|emoji| chat::CustomEmoji {
+                            text: format!(":{}:", emoji.name),
+                            id: emoji.id.clone(),
+                            animated: emoji.animated,
+                            picture: talk_discord::ready::custom_emoji(
+                                &emoji.id,
+                                false,
+                                chat::EMOJI_PICTURE_SIZE,
+                            ),
+                        })
+                        .collect(),
+                })
+                .filter(|set| !set.emoji.is_empty())
+                .collect();
+        }
+        vec![]
     }
 
     /// The `count` reactions this device adds most, then the defaults.
@@ -3093,6 +3427,46 @@ mod tests {
     }
 
     #[test]
+    fn jumping_to_a_reply_loads_history_until_the_original_is_there() {
+        let mut app = connected();
+        let message = |item: &str| ChatMessage {
+            id: item.into(),
+            item: item.into(),
+            body: item.into(),
+            ..Default::default()
+        };
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![message("e:2"), message("e:3")],
+        });
+        app.dispatch(Action::Jump("e:3".into()));
+        assert_eq!(app.state.jump, Some(("e:3".into(), 0)));
+        // An earlier message is loaded first.
+        let effects = app.dispatch(Action::Jump("e:1".into()));
+        assert!(matches!(&effects[..], [Effect::Backend(Command::Earlier(room))] if room == "dm"));
+        assert_eq!(app.state.jump, Some(("e:3".into(), 0)));
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: vec![message("e:1"), message("e:2"), message("e:3")],
+        });
+        assert!(app.apply(Event::HistoryLoaded("dm".into())).is_empty());
+        assert_eq!(app.state.jump, Some(("e:1".into(), 1)));
+        // One that never turns up stops the search with a note.
+        app.dispatch(Action::Jump("e:0".into()));
+        for _ in 0..MAX_SEEK_PAGES {
+            assert!(app.state.loading_history);
+            app.apply(Event::HistoryLoaded("dm".into()));
+        }
+        assert!(!app.state.loading_history);
+        assert!(
+            app.state
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("couldn't find"))
+        );
+    }
+
+    #[test]
     fn stale_timeline_and_history_events_do_not_replace_the_selected_room() {
         let mut app = connected();
         app.dispatch(Action::Earlier);
@@ -3410,6 +3784,7 @@ mod tests {
             preview: None,
             preview_failed: false,
             placement: chat::Placement::Message,
+            spoiler: false,
         };
         app.apply(Event::Timeline {
             room: "dm".into(),
@@ -3540,6 +3915,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 rgba: vec![0; 4],
+                ..Default::default()
             }),
         });
         assert!(app.state.pictures.contains_key("icon.png"));
@@ -4196,6 +4572,91 @@ mod tests {
             effects.last(),
             Some(Effect::Backend(Command::Voice(voice::Command::Join(id)))) if *id == dm
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "discord")]
+    fn adds_friends_by_username_and_sets_the_custom_status() {
+        use talk_discord::service::{Snapshot, Status};
+        let mut app = Application::default();
+        app.apply(Event::Discord(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            ..Default::default()
+        }));
+
+        app.dispatch(Action::OpenAddFriend);
+        assert!(matches!(
+            app.dispatch(Action::AddFriend(" @Erin ".into())).as_slice(),
+            [Effect::Backend(Command::AddFriend { username })] if username == "erin"
+        ));
+        assert!(
+            app.dispatch(Action::AddFriend("erin".into())).is_empty(),
+            "one request at a time"
+        );
+        app.apply(Event::FriendAdded(Err(
+            "Discord has nobody by that username.".into(),
+        )));
+        let dialog = app.state.add_friend.as_ref().expect("still open");
+        assert!(!dialog.sending);
+        assert!(matches!(&dialog.outcome, Some(Err(_))));
+
+        app.dispatch(Action::OpenStatusEditor);
+        assert_eq!(
+            app.dispatch(Action::SetCustomStatus {
+                emoji: Some(":pog:".into()),
+                text: "Hi".into(),
+                clear_after: ClearAfter::Never,
+            })
+            .len(),
+            0
+        );
+        assert_eq!(
+            app.state
+                .status_editor
+                .as_ref()
+                .and_then(|editor| editor.error.as_deref()),
+            Some("A custom emoji in a status needs Discord Nitro.")
+        );
+        let effects = app.dispatch(Action::SetCustomStatus {
+            emoji: Some("🔧".into()),
+            text: " Fixing the bridge ".into(),
+            clear_after: ClearAfter::Minutes(30),
+        });
+        let [Effect::Backend(Command::SetCustomStatus(Some(status)))] = effects.as_slice() else {
+            panic!("the status goes to Discord");
+        };
+        assert_eq!(status.text, "Fixing the bridge");
+        assert_eq!(status.emoji.as_deref(), Some("🔧"));
+        let left = status.expires_at_ms.unwrap() as i64 - chrono::Local::now().timestamp_millis();
+        assert!((29 * 60_000..=30 * 60_000).contains(&left));
+        app.apply(Event::CustomStatusSet(Ok(())));
+        assert!(app.state.status_editor.is_none());
+
+        // Nothing to say clears it.
+        app.dispatch(Action::OpenStatusEditor);
+        assert!(matches!(
+            app.dispatch(Action::SetCustomStatus {
+                emoji: None,
+                text: " ".into(),
+                clear_after: ClearAfter::Today,
+            })
+            .as_slice(),
+            [Effect::Backend(Command::SetCustomStatus(None))]
+        ));
+    }
+
+    #[test]
+    fn clears_a_status_today_at_midnight() {
+        use chrono::{Datelike, Local, TimeZone, Timelike};
+        let evening = Local.with_ymd_and_hms(2026, 10, 7, 21, 30, 0).unwrap();
+        let at = ClearAfter::Today.at(evening).unwrap();
+        let midnight = Local.timestamp_millis_opt(at as i64).unwrap();
+        assert_eq!(
+            (midnight.day(), midnight.hour(), midnight.minute()),
+            (8, 0, 0)
+        );
+        assert_eq!(ClearAfter::Never.at(evening), None);
     }
 
     #[test]

@@ -20,6 +20,7 @@ use crate::{
     message::{self, Message, Names},
     profile::{self, Profile},
     ready::{self, PRIVATE, Private, Server},
+    settings::{self, CustomStatus},
     stream::{self, Opening, StreamServer},
     unread::Unreads,
 };
@@ -114,6 +115,13 @@ pub struct Snapshot {
     pub conversations: Vec<Conversation>,
     /// The account's friends, by user id.
     pub friends: Vec<String>,
+    /// Those this account blocked, by user id. Their messages show collapsed,
+    /// and they don't notify.
+    pub blocked: Vec<String>,
+    /// This account's status: `online`, `idle`, `dnd` or `invisible`.
+    pub presence: String,
+    /// This account's custom status, until it ends.
+    pub custom_status: Option<CustomStatus>,
     /// Friend requests waiting for an answer: those sent to this account
     /// first, then those it sent, the newest first in each.
     pub friend_requests: Vec<FriendRequest>,
@@ -239,6 +247,8 @@ enum Request {
         stream_key: String,
         paused: bool,
     },
+    /// The custom status changed in the settings; this session shows it.
+    CustomStatus(Option<CustomStatus>),
 }
 
 /// A handle to the connection. It ends when every handle is dropped.
@@ -287,6 +297,7 @@ impl Discord {
                 listing: None,
                 lists: Vec::new(),
                 group: None,
+                presence: settings::presence("online", None, 0),
             },
         ));
         Ok(Self {
@@ -481,6 +492,19 @@ impl Discord {
         }
         self.api.ring(channel).await?;
         Ok(true)
+    }
+
+    /// Sends a friend request to whoever has this username.
+    pub async fn add_friend_by_username(&self, username: &str) -> Result<()> {
+        self.api.add_friend_by_username(username).await
+    }
+
+    /// Sets or clears the custom status, everywhere this account is signed
+    /// in, and shows it from this session.
+    pub async fn set_custom_status(&self, custom: Option<CustomStatus>) -> Result<()> {
+        self.api.set_custom_status(custom.as_ref()).await?;
+        let _ = self.requests.send(Request::CustomStatus(custom));
+        Ok(())
     }
 
     /// Sends someone a friend request from their profile, or accepts theirs.
@@ -700,8 +724,10 @@ fn server(guild: &str) -> Option<&str> {
 }
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
-/// Relationship types: a friend, and friend requests to and from this account.
+/// Relationship types: a friend, someone blocked, and friend requests to and
+/// from this account.
 const FRIEND: u64 = 1;
+const BLOCKED: u64 = 2;
 const INCOMING_REQUEST: u64 = 3;
 const OUTGOING_REQUEST: u64 = 4;
 /// How long a member search waits for Discord.
@@ -725,6 +751,8 @@ struct Shared {
     lists: Vec<MemberList>,
     /// The group DM on screen, whose members Talk lists itself.
     group: Option<String>,
+    /// The presence this session last sent, which it identifies with again.
+    presence: Value,
 }
 
 /// Member lists kept for channels shown again.
@@ -766,7 +794,7 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
     loop {
         snapshots.send_modify(|snapshot| snapshot.status = Status::Connecting);
         let connected = tokio::select! {
-            connected = Gateway::connect(&token) => connected,
+            connected = Gateway::connect(&token, shared.presence.clone()) => connected,
             () = snapshots.closed() => return,
         };
         let error = match connected {
@@ -900,6 +928,39 @@ struct PendingStream {
     opening: Opening,
 }
 
+/// Unix milliseconds now.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// How long until the custom status ends by itself; long when it doesn't.
+fn status_left(tracker: &Tracker) -> Duration {
+    tracker
+        .custom_status
+        .as_ref()
+        .and_then(|custom| custom.expires_at_ms)
+        .map_or(Duration::from_secs(86_400 * 365), |at| {
+            Duration::from_millis(at.saturating_sub(now_ms()))
+        })
+}
+
+/// Sends the gateway this session's presence when it changed.
+async fn show_presence(
+    gateway: &mut Gateway,
+    tracker: &Tracker,
+    shared: &mut Shared,
+) -> Result<()> {
+    let presence = tracker.own_presence();
+    if presence != shared.presence {
+        gateway.update_presence(presence.clone()).await?;
+        shared.presence = presence;
+    }
+    Ok(())
+}
+
 fn fail_streams(openings: &mut HashMap<String, PendingStream>, message: &str) {
     for (_, waiting) in openings.drain() {
         let _ = waiting.reply.send(Err(anyhow!("{message}")));
@@ -917,6 +978,10 @@ async fn connected_session(
     };
     let mut tracker = Tracker::from_ready(me.clone(), ready, shared.names.clone());
     shared.snapshots.send_replace(tracker.snapshot());
+    // This session shows the status the settings hold, as Discord's own apps do.
+    if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
+        return Ended::Failed(error);
+    }
     publish_group(&tracker, shared);
     tracker.list = shared
         .listing
@@ -945,6 +1010,9 @@ async fn connected_session(
     let mut search_nonce = 0u64;
     let ack_at = tokio::time::sleep(ACK_DELAY);
     tokio::pin!(ack_at);
+    // When the custom status ends by itself.
+    let status_ends = tokio::time::sleep(status_left(&tracker));
+    tokio::pin!(status_ends);
     loop {
         tokio::select! {
             request = requests.recv() => {
@@ -1064,6 +1132,14 @@ async fn connected_session(
                     Request::PauseStream { stream_key, paused } => {
                         gateway.pause_stream(&stream_key, paused).await
                     }
+                    Request::CustomStatus(custom) => {
+                        // The settings update that follows says the same; this
+                        // shows it without waiting.
+                        tracker.custom_status = custom;
+                        shared.snapshots.send_replace(tracker.snapshot());
+                        status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
+                        show_presence(&mut gateway, &tracker, shared).await
+                    }
                     Request::Search { guild, query, reply } => {
                         search_nonce += 1;
                         let nonce = format!("talk-search-{search_nonce}");
@@ -1083,6 +1159,13 @@ async fn connected_session(
                     }
                 };
                 if let Err(error) = sent {
+                    return Ended::Failed(error);
+                }
+            }
+            () = &mut status_ends, if tracker.custom_status.as_ref().is_some_and(|custom| custom.expires_at_ms.is_some()) => {
+                tracker.custom_status = None;
+                shared.snapshots.send_replace(tracker.snapshot());
+                if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
                     return Ended::Failed(error);
                 }
             }
@@ -1180,6 +1263,12 @@ async fn connected_session(
                 if tracker.apply(&event.name, &event.data) {
                     shared.snapshots.send_replace(tracker.snapshot());
                 }
+                if event.name == "USER_SETTINGS_PROTO_UPDATE" {
+                    status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
+                    if let Err(error) = show_presence(&mut gateway, &tracker, shared).await {
+                        return Ended::Failed(error);
+                    }
+                }
                 // Server events, such as presences in a server, don't change a group.
                 if shared.group.is_some()
                     && event.data["guild_id"].is_null()
@@ -1231,6 +1320,11 @@ struct Tracker {
     presences: HashMap<String, (Presence, Option<String>)>,
     /// The account's friends, by user id.
     friends: Vec<String>,
+    /// Those this account blocked, by user id.
+    blocked: Vec<String>,
+    /// This account's status and custom status, from its settings.
+    status: String,
+    custom_status: Option<CustomStatus>,
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
@@ -1259,8 +1353,14 @@ impl Tracker {
             private: Vec::new(),
             presences: HashMap::new(),
             friends: Vec::new(),
+            blocked: Vec::new(),
+            status: "online".into(),
+            custom_status: None,
             requests: HashMap::new(),
         };
+        if let Some(encoded) = ready["user_settings_proto"].as_str() {
+            tracker.settings(encoded);
+        }
         for relationship in ready["relationships"].as_array().into_iter().flatten() {
             tracker.relationship(relationship);
         }
@@ -1371,6 +1471,7 @@ impl Tracker {
             "RELATIONSHIP_REMOVE" => {
                 let id = data["id"].as_str().or_else(|| data["user_id"].as_str());
                 self.friends.retain(|friend| Some(friend.as_str()) != id);
+                self.blocked.retain(|blocked| Some(blocked.as_str()) != id);
                 if let Some(id) = id {
                     self.requests.remove(id);
                 }
@@ -1397,6 +1498,24 @@ impl Tracker {
                 } else {
                     server.put_role(&data["role"]);
                 }
+                true
+            }
+            // The settings of type 1 hold the status.
+            "USER_SETTINGS_PROTO_UPDATE" if data["settings"]["type"] == 1 => {
+                let Some(encoded) = data["settings"]["proto"].as_str() else {
+                    return false;
+                };
+                self.settings(encoded);
+                true
+            }
+            "GUILD_EMOJIS_UPDATE" => {
+                let Some(server) = data["guild_id"]
+                    .as_str()
+                    .and_then(|guild| self.servers.iter_mut().find(|server| server.id == guild))
+                else {
+                    return false;
+                };
+                server.emojis = ready::emojis(&data["emojis"]);
                 true
             }
             // Carries the server's own fields, without its channels or members.
@@ -1650,10 +1769,12 @@ impl Tracker {
                 .find(|known| known.id == channel)?;
             channel.parent.as_deref()
         });
-        let unwanted = self
-            .private
-            .iter()
-            .any(|private| private.id == channel && (private.request || private.spam));
+        let author = message["author"]["id"].as_str().unwrap_or_default();
+        let unwanted = self.blocked.iter().any(|blocked| blocked == author)
+            || self
+                .private
+                .iter()
+                .any(|private| private.id == channel && (private.request || private.spam));
         !unwanted
             && self
                 .unreads
@@ -1661,6 +1782,22 @@ impl Tracker {
     }
 
     /// DMs and group DMs, the latest conversation first.
+    /// Learns the status from settings, all or some of them, in base64.
+    fn settings(&mut self, encoded: &str) {
+        let read = settings::read(encoded);
+        if let Some(status) = read.status.filter(|status| !status.is_empty()) {
+            self.status = status;
+        }
+        if let Some(custom) = read.custom {
+            self.custom_status = custom;
+        }
+    }
+
+    /// The presence this session shows, as the settings say.
+    fn own_presence(&self) -> Value {
+        settings::presence(&self.status, self.custom_status.as_ref(), now_ms())
+    }
+
     /// Learns a relationship object: a friend, or someone who no longer is one.
     fn relationship(&mut self, relationship: &Value) {
         if relationship["user"].is_object() {
@@ -1677,9 +1814,11 @@ impl Tracker {
             return;
         };
         self.friends.retain(|friend| friend != id);
+        self.blocked.retain(|blocked| blocked != id);
         self.requests.remove(id);
         match kind {
             FRIEND => self.friends.push(id.to_owned()),
+            BLOCKED => self.blocked.push(id.to_owned()),
             INCOMING_REQUEST | OUTGOING_REQUEST => {
                 let spam = relationship["is_spam_request"].as_bool().unwrap_or(false);
                 let since = relationship["since"]
@@ -1871,6 +2010,12 @@ impl Tracker {
             servers,
             conversations: self.conversations(&names),
             friends: self.friends.clone(),
+            blocked: self.blocked.clone(),
+            presence: self.status.clone(),
+            custom_status: self
+                .custom_status
+                .clone()
+                .filter(|custom| !custom.expired(now_ms())),
             friend_requests: self.friend_requests(&names),
             voice,
             listed: self
@@ -2134,6 +2279,40 @@ mod tests {
     }
 
     #[test]
+    fn shows_the_status_the_settings_hold() {
+        let away = CustomStatus {
+            text: "Fixing the bridge".into(),
+            emoji_name: Some("🔧".into()),
+            ..Default::default()
+        };
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "user_settings_proto": settings::write_custom(Some(&away)),
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        assert_eq!(tracker.snapshot().custom_status, Some(away));
+        assert_eq!(tracker.snapshot().presence, "online");
+        assert_eq!(
+            tracker.own_presence()["activities"][0]["state"],
+            "Fixing the bridge"
+        );
+
+        // Settings of another type say nothing of it; clearing it does.
+        let cleared = settings::write_custom(None);
+        assert!(!tracker.apply(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 2, "proto": cleared}, "partial": true}),
+        ));
+        assert!(tracker.snapshot().custom_status.is_some());
+        assert!(tracker.apply(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": cleared}, "partial": true}),
+        ));
+        assert_eq!(tracker.snapshot().custom_status, None);
+        assert_eq!(tracker.own_presence()["activities"], json!([]));
+    }
+
+    #[test]
     fn tracks_friend_requests_both_ways() {
         let ready = json!({
             "user": {"id": "1", "username": "me"},
@@ -2175,6 +2354,16 @@ mod tests {
         tracker.apply("RELATIONSHIP_UPDATE", &json!({"id": "5", "nickname": "x"}));
         assert_eq!(listed(&tracker), [("spam".to_owned(), true, true)]);
         assert_eq!(tracker.snapshot().friends, ["2", "3"]);
+
+        // Blocking Ann ends the friendship, and her messages stop notifying.
+        tracker.apply("RELATIONSHIP_ADD", &json!({"id": "2", "type": 2}));
+        assert_eq!(tracker.snapshot().friends, ["3"]);
+        assert_eq!(tracker.snapshot().blocked, ["2"]);
+        let from =
+            |author: &str| json!({"channel_id": "9", "author": {"id": author}, "content": "hi"});
+        assert!(!tracker.notifies(&from("2")));
+        tracker.apply("RELATIONSHIP_REMOVE", &json!({"id": "2", "type": 2}));
+        assert!(tracker.snapshot().blocked.is_empty());
     }
 
     #[test]

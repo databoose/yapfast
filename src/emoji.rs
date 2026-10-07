@@ -11,7 +11,10 @@ use slint::{
     ModelRc, SharedString, VecModel,
     fontique_011::{fontique, shared_collection},
 };
+use talk_core::chat::EmojiSet;
 use talk_ui::{EmojiCell, EmojiRow};
+
+use crate::custom_emoji;
 
 /// The family name Talk gives the bitmap emoji font it registers.
 const REGISTERED: &str = "Talk Color Emoji";
@@ -39,28 +42,62 @@ const COLUMNS: usize = 8;
 /// 15.0; newer emoji would show as empty boxes.
 const NEWEST: emojis::UnicodeVersion = emojis::UnicodeVersion::new(15, 0);
 
-/// An emoji and its name, such as "Thumbs up".
-pub fn cell(glyph: &str) -> EmojiCell {
-    let name = emojis::get(glyph).map_or(glyph, emojis::Emoji::name);
+/// An emoji and its name, such as "Thumbs up", by the reaction it adds: the
+/// emoji itself, or a Discord custom emoji's `name:id`, which shows its glyph
+/// once it has one, and its name until then.
+pub fn cell(key: &str) -> EmojiCell {
+    if let Some((name, id)) = key.split_once(':')
+        && !name.is_empty()
+        && !id.is_empty()
+        && id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        let name = format!(":{name}:");
+        return EmojiCell {
+            glyph: custom_emoji::glyph(id)
+                .map_or_else(|| name.clone(), String::from)
+                .into(),
+            name: name.into(),
+            key: key.into(),
+        };
+    }
+    let name = emojis::get(key).map_or(key, emojis::Emoji::name);
     let mut chars = name.chars();
     EmojiCell {
-        glyph: glyph.into(),
+        glyph: key.into(),
         name: chars
             .next()
             .map(|first| first.to_uppercase().chain(chars).collect::<String>())
             .unwrap_or_default()
             .into(),
+        key: key.into(),
     }
 }
 
-/// The picker's rows: with no query, frequently used emoji and then every
-/// category under its heading; otherwise the emoji whose name or shortcode
-/// contains the query.
-pub fn rows(query: &str, frequent: &[String]) -> Vec<EmojiRow> {
+/// A custom emoji's reaction key, Discord's `name:id`.
+fn custom_key(emoji: &talk_core::chat::CustomEmoji) -> String {
+    format!("{}:{}", emoji.text.trim_matches(':'), emoji.id)
+}
+
+/// The picker's rows: with no query, frequently used emoji, the custom emoji of
+/// each server in `custom`, and then every category under its heading; otherwise
+/// the emoji whose name or shortcode contains the query.
+pub fn rows(query: &str, frequent: &[String], custom: &[EmojiSet]) -> Vec<EmojiRow> {
     let query = query.trim().trim_matches(':').to_lowercase();
     let available = || emojis::iter().filter(|emoji| emoji.unicode_version() <= NEWEST);
+    let custom_keys: Vec<(String, Vec<String>)> = custom
+        .iter()
+        .map(|set| {
+            let keys = set
+                .emoji
+                .iter()
+                .filter(|emoji| query.is_empty() || emoji.text.to_lowercase().contains(&query))
+                .map(custom_key)
+                .collect();
+            (set.server.to_uppercase(), keys)
+        })
+        .collect();
     let mut rows = Vec::new();
-    let mut section = |heading: &str, glyphs: Vec<&str>| {
+    let mut section = |heading: &str, glyphs: Vec<String>| {
         if glyphs.is_empty() {
             return;
         }
@@ -82,20 +119,25 @@ pub fn rows(query: &str, frequent: &[String]) -> Vec<EmojiRow> {
     if !query.is_empty() {
         section(
             "",
-            available()
-                .filter(|emoji| {
-                    emoji.name().contains(&query)
-                        || emoji.shortcodes().any(|code| code.contains(&query))
-                })
-                .map(emojis::Emoji::as_str)
+            custom_keys
+                .iter()
+                .flat_map(|(_, keys)| keys.iter().cloned())
+                .chain(
+                    available()
+                        .filter(|emoji| {
+                            emoji.name().contains(&query)
+                                || emoji.shortcodes().any(|code| code.contains(&query))
+                        })
+                        .map(|emoji| emoji.as_str().to_owned()),
+                )
                 .collect(),
         );
         return rows;
     }
-    section(
-        "FREQUENTLY USED",
-        frequent.iter().map(String::as_str).collect(),
-    );
+    section("FREQUENTLY USED", frequent.to_vec());
+    for (server, keys) in &custom_keys {
+        section(server, keys.clone());
+    }
     for group in emojis::Group::iter() {
         let heading = match group {
             emojis::Group::SmileysAndEmotion => "SMILEYS & EMOTION",
@@ -113,7 +155,7 @@ pub fn rows(query: &str, frequent: &[String]) -> Vec<EmojiRow> {
             group
                 .emojis()
                 .filter(|emoji| emoji.unicode_version() <= NEWEST)
-                .map(emojis::Emoji::as_str)
+                .map(|emoji| emoji.as_str().to_owned())
                 .collect(),
         );
     }
@@ -240,17 +282,36 @@ mod tests {
 
     #[test]
     fn the_picker_lists_categories_or_matches_and_names_emoji() {
-        let all = rows("", &["🔥".into()]);
+        let all = rows("", &["🔥".into()], &[]);
         assert_eq!(all[0].heading, "FREQUENTLY USED");
         assert_eq!(all[1].cells.row_count(), 1);
         assert_eq!(all[2].heading, "SMILEYS & EMOTION");
         assert!(all.iter().all(|row| row.cells.row_count() <= COLUMNS));
-        let found = rows(":pizza", &[]);
+        let found = rows(":pizza", &[], &[]);
         assert_eq!(found.len(), 1);
         assert!(found[0].heading.is_empty());
         assert_eq!(found[0].cells.row_data(0).unwrap().glyph, "🍕");
-        assert!(rows("no such emoji", &[]).is_empty());
+        assert!(rows("no such emoji", &[], &[]).is_empty());
         assert_eq!(cell("👍").name, "Thumbs up");
+
+        // A server's custom emoji follow those used often, and match by name.
+        let custom = [EmojiSet {
+            server: "Games".into(),
+            emoji: vec![talk_core::chat::CustomEmoji {
+                text: ":pog:".into(),
+                id: "5".into(),
+                animated: false,
+                picture: String::new(),
+            }],
+        }];
+        let all = rows("", &[], &custom);
+        assert_eq!(all[0].heading, "GAMES");
+        let pog = all[1].cells.row_data(0).unwrap();
+        assert_eq!((pog.glyph.as_str(), pog.key.as_str()), (":pog:", "pog:5"));
+        assert_eq!(
+            rows("po", &[], &custom)[0].cells.row_data(0).unwrap().key,
+            "pog:5"
+        );
     }
 
     #[test]

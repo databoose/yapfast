@@ -27,6 +27,7 @@ const CAPABILITIES: u64 = 1734653;
 const DISPATCH: u64 = 0;
 const HEARTBEAT: u64 = 1;
 const IDENTIFY: u64 = 2;
+const PRESENCE_UPDATE: u64 = 3;
 const VOICE_STATE_UPDATE: u64 = 4;
 const RECONNECT: u64 = 7;
 const REQUEST_GUILD_MEMBERS: u64 = 8;
@@ -81,7 +82,8 @@ pub struct Gateway {
 
 impl Gateway {
     /// Connect and identify, returning the gateway and the READY payload.
-    pub async fn connect(token: &str) -> Result<(Self, Value)> {
+    /// Connects and identifies with `presence`; see [`crate::settings::presence`].
+    pub async fn connect(token: &str, presence: Value) -> Result<(Self, Value)> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let url = match client::test_server() {
             Some(server) => {
@@ -130,7 +132,7 @@ impl Gateway {
                     "token": token,
                     "capabilities": CAPABILITIES,
                     "properties": client::properties(),
-                    "presence": {"status": "online", "since": 0, "activities": [], "afk": false},
+                    "presence": presence,
                     "compress": false,
                     "client_state": {"guild_versions": {}},
                 }),
@@ -151,6 +153,11 @@ impl Gateway {
             .send(Message::text(payload))
             .await
             .context("could not send to Discord's gateway")
+    }
+
+    /// Tells Discord this session's status and activities.
+    pub async fn update_presence(&mut self, presence: Value) -> Result<()> {
+        self.send(PRESENCE_UPDATE, presence).await
     }
 
     /// Join a voice channel, or leave voice with `channel_id` set to `None`.

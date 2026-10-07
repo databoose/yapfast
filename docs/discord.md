@@ -23,9 +23,10 @@ Discord 50 messages at a time, and new messages, edits, deletions and
 reactions arrive live. Opening a channel subscribes to its server, as the web
 client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes, reacts and sends files
-through Discord's cloud uploads. Mentions, custom emoji and timestamps show as
-text, every attachment shows, images with previews scaled by Discord's media
-proxy, and channels the account can't send in are read-only. An author's
+through Discord's cloud uploads. Mentions and timestamps show as text, custom
+emoji and stickers as pictures, every attachment shows, images with previews
+scaled by Discord's media proxy, and channels the account can't send in are
+read-only. An author's
 name takes their highest coloured role's colour, once their roles are known:
 live messages carry them, and for history Talk asks Discord for the authors'
 member profiles.
@@ -80,6 +81,12 @@ The pen in the DM list's header starts a DM: it lists the account's friends
 (from READY's relationships), then anyone else Talk knows by name, and
 opening one posts to `/users/@me/channels`, which finds the DM with them or
 starts one. Talk opens it once its CHANNEL_CREATE lists it.
+
+The person beside it, in the same header, adds a friend by username: `POST
+/users/@me/relationships` with `{"username": ..., "discriminator": null}` and
+`{"location":"Add Friend"}` as the context. Discord's codes 80004 (nobody by
+that name), 80000 (they take no requests from strangers) and 80007 (already
+friends) get their own words.
 
 Friend requests head the DM list under "Friend requests", from READY's
 relationships (type 3 sent to this account, 4 sent by it) and kept current by
@@ -424,7 +431,8 @@ Talk shows Discord live from its own Discord connection. Every server, channel
 and DM is visible without copying anything into Matrix.
 
 - Discord servers appear in the server rail with a Discord badge, and Discord
-  DMs appear in the DM list with the same badge.
+  DMs appear in the DM list with the same badge. A build without Matrix leaves
+  the badge off, since everything in it is Discord's.
 - Server icons and avatars come from Discord's CDN, which needs no login.
   Talk asks for each one once it shows: in the rail, beside people in a
   voice channel of the open server, in the call, or beside a message. A
@@ -449,9 +457,41 @@ and DM is visible without copying anything into Matrix.
   beside the text otherwise. A video's picture opens the video in the
   browser; other pictures open in the image viewer. A linked image or GIF
   shows with the message's images, without its address when that's all the
-  message says. GIFs show their first frame. Pictures come through Discord's
+  message says. Pictures come through Discord's
   media proxy (`images-ext-*.discordapp.net`), so Talk never contacts the
   linked site, and embeds of a message marked to hide them don't show.
+- Animated GIFs, APNGs and animated WebPs play, in messages, as stickers and
+  in the image viewer. The media proxy keeps GIFs as GIFs (Talk asks it for
+  WebP only for still pictures). An animation's frames are decoded once, up to
+  24 MB of them, dropping every other frame until the rest fit; frames shorter
+  than 20 ms play at 100 ms, as browsers do. Tenor and Giphy links arrive as
+  MP4 "gifv" and show their still picture.
+- Spoilers, `||like this||`, show under an opaque cover that a click lifts.
+  The cover is drawn by Talk's patched Slint text renderer over a link to
+  `talk:spoiler/{item}/{n}`; see [building](building.md). A spoiler in a reply
+  or a notification reads "(spoiler)". Attachments named `SPOILER_...` or
+  flagged as spoilers, and pictures linked inside a spoiler, show blurred with
+  a "Spoiler" label until clicked. Revealing lasts while Talk runs.
+- Custom emoji show as pictures: in messages, as reactions and in the emoji
+  picker, which lists them by server after the frequently used ones, the open
+  server's first. Talk draws them as text: each emoji whose picture arrived
+  gets a code point in the Supplementary Private Use Area B, and each batch
+  of them a colour bitmap (CBDT) font made on the fly, which text falls back
+  to after Satoshi, so they wrap and select like letters. A message of only
+  emoji, up to 30, shows them large, as Discord does. Without Nitro, the
+  picker offers only the open server's emoji, none animated, and sending
+  turns `:name:` into Discord's `<:name:id>` only for those. Animated emoji
+  show their first frame.
+- Stickers show as pictures at 160px, PNG and APNG stickers from the CDN and
+  GIF ones from the media proxy. Lottie stickers, which are vector
+  animations, show their name.
+- Messages from people this account blocked show collapsed as "Blocked
+  message", which "Show it" opens, and they don't notify or show typing.
+  Talk learns the blocked from READY's relationships (type 2) and keeps them
+  current from RELATIONSHIP_ADD and RELATIONSHIP_REMOVE.
+- A reply's quoted line jumps to the original: Talk loads earlier history,
+  up to 20 pages, until the original is there, then brings it into view and
+  highlights it for a moment. When it's further back than that, Talk says so.
 - Desktop notifications follow the person's Discord settings: each channel's,
   category's or server's level (every message, mentions only or nothing),
   falling back to the server's default, with mutes leaving only mentions. DMs
@@ -475,10 +515,43 @@ and DM is visible without copying anything into Matrix.
   A setting turns this off.
 - Talk sets the online, idle and do-not-disturb status on Discord. Closing Talk
   takes the person offline, like closing the Discord app.
+- The custom status shows under the account's name, bottom left. Clicking the
+  name, or "Set a custom status" in My account, sets it: an emoji from the
+  picker, words, and when it clears (never, 30 minutes, an hour, four hours,
+  or at midnight). Discord keeps it in the account's settings, a protobuf
+  (`PreloadedUserSettings`, field 11), which arrive in READY as
+  `user_settings_proto` and change in USER_SETTINGS_PROTO_UPDATE. Talk reads
+  only the status from it, and changes it with `PATCH
+  /users/@me/settings-proto/1`, whose body sets nothing else. Each session
+  shows the status to others itself, so Talk sends it with opcode 3 once
+  connected, whenever the settings change, and clears it when it ends. A
+  custom emoji in a status needs Nitro.
 
-Later: threads, forum channels, stickers, polls, soundboard, activities, friend
-requests, joining servers by invite, and server administration. The browser
-covers these until then.
+Later, in rough order. The browser covers these until then.
+
+- Threads and forum channels.
+- Search and pinned messages.
+- Forwarding Discord messages, which Discord marks as forwarded, rather than
+  sending their text again.
+- Server folders in the rail.
+- Joining servers by invite, and leaving them.
+- Discord's push-to-talk, and its voice settings.
+- Audio on Windows.
+- Camera video and the soundboard.
+- Polls, activities, and server administration.
+- [Mirroring into Matrix](#mirroring-into-matrix).
+- Linking by QR code, in place of the browser token.
+- A friends page: everyone, online, pending and blocked.
+- Blocking and unblocking from a profile.
+- Marking uploads as spoilers.
+- Tenor and Giphy "gifv" links, which are MP4s and need a video demuxer to
+  play; they show their still picture.
+- Animated custom emoji, which show their first frame.
+- Copying custom emoji: copied text has their private code points, not
+  `:name:`.
+- A custom status's end while Talk is closed, or set from a device whose
+  clock is off: Talk trusts the time Discord gives.
+- Opening embed pictures from a card in the viewer with their neighbours.
 
 ## Mirroring into Matrix
 

@@ -637,6 +637,8 @@ impl Matrix {
             | Command::AnswerRequest { .. }
             | Command::DeclineCall { .. }
             | Command::Friend { .. }
+            | Command::AddFriend { .. }
+            | Command::SetCustomStatus(_)
             | Command::Profile { .. }
             | Command::Pictures(_) => {}
         }
@@ -1500,6 +1502,7 @@ async fn publish_timeline(
                             dimensions,
                             preview_failed: matches!(cached, Some(None)),
                             placement: Placement::Message,
+                            spoiler: false,
                             preview: cached.flatten(),
                         }];
                     }
@@ -1517,6 +1520,7 @@ async fn publish_timeline(
                             preview: None,
                             preview_failed: false,
                             placement: Placement::Message,
+                            spoiler: false,
                         }];
                     }
                     MessageType::Video(content) => {
@@ -1533,6 +1537,7 @@ async fn publish_timeline(
                             preview: None,
                             preview_failed: false,
                             placement: Placement::Message,
+                            spoiler: false,
                         }];
                     }
                     MessageType::Audio(content) => {
@@ -1549,6 +1554,7 @@ async fn publish_timeline(
                             preview: None,
                             preview_failed: false,
                             placement: Placement::Message,
+                            spoiler: false,
                         }];
                     }
                     _ => message.body = text.body().to_owned(),
@@ -1564,14 +1570,17 @@ async fn publish_timeline(
             _ => continue,
         }
         if let Some(reply) = &content.in_reply_to {
+            let item = Some(format!("e:{}", reply.event_id));
             message.reply = Some(match &reply.event {
                 TimelineDetails::Ready(embedded) => Reply {
                     author: display_name(&embedded.sender, &embedded.sender_profile),
                     body: summary(&embedded.content),
+                    item,
                 },
                 TimelineDetails::Error(_) => Reply {
                     author: String::new(),
                     body: "The original message could not be loaded.".into(),
+                    item,
                 },
                 _ => {
                     if open.requested.insert(reply.event_id.to_string()) {
@@ -1585,6 +1594,7 @@ async fn publish_timeline(
                     Reply {
                         author: String::new(),
                         body: "Loading the original message...".into(),
+                        item,
                     }
                 }
             });

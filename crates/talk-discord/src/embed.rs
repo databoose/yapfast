@@ -80,6 +80,7 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
         preview_url: Some(preview_url),
         view_url: scaled_url(value, VIEW_WIDTH, VIEW_HEIGHT),
         shown,
+        spoiler: false,
     })
 }
 

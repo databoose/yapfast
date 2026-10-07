@@ -33,6 +33,8 @@ The core of it is `talk_selection.rs`. The other changes are marked `Talk:` in:
 - `item_rendering.rs`
 - `textlayout/sharedparley.rs`
 - `textlayout/sharedparley/shaping.rs`
+- `textlayout/sharedparley/draw.rs`, which draws mention pills under their
+  text and opaque covers over hidden Discord spoilers, links to `talk:spoiler/`
 
 Reapply them to the matching release when upgrading Slint. Styled paragraphs now
 have byte ranges as if joined by newlines, where upstream gives them all `0..0`.

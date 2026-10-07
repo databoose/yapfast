@@ -59,6 +59,18 @@ pub struct ChatRoom {
 /// The most files one message carries, as Discord allows.
 pub const MAX_FILES: usize = 10;
 
+/// A Discord custom status: its text and emoji, and when it clears itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomStatus {
+    pub text: String,
+    /// A Unicode emoji, or a custom emoji's name.
+    pub emoji: Option<String>,
+    /// A custom emoji's id.
+    pub emoji_id: Option<String>,
+    /// Unix milliseconds when it clears itself; none when it stays.
+    pub expires_at_ms: Option<u64>,
+}
+
 /// A Discord friend request waiting for an answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FriendRequest {
@@ -276,6 +288,64 @@ pub enum Delivery {
 pub struct Reply {
     pub author: String,
     pub body: String,
+    /// The original message's item, to jump to it; none when it's gone.
+    pub item: Option<String>,
+}
+
+/// A Discord custom emoji, which shows as `text` until its picture arrives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomEmoji {
+    /// Its name between colons, such as `:pog:`, as message bodies and
+    /// reaction keys show it.
+    pub text: String,
+    pub id: String,
+    pub animated: bool,
+    /// The address of its picture; see [`Command::Pictures`].
+    pub picture: String,
+}
+
+/// The size custom emoji pictures are downloaded at: enough for text's emoji on
+/// a doubled display, and for a message of nothing but emoji.
+pub const EMOJI_PICTURE_SIZE: u32 = 64;
+
+/// A server's custom emoji that this account may use where it's writing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmojiSet {
+    pub server: String,
+    pub emoji: Vec<CustomEmoji>,
+}
+
+/// `text` with each `:name:` of a usable custom emoji, outside code, in Discord's
+/// form, `<:name:id>`. The first emoji of a name wins.
+pub fn wire_emoji(text: &str, usable: &[CustomEmoji]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut code = false;
+    let mut rest = text;
+    while let Some(next) = rest.chars().next() {
+        if next == '`' {
+            code = !code;
+        }
+        if !code
+            && next == ':'
+            && !out.ends_with('<')
+            && !out.ends_with("<a")
+            && let Some(end) = rest[1..].find(':')
+            && let name = &rest[1..1 + end]
+            && name.len() >= 2
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && let Some(emoji) = usable
+                .iter()
+                .find(|emoji| emoji.text[1..emoji.text.len() - 1] == *name)
+        {
+            let animated = if emoji.animated { "a" } else { "" };
+            out.push_str(&format!("<{animated}:{name}:{}>", emoji.id));
+            rest = &rest[end + 2..];
+            continue;
+        }
+        out.push(next);
+        rest = &rest[next.len_utf8()..];
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -286,12 +356,26 @@ pub struct Reaction {
 }
 
 /// A decoded, size-limited preview. Talk never hands undecoded media to the UI.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
     pub height: u32,
+    /// The picture, or an animation's first frame.
     pub rgba: Vec<u8>,
+    /// An animation's frames, the first being `rgba` again; empty for a still.
+    pub frames: Vec<Frame>,
 }
+
+/// A frame of an animation, and how long it shows.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub rgba: Vec<u8>,
+    pub delay_ms: u32,
+}
+
+/// The most memory an animation's frames take; longer ones keep fewer frames,
+/// each showing longer.
+const ANIMATION_BYTES: usize = 24 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attachment {
@@ -304,6 +388,8 @@ pub struct Attachment {
     /// The preview could not be downloaded or decoded; the file can still be saved.
     pub preview_failed: bool,
     pub placement: Placement,
+    /// Marked as a spoiler: its picture is covered until clicked.
+    pub spoiler: bool,
 }
 
 /// Where an attachment's picture shows.
@@ -316,6 +402,8 @@ pub enum Placement {
     Embed(usize),
     /// Small, beside the text of the embed at this index.
     Thumbnail(usize),
+    /// On its own, without a frame: a Discord sticker.
+    Sticker,
 }
 
 /// A Discord link preview or bot card. Empty texts are left out.
@@ -369,6 +457,8 @@ pub struct ChatMessage {
     pub own: bool,
     pub edited: bool,
     pub deleted: bool,
+    /// From someone this account blocked: it shows collapsed until asked for.
+    pub blocked: bool,
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,
@@ -378,6 +468,8 @@ pub struct ChatMessage {
     pub embeds: Vec<Embed>,
     /// Who and what the body mentions, which it links to.
     pub mentions: Vec<crate::mention::Mentioned>,
+    /// The Discord custom emoji its body and reactions show.
+    pub emoji: Vec<CustomEmoji>,
     pub can_reply: bool,
     pub can_edit: bool,
     pub can_delete: bool,
@@ -505,6 +597,14 @@ pub enum Command {
         user: String,
         add: bool,
     },
+    /// Send a friend request to whoever has this Discord username;
+    /// [`Event::FriendAdded`] follows.
+    AddFriend {
+        username: String,
+    },
+    /// Set the Discord custom status, or clear it with `None`;
+    /// [`Event::CustomStatusSet`] follows.
+    SetCustomStatus(Option<CustomStatus>),
     /// Fetch a Discord user's profile, as a member of a room's server or as
     /// the other person in a DM. It comes back as [`Event::Profile`].
     Profile {
@@ -555,6 +655,10 @@ pub enum Event {
     },
     /// The DM [`Command::StartDm`] asked for, by room id, or why it couldn't start.
     DmStarted(Result<String, String>),
+    /// Whether [`Command::AddFriend`]'s request went: to whom, or why not.
+    FriendAdded(Result<String, String>),
+    /// Whether [`Command::SetCustomStatus`] changed it, or why not.
+    CustomStatusSet(Result<(), String>),
     /// The roles and groups a message in a room may mention.
     MentionGroups {
         room: String,
@@ -657,6 +761,11 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
+    if let Some(format) = reader.format()
+        && let Some(animation) = decode_animation(data, format, width, height)
+    {
+        return Some(animation);
+    }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
@@ -673,6 +782,89 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
         width: picture.width(),
         height: picture.height(),
         rgba: picture.into_raw(),
+        frames: Vec::new(),
+    })
+}
+
+/// An animated GIF, PNG or WebP's frames, shrunk to fit `width` by `height`;
+/// none for a still picture. Past [`ANIMATION_BYTES`], every other frame is
+/// dropped and the rest show twice as long, as often as it takes.
+fn decode_animation(
+    data: &[u8],
+    format: image::ImageFormat,
+    width: u32,
+    height: u32,
+) -> Option<Picture> {
+    use image::{AnimationDecoder, ImageDecoder, ImageFormat, codecs};
+    const MAX_SIDE: u32 = 8192;
+    let cursor = || std::io::Cursor::new(data);
+    let fits = |(w, h): (u32, u32)| w <= MAX_SIDE && h <= MAX_SIDE;
+    let frames = match format {
+        ImageFormat::Gif => {
+            let decoder = codecs::gif::GifDecoder::new(cursor()).ok()?;
+            fits(decoder.dimensions()).then_some(())?;
+            decoder.into_frames()
+        }
+        ImageFormat::Png => {
+            let decoder = codecs::png::PngDecoder::new(cursor()).ok()?;
+            (fits(decoder.dimensions()) && decoder.is_apng().ok()?).then_some(())?;
+            decoder.apng().ok()?.into_frames()
+        }
+        ImageFormat::WebP => {
+            let decoder = codecs::webp::WebPDecoder::new(cursor()).ok()?;
+            (fits(decoder.dimensions()) && decoder.has_animation()).then_some(())?;
+            decoder.into_frames()
+        }
+        _ => return None,
+    };
+    let mut kept: Vec<Frame> = Vec::new();
+    let (mut size, mut step, mut skipped) = ((0, 0), 1, 0);
+    for frame in frames {
+        let frame = frame.ok()?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        // Browsers show frames meant for under 20 ms for 100 ms.
+        let delay = numerator / denominator.max(1);
+        let delay = if delay < 20 { 100 } else { delay };
+        let buffer = frame.into_buffer();
+        if skipped % step != 0 {
+            if let Some(last) = kept.last_mut() {
+                last.delay_ms += delay;
+            }
+            skipped += 1;
+            continue;
+        }
+        skipped += 1;
+        let buffer = if buffer.width() > width || buffer.height() > height {
+            image::imageops::thumbnail(&buffer, width, height)
+        } else {
+            buffer
+        };
+        size = buffer.dimensions();
+        kept.push(Frame {
+            rgba: buffer.into_raw(),
+            delay_ms: delay,
+        });
+        if kept.iter().map(|frame| frame.rgba.len()).sum::<usize>() > ANIMATION_BYTES {
+            // An odd frame out takes the next one's time.
+            skipped = kept.len() % 2;
+            kept = kept
+                .chunks_mut(2)
+                .map(|pair| Frame {
+                    rgba: std::mem::take(&mut pair[0].rgba),
+                    delay_ms: pair.iter().map(|frame| frame.delay_ms).sum(),
+                })
+                .collect();
+            step *= 2;
+        }
+    }
+    if kept.len() < 2 {
+        return None;
+    }
+    Some(Picture {
+        width: size.0,
+        height: size.1,
+        rgba: kept[0].rgba.clone(),
+        frames: kept,
     })
 }
 
@@ -870,6 +1062,8 @@ pub async fn run(
                     | Command::AnswerRequest { .. }
                     | Command::DeclineCall { .. }
                     | Command::Friend { .. }
+                    | Command::AddFriend { .. }
+                    | Command::SetCustomStatus(_)
                     | Command::Profile { .. }
                     | Command::Pictures(_) => {}
                     #[cfg(feature = "matrix")]
@@ -910,6 +1104,71 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An animated GIF of `count` frames of one colour each, 50 ms apiece.
+    fn gif(side: u32, count: u8) -> Vec<u8> {
+        let mut data = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut data);
+            for index in 0..count {
+                let shade = image::Rgba([index.wrapping_mul(20), 0, 0, 255]);
+                let frame = image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(side, side, shade),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(50, 1),
+                );
+                encoder.encode_frame(frame).unwrap();
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn decodes_animations_within_their_memory() {
+        let picture = decode_picture(&gif(8, 3), 360, 270).unwrap();
+        assert_eq!(picture.frames.len(), 3);
+        assert_eq!(picture.rgba, picture.frames[0].rgba);
+        assert_eq!(picture.frames[2].rgba[0], 40);
+        assert!(picture.frames.iter().all(|frame| frame.delay_ms == 50));
+        // 1.4 MB frames: 24 MB holds 17, so every other frame of 30 goes.
+        let long = decode_picture(&gif(600, 30), 1000, 1000).unwrap();
+        assert_eq!(long.frames.len(), 15);
+        assert!(long.frames.iter().all(|frame| frame.delay_ms == 100));
+        assert_eq!(
+            long.frames.iter().map(|frame| frame.delay_ms).sum::<u32>(),
+            1500
+        );
+        // A still picture has no frames.
+        assert!(
+            decode_picture(&gif(8, 1), 360, 270)
+                .unwrap()
+                .frames
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn sends_custom_emoji_in_discords_form() {
+        let emoji = |name: &str, id: &str, animated| CustomEmoji {
+            text: format!(":{name}:"),
+            id: id.into(),
+            animated,
+            picture: String::new(),
+        };
+        let usable = [
+            emoji("pog", "5", false),
+            emoji("party", "6", true),
+            emoji("pog", "7", false),
+        ];
+        assert_eq!(
+            wire_emoji(
+                "gg :pog: :party::pog: `:pog:` <:pog:5> :nope: 10:30:45",
+                &usable
+            ),
+            "gg <:pog:5> <a:party:6><:pog:5> `:pog:` <:pog:5> :nope: 10:30:45"
+        );
+    }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut data = Vec::new();

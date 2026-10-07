@@ -11,6 +11,7 @@ use talk_discord::{
     ready::PRIVATE,
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
+    settings::CustomStatus,
     stream,
     stream_connection::{Frame, Link, SEND_CODEC, Sound, StreamReceiver, StreamSender},
     token,
@@ -111,18 +112,43 @@ fn stream_codec(server: &str, codec: &str) {
 
 /// Posts `body` to one of the fake's controls.
 fn post_control(server: &str, path: &str, body: &str) {
+    control(server, "POST", path, body);
+}
+
+/// Asks one of the fake's controls, and returns its answer's body.
+fn control(server: &str, method: &str, path: &str, body: &str) -> String {
     use std::io::{Read, Write};
     let address = server.trim_start_matches("http://");
     let mut connection = std::net::TcpStream::connect(address).unwrap();
     write!(
         connection,
-        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();
     let mut answer = String::new();
     connection.read_to_string(&mut answer).unwrap();
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    answer
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default()
+}
+
+/// The presence Alice's session last sent the fake.
+async fn presence_where(server: &str, check: impl Fn(&serde_json::Value) -> bool) {
+    timeout(WAIT, async {
+        loop {
+            let presence = serde_json::from_str(&control(server, "GET", "/_control/presence", ""))
+                .unwrap_or_default();
+            if check(&presence) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the presence");
 }
 
 /// The first snapshot that passes `check`.
@@ -991,4 +1017,66 @@ async fn talks_to_the_fake_server() {
         .clone();
     discord.remove_friend_request(&erin).await.unwrap();
     snapshot_where(&discord, |snapshot| snapshot.friend_requests.is_empty()).await;
+
+    // Friend requests by username: to someone unknown, to Frank, who takes
+    // none, and to Erin.
+    let refused = |name: &'static str| {
+        let discord = &discord;
+        async move {
+            discord
+                .add_friend_by_username(name)
+                .await
+                .expect_err("refused")
+                .to_string()
+        }
+    };
+    assert_eq!(
+        refused("nobody").await,
+        "Discord has nobody by that username."
+    );
+    assert_eq!(
+        refused("frank_deals").await,
+        "They don't take friend requests from people they don't know."
+    );
+    assert_eq!(refused("bob").await, "You're already friends.");
+    discord.add_friend_by_username("erin").await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        requested(snapshot) == [("Erin".to_owned(), false)]
+    })
+    .await;
+
+    // Alice's custom status from her settings shows from this session, and
+    // changing it changes what the session shows.
+    let custom = snapshot_where(&discord, |snapshot| snapshot.custom_status.is_some())
+        .await
+        .custom_status
+        .unwrap();
+    assert_eq!(
+        (custom.text.as_str(), custom.emoji_name.as_deref()),
+        ("Testing Talk", Some("🧪"))
+    );
+    presence_where(server, |presence| {
+        presence["activities"][0]["state"] == "Testing Talk"
+    })
+    .await;
+    let away = CustomStatus {
+        text: "Fixing the bridge".into(),
+        emoji_name: Some("🔧".into()),
+        ..Default::default()
+    };
+    discord.set_custom_status(Some(away.clone())).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot.custom_status.as_ref() == Some(&away)
+    })
+    .await;
+    presence_where(server, |presence| {
+        presence["activities"][0]["emoji"]["name"] == "🔧"
+    })
+    .await;
+    discord.set_custom_status(None).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.custom_status.is_none()).await;
+    presence_where(server, |presence| {
+        presence["activities"] == serde_json::json!([])
+    })
+    .await;
 }
