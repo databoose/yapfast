@@ -151,8 +151,9 @@ Scope for the beta:
 - DM and group DM calls, both incoming with ringing and outgoing.
 - One connection at a time across Talk and Discord. Joining Discord voice asks
   to leave a Talk call, and the other way round, as in PRODUCT.md.
-- The same devices, push-to-talk, voice activation, noise suppression, echo
-  cancellation and voice leveling as Talk calls.
+- The same devices, push-to-talk, voice activation, echo cancellation and
+  voice leveling as Talk calls. Noise suppression is RNNoise rather than
+  WebRTC's, as described under Microphone below.
 
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
@@ -170,13 +171,35 @@ device module can't be reused outside a LiveKit room: it hands captured audio
 straight to WebRTC and only plays remote WebRTC streams. Its audio processing
 module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
 Discord voice gets a small path of its own: `cpal` for the microphone and
-speakers at 48 kHz, the processing module for echo cancellation, noise
-suppression and gain, then songbird for Opus and DAVE. Feed the speaker mix to
+speakers at 48 kHz, the processing module for echo cancellation and gain
+(noise suppression became RNNoise; see [Microphone](#microphone)), then
+songbird for Opus and DAVE. Feed the speaker mix to
 the processing module's reverse stream so echo cancellation has its reference.
 
 Check one linking risk before building on this. songbird encodes with `opus2`,
 which builds its own libopus, while Talk's libwebrtc archive already contains
 libopus. Linking both into Talk may clash, particularly on Windows MSVC.
+
+### Microphone
+
+Discord's own client suppresses noise with Krisp, a neural network, and
+WebRTC's suppressor sounded different from it. So Talk's Discord microphone
+runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter;
+RNNoise, through `nnnoiseless` (BSD-3-Clause), which takes out the noise and
+gives each block a speech probability; WebRTC's gain control on what's left;
+then Talk's leveling. On a synthesized test with fan-like noise at -48 dBFS,
+pauses came out near -87 dBFS.
+
+The voice gate opens on a block louder than -42 dBFS, or one RNNoise takes
+for speech (at least 0.6) above -60 dBFS, and holds 400 ms. It keeps the last
+100 ms while shut and sends them when it opens, so a soft start such as an "h"
+isn't cut off; speech goes out that much later until the gate closes. It stays
+shut for the first 200 ms after the microphone opens, while RNNoise learns the
+noise. Opus stays at songbird's 128 kbps in its music mode.
+
+To hear the processing, run a recording through it: raw mono 16-bit 48 kHz in
+`TALK_AUDIO_IN`, with `TALK_AUDIO_OUT` and optionally `TALK_AUDIO_SENT`, then
+`cargo test -p talk-core processes_a_recording -- --ignored --nocapture`.
 
 ### Screen sharing
 

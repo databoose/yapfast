@@ -172,8 +172,9 @@ pub struct Microphone {
 }
 
 /// At most this much microphone audio waits to be sent; older audio is dropped
-/// so a stall never turns into lasting delay.
-const MICROPHONE_BACKLOG: usize = SAMPLE_RATE as usize / 10;
+/// so a stall never turns into lasting delay. It leaves room for the 100 ms
+/// Talk sends from just before its voice gate opens.
+const MICROPHONE_BACKLOG: usize = SAMPLE_RATE as usize / 4;
 
 impl Microphone {
     pub fn push(&self, samples: &[f32]) {

@@ -1,10 +1,10 @@
 //! Discord voice's audio on this machine. LiveKit's device module only serves
 //! its own calls, so Discord voice opens the chosen microphone and speakers
-//! itself, through PulseAudio on Linux, and runs the microphone through
-//! WebRTC's echo cancellation, noise suppression and gain control, then Talk's
-//! leveling.
+//! itself, through PulseAudio on Linux. The microphone goes through WebRTC's
+//! echo cancellation, RNNoise's noise suppression, WebRTC's gain control and
+//! Talk's leveling, and a gate that RNNoise's speech detection opens.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -115,6 +115,64 @@ fn decibels(samples: &[i16]) -> f32 {
     10.0 * power.max(1e-10).log10()
 }
 
+/// The gate opens on a block louder than this, in RMS dBFS, after processing,
+const GATE_OPEN: f32 = -42.0;
+/// or on one RNNoise takes for speech, at least this likely, that's louder
+/// than `SPEECH_FLOOR`.
+const SPEECH: f32 = 0.6;
+const SPEECH_FLOOR: f32 = -60.0;
+/// It stays open this many 10 ms blocks after the last that would open it.
+const GATE_HOLD: u32 = 40;
+/// Blocks kept from before the gate opens and sent when it does: a word's
+/// quiet start, such as an "h", comes before it's loud or clear enough to open
+/// it. Speech goes out this much later while the gate stays open.
+const BEFORE_OPENING: usize = 10;
+/// RNNoise takes a few blocks to learn the noise, which passes meanwhile, so
+/// the gate stays shut for this many after the microphone opens.
+const WARM_UP: u32 = 20;
+
+/// Sends the microphone only while someone talks, starting a little before.
+#[derive(Default)]
+struct Gate {
+    hold: u32,
+    heard: u32,
+    before: VecDeque<Vec<f32>>,
+}
+
+impl Gate {
+    fn is_open(&self) -> bool {
+        self.hold > 0
+    }
+
+    /// Takes the next 10 ms block, with its level and RNNoise's speech
+    /// probability, and returns the blocks to send: none while closed, and on
+    /// opening, those kept from before too.
+    fn block(&mut self, samples: Vec<f32>, level: f32, speech: f32) -> Vec<Vec<f32>> {
+        let was_open = self.is_open();
+        self.heard = self.heard.saturating_add(1);
+        let warm = self.heard > WARM_UP;
+        if warm && (level > GATE_OPEN || (speech >= SPEECH && level > SPEECH_FLOOR)) {
+            self.hold = GATE_HOLD;
+        } else {
+            self.hold = self.hold.saturating_sub(1);
+        }
+        if !self.is_open() {
+            if self.before.len() == BEFORE_OPENING {
+                self.before.pop_front();
+            }
+            self.before.push_back(samples);
+            return Vec::new();
+        }
+        let mut sent: Vec<Vec<f32>> = if was_open {
+            Vec::new()
+        } else {
+            self.before.drain(..).collect()
+        };
+        sent.push(samples);
+        sent
+    }
+}
+
 /// The playback side's copy of what it played, for echo cancellation.
 pub type Reverse = Arc<Mutex<Receiver<Vec<i16>>>>;
 
@@ -180,7 +238,7 @@ mod linux {
             mpsc::{self, RecvTimeoutError, SyncSender},
         },
         thread,
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use anyhow::{Context, Result, anyhow};
@@ -193,19 +251,16 @@ mod linux {
     use livekit::webrtc::native::apm::AudioProcessingModule;
     use talk_discord::voice::{CHANNELS, FRAME, Microphone, SAMPLE_RATE, Track};
 
-    use super::{Capture, Reverse, Speakers, decibels};
+    use super::{Capture, Gate, Reverse, Speakers, decibels};
     use crate::meter::pulse;
 
     /// Frames waiting for the speakers; more than this and new ones are dropped.
     const QUEUE: usize = 4;
     /// Roughly how late the microphone hears what the speakers played.
     const ECHO_DELAY_MS: i32 = 60;
-    /// The gate opens above this RMS level after processing, in dBFS.
-    const GATE_OPEN: f32 = -42.0;
-    /// It stays open this long after the last loud 10 ms.
-    const GATE_HOLD: Duration = Duration::from_millis(400);
-    /// Capture works in WebRTC's 10 ms blocks.
+    /// Capture works in WebRTC's 10 ms blocks, which are RNNoise's frames too.
     const BLOCK: usize = SAMPLE_RATE as usize / 100;
+    const _: () = assert!(BLOCK == nnnoiseless::DenoiseState::FRAME_SIZE);
 
     /// Opens the speakers and returns them with the queue that feeds them.
     /// Every played frame also goes to `reverse` for echo cancellation.
@@ -263,6 +318,70 @@ mod linux {
         Ok((Speakers { stop }, frames))
     }
 
+    /// The microphone's processing, block by block: WebRTC cancels echo and
+    /// filters out rumble, RNNoise takes out noise and hears speech, WebRTC
+    /// controls the gain of what's left, and Talk levels it. The gate decides
+    /// what's sent.
+    pub(super) struct Processing {
+        echo: AudioProcessingModule,
+        denoise: Box<nnnoiseless::DenoiseState<'static>>,
+        gain: AudioProcessingModule,
+        leveler: crate::leveling::Leveler,
+        pub(super) gate: Gate,
+        noisy: Vec<f32>,
+        clean: Vec<f32>,
+    }
+
+    impl Processing {
+        pub(super) fn new() -> Self {
+            let mut echo = AudioProcessingModule::new(true, false, true, false);
+            let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
+            Self {
+                echo,
+                denoise: nnnoiseless::DenoiseState::new(),
+                gain: AudioProcessingModule::new(false, true, false, false),
+                leveler: crate::leveling::Leveler::default(),
+                gate: Gate::default(),
+                noisy: vec![0.0; BLOCK],
+                clean: vec![0.0; BLOCK],
+            }
+        }
+
+        /// Notes what the speakers played, for echo cancellation.
+        pub(super) fn played(&mut self, frame: &mut [i16]) {
+            let _ =
+                self.echo
+                    .process_reverse_stream(frame, SAMPLE_RATE as i32, i32::from(CHANNELS));
+        }
+
+        /// Processes 10 ms of mono microphone in place, and returns the blocks
+        /// to send, as f32 in full scale.
+        pub(super) fn block(&mut self, block: &mut [i16]) -> Vec<Vec<f32>> {
+            let _ = self.echo.process_stream(block, SAMPLE_RATE as i32, 1);
+            for (value, sample) in self.noisy.iter_mut().zip(block.iter()) {
+                *value = f32::from(*sample);
+            }
+            let speech = self.denoise.process_frame(&mut self.clean, &self.noisy);
+            for (sample, value) in block.iter_mut().zip(&self.clean) {
+                *sample = value.clamp(-32768.0, 32767.0) as i16;
+            }
+            let _ = self.gain.process_stream(block, SAMPLE_RATE as i32, 1);
+            // The gate hears the voice before leveling, which could lift
+            // noise past it.
+            let level = decibels(block);
+            let mut samples: Vec<f32> = block.iter().map(|sample| f32::from(*sample)).collect();
+            self.leveler
+                .process(&mut samples, SAMPLE_RATE, crate::leveling::enabled());
+            for (sample, value) in block.iter_mut().zip(&samples) {
+                *sample = value.clamp(-32768.0, 32767.0) as i16;
+            }
+            for value in &mut samples {
+                *value /= 32768.0;
+            }
+            self.gate.block(samples, level, speech)
+        }
+    }
+
     /// Opens the microphone and sends its processed audio while someone talks:
     /// the track plays while the gate is open and pauses otherwise, so Discord
     /// shows speaking only during speech.
@@ -276,7 +395,8 @@ mod linux {
         let (opened, result) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let talking = Arc::new(AtomicBool::new(false));
-        let (stopped, gate, gated_track) = (stop.clone(), talking.clone(), track.clone());
+        let (stopped, gated_track) = (stop.clone(), track.clone());
+        let speaking = talking.clone();
         thread::Builder::new()
             .name("talk-discord-in".into())
             .spawn(move || {
@@ -290,63 +410,41 @@ mod linux {
                         return;
                     }
                 };
-                // The module isn't Send, so it lives on this thread.
-                let mut processing = AudioProcessingModule::new(true, true, true, true);
-                let _ = processing.set_stream_delay_ms(ECHO_DELAY_MS);
+                // The modules aren't Send, so they live on this thread.
+                let mut processing = Processing::new();
                 let reverse = reverse.lock().unwrap();
                 // Drop what played before the microphone opened.
                 while reverse.try_recv().is_ok() {}
                 let mut bytes = vec![0u8; BLOCK * 2];
                 let mut block = vec![0i16; BLOCK];
-                let mut samples = vec![0f32; BLOCK];
-                let mut leveler = crate::leveling::Leveler::default();
-                let mut loud_until: Option<Instant> = None;
-                let mut open_gate = false;
                 while !stopped.load(Ordering::Relaxed) {
                     if stream.read(&mut bytes).is_err() {
                         tracing::warn!("Discord microphone stopped");
                         break;
                     }
                     while let Ok(mut played) = reverse.try_recv() {
-                        let _ = processing.process_reverse_stream(
-                            &mut played,
-                            SAMPLE_RATE as i32,
-                            i32::from(CHANNELS),
-                        );
+                        processing.played(&mut played);
                     }
                     for (sample, pair) in block.iter_mut().zip(bytes.chunks_exact(2)) {
                         *sample = i16::from_le_bytes([pair[0], pair[1]]);
                     }
-                    let _ = processing.process_stream(&mut block, SAMPLE_RATE as i32, 1);
-                    let now = Instant::now();
-                    // The gate hears the voice before leveling, which could lift
-                    // noise past it.
-                    if decibels(&block) > GATE_OPEN {
-                        loud_until = Some(now + GATE_HOLD);
-                    }
-                    let should_open = loud_until.is_some_and(|until| now < until);
-                    if should_open != open_gate {
-                        open_gate = should_open;
-                        gate.store(open_gate, Ordering::Relaxed);
-                        let _ = if open_gate {
+                    let was_open = processing.gate.is_open();
+                    let sent = processing.block(&mut block);
+                    let gate = &processing.gate;
+                    if gate.is_open() != was_open {
+                        speaking.store(gate.is_open(), Ordering::Relaxed);
+                        let _ = if gate.is_open() {
                             out.clear();
                             gated_track.play()
                         } else {
                             gated_track.pause()
                         };
                     }
-                    for (value, sample) in samples.iter_mut().zip(&block) {
-                        *value = f32::from(*sample);
-                    }
-                    leveler.process(&mut samples, SAMPLE_RATE, crate::leveling::enabled());
-                    if open_gate {
-                        for value in &mut samples {
-                            *value /= 32768.0;
-                        }
+                    for samples in sent {
                         out.push(&samples);
                     }
                 }
-                gate.store(false, Ordering::Relaxed);
+                speaking.store(false, Ordering::Relaxed);
                 let _ = gated_track.pause();
             })
             .context("could not start the Discord microphone")?;
@@ -361,6 +459,53 @@ mod linux {
             talking,
             track,
         })
+    }
+
+    /// Runs a recording through the microphone's processing: raw mono 16-bit
+    /// 48 kHz from `TALK_AUDIO_IN`, written processed to `TALK_AUDIO_OUT`, and
+    /// what was sent to `TALK_AUDIO_SENT`, with silence where the gate was
+    /// closed.
+    #[test]
+    #[ignore = "needs TALK_AUDIO_IN and TALK_AUDIO_OUT"]
+    fn processes_a_recording() {
+        let input = std::fs::read(std::env::var("TALK_AUDIO_IN").unwrap()).unwrap();
+        let mut processing = Processing::new();
+        let (mut processed, mut sent) = (Vec::new(), Vec::new());
+        let (mut opened, mut blocks) = (0, 0);
+        for bytes in input.chunks_exact(BLOCK * 2) {
+            let mut block: Vec<i16> = bytes
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            let was_open = processing.gate.is_open();
+            let out = processing.block(&mut block);
+            if processing.gate.is_open() && !was_open {
+                opened += 1;
+                println!(
+                    "opened at {:.2} s, sending {} blocks",
+                    blocks as f32 / 100.0,
+                    out.len()
+                );
+            }
+            if !processing.gate.is_open() && was_open {
+                println!("closed at {:.2} s", blocks as f32 / 100.0);
+            }
+            blocks += 1;
+            processed.extend(block.iter().flat_map(|sample| sample.to_le_bytes()));
+            if out.is_empty() {
+                sent.extend(std::iter::repeat_n(0u8, BLOCK * 2));
+            }
+            for samples in out {
+                sent.extend(samples.iter().flat_map(|value| {
+                    ((value * 32768.0).clamp(-32768.0, 32767.0) as i16).to_le_bytes()
+                }));
+            }
+        }
+        println!("{blocks} blocks, the gate opened {opened} times");
+        std::fs::write(std::env::var("TALK_AUDIO_OUT").unwrap(), processed).unwrap();
+        if let Ok(path) = std::env::var("TALK_AUDIO_SENT") {
+            std::fs::write(path, sent).unwrap();
+        }
     }
 
     fn open(
@@ -422,6 +567,39 @@ mod tests {
         assert_eq!(mixed[0], i16::MAX);
         assert_eq!(mix(&[(3, &quiet)])[0], 100);
         assert!(mix(&[]).iter().all(|sample| *sample == 0));
+    }
+
+    #[test]
+    fn the_gate_opens_on_speech_with_what_came_just_before() {
+        let mut gate = Gate::default();
+        let block = |value: f32| vec![value; 480];
+        for _ in 0..WARM_UP {
+            assert!(gate.block(block(0.0), -20.0, 1.0).is_empty(), "warming up");
+        }
+        for index in 0..15 {
+            let quiet = gate.block(block(index as f32), -70.0, 0.9);
+            assert!(
+                quiet.is_empty() && !gate.is_open(),
+                "too quiet to be speech"
+            );
+        }
+        // A soft start RNNoise hears as speech opens it, with the 100 ms before.
+        let opened = gate.block(block(15.0), -50.0, 0.9);
+        assert!(gate.is_open());
+        let firsts: Vec<f32> = opened.iter().map(|samples| samples[0]).collect();
+        assert_eq!(
+            firsts,
+            (5..=15).map(|index| index as f32).collect::<Vec<_>>()
+        );
+        // Then one block at a time, through a pause shorter than the hold.
+        for index in 0..GATE_HOLD - 1 {
+            assert_eq!(gate.block(block(0.0), -70.0, 0.0).len(), 1, "{index}");
+        }
+        assert!(gate.block(block(0.0), -70.0, 0.0).is_empty());
+        assert!(!gate.is_open());
+        // Loud noise opens it whatever RNNoise says; quiet noise doesn't.
+        assert!(gate.block(block(0.0), -55.0, 0.1).is_empty());
+        assert_eq!(gate.block(block(1.0), -30.0, 0.1).len(), 3);
     }
 
     #[test]
