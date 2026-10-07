@@ -3,6 +3,10 @@
 //! it; see [`crate::emoji_font`]. Each batch of new emoji is a font of its own,
 //! which text falls back to first after Satoshi. Icon fonts such as Nerd Fonts
 //! take code points in area A, so these stay clear of them.
+//!
+//! Only emoji in message text need glyphs. The picker, suggestions and
+//! reaction buttons show an emoji's picture as an image, so the hundreds a
+//! picker lists don't each add a font for text to fall back through.
 
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
@@ -19,6 +23,8 @@ const LAST: u32 = 0x10_FFFD;
 struct Registry {
     /// Each emoji with a glyph, by id.
     glyphs: HashMap<String, char>,
+    /// Each emoji's picture, by id, as shown on its own.
+    images: HashMap<String, slint::Image>,
     /// The fonts registered so far.
     fonts: usize,
 }
@@ -30,6 +36,34 @@ thread_local! {
 /// The character that draws the emoji with this id, once its picture is in a font.
 pub fn glyph(id: &str) -> Option<char> {
     REGISTRY.with_borrow(|registry| registry.glyphs.get(id).copied())
+}
+
+/// The emoji's picture, once it has arrived.
+pub fn image(id: &str) -> Option<slint::Image> {
+    REGISTRY.with_borrow(|registry| registry.images.get(id).cloned())
+}
+
+/// Keeps the pictures that arrived of emoji shown on their own. True when
+/// there are new ones.
+pub fn add_images<'a>(arrived: impl IntoIterator<Item = (&'a str, &'a Picture)>) -> bool {
+    REGISTRY.with_borrow_mut(|registry| {
+        let mut added = false;
+        for (id, picture) in arrived {
+            if registry.images.contains_key(id) {
+                continue;
+            }
+            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                &picture.rgba,
+                picture.width,
+                picture.height,
+            );
+            registry
+                .images
+                .insert(id.to_owned(), slint::Image::from_rgba8(buffer));
+            added = true;
+        }
+        added
+    })
 }
 
 /// Gives the emoji whose pictures arrived glyphs. True when there are new ones,

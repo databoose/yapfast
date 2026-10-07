@@ -1005,7 +1005,9 @@ impl Application {
     /// Keeps a picture that arrived, and once more than [`KEPT_PICTURES`]
     /// have, forgets those off screen, which are asked for again when they
     /// show. So that pictures on screen don't make it go through them each
-    /// time one arrives, it waits for twice as many as it kept last.
+    /// time one arrives, it waits for twice as many as it kept last. Custom
+    /// emoji stay: the emoji picker asks for hundreds at once, and they're
+    /// small.
     fn keep_picture(&mut self, url: String, picture: Arc<Picture>) {
         self.state.pictures.insert(url, picture);
         self.state.picture_changes += 1;
@@ -1015,10 +1017,12 @@ impl Application {
         let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages)
             .map(str::to_owned)
             .collect();
-        self.state.pictures.retain(|url, _| shown.contains(url));
+        // Discord's CDN keeps custom emoji under /emojis/.
+        let kept = |url: &String| shown.contains(url) || url.contains("/emojis/");
+        self.state.pictures.retain(|url, _| kept(url));
         let pictures = &self.state.pictures;
         self.requested_pictures
-            .retain(|url| shown.contains(url) || pictures.contains_key(url));
+            .retain(|url| kept(url) || pictures.contains_key(url));
         self.pictures_kept = self.state.pictures.len();
     }
 

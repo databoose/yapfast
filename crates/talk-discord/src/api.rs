@@ -90,9 +90,9 @@ pub struct Api {
     downloads: tokio::sync::Semaphore,
 }
 
-/// The most files Talk downloads from Discord at once, about what a browser
-/// opens to one host.
-const DOWNLOADS: usize = 6;
+/// The most files Talk downloads from Discord at once. They share one HTTP/2
+/// connection, as a browser's requests to one host do.
+const DOWNLOADS: usize = 8;
 
 impl Api {
     pub fn new(token: String) -> Result<Self> {

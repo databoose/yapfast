@@ -8,7 +8,7 @@
 use std::sync::{Arc, OnceLock};
 
 use slint::{
-    ModelRc, SharedString, VecModel,
+    Model, ModelRc, SharedString, VecModel,
     fontique_011::{fontique, shared_collection},
 };
 use talk_core::chat::EmojiSet;
@@ -58,6 +58,7 @@ pub fn cell(key: &str) -> EmojiCell {
                 .into(),
             name: name.into(),
             key: key.into(),
+            picture: custom_emoji::image(id).unwrap_or_default(),
         };
     }
     let name = emojis::get(key).map_or(key, emojis::Emoji::name);
@@ -70,6 +71,24 @@ pub fn cell(key: &str) -> EmojiCell {
             .unwrap_or_default()
             .into(),
         key: key.into(),
+        picture: slint::Image::default(),
+    }
+}
+
+/// Gives the picker's custom emoji the pictures that arrived since its rows
+/// were built, changing only those cells.
+pub fn fill_pictures(rows: &VecModel<EmojiRow>) {
+    for row in rows.iter() {
+        for (index, shown) in row.cells.iter().enumerate() {
+            if shown.picture.size().width > 0 || !shown.key.contains(':') {
+                continue;
+            }
+            let picture = cell(&shown.key).picture;
+            if picture.size().width > 0 {
+                row.cells
+                    .set_row_data(index, EmojiCell { picture, ..shown });
+            }
+        }
     }
 }
 
@@ -352,6 +371,38 @@ mod tests {
             data.extend([0; 12]);
         }
         data
+    }
+
+    #[test]
+    fn pictures_fill_the_picker_in_place() {
+        let custom = [EmojiSet {
+            server: "Games".into(),
+            emoji: vec![talk_core::chat::CustomEmoji {
+                text: ":gg:".into(),
+                id: "77".into(),
+                animated: false,
+                picture: String::new(),
+            }],
+        }];
+        let model = VecModel::from(rows("", &[], &custom));
+        let cells = model.row_data(1).unwrap().cells;
+        assert_eq!(cells.row_data(0).unwrap().picture.size().width, 0);
+        let picture = talk_core::chat::Picture {
+            width: 2,
+            height: 2,
+            rgba: [255, 0, 0, 255].repeat(4),
+            ..Default::default()
+        };
+        assert!(custom_emoji::add_images([("77", &picture)]));
+        assert!(!custom_emoji::add_images([("77", &picture)]), "kept once");
+        fill_pictures(&model);
+        // The same row model, with the cell's picture now in it.
+        let gg = cells.row_data(0).unwrap();
+        assert_eq!(gg.picture.size().width, 2);
+        assert_eq!(
+            gg.glyph, ":gg:",
+            "its glyph is for text, which needs a font"
+        );
     }
 
     #[test]

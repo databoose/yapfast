@@ -3,7 +3,7 @@ import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar, TextField, MenuItem } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { StatusDot } from "rail.slint";
-import { EmojiCell } from "messages.slint";
+import { EmojiCell, EmojiFace } from "messages.slint";
 import { Choices } from "settings.slint";
 
 // Someone the new conversation dialog found.
@@ -63,10 +63,7 @@ export component StatusDialog inherits Rectangle {
                         accessible-role: button;
                         accessible-label: root.status-emoji.glyph != "" ? "Emoji, " + root.status-emoji.name + ". Change it" : "Pick an emoji";
                         accessible-action-default => { root.pick-emoji(); }
-                        if root.status-emoji.glyph != "": Text {
-                            text: root.status-emoji.glyph; font-family: root.emoji-font; font-size: 22px;
-                            horizontal-alignment: center; vertical-alignment: center;
-                        }
+                        if root.status-emoji.glyph != "": EmojiFace { emoji: root.status-emoji; font: root.emoji-font; side: 22px; }
                         if root.status-emoji.glyph == "": Image {
                             source: @image-url("icons/smile-plus.svg"); width: 20px; colorize: Theme.secondary;
                         }

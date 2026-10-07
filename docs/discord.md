@@ -94,10 +94,10 @@ Talk follows the rules Discord documents for every client:
   readable only by the user, in `discord-cookies.json` in the data directory,
   so Talk stays the same device across restarts. Talk can't pass a Cloudflare
   challenge or captcha, so it never has a `cf_clearance` cookie.
-- **Downloads.** Pictures and files from Discord's CDN download six at a
-  time, about what a browser opens to one host. Opening the emoji picker
-  queues its pictures in the picker's order instead of asking for hundreds at
-  once.
+- **Downloads.** Pictures and files from Discord's CDN download eight at a
+  time, over one HTTP/2 connection, as a browser's requests to one host go.
+  Opening the emoji picker queues its pictures in the picker's order instead
+  of asking for hundreds at once.
 
 ## Why not an existing bridge
 
@@ -565,6 +565,7 @@ an error.
   member's server avatar wins over their own. Talk decodes them at 128px
   before the UI sees them. Once more than 400 have arrived, those off
   screen go, and Talk asks for them again, from disk, when they show.
+  Custom emoji stay, since the picker asks for hundreds at once.
   Initials show until a picture arrives or when it fails. A download that
   may work later, when the CDN is out of reach, fails or answers 429, is
   tried up to six times; every download then waits together, 10 seconds
@@ -606,10 +607,13 @@ an error.
   a "Spoiler" label until clicked. Revealing lasts while Talk runs.
 - Custom emoji show as pictures: in messages, as reactions and in the emoji
   picker, which lists them by server after the frequently used ones, the open
-  server's first. Talk draws them as text: each emoji whose picture arrived
-  gets a code point in the Supplementary Private Use Area B, and each batch
-  of them a colour bitmap (CBDT) font made on the fly, which text falls back
-  to after Satoshi, so they wrap and select like letters. A message of only
+  server's first. In messages Talk draws them as text: each emoji whose
+  picture arrived gets a code point in the Supplementary Private Use Area B,
+  and each batch of them a colour bitmap (CBDT) font made on the fly, which
+  text falls back to after Satoshi, so they wrap and select like letters.
+  The picker, suggestions and reaction buttons show the picture itself, so
+  the hundreds a picker lists add no fonts; a quiet square holds each place
+  until its picture arrives. A message of only
   emoji, up to 30, shows them large, as Discord does. Without Nitro, the
   picker offers only the open server's emoji, none animated, and sending
   turns `:name:` into Discord's `<:name:id>` only for those. Animated emoji

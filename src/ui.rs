@@ -654,6 +654,8 @@ struct Adapter {
     rows: HashMap<String, MessageRow>,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
+    /// Shows pictures that arrived, together with those that follow them closely.
+    pictures_due: slint::Timer,
     /// Server icons and avatars already handed to Slint, by address.
     pictures: HashMap<String, slint::Image>,
     /// `AppState::picture_changes` when the message rows were last built.
@@ -747,6 +749,7 @@ impl Adapter {
                 messages: Arc::new(Vec::new()),
                 rows: HashMap::new(),
                 sidebar: None,
+                pictures_due: slint::Timer::default(),
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 jumped: None,

@@ -2512,16 +2512,23 @@ fn pictures_off_screen_go_once_many_have_arrived() {
         });
     };
     arrive(&mut app, "ann.png".into());
-    for index in 0..KEPT_PICTURES {
+    // The emoji picker asks for a server's custom emoji all at once.
+    let emoji = "https://cdn.discordapp.com/emojis/5.png?size=64";
+    app.requested_pictures.insert(emoji.into());
+    arrive(&mut app, emoji.into());
+    // The last of these is one more than are kept.
+    for index in 0..KEPT_PICTURES - 1 {
         app.requested_pictures.insert(format!("{index}.png"));
         arrive(&mut app, format!("{index}.png"));
     }
     assert_eq!(
         app.state.pictures.len(),
-        1,
-        "all but the one on screen went"
+        2,
+        "all but the one on screen and the custom emoji went"
     );
     assert!(app.state.pictures.contains_key("ann.png"));
+    assert!(app.state.pictures.contains_key(emoji));
+    assert!(app.requested_pictures.contains(emoji));
     assert!(
         !app.requested_pictures.contains("1.png"),
         "asked for again when shown"

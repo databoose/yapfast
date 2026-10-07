@@ -28,6 +28,8 @@ impl Changes {
 pub(super) struct Reach {
     composer: bool,
     voice: bool,
+    /// Pictures arrived, which can show anywhere.
+    pictures: bool,
     pub(super) everything: bool,
 }
 
@@ -35,6 +37,7 @@ impl Reach {
     pub(super) const EVERYTHING: Self = Self {
         composer: true,
         voice: true,
+        pictures: true,
         everything: true,
     };
 
@@ -51,6 +54,10 @@ impl Reach {
                 voice: true,
                 ..Self::default()
             },
+            Event::Picture { .. } => Self {
+                pictures: true,
+                ..Self::default()
+            },
             _ => Self::EVERYTHING,
         }
     }
@@ -59,10 +66,14 @@ impl Reach {
         Self {
             composer: self.composer || other.composer,
             voice: self.voice || other.voice,
+            pictures: self.pictures || other.pictures,
             everything: self.everything || other.everything,
         }
     }
 }
+
+/// How long a picture that arrived waits for others to show with it.
+const PICTURE_BATCH: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What the sidebar was built from, kept to tell whether it changed.
 #[derive(PartialEq)]
@@ -116,6 +127,17 @@ impl Adapter {
         if reach.everything {
             self.refresh(window);
             return;
+        }
+        // Pictures arrive one at a time, hundreds when the emoji picker opens,
+        // so those that come close together show in one refresh.
+        if reach.pictures && !self.pictures_due.running() {
+            let (adapter, weak) = (self.weak.clone(), window.as_weak());
+            self.pictures_due
+                .start(slint::TimerMode::SingleShot, PICTURE_BATCH, move || {
+                    if let (Some(adapter), Some(window)) = (adapter.upgrade(), weak.upgrade()) {
+                        adapter.borrow_mut().refresh(&window);
+                    }
+                });
         }
         if reach.composer {
             self.show_composer(window);
@@ -1072,42 +1094,34 @@ impl Adapter {
             self.pictures
                 .retain(|url, _| state.pictures.contains_key(url));
         }
-        // Custom emoji whose pictures arrived get glyphs, and the rows and picker
-        // cells that show them by name are built again.
+        // Custom emoji in messages whose pictures arrived get glyphs, and the
+        // rows that showed them by name are built again. Those shown on their
+        // own, in the picker, suggestions and reaction buttons, show pictures.
         if pictures_arrived || messages_changed {
+            let state = &self.app.state;
+            let in_messages = || state.messages.iter().flat_map(|message| &message.emoji);
+            if custom_emoji::add(in_messages().filter_map(|emoji| arrived(state, emoji))) {
+                self.restyle = true;
+            }
             let usable = if pictures_arrived {
                 self.app.usable_emoji()
             } else {
                 Vec::new()
             };
             let state = &self.app.state;
-            let added = custom_emoji::add(
-                state
-                    .messages
+            let added = custom_emoji::add_images(
+                usable
                     .iter()
-                    .flat_map(|message| &message.emoji)
-                    .chain(usable.iter().flat_map(|set| &set.emoji))
-                    .filter_map(|emoji| {
-                        Some((
-                            emoji.id.as_str(),
-                            state.pictures.get(&emoji.picture)?.as_ref(),
-                        ))
-                    }),
+                    .flat_map(|set| &set.emoji)
+                    .chain(state.messages.iter().flat_map(|message| &message.emoji))
+                    .filter_map(|emoji| arrived(state, emoji)),
             );
             if added {
-                self.restyle = true;
                 if self.emoji_word.is_some() {
                     self.show_emoji_suggestions(window);
                 }
                 if !window.get_react_item().is_empty() {
-                    update_model(
-                        &self.models.emoji_rows,
-                        emoji::rows(
-                            &window.get_emoji_query(),
-                            &self.app.frequent_reactions(16),
-                            &usable,
-                        ),
-                    );
+                    emoji::fill_pictures(&self.models.emoji_rows);
                 }
             }
         }
@@ -1640,4 +1654,15 @@ pub(super) fn fold_collapsed(
         }
     }
     folded
+}
+
+/// A custom emoji and its picture, once that has arrived.
+fn arrived<'a>(
+    state: &'a AppState,
+    emoji: &'a talk_core::chat::CustomEmoji,
+) -> Option<(&'a str, &'a talk_core::chat::Picture)> {
+    Some((
+        emoji.id.as_str(),
+        state.pictures.get(&emoji.picture)?.as_ref(),
+    ))
 }

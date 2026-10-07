@@ -48,7 +48,9 @@
 // GIF link, and a bot post a card with fields; their pictures come from
 // /external/, standing in for Discord's media proxy.
 // The server has two custom emoji, :talk: and the animated :party:, served
-// from /emojis/, and a sticker from /stickers/. POST /_control/showcase makes
+// from /emojis/, and a sticker from /stickers/. `--nitro` gives Alice Nitro,
+// so every server's emoji are hers to use, and `--cdn-delay MS` makes each
+// emoji and sticker take that long, as a round trip to the real CDN does. POST /_control/showcase makes
 // Bob post a spoiler, custom emoji, stickers, a GIF, a spoilered picture and a reply
 // to the start of #general's history, and Alice block Dave, who then posts.
 // Alice's custom status, "Testing Talk", is in her settings; PATCH
@@ -88,6 +90,8 @@ const { values: args } = parseArgs({
     images: { type: "string", default: "0" },
     channels: { type: "string", default: "0" },
     authors: { type: "string", default: "0" },
+    nitro: { type: "boolean", default: false },
+    "cdn-delay": { type: "string", default: "0" },
   },
 });
 
@@ -604,6 +608,7 @@ function sample(index: number): string {
 }
 
 const extra = Number(args.extra);
+const cdnDelay = Number(args["cdn-delay"]);
 const imageEvery = Number(args.images);
 for (let index = 0; index < extra; index++) {
   const ms = HISTORY_START + (4 + index) * 60_000;
@@ -945,7 +950,7 @@ function ready(ws: Socket) {
       email: "alice@example.org",
       verified: true,
       mfa_enabled: false,
-      premium_type: 0,
+      premium_type: args.nitro ? 2 : 0,
       flags: 0,
       bot: false,
       phone: null,
@@ -2678,6 +2683,7 @@ const server = Bun.serve<SocketData>({
     // Discord's CDN: custom emoji and stickers.
     const emoji = req.method === "GET" ? path.match(/^\/(emojis|stickers)\/(\d+)\.(png|gif|webp)$/) : null;
     if (emoji) {
+      if (cdnDelay > 0) await Bun.sleep(cdnDelay);
       const size = Math.min(Number(url.searchParams.get("size")) || 128, 512);
       if (emoji[3] === "gif") {
         return new Response(bouncing(size, 10, [124, 196, 255]), { headers: { "content-type": "image/gif" } });

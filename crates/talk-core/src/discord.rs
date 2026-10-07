@@ -44,7 +44,7 @@ const BANNER_SIZE: (u32, u32) = (600, 240);
 #[cfg(feature = "discord")]
 const PICTURE_SIZE: u32 = 128;
 #[cfg(feature = "discord")]
-const PARALLEL_DOWNLOADS: usize = 4;
+const PARALLEL_DOWNLOADS: usize = 8;
 /// Tries per picture whose download may work later, before its initial
 /// shows for good.
 #[cfg(feature = "discord")]
