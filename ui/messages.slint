@@ -118,6 +118,8 @@ export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
     /// The author's Discord role colour, when they have one.
     color: color, has-color: bool,
+    /// The author is a Discord bot or webhook: tagged after their name.
+    bot: bool,
     /// Starts a group: shows the avatar and author. Later messages from the same person follow compactly.
     first: bool,
     /// A date divider above this message, when it starts a new day.
@@ -362,6 +364,14 @@ export component FileCard inherits HorizontalLayout {
     Rectangle { horizontal-stretch: 1; }
 }
 
+// Discord's tag after a bot's name: white on blurple.
+export component BotTag inherits Rectangle {
+    width: tag-text.preferred-width + 8px; height: 16px; border-radius: 4px;
+    background: #5865f2;
+    accessible-role: text; accessible-label: "Bot";
+    tag-text := Text { text: "BOT"; color: #ffffff; font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
+}
+
 // Link previews and bot cards, behind a bar of their colour.
 export component EmbedView inherits HorizontalLayout {
     in property <EmbedCard> embed;
@@ -371,8 +381,11 @@ export component EmbedView inherits HorizontalLayout {
     callback reveal-attachment(string, int);
     callback view-image(string, int);
     padding-top: 4px;
+    // The card takes its height from its contents' layout, which measures
+    // wrapped text at the width the card gets. A height bound to their
+    // preferred height measured it at another width and cut off the end.
     Rectangle {
-        min-height: embed-body.preferred-height; max-width: 432px; horizontal-stretch: 100;
+        max-width: 432px; horizontal-stretch: 100;
         background: Theme.sidebar; border-radius: 4px; clip: true;
         Rectangle { x: 0px; width: 4px; background: root.embed.has-color ? root.embed.color : Theme.edge; }
         embed-body := HorizontalLayout {

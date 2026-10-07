@@ -188,6 +188,20 @@ impl Adapter {
                 .iter()
                 .any(|room| room.direct && room.unread > 0),
         );
+        // As in Discord, the DM home counts DM mentions and the friend
+        // requests waiting for an answer.
+        let dm_mentions: u64 = state
+            .rooms
+            .iter()
+            .filter(|room| room.direct)
+            .map(|room| room.mentions)
+            .sum();
+        let incoming = state
+            .friend_requests
+            .iter()
+            .filter(|request| request.incoming && !request.spam)
+            .count() as u64;
+        window.set_dms_badge(count_badge(dm_mentions + incoming));
         window.set_discord_linked(
             state.discord_linked || state.servers.iter().any(|server| server.discord),
         );
@@ -296,6 +310,15 @@ impl Adapter {
                         }),
                     discord: server.discord,
                     unavailable: server.unavailable,
+                    badge: count_badge(
+                        server
+                            .channels
+                            .iter()
+                            .filter_map(|channel| rooms_by_id.get(channel.as_str()))
+                            .filter(|room| !room.direct)
+                            .map(|room| room.mentions)
+                            .sum(),
+                    ),
                 })
                 .collect(),
         );
@@ -499,12 +522,28 @@ impl Adapter {
                     }
                     .into(),
                     detail: dm_detail(room).into(),
+                    ..Default::default()
                 }
             })
             .collect();
+        // Categories fold as their server last left them, except while filtering.
+        let rows = match &state.navigation {
+            Navigation::Server(server) if query.is_empty() => {
+                match self.layout.collapsed.get(server) {
+                    Some(collapsed) => fold_collapsed(
+                        rows,
+                        collapsed,
+                        state.voice.room.as_deref().filter(|_| state.voice.active()),
+                    ),
+                    None => rows,
+                }
+            }
+            _ => rows,
+        };
         window.set_sidebar_empty(if !rows.is_empty() { "" }
             else if state.scoped_rooms().next().is_some() { "No matching conversations." }
             else if state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." }
+            else if state.servers.iter().any(|server| server.discord && state.navigation == Navigation::Server(server.id.clone())) { "No channels in this server that you can see." }
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
         // A voice channel's people come as a new list each time; the one on
         // screen stays while they're the same, so its row counts as unchanged.
@@ -560,6 +599,7 @@ impl Adapter {
             .into(),
         );
         window.set_has_custom_status(state.custom_status.is_some());
+        window.set_discord_status(state.discord_presence.as_deref().unwrap_or("online").into());
         window.set_storage(state.storage.unwrap_or_default().into());
         window.set_notice(state.notice.as_deref().unwrap_or_default().into());
     }
@@ -604,18 +644,14 @@ impl Adapter {
         } else {
             self.icons.text.clone()
         });
-        window.set_members(room.map_or(SharedString::default(), |room| {
-            format!(
-                "{} {}",
-                room.members,
-                if room.members == 1 {
-                    "member"
-                } else {
-                    "members"
-                }
-            )
-            .into()
-        }));
+        // Discord counts a channel's members only once its list comes.
+        window.set_members(
+            room.map_or(SharedString::default(), |room| match room.members {
+                0 => "Members".into(),
+                1 => "1 member".into(),
+                count => format!("{count} members").into(),
+            }),
+        );
         window.set_members_available(state.lists_members());
     }
 
@@ -801,11 +837,19 @@ impl Adapter {
             Some(NewDm { error: Some(error), .. }) => error.as_str().into(),
             Some(NewDm { starting: true, .. }) => "Starting the conversation...".into(),
             Some(new_dm) if people.is_empty() && new_dm.query.trim().is_empty() => {
-                "Type a name to find people you know on Discord, or a full Matrix id such as @name:example.org.".into()
+                if cfg!(feature = "matrix") {
+                    "Type a name to find people you know on Discord, or a full Matrix id such as @name:example.org."
+                } else {
+                    "Type a name to find people you know on Discord."
+                }
+                .into()
             }
-            Some(_) if people.is_empty() => {
-                "No one found. For Matrix, type a full id such as @name:example.org.".into()
+            Some(_) if people.is_empty() => if cfg!(feature = "matrix") {
+                "No one found. For Matrix, type a full id such as @name:example.org."
+            } else {
+                "No one found."
             }
+            .into(),
             _ => SharedString::default(),
         });
         update_model(&self.models.new_dm_people, people);
@@ -1523,4 +1567,41 @@ impl Adapter {
             _ => SharedString::default(),
         });
     }
+}
+
+/// Rows under a collapsed category: only the selected channel, unread ones and
+/// voice channels with people in them stay, as in Discord. A category with
+/// none of those keeps its heading alone, to open it again.
+pub(super) fn fold_collapsed(
+    rows: Vec<RoomRow>,
+    collapsed: &std::collections::BTreeSet<String>,
+    voice_room: Option<&str>,
+) -> Vec<RoomRow> {
+    let mut group = SharedString::default();
+    let mut folded = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        if !row.heading.is_empty() {
+            group = row.heading.clone();
+        }
+        if group.is_empty() || !collapsed.contains(group.as_str()) {
+            folded.push(row);
+            continue;
+        }
+        row.collapsed = true;
+        if row.selected
+            || row.unread
+            || row.people.row_count() > 0
+            || voice_room == Some(row.id.as_str())
+        {
+            folded.push(row);
+        } else if !row.heading.is_empty() {
+            folded.push(RoomRow {
+                heading: row.heading,
+                collapsed: true,
+                hidden: true,
+                ..Default::default()
+            });
+        }
+    }
+    folded
 }

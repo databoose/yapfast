@@ -449,16 +449,20 @@ channels. Channels the account's roles and channel overwrites keep it out of
 show greyed out with a lock, as in Discord; channels hidden from it appear the
 same way only with the "Show channels you can't access" setting, which is off
 by default. Server text channels are listed under their Discord categories and
-open in Talk's timeline. History loads from Discord 50 messages at a time, and
-new messages, edits, deletions and reactions arrive live. Opening a channel
-subscribes to its server, as the web client does, because Discord sends large
-servers' messages only to subscribers. Talk sends, replies, edits, deletes,
+open in Talk's timeline. Clicking a category's heading collapses it, leaving
+the open channel, unread ones and voice channels with people in them, as in
+Discord; Talk remembers which categories are collapsed, per server. History
+loads from Discord 50 messages at a time, and new messages, edits, deletions
+and reactions arrive live. Opening a channel subscribes to its server, as the
+web client does, because Discord sends large servers' messages only to
+subscribers. Talk sends, replies, edits, deletes,
 reacts and sends files through Discord's cloud uploads. Mentions and timestamps
 show as text, custom emoji and stickers as pictures, every attachment shows,
 images with previews scaled by Discord's media proxy, and channels the account
-can't send in are read-only. An author's name takes their highest coloured
-role's colour, once their roles are known: live messages carry them, and for
-history Talk asks Discord for the authors' member profiles.
+can't send in are read-only. Bots and webhooks have a BOT tag after their
+name. An author's name takes their highest coloured role's colour, once their
+roles are known: live messages carry them, and for history Talk asks Discord
+for the authors' member profiles.
 
 Talk keeps the open channel's messages in memory, and those of the 40
 channels open before it, so going back to one shows it at once. A closed
@@ -486,6 +490,8 @@ since they hold its previews.
 
 Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
+Each server in the rail shows its mentions as a count, and the DM button
+counts DM mentions and the friend requests waiting for an answer.
 Showing an unread channel marks it read, and with the "Mark messages read on
 Discord" setting, on by default, acknowledges it on Discord within a second.
 The open text channel lists its members on the right as Discord's sidebar
@@ -500,8 +506,10 @@ and asks Discord for nothing. Talk keeps the last 40 lists. One Discord still
 sends, or sent within 10 minutes, shows without asking again. An older one
 shows at once while Talk subscribes, and Discord's sync replaces it. A list
 on screen that Discord doesn't send is asked for again once it's 10 minutes
-old. A build without Matrix shows the Discord account's name, avatar and
-connection in the bottom-left panel.
+old. When no list comes within 8 seconds of opening a channel, the panel
+says Discord didn't send one instead of loading on, and the header says
+"Members" until a count is known. A build without Matrix shows the Discord
+account's name, avatar and connection in the bottom-left panel.
 
 Talk starts from Discord as it last saw it, kept in the data directory by
 `talk_discord::cache`, and Discord's answers replace it as they arrive:
@@ -640,15 +648,18 @@ an error.
   typing, at most every eight seconds, unless a setting turns it off.
 - Reading a message in Talk marks it read on Discord, so the phone app agrees.
   A setting turns this off.
-- Talk sets the online, idle and do-not-disturb status on Discord. Closing Talk
-  takes the person offline, like closing the Discord app.
-- The custom status shows under the account's name, bottom left. Clicking the
-  name, or "Set a custom status" in My account, sets it: an emoji from the
+- Clicking the account's avatar or name, bottom left, opens a menu of Online,
+  Idle, Do Not Disturb and Invisible, as in Discord. Talk saves the choice in
+  the settings below and sends it with opcode 3. Do Not Disturb holds back
+  Talk's message notifications. Closing Talk takes the person offline, like
+  closing the Discord app.
+- The custom status shows under the account's name. "Change custom status" in
+  that menu, or "Set a custom status" in My account, sets it: an emoji from the
   picker, words, and when it clears (never, 30 minutes, an hour, four hours,
   or at midnight). Discord keeps it in the account's settings, a protobuf
   (`PreloadedUserSettings`, field 11), which arrive in READY as
   `user_settings_proto` and change in USER_SETTINGS_PROTO_UPDATE. Talk reads
-  only the status from it, and changes it with `PATCH
+  only the status and custom status from it, and changes either with `PATCH
   /users/@me/settings-proto/1`, whose body sets nothing else. Each session
   shows the status to others itself, so Talk sends it with opcode 3 once
   connected, whenever the settings change, and clears it when it ends. A

@@ -297,6 +297,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         author: message.author.clone().into(),
         color: role_color(message.color),
         has_color: message.color.is_some(),
+        bot: message.bot,
         initial: initial(&message.author),
         tint: tint(&message.author),
         // Set from the picture cache when the timeline is built.
@@ -381,6 +382,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             tint: Default::default(),
             color: Default::default(),
             has_color: false,
+            bot: false,
             body: "Blocked message.".into(),
             styled: slint::StyledText::from_markdown(&note)
                 .unwrap_or_else(|_| slint::StyledText::from_plain_text("Blocked message.")),

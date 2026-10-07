@@ -384,6 +384,17 @@ impl Api {
         .map(drop)
     }
 
+    /// Sets the status: `online`, `idle`, `dnd` or `invisible`.
+    pub async fn set_status(&self, status: &str) -> Result<()> {
+        let body = json!({"settings": settings::write_status(status)});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/1"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// Ignores a friend request, cancels one, or ends a friendship.
     pub async fn remove_relationship(&self, user: &str, place: &str) -> Result<()> {
         let path = format!("/users/@me/relationships/{user}");

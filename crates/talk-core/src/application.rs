@@ -690,6 +690,8 @@ pub enum Action {
     },
     ClearCustomStatus,
     CloseStatusEditor,
+    /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`.
+    SetStatus(String),
     ConfirmVoiceSwitch,
     CancelVoiceSwitch,
     DismissVoiceError,
@@ -1173,6 +1175,17 @@ impl Application {
                 self.state.status_editor = None;
                 vec![]
             }
+            Action::SetStatus(status) => {
+                if self.state.preview
+                    || self.state.discord_user.is_none()
+                    || self.state.discord_presence.as_ref() == Some(&status)
+                {
+                    return vec![];
+                }
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::SetStatus(status),
+                ))]
+            }
             Action::ConfirmVoiceSwitch => self.confirm_voice_switch(),
             Action::CancelVoiceSwitch => {
                 self.state.switch_voice = None;
@@ -1283,6 +1296,8 @@ impl Application {
                 }
             }
             Event::Picture { url, picture } => self.keep_picture(url, picture),
+            // Do Not Disturb holds back message notifications, as in Discord.
+            Event::Notify(_) if self.state.do_not_disturb() => {}
             Event::Notify(notification) => return vec![Effect::Notify(self.alert(notification))],
             Event::Typing { room, names } => {
                 if names.is_empty() {
@@ -1307,7 +1322,9 @@ impl Application {
             }
             Event::Profile { user, result } => self.show_fetched_profile(user, result),
             Event::Members { room, members } => {
-                if self.state.selected.as_ref() == Some(&room) {
+                // A list that came stays when a later check finds none came.
+                let listed = members.is_err() && matches!(self.state.members, Some(Ok(_)));
+                if self.state.selected.as_ref() == Some(&room) && !listed {
                     self.state.members = Some(members);
                 }
             }
@@ -1341,6 +1358,11 @@ impl Application {
             Event::DiscordUnlinked => return self.forget_discord(),
             Event::CustomStatusSet(Ok(())) => {
                 self.state.status_editor = None;
+            }
+            Event::StatusSet(result) => {
+                if let Err(error) = result {
+                    self.state.notice = Some(format!("Couldn't change your status: {error}"));
+                }
             }
             Event::CustomStatusSet(Err(error)) => {
                 if let Some(editor) = &mut self.state.status_editor {

@@ -453,6 +453,9 @@ struct Layout {
     zoom: Option<f32>,
     /// Each server's last selected channel, by server ID.
     channels: HashMap<String, String>,
+    /// Each server's collapsed channel categories, by server ID, as their
+    /// headings show them.
+    collapsed: HashMap<String, std::collections::BTreeSet<String>>,
     /// How often this device added each reaction, for the frequent reactions.
     reactions: HashMap<String, u32>,
     /// List Discord channels hidden from this account, locked.
@@ -1065,7 +1068,12 @@ fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
 }
 
 fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
-    match room.mentions {
+    count_badge(room.mentions)
+}
+
+/// A count as a badge shows it: nothing for none, and at most "99+".
+fn count_badge(count: u64) -> SharedString {
+    match count {
         0 => SharedString::default(),
         count if count > 99 => "99+".into(),
         count => count.to_string().into(),

@@ -14,11 +14,11 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
+import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
-import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog } from "dialogs.slint";
+import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu } from "dialogs.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 
 // Rust sees these, besides TalkWindow.
@@ -50,6 +50,7 @@ export component TalkWindow inherits Window {
     in property <bool> restore-available;
     in property <bool> dms-selected;
     in property <bool> dms-unread;
+    in property <string> dms-badge;
     // The dialog for starting a DM: who it found, and whether one is starting.
     // Adding a Discord friend by username: whether the request went, and what to say.
     in property <bool> add-friend-open;
@@ -70,6 +71,10 @@ export component TalkWindow inherits Window {
     in-out property <EmojiCell> status-emoji;
     in-out property <int> status-clear-after;
     callback open-status;
+    /// Set the Discord status: "online", "idle", "dnd" or "invisible".
+    callback set-status(string);
+    /// The Discord status as its settings keep it, for the status menu.
+    in property <string> discord-status;
     callback save-status;
     callback clear-status;
     callback close-status;
@@ -427,6 +432,8 @@ export component TalkWindow inherits Window {
     callback stream-tick;
     /// Watch the participant with this id's stream.
     callback watch-stream(string);
+    /// A channel category's heading was clicked; see RoomList.
+    callback toggle-category(string);
     // Someone's volumes, from a right click on them in a call, as percentages.
     callback volume-of(string, bool) -> int;
     /// A person, whether it's their stream, the volume, and whether it's
@@ -670,6 +677,23 @@ export component TalkWindow inherits Window {
             }
         }
     }
+    // The status menu opens above the account panel, along its left edge.
+    function open-status-menu() {
+        root.menu-x = account-panel.absolute-position.x + 8px;
+        root.menu-y = account-panel.absolute-position.y;
+        status-menu.show();
+    }
+    status-menu := PopupWindow {
+        width: 248px; height: status-menu-content.preferred-height;
+        x: max(8px, min(root.width - self.width - 8px, root.menu-x));
+        y: max(8px, root.menu-y - self.height - 4px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        status-menu-content := StatusMenu {
+            status: root.discord-status; has-custom-status: root.has-custom-status;
+            choose(status) => { root.set-status(status); status-menu.close(); }
+            custom-status => { root.open-status(); status-menu.close(); }
+        }
+    }
     function open-menu(message: MessageRow) {
         root.menu-message = message;
         message-menu.show();
@@ -758,7 +782,7 @@ export component TalkWindow inherits Window {
                     vertical-stretch: 1; spacing: 0px;
                     // Server rail.
                     ServerRail {
-                        dms-selected: root.dms-selected; dms-unread: root.dms-unread; servers: root.servers;
+                        dms-selected: root.dms-selected; dms-unread: root.dms-unread; dms-badge: root.dms-badge; servers: root.servers;
                         navigate-dms => { root.navigate-dms(); }
                         navigate-server(id) => { root.navigate-server(id); }
                     }
@@ -806,6 +830,7 @@ export component TalkWindow inherits Window {
                                 }
                                 open-volume(person, x, y) => { root.open-volume(person, x, y); }
                                 watch-stream(id) => { root.watch-stream(id); }
+                                toggle-category(heading) => { root.toggle-category(heading); }
                             }
                         }
                     }
@@ -820,7 +845,7 @@ export component TalkWindow inherits Window {
                     dismiss-voice-error => { root.dismiss-voice-error(); }
                 }
                 // Account panel.
-                Rectangle {
+                account-panel := Rectangle {
                     height: 56px; background: Theme.panel;
                     if root.voice-visible: Rectangle { x: 12px; y: 0px; width: parent.width - 24px; height: 1px; background: Theme.line; }
                     HorizontalLayout {
@@ -838,15 +863,19 @@ export component TalkWindow inherits Window {
                                     background: root.preview ? Theme.accent : root.online ? Theme.live : Theme.faint;
                                 }
                             }
+                            if root.discord-linked: TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.open-status-menu(); }
+                            }
                         }
-                        // With Discord linked, the name opens the custom status.
+                        // With Discord linked, the avatar and name open the status menu.
                         Rectangle {
                             horizontal-stretch: 1; y: 6px; height: parent.height - 12px; border-radius: 6px;
                             background: account-touch.has-hover ? Theme.hover : transparent;
                             accessible-role: button;
                             accessible-enabled: root.discord-linked;
-                            accessible-label: root.account-name + ", " + root.account-status + (root.discord-linked ? ". Set a custom status" : "");
-                            accessible-action-default => { if root.discord-linked { root.open-status(); } }
+                            accessible-label: root.account-name + ", " + root.account-status + (root.discord-linked ? ". Set your status" : "");
+                            accessible-action-default => { if root.discord-linked { root.open-status-menu(); } }
                             VerticalLayout {
                                 alignment: center; padding-left: 6px; padding-right: 6px;
                                 Text { text: root.account-name; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
@@ -854,7 +883,7 @@ export component TalkWindow inherits Window {
                             }
                             account-touch := TouchArea {
                                 enabled: root.discord-linked; mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.open-status(); }
+                                clicked => { root.open-status-menu(); }
                             }
                         }
                         if root.voice-active: DeviceToggle {
@@ -949,10 +978,11 @@ export component TalkWindow inherits Window {
                         }
                         if root.friends-open: Rectangle { horizontal-stretch: 1; }
                         if root.dm-friend == 1 || root.dm-friend == 3: Middle {
-                            IconButton {
+                            ActionButton {
                                 icon: @image-url("icons/user-plus.svg");
+                                text: root.dm-friend == 1 ? "Add Friend" : "Accept Friend Request";
                                 label: root.dm-friend == 1 ? "Send friend request" : "Accept friend request";
-                                size: 32px; glyph: 20px; emphasis: root.dm-friend == 3; tip-side: 2;
+                                small: true; primary: root.dm-friend == 3;
                                 clicked => { root.befriend(root.dm-person); }
                             }
                         }
@@ -1241,6 +1271,7 @@ export component TalkWindow inherits Window {
                                                         if message.first: HorizontalLayout {
                                                             spacing: 8px;
                                                             StyledText { text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center; }
+                                                            if message.bot: Middle { BotTag { } }
                                                             StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
                                                             Rectangle { horizontal-stretch: 1; }
                                                         }
@@ -1588,11 +1619,13 @@ export component TalkWindow inherits Window {
             message-font-size: root.message-font-size;
             twelve-hour-clock <=> root.twelve-hour-clock; text-size <=> root.text-size;
             link-previews <=> root.link-previews; share-typing <=> root.share-typing;
+            matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
         }
         if root.settings-section == 3: NotificationSettings {
             notifications <=> root.notifications; notification-sound <=> root.notification-sound;
             notification-text <=> root.notification-text;
+            matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
         }
         if root.settings-section == 4 && !root.discord-linked: DiscordLinkSettings {
@@ -1735,7 +1768,7 @@ export component TalkWindow inherits Window {
     }
     // Starting a DM; see NewDmDialog.
     if root.new-dm-open: NewDmDialog {
-        new-dm-query <=> root.new-dm-query;
+        new-dm-query <=> root.new-dm-query; matrix: root.matrix-build;
         new-dm-people: root.new-dm-people; new-dm-starting: root.new-dm-starting; new-dm-note: root.new-dm-note;
         new-dm-search => { root.new-dm-search(); }
         start-dm(index) => { root.start-dm(index); }

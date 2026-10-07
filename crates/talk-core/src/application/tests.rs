@@ -264,8 +264,22 @@ fn members_belong_to_the_selected_text_room() {
         members: Ok(vec![member]),
     });
     assert!(matches!(&app.state.members, Some(Ok(members)) if members.len() == 1));
+    let late = "Discord didn't send this channel's member list.";
+    app.apply(Event::Members {
+        room: "general".into(),
+        members: Err(late),
+    });
+    assert!(
+        matches!(&app.state.members, Some(Ok(members)) if members.len() == 1),
+        "the list that came stays"
+    );
     app.dispatch(Action::SelectRoom("games".into()));
     assert!(app.state.members.is_none());
+    app.apply(Event::Members {
+        room: "games".into(),
+        members: Err(late),
+    });
+    assert_eq!(app.state.members, Some(Err(late)), "loading ends");
     app.dispatch(Action::SelectRoom("lounge".into()));
     assert!(!app.state.lists_members());
 
@@ -2248,6 +2262,50 @@ fn clears_a_status_today_at_midnight() {
         (8, 0, 0)
     );
     assert_eq!(ClearAfter::Never.at(evening), None);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn sets_the_status_and_holds_notifications_while_busy() {
+    use talk_discord::service::{Snapshot, Status};
+    let mut app = Application::default();
+    let snapshot = |presence: &str| Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        presence: presence.into(),
+        ..Default::default()
+    };
+    app.apply(discord_event(snapshot("online")));
+    assert!(
+        app.dispatch(Action::SetStatus("online".into())).is_empty(),
+        "it's already online"
+    );
+    assert!(matches!(
+        app.dispatch(Action::SetStatus("dnd".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::SetStatus(status)))] if status == "dnd"
+    ));
+    app.apply(Event::StatusSet(Ok(())));
+    app.apply(discord_event(snapshot("dnd")));
+    assert_eq!(app.state.discord_presence.as_deref(), Some("dnd"));
+    let notify = |app: &mut Application| {
+        app.apply(Event::Notify(chat::Notification {
+            room: "dm".into(),
+            author: "Sam".into(),
+            body: "Around?".into(),
+            avatar: None,
+        }))
+    };
+    assert!(
+        notify(&mut app).is_empty(),
+        "Do Not Disturb holds them back"
+    );
+    app.apply(discord_event(snapshot("idle")));
+    assert_eq!(notify(&mut app).len(), 1);
+    app.apply(Event::StatusSet(Err("Discord said no.".into())));
+    assert_eq!(
+        app.state.notice.as_deref(),
+        Some("Couldn't change your status: Discord said no.")
+    );
 }
 
 #[test]

@@ -204,6 +204,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_close_add_friend, Action::CloseAddFriend);
     bind_item!(on_add_friend, Action::AddFriend);
     bind!(on_open_status, Action::OpenStatusEditor);
+    bind_item!(on_set_status, Action::SetStatus);
     bind!(on_close_status, Action::CloseStatusEditor);
     bind!(on_clear_status, Action::ClearCustomStatus);
     let state = adapter.clone();
@@ -651,6 +652,24 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(window) = weak.upgrade() {
             state.borrow_mut().show_sidebar(&window);
         }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_toggle_category(move |heading| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        let Navigation::Server(server) = adapter.app.state.navigation.clone() else {
+            return;
+        };
+        let collapsed = adapter.layout.collapsed.entry(server.clone()).or_default();
+        if !collapsed.remove(heading.as_str()) {
+            collapsed.insert(heading.into());
+        }
+        if collapsed.is_empty() {
+            adapter.layout.collapsed.remove(&server);
+        }
+        adapter.layout.write(&adapter.root);
+        adapter.show_sidebar(&window);
     });
     let state = adapter.clone();
     let weak = window.as_weak();

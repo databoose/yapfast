@@ -515,6 +515,8 @@ pub struct ChatMessage {
     /// The RGB colour of the author's name, from their highest coloured
     /// Discord role.
     pub color: Option<u32>,
+    /// The author is a Discord bot or webhook.
+    pub bot: bool,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,
@@ -670,6 +672,9 @@ pub enum DiscordCommand {
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
+    /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`;
+    /// [`Event::StatusSet`] follows.
+    SetStatus(String),
     /// Connect the Discord account that was just linked.
     Start,
     /// Forget the linked Discord account on this device, ending its session
@@ -773,6 +778,8 @@ pub enum Event {
     FriendAdded(Result<String, String>),
     /// Whether [`DiscordCommand::SetCustomStatus`] changed it, or why not.
     CustomStatusSet(Result<(), String>),
+    /// Whether [`DiscordCommand::SetStatus`] changed it, or why not.
+    StatusSet(Result<(), String>),
     /// [`DiscordCommand::Unlink`] forgot the account.
     DiscordUnlinked,
     /// The roles and groups a message in a room may mention.

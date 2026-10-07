@@ -26,7 +26,7 @@ export component FriendRequest inherits Rectangle {
     accessible-label: root.request.name + ", " + root.request.detail;
     pointer := TouchArea { }
     HorizontalLayout {
-        padding-left: 8px; padding-right: 4px; spacing: 12px;
+        padding-left: 8px; padding-right: 8px; spacing: 12px;
         Middle {
             Avatar {
                 size: 32px; initial: root.request.initial; tint: root.request.tint; picture: root.request.picture;
@@ -39,14 +39,17 @@ export component FriendRequest inherits Rectangle {
             Text { text: root.request.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
         }
         if root.request.incoming: Middle {
-            IconButton {
-                icon: @image-url("icons/check.svg"); label: "Accept"; size: 30px; glyph: 18px; tint: Theme.live; tip-side: 2;
+            ActionButton {
+                text: "Accept"; label: "Accept " + root.request.name + "'s friend request";
+                icon: @image-url("icons/check.svg"); small: true; primary: true;
                 clicked => { root.accept(); }
             }
         }
         Middle {
-            IconButton {
-                icon: @image-url("icons/x.svg"); label: root.request.incoming ? "Ignore" : "Cancel"; size: 30px; glyph: 18px; tip-side: 2;
+            ActionButton {
+                text: root.request.incoming ? "Ignore" : "Cancel";
+                label: root.request.incoming ? "Ignore " + root.request.name + "'s friend request" : "Cancel the friend request to " + root.request.name;
+                icon: @image-url("icons/x.svg"); small: true;
                 clicked => { root.remove(); }
             }
         }

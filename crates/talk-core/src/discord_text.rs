@@ -41,6 +41,8 @@ pub const MAX_CHARS: usize = 2000;
 const TYPING: Duration = Duration::from_secs(10);
 /// How often Discord hears that this account is still typing.
 const TYPING_AGAIN: Duration = Duration::from_secs(8);
+/// How long an open channel waits for its member list before saying none came.
+const MEMBERS_WAIT: Duration = Duration::from_secs(8);
 /// How often changed channels' newest messages go to disk; see
 /// [`talk_discord::cache`].
 const SAVE_EVERY: Duration = Duration::from_secs(20);
@@ -89,6 +91,8 @@ pub enum Done {
     Failed { room: String, message: String },
     /// Someone may have stopped typing.
     Typing { room: String },
+    /// A channel opened a while ago; its member list should have come by now.
+    MembersLate { room: String },
 }
 
 struct Pending {
@@ -886,6 +890,7 @@ impl OpenChannel {
             sender: format!("discord:{}", message.author_id),
             avatar: Some(discord.avatar(Some(&self.guild), &message.author_id)),
             color: server.and_then(|server| discord.color(server, &message.author_id)),
+            bot: message.bot,
             body,
             formatted: ordinary,
             time: crate::clock::time(timestamp),
@@ -1499,6 +1504,24 @@ pub fn command(
         }
         return;
     }
+    if let Command::Discord(DiscordCommand::SetStatus(status)) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord.set_status(&status).await.map_err(|error| {
+                        tracing::warn!(error = format!("{error:#}"), "could not set the status");
+                        error.to_string()
+                    });
+                    let _ = events.send(Event::StatusSet(result));
+                });
+            }
+            Err(why) => {
+                let _ = events.send(Event::StatusSet(Err(why.into())));
+            }
+        }
+        return;
+    }
     if let Command::Discord(DiscordCommand::DeclineCall { room }) = command {
         if let (Ok(discord), Some((_, channel))) = (discord, discord::parse_room(&room)) {
             let (discord, events, channel) = (discord.clone(), events.clone(), channel.to_owned());
@@ -1581,6 +1604,12 @@ pub fn command(
         let _ = events.send(Event::MentionGroups {
             room: room.clone(),
             groups: mention_groups(discord, &room),
+        });
+        // The member list follows as Live::Members, unless Discord sends none.
+        let (late, waiting) = (room.clone(), done.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(MEMBERS_WAIT).await;
+            let _ = waiting.send(Done::MembersLate { room: late });
         });
         // Shown at once as it was kept, while the latest page loads.
         if let Some(mut channel) = channels.reopen(&room) {
@@ -1702,6 +1731,16 @@ pub fn finished(
             channels.typing_changed(room, events);
             return;
         }
+        // The application keeps a list that came; otherwise this says why there's none.
+        Done::MembersLate { room } => {
+            if channels.is_open(room) {
+                let _ = events.send(Event::Members {
+                    room: room.clone(),
+                    members: Err("Discord didn't send this channel's member list."),
+                });
+            }
+            return;
+        }
     };
     let shown = channels.is_open(&room);
     // Closed channels kept lately take what finished too.
@@ -1788,7 +1827,7 @@ pub fn finished(
             let _ = events.send(Event::RoomError { room, message });
         }
         // Handled above.
-        (Done::Typing { .. }, Some(_)) => {}
+        (Done::Typing { .. } | Done::MembersLate { .. }, Some(_)) => {}
     }
     if changed
         && shown

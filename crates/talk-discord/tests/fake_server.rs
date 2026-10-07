@@ -1146,6 +1146,12 @@ async fn talks_to_the_fake_server() {
         presence["activities"] == serde_json::json!([])
     })
     .await;
+    // So does the status.
+    discord.set_status("dnd").await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.presence == "dnd").await;
+    presence_where(server, |presence| presence["status"] == "dnd").await;
+    discord.set_status("online").await.unwrap();
+    presence_where(server, |presence| presence["status"] == "online").await;
 
     // Discord asks the gateway to reconnect: the session resumes, without a
     // new identify, and carries on.

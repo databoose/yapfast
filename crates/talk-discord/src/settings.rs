@@ -203,6 +203,17 @@ pub fn write_custom(custom: Option<&CustomStatus>) -> String {
     base64::engine::general_purpose::STANDARD.encode(settings)
 }
 
+/// Base64 settings that set the status: `online`, `idle`, `dnd` or `invisible`.
+pub fn write_status(status: &str) -> String {
+    let mut wrapper = Vec::new();
+    put_bytes(&mut wrapper, 1, status.as_bytes());
+    let mut inner = Vec::new();
+    put_bytes(&mut inner, STATUS_STATUS, &wrapper);
+    let mut settings = Vec::new();
+    put_bytes(&mut settings, STATUS, &inner);
+    base64::engine::general_purpose::STANDARD.encode(settings)
+}
+
 /// The presence a session sends the gateway, in IDENTIFY or opcode 3: the
 /// status, and the custom status as an activity unless it has ended.
 pub fn presence(status: &str, custom: Option<&CustomStatus>, now_ms: u64) -> Value {
@@ -326,6 +337,14 @@ mod tests {
             }
         );
         assert_eq!(read(&write_custom(None)).custom, Some(None));
+        assert_eq!(
+            read(&write_status("idle")),
+            StatusSettings {
+                status: Some("idle".into()),
+                custom: None,
+            },
+            "setting the status leaves the custom status as it was"
+        );
         // Other settings around it, and a status, are read past and read.
         let mut settings = Vec::new();
         put_bytes(&mut settings, 1, b"\x08\x01");

@@ -302,6 +302,8 @@ enum Request {
     },
     /// The custom status changed in the settings; this session shows it.
     CustomStatus(Option<CustomStatus>),
+    /// The status changed in the settings; this session shows it.
+    Status(String),
 }
 
 /// A handle to the connection. It ends when every handle is dropped.
@@ -578,6 +580,14 @@ impl Discord {
     pub async fn set_custom_status(&self, custom: Option<CustomStatus>) -> Result<()> {
         self.api.set_custom_status(custom.as_ref()).await?;
         let _ = self.requests.send(Request::CustomStatus(custom));
+        Ok(())
+    }
+
+    /// Sets the status, `online`, `idle`, `dnd` or `invisible`, everywhere
+    /// this account is signed in, and shows it from this session.
+    pub async fn set_status(&self, status: &str) -> Result<()> {
+        self.api.set_status(status).await?;
+        let _ = self.requests.send(Request::Status(status.to_owned()));
         Ok(())
     }
 
@@ -1336,6 +1346,11 @@ async fn connected_session(
                         tracker.custom_status = custom;
                         stale = true;
                         status_ends.as_mut().reset(tokio::time::Instant::now() + status_left(&tracker));
+                        show_presence(&mut gateway, &tracker, shared).await
+                    }
+                    Request::Status(status) => {
+                        tracker.status = status;
+                        stale = true;
                         show_presence(&mut gateway, &tracker, shared).await
                     }
                     Request::Search { guild, query, reply } => {

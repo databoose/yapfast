@@ -52,7 +52,7 @@
 // Bob post a spoiler, custom emoji, stickers, a GIF, a spoilered picture and a reply
 // to the start of #general's history, and Alice block Dave, who then posts.
 // Alice's custom status, "Testing Talk", is in her settings; PATCH
-// /users/@me/settings-proto/1 replaces it, and GET /_control/presence shows the
+// /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
 // a friend request by username: Frank takes none, and unknown names fail.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
@@ -116,7 +116,7 @@ const STICKER_BOUNCE = "1400000000000000311";
 const ALICE = "1400000000000000001";
 
 // Dave has no avatar, so he gets a default one; Carol set another for the server.
-type User = { id: string; username: string; global_name: string; avatar: string | null };
+type User = { id: string; username: string; global_name: string; avatar: string | null; bot?: boolean };
 const users: Record<string, User> = {
   alice: { id: ALICE, username: "alice", global_name: "Alice", avatar: "alice1" },
   bob: { id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: "bob1" },
@@ -2198,8 +2198,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return empty();
   }
 
-  // Alice's settings: Talk changes only the custom status, which every
-  // session hears of.
+  // Alice's settings: Talk changes the status or the custom status, which
+  // every session hears of. The fake keeps only the latest change.
   if (method === "PATCH" && path === "/users/@me/settings-proto/1") {
     const body: any = await req.json().catch(() => ({}));
     if (typeof body.settings !== "string") return json({ message: "Invalid Form Body", code: 50035 }, 400);
@@ -2329,7 +2329,7 @@ function serveFile(path: string, url: URL): Response {
 // --- Embeds -----------------------------------------------------------------
 
 // A bot that posts cards; it shares no server member list with anyone.
-const statusBot: User = { id: "1400000000000000007", username: "statusbot", global_name: "Status Bot", avatar: null };
+const statusBot: User = { id: "1400000000000000007", username: "statusbot", global_name: "Status Bot", avatar: null, bot: true };
 
 /** An embed picture as Discord's proxy gives it: drawn here at any size. */
 function proxied(origin: string, name: string, width: number, height: number) {

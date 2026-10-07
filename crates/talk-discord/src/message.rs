@@ -47,6 +47,9 @@ pub struct Message {
     pub author_id: String,
     /// The author's name from the message itself, used until a better one is known.
     pub author: String,
+    /// The author is a bot or webhook, which Discord tags.
+    #[serde(default)]
+    pub bot: bool,
     /// Discord Markdown with mentions still as `<@id>`.
     pub content: String,
     /// Shown after the author's name instead of content, for joins, pins
@@ -371,6 +374,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         },
         author_id: author["id"].as_str()?.into(),
         author: author_name(value).into(),
+        bot: author["bot"].as_bool().unwrap_or(false),
         content,
         system,
         edited: value["edited_timestamp"].is_string(),
