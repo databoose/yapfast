@@ -580,7 +580,9 @@ an error.
 - Desktop notifications follow the person's Discord settings: each channel's,
   category's or server's level (every message, mentions only or nothing),
   falling back to the server's default, with mutes leaving only mentions. DMs
-  notify unless muted; message requests and spam don't. They show while Talk
+  notify unless muted; message requests and spam don't. Apps' answers to
+  slash commands and context menu commands notify as people's messages do;
+  joins, pins and call notices don't. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
 - Mentions in messages are links on a light fill, in the role's colour or the
