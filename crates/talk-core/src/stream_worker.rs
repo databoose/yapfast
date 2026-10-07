@@ -818,7 +818,7 @@ impl Worker {
         // Tests run from their own binary, so they name Talk's.
         let program = match std::env::var_os("TALK_STREAM_WORKER") {
             Some(program) => PathBuf::from(program),
-            None => std::env::current_exe().context("could not find Talk to start streaming")?,
+            None => running_talk()?,
         };
         let mut child = Command::new(program)
             .arg(ARGUMENT)
@@ -863,6 +863,17 @@ impl Worker {
     }
 }
 
+/// The Talk that's running, to start as the worker. On Linux that's
+/// `/proc/self/exe`, which still opens after a rebuild or an update replaced
+/// Talk's file, where its path names a deleted file; it also keeps the worker
+/// the same version as the window it talks to.
+fn running_talk() -> Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    std::env::current_exe().context("could not find Talk to start streaming")
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         if let Some(mut stdin) = self.stdin.take() {
@@ -885,6 +896,18 @@ impl Drop for Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_worker_is_the_running_talk() {
+        // Here that's the test binary, which lists its tests and exits.
+        let program = running_talk().unwrap();
+        let status = std::process::Command::new(program)
+            .args(["--list", "--format", "terse"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn fits_frames_with_even_sizes() {

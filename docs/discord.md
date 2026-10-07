@@ -215,7 +215,8 @@ states carry `self_stream`, which shows as a LIVE badge beside the person.
 Capture runs in a worker process, `talk --stream-worker`, so its buffers take
 memory only while sharing; the process exits when sharing stops.
 `stream_worker` starts it with one job as a JSON line and reads its reports
-back. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
+back. On Linux it starts `/proc/self/exe`, the running Talk, since Talk's path
+names a deleted file once a rebuild or update replaces it. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
 file in the runtime directory. The file is unlinked once the worker opens it.
 On Linux, libwebrtc's capturer asks the screen sharing portal what to share.
 The portal answers over D-Bus through GLib, so the worker runs GLib's main
