@@ -16,7 +16,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::{
     api::Api,
     cache,
-    gateway::{Closed, Gateway, Invalidated},
+    gateway::{Closed, Gateway, Reconnects, TooManyIdentifies},
     member_list::{self, ListedMember, MemberList, Presence},
     message::{self, Message, Names},
     profile::{self, Profile},
@@ -797,8 +797,6 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
 const PUBLISH_GAP: Duration = Duration::from_millis(100);
 /// Reads within this long go to Discord as one acknowledgement per channel.
 const ACK_DELAY: Duration = Duration::from_secs(1);
-const FIRST_RETRY: Duration = Duration::from_secs(2);
-const LAST_RETRY: Duration = Duration::from_secs(60);
 
 struct Shared {
     snapshots: watch::Sender<Arc<Snapshot>>,
@@ -891,31 +889,37 @@ async fn refresh_list(
 
 async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut shared: Shared) {
     let snapshots = shared.snapshots.clone();
-    let mut retry = FIRST_RETRY;
+    let mut reconnects = Reconnects::default();
     loop {
         snapshots.send_modify(|snapshot| Arc::make_mut(snapshot).status = Status::Connecting);
         let connected = tokio::select! {
-            connected = Gateway::connect(&token, shared.presence.clone()) => connected,
+            connected = Gateway::connect(&token, shared.presence.clone(), &mut reconnects) => connected,
             () = snapshots.closed() => return,
         };
-        let error = match connected {
+        let (error, up) = match connected {
             Ok((gateway, ready)) => {
-                retry = FIRST_RETRY;
+                let started = tokio::time::Instant::now();
                 match connected_session(gateway, &ready, &mut requests, &mut shared).await {
                     Ended::Dropped => return,
-                    Ended::Failed(error) => error,
+                    Ended::Failed(error) => (error, Some(started.elapsed())),
                 }
             }
-            Err(error) => error,
+            Err(error) => (error, None),
         };
-        let closed = error.downcast_ref::<Closed>();
         tracing::warn!(%error, "Discord connection ended");
-        if closed.is_some_and(Closed::is_final) {
+        let stopped = if error.downcast_ref::<Closed>().is_some_and(Closed::is_final) {
+            Some("Discord refused the saved login. Link your Discord account again.")
+        } else if error.downcast_ref::<TooManyIdentifies>().is_some() {
+            Some(
+                "Discord keeps ending the connection, so Talk stopped reconnecting. Restart Talk to try again.",
+            )
+        } else {
+            None
+        };
+        if let Some(reason) = stopped {
             snapshots.send_modify(|snapshot| {
                 let snapshot = Arc::make_mut(snapshot);
-                snapshot.status = Status::Offline(
-                    "Discord refused the saved login. Link your Discord account again.".into(),
-                );
+                snapshot.status = Status::Offline(reason.into());
                 snapshot.voice.clear();
             });
             // Keep answering until Talk drops the handles.
@@ -929,15 +933,7 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
             snapshot.status = Status::Offline("Can't reach Discord. Reconnecting...".into());
             snapshot.voice.clear();
         });
-        // Discord asks for a random wait of one to five seconds after it ends
-        // a session; other retries back off, spread so clients don't return
-        // together.
-        let wait = if error.downcast_ref::<Invalidated>().is_some() {
-            Duration::from_millis(rand::random_range(1_000..5_000))
-        } else {
-            retry.mul_f64(rand::random_range(0.5..1.0))
-        };
-        let wait = tokio::time::sleep(wait);
+        let wait = tokio::time::sleep(reconnects.wait(&error, up));
         tokio::pin!(wait);
         loop {
             tokio::select! {
@@ -948,7 +944,6 @@ async fn run(token: String, mut requests: mpsc::UnboundedReceiver<Request>, mut 
                 },
             }
         }
-        retry = (retry * 2).min(LAST_RETRY);
     }
 }
 

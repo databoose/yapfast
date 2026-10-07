@@ -5,8 +5,8 @@
 //! A lost connection resumes the session where it can, as Discord asks of
 //! every client: Talk connects to the session's resume address, sends RESUME
 //! with the last sequence number, and Discord replays what was missed. A new
-//! IDENTIFY, which Discord limits, follows only when Discord won't resume.
-//! Talk also keeps under
+//! IDENTIFY, which Discord limits, follows only when Discord won't resume,
+//! and [`Reconnects`] spaces those out and caps them. Talk also keeps under
 //! Discord's limit on what a connection sends, in the connection's own task,
 //! so commands held back don't hold back the heartbeats.
 
@@ -116,6 +116,83 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// The first wait before connecting again, which doubles with each session
+/// that fails, up to [`LAST_RETRY`].
+const FIRST_RETRY: Duration = Duration::from_secs(2);
+const LAST_RETRY: Duration = Duration::from_secs(60);
+/// A session up this long counts as working, and the wait starts over.
+const STABLE: Duration = Duration::from_secs(60);
+/// The most IDENTIFYs Talk sends in [`IDENTIFY_WINDOW`]. Discord flags
+/// accounts that keep identifying, so Talk stops rather than go past this.
+const IDENTIFY_LIMIT: usize = 10;
+const IDENTIFY_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+/// Talk sent [`IDENTIFY_LIMIT`] IDENTIFYs within the hour, and stopped.
+#[derive(Debug)]
+pub struct TooManyIdentifies;
+
+impl std::fmt::Display for TooManyIdentifies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Talk started too many Discord gateway sessions within the hour")
+    }
+}
+
+impl std::error::Error for TooManyIdentifies {}
+
+/// When to connect again after a session ends, so a session that keeps
+/// failing doesn't identify over and over.
+pub struct Reconnects {
+    /// The wait before the next connection, before its jitter.
+    retry: Duration,
+    /// When the IDENTIFYs of the last [`IDENTIFY_WINDOW`] went.
+    identifies: VecDeque<Instant>,
+}
+
+impl Default for Reconnects {
+    fn default() -> Self {
+        Self {
+            retry: FIRST_RETRY,
+            identifies: VecDeque::new(),
+        }
+    }
+}
+
+impl Reconnects {
+    /// Counts an IDENTIFY about to go, or refuses it past [`IDENTIFY_LIMIT`].
+    fn identify(&mut self, now: Instant) -> Result<()> {
+        while self
+            .identifies
+            .front()
+            .is_some_and(|sent| now.duration_since(*sent) >= IDENTIFY_WINDOW)
+        {
+            self.identifies.pop_front();
+        }
+        if self.identifies.len() >= IDENTIFY_LIMIT {
+            return Err(TooManyIdentifies.into());
+        }
+        self.identifies.push_back(now);
+        Ok(())
+    }
+
+    /// How long to wait before connecting again, after a session that was up
+    /// for `up`, or never connected, ended with `error`. Waits double until a
+    /// session stays up for [`STABLE`], spread so clients don't return
+    /// together.
+    pub fn wait(&mut self, error: &anyhow::Error, up: Option<Duration>) -> Duration {
+        if up.is_some_and(|up| up >= STABLE) {
+            self.retry = FIRST_RETRY;
+        }
+        let mut wait = self.retry.mul_f64(rand::random_range(0.5..1.0));
+        if error.downcast_ref::<Invalidated>().is_some() {
+            // Discord asks for a random wait of one to five seconds after it
+            // ends a session; longer when it keeps ending them.
+            wait = wait.max(Duration::from_millis(rand::random_range(1_000..5_000)));
+        }
+        self.retry = (self.retry * 2).min(LAST_RETRY);
+        wait
+    }
+}
+
 pub struct Dispatch {
     pub name: String,
     pub data: Value,
@@ -168,8 +245,13 @@ async fn open(url: &str) -> Result<Socket> {
 impl Gateway {
     /// Connects and identifies with `presence`, see
     /// [`crate::settings::presence`], returning the gateway and the READY
-    /// payload.
-    pub async fn connect(token: &str, presence: Value) -> Result<(Self, Value)> {
+    /// payload. Refuses with [`TooManyIdentifies`] when `reconnects` has
+    /// identified too often.
+    pub async fn connect(
+        token: &str,
+        presence: Value,
+        reconnects: &mut Reconnects,
+    ) -> Result<(Self, Value)> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let url = match client::test_server() {
             Some(server) => {
@@ -181,13 +263,14 @@ impl Gateway {
             None => URL.to_owned(),
         };
         let limiter = Limiter::new(SEND_LIMIT, SEND_WINDOW);
-        Self::connect_to(&url, token, presence, limiter).await
+        Self::connect_to(&url, token, presence, reconnects, limiter).await
     }
 
     async fn connect_to(
         url: &str,
         token: &str,
         presence: Value,
+        reconnects: &mut Reconnects,
         limiter: Limiter,
     ) -> Result<(Self, Value)> {
         let mut connection = Connection {
@@ -203,6 +286,7 @@ impl Gateway {
             resumes: 0,
         };
         connection.greeted().await?;
+        reconnects.identify(Instant::now())?;
         let identify = json!({
             "token": token,
             "capabilities": CAPABILITIES,
@@ -680,8 +764,9 @@ mod tests {
 
         /// A session that's READY, with the connection Discord holds.
         async fn session(&self, interval: Duration, limiter: Limiter) -> (Gateway, Peer) {
+            let mut reconnects = Reconnects::default();
             let (connected, peer) = tokio::join!(
-                Gateway::connect_to(&self.url, "token", json!({}), limiter),
+                Gateway::connect_to(&self.url, "token", json!({}), &mut reconnects, limiter),
                 async {
                     let mut peer = self.accept(interval).await;
                     assert_eq!(peer.command().await["op"], IDENTIFY);
@@ -881,7 +966,7 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let started = Instant::now();
-        let error = Gateway::connect_to(&url, "", json!({}), limiter())
+        let error = Gateway::connect_to(&url, "", json!({}), &mut Reconnects::default(), limiter())
             .await
             .err()
             .unwrap();
@@ -897,7 +982,7 @@ mod tests {
             let _socket = tokio_tungstenite::accept_async(stream).await.unwrap();
             std::future::pending::<()>().await;
         });
-        let error = Gateway::connect_to(&url, "", json!({}), limiter())
+        let error = Gateway::connect_to(&url, "", json!({}), &mut Reconnects::default(), limiter())
             .await
             .err()
             .unwrap();
@@ -971,5 +1056,96 @@ mod tests {
         // No acknowledgement: by the next one, Talk connects again.
         let mut peer = discord.accept(SLOW_HEARTBEAT).await;
         assert_eq!(peer.command().await["op"], RESUME);
+    }
+
+    #[test]
+    fn reconnects_wait_longer_until_a_session_holds() {
+        let mut reconnects = Reconnects::default();
+        let lost = anyhow!("lost");
+        let between = |wait: Duration, low: u64, high: u64| {
+            assert!(
+                wait >= Duration::from_millis(low) && wait <= Duration::from_millis(high),
+                "{wait:?} not in {low}..={high} ms"
+            );
+        };
+        between(reconnects.wait(&lost, None), 1_000, 2_000);
+        between(reconnects.wait(&lost, None), 2_000, 4_000);
+        // A session that ended within the minute doesn't start over.
+        between(
+            reconnects.wait(&lost, Some(Duration::from_secs(5))),
+            4_000,
+            8_000,
+        );
+        for _ in 0..10 {
+            reconnects.wait(&lost, Some(Duration::from_secs(5)));
+        }
+        between(reconnects.wait(&lost, None), 30_000, 60_000);
+        // One that held for a minute does.
+        between(reconnects.wait(&lost, Some(STABLE)), 1_000, 2_000);
+
+        // Ended sessions wait Discord's one to five seconds at first, then
+        // longer.
+        let mut reconnects = Reconnects::default();
+        let invalidated = anyhow::Error::new(Invalidated);
+        between(
+            reconnects.wait(&invalidated, Some(Duration::ZERO)),
+            1_000,
+            5_000,
+        );
+        // 4, 8 and 16 s.
+        for _ in 0..3 {
+            reconnects.wait(&invalidated, Some(Duration::ZERO));
+        }
+        between(
+            reconnects.wait(&invalidated, Some(Duration::ZERO)),
+            16_000,
+            32_000,
+        );
+    }
+
+    #[test]
+    fn identifies_stop_at_the_hourly_limit() {
+        let mut reconnects = Reconnects::default();
+        let now = Instant::now();
+        for minute in 0..IDENTIFY_LIMIT as u64 {
+            reconnects
+                .identify(now + Duration::from_secs(minute * 60))
+                .unwrap();
+        }
+        let refused = reconnects
+            .identify(now + Duration::from_secs(30 * 60))
+            .unwrap_err();
+        assert!(refused.downcast_ref::<TooManyIdentifies>().is_some());
+        // An hour after the first, one more may go.
+        reconnects.identify(now + IDENTIFY_WINDOW).unwrap();
+        assert!(reconnects.identify(now + IDENTIFY_WINDOW).is_err());
+    }
+
+    #[tokio::test]
+    async fn connecting_counts_its_identify() {
+        let discord = Discord::new().await;
+        let mut reconnects = Reconnects::default();
+        let now = Instant::now();
+        for _ in 0..IDENTIFY_LIMIT {
+            reconnects.identify(now).unwrap();
+        }
+        let accept = async {
+            // Talk opens the connection, then sends nothing.
+            let mut peer = discord.accept(SLOW_HEARTBEAT).await;
+            timeout(Duration::from_millis(200), peer.socket.next()).await
+        };
+        let (connected, sent) = tokio::join!(
+            Gateway::connect_to(&discord.url, "", json!({}), &mut reconnects, limiter()),
+            accept,
+        );
+        let error = connected.err().unwrap();
+        assert!(
+            error.downcast_ref::<TooManyIdentifies>().is_some(),
+            "{error:#}"
+        );
+        assert!(
+            !matches!(sent, Ok(Some(Ok(Message::Text(_))))),
+            "no IDENTIFY went"
+        );
     }
 }
