@@ -660,6 +660,9 @@ struct Adapter {
     /// Suggestions for the `@` here were closed with Escape; they stay closed until
     /// the cursor leaves the word.
     mention_dismissed: Option<usize>,
+    /// The room whose composer last reported its cursor, and the cursor's byte
+    /// offset, where the picker's emoji go.
+    caret: Option<(String, usize)>,
     notifier: crate::notify::Notifier,
     /// The viewer's image, converted for Slint while it shows.
     viewer_image: Option<(Arc<Picture>, slint::Image)>,
@@ -737,6 +740,7 @@ impl Adapter {
                 restyle: false,
                 mention_at: None,
                 mention_dismissed: None,
+                caret: None,
                 notifier: crate::notify::Notifier::start(open_from_notification),
                 viewer_image: None,
                 viewer_size: None,

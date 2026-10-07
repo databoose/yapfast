@@ -78,6 +78,15 @@ fn custom_key(emoji: &talk_core::chat::CustomEmoji) -> String {
     format!("{}:{}", emoji.text.trim_matches(':'), emoji.id)
 }
 
+/// What an emoji puts in the composer: the emoji itself, or a custom emoji's
+/// `:name:`, which goes out in Discord's form; see `talk_core::chat::wire_emoji`.
+pub fn composer_text(key: &str) -> String {
+    match key.split_once(':') {
+        Some((name, _)) => format!(":{name}:"),
+        None => key.to_owned(),
+    }
+}
+
 /// The picker's rows: with no query, frequently used emoji, the custom emoji of
 /// each server in `custom`, and then every category under its heading; otherwise
 /// the emoji whose name or shortcode contains the query.
@@ -293,6 +302,9 @@ mod tests {
         assert_eq!(found[0].cells.row_data(0).unwrap().glyph, "🍕");
         assert!(rows("no such emoji", &[], &[]).is_empty());
         assert_eq!(cell("👍").name, "Thumbs up");
+        // The composer gets the emoji, or a custom emoji's name.
+        assert_eq!(composer_text("👍"), "👍");
+        assert_eq!(composer_text("pog:5"), ":pog:");
 
         // A server's custom emoji follow those used often, and match by name.
         let custom = [EmojiSet {

@@ -1328,13 +1328,25 @@ fn matrix_mentions_link_to_the_person() {
 #[cfg(feature = "discord")]
 fn discord_mentions_search_the_server_and_name_roles() {
     use talk_discord::{
-        ready::{Channel, Server},
-        service::{Snapshot, Status},
+        ready::{Channel, Emoji, Server},
+        service::{Account, Snapshot, Status},
     };
     let mut app = connected();
+    let emoji = |id: &str, name: &str, animated| Emoji {
+        id: id.into(),
+        name: name.into(),
+        animated,
+        available: true,
+    };
     app.apply(discord_event(Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
+        // Nitro, for the animated emoji.
+        account: Some(Account {
+            name: "Alice".into(),
+            avatar: String::new(),
+            premium_type: 2,
+        }),
         servers: vec![Arc::new(Server {
             id: "10".into(),
             name: "Test".into(),
@@ -1343,6 +1355,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
                 name: "general".into(),
                 ..Default::default()
             }],
+            emojis: vec![emoji("5", "talk", false), emoji("6", "party", true)],
             ..Default::default()
         })],
         ..Default::default()
@@ -1408,11 +1421,14 @@ fn discord_mentions_search_the_server_and_name_roles() {
         .map(|candidate| candidate.name)
         .collect();
     assert_eq!(names, ["Bob", "Bobby"]);
-    app.dispatch(Action::SetDraft("@Bobby and @mods, look".into()));
+    // Custom emoji from the picker go out in Discord's form.
+    app.dispatch(Action::SetDraft(
+        "@Bobby and @mods, look :talk: :party:".into(),
+    ));
     let Command::Send { body, .. } = send_command(app.dispatch(Action::Send)) else {
         unreachable!()
     };
-    assert_eq!(body, "<@9> and <@&30>, look");
+    assert_eq!(body, "<@9> and <@&30>, look <:talk:5> <a:party:6>");
     // Another conversation starts afresh.
     app.dispatch(Action::Navigate(Navigation::DirectMessages));
     app.dispatch(Action::SelectRoom("dm".into()));

@@ -171,6 +171,8 @@ export component TalkWindow inherits Window {
     callback composer-caret(string, int);
     callback mention-chosen(int);
     callback mention-dismissed;
+    // An emoji from the picker, by its reaction key, goes in at the composer's cursor.
+    callback insert-emoji(string);
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
@@ -676,12 +678,19 @@ export component TalkWindow inherits Window {
         message-menu.show();
     }
     property <bool> picker-open: emoji-picker.is-open;
-    changed picker-open => { if !root.picker-open { root.react-item = ""; } }
+    changed picker-open => {
+        if !root.picker-open {
+            if root.react-item == "talk:composer" { root.focus-composer(); }
+            root.react-item = "";
+        }
+    }
     property <EmojiCell> emoji-hover;
     // The status dialog borrows the picker for its emoji.
     function pick(cell: EmojiCell) {
         if root.react-item == "talk:status" {
             root.status-emoji = cell;
+        } else if root.react-item == "talk:composer" {
+            root.insert-emoji(cell.key);
         } else {
             root.react(root.react-item, cell.key);
         }
@@ -1461,6 +1470,18 @@ export component TalkWindow inherits Window {
                                             up-from-empty => { root.edit-last(); }
                                             up-to-messages => { root.browse-messages(); }
                                             paste => { root.paste-into-composer(); }
+                                        }
+                                        VerticalLayout {
+                                            alignment: end; padding-bottom: 8px;
+                                            IconButton {
+                                                icon: @image-url("icons/smile.svg"); label: "Add an emoji";
+                                                glyph: 22px; enabled: root.composer-enabled;
+                                                tint: root.react-item == "talk:composer" ? Theme.text : Theme.secondary;
+                                                clicked => {
+                                                    root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
+                                                    root.open-picker("talk:composer");
+                                                }
+                                            }
                                         }
                                         VerticalLayout {
                                             alignment: end; padding-bottom: 8px;

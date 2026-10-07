@@ -575,9 +575,9 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         if adapter.app.state.draft() != text.as_str() {
             adapter.action(&window, Action::SetDraft(text.to_string()));
         }
-        let found = usize::try_from(offset)
-            .ok()
-            .and_then(|offset| mention::query(&text, offset));
+        let offset = usize::try_from(offset).ok();
+        adapter.caret = adapter.app.state.selected.clone().zip(offset);
+        let found = offset.and_then(|offset| mention::query(&text, offset));
         if found.is_none() {
             adapter.mention_dismissed = None;
         }
@@ -619,6 +619,29 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             let text = format!("{}{inserted}{}", &text[..at], &text[end..]);
             adapter.mention_at = None;
             adapter.action(&window, Action::MentionQuery(None));
+            adapter.action(&window, Action::SetDraft(text));
+            at + inserted.len()
+        };
+        window.invoke_place_composer_caret(i32::try_from(caret).unwrap_or(i32::MAX));
+        window.invoke_focus_composer();
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_insert_emoji(move |key| {
+        let Some(window) = weak.upgrade() else { return };
+        let caret = {
+            let mut adapter = state.borrow_mut();
+            let text = adapter.app.state.draft().to_owned();
+            // At the cursor this room's composer last had, else at the end.
+            let at = adapter
+                .caret
+                .as_ref()
+                .filter(|(room, _)| adapter.app.state.selected.as_ref() == Some(room))
+                .map(|&(_, at)| at)
+                .filter(|&at| text.is_char_boundary(at))
+                .unwrap_or(text.len());
+            let inserted = emoji::composer_text(&key);
+            let text = format!("{}{inserted}{}", &text[..at], &text[at..]);
             adapter.action(&window, Action::SetDraft(text));
             at + inserted.len()
         };

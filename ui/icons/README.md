@@ -7,7 +7,7 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
   phone, phone-off, refresh-cw, reply, screen-share, screen-share-off, send-horizontal,
   smile-plus, square-pen, trash-2, triangle-alert, user, user-plus, users and x come unmodified from
   lucide-static 1.51.0.
-- chevron-left, chevron-right, ellipsis, forward and search follow
+- chevron-left, chevron-right, ellipsis, forward, search and smile follow
   lucide-static 1.51.0's paths in the same wrapper.
 
 discord.svg is Discord's logo from Simple Icons 16.34.0
