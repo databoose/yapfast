@@ -109,6 +109,12 @@ const SEND_WINDOW: Duration = Duration::from_secs(60);
 /// How many times a lost connection tries to resume before Talk identifies
 /// again.
 const RESUME_TRIES: u32 = 3;
+/// A resume that didn't hold waits this long, doubled with each try so far,
+/// and up to this long more, before the next.
+#[cfg(not(test))]
+const RESUME_WAIT: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const RESUME_WAIT: Duration = Duration::from_millis(10);
 /// How long opening a connection, Discord's HELLO, or sending may take before
 /// Talk gives up on the connection.
 #[cfg(not(test))]
@@ -674,8 +680,8 @@ impl Connection {
             }
             // A resume that didn't hold waits longer before the next.
             if self.resumes > 0 {
-                let wait = Duration::from_secs(2u64.pow(self.resumes))
-                    + Duration::from_millis(rand::random_range(0..1_000));
+                let wait = RESUME_WAIT * 2u32.pow(self.resumes)
+                    + rand::random_range(Duration::ZERO..RESUME_WAIT);
                 tokio::time::sleep(wait).await;
             }
             self.resumes += 1;
