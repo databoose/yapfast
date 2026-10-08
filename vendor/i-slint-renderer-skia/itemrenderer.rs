@@ -411,12 +411,30 @@ impl<'a> SkiaItemRenderer<'a> {
                 skia_image.height() * fit.clip_rect.size.height / source_size.height as i32,
             );
 
+            // Talk: small smooth pictures sample mipmaps, so one drawn smaller
+            // than its pixels, such as a 128-pixel avatar at 40, averages them
+            // rather than picking a few and looking jagged. Skia builds a
+            // picture's mipmaps once, but each video frame is a new picture:
+            // building them for a 1080p frame took 4 ms more, so larger ones go
+            // without.
+            const MIPMAPPED_PIXELS: i64 = 512 * 512;
+            let small = i64::from(skia_image.width()) * i64::from(skia_image.height())
+                <= MIPMAPPED_PIXELS;
             let filter_mode: skia_safe::sampling_options::SamplingOptions =
                 match item.rendering() {
-                    ImageRendering::Pixelated => skia_safe::sampling_options::FilterMode::Nearest,
-                    ImageRendering::Smooth | _ => skia_safe::sampling_options::FilterMode::Linear,
-                }
-                .into();
+                    ImageRendering::Pixelated => {
+                        skia_safe::sampling_options::FilterMode::Nearest.into()
+                    }
+                    ImageRendering::Smooth | _ if small => {
+                        skia_safe::sampling_options::SamplingOptions::new(
+                            skia_safe::sampling_options::FilterMode::Linear,
+                            skia_safe::sampling_options::MipmapMode::Linear,
+                        )
+                    }
+                    ImageRendering::Smooth | _ => {
+                        skia_safe::sampling_options::FilterMode::Linear.into()
+                    }
+                };
 
             if let Some(tiled_offset) = fit.tiled {
                 let matrix = Matrix::translate(((fit.offset.x as i32), (fit.offset.y as i32)))
