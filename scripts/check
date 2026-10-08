@@ -3,8 +3,9 @@
 # smoke runs.
 # Usage: scripts/check [--fast]
 # --fast builds with the `fast` profile, which local work uses. Each step
-# prints `=== step` and `rc=N`; its full output is in target/check/. The
-# script exits non-zero when any step failed, after running them all.
+# prints `=== step` and `rc=N` when it ends; its full output is in
+# target/check/. The script exits non-zero when any step failed, after running
+# them all.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -21,46 +22,66 @@ esac
 
 logs=target/check
 mkdir -p "$logs"
-rm -f "$logs"/*.log
-failed=()
-step=0
+rm -f "$logs"/*.log "$logs"/*.rc
 
+# Runs a step and prints its report in one write, so the reports of steps
+# running at the same time don't interleave.
 run() {
   local name=$1
   shift
-  step=$((step + 1))
-  local log
-  log=$(printf '%s/%02d-%s.log' "$logs" "$step" "$name")
-  echo "=== $name: $*"
-  "$@" >"$log" 2>&1
+  "$@" >"$logs/$name.log" 2>&1
   local rc=$?
-  echo "rc=$rc"
+  echo "$rc" >"$logs/$name.rc"
+  local report
+  report="=== $name: $*"$'\n'"rc=$rc"
   if [[ $rc -ne 0 ]]; then
-    failed+=("$name")
     # Rust's own diagnostics, without the C compilers' warnings around them,
     # or the end of the output when there are none.
-    grep -E -A12 '^(error|warning)(\[|:)|^test .* FAILED|panicked at' "$log" | head -80 ||
-      tail -20 "$log"
-    echo "(full output: $log)"
+    report+=$'\n'$(grep -E -A12 '^(error|warning)(\[|:)|^test .* FAILED|panicked at' "$logs/$name.log" | head -80 ||
+      tail -20 "$logs/$name.log")
+    report+=$'\n'"(full output: $logs/$name.log)"
   fi
+  printf '%s\n' "$report"
 }
 
 clippy=(cargo clippy --locked "${profile[@]}" --all-targets)
+
+# Each network alone, in the desktop and in the shared core with its tests.
+# These build talk and talk-core with other features than the steps below, so
+# they run alongside them in a target directory of their own: Cargo lets one
+# build at a time use a target directory.
+combinations() {
+  export CARGO_TARGET_DIR=target/check-combinations
+  run clippy-discord-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
+    --features talk/desktop,talk/discord,talk-core/discord -- -D warnings
+  run clippy-matrix-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
+    --features talk/desktop,talk/matrix,talk-core/matrix -- -D warnings
+  run clippy-headless "${clippy[@]}" -p talk --no-default-features --features matrix,discord -- -D warnings
+}
+
+# In a process group of its own, so an interrupt can stop all of it: a
+# background job doesn't get the terminal's Ctrl-C.
+set -m
+combinations &
+combinations_pid=$!
+set +m
+trap 'kill -TERM -- -"$combinations_pid" 2>/dev/null; exit 130' INT TERM
+
 run fmt cargo fmt --all -- --check
 run doc-links scripts/check-doc-links
 run clippy "${clippy[@]}" --workspace -- -D warnings
 run test cargo test --locked "${profile[@]}" --workspace
-# Each network alone, in the desktop and in the shared core with its tests.
-run clippy-discord-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
-  --features talk/desktop,talk/discord,talk-core/discord -- -D warnings
-run clippy-matrix-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
-  --features talk/desktop,talk/matrix,talk-core/matrix -- -D warnings
-run clippy-headless "${clippy[@]}" -p talk --no-default-features --features matrix,discord -- -D warnings
 run build cargo build --locked "${profile[@]}" --workspace
 run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
 # Last, so target/<profile>/talk is the desktop build afterwards.
 run smoke cargo run --locked "${profile[@]}" -- --smoke-test
+wait "$combinations_pid"
 
+failed=()
+for name in fmt doc-links clippy test clippy-discord-only clippy-matrix-only clippy-headless \
+  build smoke-headless smoke; do
+  [[ "$(cat "$logs/$name.rc" 2>/dev/null)" == 0 ]] || failed+=("$name")
+done
 if [[ ${#failed[@]} -gt 0 ]]; then
   echo "FAILED: ${failed[*]}"
   exit 1
