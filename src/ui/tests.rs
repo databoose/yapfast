@@ -855,6 +855,110 @@ fn scrolling_up_leaves_the_latest_message() {
 }
 
 #[test]
+fn older_messages_go_in_above_without_moving_those_shown() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_loading_history(true);
+    // The first row carries the loading notice and its day; once older
+    // messages from that day are above it, it carries neither.
+    let rows = |from: usize| -> Vec<MessageRow> {
+        (from..200)
+            .map(|index| {
+                let body = if index % 3 == 0 {
+                    format!("Message {index}, a longer line that wraps across the timeline at ordinary window widths, and then some more words")
+                } else {
+                    format!("Message {index}")
+                };
+                let mut row = message_row_plain(&ChatMessage {
+                    id: format!("m{index}"),
+                    item: format!("i{index}"),
+                    author: "Bob".into(),
+                    body,
+                    formatted: true,
+                    ..Default::default()
+                });
+                row.first = true;
+                if index == from {
+                    row.day = "1 October 2026".into();
+                }
+                row
+            })
+            .collect()
+    };
+    let model = Rc::new(VecModel::from(rows(150)));
+    window.set_messages(ModelRc::from(model.clone()));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    // As drawing does, the pointer goes through the list, which lays it out.
+    let settle = || {
+        for _ in 0..5 {
+            slint::platform::update_timers_and_animations();
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(1100., 740.),
+                });
+        }
+    };
+    settle();
+    window.invoke_scroll_to_latest();
+    settle();
+    for _ in 0..40 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: 400.,
+            });
+        settle();
+    }
+    // The first message, with the loading notice and its day above it, is
+    // partly scrolled under the top.
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(700., 380.),
+            delta_x: 0.,
+            delta_y: -90.,
+        });
+    settle();
+    assert_eq!(window.get_top_index(), 0);
+    let edge = window.get_top_edge();
+    show_rows(&model, rows(100));
+    settle();
+    assert_eq!(
+        (window.get_top_index(), window.get_top_item().as_str()),
+        (50, "i150"),
+        "the same message is at the top"
+    );
+    assert!(
+        (window.get_top_edge() - edge).abs() < 0.5,
+        "its text stays where it was: {edge} then {}",
+        window.get_top_edge()
+    );
+    assert!(!window.invoke_timeline_at_end());
+    // Scrolling up shows those that went in.
+    for _ in 0..2 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: 200.,
+            });
+        settle();
+    }
+    assert!(window.get_top_index() < 50);
+    window.hide().unwrap();
+}
+
+#[test]
 fn scrolling_up_through_styled_messages_stays_up() {
     i_slint_backend_testing::init_no_event_loop();
     let window = TalkWindow::new().unwrap();

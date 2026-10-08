@@ -453,7 +453,10 @@ by default. Server text channels are listed under their Discord categories and
 open in Talk's timeline. Clicking a category's heading collapses it, leaving
 the open channel, unread ones and voice channels with people in them, as in
 Discord; Talk remembers which categories are collapsed, per server. History
-loads from Discord 50 messages at a time, and new messages, edits, deletions
+loads from Discord 50 messages at a time (`GET /channels/{id}/messages` with
+`before` the oldest loaded message and `limit=50`) as the timeline scrolls
+near its top, one page at a time per channel, until a short page shows the
+channel's first message is there; and new messages, edits, deletions
 and reactions arrive live. Opening a channel subscribes to its server, as the
 web client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes,

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs crates/talk-discord/tests/fake_server.rs against testing/fake_discord.ts.
+# Runs crates/talk-discord/tests/fake_server.rs, then talk-core's ignored
+# discord_text tests, against testing/fake_discord.ts.
 # Usage: scripts/test-fake-discord [TEST_ARGS…], such as a test name filter
 # or --test-threads=1, passed to the test binary.
 # Starts the fake on a free port, waits until it answers, runs the ignored
@@ -35,3 +36,6 @@ curl -fsS --max-time 1 "http://127.0.0.1:$port/_control/health" >/dev/null || {
 
 TALK_DISCORD_TEST_SERVER="http://127.0.0.1:$port" \
   cargo test --locked --profile fast -p talk-discord --test fake_server -- --ignored "$@"
+# The shared core's Discord side, against the same fake.
+TALK_DISCORD_TEST_SERVER="http://127.0.0.1:$port" \
+  cargo test --locked --profile fast -p talk-core discord_text::tests -- --ignored "$@"

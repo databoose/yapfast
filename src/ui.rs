@@ -1254,6 +1254,21 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
 /// rows that came or went before or after the rest are inserted or removed,
 /// so loading older messages above leaves the rows below untouched, and the
 /// rest are set only where they changed.
+/// Shows the timeline's rows, building again only those that changed. Older
+/// messages go in above the rows shown, and the list keeps those where they
+/// are on screen, even when it shows the first row; see
+/// `i_slint_core::talk_anchor`.
+fn show_rows(model: &VecModel<MessageRow>, rows: Vec<MessageRow>) {
+    let earlier = model
+        .row_data(0)
+        .is_some_and(|first| rows.iter().skip(1).any(|row| row.id == first.id));
+    if earlier {
+        i_slint_core::talk_anchor::hold(|| update_model_by_id(model, rows, |row| row.id.clone()));
+    } else {
+        update_model_by_id(model, rows, |row| row.id.clone());
+    }
+}
+
 fn update_model_by_id<T: Clone + PartialEq + 'static>(
     model: &VecModel<T>,
     rows: Vec<T>,

@@ -111,6 +111,9 @@ impl Application {
         self.state.profile = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
+        // The preview's samples are all there is.
+        self.state.history_start = self.state.preview;
+        self.state.history_failed = false;
         self.state.jump = None;
         self.seeking = None;
         self.state.notice = None;
@@ -178,6 +181,8 @@ impl Application {
         self.state.viewer = None;
         self.state.room_ready = false;
         self.state.loading_history = false;
+        self.state.history_start = false;
+        self.state.history_failed = false;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.state.members = None;

@@ -47,7 +47,15 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   ONLINE and OFFLINE, with counts, avatars, status dots, role colours and
   custom statuses. Talk subscribes to the list's
   first 100 rows while the channel is open, and Discord keeps them current.
-- Read live text messages and load history in batches of 30.
+- Read live text messages. Earlier history loads as the timeline scrolls
+  within a screen of its top, a page at a time (30 events for Matrix, 50
+  messages for Discord), until the conversation's first message, which "This
+  is the start of #general." marks. While a page is on its way a pill above
+  the oldest message says "Loading earlier messages..."; if it fails, the pill
+  offers Retry, and pages load again only when asked. The messages shown
+  stay where they are on screen as older ones go in above them, even when
+  the top of the history is on screen; see
+  [building](building.md#dependencies).
 - Recover encryption keys or recheck verification performed in another client.
 - Send only from a cross-signed device into a joined encrypted room. Existing
   plaintext rooms are read-only.
@@ -154,8 +162,9 @@ The window follows Discord's arrangement:
 - A conversation with a 48px header. Messages from one person within seven
   minutes are grouped under one avatar and name. Hovering a grouped message
   shows its time in the gutter. Replies draw a spine to the quoted message, and
-  a date divider starts each day. An "Earlier messages" pill sits above the
-  oldest loaded message. The composer is a rounded field with attach, the
+  a date divider starts each day. The top of the history shows what's
+  before it: earlier messages loading, a way to retry them, or the start of
+  the conversation. The composer is a rounded field with attach, the
   message ("Message #general"), and a send button; reply and edit modes attach
   a bar above it. With no conversation selected, the area shows "Pick a
   conversation" and hides the composer. The local preview labels itself in a

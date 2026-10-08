@@ -558,6 +558,17 @@ pub struct ChatMessage {
     pub can_forward: bool,
 }
 
+/// How loading a page of earlier history ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum History {
+    /// There's more before it.
+    More,
+    /// The room's first message is loaded, so there's nothing before it.
+    Start,
+    /// It failed, and [`Event::RoomError`] said why.
+    Failed,
+}
+
 pub enum Start {
     Restore,
     Login {
@@ -652,6 +663,9 @@ pub enum Command {
         room: String,
         body: String,
     },
+    /// Load the page of history before the room's oldest loaded message;
+    /// [`Event::HistoryLoaded`] follows. A backend loads one page at a time
+    /// per room, and answers at once when the first message is loaded.
     Earlier(String),
     Recover(String),
     RefreshTrust,
@@ -825,7 +839,12 @@ pub enum Event {
         room: String,
         message: String,
     },
-    HistoryLoaded(String),
+    /// A page of earlier history [`Command::Earlier`] asked for is in the
+    /// room's timeline, or why there's none.
+    HistoryLoaded {
+        room: String,
+        history: History,
+    },
     /// The open room's joined members, by role and then name.
     Members {
         room: String,

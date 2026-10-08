@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, ImageViewer } from "messages.slint";
+import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, ImageViewer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -179,6 +179,10 @@ export component TalkWindow inherits Window {
     in property <bool> can-send;
     in property <bool> sending;
     in property <bool> loading-history;
+    // The first message is loaded, or loading earlier ones failed and waits
+    // for Retry.
+    in property <bool> history-start;
+    in property <bool> history-failed;
     in property <string> composer-hint;
     // Who else is typing in the open conversation; it takes the hint's place.
     in property <string> typing;
@@ -567,6 +571,20 @@ export component TalkWindow inherits Window {
         root.settle-lead();
         if root.follow-latest { root.scroll-to-latest(); }
     }
+    // The rows at the top and bottom of the view, by index, and the top one's
+    // item and bottom edge in the view; the rows report them as they move,
+    // and each row made counts `view-tick` up, so that the others report too.
+    out property <int> top-index: -1;
+    out property <string> top-item;
+    out property <length> top-edge;
+    out property <int> bottom-index: -1;
+    property <int> view-tick;
+    // Earlier messages load as the timeline nears its top, a page at a time,
+    // until the first message. After a failure they wait for Retry.
+    property <bool> wants-earlier: root.room-ready && !root.preview && !root.busy && !root.voice-room
+        && root.messages.length > 0 && !root.loading-history && !root.history-start && !root.history-failed
+        && -timeline.content-y < timeline.height;
+    changed wants-earlier => { if self.wants-earlier { root.earlier(); } }
     // Formatted messages are not selectable, so Copy goes through a hidden text field.
     function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
     clipboard := TextInput { visible: false; width: 0px; height: 0px; }
@@ -1196,6 +1214,21 @@ export component TalkWindow inherits Window {
                                                 root.keyboard-popup = "";
                                             }
                                         }
+                                        // Where it is in the view, for `top-index` and `bottom-index`.
+                                        property <length> view-y: self.y + timeline.content-y;
+                                        property <int> view-tick: root.view-tick;
+                                        property <int> row-index: index;
+                                        function report-view() {
+                                            if self.view-y <= 0px && self.view-y + self.height > 0px {
+                                                root.top-index = index; root.top-item = message.item; root.top-edge = self.view-y + self.height;
+                                            }
+                                            if self.view-y < timeline.height && self.view-y + self.height >= timeline.height { root.bottom-index = index; }
+                                        }
+                                        init => { root.view-tick += 1; }
+                                        changed view-y => { self.report-view(); }
+                                        changed height => { self.report-view(); }
+                                        changed view-tick => { self.report-view(); }
+                                        changed row-index => { self.report-view(); }
                                         // The space that holds a short history down stays outside the row.
                                         property <length> top: index == 0 ? root.lead : 0px;
                                         height: col.preferred-height + self.top;
@@ -1227,21 +1260,12 @@ export component TalkWindow inherits Window {
                                                 padding-top: message.day != "" ? 12px : message.first ? 14px : 1px;
                                                 padding-bottom: index == root.messages.length - 1 ? 20px : 1px;
                                                 spacing: 0px;
-                                                // History starts with a way to load more of it.
-                                                if index == 0 && !root.preview && root.room-ready: HorizontalLayout {
-                                                    alignment: center; padding-top: 4px; padding-bottom: 8px;
-                                                    Rectangle {
-                                                        width: earlier-content.preferred-width; height: 30px; border-radius: 15px;
-                                                        background: earlier-touch.has-hover && !root.loading-history ? Theme.active : Theme.raised;
-                                                        accessible-role: button; accessible-label: "Earlier messages"; accessible-enabled: !root.loading-history && !root.busy;
-                                                        accessible-action-default => { if !root.loading-history && !root.busy { root.earlier(); } }
-                                                        earlier-content := HorizontalLayout {
-                                                            padding-left: 12px; padding-right: 14px; spacing: 6px;
-                                                            Image { source: @image-url("icons/history.svg"); width: 16px; image-fit: contain; colorize: Theme.secondary; }
-                                                            Text { text: root.loading-history ? "Loading..." : "Earlier messages"; color: Theme.secondary; font-size: 14px; font-weight: 500; vertical-alignment: center; }
-                                                        }
-                                                        earlier-touch := TouchArea { enabled: !root.loading-history && !root.busy; mouse-cursor: MouseCursor.pointer; clicked => { root.earlier(); } }
-                                                    }
+                                                // History starts with what's before it: earlier messages
+                                                // loading, or the conversation's start.
+                                                if index == 0 && root.room-ready: HistoryEdge {
+                                                    loading: root.loading-history; failed: root.history-failed; start: root.history-start;
+                                                    enabled: !root.busy && !root.preview; room-direct: root.room-direct; room-name: root.room-name;
+                                                    earlier => { root.earlier(); }
                                                 }
                                                 if message.day != "": HorizontalLayout {
                                                     padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;

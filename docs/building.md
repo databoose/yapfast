@@ -51,6 +51,20 @@ The core of it is `talk_selection.rs`. The other changes are marked `Talk:` in:
 - `graphics/image.rs`, where no image equals no image; upstream they differ,
   so every list row without a picture counted as changed on each refresh
 
+It also keeps a timeline's rows in place as older messages go in above them.
+Upstream, a `ListView` keeps its rows where they are on screen when rows go in
+above the first one it shows, but rows that go in right above it, as when the
+top of the history is on screen, push everything shown down. Inside
+`talk_anchor::hold`, which Talk wraps around a page of older messages, those
+count as above it too. That row then keeps its bottom edge where it is in the
+view, rather than its top, while its height settles: it loses its date, its
+author line or the loading notice once the rows before it carry them, and
+those parts change only when the list is next drawn. The anchor moves with
+scrolling and ends when the row is no longer shown. A wheel scroll animates
+`content-y` and would carry on to where it was going, so the list stops that
+animation when rows go in above inside `hold`. This is `talk_anchor.rs` and the
+changes marked `Talk:` in `model/repeater.rs`.
+
 Reapply them to the matching release when upgrading Slint. Styled paragraphs now
 have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
 
@@ -87,7 +101,8 @@ incrementally. Use it for tests, local runs and
 Talk patches these crates in `vendor/`, through `[patch.crates-io]` or a path
 dependency in Cargo.toml:
 
-- `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText`, above.
+- `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText` and
+  timelines that keep their place as older messages load, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
   above.
 - `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native

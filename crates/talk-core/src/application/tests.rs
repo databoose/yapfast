@@ -690,13 +690,13 @@ fn jumping_to_a_reply_loads_history_until_the_original_is_there() {
         room: "dm".into(),
         messages: vec![message("e:1"), message("e:2"), message("e:3")],
     });
-    assert!(app.apply(Event::HistoryLoaded("dm".into())).is_empty());
+    assert!(app.apply(more("dm")).is_empty());
     assert_eq!(app.state.jump, Some(("e:1".into(), 1)));
     // One that never turns up stops the search with a note.
     app.dispatch(Action::Jump("e:0".into()));
     for _ in 0..MAX_SEEK_PAGES {
         assert!(app.state.loading_history);
-        app.apply(Event::HistoryLoaded("dm".into()));
+        app.apply(more("dm"));
     }
     assert!(!app.state.loading_history);
     assert!(
@@ -712,7 +712,7 @@ fn stale_timeline_and_history_events_do_not_replace_the_selected_room() {
     let mut app = connected();
     app.dispatch(Action::Earlier);
     assert!(app.state.loading_history);
-    app.apply(Event::HistoryLoaded("other".into()));
+    app.apply(more("other"));
     assert!(app.state.loading_history);
     let messages = app.state.messages.clone();
     app.apply(Event::Timeline {
@@ -733,8 +733,86 @@ fn stale_timeline_and_history_events_do_not_replace_the_selected_room() {
         messages: vec![],
     });
     assert!(!app.state.room_ready);
-    app.apply(Event::HistoryLoaded("dm".into()));
+    app.apply(more("dm"));
     assert!(!app.state.loading_history);
+}
+
+/// A page of history arrived, with more before it.
+fn more(room: &str) -> Event {
+    Event::HistoryLoaded {
+        room: room.into(),
+        history: chat::History::More,
+    }
+}
+
+#[test]
+fn history_loads_a_page_at_a_time_until_the_first_message() {
+    let mut app = connected();
+    let earlier = |app: &mut Application| {
+        matches!(
+            app.dispatch(Action::Earlier).as_slice(),
+            [Effect::Backend(Command::Earlier(room))] if room == "dm"
+        )
+    };
+    assert!(earlier(&mut app));
+    assert!(!earlier(&mut app), "one page at a time");
+    app.apply(more("dm"));
+    assert!(earlier(&mut app));
+    // A page that fails stops loading until asked again.
+    app.apply(Event::HistoryLoaded {
+        room: "dm".into(),
+        history: chat::History::Failed,
+    });
+    assert!(app.state.history_failed);
+    assert!(earlier(&mut app), "asking again retries");
+    assert!(!app.state.history_failed);
+    app.apply(Event::HistoryLoaded {
+        room: "dm".into(),
+        history: chat::History::Start,
+    });
+    assert!(app.state.history_start);
+    assert!(!earlier(&mut app), "nothing is before the first message");
+    // Another room starts over.
+    app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+    assert!(!app.state.history_start);
+    app.dispatch(Action::SelectRoom("dm".into()));
+    app.dispatch(Action::Navigate(Navigation::DirectMessages));
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: vec![],
+    });
+    assert!(!app.state.history_start);
+    assert!(earlier(&mut app));
+}
+
+#[test]
+fn a_timeline_that_drops_its_oldest_messages_has_history_to_load_again() {
+    let mut app = connected();
+    let message = |item: &str| ChatMessage {
+        id: item.into(),
+        item: item.into(),
+        ..Default::default()
+    };
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: vec![message("d:1"), message("d:2")],
+    });
+    app.dispatch(Action::Earlier);
+    app.apply(Event::HistoryLoaded {
+        room: "dm".into(),
+        history: chat::History::Start,
+    });
+    // A new message keeps the first one loaded.
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: vec![message("d:1"), message("d:2"), message("d:3")],
+    });
+    assert!(app.state.history_start);
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: vec![message("d:9")],
+    });
+    assert!(!app.state.history_start);
 }
 
 #[test]

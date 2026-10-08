@@ -178,11 +178,13 @@ impl Application {
             || self.state.busy
             || !self.state.room_ready
             || self.state.loading_history
+            || self.state.history_start
             || self.state.selected_room().is_none_or(|room| room.voice)
         {
             return vec![];
         }
         self.state.loading_history = true;
+        self.state.history_failed = false;
         vec![Effect::Backend(Command::Earlier(
             self.state.selected.clone().expect("selected room exists"),
         ))]
@@ -300,7 +302,7 @@ impl Application {
             self.state.jump = Some((item, count));
             return vec![];
         }
-        if pages >= MAX_SEEK_PAGES {
+        if pages >= MAX_SEEK_PAGES || self.state.history_start {
             self.state.notice = Some(
                 "Talk couldn't find the original message in this conversation's recent history."
                     .into(),

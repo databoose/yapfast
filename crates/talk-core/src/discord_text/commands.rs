@@ -146,7 +146,10 @@ pub fn command(
                 item,
                 result: Err(again.into()),
             }),
-            Command::Earlier(room) => events.send(Event::HistoryLoaded(room)),
+            Command::Earlier(room) => events.send(Event::HistoryLoaded {
+                room,
+                history: History::Failed,
+            }),
             _ => Ok(()),
         };
         return;
@@ -194,7 +197,10 @@ pub fn command(
         } => channel.save(discord, done, &item, index, path),
         Command::ViewImage { item, index, .. } => channel.view_image(discord, done, item, index),
         Command::Earlier(room) if !channel.earlier(discord, done) => {
-            let _ = events.send(Event::HistoryLoaded(room));
+            let _ = events.send(Event::HistoryLoaded {
+                room,
+                history: History::Start,
+            });
         }
         _ => {}
     }
@@ -271,21 +277,30 @@ pub fn finished(
             });
         }
         (Done::History { older, result, .. }, channel) => {
-            match (result, channel) {
+            let history = match (result, channel) {
                 (Ok(messages), Some(channel)) => {
                     channel.loaded(older, messages);
                     changed = true;
+                    if channel.complete {
+                        History::Start
+                    } else {
+                        History::More
+                    }
                 }
-                (Ok(_), None) => {}
-                (Err(error), _) => {
+                (Ok(_), None) => History::Failed,
+                (Err(error), channel) => {
+                    if let Some(channel) = channel {
+                        channel.loading_earlier &= !older;
+                    }
                     let _ = events.send(Event::RoomError {
                         room: room.clone(),
                         message: error,
                     });
+                    History::Failed
                 }
-            }
+            };
             // Said once the page is published, so the timeline has it.
-            history_loaded = older.then_some(room);
+            history_loaded = older.then_some((room, history));
         }
         (_, None) => {}
         (Done::Sent { nonce, result, .. }, Some(channel)) => {
@@ -325,8 +340,8 @@ pub fn finished(
     {
         publish(channel, discord, done, events);
     }
-    if let Some(room) = history_loaded {
-        let _ = events.send(Event::HistoryLoaded(room));
+    if let Some((room, history)) = history_loaded {
+        let _ = events.send(Event::HistoryLoaded { room, history });
     }
 }
 

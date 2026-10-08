@@ -498,6 +498,51 @@ export component NoConversation inherits VerticalLayout {
     Text { text: "Choose a DM or a server channel on the left."; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
 }
 
+// What's above the oldest loaded message: earlier messages on their way, a way
+// to load them, or the start of the conversation. It's as tall in each, so
+// changing from one to another doesn't move the messages below.
+export component HistoryEdge inherits HorizontalLayout {
+    in property <bool> loading;
+    in property <bool> failed;
+    in property <bool> start;
+    in property <bool> enabled;
+    in property <bool> room-direct;
+    in property <string> room-name;
+    callback earlier;
+    alignment: center; height: 42px; padding-top: 4px; padding-bottom: 8px;
+    if root.start: Text {
+        text: root.room-direct ? "This is the beginning of your messages with " + root.room-name + "."
+            : "This is the start of #" + root.room-name + ".";
+        color: Theme.muted; font-size: 14px; vertical-alignment: center; overflow: elide;
+    }
+    if !root.start: Rectangle {
+        width: content.preferred-width; height: 30px; border-radius: 15px; clip: true;
+        background: touch.has-hover && touch.enabled ? Theme.active : Theme.raised;
+        accessible-role: button;
+        accessible-label: root.loading ? "Loading earlier messages" : root.failed ? "Couldn't load earlier messages. Retry" : "Earlier messages";
+        accessible-enabled: touch.enabled;
+        accessible-action-default => { if touch.enabled { root.earlier(); } }
+        // The shimmer of the skeletons that stand in for other things loading.
+        if root.loading: Rectangle {
+            width: 120px; height: parent.height;
+            x: Math.mod(animation-tick() / 1ms, 1500) / 1500 * (parent.width + self.width) - self.width;
+            background: @linear-gradient(90deg, #ffffff00 0%, #ffffff10 50%, #ffffff00 100%);
+        }
+        content := HorizontalLayout {
+            padding-left: 12px; padding-right: 14px; spacing: 6px;
+            Image {
+                source: root.failed ? @image-url("icons/triangle-alert.svg") : @image-url("icons/history.svg");
+                width: 16px; image-fit: contain; colorize: root.failed ? Theme.danger : Theme.secondary;
+            }
+            Text {
+                text: root.loading ? "Loading earlier messages..." : root.failed ? "Couldn't load earlier messages. Retry" : "Earlier messages";
+                color: Theme.secondary; font-size: 14px; font-weight: 500; vertical-alignment: center;
+            }
+        }
+        touch := TouchArea { enabled: root.enabled && !root.loading; mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default; clicked => { root.earlier(); } }
+    }
+}
+
 // The opening of a conversation without messages yet.
 export component ConversationStart inherits VerticalLayout {
     in property <bool> room-selected;

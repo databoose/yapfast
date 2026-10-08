@@ -251,7 +251,14 @@ pub struct AppState {
     pub messages: Arc<Vec<ChatMessage>>,
     /// The selected room's joined members, by role and then name; `None` while loading.
     pub members: Option<Result<Vec<ChatMember>, &'static str>>,
+    /// A page of earlier history is on its way.
     pub loading_history: bool,
+    /// The selected room's first message is loaded, so there's no earlier
+    /// history to load.
+    pub history_start: bool,
+    /// Loading earlier history failed. It loads again only when asked
+    /// with [`Action::Earlier`], rather than as the timeline scrolls.
+    pub history_failed: bool,
     /// The message the timeline should bring into view and highlight, and a
     /// count that changes with each jump, even to the same message.
     pub jump: Option<(String, u64)>,
@@ -661,6 +668,9 @@ pub enum Action {
     StepImage(isize),
     CloseImage,
     DismissNotice,
+    /// Load the page of history before the selected room's oldest loaded
+    /// message, as the timeline does when scrolled near its top, unless one
+    /// is on its way or the first message is loaded.
     Earlier,
     /// Show the selected room's message with this item, loading earlier
     /// history until it's there; see [`AppState::jump`].
@@ -1338,6 +1348,13 @@ impl Application {
             Event::Discord(snapshot) => return self.show_snapshot(snapshot),
             Event::Timeline { room, messages } => {
                 if self.state.selected.as_ref() == Some(&room) {
+                    // A backend can drop its oldest messages, as Discord does
+                    // after missing many; what came before them loads again.
+                    if let Some(first) = self.state.messages.first()
+                        && !messages.iter().any(|message| message.item == first.item)
+                    {
+                        self.state.history_start = false;
+                    }
                     self.state.room_ready = true;
                     self.state.messages = Arc::new(messages);
                     return self.mark_discord_read();
@@ -1440,9 +1457,14 @@ impl Application {
                     }
                 }
             }
-            Event::HistoryLoaded(room) => {
+            Event::HistoryLoaded { room, history } => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.loading_history = false;
+                    match history {
+                        chat::History::More => {}
+                        chat::History::Start => self.state.history_start = true,
+                        chat::History::Failed => self.state.history_failed = true,
+                    }
                     return self.seek();
                 }
             }

@@ -76,6 +76,7 @@ impl Application {
             Command::Earlier(room) => {
                 if self.state.selected.as_ref() == Some(room) {
                     self.state.loading_history = false;
+                    self.state.history_failed = true;
                 }
             }
             Command::StartDm { .. } => {

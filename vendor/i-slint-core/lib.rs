@@ -60,7 +60,8 @@ pub mod sharedvector;
 pub mod slice;
 pub mod string;
 pub mod styled_text;
-// Talk: see the module.
+// Talk: see the modules.
+pub mod talk_anchor;
 pub mod talk_selection;
 pub mod textlayout;
 pub mod timers;

@@ -52,9 +52,9 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Delivery,
-        Event, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture, Placement,
-        Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view, notification_text,
-        plain_snippet, sort_members,
+        Event, History, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture,
+        Placement, Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view,
+        notification_text, plain_snippet, sort_members,
     },
     network::Network,
     session::Session,
@@ -65,6 +65,8 @@ use crate::{
 const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
 /// How long a recoverable send failure pauses a room's queue before Talk retries.
 const QUEUE_RETRY: Duration = Duration::from_secs(10);
+/// How many events a page of earlier history asks the homeserver for.
+const HISTORY_PAGE: u16 = 30;
 
 type Updates = Pin<Box<dyn Stream<Item = ()> + Send>>;
 
@@ -424,8 +426,8 @@ impl Matrix {
                         watch_typing(&mut active, &room, events);
                         publish_timeline(&mut active, client, &self.media_sender, events).await;
                         // Sync often delivers only the latest event; fill the first screen.
-                        if active.timeline.items().await.len() < 30 {
-                            let _ = active.timeline.paginate_backwards(30).await;
+                        if active.timeline.items().await.len() < usize::from(HISTORY_PAGE) {
+                            let _ = active.timeline.paginate_backwards(HISTORY_PAGE).await;
                             publish_timeline(&mut active, client, &self.media_sender, events).await;
                         }
                         *open = Some(active);
@@ -568,16 +570,22 @@ impl Matrix {
                 }
             }
             Command::Earlier(id) => {
-                if let Some(active) = open
-                    && active.id() == id
-                {
-                    if active.timeline.paginate_backwards(30).await.is_err() {
-                        let _ = events.send(Event::RoomError { room: id.clone(), message: "Could not load older messages. Check your connection and try again.".into() });
-                    } else {
-                        publish_timeline(active, client, &self.media_sender, events).await;
-                    }
-                }
-                let _ = events.send(Event::HistoryLoaded(id));
+                // The actor carries out one command at a time, so a room
+                // loads one page at once.
+                let history = match open.as_mut().filter(|active| active.id() == id) {
+                    Some(active) => match active.timeline.paginate_backwards(HISTORY_PAGE).await {
+                        Ok(start) => {
+                            publish_timeline(active, client, &self.media_sender, events).await;
+                            if start { History::Start } else { History::More }
+                        }
+                        Err(_) => {
+                            let _ = events.send(Event::RoomError { room: id.clone(), message: "Could not load older messages. Check your connection and try again.".into() });
+                            History::Failed
+                        }
+                    },
+                    None => History::Failed,
+                };
+                let _ = events.send(Event::HistoryLoaded { room: id, history });
             }
             Command::Recover(key) => {
                 if voice.states.borrow().active() {

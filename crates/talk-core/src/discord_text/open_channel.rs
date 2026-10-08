@@ -32,6 +32,8 @@ pub struct OpenChannel {
     pub(super) sent: HashSet<String>,
     /// The channel's first message is loaded.
     pub(super) complete: bool,
+    /// A page of earlier history is on its way.
+    pub(super) loading_earlier: bool,
     /// A page of messages arrived, or was kept on disk, so there's something
     /// to show.
     pub(super) loaded: bool,
@@ -75,6 +77,7 @@ impl OpenChannel {
             pending: Vec::new(),
             sent: HashSet::new(),
             complete: false,
+            loading_earlier: false,
             loaded: false,
             dirty: false,
             pictures: HashMap::new(),
@@ -90,10 +93,15 @@ impl OpenChannel {
         self.load(discord, done, None);
     }
 
-    /// Loads the page before the oldest loaded message; `false` when there is none.
+    /// Loads the page before the oldest loaded message, unless one is on
+    /// its way already; `false` when the first message is loaded, so there
+    /// is none.
     pub fn earlier(&mut self, discord: &Discord, done: &UnboundedSender<Done>) -> bool {
         if self.complete {
             return false;
+        }
+        if std::mem::replace(&mut self.loading_earlier, true) {
+            return true;
         }
         let oldest = self
             .messages
@@ -128,6 +136,7 @@ impl OpenChannel {
     }
 
     pub fn loaded(&mut self, older: bool, messages: Vec<Message>) {
+        self.loading_earlier &= !older;
         self.loaded = true;
         self.dirty = true;
         if !older {

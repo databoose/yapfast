@@ -124,11 +124,36 @@ struct RepeaterInner<C: RepeatedItemTree> {
     instances: Vec<(RepeatedInstanceState, Option<ItemTreeRc<C>>)>,
     /// ListView-specific layout state (offset, cached heights, scroll position).
     layout_state: RepeaterLayoutState,
+    /// Talk: see `TalkHold`.
+    talk_hold: TalkHold,
+}
+
+/// Talk: what `talk_anchor::hold` asks of a ListView's layout.
+#[derive(Clone, Copy, Default, Debug)]
+struct TalkHold {
+    /// Rows went in above the instances, and the first instance's height then, when they went in
+    /// right above it.
+    added: Option<Option<Coord>>,
+    /// The row that keeps its bottom edge where it is in the view, as its height changes, once
+    /// rows went in right above it, until it isn't instantiated anymore.
+    anchor: Option<TalkAnchor>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TalkAnchor {
+    row: usize,
+    /// Its bottom edge in the view, when `content-y` was `content_y`; scrolling moves it.
+    bottom: Coord,
+    content_y: Coord,
 }
 
 impl<C: RepeatedItemTree> Default for RepeaterInner<C> {
     fn default() -> Self {
-        RepeaterInner { instances: Default::default(), layout_state: Default::default() }
+        RepeaterInner {
+            instances: Default::default(),
+            layout_state: Default::default(),
+            talk_hold: TalkHold::default(),
+        }
     }
 }
 
@@ -162,6 +187,12 @@ trait RepeaterInstanceOps {
 
     /// Height of the instance, or `None` if not yet created.
     fn height(&self, instance_idx: usize) -> Option<Coord>;
+
+    /// Talk: the height of the instance once the parts its data shows or hides are made, which
+    /// otherwise happens when it's next visited, such as to draw it.
+    fn talk_settled_height(&self, instance_idx: usize) -> Option<Coord> {
+        self.height(instance_idx)
+    }
 
     /// Call `listview_layout` on the instance.
     /// Advances `*y` to the next item position. Returns item width.
@@ -215,6 +246,10 @@ pub trait ListViewProperties {
     /// Register the content properties as dependencies of the current
     /// binding evaluation without reading them.
     fn register_as_dependencies(&self);
+    /// Talk: set `content-y`, ending an animation of it.
+    fn talk_content_y_reset(&self, value: LogicalLength) {
+        self.content_y_set(value);
+    }
 }
 
 struct TypedListViewProps<'a> {
@@ -249,6 +284,11 @@ impl ListViewProperties for TypedListViewProps<'_> {
             content_height.set(value);
         }
     }
+    fn talk_content_y_reset(&self, value: LogicalLength) {
+        // A binding of its own replaces the animation's, then setting the value drops it.
+        self.content_y.set_binding(move || value);
+        self.content_y.set(value);
+    }
     fn register_as_dependencies(&self) {
         if let Some(content_width) = self.content_width {
             content_width.register_as_dependency();
@@ -272,6 +312,7 @@ fn update_visible_instances(
     props: &dyn ListViewProperties,
     listview_width: LogicalLength,
     listview_height: LogicalLength,
+    talk: &mut TalkHold,
 ) -> bool {
     let zero = LogicalLength::default();
     let mut content_width_value = listview_width.get();
@@ -321,7 +362,35 @@ fn update_visible_instances(
     }
 
     let one_and_a_half_screen = listview_height * 3 as Coord / 2 as Coord;
-    let first_item_y = state.anchor_y;
+    #[allow(unused_mut)]
+    let mut first_item_y = state.anchor_y;
+    // Talk: rows went in above, inside `talk_anchor::hold`. When they went in right above the
+    // first instance, it keeps its bottom edge where it was, as its top part can change with the
+    // rows now before it, and goes on doing so as its height settles.
+    let added = talk.added.take();
+    if let Some(Some(height)) = added {
+        talk.anchor = Some(TalkAnchor {
+            row: state.offset,
+            bottom: state.anchor_y + state.previous_content_y + height,
+            content_y: state.previous_content_y,
+        });
+    }
+    let mut anchor_bottom = None;
+    if let Some(anchor) = talk.anchor {
+        match anchor.row.checked_sub(state.offset).filter(|instance| *instance < ops.len()) {
+            Some(instance) => {
+                let bottom = anchor.bottom + content_y_value - anchor.content_y;
+                let mut top = bottom;
+                for i in 0..=instance {
+                    changed |= ops.ensure_updated(i, state.offset + i);
+                    top -= ops.talk_settled_height(i).unwrap_or(0 as Coord);
+                }
+                first_item_y = top - content_y_value;
+                anchor_bottom = Some(bottom);
+            }
+            None => talk.anchor = None,
+        }
+    }
     let last_item_bottom = first_item_y + element_height * ops.len() as Coord;
 
     let (mut new_offset, mut new_offset_y) = if first_item_y
@@ -426,12 +495,20 @@ fn update_visible_instances(
         props.content_height_set(LogicalLength::new(state.cached_item_height * row_count as Coord));
         props.content_width_set(LogicalLength::new(content_width_value));
         let new_content_y = -state.anchor_y + new_offset_y;
+        if let (Some(anchor), Some(bottom)) = (&mut talk.anchor, anchor_bottom) {
+            anchor.bottom = bottom;
+            anchor.content_y = new_content_y;
+        }
         // Important: Use get_internal here, the content_y may have a binding on it (especially
         // a physical animation).
         // We must not yet trigger a re-evaluation of that binding, as we have already updated the
         // content_width and content_height, but the content_y is not yet consistent.
         // So the physics animations limit value may be inconsistent.
-        if new_content_y != props.content_y_get_internal().get() {
+        if added.is_some() {
+            // Talk: rows went in above inside `talk_anchor::hold`. An animation, such as a
+            // wheel's, would scroll on to where it was going regardless, moving the rows shown.
+            props.talk_content_y_reset(LogicalLength::new(new_content_y));
+        } else if new_content_y != props.content_y_get_internal().get() {
             // If a physics animation is ongoing (e.g. due to a flick), we should not interrupt it.
             // The physics animation implements intercept_set, and is therefore not interrupted by
             // a call to set() - so it's okay to just use a normal set here.
@@ -493,6 +570,19 @@ impl<C: RepeatedItemTree> RepeaterInstanceOps for RustRepeaterOps<'_, C> {
             .map(|x| x.as_pin_ref().item_geometry(0).height_length().get())
     }
 
+    fn talk_settled_height(&self, instance_idx: usize) -> Option<Coord> {
+        let instance = self.inner.borrow().instances[instance_idx].1.clone()?;
+        let tree = vtable::VRc::into_dyn(instance.clone());
+        // Visiting each item makes the parts of it that show or hide with its data.
+        crate::item_tree::visit_items(
+            &tree,
+            crate::item_tree::TraversalOrder::BackToFront,
+            |_, _, _, _| crate::item_tree::ItemVisitorResult::Continue(()),
+            (),
+        );
+        Some(instance.as_pin_ref().item_geometry(0).height_length().get())
+    }
+
     fn listview_layout(&self, instance_idx: usize, y: &mut Coord) -> Coord {
         let inner = self.inner.borrow();
         let mut y_len = LogicalLength::new(*y);
@@ -548,8 +638,24 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
     /// Notify the peers that rows were added
     fn row_added(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
-        if index < inner.layout_state.offset {
-            if index + count <= inner.layout_state.offset {
+        // Talk: inside `talk_anchor::hold`, rows right above the first instance count as before it
+        // too, and it remembers its height; see `update_visible_instances`.
+        let holding = crate::talk_anchor::holding();
+        let held = holding
+            && index == inner.layout_state.offset
+            && inner.instances.first().is_some_and(|instance| instance.1.is_some());
+        if held && inner.talk_hold.added.flatten().is_none() {
+            inner.talk_hold.added = Some(
+                inner.instances[0]
+                    .1
+                    .as_ref()
+                    .map(|instance| instance.as_pin_ref().item_geometry(0).height_length().get()),
+            );
+        } else if holding && index < inner.layout_state.offset && inner.talk_hold.added.is_none() {
+            inner.talk_hold.added = Some(None);
+        }
+        if index < inner.layout_state.offset || held {
+            if index + count <= inner.layout_state.offset || held {
                 // Entirely before the visible range: shift the offset.
                 inner.layout_state.offset += count;
                 self.is_dirty.set(true);
@@ -773,7 +879,10 @@ impl<C: RepeatedItemTree + 'static> Repeater<C> {
         let row_count = model.row_count();
 
         let data = self.data();
-        let mut layout_state = data.inner.borrow().layout_state.clone();
+        let (mut layout_state, mut talk) = {
+            let inner = data.inner.borrow();
+            (inner.layout_state.clone(), inner.talk_hold)
+        };
         let mut ops = RustRepeaterOps { inner: &data.inner, init: &init, model: &model };
         let changed = update_visible_instances(
             &mut ops,
@@ -782,8 +891,13 @@ impl<C: RepeatedItemTree + 'static> Repeater<C> {
             props,
             listview_width,
             listview_height,
+            &mut talk,
         );
-        data.inner.borrow_mut().layout_state = layout_state;
+        {
+            let mut inner = data.inner.borrow_mut();
+            inner.layout_state = layout_state;
+            inner.talk_hold = talk;
+        }
 
         if changed {
             self.data().instance_generation.mark_dirty();
@@ -1098,6 +1212,14 @@ mod ffi {
         listview_height: LogicalLength,
     ) -> bool {
         let props = TypedListViewProps { content_width, content_height, content_y };
-        update_visible_instances(ops, state, row_count, &props, listview_width, listview_height)
+        update_visible_instances(
+            ops,
+            state,
+            row_count,
+            &props,
+            listview_width,
+            listview_height,
+            &mut TalkHold::default(),
+        )
     }
 }

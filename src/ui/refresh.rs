@@ -1019,6 +1019,8 @@ impl Adapter {
         }
         update_model(&self.models.mentions, mentions);
         window.set_loading_history(state.loading_history);
+        window.set_history_start(state.history_start);
+        window.set_history_failed(state.history_failed);
         // Without Matrix everything is Discord, so the encryption and key hints
         // say nothing new; what stops sending still shows.
         let discord_only = !cfg!(feature = "matrix");
@@ -1142,7 +1144,7 @@ impl Adapter {
                 .collect();
             let mut previous = std::mem::take(&mut self.rows);
             let mut before: Option<&ChatMessage> = None;
-            let rows = state
+            let rows: Vec<MessageRow> = state
                 .messages
                 .iter()
                 .map(|message| {
@@ -1180,9 +1182,7 @@ impl Adapter {
                     row
                 })
                 .collect();
-            // Older messages go in above the rows shown, and the list keeps
-            // those where they are.
-            update_model_by_id(&self.models.messages, rows, |row| row.id.clone());
+            show_rows(&self.models.messages, rows);
             // A jump to a message places the list itself, even one made after
             // this refresh; see `show_message`.
             let weak = window.as_weak();

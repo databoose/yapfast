@@ -340,3 +340,159 @@ fn closed_channels_follow_live_events_and_open_again() {
         "the oldest went"
     );
 }
+
+/// The fake Discord's server and its #general.
+const FAKE_GUILD: &str = "1400000000000000100";
+const FAKE_GENERAL: &str = "1400000000000000102";
+
+/// Discord connected to the fake server, once it's online. Run the tests
+/// that use it with scripts/test-fake-discord.
+async fn fake_discord() -> Discord {
+    assert!(
+        talk_discord::client::test_server().is_some(),
+        "set TALK_DISCORD_TEST_SERVER to the fake Discord"
+    );
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let discord = Discord::start(talk_discord::token::load().unwrap()).unwrap();
+    let mut snapshots = discord.snapshots();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        snapshots.wait_for(|snapshot| snapshot.status == Status::Online),
+    )
+    .await
+    .expect("the fake Discord answers")
+    .unwrap();
+    discord
+}
+
+/// Applies finished work until `found` picks an event it led to.
+async fn until<T>(
+    discord: &Discord,
+    channels: &mut Channels,
+    done: &UnboundedSender<Done>,
+    finished: &mut UnboundedReceiver<Done>,
+    events: &mut UnboundedReceiver<Event>,
+    found: impl Fn(&Event) -> Option<T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            while let Ok(event) = events.try_recv() {
+                if let Some(found) = found(&event) {
+                    return found;
+                }
+                if let Event::RoomError { message, .. } = event {
+                    panic!("{message}");
+                }
+            }
+            let work = finished.recv().await.expect("work goes on");
+            let (to, mut from) = tokio::sync::mpsc::unbounded_channel();
+            super::finished(work, Some(discord), channels, done, &to);
+            drop(to);
+            while let Some(event) = from.recv().await {
+                if let Some(found) = found(&event) {
+                    return found;
+                }
+                if let Event::RoomError { message, .. } = event {
+                    panic!("{message}");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for Discord")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    command(
+        Command::Open(room.clone()),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    let first = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| match event {
+            Event::Timeline { messages, .. } => Some(messages.len()),
+            _ => None,
+        },
+    )
+    .await;
+    assert_eq!(first, talk_discord::api::PAGE, "the latest page");
+    let mut pages = 0;
+    let history = loop {
+        // Asking twice while a page loads loads it once.
+        for _ in 0..2 {
+            command(
+                Command::Earlier(room.clone()),
+                Ok(&discord),
+                &mut channels,
+                &done,
+                &events,
+            );
+        }
+        let history = until(
+            &discord,
+            &mut channels,
+            &done,
+            &mut finished,
+            &mut received,
+            |event| match event {
+                Event::HistoryLoaded { history, .. } => Some(*history),
+                _ => None,
+            },
+        )
+        .await;
+        pages += 1;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        while let Ok(work) = finished.try_recv() {
+            assert!(
+                !matches!(work, Done::History { older: true, .. }),
+                "no second page was asked for"
+            );
+            super::finished(work, Some(&discord), &mut channels, &done, &events);
+        }
+        if history != History::More || pages > 20 {
+            break history;
+        }
+    };
+    assert_eq!(history, History::Start);
+    let open = channels.open.as_ref().unwrap();
+    assert!(open.complete);
+    assert!(
+        open.messages
+            .values()
+            .next()
+            .unwrap()
+            .content
+            .starts_with("Welcome to **Talk**"),
+        "the channel's first message is loaded"
+    );
+    // Once it is, asking again says so at once.
+    while received.try_recv().is_ok() {}
+    command(
+        Command::Earlier(room.clone()),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Event::HistoryLoaded {
+            history: History::Start,
+            ..
+        })
+    ));
+}
