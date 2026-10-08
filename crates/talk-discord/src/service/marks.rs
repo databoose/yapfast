@@ -18,11 +18,14 @@ pub(super) struct Published {
 }
 
 /// What [`super::tracker::Tracker::snapshot`] sets on a server for this account: whether
-/// it's muted, then for each text channel and each voice channel, in order,
-/// what [`ChannelMarks`] holds.
+/// it's muted, its roles there and which mentions its settings suppress, then
+/// for each text channel and each voice channel, in order, what
+/// [`ChannelMarks`] holds.
 #[derive(PartialEq, Eq)]
 pub(super) struct Marks {
     muted: bool,
+    roles: Vec<String>,
+    suppressed: (bool, bool),
     channels: Vec<ChannelMarks>,
 }
 
@@ -64,6 +67,8 @@ impl Marks {
         }
         Self {
             muted: unreads.server_muted(&server.id),
+            roles: roles.to_vec(),
+            suppressed: unreads.suppressed(&server.id),
             channels,
         }
     }
@@ -79,6 +84,8 @@ impl Marks {
         }
         Self {
             muted: unreads.server_muted(&server.id),
+            roles: self.roles.clone(),
+            suppressed: unreads.suppressed(&server.id),
             channels,
         }
     }
@@ -87,6 +94,8 @@ impl Marks {
     pub(super) fn apply(&self, server: &Server) -> Server {
         let mut marked = server.clone();
         marked.muted = self.muted;
+        marked.my_roles.clone_from(&self.roles);
+        (marked.suppress_everyone, marked.suppress_roles) = self.suppressed;
         let channels = marked
             .text_channels
             .iter_mut()

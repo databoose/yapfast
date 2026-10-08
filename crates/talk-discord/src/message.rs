@@ -63,6 +63,17 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     /// Content can be edited by its author: an ordinary message or reply.
     pub editable: bool,
+    /// Who it mentions, by user id, including the author of the message it
+    /// replies to when the reply pings them.
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    /// The roles it mentions, by id, as Discord counts them: only those the
+    /// author may mention.
+    #[serde(default)]
+    pub mention_roles: Vec<String>,
+    /// It mentions @everyone or @here, and its author may.
+    #[serde(default)]
+    pub mention_everyone: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -121,6 +132,28 @@ pub struct Reaction {
 }
 
 impl Message {
+    /// Whether it calls on this account, `me`, as Discord highlights it: by
+    /// name, through one of its roles in `server`, or with @everyone or
+    /// @here, unless its notification settings there suppress those; or as
+    /// a reply to its message. Its own messages never do.
+    pub fn mentions_me(&self, me: &str, server: Option<&ready::Server>) -> bool {
+        if self.author_id == me {
+            return false;
+        }
+        let replied =
+            matches!(&self.reply, Some(Reply::Message { author_id, .. }) if author_id == me);
+        let everyone =
+            self.mention_everyone && server.is_some_and(|server| !server.suppress_everyone);
+        let role = server.is_some_and(|server| {
+            !server.suppress_roles
+                && self
+                    .mention_roles
+                    .iter()
+                    .any(|role| server.my_roles.contains(role))
+        });
+        self.mentions.iter().any(|user| user == me) || replied || everyone || role
+    }
+
     /// Seconds since the Unix epoch, from the message's snowflake.
     pub fn timestamp(&self) -> u64 {
         snowflake_ms(&self.id) / 1000
@@ -383,7 +416,20 @@ pub fn parse(value: &Value) -> Option<Message> {
         embeds: embeds.embeds,
         reactions,
         editable: matches!(kind, DEFAULT | REPLY),
+        mentions: ids(&value["mentions"], |user| user["id"].as_str()),
+        mention_roles: ids(&value["mention_roles"], Value::as_str),
+        mention_everyone: value["mention_everyone"].as_bool().unwrap_or(false),
     })
+}
+
+/// The ids `id` finds in a list.
+fn ids<'a>(list: &'a Value, id: impl Fn(&'a Value) -> Option<&'a str>) -> Vec<String> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(id)
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Whether a spoiler in `content` holds a link.
@@ -1257,5 +1303,59 @@ mod tests {
             "kept when a member object leaves them out"
         );
         assert!(names.roles("11", "2").is_empty());
+    }
+
+    #[test]
+    fn mentions_call_on_this_account_as_discord_highlights_them() {
+        let me = "1";
+        let message = |extra: Value| {
+            let mut value = json!({"id": "500", "channel_id": "11", "type": 0,
+                "author": {"id": "2", "username": "bob"}, "content": "hi"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            parse(&value).unwrap()
+        };
+        let server = Server {
+            my_roles: vec!["30".into()],
+            ..Default::default()
+        };
+        let pings = |extra: Value| message(extra).mentions_me(me, Some(&server));
+        assert!(!pings(json!({})));
+        assert!(pings(
+            json!({"mentions": [{"id": "1", "username": "alice"}]})
+        ));
+        assert!(!pings(
+            json!({"mentions": [{"id": "3", "username": "carol"}]})
+        ));
+        assert!(pings(json!({"mention_roles": ["30"]})), "Alice's role");
+        assert!(!pings(json!({"mention_roles": ["31"]})));
+        assert!(pings(json!({"mention_everyone": true})));
+        let reply = |author: &str| {
+            json!({"type": 19, "referenced_message": {"id": "400",
+                "author": {"id": author, "username": "someone"}, "content": "plan"}})
+        };
+        assert!(pings(reply("1")), "a reply to Alice, pinging her or not");
+        assert!(!pings(reply("3")));
+
+        // Her settings can quiet @everyone and roles, but not her name.
+        let quiet = Server {
+            suppress_everyone: true,
+            suppress_roles: true,
+            ..server.clone()
+        };
+        let quieted = |extra: Value| message(extra).mentions_me(me, Some(&quiet));
+        assert!(!quieted(json!({"mention_everyone": true})));
+        assert!(!quieted(json!({"mention_roles": ["30"]})));
+        assert!(quieted(
+            json!({"mentions": [{"id": "1", "username": "alice"}]})
+        ));
+        // Her own messages don't call on her.
+        let own = message(json!({"author": {"id": "1", "username": "alice"},
+            "mention_everyone": true}));
+        assert!(!own.mentions_me(me, Some(&server)));
+        // A DM has no server: @everyone means nothing there.
+        assert!(!message(json!({"mention_everyone": true})).mentions_me(me, None));
     }
 }

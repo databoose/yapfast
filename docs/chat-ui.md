@@ -138,7 +138,12 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   an arrow toward it, and clicking it scrolls back to the divider. A Discord
   channel places it by message order, loading earlier history to reach it; a
   Matrix room places it after the event its read receipt is on, once that
-  event is in the loaded timeline. Talk counts unread messages on this device; for a room that isn't open,
+  event is in the loaded timeline.
+- Highlight messages that call on the user with a faint red tint and a red
+  edge on the left, as Discord does: a mention of them, of a Discord role
+  they have, or @everyone or @here where those reach them, and a reply to
+  their message. Matrix's push rules decide which messages mention the user.
+  Their own messages are never highlighted. Talk counts unread messages on this device; for a room that isn't open,
   sync often delivers only the newest event, so Talk shows that something is
   unread rather than how much.
 - Show sync status in the account panel. Reconnect appears there when offline;

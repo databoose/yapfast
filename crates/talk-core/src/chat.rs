@@ -543,6 +543,9 @@ pub struct ChatMessage {
     pub deleted: bool,
     /// From someone this account blocked: it shows collapsed until asked for.
     pub blocked: bool,
+    /// Calls on this account: it mentions it or a group it's in, or replies
+    /// to its message. The timeline highlights it.
+    pub mentions_me: bool,
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,

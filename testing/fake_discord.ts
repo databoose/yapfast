@@ -198,7 +198,7 @@ function wireUser(user: User) {
 }
 
 // Bob is a Mod everywhere his member object goes, so his name takes its colour.
-function member(user: User, roles: string[] = user.id === users.bob.id ? [MODS] : []) {
+function member(user: User, roles: string[] = user.id === users.bob.id ? [MODS] : user.id === ALICE ? [CREW] : []) {
   return {
     user: wireUser(user),
     user_id: user.id,
@@ -955,7 +955,7 @@ const fillers = Array.from({ length: Math.max(0, Number(args.servers) - 1) }, (_
 const fillerList = [...fillerChannels.keys()];
 
 function ready(ws: Socket) {
-  const { user: _, ...alice } = member(users.alice, [CREW]);
+  const { user: _, ...alice } = member(users.alice);
   return {
     v: 9,
     user: {
@@ -1088,7 +1088,7 @@ function memberList() {
   ];
   const row = (user: User) => ({
     member: {
-      ...member(user, mods.includes(user) ? [MODS] : []),
+      ...member(user),
       presence: { user: { id: user.id }, client_status: {}, ...presences[user.id] },
     },
   });

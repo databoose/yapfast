@@ -407,6 +407,14 @@ impl Unreads {
         }
     }
 
+    /// Whether the notification settings keep @everyone and @here, and role
+    /// mentions, from calling on this account in a server.
+    pub fn suppressed(&self, guild: &str) -> (bool, bool) {
+        self.settings.get(guild).map_or((false, false), |settings| {
+            (settings.suppress_everyone, settings.suppress_roles)
+        })
+    }
+
     /// Whether a server is muted in the notification settings.
     pub fn server_muted(&self, guild: &str) -> bool {
         self.settings

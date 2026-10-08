@@ -146,6 +146,9 @@ export struct MessageRow {
     /// The first message that was unread when the conversation was opened:
     /// the "New" divider goes above it.
     unread-start: bool,
+    /// Calls on this account: it mentions it or a group it's in, or replies
+    /// to its message. The row is tinted red with a red edge.
+    mentions-me: bool,
     /// The body, and the author and time as selectable text: a selection runs across messages
     /// through all three. A body of nothing but emoji shows them large.
     jumbo: bool,

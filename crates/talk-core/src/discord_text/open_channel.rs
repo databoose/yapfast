@@ -821,6 +821,7 @@ impl OpenChannel {
             edited: message.edited,
             deleted: false,
             blocked: snapshot.blocked.contains(&message.author_id),
+            mentions_me: message.mentions_me(me, server),
             delivery: Delivery::Sent,
             reply,
             reactions: message
@@ -865,8 +866,9 @@ impl OpenChannel {
 }
 
 /// What rendering a message depends on besides the message and its
-/// previews: the names known, who this account is and blocks, and the
-/// server's roles and channels, which mentions show by name.
+/// previews: the names known, who this account is and blocks, the server's
+/// roles and channels, which mentions show by name, and this account's roles
+/// there and the mentions it suppresses, which decide which mention it.
 #[derive(Default)]
 pub(super) struct Rendering {
     pub(super) names: u64,
@@ -893,6 +895,9 @@ impl Rendering {
                 Arc::ptr_eq(one, other)
                     || (one.role_names == other.role_names
                         && one.role_colors == other.role_colors
+                        && one.my_roles == other.my_roles
+                        && one.suppress_everyone == other.suppress_everyone
+                        && one.suppress_roles == other.suppress_roles
                         && channels(one).eq(channels(other)))
             }
             (one, other) => one.is_none() && other.is_none(),

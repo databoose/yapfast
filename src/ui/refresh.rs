@@ -1697,7 +1697,7 @@ fn arrived<'a>(
 /// What the bar that jumps to the "New" divider says: how many messages
 /// others sent from `unread` on, and since when, with the date unless it
 /// was today.
-fn unread_label(unread: &[ChatMessage]) -> String {
+pub(super) fn unread_label(unread: &[ChatMessage]) -> String {
     let count = unread.iter().filter(|message| !message.own).count();
     let messages = if count == 1 { "message" } else { "messages" };
     let Some(first) = unread.first().filter(|first| first.time.contains(':')) else {

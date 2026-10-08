@@ -56,6 +56,16 @@ pub struct Server {
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
+    /// This account's roles here, set when the service publishes it.
+    #[serde(default)]
+    pub my_roles: Vec<String>,
+    /// The account's notification settings here keep @everyone and @here,
+    /// and role mentions, from calling on it; set when the service
+    /// publishes it.
+    #[serde(default)]
+    pub suppress_everyone: bool,
+    #[serde(default)]
+    pub suppress_roles: bool,
     /// Its boost level, from 0 to 3, which raises everyone's upload limit
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,

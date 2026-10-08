@@ -1486,3 +1486,42 @@ fn opening_at_the_new_divider_puts_it_at_the_top_and_the_bar_jumps_back() {
     }
     assert!(window.get_unread_below());
 }
+
+#[test]
+fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
+    let message = |own: bool, mentions_me: bool| ChatMessage {
+        own,
+        mentions_me,
+        time: "14:05".into(),
+        // Today, so the bar leaves the date out.
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        ..Default::default()
+    };
+    assert!(message_row_plain(&message(false, true)).mentions_me);
+    assert!(!message_row_plain(&message(false, false)).mentions_me);
+    let unread = [
+        message(false, true),
+        message(true, false),
+        message(false, false),
+    ];
+    assert_eq!(
+        refresh::unread_label(&unread),
+        "2 new messages since 14:05",
+        "Alice's own reply isn't new to her"
+    );
+    assert_eq!(
+        refresh::unread_label(&unread[..1]),
+        "1 new message since 14:05"
+    );
+    let older = ChatMessage {
+        timestamp: 1_791_329_400,
+        ..message(false, false)
+    };
+    assert!(
+        refresh::unread_label(&[older]).starts_with("1 new message since 14:05 on "),
+        "with the date when it wasn't today"
+    );
+}

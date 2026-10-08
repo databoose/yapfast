@@ -494,6 +494,12 @@ since they hold its previews.
 
 Unread dots and mention counts follow Discord's read states, mutes and
 @everyone and role suppression, including passive updates from large servers.
+A message that calls on this account is highlighted in the timeline, as in
+Discord: one that mentions it, one of its roles in the server, or @everyone
+or @here, from a message's `mentions`, `mention_roles` and
+`mention_everyone`, which count only what the author may mention. The
+account's settings for the server can suppress @everyone and @here, and
+roles. A reply to its message is highlighted too, whether it pings or not.
 Each server in the rail shows its mentions as a count, and the DM button
 counts DM mentions and the friend requests waiting for an answer.
 Showing an unread channel marks it read, and with the "Mark messages read on

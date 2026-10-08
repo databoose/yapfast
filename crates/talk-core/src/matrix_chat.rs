@@ -1435,6 +1435,8 @@ async fn publish_timeline(
             author: display_name(event.sender(), event.sender_profile()),
             sender: event.sender().to_string(),
             own: event.is_own(),
+            // Push rules decide what mentions this account in Matrix.
+            mentions_me: !event.is_own() && event.is_highlighted(),
             ..Default::default()
         };
         match &content.kind {
@@ -1585,12 +1587,16 @@ async fn publish_timeline(
         if let Some(reply) = &content.in_reply_to {
             let item = Some(format!("e:{}", reply.event_id));
             message.reply = Some(match &reply.event {
-                TimelineDetails::Ready(embedded) => Reply {
-                    author: display_name(&embedded.sender, &embedded.sender_profile),
-                    avatar: None,
-                    body: summary(&embedded.content),
-                    item,
-                },
+                TimelineDetails::Ready(embedded) => {
+                    message.mentions_me |=
+                        !message.own && own.as_deref() == Some(&*embedded.sender);
+                    Reply {
+                        author: display_name(&embedded.sender, &embedded.sender_profile),
+                        avatar: None,
+                        body: summary(&embedded.content),
+                        item,
+                    }
+                }
                 TimelineDetails::Error(_) => Reply {
                     author: String::new(),
                     avatar: None,

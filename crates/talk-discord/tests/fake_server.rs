@@ -1216,6 +1216,27 @@ async fn talks_to_the_fake_server() {
     assert!(cookies["returned"].as_u64().unwrap() > 10, "{cookies}");
     assert!(cookies["set"].as_u64().unwrap() <= 2, "{cookies}");
 
+    // Bob calls on Alice every way Discord highlights for her, through her
+    // Crew role among them, and two ways it doesn't.
+    post_control(server, "/_control/mentions", "");
+    let snapshot = discord.snapshots().borrow().clone();
+    let me = snapshot.user_id.clone().unwrap();
+    assert!(
+        snapshot.servers[0]
+            .my_roles
+            .contains(&"1400000000000000112".to_owned())
+    );
+    let latest = discord.history(&guild, &general, None).await.unwrap();
+    let highlighted: Vec<bool> = latest[latest.len() - 7..]
+        .iter()
+        .map(|message| message.mentions_me(&me, Some(&snapshot.servers[0])))
+        .collect();
+    assert_eq!(
+        highlighted,
+        [true, true, true, true, true, false, false],
+        "by name, Crew, @everyone, @here and a reply; not Mods, nor nothing"
+    );
+
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();
     assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");
