@@ -105,8 +105,10 @@ strip = true
 
 # Optimized like release, without LTO and with incremental builds: for tests,
 # local runs and quick checks. Builds people use, and measurements, stay release.
+# "off" rather than false, which still runs LTO across each crate's codegen
+# units: that made rebuilding talk-core after an edit take 15 s instead of 4.
 [profile.fast]
 inherits = "release"
-lto = false
+lto = "off"
 strip = false
 incremental = true

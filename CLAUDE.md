@@ -9,8 +9,8 @@
   Discord-only, Matrix-only and headless builds; it takes under a minute
   after an edit.
 - In a new worktree, run `scripts/warm-worktree` before building. It copies
-  the main checkout's build, so the first check takes about 7 minutes
-  instead of 10.
+  the main checkout's build, so the first check compiles only the crates in
+  the repository, about 3.5 minutes.
 - An edit under `vendor/i-slint-*` recompiles Slint and the UI crate, 2–3
   minutes each time; settle such a patch in as few builds as possible.
 - See the app: `scripts/ui-session` (private display, screenshots, input; run

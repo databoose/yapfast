@@ -125,11 +125,11 @@ with Rust's errors when it fails, and keeps its full log under `target/check/`.
 The script runs every step and exits non-zero if any failed.
 
 A new worktree starts with an empty `target/`, and its first check compiles
-every dependency, about 10 minutes. `scripts/warm-worktree`, run inside it
+every dependency. `scripts/warm-worktree`, run inside it
 before the first build, copies the main checkout's `target/fast/` and
 `target/check-combinations/` as reflinks, which share disk space with the
 originals, and cleans the crates whose sources are in the repository, so those
-build from the worktree's own files. The first check then takes about 7
+build from the worktree's own files. The first check then takes about 3.5
 minutes. Reflinks need a filesystem such as btrfs.
 
 `git config core.hooksPath .githooks` turns on the pre-commit hook, which
