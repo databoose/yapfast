@@ -14,8 +14,9 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 profile=()
+profile_dir=debug
 case "${1:-}" in
-  --fast) profile=(--profile fast) ;;
+  --fast) profile=(--profile fast) profile_dir=fast ;;
   "") ;;
   *) echo "usage: scripts/check [--fast]" >&2; exit 2 ;;
 esac
@@ -46,10 +47,11 @@ run() {
 
 clippy=(cargo clippy --locked "${profile[@]}" --all-targets)
 
-# Each network alone, in the desktop and in the shared core with its tests.
-# These build talk and talk-core with other features than the steps below, so
-# they run alongside them in a target directory of their own: Cargo lets one
-# build at a time use a target directory.
+# Each network alone, in the desktop and in the shared core with its tests,
+# and the headless build. These build talk and talk-core with other features
+# than the steps below, so they run alongside them in a target directory of
+# their own: Cargo lets one build at a time use a target directory. The
+# headless binary stays out of target/<profile>/ that way too.
 combinations() {
   export CARGO_TARGET_DIR=target/check-combinations
   run clippy-discord-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
@@ -57,6 +59,7 @@ combinations() {
   run clippy-matrix-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
     --features talk/desktop,talk/matrix,talk-core/matrix -- -D warnings
   run clippy-headless "${clippy[@]}" -p talk --no-default-features --features matrix,discord -- -D warnings
+  run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
 }
 
 # In a process group of its own, so an interrupt can stop all of it: a
@@ -72,15 +75,20 @@ run doc-links scripts/check-doc-links
 run clippy "${clippy[@]}" --workspace -- -D warnings
 run test cargo test --locked "${profile[@]}" --workspace
 run build cargo build --locked "${profile[@]}" --workspace
-run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
-# Last, so target/<profile>/talk is the desktop build afterwards.
-run smoke cargo run --locked "${profile[@]}" -- --smoke-test
+# The binary the build step made: `cargo run` would resolve the dependencies'
+# features for talk alone, not the workspace, and compile it again.
+if [[ "$(cat "$logs/build.rc")" == 0 ]]; then
+  run smoke "target/$profile_dir/talk" --smoke-test
+else
+  echo "=== smoke: skipped, as the build failed"
+fi
 wait "$combinations_pid"
 
 failed=()
 for name in fmt doc-links clippy test clippy-discord-only clippy-matrix-only clippy-headless \
   build smoke-headless smoke; do
-  [[ "$(cat "$logs/$name.rc" 2>/dev/null)" == 0 ]] || failed+=("$name")
+  # A step without a result was skipped.
+  [[ ! -e "$logs/$name.rc" || "$(cat "$logs/$name.rc")" == 0 ]] || failed+=("$name")
 done
 if [[ ${#failed[@]} -gt 0 ]]; then
   echo "FAILED: ${failed[*]}"

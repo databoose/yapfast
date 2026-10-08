@@ -116,11 +116,11 @@ the short form of the revision pinned in Cargo.toml. libwebrtc's headers are in
 builds with the `fast` profile, as local work does. It runs, in order:
 formatting; `scripts/check-doc-links`, which fails on a Markdown link to a
 missing file or heading; Clippy with warnings denied and the tests for the whole workspace;
-a build; and the headless and desktop smoke tests. Alongside those, in
+a build; and the desktop smoke test, which runs `target/<profile>/talk`, the
+desktop build, from that build. Alongside those, in
 `target/check-combinations/` because Cargo lets one build at a time use a
 target directory, it runs Clippy for the Discord-only, Matrix-only and headless
-builds. The desktop smoke test runs last, so `target/<profile>/talk` is the
-desktop build afterwards. Each step prints `=== step` and `rc=N` when it ends,
+builds and the headless smoke test, whose binary stays there. Each step prints `=== step` and `rc=N` when it ends,
 with Rust's errors when it fails, and keeps its full log under `target/check/`.
 The script runs every step and exits non-zero if any failed.
 

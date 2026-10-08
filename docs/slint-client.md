@@ -173,9 +173,8 @@ nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework
 Use `--renderer software --size 800x560` for the minimum-size capture. GUI evidence
 lives under the ignored `.impeccable/review` directory, with binary hashes and
 assertion results in `actions.json`. The probe runs `target/debug/talk` unless
-`--exe` names another build. `scripts/check` runs the desktop smoke test last, so
-`target/debug/talk`, or `target/fast/talk` after `scripts/check --fast`, is the
-desktop build when it finishes. Add `--connected --long-name` to exercise long
+`--exe` names another build. After `scripts/check`, `target/debug/talk`, or
+`target/fast/talk` after `scripts/check --fast`, is the desktop build. Add `--connected --long-name` to exercise long
 labels against the local stack.
 
 For screenshots and checks by hand, `scripts/ui-session` runs Talk, or a
