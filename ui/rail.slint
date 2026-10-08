@@ -25,8 +25,8 @@ export struct RoomRow {
     people: [PersonRow],
     /// A DM with a call going on.
     call: bool,
-    /// A one-to-one Discord DM's other person: "online", "idle", "dnd" or
-    /// "offline", empty when unknown; and their custom status or what
+    /// A one-to-one Discord DM's other person: "online", "mobile", "idle",
+    /// "dnd" or "offline", empty when unknown; and their custom status or what
     /// they're doing, or a group DM's size.
     presence: string,
     detail: string,
@@ -132,17 +132,19 @@ export component RailItem inherits Rectangle {
 }
 
 // A presence dot on a ring cut from the background, as in Discord: green when
-// online, a moon when idle, a bar when they don't want to be disturbed, and a
-// grey ring when offline. Anything else counts as offline.
+// online, a green phone standing up from it when online only on a phone, a
+// moon when idle, a bar when they don't want to be disturbed, and a grey ring
+// when offline. Anything else counts as offline.
 export component StatusDot inherits Rectangle {
     in property <string> presence;
     in property <color> ring;
-    property <bool> online: root.presence == "online" || root.presence == "idle" || root.presence == "dnd";
+    property <bool> mobile: root.presence == "mobile";
+    property <bool> online: root.presence == "online" || root.mobile || root.presence == "idle" || root.presence == "dnd";
     width: 16px; height: 16px; border-radius: 8px;
-    background: root.ring;
+    background: root.mobile ? transparent : root.ring;
     accessible-role: image;
-    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : root.presence == "online" ? "Online" : "Offline";
-    Rectangle {
+    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : root.presence == "online" ? "Online" : root.mobile ? "Online on mobile" : "Offline";
+    if !root.mobile: Rectangle {
         width: 10px; height: 10px; border-radius: 5px;
         background: root.presence == "dnd" ? Theme.danger : root.presence == "idle" ? Theme.accent : root.presence == "online" ? Theme.live : Theme.faint;
     }
@@ -154,6 +156,16 @@ export component StatusDot inherits Rectangle {
     }
     if root.presence == "dnd": Rectangle {
         width: 6px; height: 2px; border-radius: 1px; background: root.ring;
+    }
+    // The phone keeps the dot's ring and bottom edge, and stands taller.
+    if root.mobile: Rectangle {
+        y: root.height - self.height; height: root.height + 5px;
+        border-radius: 4px; background: root.ring;
+        Rectangle {
+            width: 10px; height: 15px; border-radius: 2px; background: Theme.live;
+            Rectangle { x: 2px; y: 2px; width: 6px; height: 9px; border-radius: 1px; background: root.ring; }
+            Rectangle { x: 4px; y: 12px; width: 2px; height: 2px; border-radius: 1px; background: root.ring; }
+        }
     }
 }
 
@@ -415,7 +427,7 @@ export component RoomList inherits VerticalLayout {
             if !room.hidden: ChannelRow {
                 text: room.name;
                 label: room.name + (room.discord ? ", Discord" : "")
-                    + (room.presence == "dnd" ? ", do not disturb" : room.presence != "" ? ", " + room.presence : "")
+                    + (room.presence == "dnd" ? ", do not disturb" : room.presence == "mobile" ? ", online on mobile" : room.presence != "" ? ", " + room.presence : "")
                     + (room.detail != "" ? ", " + room.detail : "")
                     + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                 icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;

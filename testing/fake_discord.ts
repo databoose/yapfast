@@ -71,7 +71,8 @@
 // GET /_control/list-requests counts member list subscriptions. POST
 // /_control/slow with a number of milliseconds slows history, attachments
 // and links' pictures, to show loading states.
-// POST /_control/bob-away makes Bob idle with a custom status, and
+// POST /_control/bob-away makes Bob idle with a custom status,
+// /_control/bob-mobile puts him online on his phone alone, and
 // /_control/bob-offline takes him offline.
 // Alice has the Crew role, which only she has. `--unread N` sets how many of
 // #general's newest messages she hasn't read (default 5). POST
@@ -1065,7 +1066,7 @@ function readySupplemental() {
 }
 
 // Who is around and what they're doing, as their presence says.
-const presences: Record<string, { status: string; activities: unknown[] }> = {
+const presences: Record<string, { status: string; activities: unknown[]; client_status?: Record<string, string> }> = {
   [users.alice.id]: { status: "online", activities: [] },
   [users.bob.id]: { status: "dnd", activities: [{ type: 0, name: "Factorio" }] },
   [users.carol.id]: {
@@ -2602,6 +2603,11 @@ const server = Bun.serve<SocketData>({
       };
       dispatch("PRESENCE_UPDATE", { user: { id: users.bob.id }, client_status: {}, ...presences[users.bob.id] });
       return new Response("Bob is away\n");
+    }
+    if (req.method === "POST" && path === "/_control/bob-mobile") {
+      presences[users.bob.id] = { status: "online", activities: [], client_status: { mobile: "online" } };
+      dispatch("PRESENCE_UPDATE", { user: { id: users.bob.id }, ...presences[users.bob.id] });
+      return new Response("Bob is on his phone\n");
     }
     if (req.method === "POST" && path === "/_control/bob-offline") {
       presences[users.bob.id] = { status: "offline", activities: [] };

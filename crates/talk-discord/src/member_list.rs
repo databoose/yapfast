@@ -34,6 +34,8 @@ pub struct ListedMember {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Presence {
     Online,
+    /// Online, and only on a phone.
+    Mobile,
     Idle,
     DoNotDisturb,
     /// Offline or invisible.
@@ -42,8 +44,18 @@ pub enum Presence {
 }
 
 impl Presence {
-    pub fn parse(status: &Value) -> Self {
-        match status.as_str() {
+    /// Reads a presence object: its status, and from `client_status` whether
+    /// they're online only on a phone, which Discord marks with a phone.
+    pub fn parse(presence: &Value) -> Self {
+        let clients = &presence["client_status"];
+        match presence["status"].as_str() {
+            Some("online")
+                if clients["mobile"] == "online"
+                    && clients["desktop"] != "online"
+                    && clients["web"] != "online" =>
+            {
+                Self::Mobile
+            }
             Some("online") => Self::Online,
             Some("idle") => Self::Idle,
             Some("dnd") => Self::DoNotDisturb,
@@ -265,7 +277,7 @@ impl MemberList {
         else {
             return false;
         };
-        let presence = Presence::parse(&data["status"]);
+        let presence = Presence::parse(data);
         let activity = activity(&data["activities"]);
         let changed = person.presence != presence || person.activity != activity;
         person.presence = presence;
@@ -341,7 +353,7 @@ fn row(guild: &str, item: &Value, names: &mut Names, people: &mut HashMap<String
                 .flatten()
                 .filter_map(|role| role.as_str().map(str::to_owned))
                 .collect(),
-            presence: Presence::parse(&presence["status"]),
+            presence: Presence::parse(presence),
             activity: activity(&presence["activities"]),
         },
     );
@@ -414,6 +426,35 @@ mod tests {
             Some("Listening to Spotify".into())
         );
         assert_eq!(activity(&json!([])), None);
+    }
+
+    #[test]
+    fn marks_who_is_online_only_on_a_phone() {
+        let parse = |status: &str, clients: Value| {
+            Presence::parse(&json!({"status": status, "client_status": clients}))
+        };
+        assert_eq!(
+            parse("online", json!({"mobile": "online"})),
+            Presence::Mobile
+        );
+        assert_eq!(
+            parse("online", json!({"mobile": "online", "desktop": "idle"})),
+            Presence::Mobile,
+            "the phone keeps them online"
+        );
+        assert_eq!(
+            parse("online", json!({"mobile": "online", "desktop": "online"})),
+            Presence::Online
+        );
+        assert_eq!(
+            parse("online", json!({"mobile": "online", "web": "online"})),
+            Presence::Online
+        );
+        assert_eq!(parse("idle", json!({"mobile": "idle"})), Presence::Idle);
+        assert_eq!(
+            Presence::parse(&json!({"status": "online"})),
+            Presence::Online
+        );
     }
 
     #[test]

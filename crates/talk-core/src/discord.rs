@@ -102,6 +102,7 @@ pub fn presence(presence: talk_discord::member_list::Presence) -> chat::Presence
     use talk_discord::member_list::Presence as Discord;
     match presence {
         Discord::Online => chat::Presence::Online,
+        Discord::Mobile => chat::Presence::Mobile,
         Discord::Idle => chat::Presence::Idle,
         Discord::DoNotDisturb => chat::Presence::DoNotDisturb,
         Discord::Offline => chat::Presence::Offline,

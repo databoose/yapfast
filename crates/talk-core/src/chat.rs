@@ -339,6 +339,8 @@ pub struct MentionGroup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {
     Online,
+    /// Online, and only on a phone.
+    Mobile,
     Idle,
     DoNotDisturb,
     Offline,

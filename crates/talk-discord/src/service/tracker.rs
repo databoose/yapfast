@@ -561,7 +561,7 @@ impl Tracker {
             return false;
         };
         let presence = (
-            Presence::parse(&data["status"]),
+            Presence::parse(data),
             member_list::activity(&data["activities"]),
         );
         self.presences.insert(user.to_owned(), presence.clone()) != Some(presence)

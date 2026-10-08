@@ -6,7 +6,8 @@ import { StatusDot } from "rail.slint";
 /// A member of the open room. A heading starts each role's group.
 export struct MemberRow {
     id: string, name: string, initial: string, tint: color, picture: image, heading: string,
-    /// Discord's presence: "online", "idle", "dnd" or "offline"; empty for Matrix.
+    /// Discord's presence: "online", "mobile" (online only on a phone), "idle",
+    /// "dnd" or "offline"; empty for Matrix.
     presence: string,
     /// The name's colour, from a coloured Discord role.
     color: color, has-color: bool,

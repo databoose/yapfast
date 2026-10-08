@@ -64,7 +64,7 @@ export component RequestsHeading inherits HorizontalLayout {
 
 export struct FriendRow {
     id: string, name: string, initial: string, tint: color, picture: image,
-    /// As in MemberRow: "online", "idle", "dnd" or "offline".
+    /// As in MemberRow: "online", "mobile", "idle", "dnd" or "offline".
     presence: string,
     /// Their custom status or what they're doing.
     activity: string,
@@ -74,7 +74,7 @@ export struct FriendRow {
 export component FriendItem inherits Rectangle {
     in property <FriendRow> friend;
     callback message;
-    property <string> status: root.friend.presence == "dnd" ? "Do Not Disturb" : root.friend.presence == "idle" ? "Idle" : root.friend.presence == "online" ? "Online" : "Offline";
+    property <string> status: root.friend.presence == "dnd" ? "Do Not Disturb" : root.friend.presence == "idle" ? "Idle" : root.friend.presence == "online" || root.friend.presence == "mobile" ? "Online" : "Offline";
     property <brush> surface: pointer.has-hover ? Theme.hover : Theme.chat;
     height: 62px; border-radius: 8px;
     background: pointer.has-hover ? Theme.hover : transparent;
