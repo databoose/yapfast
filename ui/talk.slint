@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, ImageViewer } from "messages.slint";
+import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -183,6 +183,10 @@ export component TalkWindow inherits Window {
     // for Retry.
     in property <bool> history-start;
     in property <bool> history-failed;
+    // The row the "New" divider is on, or -1, and what the bar that jumps to
+    // it says while it's out of view.
+    in property <int> unread-index: -1;
+    in property <string> unread-label;
     in property <string> composer-hint;
     // Who else is typing in the open conversation; it takes the hint's place.
     in property <string> typing;
@@ -447,6 +451,7 @@ export component TalkWindow inherits Window {
     callback filter-edited;
     callback send;
     callback earlier;
+    callback jump-to-unread;
     callback join-voice;
     callback toggle-mute;
     callback toggle-deafen;
@@ -527,22 +532,37 @@ export component TalkWindow inherits Window {
     public function anchor-link(x: length, y: length, width: length, height: length) {
         root.anchor(x, y, width, height, false);
     }
-    // The message a reply's click jumped to, highlighted while it's set.
+    // The message a reply's click jumped to, highlighted while it's set, or
+    // the first unread message, brought to the top without the highlight.
     in-out property <string> jump-item;
+    property <bool> jump-lit;
     property <int> jump-tick;
     callback jump-to(string);
     // Uncovers a spoiler picture: the message's item and the attachment's index.
     callback reveal-attachment(string, int);
     /// Brings the message at `index` into view: an estimate first, so the list builds its
     /// row, then the row places itself on each `settle-jump` as the rows around it measure.
-    public function show-message(index: int, item: string) {
+    /// A lit message sits a third of the way down, highlighted; another at the top.
+    public function show-message(index: int, item: string, lit: bool) {
         root.follow-latest = false;
         root.jump-item = item;
-        timeline.content-y = max(min(0px, timeline.height - timeline.content-height),
-            min(0px, timeline.height / 3 - timeline.content-height * index / max(1, root.messages.length)));
+        root.jump-lit = lit;
+        root.jump-placed = false;
+        root.estimate-jump(index);
         root.jump-tick += 1;
     }
-    public function settle-jump() { root.jump-tick += 1; }
+    /// Places the jump's row again, at `index` now. Until the row is built and places
+    /// itself, the estimate is made again: the list may not have measured anything
+    /// yet when the jump starts, and history loaded above moves the row on.
+    public function settle-jump(index: int) {
+        if !root.jump-placed && index >= 0 { root.estimate-jump(index); }
+        root.jump-tick += 1;
+    }
+    property <bool> jump-placed;
+    function estimate-jump(index: int) {
+        timeline.content-y = max(min(0px, timeline.height - timeline.content-height),
+            min(0px, (root.jump-lit ? timeline.height / 3 : 0px) - timeline.content-height * index / max(1, root.messages.length)));
+    }
     public function scroll-to-latest() {
         root.follow-latest = true;
         timeline.content-y = min(0px, timeline.height - timeline.content-height);
@@ -579,6 +599,12 @@ export component TalkWindow inherits Window {
     out property <length> top-edge;
     out property <int> bottom-index: -1;
     property <int> view-tick;
+    // Where the "New" divider's row starts in the view, while it's built. Its
+    // line is 20px down the row, so it's out of view once the row is that far up.
+    property <length> unread-y;
+    out property <bool> unread-above: root.unread-index >= 0
+        && (root.unread-index < root.top-index || (root.unread-index == root.top-index && root.unread-y < -20px));
+    out property <bool> unread-below: root.unread-index >= 0 && root.bottom-index >= 0 && root.unread-index > root.bottom-index;
     // Earlier messages load as the timeline nears its top, a page at a time,
     // until the first message. After a failure they wait for Retry.
     property <bool> wants-earlier: root.room-ready && !root.preview && !root.busy && !root.voice-room
@@ -1190,7 +1216,9 @@ export component TalkWindow inherits Window {
                                         property <int> jump-tick: root.jump-tick;
                                         changed jump-tick => {
                                             if self.jumped {
-                                                timeline.content-y = max(min(0px, timeline.height - timeline.content-height), min(0px, timeline.height / 3 - self.y));
+                                                root.jump-placed = true;
+                                                timeline.content-y = max(min(0px, timeline.height - timeline.content-height),
+                                                    min(0px, (root.jump-lit ? timeline.height / 3 : 0px) - self.y - self.top));
                                             }
                                         }
                                         // The keyboard's message stays in view, with room for the next one,
@@ -1223,6 +1251,7 @@ export component TalkWindow inherits Window {
                                                 root.top-index = index; root.top-item = message.item; root.top-edge = self.view-y + self.height;
                                             }
                                             if self.view-y < timeline.height && self.view-y + self.height >= timeline.height { root.bottom-index = index; }
+                                            if message.unread-start { root.unread-y = self.view-y + self.top; }
                                         }
                                         init => { root.view-tick += 1; }
                                         changed view-y => { self.report-view(); }
@@ -1234,7 +1263,7 @@ export component TalkWindow inherits Window {
                                         height: col.preferred-height + self.top;
                                         Rectangle {
                                             y: parent.top; height: parent.height - parent.top;
-                                            background: parent.jumped ? Theme.accent.transparentize(0.86) : parent.lit ? Theme.row-hover : transparent;
+                                            background: parent.jumped && root.jump-lit ? Theme.accent.transparentize(0.86) : parent.lit ? Theme.row-hover : transparent;
                                             animate background { duration: 400ms; }
                                         }
                                         // The keyboard's message has a marigold edge.
@@ -1257,7 +1286,7 @@ export component TalkWindow inherits Window {
                                                 }
                                             }
                                             col := VerticalLayout {
-                                                padding-top: message.day != "" ? 12px : message.first ? 14px : 1px;
+                                                padding-top: message.day != "" || message.unread-start ? 12px : message.first ? 14px : 1px;
                                                 padding-bottom: index == root.messages.length - 1 ? 20px : 1px;
                                                 spacing: 0px;
                                                 // History starts with what's before it: earlier messages
@@ -1267,11 +1296,24 @@ export component TalkWindow inherits Window {
                                                     enabled: !root.busy && !root.preview; room-direct: root.room-direct; room-name: root.room-name;
                                                     earlier => { root.earlier(); }
                                                 }
-                                                if message.day != "": HorizontalLayout {
+                                                // A new day's date, and the "New" divider in marigold above
+                                                // the first unread message, on one line when both are here.
+                                                if message.day != "" || message.unread-start: HorizontalLayout {
                                                     padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;
-                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: Theme.line; } }
-                                                    Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: Theme.line; } }
+                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
+                                                    if message.day != "": Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                                    if message.day != "": Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
+                                                    if message.unread-start: Rectangle {
+                                                        width: new-text.preferred-width + 10px;
+                                                        accessible-role: text; accessible-label: "New messages start here";
+                                                        Rectangle {
+                                                            height: 18px; border-radius: 4px; background: Theme.accent;
+                                                            new-text := Text {
+                                                                text: "New"; color: Theme.on-accent; font-size: 12px; font-weight: 800;
+                                                                horizontal-alignment: center; vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                                 HorizontalLayout {
                                                     padding-left: 16px; padding-right: 48px; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
@@ -1428,6 +1470,13 @@ export component TalkWindow inherits Window {
                                         }
                                     }
                                 }
+                            }
+                            // While the "New" divider is out of view, a bar at the top jumps to it.
+                            if root.room-selected && !root.requests-open && !root.friends-open
+                                && (root.unread-above || root.unread-below): UnreadBar {
+                                x: (parent.width - self.width) / 2; y: 12px;
+                                label: root.unread-label; above: root.unread-above;
+                                jump => { root.jump-to-unread(); }
                             }
                             if root.requests-open: RequestsScreen {
                                 width: parent.width; height: parent.height;

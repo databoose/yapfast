@@ -143,6 +143,9 @@ export struct MessageRow {
     first: bool,
     /// A date divider above this message, when it starts a new day.
     day: string,
+    /// The first message that was unread when the conversation was opened:
+    /// the "New" divider goes above it.
+    unread-start: bool,
     /// The body, and the author and time as selectable text: a selection runs across messages
     /// through all three. A body of nothing but emoji shows them large.
     jumbo: bool,
@@ -541,6 +544,30 @@ export component HistoryEdge inherits HorizontalLayout {
         }
         touch := TouchArea { enabled: root.enabled && !root.loading; mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default; clicked => { root.earlier(); } }
     }
+}
+
+// Says how much is new since the conversation was last read while the "New"
+// divider is out of view, and jumps to it.
+export component UnreadBar inherits Rectangle {
+    in property <string> label;
+    /// The divider is above the view, rather than below it.
+    in property <bool> above;
+    callback jump;
+    width: content.preferred-width; height: 32px; border-radius: 16px;
+    background: touch.has-hover ? Theme.accent-hover : Theme.accent;
+    drop-shadow-blur: 12px; drop-shadow-color: #00000060; drop-shadow-offset-y: 4px;
+    accessible-role: button;
+    accessible-label: root.label + ". Jump to the first unread message";
+    accessible-action-default => { root.jump(); }
+    content := HorizontalLayout {
+        padding-left: 14px; padding-right: 10px; spacing: 8px;
+        Text { text: root.label; color: Theme.on-accent; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        Image {
+            source: @image-url("icons/chevron-down.svg"); width: 16px; image-fit: contain;
+            colorize: Theme.on-accent; transform-rotation: root.above ? 180deg : 0deg;
+        }
+    }
+    touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.jump(); } }
 }
 
 // The opening of a conversation without messages yet.

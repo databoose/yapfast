@@ -289,30 +289,97 @@ impl Application {
     /// Brings the message being sought into view once the timeline has it,
     /// else loads another page of history, up to [`MAX_SEEK_PAGES`].
     pub(super) fn seek(&mut self) -> Vec<Effect> {
-        let Some((item, pages)) = self.seeking.take() else {
+        let Some(seeking) = self.seeking.take() else {
             return vec![];
         };
         if self
             .state
             .messages
             .iter()
-            .any(|message| message.item == item)
+            .any(|message| message.item == seeking.item)
         {
-            let count = self.state.jump.as_ref().map_or(0, |(_, count)| count + 1);
-            self.state.jump = Some((item, count));
+            if seeking.unread {
+                self.state.unread_jump += 1;
+            } else {
+                let count = self.state.jump.as_ref().map_or(0, |(_, count)| count + 1);
+                self.state.jump = Some((seeking.item, count));
+            }
             return vec![];
         }
-        if pages >= MAX_SEEK_PAGES || self.state.history_start {
+        if seeking.pages >= MAX_SEEK_PAGES || self.state.history_start {
             self.state.notice = Some(
-                "Talk couldn't find the original message in this conversation's recent history."
-                    .into(),
+                if seeking.unread {
+                    "Talk couldn't find the first unread message in this conversation's recent history."
+                } else {
+                    "Talk couldn't find the original message in this conversation's recent history."
+                }
+                .into(),
             );
             return vec![];
         }
         let effects = self.dispatch_action(Action::Earlier);
         if self.state.loading_history {
-            self.seeking = Some((item, pages + 1));
+            self.seeking = Some(Seeking {
+                pages: seeking.pages + 1,
+                ..seeking
+            });
         }
         effects
+    }
+
+    /// Puts the "New" divider above the first message after the one last
+    /// read when the room was opened, once the timeline has it. Discord's
+    /// messages are ordered by their snowflakes, so the divider goes in even
+    /// when the last read message is gone; earlier history loads until a read
+    /// message is there too, up to [`MAX_UNREAD_PAGES`]. A Matrix room's
+    /// divider waits for the message its read receipt is on. The timeline
+    /// then shows the divider at its top, once.
+    pub(super) fn place_unread(&mut self) -> Vec<Effect> {
+        let Some((marker, pages)) = self.read_marker.take() else {
+            return vec![];
+        };
+        let messages = Arc::clone(&self.state.messages);
+        if !self.state.room_ready || messages.is_empty() {
+            self.read_marker = Some((marker, pages));
+            return vec![];
+        }
+        let unread = |message: &ChatMessage| !message.own;
+        let first = match discord::item_order(&marker) {
+            Some(read) => {
+                let after = |message: &ChatMessage| {
+                    discord::item_order(&message.item).is_some_and(|order| order > read)
+                };
+                let reached = messages.iter().any(|message| {
+                    discord::item_order(&message.item).is_some_and(|order| order <= read)
+                });
+                if !reached && !self.state.history_start && pages < MAX_UNREAD_PAGES {
+                    // A page already on its way, such as one scrolling asked
+                    // for, isn't counted.
+                    let effects = self.earlier();
+                    self.read_marker = Some((marker, pages + u32::from(!effects.is_empty())));
+                    return effects;
+                }
+                messages
+                    .iter()
+                    .position(|message| after(message) && unread(message))
+            }
+            None => messages
+                .iter()
+                .position(|message| message.item == marker)
+                .and_then(|at| {
+                    let next = messages[at + 1..].iter().position(unread)?;
+                    Some(at + 1 + next)
+                }),
+        };
+        match first {
+            Some(first) => {
+                self.state.first_unread = Some(messages[first].item.clone());
+                self.state.unread_jump += 1;
+            }
+            // Not loaded yet, or nothing is unread after all; newer messages
+            // may still come with the rest of the timeline.
+            None => self.read_marker = Some((marker, pages)),
+        }
+        vec![]
     }
 }

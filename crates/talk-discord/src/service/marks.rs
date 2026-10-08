@@ -33,6 +33,7 @@ struct ChannelMarks {
     muted: bool,
     unread: bool,
     mentions: u64,
+    last_read: u64,
 }
 
 impl Marks {
@@ -48,6 +49,7 @@ impl Marks {
                 muted,
                 unread,
                 mentions,
+                last_read: unreads.last_read(&server.id, &channel.id),
             });
         }
         for channel in &server.voice_channels {
@@ -57,6 +59,7 @@ impl Marks {
                 muted: channel.muted,
                 unread: channel.unread,
                 mentions: channel.mentions,
+                last_read: channel.last_read,
             });
         }
         Self {
@@ -72,6 +75,7 @@ impl Marks {
         for (channel, marks) in server.text_channels.iter().zip(&mut channels) {
             (marks.muted, marks.unread, marks.mentions) =
                 unreads.channel(&server.id, channel, marks.access);
+            marks.last_read = unreads.last_read(&server.id, &channel.id);
         }
         Self {
             muted: unreads.server_muted(&server.id),
@@ -93,6 +97,7 @@ impl Marks {
             channel.muted = marks.muted;
             channel.unread = marks.unread;
             channel.mentions = marks.mentions;
+            channel.last_read = marks.last_read;
         }
         marked
     }

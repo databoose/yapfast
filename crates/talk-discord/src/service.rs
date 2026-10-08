@@ -89,6 +89,9 @@ pub struct Conversation {
     pub unread: bool,
     /// Unread messages, as every message in a DM counts as a mention.
     pub mentions: u64,
+    /// The snowflake of the last message this account read here, or 0.
+    #[serde(default)]
+    pub last_read: u64,
     /// A call is going on here. Who is in it is in [`Snapshot::voice`].
     pub call: bool,
     /// Whom Discord is ringing for the call, this account perhaps among them.

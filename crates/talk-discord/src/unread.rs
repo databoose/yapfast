@@ -356,17 +356,26 @@ impl Unreads {
     /// Whether a channel has unread messages, and how many mention this account.
     fn state(&self, guild: &str, channel: &str) -> (bool, u64) {
         let last = self.last_messages.get(channel).copied().unwrap_or_default();
-        let read = self.reads.get(channel).copied().unwrap_or(Read {
+        let read = self.read_state(guild, channel);
+        (last > read.last, read.mentions)
+    }
+
+    fn read_state(&self, guild: &str, channel: &str) -> Read {
+        self.reads.get(channel).copied().unwrap_or(Read {
             // Discord keeps a read state for each DM with messages to read,
             // so a DM without one is read.
             last: if guild == PRIVATE {
-                last
+                self.last_message(channel)
             } else {
                 self.joined.get(guild).copied().unwrap_or_default()
             },
             mentions: 0,
-        });
-        (last > read.last, read.mentions)
+        })
+    }
+
+    /// The snowflake of the last message this account read in a channel, or 0.
+    pub fn last_read(&self, guild: &str, channel: &str) -> u64 {
+        self.read_state(guild, channel).last
     }
 
     /// A channel's newest message, or 0 when none is known.
@@ -394,6 +403,7 @@ impl Unreads {
         for channel in &mut server.text_channels {
             (channel.muted, channel.unread, channel.mentions) =
                 self.channel(&id, channel, channel.access);
+            channel.last_read = self.last_read(&id, &channel.id);
         }
     }
 
@@ -432,6 +442,7 @@ impl Unreads {
         let (unread, mentions) = self.state(PRIVATE, &private.id);
         private.unread = unread && !private.muted;
         private.mentions = if private.muted { 0 } else { mentions };
+        private.last_read = self.last_read(PRIVATE, &private.id);
     }
 }
 
@@ -594,9 +605,22 @@ mod tests {
             "already unread"
         );
 
+        // Where each channel was read up to, for the "New" divider: never
+        // read counts from joining.
+        let read = |server: &Server| {
+            server
+                .text_channels
+                .iter()
+                .map(|channel| channel.last_read)
+                .collect::<Vec<_>>()
+        };
+        let joined = snowflake_at(iso_ms("2015-01-01T00:00:00+00:00").unwrap());
+        assert_eq!(read(&server), [500, 400, joined, joined]);
+
         assert_eq!(unreads.mark_read("10", "11").as_deref(), Some("604"));
         assert_eq!(unreads.mark_read("10", "11"), None);
         assert_eq!(state(&unreads, &mut server)[0], (false, 0));
+        assert_eq!(read(&server)[0], 604);
 
         unreads.apply(
             &Event::MessageAck,

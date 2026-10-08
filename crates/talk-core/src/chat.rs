@@ -36,6 +36,10 @@ pub struct ChatRoom {
     pub members: u64,
     pub unread: u64,
     pub mentions: u64,
+    /// The timeline item of the last message this account read here, which
+    /// may not be loaded: a Discord `d:` item, ordered by its snowflake, or
+    /// a Matrix `e:` event from its read receipt.
+    pub last_read: Option<String>,
     /// Listed, but this account may not join it, such as a Discord channel
     /// its roles keep it out of.
     pub locked: bool,

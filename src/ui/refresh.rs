@@ -1178,6 +1178,9 @@ impl Adapter {
                     } else {
                         SharedString::default()
                     };
+                    // The author shows again below the "New" divider.
+                    row.unread_start = state.first_unread.as_ref() == Some(&message.item);
+                    row.first |= row.unread_start;
                     before = Some(message);
                     row
                 })
@@ -1198,6 +1201,24 @@ impl Adapter {
                 });
             }
         }
+        let unread = state.first_unread.as_ref().and_then(|item| {
+            let index = state
+                .messages
+                .iter()
+                .position(|message| &message.item == item)?;
+            Some((index, item))
+        });
+        if messages_changed || selection_changed || reset {
+            window.set_unread_index(
+                unread.map_or(-1, |(index, _)| i32::try_from(index).unwrap_or(i32::MAX)),
+            );
+            window.set_unread_label(
+                unread
+                    .map(|(index, _)| unread_label(&state.messages[index..]))
+                    .unwrap_or_default()
+                    .into(),
+            );
+        }
         if state.jump != self.jumped {
             self.jumped = state.jump.clone();
             if let Some((item, _)) = &state.jump
@@ -1206,7 +1227,13 @@ impl Adapter {
                     .iter()
                     .position(|message| &message.item == item)
             {
-                show_message(window, index, item);
+                show_message(window, index, item, true);
+            }
+        }
+        if state.unread_jump != self.unread_jumped {
+            self.unread_jumped = state.unread_jump;
+            if let Some((index, item)) = unread {
+                show_message(window, index, item, false);
             }
         }
     }
@@ -1665,4 +1692,24 @@ fn arrived<'a>(
         emoji.id.as_str(),
         state.pictures.get(&emoji.picture)?.as_ref(),
     ))
+}
+
+/// What the bar that jumps to the "New" divider says: how many messages
+/// others sent from `unread` on, and since when, with the date unless it
+/// was today.
+fn unread_label(unread: &[ChatMessage]) -> String {
+    let count = unread.iter().filter(|message| !message.own).count();
+    let messages = if count == 1 { "message" } else { "messages" };
+    let Some(first) = unread.first().filter(|first| first.time.contains(':')) else {
+        return format!("{count} new {messages}");
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |now| now.as_secs());
+    let on = day(first.timestamp);
+    if on.is_empty() || on == day(now) {
+        format!("{count} new {messages} since {}", first.time)
+    } else {
+        format!("{count} new {messages} since {} on {on}", first.time)
+    }
 }

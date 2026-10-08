@@ -1401,3 +1401,88 @@ fn clicking_a_category_collapses_it() {
     window.invoke_toggle_category(heading);
     assert!(!window.get_rooms().iter().any(|row| row.collapsed));
 }
+
+#[test]
+fn opening_at_the_new_divider_puts_it_at_the_top_and_the_bar_jumps_back() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_history_start(true);
+    let rows = || -> Vec<MessageRow> {
+        (0..100)
+            .map(|index| {
+                let mut row = message_row_plain(&ChatMessage {
+                    id: format!("m{index}"),
+                    item: format!("i{index}"),
+                    author: "Bob".into(),
+                    body: format!("Message {index}"),
+                    formatted: true,
+                    ..Default::default()
+                });
+                row.first = true;
+                row.unread_start = index == 60;
+                row
+            })
+            .collect()
+    };
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let settle = || {
+        for _ in 0..10 {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(1100., 740.),
+                });
+        }
+    };
+    settle();
+    // The jump comes with the rows, before the list has measured any.
+    window.set_messages(ModelRc::new(VecModel::from(rows())));
+    window.set_unread_index(60);
+    window.set_unread_label("40 new messages".into());
+    messages::show_message(&window, 60, "i60", false);
+    settle();
+    assert!(
+        (59..=60).contains(&window.get_top_index()),
+        "the divider is at the top, not row {}",
+        window.get_top_index()
+    );
+    assert!(!window.get_unread_above() && !window.get_unread_below());
+    assert!(!window.invoke_timeline_at_end());
+
+    // Scrolled on down, the divider is above, and the bar takes the view back.
+    for _ in 0..3 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: -400.,
+            });
+        settle();
+    }
+    assert!(window.get_top_index() > 60);
+    assert!(window.get_unread_above());
+    messages::show_message(&window, 60, "i60", false);
+    settle();
+    assert!((59..=60).contains(&window.get_top_index()));
+    assert!(!window.get_unread_above());
+    // Scrolled up past it, it's below.
+    for _ in 0..4 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: 400.,
+            });
+        settle();
+    }
+    assert!(window.get_unread_below());
+}

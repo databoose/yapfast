@@ -100,6 +100,10 @@ impl Application {
         };
         let voice_room = room.voice;
         let locked = room.locked;
+        // Where the "New" divider goes, from before showing the room reads it.
+        let read_marker = (room.unread > 0 || room.mentions > 0)
+            .then(|| room.last_read.clone())
+            .flatten();
         self.remember_view();
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
@@ -116,6 +120,8 @@ impl Application {
         self.state.history_failed = false;
         self.state.jump = None;
         self.seeking = None;
+        self.state.first_unread = None;
+        self.read_marker = read_marker.map(|marker| (marker, 0));
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.state.members = None;
@@ -183,6 +189,8 @@ impl Application {
         self.state.loading_history = false;
         self.state.history_start = false;
         self.state.history_failed = false;
+        self.state.first_unread = None;
+        self.read_marker = None;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.state.members = None;

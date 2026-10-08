@@ -258,6 +258,17 @@ impl Index {
     }
 }
 
+/// The item of the last message read in a channel, from its snowflake.
+#[cfg(feature = "discord")]
+fn read_item(last_read: u64) -> Option<String> {
+    (last_read != 0).then(|| format!("d:{last_read}"))
+}
+
+/// Where a Discord message's item falls in its channel: its snowflake.
+pub fn item_order(item: &str) -> Option<u64> {
+    item.strip_prefix("d:")?.parse().ok()
+}
+
 /// The DMs and group DMs to list, the latest first.
 #[cfg(feature = "discord")]
 fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
@@ -275,6 +286,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             members: dm.people as u64,
             unread: u64::from(dm.unread),
             mentions: dm.mentions,
+            last_read: read_item(dm.last_read),
             locked: false,
             // Replying waits until the request is accepted.
             read_only: dm.request,
@@ -348,6 +360,7 @@ fn server_rooms(
                     .map_or(0, |members| members.len() as u64),
                 unread: 0,
                 mentions: 0,
+                last_read: None,
                 locked: channel.access != Access::Join,
                 read_only: false,
                 category,
@@ -379,6 +392,7 @@ fn server_rooms(
                     .map_or(0, |(_, count)| *count),
                 unread: u64::from(channel.unread),
                 mentions: channel.mentions,
+                last_read: read_item(channel.last_read),
                 locked: channel.access == Access::Hidden,
                 read_only: channel.access == Access::Locked,
                 category,

@@ -120,6 +120,9 @@ pub struct Channel {
     pub mentions: u64,
     /// Muted, directly or through its category.
     pub muted: bool,
+    /// The snowflake of the last message this account read here, or 0.
+    #[serde(default)]
+    pub last_read: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -164,6 +167,7 @@ pub struct Private {
     pub unread: bool,
     pub mentions: u64,
     pub muted: bool,
+    pub last_read: u64,
 }
 
 /// A DM or group DM, or a message request, from a channel object.

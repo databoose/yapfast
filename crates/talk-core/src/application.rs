@@ -36,6 +36,10 @@ const MENTION_GROUPS: usize = 4;
 
 /// How many pages of history a jump to a message loads looking for it.
 const MAX_SEEK_PAGES: u32 = 20;
+/// How many pages of Discord history opening a channel loads looking for
+/// its first unread message, before putting the "New" divider above the
+/// oldest loaded one.
+const MAX_UNREAD_PAGES: u32 = 5;
 
 const STOPPED: &str = "The connection has stopped. Restart Talk to restore your session.";
 
@@ -262,6 +266,13 @@ pub struct AppState {
     /// The message the timeline should bring into view and highlight, and a
     /// count that changes with each jump, even to the same message.
     pub jump: Option<(String, u64)>,
+    /// The selected room's first unread message as it was on opening the
+    /// room, which the timeline draws the "New" divider above. It stays put
+    /// while the room is open, as newer messages are read as they come.
+    pub first_unread: Option<String>,
+    /// Changes each time the timeline should bring [`Self::first_unread`]
+    /// to its top: once when it's found, and on [`Action::JumpToUnread`].
+    pub unread_jump: u64,
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
     pub confirm_delete: Option<String>,
@@ -675,6 +686,9 @@ pub enum Action {
     /// Show the selected room's message with this item, loading earlier
     /// history until it's there; see [`AppState::jump`].
     Jump(String),
+    /// Show the selected room's first unread message; see
+    /// [`AppState::first_unread`].
+    JumpToUnread,
     /// Download pictures that show outside the state, such as the emoji
     /// picker's; see [`DiscordCommand::Pictures`].
     LoadPictures(Vec<String>),
@@ -809,13 +823,25 @@ pub struct Application {
     sent_draft: Option<String>,
     /// The files sent with it, which leave the composer once sent.
     sent_files: Vec<PathBuf>,
-    /// The message [`Action::Jump`] is loading history to find, and how many
-    /// pages it has loaded.
-    seeking: Option<(String, u32)>,
+    /// The message [`Action::Jump`] or [`Action::JumpToUnread`] is loading
+    /// history to find.
+    seeking: Option<Seeking>,
+    /// The last message read in the selected room when it was opened, while
+    /// the first message after it is still to be found, and how many pages
+    /// of history were loaded looking for it.
+    read_marker: Option<(String, u32)>,
     /// Discord channels shown lately, newest last: their timeline and
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.
     shown: Vec<Shown>,
+}
+
+struct Seeking {
+    item: String,
+    /// Pages of history loaded so far.
+    pages: u32,
+    /// Bring it in view as the first unread message, without highlighting it.
+    unread: bool,
 }
 
 struct Shown {
@@ -1111,9 +1137,24 @@ impl Application {
                 vec![]
             }
             Action::Jump(item) => {
-                self.seeking = Some((item, 0));
+                self.seeking = Some(Seeking {
+                    item,
+                    pages: 0,
+                    unread: false,
+                });
                 self.seek()
             }
+            Action::JumpToUnread => match self.state.first_unread.clone() {
+                Some(item) => {
+                    self.seeking = Some(Seeking {
+                        item,
+                        pages: 0,
+                        unread: true,
+                    });
+                    self.seek()
+                }
+                None => vec![],
+            },
             Action::LoadPictures(urls) => self.load_pictures(urls),
             Action::Earlier => self.earlier(),
             Action::Login {
@@ -1357,7 +1398,9 @@ impl Application {
                     }
                     self.state.room_ready = true;
                     self.state.messages = Arc::new(messages);
-                    return self.mark_discord_read();
+                    let mut effects = self.place_unread();
+                    effects.extend(self.mark_discord_read());
+                    return effects;
                 }
             }
             Event::RoomError { room, message } => {
@@ -1465,7 +1508,9 @@ impl Application {
                         chat::History::Start => self.state.history_start = true,
                         chat::History::Failed => self.state.history_failed = true,
                     }
-                    return self.seek();
+                    let mut effects = self.place_unread();
+                    effects.extend(self.seek());
+                    return effects;
                 }
             }
             Event::SendResult { room, body, result } => {

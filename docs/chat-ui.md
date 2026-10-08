@@ -128,7 +128,17 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Show unread channels in bold with a short pill at the sidebar edge, and the
   same pill beside servers and the DM button that contain them. Mentions show a
   red count. Opening a conversation marks
-  it read. Talk counts unread messages on this device; for a room that isn't open,
+  it read. A conversation opened with unread messages opens at a marigold
+  "New" divider above the first one, sitting at the top of the view rather
+  than at the newest message, and the author's name shows again below it. The
+  divider stays put while the conversation is open, as newer messages are
+  read as they come, and it's gone the next time once the conversation was
+  read. While the divider is out of view, a marigold bar at the top says how
+  many messages are new and since when ("80 new messages since 14:44"), with
+  an arrow toward it, and clicking it scrolls back to the divider. A Discord
+  channel places it by message order, loading earlier history to reach it; a
+  Matrix room places it after the event its read receipt is on, once that
+  event is in the loaded timeline. Talk counts unread messages on this device; for a room that isn't open,
   sync often delivers only the newest event, so Talk shows that something is
   unread rather than how much.
 - Show sync status in the account panel. Reconnect appears there when offline;
@@ -190,7 +200,7 @@ older messages go in above the rows shown, which stay where they are on screen.
 There is no UI polling loop.
 Only joined Spaces and their joined channels appear. DMs stay in the DM list even
 if linked to a Space. Standalone rooms outside Spaces, channel discovery, room
-creation, mentions with autocomplete, jumping to the first unread message,
+creation, mentions with autocomplete,
 threads, a full emoji picker, video/audio playback, drag and drop, and deleting
 other people's messages remain later work. Message actions need a pointer;
 keyboard access to them is still missing. Closing the last window exits Talk.

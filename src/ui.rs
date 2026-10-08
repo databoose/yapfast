@@ -663,6 +663,9 @@ struct Adapter {
     pictures_seen: u64,
     /// The last jump to a message the timeline made; see `AppState::jump`.
     jumped: Option<(String, u64)>,
+    /// `AppState::unread_jump` when the timeline last brought the first
+    /// unread message to its top.
+    unread_jumped: u64,
     /// Spoilers clicked; see `message_row`.
     revealed: HashSet<String>,
     /// The preferences that shape message rows changed, so they're built again.
@@ -754,6 +757,7 @@ impl Adapter {
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 jumped: None,
+                unread_jumped: 0,
                 revealed: HashSet::new(),
                 restyle: false,
                 mention_at: None,

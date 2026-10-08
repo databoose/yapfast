@@ -128,23 +128,33 @@ pub(super) fn plain_with_links(body: &str) -> Option<slint::StyledText> {
         .and_then(|markdown| slint::StyledText::from_markdown(&markdown).ok())
 }
 
-/// Scrolls the timeline to the message at `index` and highlights it for a moment. The
+/// Scrolls the timeline to the message at `index`: a third of the way down, highlighted
+/// for a moment where `lit`, else to the top, as for the first unread message. The
 /// list builds rows as they come into view, so the row settles its place a few times
 /// as those around it measure.
-pub(super) fn show_message(window: &TalkWindow, index: usize, item: &str) {
+pub(super) fn show_message(window: &TalkWindow, index: usize, item: &str, lit: bool) {
     // At once, so the list stops following the newest message before anything
     // else scrolls it.
-    window.invoke_show_message(i32::try_from(index).unwrap_or(i32::MAX), item.into());
-    for delay in [0, 30, 100, 250] {
+    window.invoke_show_message(i32::try_from(index).unwrap_or(i32::MAX), item.into(), lit);
+    let shown: SharedString = item.into();
+    for delay in [0, 30, 100, 250, 500] {
         let weak = window.as_weak();
+        let shown = shown.clone();
         slint::Timer::single_shot(Duration::from_millis(delay), move || {
-            if let Some(window) = weak.upgrade() {
-                window.invoke_settle_jump();
+            if let Some(window) = weak.upgrade()
+                && window.get_jump_item() == shown
+            {
+                // History may have loaded above it since.
+                let index = window
+                    .get_messages()
+                    .iter()
+                    .position(|row| row.item == shown)
+                    .map_or(-1, |index| i32::try_from(index).unwrap_or(i32::MAX));
+                window.invoke_settle_jump(index);
             }
         });
     }
     let weak = window.as_weak();
-    let shown: SharedString = item.into();
     slint::Timer::single_shot(Duration::from_millis(2500), move || {
         if let Some(window) = weak.upgrade()
             && window.get_jump_item() == shown
@@ -316,6 +326,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         // Grouping depends on the neighbouring messages; refresh sets both.
         first: true,
         day: SharedString::default(),
+        unread_start: false,
         jumbo,
         styled,
         author_styled: bold(&message.author),

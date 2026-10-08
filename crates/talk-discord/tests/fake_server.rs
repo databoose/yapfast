@@ -222,6 +222,7 @@ async fn talks_to_the_fake_server() {
     let bob = snapshot.voice[&guild.voice_channels[0].id][0]
         .user_id
         .clone();
+    let last_read = general.last_read;
     let (guild, general, lounge) = (
         guild.id.clone(),
         general.id.clone(),
@@ -231,6 +232,11 @@ async fn talks_to_the_fake_server() {
     // Two pages of history: 50, then the rest, oldest first.
     let latest = discord.history(&guild, &general, None).await.unwrap();
     assert_eq!(latest.len(), 50);
+    assert_eq!(
+        last_read.to_string(),
+        latest[latest.len() - 6].id,
+        "read up to the fixture's last five messages"
+    );
     let older = discord
         .history(&guild, &general, Some(&latest[0].id))
         .await
@@ -312,8 +318,10 @@ async fn talks_to_the_fake_server() {
 
     // Reading the channel clears its unread mark.
     discord.mark_read(&guild, &general, true);
+    let newest = latest.last().unwrap().id.clone();
     snapshot_where(&discord, |snapshot| {
-        !snapshot.servers[0].text_channels[0].unread
+        let general = &snapshot.servers[0].text_channels[0];
+        !general.unread && general.last_read.to_string() == newest
     })
     .await;
 
@@ -581,8 +589,8 @@ async fn talks_to_the_fake_server() {
     assert_eq!(mentionable, ["Mods"]);
     assert_eq!(
         listed.mentionable(true).len(),
-        2,
-        "Bots too, for those who may"
+        3,
+        "Bots and Crew too, for those who may"
     );
 
     // New DMs: friends come first, others by name, and opening a DM with

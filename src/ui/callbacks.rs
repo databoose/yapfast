@@ -51,6 +51,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         });
     }
     bind!(on_earlier, Action::Earlier);
+    bind!(on_jump_to_unread, Action::JumpToUnread);
     bind!(on_accept_request, Action::AnswerRequest(true));
     bind!(on_enlarge_profile, Action::EnlargeProfile);
     bind!(on_close_profile, Action::CloseProfile);

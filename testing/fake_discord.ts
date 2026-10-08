@@ -73,6 +73,12 @@
 // and links' pictures, to show loading states.
 // POST /_control/bob-away makes Bob idle with a custom status, and
 // /_control/bob-offline takes him offline.
+// Alice has the Crew role, which only she has. `--unread N` sets how many of
+// #general's newest messages she hasn't read (default 5). POST
+// /_control/mentions makes Bob mention her in #general every way Discord
+// highlights for her, and two ways it doesn't: by name, through Crew, with
+// @everyone and @here, in a reply to her message, then through Mods, which
+// she lacks, and not at all.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -92,6 +98,7 @@ const { values: args } = parseArgs({
     authors: { type: "string", default: "0" },
     nitro: { type: "boolean", default: false },
     "cdn-delay": { type: "string", default: "0" },
+    unread: { type: "string", default: "5" },
   },
 });
 
@@ -108,6 +115,8 @@ const LOUNGE = "1400000000000000103";
 const MODS = "1400000000000000110";
 // Only those who may mention everyone can mention Bots.
 const BOTS = "1400000000000000111";
+// Alice's own role.
+const CREW = "1400000000000000112";
 const DM_BOB = "1400000000000000120";
 const WEEKEND = "1400000000000000121";
 const DM_DAVE = "1400000000000000122";
@@ -483,6 +492,9 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     .map((match) => userById.get(match[1]!))
     .filter((user) => user !== undefined)
     .map(wireUser);
+  // As Discord, only roles and @everyone that the author may mention count;
+  // here, Bob and the bots may mention anything.
+  const mayMention = message.author.id === users.bob.id || !!message.author.bot;
   const wire: Record<string, unknown> = {
     id: message.id,
     type: message.type,
@@ -492,9 +504,9 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     attachments: message.files.map((file) => wireAttachment(file, origin)),
     embeds: message.embeds?.(origin) ?? [],
     mentions,
-    mention_roles: [],
+    mention_roles: mayMention ? [...message.content.matchAll(/<@&(\d+)>/g)].map((match) => match[1]) : [],
     pinned: false,
-    mention_everyone: false,
+    mention_everyone: mayMention && /@(everyone|here)\b/.test(message.content),
     tts: false,
     timestamp: iso(timeOf(message.id)),
     edited_timestamp: message.edited ? iso(message.edited) : null,
@@ -690,11 +702,11 @@ privates.set(SPAM_FRANK, { type: 1, recipients: [strangers.frank!], request: tru
 post(SPAM_FRANK, strangers.frank!, "Claim your free Nitro at nitro-gift.example", DM_START + 360_000);
 post(REQUEST_ERIN, strangers.erin!, "Hi Alice, Bob gave me your name. Can I ask about the trip?", DM_START + 420_000);
 
-// Alice has read all but the last five messages of the fixture, and Bob's
+// Alice has read all but the last `--unread` messages of the fixture, and Bob's
 // last two in their DM, which count as mentions as in Discord.
 const general = messages.get(GENERAL)!;
 const readStates = new Map<string, { last: string; mentions: number }>([
-  [GENERAL, { last: general[Math.max(0, general.length - 6)]!.id, mentions: 0 }],
+  [GENERAL, { last: general[Math.max(0, general.length - 1 - Number(args.unread))]!.id, mentions: 0 }],
   [DM_BOB, { last: readBob.id, mentions: 2 }],
   [REQUEST_ERIN, { last: readBob.id, mentions: 1 }],
   [SPAM_FRANK, { last: readBob.id, mentions: 1 }],
@@ -834,6 +846,7 @@ function guild() {
       { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
       { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
       { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+      { id: CREW, name: "Crew", permissions: "0", position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
     ],
     emojis: [
       { id: EMOJI_TALK, name: "talk", animated: false, available: true, managed: false, require_colons: true, roles: [] },
@@ -942,7 +955,7 @@ const fillers = Array.from({ length: Math.max(0, Number(args.servers) - 1) }, (_
 const fillerList = [...fillerChannels.keys()];
 
 function ready(ws: Socket) {
-  const { user: _, ...alice } = member(users.alice);
+  const { user: _, ...alice } = member(users.alice, [CREW]);
   return {
     v: 9,
     user: {
@@ -2745,6 +2758,28 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && path === "/_control/mention") {
       const message = post(GENERAL, users.bob, `<@${users.alice.id}> are you in for co-op tonight?`, Date.now());
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      return new Response("Bob mentioned Alice\n");
+    }
+    if (req.method === "POST" && path === "/_control/mentions") {
+      const now = Date.now();
+      let alices = messages.get(GENERAL)!.findLast((message) => message.author.id === ALICE);
+      if (!alices) {
+        alices = post(GENERAL, users.alice, "I'll bring the map", now - 1000);
+        dispatch("MESSAGE_CREATE", dispatched(alices, origin));
+      }
+      const said = [
+        `<@${ALICE}> can you check the route?`,
+        `<@&${CREW}> meet at the bridge at nine`,
+        "@everyone the ferry is cancelled",
+        "@here anyone still online?",
+        "",
+        `<@&${MODS}> please pin the plan`,
+        "See you all there",
+      ];
+      said.forEach((content, index) => {
+        const message = post(GENERAL, users.bob, content || "Good idea, bring the big one", now + index, content ? {} : { reply: alices!.id });
+        dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      });
       return new Response("Bob mentioned Alice\n");
     }
     if (req.method === "POST" && path === "/_control/typing") {

@@ -828,6 +828,7 @@ impl Tracker {
                         .flatten(),
                     unread: private.unread && !private.spam,
                     mentions: if private.request { 0 } else { private.mentions },
+                    last_read: private.last_read,
                     call,
                     ringing,
                     presence: known.map(|(presence, _)| *presence),

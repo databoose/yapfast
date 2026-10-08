@@ -498,6 +498,13 @@ Each server in the rail shows its mentions as a count, and the DM button
 counts DM mentions and the friend requests waiting for an answer.
 Showing an unread channel marks it read, and with the "Mark messages read on
 Discord" setting, on by default, acknowledges it on Discord within a second.
+Before it does, Talk notes the channel's last read message, from READY's read
+state or the last acknowledgement since, and the "New" divider goes above the
+first message after it from someone else. Snowflakes order messages, so the
+divider finds its place even when the last read message was deleted. When
+every loaded message is unread, earlier pages load until a read one is there,
+up to five pages of 50; past that the divider goes above the oldest loaded
+message.
 The open text channel lists its members on the right as Discord's sidebar
 does: under hoisted roles, then online, then offline, with offline members
 faded. Each shows a status dot for online, idle or do not disturb, their name

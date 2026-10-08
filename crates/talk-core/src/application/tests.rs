@@ -2613,3 +2613,205 @@ fn pictures_off_screen_go_once_many_have_arrived() {
     );
     assert_eq!(app.state.picture_changes, KEPT_PICTURES as u64 + 1);
 }
+
+#[cfg(feature = "discord")]
+fn unread_channel(unread: bool, last_read: u64) -> Event {
+    use talk_discord::{
+        ready::{Channel, Server},
+        service::{Snapshot, Status},
+    };
+    discord_event(Snapshot {
+        status: Status::Online,
+        servers: vec![Arc::new(Server {
+            id: "10".into(),
+            name: "Test".into(),
+            text_channels: vec![
+                Channel {
+                    id: "21".into(),
+                    name: "general".into(),
+                    unread,
+                    last_read,
+                    ..Default::default()
+                },
+                Channel {
+                    id: "22".into(),
+                    name: "news".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })],
+        ..Default::default()
+    })
+}
+
+/// Bob's Discord messages with these snowflakes, and Alice's where `own`.
+#[cfg(feature = "discord")]
+fn discord_messages(ids: impl IntoIterator<Item = u64>, own: &[u64]) -> Vec<ChatMessage> {
+    ids.into_iter()
+        .map(|id| message(&format!("d:{id}"), own.contains(&id)))
+        .collect()
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
+    let general = "discord:10:21";
+    let mut app = connected();
+    app.apply(unread_channel(true, 103));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom(general.into()));
+    assert_eq!(app.state.first_unread, None);
+    let effects = app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(95..=110, &[104]),
+    });
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::Discord(
+                DiscordCommand::MarkRead { .. }
+            ))]
+        ),
+        "the last read message is loaded, so no earlier history is"
+    );
+    // Alice's own message after the last read one isn't new to her.
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:105"));
+    assert_eq!(app.state.unread_jump, 1, "shown once");
+
+    // Reading the channel and newer messages leave the divider where it is.
+    app.apply(unread_channel(false, 110));
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(95..=111, &[104]),
+    });
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:105"));
+    assert_eq!(app.state.unread_jump, 1);
+    assert!(app.dispatch(Action::JumpToUnread).is_empty());
+    assert_eq!(app.state.unread_jump, 2);
+    assert_eq!(app.state.jump, None, "the jump doesn't highlight");
+
+    // Left and read, the channel has no divider when it opens again.
+    app.dispatch(Action::SelectRoom("discord:10:22".into()));
+    assert_eq!(app.state.first_unread, None);
+    app.dispatch(Action::SelectRoom(general.into()));
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(95..=111, &[104]),
+    });
+    assert_eq!(app.state.first_unread, None);
+    assert!(app.dispatch(Action::JumpToUnread).is_empty());
+    assert_eq!(app.state.unread_jump, 2);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn opening_a_channel_loads_history_back_to_its_first_unread_message() {
+    let general = "discord:10:21";
+    let earlier = |effects: &[Effect]| {
+        effects.iter().any(
+            |effect| matches!(effect, Effect::Backend(Command::Earlier(room)) if room == general),
+        )
+    };
+    let mut app = connected();
+    app.apply(unread_channel(true, 50));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom(general.into()));
+    let effects = app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(100..110, &[]),
+    });
+    assert!(earlier(&effects), "every loaded message is unread");
+    assert_eq!(app.state.first_unread, None);
+    // The page comes as a timeline, then its outcome.
+    let effects = app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages((40..48).chain(100..110), &[]),
+    });
+    assert!(!earlier(&effects), "one page at a time");
+    let effects = app.apply(more(general));
+    assert!(!earlier(&effects));
+    // Messages 49 and 50 were deleted: the divider goes above the next one.
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:100"));
+    assert_eq!(app.state.unread_jump, 1);
+
+    // Scrolled far down, the first unread message was let go; the jump
+    // loads it again.
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(105..110, &[]),
+    });
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:100"), "it stays");
+    assert!(earlier(&app.dispatch(Action::JumpToUnread)));
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(95..110, &[]),
+    });
+    app.apply(more(general));
+    assert_eq!(app.state.unread_jump, 2);
+    assert_eq!(app.state.jump, None);
+
+    // A channel unread further back than a few pages gets its divider
+    // above the oldest message loaded.
+    app.dispatch(Action::SelectRoom("discord:10:22".into()));
+    app.apply(unread_channel(true, 1));
+    app.dispatch(Action::SelectRoom(general.into()));
+    let mut oldest = 1000;
+    let mut pages = 0;
+    let mut effects = app.apply(Event::Timeline {
+        room: general.into(),
+        messages: discord_messages(oldest..1010, &[]),
+    });
+    while earlier(&effects) {
+        pages += 1;
+        oldest -= 10;
+        app.apply(Event::Timeline {
+            room: general.into(),
+            messages: discord_messages(oldest..1010, &[]),
+        });
+        effects = app.apply(more(general));
+    }
+    assert_eq!(pages, MAX_UNREAD_PAGES);
+    assert_eq!(app.state.first_unread, Some(format!("d:{oldest}")));
+}
+
+#[test]
+fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
+    let mut app = connected();
+    app.apply(Event::Rooms(RoomIndex {
+        rooms: vec![
+            preview_room("dm", "DM", true, 2),
+            ChatRoom {
+                unread: 2,
+                last_read: Some("e:2".into()),
+                ..preview_room("general", "general", false, 3)
+            },
+        ],
+        servers: vec![ChatServer {
+            id: "friends".into(),
+            name: "Friends".into(),
+            channels: vec!["general".into()],
+            discord: false,
+            muted: false,
+            unavailable: false,
+            icon: None,
+        }],
+    }));
+    app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+    app.dispatch(Action::SelectRoom("general".into()));
+    let messages = |items: &[&str]| items.iter().map(|item| message(item, false)).collect();
+    // The receipt's message isn't loaded: Matrix can't tell where it is,
+    // so no history loads for it.
+    let effects = app.apply(Event::Timeline {
+        room: "general".into(),
+        messages: messages(&["e:3", "e:4"]),
+    });
+    assert!(effects.is_empty());
+    assert_eq!(app.state.first_unread, None);
+    app.apply(Event::Timeline {
+        room: "general".into(),
+        messages: messages(&["e:1", "e:2", "e:3", "e:4"]),
+    });
+    assert_eq!(app.state.first_unread.as_deref(), Some("e:3"));
+    assert_eq!(app.state.unread_jump, 1);
+}
