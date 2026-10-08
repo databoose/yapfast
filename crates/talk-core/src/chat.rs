@@ -472,6 +472,49 @@ pub struct Attachment {
     pub placement: Placement,
     /// Marked as a spoiler: its picture is covered until clicked.
     pub spoiler: bool,
+    /// A video that plays in place of its picture, which is its poster:
+    /// [`Command::PlayVideo`].
+    pub video: bool,
+}
+
+/// What [`Command::Video`] tells the video playing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VideoCommand {
+    /// Play, from the start once it ended.
+    Play,
+    Pause,
+    /// Move to this many milliseconds in.
+    Seek(u64),
+    /// Draw it to fit this many pixels, as when the window grows.
+    Size {
+        width: u32,
+        height: u32,
+    },
+    Mute(bool),
+    Stop,
+}
+
+/// The video playing in the conversation view.
+#[derive(Clone, Debug)]
+pub struct Video {
+    pub room: String,
+    pub item: String,
+    /// Its attachment's index in the item's attachments.
+    pub index: usize,
+    /// Its pictures, while it plays.
+    pub frames: Option<Arc<crate::frames::Frames>>,
+    /// How long it plays, once the file says.
+    pub duration_ms: Option<u64>,
+    /// Until its file opens.
+    pub loading: bool,
+    pub playing: bool,
+    /// It played to its end.
+    pub ended: bool,
+    /// It has sound that plays.
+    pub sound: bool,
+    pub muted: bool,
+    /// Why it stopped, for the person.
+    pub error: Option<String>,
 }
 
 /// Where an attachment's picture shows.
@@ -650,6 +693,19 @@ pub enum Command {
         item: String,
         index: usize,
     },
+    /// Play an attachment's video where its poster shows, at most `width`
+    /// by `height` pixels, on `speakers`, stopping any other; it goes as
+    /// [`Event::Video`].
+    PlayVideo {
+        room: String,
+        item: String,
+        index: usize,
+        width: u32,
+        height: u32,
+        speakers: Option<String>,
+    },
+    /// Control the video playing.
+    Video(VideoCommand),
     /// Look for people to start a DM with; each network answers with
     /// [`Event::People`].
     FindPeople {
@@ -742,7 +798,8 @@ impl Command {
         };
         match self {
             Command::Voice(_) => Route::Voice,
-            Command::Discord(_) => Route::Discord,
+            // Only Discord's videos play for now.
+            Command::Discord(_) | Command::Video(_) => Route::Discord,
             Command::Open(_) | Command::CloseRoom | Command::FindPeople { .. } => Route::Every,
             Command::Send { room, .. }
             | Command::Edit { room, .. }
@@ -752,6 +809,7 @@ impl Command {
             | Command::Cancel { room, .. }
             | Command::SaveAttachment { room, .. }
             | Command::ViewImage { room, .. }
+            | Command::PlayVideo { room, .. }
             | Command::Typing { room, .. }
             | Command::SaveDraft { room, .. }
             | Command::Earlier(room) => network(room),
@@ -780,6 +838,8 @@ pub enum Event {
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(Arc<talk_discord::service::Snapshot>),
+    /// The video [`Command::PlayVideo`] plays, as it changes; none once it stops.
+    Video(Option<Video>),
     /// An image [`Command::ViewImage`] asked for, or why it can't show.
     Image {
         room: String,
@@ -917,6 +977,10 @@ pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
 /// by `height`. A smaller image keeps its size: enlarging it would blur it
 /// and cost memory, and the viewer sizes images from their own dimensions.
 pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
+    #[cfg(feature = "discord")]
+    if crate::video::is_video(data) {
+        return crate::video::decode_animation(data, width, height);
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -946,8 +1010,7 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
 }
 
 /// An animated GIF, PNG or WebP's frames, shrunk to fit `width` by `height`;
-/// none for a still picture. Past [`ANIMATION_BYTES`], every other frame is
-/// dropped and the rest show twice as long, as often as it takes.
+/// none for a still picture.
 fn decode_animation(
     data: &[u8],
     format: image::ImageFormat,
@@ -976,15 +1039,30 @@ fn decode_animation(
         }
         _ => return None,
     };
-    let mut kept: Vec<Frame> = Vec::new();
-    let (mut size, mut step, mut skipped) = ((0, 0), 1, 0);
-    for frame in frames {
+    let frames = frames.map(|frame| {
         let frame = frame.ok()?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         // Browsers show frames meant for under 20 ms for 100 ms.
         let delay = numerator / denominator.max(1);
         let delay = if delay < 20 { 100 } else { delay };
-        let buffer = frame.into_buffer();
+        Some((frame.into_buffer(), delay))
+    });
+    animate(frames, width, height).filter(|picture| !picture.frames.is_empty())
+}
+
+/// An animation from its frames and how long each shows, shrunk to fit
+/// `width` by `height`; none when a frame failed or there were none, and a
+/// still for one frame. Past [`ANIMATION_BYTES`], every other frame is
+/// dropped and the rest show twice as long, as often as it takes.
+pub(crate) fn animate(
+    frames: impl Iterator<Item = Option<(image::RgbaImage, u32)>>,
+    width: u32,
+    height: u32,
+) -> Option<Picture> {
+    let mut kept: Vec<Frame> = Vec::new();
+    let (mut size, mut step, mut skipped) = ((0, 0), 1, 0);
+    for frame in frames {
+        let (buffer, delay) = frame?;
         if skipped % step != 0 {
             if let Some(last) = kept.last_mut() {
                 last.delay_ms += delay;
@@ -1017,7 +1095,13 @@ fn decode_animation(
         }
     }
     if kept.len() < 2 {
-        return None;
+        let still = kept.pop()?;
+        return Some(Picture {
+            width: size.0,
+            height: size.1,
+            rgba: still.rgba,
+            frames: Vec::new(),
+        });
     }
     Some(Picture {
         width: size.0,

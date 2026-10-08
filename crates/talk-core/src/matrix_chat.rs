@@ -643,7 +643,11 @@ impl Matrix {
                 }
             }
             // `Command::route` sends these elsewhere.
-            Command::Voice(_) | Command::Discord(_) => {}
+            // Matrix videos are files to save for now.
+            Command::Voice(_)
+            | Command::Discord(_)
+            | Command::PlayVideo { .. }
+            | Command::Video(_) => {}
         }
         true
     }
@@ -1518,6 +1522,7 @@ async fn publish_timeline(
                             preview_failed: matches!(cached, Some(None)),
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                             preview: cached.flatten(),
                         }];
                     }
@@ -1536,6 +1541,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                         }];
                     }
                     MessageType::Video(content) => {
@@ -1553,6 +1559,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                         }];
                     }
                     MessageType::Audio(content) => {
@@ -1570,6 +1577,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                         }];
                     }
                     _ => message.body = text.body().to_owned(),

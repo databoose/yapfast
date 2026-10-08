@@ -112,6 +112,7 @@ impl Application {
         self.state.confirm_delete = None;
         self.state.forwarding = None;
         self.state.viewer = None;
+        self.state.video = None;
         self.state.profile = None;
         self.state.room_ready = self.state.preview || voice_room;
         self.state.loading_history = false;
@@ -185,6 +186,7 @@ impl Application {
         self.state.confirm_delete = None;
         self.state.forwarding = None;
         self.state.viewer = None;
+        self.state.video = None;
         self.state.room_ready = false;
         self.state.loading_history = false;
         self.state.history_start = false;

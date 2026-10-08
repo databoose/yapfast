@@ -875,6 +875,95 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         {
             window.set_watch_frame(frame);
         }
+        let video = adapter.app.state.video.as_ref();
+        let taken =
+            video.and_then(|video| Some((video, video.frames.as_ref()?.take_timed(image)?)));
+        if taken.is_none() && video.is_some_and(|video| !video.playing && !video.loading) {
+            // Half a second without a picture: a paused video's ticks stop.
+            adapter.video_quiet.set(adapter.video_quiet.get() + 1);
+            if adapter.video_quiet.get() > 15 {
+                window.set_video_active(false);
+            }
+        }
+        if let Some((video, (frame, time))) = taken {
+            adapter.video_quiet.set(0);
+            let player = window.global::<VideoPlayer>();
+            player.set_frame(frame);
+            player.set_has_frame(true);
+            // The last picture shows a little before the end.
+            let time = match video.duration_ms {
+                Some(duration) if video.ended => duration,
+                _ => time,
+            };
+            if let Some(duration) = video.duration_ms.filter(|duration| *duration > 0) {
+                player.set_progress((time as f64 / duration as f64).min(1.0) as f32);
+            }
+            player.set_time(refresh::video_time(time, video.duration_ms).into());
+        }
+    });
+    // The video playing: started from its cell, controlled from its bar.
+    let player = window.global::<VideoPlayer>();
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_play(move |item, index, width, height| {
+        if let Some(window) = weak.upgrade() {
+            let scale = window.window().scale_factor();
+            let pixels = |side: f32| (side * scale).round().max(1.0) as u32;
+            let action = Action::PlayVideo {
+                item: item.into(),
+                index: index as usize,
+                width: pixels(width),
+                height: pixels(height),
+            };
+            state.borrow_mut().action(&window, action);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_toggle(move || {
+        if let Some(window) = weak.upgrade() {
+            let playing = state
+                .borrow()
+                .app
+                .state
+                .video
+                .as_ref()
+                .is_some_and(|video| video.playing);
+            let command = if playing {
+                VideoCommand::Pause
+            } else {
+                VideoCommand::Play
+            };
+            state.borrow_mut().action(&window, Action::Video(command));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_seek(move |fraction| {
+        if let Some(window) = weak.upgrade() {
+            let duration = state
+                .borrow()
+                .app
+                .state
+                .video
+                .as_ref()
+                .and_then(|video| video.duration_ms);
+            if let Some(duration) = duration {
+                let at = (f64::from(fraction.clamp(0.0, 1.0)) * duration as f64) as u64;
+                state
+                    .borrow_mut()
+                    .action(&window, Action::Video(VideoCommand::Seek(at)));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_mute(move |muted| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Video(VideoCommand::Mute(muted)));
+        }
     });
     let state = adapter.clone();
     let weak = window.as_weak();

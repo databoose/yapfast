@@ -30,6 +30,8 @@ pub(super) struct Reach {
     voice: bool,
     /// Pictures arrived, which can show anywhere.
     pictures: bool,
+    /// The video playing changed.
+    video: bool,
     pub(super) everything: bool,
 }
 
@@ -38,6 +40,7 @@ impl Reach {
         composer: true,
         voice: true,
         pictures: true,
+        video: true,
         everything: true,
     };
 
@@ -58,6 +61,10 @@ impl Reach {
                 pictures: true,
                 ..Self::default()
             },
+            Event::Video(_) => Self {
+                video: true,
+                ..Self::default()
+            },
             _ => Self::EVERYTHING,
         }
     }
@@ -67,6 +74,7 @@ impl Reach {
             composer: self.composer || other.composer,
             voice: self.voice || other.voice,
             pictures: self.pictures || other.pictures,
+            video: self.video || other.video,
             everything: self.everything || other.everything,
         }
     }
@@ -145,6 +153,9 @@ impl Adapter {
         if reach.voice {
             self.show_voice(window);
         }
+        if reach.video {
+            self.show_video(window);
+        }
     }
 
     pub(super) fn refresh(&mut self, window: &TalkWindow) {
@@ -168,6 +179,7 @@ impl Adapter {
         self.show_composer(window);
         self.show_messages(window, &changes);
         self.show_voice(window);
+        self.show_video(window);
         let state = &self.app.state;
         if changes.selection && state.selected_room().is_some_and(|room| !room.voice) {
             window.invoke_focus_composer();
@@ -1566,6 +1578,51 @@ impl Adapter {
     }
 
     /// The image viewer: the full image once it arrives, the preview until then.
+    /// The video playing, which its cell shows through [`VideoPlayer`]; its
+    /// pictures come with each stream tick.
+    fn show_video(&mut self, window: &TalkWindow) {
+        let player = window.global::<VideoPlayer>();
+        let video = self.app.state.video.as_ref();
+        // Stream ticks bring its pictures, until a quiet moment while it
+        // isn't playing.
+        window.set_video_active(video.is_some_and(|video| video.frames.is_some()));
+        self.video_quiet.set(0);
+        let same = video.is_some_and(|video| {
+            player.get_item() == video.item.as_str() && player.get_index() == video.index as i32
+        });
+        if !same {
+            player.set_has_frame(false);
+            player.set_frame(slint::Image::default());
+            player.set_progress(0.0);
+            player.set_time(SharedString::default());
+        }
+        let Some(video) = video else {
+            player.set_item(SharedString::default());
+            player.set_index(-1);
+            player.set_error(SharedString::default());
+            return;
+        };
+        player.set_item(video.item.clone().into());
+        player.set_index(video.index as i32);
+        player.set_loading(video.loading);
+        player.set_playing(video.playing);
+        player.set_ended(video.ended);
+        player.set_sound(video.sound);
+        player.set_muted(video.muted);
+        player.set_error(video.error.clone().unwrap_or_default().into());
+        if video.ended {
+            player.set_progress(1.0);
+        }
+        if !same || video.ended {
+            let at = if video.ended {
+                video.duration_ms.unwrap_or(0)
+            } else {
+                0
+            };
+            player.set_time(video_time(at, video.duration_ms).into());
+        }
+    }
+
     fn show_viewer(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         let viewing = state.viewer.as_ref().and_then(|viewer| {
@@ -1711,5 +1768,20 @@ pub(super) fn unread_label(unread: &[ChatMessage]) -> String {
         format!("{count} new {messages} since {}", first.time)
     } else {
         format!("{count} new {messages} since {} on {on}", first.time)
+    }
+}
+
+/// How far into a video, and how long it is when known, as "0:12 / 1:30".
+pub(super) fn video_time(at_ms: u64, duration_ms: Option<u64>) -> String {
+    let clock = |ms: u64| {
+        let seconds = ms / 1000;
+        match seconds / 3600 {
+            0 => format!("{}:{:02}", seconds / 60, seconds % 60),
+            hours => format!("{hours}:{:02}:{:02}", seconds / 60 % 60, seconds % 60),
+        }
+    };
+    match duration_ms {
+        Some(duration) => format!("{} / {}", clock(at_ms.min(duration)), clock(duration)),
+        None => clock(at_ms),
     }
 }

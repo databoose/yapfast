@@ -544,7 +544,11 @@ impl OpenChannel {
     }
 
     /// A sent message's attachment at `index`.
-    fn attachment(&self, item: &str, index: usize) -> Option<&talk_discord::message::Attachment> {
+    pub(super) fn attachment(
+        &self,
+        item: &str,
+        index: usize,
+    ) -> Option<&talk_discord::message::Attachment> {
         sent_id(item)
             .and_then(|id| self.messages.get(&id.parse().unwrap_or_default()))
             .and_then(|message| message.attachments.get(index))
@@ -713,6 +717,7 @@ impl OpenChannel {
                         preview_failed: false,
                         placement: Placement::Message,
                         spoiler: false,
+                        video: false,
                     })
                     .collect(),
                 ..Default::default()
@@ -747,37 +752,42 @@ impl OpenChannel {
             Some(system) => format!("{author} {system}"),
             None => discord.render(server, &message.content),
         };
-        let attachments =
-            message
-                .attachments
-                .iter()
-                .map(|attachment| {
-                    let preview = attachment.preview_url.as_ref().and_then(|url| {
-                        match self.pictures.get(url) {
-                            Some(picture) => Some(picture.clone()),
-                            None => {
-                                wanted.push(url.clone());
-                                None
-                            }
-                        }
-                    });
-                    Attachment {
-                        name: attachment.name.clone(),
-                        size: attachment.size,
-                        image: attachment.image && attachment.preview_url.is_some(),
-                        dimensions: attachment.dimensions,
-                        preview_failed: matches!(preview, Some(None)),
-                        preview: preview.flatten(),
-                        placement: match attachment.shown {
-                            Shown::Message => Placement::Message,
-                            Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
-                            Shown::Thumbnail(index) => Placement::Thumbnail(index),
-                            Shown::Sticker => Placement::Sticker,
-                        },
-                        spoiler: attachment.spoiler,
+        let attachments = message
+            .attachments
+            .iter()
+            .map(|attachment| {
+                let mut preview_of = |url: &String| match self.pictures.get(url) {
+                    Some(picture) => Some(picture.clone()),
+                    None => {
+                        wanted.push(url.clone());
+                        None
                     }
-                })
-                .collect();
+                };
+                let mut preview = attachment.preview_url.as_ref().and_then(&mut preview_of);
+                // A GIF's video that can't be shown gives way to its picture.
+                if matches!(preview, Some(None))
+                    && let Some(still) = &attachment.still_url
+                {
+                    preview = preview_of(still);
+                }
+                Attachment {
+                    name: attachment.name.clone(),
+                    size: attachment.size,
+                    image: attachment.image && attachment.preview_url.is_some(),
+                    dimensions: attachment.dimensions,
+                    preview_failed: matches!(preview, Some(None)),
+                    preview: preview.flatten(),
+                    placement: match attachment.shown {
+                        Shown::Message => Placement::Message,
+                        Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
+                        Shown::Thumbnail(index) => Placement::Thumbnail(index),
+                        Shown::Sticker => Placement::Sticker,
+                    },
+                    spoiler: attachment.spoiler,
+                    video: attachment.video_url.is_some(),
+                }
+            })
+            .collect();
         let embeds = message
             .embeds
             .iter()

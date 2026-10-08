@@ -36,7 +36,7 @@ export { Badges } from "theme.slint";
 export { PersonRow } from "voice.slint";
 export { ServerRow, RoomRow } from "rail.slint";
 export { StagedFile, MentionRow } from "composer.slint";
-export { EmojiCell, EmojiRow, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow } from "messages.slint";
+export { EmojiCell, EmojiRow, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData } from "people.slint";
 export { FriendRequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow } from "dialogs.slint";
@@ -348,6 +348,8 @@ export component TalkWindow inherits Window {
     in property <string> watch-status;
     /// The newest picture of the watched stream, refreshed by stream-tick.
     in-out property <image> watch-frame;
+    /// A video plays in the open room: stream-tick brings its pictures to VideoPlayer.
+    in property <bool> video-active;
     in property <string> switch-prompt;
     /// Discord friend requests, message requests and spam, on the requests
     /// screen, which the top of the DM list opens.
@@ -647,7 +649,7 @@ export component TalkWindow inherits Window {
     property <bool> output-open: output-menu.is-open;
     changed input-open => { root.input-level = 0; root.meter-note = ""; root.metering(root.input-open); }
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
-    Timer { interval: 33ms; running: root.sharing || root.watching; triggered => { root.stream-tick(); } }
+    Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active; triggered => { root.stream-tick(); } }
     input-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);

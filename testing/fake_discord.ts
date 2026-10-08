@@ -71,6 +71,8 @@
 // GET /_control/list-requests counts member list subscriptions. POST
 // /_control/slow with a number of milliseconds slows history, attachments
 // and links' pictures, to show loading states.
+// POST /_control/clip makes Bob attach clip.mp4, six seconds with sound, and
+// link a post whose card plays a video, as vxtwitter's do.
 // POST /_control/bob-away makes Bob idle with a custom status,
 // /_control/bob-mobile puts him online on his phone alone, and
 // /_control/bob-offline takes him offline.
@@ -419,6 +421,9 @@ function contentType(filename: string): string {
     jpeg: "image/jpeg",
     gif: "image/gif",
     webp: "image/webp",
+    mp4: "video/mp4",
+    webm: "video/webm",
+    mov: "video/quicktime",
     txt: "text/plain; charset=utf-8",
   };
   return types[extension] ?? "application/octet-stream";
@@ -2361,9 +2366,18 @@ function proxied(origin: string, name: string, width: number, height: number) {
   };
 }
 
+// A GIF as Tenor serves it, an MP4: three seconds into the Mandelbrot set.
+const gifVideo = readFileSync(new URL("gif-mandelbrot.mp4", fixtures));
+
 // Serves /external/{name}/{width}x{height}.png at its size, or at the
-// width and height asked for, as the media proxy scales.
+// width and height asked for, as the media proxy scales, and a GIF's video
+// at /external/{name}/video.mp4, the linked post's clip at
+// /external/post/video.mp4.
 function serveExternal(path: string, url: URL): Response | undefined {
+  if (/^\/external\/[\w-]+\/video\.mp4$/.test(path)) {
+    const data = path === "/external/post/video.mp4" ? clip : gifVideo;
+    return new Response(data, { headers: { "content-type": "video/mp4" } });
+  }
   const m = path.match(/^\/external\/([\w-]+)\/(\d+)x(\d+)\.png$/);
   if (!m) return undefined;
   let [width, height] = [Number(m[2]), Number(m[3])];
@@ -2427,7 +2441,7 @@ function postEmbeds(origin: string) {
         url: "https://tenor.com/view/bike-gif-1",
         provider: { name: "Tenor", url: "https://tenor.co" },
         thumbnail: proxied(origin, "bike-gif", 498, 280),
-        video: { url: "https://media.tenor.com/bike.mp4", width: 498, height: 280 },
+        video: { url: "https://media.tenor.com/bike.mp4", proxy_url: `${origin}/external/bike-gif/video.mp4`, width: 498, height: 280 },
       },
     ],
   });
@@ -2506,6 +2520,44 @@ function postShowcase(origin: string) {
   relationships.set(users.dave.id, 2);
   dispatch("RELATIONSHIP_ADD", { id: users.dave.id, type: 2, nickname: null, user: wireUser(users.dave), since: iso(now) });
   send(post(GENERAL, users.dave, "Alice, you can't see this", now + 6));
+}
+
+// A clip with sound, as people attach them: six seconds of test pattern and
+// beeps. Its poster, which Discord's proxy makes from the first frame, is
+// drawn here instead.
+const clip = readFileSync(new URL("video-clip.mp4", fixtures));
+
+function postVideo(origin: string) {
+  const now = Date.now();
+  const video = addFile({
+    id: snowflake(now, 1),
+    channel: GENERAL,
+    filename: "clip.mp4",
+    contentType: "video/mp4",
+    data: new Uint8Array(clip),
+    width: 480,
+    height: 270,
+    draw: sunset,
+  });
+  dispatch("MESSAGE_CREATE", dispatched(post(GENERAL, users.bob, "Watch this", now, { files: [video] }), origin));
+  // vxtwitter's card for a post with a video: rich, with the video the
+  // proxy has beside a thumbnail.
+  const link = "https://vxtwitter.com/bob/status/1";
+  const linked = post(GENERAL, users.bob, link, now + 1, {
+    embeds: (origin) => [
+      {
+        type: "rich",
+        url: link,
+        description: "Six seconds of test pattern",
+        color: 0x1da1f2,
+        author: { name: "Bob (@bob)", url: link },
+        footer: { text: "vxTwitter / fixvx" },
+        thumbnail: proxied(origin, "post", 1280, 720),
+        video: { url: "https://vxtwitter.com/tvid/1", proxy_url: `${origin}/external/post/video.mp4`, width: 480, height: 270 },
+      },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(linked, origin));
 }
 
 // --- Control ----------------------------------------------------------------
@@ -2712,6 +2764,10 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && path === "/_control/showcase") {
       postShowcase(origin);
       return new Response("showcase posted\n");
+    }
+    if (req.method === "POST" && path === "/_control/clip") {
+      postVideo(origin);
+      return new Response("video posted\n");
     }
     if (req.method === "POST" && path === "/_control/embeds") {
       postEmbeds(origin);

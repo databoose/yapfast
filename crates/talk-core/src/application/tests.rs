@@ -1093,6 +1093,69 @@ fn discord_channels_join_unless_locked_and_hidden_ones_show_on_request() {
 }
 
 #[test]
+fn videos_play_in_the_open_room_until_it_closes() {
+    let mut app = connected();
+    let file = |name: &str, video: bool| chat::Attachment {
+        name: name.into(),
+        size: None,
+        image: false,
+        dimensions: None,
+        preview: None,
+        preview_failed: false,
+        placement: chat::Placement::Message,
+        spoiler: false,
+        video,
+    };
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: vec![ChatMessage {
+            id: "m".into(),
+            item: "e:m".into(),
+            attachments: vec![file("notes.txt", false), file("clip.mp4", true)],
+            ..Default::default()
+        }],
+    });
+    let play = |index| Action::PlayVideo {
+        item: "e:m".into(),
+        index,
+        width: 720,
+        height: 404,
+    };
+    assert!(app.dispatch(play(0)).is_empty(), "a file isn't a video");
+    assert!(matches!(
+        app.dispatch(play(1)).as_slice(),
+        [Effect::Backend(Command::PlayVideo { room, index: 1, width: 720, .. })] if room == "dm"
+    ));
+    let video = |room: &str| chat::Video {
+        room: room.into(),
+        item: "e:m".into(),
+        index: 1,
+        frames: None,
+        duration_ms: Some(6000),
+        loading: false,
+        playing: true,
+        ended: false,
+        sound: true,
+        muted: false,
+        error: None,
+    };
+    app.apply(Event::Video(Some(video("elsewhere"))));
+    assert!(
+        app.state.video.is_none(),
+        "another room's video doesn't show"
+    );
+    app.apply(Event::Video(Some(video("dm"))));
+    assert!(app.state.video.as_ref().is_some_and(|video| video.playing));
+    assert!(matches!(
+        app.dispatch(Action::Video(chat::VideoCommand::Pause))
+            .as_slice(),
+        [Effect::Backend(Command::Video(chat::VideoCommand::Pause))]
+    ));
+    app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+    assert!(app.state.video.is_none(), "leaving the room stops it");
+}
+
+#[test]
 fn the_viewer_steps_through_a_messages_images() {
     let mut app = connected();
     let file = |name: &str, image: bool| chat::Attachment {
@@ -1104,6 +1167,7 @@ fn the_viewer_steps_through_a_messages_images() {
         preview_failed: false,
         placement: chat::Placement::Message,
         spoiler: false,
+        video: false,
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
@@ -2550,6 +2614,7 @@ fn closed_channels_keep_their_newest_messages_and_previews() {
             preview_failed: false,
             placement: crate::chat::Placement::Message,
             spoiler: false,
+            video: false,
         }],
         ..message(&format!("e:${index}"), false)
     };

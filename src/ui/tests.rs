@@ -399,6 +399,7 @@ fn pictures_on_their_way_hold_their_place_as_skeletons() {
         preview_failed,
         placement: Placement::Message,
         spoiler: false,
+        video: false,
     };
     let row = message_row_plain(&ChatMessage {
         attachments: vec![attachment("wide.png", false)],
@@ -439,6 +440,7 @@ fn a_selection_copies_the_pictures_it_runs_through() {
                 preview_failed: false,
                 placement: Placement::Message,
                 spoiler: false,
+                video: false,
             }],
             ..Default::default()
         },

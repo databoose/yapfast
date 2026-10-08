@@ -63,14 +63,10 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
     } else {
         (PREVIEW_WIDTH, PREVIEW_HEIGHT)
     };
-    let preview_url = scaled_url(value, width, height)?;
-    let source = value["url"].as_str().unwrap_or(proxy);
-    let name = source
-        .split(['?', '#'])
-        .next()
-        .and_then(|path| path.rsplit('/').next())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("image");
+    // A video's poster is its first frame alone.
+    let animated = !matches!(shown, Shown::Poster(_));
+    let preview_url = scaled_url(value, width, height, animated)?;
+    let name = file_name(value["url"].as_str().unwrap_or(proxy)).unwrap_or("image");
     Some(Attachment {
         name: name.to_owned(),
         size: None,
@@ -78,10 +74,37 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
         image: !matches!(shown, Shown::Poster(_)),
         dimensions,
         preview_url: Some(preview_url),
-        view_url: scaled_url(value, VIEW_WIDTH, VIEW_HEIGHT),
+        view_url: scaled_url(value, VIEW_WIDTH, VIEW_HEIGHT, animated),
+        still_url: None,
+        video_url: None,
         shown,
         spoiler: false,
     })
+}
+
+/// A GIF link's picture, which plays from the GIF's video. Tenor, Giphy
+/// and others send GIFs as MP4s, which Talk shows as GIFs, as Discord does:
+/// the media proxy serves them whole. The picture, a still, stands in when
+/// the video can't play. The file is the video, by its own name. Without a
+/// video the proxy has, the picture plays, if it moves.
+fn gif(picture: &mut Attachment, embed: &Value) {
+    let video = &embed["video"];
+    if let Some(proxy) = video["proxy_url"].as_str() {
+        picture.still_url = picture.preview_url.replace(proxy.to_owned());
+        picture.view_url = Some(proxy.to_owned());
+        picture.url = proxy.to_owned();
+        if let Some(name) = file_name(video["url"].as_str().unwrap_or(proxy)) {
+            picture.name = name.to_owned();
+        }
+    }
+}
+
+/// The last part of an address's path, such as `cat.png`.
+fn file_name(url: &str) -> Option<&str> {
+    url.split(['?', '#'])
+        .next()
+        .and_then(|path| path.rsplit('/').next())
+        .filter(|name| !name.is_empty())
 }
 
 /// A message's embeds as cards, and their pictures as attachments to add
@@ -111,7 +134,10 @@ pub fn parse(embeds: &Value) -> Parsed {
                 } else {
                     &embed["image"]
                 };
-                if let Some(picture) = picture(source, Shown::Message, false) {
+                if let Some(mut picture) = picture(source, Shown::Message, false) {
+                    if kind == "gifv" {
+                        gif(&mut picture, embed);
+                    }
                     parsed.pictures.push(picture);
                     parsed.hides.extend(url);
                 }
@@ -137,24 +163,36 @@ pub fn parse(embeds: &Value) -> Parsed {
             continue;
         }
         let index = parsed.embeds.len();
-        let video = kind == "video" && embed["video"].is_object();
+        // A video file the media proxy has plays in Talk, whatever the
+        // embed's kind: vxtwitter's posts come as rich cards with one. Other
+        // videos, such as YouTube's, open in the browser.
+        let playable = embed["video"]["proxy_url"].as_str();
+        let video = embed["video"].is_object() && (kind == "video" || playable.is_some());
         // Articles and videos show their thumbnail large, as Discord does.
-        let large_thumbnail = matches!(kind, "article" | "video");
-        if embed["image"].is_object() {
+        let large_thumbnail = video || kind == "article";
+        let image = embed["image"].is_object();
+        if video {
+            // A video's poster is its thumbnail, or its image without one.
+            let source = if embed["thumbnail"].is_object() || !image {
+                &embed["thumbnail"]
+            } else {
+                &embed["image"]
+            };
+            let mut poster = picture(source, Shown::Poster(index), false);
+            if let Some(poster) = poster.as_mut() {
+                poster.video_url = playable.map(str::to_owned);
+            }
+            parsed.pictures.extend(poster);
+        } else if image {
             parsed
                 .pictures
                 .extend(picture(&embed["image"], Shown::Embed(index), false));
         } else if large_thumbnail {
-            let shown = if video {
-                Shown::Poster(index)
-            } else {
-                Shown::Embed(index)
-            };
             parsed
                 .pictures
-                .extend(picture(&embed["thumbnail"], shown, false));
+                .extend(picture(&embed["thumbnail"], Shown::Embed(index), false));
         }
-        if !large_thumbnail || embed["image"].is_object() {
+        if !large_thumbnail || (image && !video) {
             parsed
                 .pictures
                 .extend(picture(&embed["thumbnail"], Shown::Thumbnail(index), true));
@@ -220,7 +258,7 @@ mod tests {
              "thumbnail": proxied("poster.jpg", 1280, 720),
              "video": {"url": "https://youtube.com/embed/1", "width": 1280, "height": 720}},
             {"type": "gifv", "url": "https://tenor.com/view/cat", "thumbnail": proxied("cat.png", 498, 280),
-             "video": {"url": "https://tenor.com/cat.mp4"}},
+             "video": proxied("cat.mp4", 498, 280)},
             {"type": "poll_result", "fields": []},
         ]));
         assert_eq!(parsed.embeds.len(), 3);
@@ -238,7 +276,7 @@ mod tests {
                 ("news.jpg", Shown::Embed(0), true),
                 ("logo.png", Shown::Thumbnail(1), true),
                 ("poster.jpg", Shown::Poster(2), false),
-                ("cat.png", Shown::Message, true),
+                ("cat.mp4", Shown::Message, true),
             ]
         );
         assert!(
@@ -248,7 +286,85 @@ mod tests {
                 .unwrap()
                 .starts_with("https://images-ext-1.discordapp.net/")
         );
+        assert_eq!(
+            parsed.pictures[2].video_url, None,
+            "YouTube's opens in the browser"
+        );
+        // The GIF plays from its MP4, its picture standing in if it can't,
+        // and saves as the MP4.
+        let gif = &parsed.pictures[3];
+        let mp4 = "https://images-ext-1.discordapp.net/external/x/https/example.com/cat.mp4";
+        assert_eq!(gif.preview_url.as_deref(), Some(mp4));
+        assert_eq!(gif.view_url.as_deref(), Some(mp4));
+        assert!(gif.still_url.as_deref().unwrap().contains("cat.png?"));
+        assert_eq!((gif.name.as_str(), gif.url.as_str()), ("cat.mp4", mp4));
         assert_eq!(parsed.hides, ["https://tenor.com/view/cat"]);
+    }
+
+    #[test]
+    fn rich_cards_with_a_proxied_video_play_it() {
+        // vxtwitter's video posts.
+        let parsed = parse(&json!([
+            {"type": "rich", "url": "https://vxtwitter.com/a/status/1", "color": 1942002,
+             "author": {"name": "A (@a)"}, "description": "?",
+             "footer": {"text": "vxTwitter / fixvx"},
+             "thumbnail": proxied("thumb.jpg", 1200, 675),
+             "video": proxied("tvid/1280x720/clip", 1280, 720)},
+            {"type": "rich", "url": "https://example.com/b", "title": "Elsewhere",
+             "thumbnail": proxied("logo.png", 64, 64),
+             "video": {"url": "https://example.com/player", "width": 640, "height": 360}},
+        ]));
+        assert!(parsed.embeds[0].video && !parsed.embeds[1].video);
+        let poster = &parsed.pictures[0];
+        assert_eq!(
+            (poster.name.as_str(), poster.shown, poster.image),
+            ("thumb.jpg", Shown::Poster(0), false)
+        );
+        assert_eq!(
+            poster.video_url.as_deref(),
+            Some(
+                "https://images-ext-1.discordapp.net/external/x/https/example.com/tvid/1280x720/clip"
+            )
+        );
+        // A video the proxy hasn't leaves the card as it was.
+        assert_eq!(parsed.pictures[1].shown, Shown::Thumbnail(1));
+    }
+
+    #[test]
+    fn moving_pictures_come_animated() {
+        // vxtwitter's GIFs: an animated AVIF, which Discord's proxy sends as
+        // an animated WebP when asked, as its client asks.
+        let proxy = "https://images-ext-1.discordapp.net/external/x/https/gifconvert.vxtwitter.com/convert.avif";
+        let parsed = parse(&json!([
+            {"type": "image", "url": "https://gifconvert.vxtwitter.com/convert.avif?url=1",
+             "thumbnail": {"url": "https://gifconvert.vxtwitter.com/convert.avif?url=1",
+                           "proxy_url": proxy, "width": 400, "height": 346}},
+        ]));
+        let picture = &parsed.pictures[0];
+        assert_eq!(
+            picture.preview_url.as_deref(),
+            Some(format!("{proxy}?animated=true&format=webp&width=312&height=270").as_str())
+        );
+        assert!(
+            picture
+                .view_url
+                .as_deref()
+                .unwrap()
+                .contains("animated=true")
+        );
+        // A video's poster is one frame.
+        let parsed = parse(&json!([
+            {"type": "video", "url": "https://example.com/v",
+             "thumbnail": {"url": "https://example.com/p.jpg", "proxy_url": proxy, "width": 400, "height": 346},
+             "video": {"url": "https://example.com/v.mp4"}},
+        ]));
+        assert!(
+            !parsed.pictures[0]
+                .preview_url
+                .as_deref()
+                .unwrap()
+                .contains("animated")
+        );
     }
 
     #[test]

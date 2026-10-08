@@ -206,7 +206,7 @@ There is no UI polling loop.
 Only joined Spaces and their joined channels appear. DMs stay in the DM list even
 if linked to a Space. Standalone rooms outside Spaces, channel discovery, room
 creation, mentions with autocomplete,
-threads, a full emoji picker, video/audio playback, drag and drop, and deleting
+threads, a full emoji picker, Matrix video and audio playback, drag and drop, and deleting
 other people's messages remain later work. Message actions need a pointer;
 keyboard access to them is still missing. Closing the last window exits Talk.
 

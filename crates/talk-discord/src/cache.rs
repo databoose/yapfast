@@ -12,6 +12,7 @@
 //!   media proxy's previews of attachments and links. Discord gives each
 //!   version of a picture its own address, so a kept one never goes stale.
 //!   The least lately shown go past [`PICTURES_SIZE`].
+//! - `discord-videos/`: the video playing, while it does; see [`videos`].
 //!
 //! The files name the login they belong to by a hash of the token, so another
 //! account linked meanwhile starts empty, and unlinking deletes them all.
@@ -93,10 +94,14 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Keeps the account in `file` from now on, and the rest beside it.
 pub fn keep_in(file: PathBuf) {
     *lock(&FILE) = Some(file);
-    if let (Some(pictures), Some(messages)) = (pictures(), messages_directory()) {
+    if let (Some(pictures), Some(messages), Some(videos)) =
+        (pictures(), messages_directory(), videos())
+    {
         std::thread::spawn(move || {
             prune(&pictures, PICTURES_SIZE, usize::MAX);
             prune(&messages, u64::MAX, CHANNELS);
+            // Videos played before Talk last closed.
+            prune(&videos, 0, 0);
         });
     }
 }
@@ -111,6 +116,12 @@ fn pictures() -> Option<PathBuf> {
 
 fn messages_directory() -> Option<PathBuf> {
     Some(file()?.with_file_name("discord-messages"))
+}
+
+/// Where a video downloads while it plays, on disk rather than in memory,
+/// as the temporary directory may be. The file goes when playing stops.
+pub fn videos() -> Option<PathBuf> {
+    Some(file()?.with_file_name("discord-videos"))
 }
 
 fn hash(text: &str) -> String {
@@ -357,7 +368,10 @@ pub fn forget() {
             Err(error) => tracing::warn!(%error, "could not delete the saved Discord account"),
         }
     }
-    for directory in [pictures(), messages_directory()].into_iter().flatten() {
+    for directory in [pictures(), messages_directory(), videos()]
+        .into_iter()
+        .flatten()
+    {
         match std::fs::remove_dir_all(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

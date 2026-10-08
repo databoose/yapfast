@@ -281,6 +281,8 @@ pub struct AppState {
     pub new_dm: Option<NewDm>,
     /// The image viewer, open over the selected room.
     pub viewer: Option<Viewer>,
+    /// The video playing in the selected room.
+    pub video: Option<chat::Video>,
     /// The profile card that's open.
     pub profile: Option<ProfileView>,
     pub role: Option<RoleView>,
@@ -675,6 +677,16 @@ pub enum Action {
         item: String,
         index: usize,
     },
+    /// Play an item's video attachment where it shows, at most `width` by
+    /// `height` pixels.
+    PlayVideo {
+        item: String,
+        index: usize,
+        width: u32,
+        height: u32,
+    },
+    /// Control the video playing.
+    Video(chat::VideoCommand),
     /// Show the message's next image, or with -1 its previous one, wrapping around.
     StepImage(isize),
     CloseImage,
@@ -1127,6 +1139,18 @@ impl Application {
             Action::Unstage(index) => self.unstage(index),
             Action::SaveAttachment { item, index, path } => self.save_attachment(item, index, path),
             Action::ViewImage { item, index } => self.view_image(item, index),
+            Action::PlayVideo {
+                item,
+                index,
+                width,
+                height,
+            } => self.play_video(item, index, (width, height)),
+            Action::Video(command) => {
+                if command == chat::VideoCommand::Stop {
+                    self.state.video = None;
+                }
+                vec![Effect::Backend(Command::Video(command))]
+            }
             Action::StepImage(step) => self.step_image(step),
             Action::CloseImage => {
                 self.state.viewer = None;
@@ -1375,6 +1399,10 @@ impl Application {
                 }
             }
             Event::Picture { url, picture } => self.keep_picture(url, picture),
+            Event::Video(video) => {
+                self.state.video =
+                    video.filter(|video| self.state.selected.as_ref() == Some(&video.room));
+            }
             // Do Not Disturb holds back message notifications, as in Discord.
             Event::Notify(_) if self.state.do_not_disturb() => {}
             Event::Notify(notification) => return vec![Effect::Notify(self.alert(notification))],

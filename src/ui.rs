@@ -20,7 +20,7 @@ use talk_core::{
     backend::Backend,
     chat::{
         ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
-        ProfileRole, Role,
+        ProfileRole, Role, VideoCommand,
     },
     discord, links, mention,
     meter::{self, InputMeter},
@@ -657,6 +657,9 @@ struct Adapter {
     sidebar: Option<SidebarShown>,
     /// Shows pictures that arrived, together with those that follow them closely.
     pictures_due: slint::Timer,
+    /// Stream ticks without a new picture of a video that isn't playing,
+    /// after which they stop until the video changes.
+    video_quiet: Cell<u32>,
     /// Server icons and avatars already handed to Slint, by address.
     pictures: HashMap<String, slint::Image>,
     /// `AppState::picture_changes` when the message rows were last built.
@@ -754,6 +757,7 @@ impl Adapter {
                 rows: HashMap::new(),
                 sidebar: None,
                 pictures_due: slint::Timer::default(),
+                video_quiet: Cell::new(0),
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 jumped: None,

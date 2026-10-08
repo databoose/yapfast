@@ -114,6 +114,114 @@ export struct ImageCell {
     frames: [image], delays: [int],
     /// On its way: a skeleton shows in its place, at the size it will take.
     loading: bool,
+    /// A video, whose poster the picture is: it plays in place.
+    video: bool,
+}
+
+// The video playing. The cell showing it binds to this, so its pictures
+// come without the timeline's rows changing.
+export global VideoPlayer {
+    in property <string> item;
+    in property <int> index: -1;
+    in property <image> frame;
+    in property <bool> has-frame;
+    in property <bool> loading;
+    in property <bool> playing;
+    in property <bool> ended;
+    in property <bool> sound;
+    in property <bool> muted;
+    /// How far in, from 0 to 1, and as text, such as "0:12 / 1:30".
+    in property <float> progress;
+    in property <string> time;
+    in property <string> error;
+    /// Plays an item's attachment in a cell of this size.
+    callback play(string, int, length, length);
+    /// Plays or pauses the video playing.
+    callback toggle();
+    callback seek(float);
+    callback mute(bool);
+}
+
+// A video in a gallery: its poster with a play button, then the video with
+// its controls, which show while the pointer is over it or it's paused.
+component VideoCell inherits Rectangle {
+    in property <string> item;
+    in property <ImageCell> cell;
+    property <bool> active: VideoPlayer.item == root.item && VideoPlayer.index == root.cell.index;
+    property <bool> failed: root.active && VideoPlayer.error != "";
+    /// The pointer is over the control bar, which the cell's own area is under.
+    property <bool> over-bar;
+    accessible-role: button;
+    accessible-label: (root.active && VideoPlayer.playing ? "Pause " : "Play ") + root.cell.name;
+    accessible-action-default => { pointer.clicked(); }
+    if root.active && VideoPlayer.has-frame: Rectangle {
+        background: #000000;
+        Image { width: parent.width; height: parent.height; source: VideoPlayer.frame; image-fit: contain; }
+    }
+    pointer := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            if root.active && !root.failed { VideoPlayer.toggle(); } else { VideoPlayer.play(root.item, root.cell.index, root.width, root.height); }
+        }
+    }
+    if !root.active || root.failed || (VideoPlayer.ended && !pointer.has-hover): Rectangle {
+        width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
+        Path {
+            width: 18px; height: 20px; x: 17px; y: 14px;
+            commands: "M 0 0 L 18 10 L 0 20 Z"; fill: #ffffff;
+        }
+    }
+    if root.active && VideoPlayer.loading && !root.failed: Rectangle {
+        width: loading.preferred-width + 20px; height: 28px; border-radius: 14px; background: #000000b3;
+        loading := Text { text: "Loading..."; color: #ffffff; font-size: 13px; }
+    }
+    if root.failed: Rectangle {
+        y: parent.height - self.height - 8px; width: min(parent.width - 16px, problem.preferred-width + 20px); height: 28px;
+        border-radius: 6px; background: #000000cc;
+        problem := Text { text: VideoPlayer.error; color: #ffffff; font-size: 13px; overflow: elide; }
+    }
+    if root.active && !root.failed && !VideoPlayer.loading && (pointer.has-hover || root.over-bar || !VideoPlayer.playing): Rectangle {
+        y: parent.height - self.height; height: 36px;
+        background: @linear-gradient(0deg, #000000cc 0%, #00000000 100%);
+        TouchArea {
+            changed has-hover => { root.over-bar = self.has-hover; }
+        }
+        HorizontalLayout {
+            padding-left: 4px; padding-right: 6px; spacing: 6px;
+            Middle {
+                IconButton {
+                    size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
+                    icon: VideoPlayer.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+                    label: VideoPlayer.playing ? "Pause" : "Play";
+                    clicked => { VideoPlayer.toggle(); }
+                }
+            }
+            Text { text: VideoPlayer.time; color: #ffffff; font-size: 12px; vertical-alignment: center; }
+            Rectangle {
+                horizontal-stretch: 1;
+                accessible-role: slider;
+                accessible-label: "Position";
+                accessible-value: round(VideoPlayer.progress * 100) + "%";
+                Rectangle {
+                    height: 4px; border-radius: 2px; background: #ffffff4d;
+                    Rectangle { x: 0; width: parent.width * clamp(VideoPlayer.progress, 0, 1); border-radius: 2px; background: #ffffff; }
+                }
+                seeking := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); }
+                    moved => { if self.pressed { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); } }
+                }
+            }
+            if VideoPlayer.sound: Middle {
+                IconButton {
+                    size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
+                    icon: VideoPlayer.muted ? @image-url("icons/volume-x.svg") : @image-url("icons/volume-2.svg");
+                    label: VideoPlayer.muted ? "Unmute" : "Mute";
+                    clicked => { VideoPlayer.mute(!VideoPlayer.muted); }
+                }
+            }
+        }
+    }
 }
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
@@ -337,6 +445,9 @@ export component MessageGallery inherits HorizontalLayout {
                     if cell.spoiler { root.reveal-attachment(root.message.item, cell.index); } else { root.view-image(root.message.item, cell.index); }
                 }
             }
+            if cell.video && !cell.spoiler && !cell.loading && !root.preview: VideoCell {
+                width: parent.width; height: parent.height; item: root.message.item; cell: cell;
+            }
             if root.active-item == root.message.item && !root.preview && root.message.delivery == "" && !cell.spoiler: Rectangle {
                 x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
                 IconButton {
@@ -453,7 +564,7 @@ export component EmbedView inherits HorizontalLayout {
                             if cell.loading: Skeleton { width: parent.width; height: parent.height; }
                             if !cell.loading: Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
                             if cell.spoiler: SpoilerCover {}
-                            if root.embed.video && !cell.spoiler: Rectangle {
+                            if root.embed.video && !cell.spoiler && !cell.video: Rectangle {
                                 width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
                                 Path {
                                     width: 18px; height: 20px; x: 17px; y: 14px;
@@ -466,6 +577,10 @@ export component EmbedView inherits HorizontalLayout {
                                     if cell.spoiler { root.reveal-attachment(root.item, cell.index); }
                                     else if root.embed.video { root.open-link(root.embed.url); } else { root.view-image(root.item, cell.index); }
                                 }
+                            }
+                            // A video file the media proxy has plays here; others open in the browser.
+                            if cell.video && !cell.spoiler && !cell.loading: VideoCell {
+                                width: parent.width; height: parent.height; item: root.item; cell: cell;
                             }
                         }
                     }

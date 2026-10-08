@@ -194,7 +194,9 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             .iter()
             .enumerate()
             .filter(|(_, attachment)| attachment.placement == placement)
-            .filter(|(_, attachment)| attachment.preview.is_some() || loading(attachment))
+            .filter(|(_, attachment)| {
+                attachment.preview.is_some() || loading(attachment) || attachment.video
+            })
             .map(|(index, attachment)| (index, attachment, attachment.preview.as_ref()))
             .collect()
     };
@@ -269,6 +271,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         .filter(|(_, attachment)| {
             attachment.preview.is_none()
                 && !loading(attachment)
+                && !attachment.video
                 && attachment.placement == Placement::Message
         })
         .map(|(index, attachment)| {

@@ -185,7 +185,9 @@ pub(super) fn blurred(picture: &Picture) -> slint::Image {
 
 /// A picture whose preview is on its way, shown as a skeleton meanwhile.
 pub(super) fn loading(attachment: &talk_core::chat::Attachment) -> bool {
-    attachment.image && attachment.preview.is_none() && !attachment.preview_failed
+    (attachment.image || attachment.video)
+        && attachment.preview.is_none()
+        && !attachment.preview_failed
 }
 
 /// The size a preview will show at, from the picture's own size when known,
@@ -216,11 +218,13 @@ pub(super) fn gallery(
     const GAP: i32 = 4;
     let cell =
         |index: usize, attachment: &talk_core::chat::Attachment, preview: Option<&Arc<Picture>>| {
+            // A video whose poster didn't come plays all the same.
             let Some(preview) = preview else {
                 return ImageCell {
                     index: index as i32,
                     name: attachment.name.clone().into(),
-                    loading: true,
+                    loading: loading(attachment),
+                    video: attachment.video,
                     ..Default::default()
                 };
             };
@@ -231,6 +235,7 @@ pub(super) fn gallery(
                     name: attachment.name.clone().into(),
                     image: blurred(preview),
                     spoiler,
+                    video: attachment.video,
                     ..Default::default()
                 };
             }
@@ -241,6 +246,7 @@ pub(super) fn gallery(
                 image: picture(preview),
                 frames,
                 delays,
+                video: attachment.video,
                 ..Default::default()
             }
         };
