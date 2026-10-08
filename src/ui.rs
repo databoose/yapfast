@@ -1254,10 +1254,6 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
     }
 }
 
-/// Updates a list of rows that have ids, keeping each row in its place:
-/// rows that came or went before or after the rest are inserted or removed,
-/// so loading older messages above leaves the rows below untouched, and the
-/// rest are set only where they changed.
 /// Shows the timeline's rows, building again only those that changed. Older
 /// messages go in above the rows shown, and the list keeps those where they
 /// are on screen, even when it shows the first row; see
@@ -1273,6 +1269,10 @@ fn show_rows(model: &VecModel<MessageRow>, rows: Vec<MessageRow>) {
     }
 }
 
+/// Updates a list of rows that have ids, keeping each row in its place:
+/// rows that came or went before or after the rest are inserted or removed,
+/// so loading older messages above leaves the rows below untouched, and the
+/// rest are set only where they changed.
 fn update_model_by_id<T: Clone + PartialEq + 'static>(
     model: &VecModel<T>,
     rows: Vec<T>,

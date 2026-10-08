@@ -943,6 +943,19 @@ fn older_messages_go_in_above_without_moving_those_shown() {
         window.get_top_edge()
     );
     assert!(!window.invoke_timeline_at_end());
+    // A message deleted above leaves it where it is too.
+    model.remove(10);
+    settle();
+    assert_eq!(
+        (window.get_top_index(), window.get_top_item().as_str()),
+        (49, "i150"),
+        "the same message is at the top after a deletion above"
+    );
+    assert!(
+        (window.get_top_edge() - edge).abs() < 0.5,
+        "its text stays where it was after a deletion above: {edge} then {}",
+        window.get_top_edge()
+    );
     // Scrolling up shows those that went in.
     for _ in 0..2 {
         window

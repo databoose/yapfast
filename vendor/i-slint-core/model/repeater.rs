@@ -638,6 +638,12 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
     /// Notify the peers that rows were added
     fn row_added(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
+        // Talk: the anchored row moves down with the rows that go in before it.
+        if let Some(anchor) = &mut inner.talk_hold.anchor {
+            if index <= anchor.row {
+                anchor.row += count;
+            }
+        }
         // Talk: inside `talk_anchor::hold`, rows right above the first instance count as before it
         // too, and it remembers its height; see `update_visible_instances`.
         let holding = crate::talk_anchor::holding();
@@ -685,6 +691,16 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
     /// Notify the peers that rows were removed
     fn row_removed(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
+        // Talk: the anchored row moves up with the rows removed before it, and the anchor ends
+        // with the row.
+        inner.talk_hold.anchor = inner.talk_hold.anchor.and_then(|mut anchor| {
+            if index + count <= anchor.row {
+                anchor.row -= count;
+            } else if index <= anchor.row {
+                return None;
+            }
+            Some(anchor)
+        });
         if index < inner.layout_state.offset {
             if index + count <= inner.layout_state.offset {
                 // Entirely before the visible range: shift the offset.
@@ -717,7 +733,10 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
 
     fn reset(self: Pin<&Self>) {
         self.is_dirty.set(true);
-        self.inner.borrow_mut().instances.clear();
+        let mut inner = self.inner.borrow_mut();
+        inner.instances.clear();
+        // Talk: the rows the anchor counted are gone.
+        inner.talk_hold = TalkHold::default();
     }
 }
 

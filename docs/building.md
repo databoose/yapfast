@@ -60,7 +60,8 @@ count as above it too. That row then keeps its bottom edge where it is in the
 view, rather than its top, while its height settles: it loses its date, its
 author line or the loading notice once the rows before it carry them, and
 those parts change only when the list is next drawn. The anchor moves with
-scrolling and ends when the row is no longer shown. A wheel scroll animates
+scrolling, follows its row as rows go in or out above it, and ends when the
+row is no longer shown or goes. A wheel scroll animates
 `content-y` and would carry on to where it was going, so the list stops that
 animation when rows go in above inside `hold`. This is `talk_anchor.rs` and the
 changes marked `Talk:` in `model/repeater.rs`.
