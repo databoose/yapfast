@@ -110,6 +110,95 @@ pub(super) fn picture(picture: &Picture) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// Gallery metadata is cheap to keep for the whole timeline. Copy pixels
+/// into Slint only when a visible row asks for its image.
+struct ImageCells(Vec<(ImageCell, Option<Arc<Picture>>)>);
+
+pub(super) fn image_cells(cells: Vec<(ImageCell, Option<Arc<Picture>>)>) -> ModelRc<ImageCell> {
+    ModelRc::new(ImageCells(cells))
+}
+
+impl Model for ImageCells {
+    type Data = ImageCell;
+
+    fn row_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn row_data(&self, row: usize) -> Option<ImageCell> {
+        let (cell, source) = self.0.get(row)?;
+        let mut cell = cell.clone();
+        if let Some(source) = source {
+            cell.image = PREVIEWS.with_borrow_mut(|cache| cache.image(source, cell.spoiler));
+        }
+        Some(cell)
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &()
+    }
+}
+
+/// Converted previews shared across row rebuilds, with an eight MiB limit.
+/// Visible Slint components keep their own handles after cache eviction.
+#[derive(Default)]
+struct Previews {
+    images: std::collections::VecDeque<CachedPreview>,
+    bytes: usize,
+}
+
+struct CachedPreview {
+    source: std::sync::Weak<Picture>,
+    spoiler: bool,
+    image: slint::Image,
+    bytes: usize,
+}
+
+const PREVIEW_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+impl Previews {
+    fn image(&mut self, source: &Arc<Picture>, spoiler: bool) -> slint::Image {
+        self.images
+            .retain(|cached| cached.source.strong_count() > 0);
+        self.bytes = self.images.iter().map(|cached| cached.bytes).sum();
+        let weak = Arc::downgrade(source);
+        if let Some(index) = self
+            .images
+            .iter()
+            .position(|cached| cached.source.ptr_eq(&weak) && cached.spoiler == spoiler)
+        {
+            let cached = self.images.remove(index).unwrap();
+            let image = cached.image.clone();
+            self.images.push_back(cached);
+            return image;
+        }
+        let image = if spoiler {
+            blurred(source)
+        } else {
+            picture(source)
+        };
+        let size = image.size();
+        let bytes = size.width as usize * size.height as usize * 4;
+        if bytes <= PREVIEW_CACHE_BYTES {
+            while self.bytes + bytes > PREVIEW_CACHE_BYTES {
+                self.bytes -= self.images.pop_front().unwrap().bytes;
+            }
+            self.bytes += bytes;
+            self.images.push_back(CachedPreview {
+                source: weak,
+                spoiler,
+                image: image.clone(),
+                bytes,
+            });
+        }
+        image
+    }
+}
+
+thread_local! {
+    static PREVIEWS: RefCell<Previews> = RefCell::default();
+}
+
 /// An animation's frames for Slint and how long each shows, in milliseconds;
 /// both empty for a still picture. The frames decode as they show.
 pub(super) fn animation(picture: &Arc<Picture>) -> (ModelRc<slint::Image>, ModelRc<i32>) {
@@ -320,7 +409,7 @@ pub(super) fn coming_size(attachment: &talk_core::chat::Attachment) -> (i32, i32
 pub(super) fn gallery(
     previews: &[Preview<'_>],
     covered: &dyn Fn(usize) -> bool,
-) -> (Vec<ImageCell>, i32, i32) {
+) -> (ModelRc<ImageCell>, i32, i32) {
     const TILE: i32 = 178;
     const GAP: i32 = 4;
     let cell =
@@ -340,7 +429,6 @@ pub(super) fn gallery(
                 return ImageCell {
                     index: index as i32,
                     name: attachment.name.clone().into(),
-                    image: blurred(preview),
                     spoiler,
                     video: attachment.video,
                     ..Default::default()
@@ -350,7 +438,6 @@ pub(super) fn gallery(
             ImageCell {
                 index: index as i32,
                 name: attachment.name.clone().into(),
-                image: picture(preview),
                 frames,
                 delays,
                 video: attachment.video,
@@ -358,7 +445,7 @@ pub(super) fn gallery(
             }
         };
     match previews {
-        [] => (vec![], 0, 0),
+        [] => (ModelRc::default(), 0, 0),
         [(index, attachment, preview)] => {
             let (width, height) = match preview {
                 Some(preview) => (preview.width as i32, preview.height as i32),
@@ -369,22 +456,31 @@ pub(super) fn gallery(
                 height,
                 ..cell(*index, attachment, *preview)
             };
-            (vec![image], width, height)
+            (image_cells(vec![(image, preview.cloned())]), width, height)
         }
         _ => {
             let cells = previews
                 .iter()
                 .enumerate()
-                .map(|(place, (index, attachment, preview))| ImageCell {
-                    x: (place % 2) as i32 * (TILE + GAP),
-                    y: (place / 2) as i32 * (TILE + GAP),
-                    width: TILE,
-                    height: TILE,
-                    ..cell(*index, attachment, *preview)
+                .map(|(place, (index, attachment, preview))| {
+                    (
+                        ImageCell {
+                            x: (place % 2) as i32 * (TILE + GAP),
+                            y: (place / 2) as i32 * (TILE + GAP),
+                            width: TILE,
+                            height: TILE,
+                            ..cell(*index, attachment, *preview)
+                        },
+                        preview.cloned(),
+                    )
                 })
                 .collect();
             let rows = previews.len().div_ceil(2) as i32;
-            (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
+            (
+                image_cells(cells),
+                2 * TILE + GAP,
+                rows * TILE + (rows - 1) * GAP,
+            )
         }
     }
 }
@@ -392,6 +488,63 @@ pub(super) fn gallery(
 #[cfg(all(test, feature = "discord"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn galleries_copy_only_requested_previews_and_bound_their_cache() {
+        PREVIEWS.set(Previews::default());
+        let attachments: Vec<_> = (0..40)
+            .map(|index| talk_core::chat::Attachment {
+                name: format!("{index}.png"),
+                size: None,
+                image: true,
+                dimensions: Some((360, 240)),
+                preview: Some(Arc::new(Picture {
+                    width: 360,
+                    height: 240,
+                    rgba: vec![index; 360 * 240 * 4],
+                    ..Default::default()
+                })),
+                preview_failed: false,
+                placement: Placement::Message,
+                spoiler: false,
+                video: false,
+            })
+            .collect();
+        let row = message_row(
+            &ChatMessage {
+                attachments,
+                ..Default::default()
+            },
+            &HashSet::new(),
+        );
+        assert_eq!(row.images.row_count(), 40);
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 0));
+
+        let first = row.images.row_data(0).unwrap();
+        assert_eq!(
+            (first.image.size().width, first.image.size().height),
+            (360, 240)
+        );
+        assert_eq!(first.image, row.images.row_data(0).unwrap().image);
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 360 * 240 * 4));
+        for index in 1..row.images.row_count() {
+            row.images.row_data(index).unwrap();
+        }
+        PREVIEWS.with_borrow(|cache| {
+            assert!(cache.bytes <= PREVIEW_CACHE_BYTES);
+            assert!(cache.images.len() < row.images.row_count());
+        });
+        // Eviction cannot invalidate a handle held by a visible component.
+        assert_eq!(
+            (first.image.size().width, first.image.size().height),
+            (360, 240)
+        );
+        assert_eq!(
+            row.images.row_data(0).unwrap().image.size(),
+            first.image.size()
+        );
+        PREVIEWS.set(Previews::default());
+    }
 
     #[test]
     fn animations_decode_the_frame_showing_and_let_it_go_when_idle() {

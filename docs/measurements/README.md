@@ -8,6 +8,10 @@ memory by build, and
 [renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
 for a call with Skia Software, the default renderer.
 
+[Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
+measures the latest memory changes on a larger fake Discord account. Its
+before/after comparison is recorded at the end of this file.
+
 Measurements use `fast` builds, as the owner decided on 2026-10-06, unless the
 question is the shipped build's absolute number; then use `release`. The
 [2026-10-05 profile comparison](2026-10-05-linux-fast-profile.json) found the
@@ -347,3 +351,111 @@ Reproduce: with the test stack up, build each feature set with `--profile fast`
 then the default) and copy each `target/fast/talk` to `target/networks/` as
 `talk-matrix`, `talk-discord` and `talk-combined`. Then `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
 The script starts the fake Discord itself.
+
+[Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
+compares the Discord-only `fast` build before and after freeing its READY
+payload and making UI preview copies on demand. The fake account has 100
+servers, 300 DMs, 12 extra channels and 60 authors. Its #general has 60
+messages, with an image every third extra message. Both builds use Skia
+Software at 1120×760, the same private display and fake server, and the same
+saved test account. Each view settles for four seconds and is sampled for
+five seconds. Two runs of each build alternate in the order before, after,
+after, before.
+
+| View | RSS before | RSS after | PSS before | PSS after | Live heap before | Live heap after |
+| --- | --- | --- | --- | --- | --- | --- |
+| DM list and Bob's conversation | 207–212 MiB | 158–164 MiB | 180–185 MiB | 132–138 MiB | 99.5–99.6 MiB | 67.6–67.8 MiB |
+| Image-heavy #general | 220–223 MiB | 170–176 MiB | 193–196 MiB | 139–150 MiB | 112.7–112.9 MiB | 74.9–75.0 MiB |
+
+The server view saves 48 MiB of RSS on average, 22%, and 38 MiB of live
+heap, 34%. Settled CPU is unchanged at 0–0.2% of one core. Captures of the
+same server view differ by 0.022% normalized pixel RMSE.
+
+The gateway previously cloned every JSON dispatch payload. The connection
+task then borrowed READY for the entire session, keeping its original JSON
+after the tracker had copied the fields it needed. It now moves dispatch
+payloads and releases READY before waiting on the session. On glibc it calls
+[`malloc_trim`](https://man7.org/linux/man-pages/man3/malloc_trim.3.html)
+once at that point, returning freed startup pages to the OS. Without the
+trim, much of the freed heap stayed resident.
+
+The UI previously copied every loaded gallery image, sticker and embed image
+into a Slint pixel buffer when building message rows, including rows outside
+the viewport. An immutable
+[Slint model](https://docs.slint.dev/latest/docs/rust/slint/trait.Model)
+now copies pixels when the row is requested. Converted previews share an
+eight MiB cache with least recently used eviction. Visible components keep
+their image handles after eviction. Source dimensions, spoiler covers,
+animation models, keyboard navigation and selection stay the same.
+
+This investigation also inspected the owner's live process read-only. It
+used 314 MiB RSS, 291 MiB PSS and 224 MiB anonymous memory with software
+rendering and 13 threads. It received no input and was not restarted, so
+the test account's saving is not a measured saving for that account. This
+comparison has no active call or Matrix session and does not measure Windows.
+
+The remaining media cost is in the backend's decoded previews for all loaded
+history and recent channels. Loading those by viewport, with a bounded decoded
+cache, would remove another copy for older images. Skia also copies visible
+Slint pixels into its own raster images. Sharing those pixels needs an owned
+buffer API with safe lifetimes; simply borrowing the bytes would be unsafe.
+These opportunities are unimplemented and their savings are unmeasured.
+
+A [follow-up font-manager experiment](2026-10-09-linux-font-manager.json)
+replaced Skia's system font manager with its
+[`custom_empty` manager](https://github.com/rust-skia/rust-skia/blob/master/skia-safe/src/core/font_mgr.rs),
+which loads the font data Fontique selected without another system font scan.
+It ran the same fake account and display in the order before, experiment,
+before, experiment. In the matched second server run, live heap fell by only
+0.50 MiB, or 0.45 MiB after a diagnostic heap trim. RSS did not improve.
+The matched captures differed by 0.000425% normalized pixel RMSE. The patch
+was discarded. Allocator retention varied enough to outweigh the small
+allocation saving, and the first server view also had an unread banner that
+disappeared on later opens.
+
+The next changes worth measuring are:
+
+- Decode previews near the timeline viewport and release distant ones. The
+  backend currently requests every preview in loaded history. One hundred
+  360×270 RGBA previews take 37 MiB before UI or renderer copies.
+- Give recent channels one byte budget for decoded previews. Forty closed
+  channels can keep four previews each, about 59 MiB at maximum dimensions.
+  The application and backend share these pictures, so that estimate counts
+  each decoded picture once. The disk cache can supply evicted previews on
+  reopening.
+- Request and convert avatars by viewport. The member panel creates visible
+  components through a `ListView`, but the application requests avatars for
+  the whole member list and the UI converts all of them. Each 128×128 avatar
+  costs 64 KiB in the core and another 64 KiB in Slint before renderer storage.
+- Release idle animation decoders on a timer. Their cleanup currently runs
+  only when another animation requests a frame; if the last visible animation
+  scrolls away, its decoder and shown frame can stay allocated in its model.
+
+These sizes describe allocations in the code, not measured savings on the
+owner's account. The follow-up read-only process sample was 229 MiB RSS,
+215 MiB PSS and 138 MiB anonymous memory. It received no input. The isolated
+test session was stopped and the previously optimized binary restored.
+
+Reproduce: save a Discord-only build of commit `4c46b06` and one with these
+changes, both built with `nix develop path:./nix --command cargo build --locked
+--profile fast --no-default-features --features desktop,discord`. Start each
+through `scripts/ui-session start --discord --fake-args '--servers 100 --dms
+300 --images 3 --channels 12 --authors 60' --bin PATH`. For each run, open
+DMs with `scripts/ui-session do 'click 36 36'`, wait four seconds, and sample
+the PID in `.local/ui-session/talk.pid` with `scripts/measure-process PID
+--seconds 5`. Repeat after opening the server with `'click 36 102'`. For
+allocator totals, set `TALK_UI_TEST_CONTROL` to a writable command file before
+starting the private session and append `stats` after each sample. Use a fresh
+command file on each restart, and retain the same fake server and test data
+between runs with `scripts/ui-session relaunch`. The JSON records the build
+hashes, individual samples and allocator totals.
+
+Validation passed `scripts/check --fast`, including formatting, documentation
+links, workspace tests, Clippy for each network combination, desktop and
+headless builds and smoke checks. Regression tests cover moving the gateway
+payload without copying it, lazy gallery allocation, cache bounds and valid
+image handles after eviction. Existing UI tests cover animation decoding,
+scrolling, selection, image copying and message actions.
+The fake Discord gateway integration and paginated-history integration also
+passed. Their runner returned 143 while its EXIT trap killed and waited for
+the fake server; the tests themselves both reported success.

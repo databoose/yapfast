@@ -591,14 +591,14 @@ impl Connection {
     }
 
     /// Acts on a message from the gateway, returning it if it's an event.
-    async fn handle(&mut self, message: Value) -> Result<Option<Dispatch>> {
+    async fn handle(&mut self, mut message: Value) -> Result<Option<Dispatch>> {
         if let Some(sequence) = message["s"].as_u64() {
             self.sequence = Some(sequence);
         }
         match message["op"].as_u64() {
             Some(DISPATCH) => {
                 let event = Event::parse(message["t"].as_str().unwrap_or_default());
-                let data = message.get("d").cloned().unwrap_or(Value::Null);
+                let data = message.get_mut("d").map(Value::take).unwrap_or(Value::Null);
                 match event {
                     Event::Ready => {
                         self.session_id = data["session_id"].as_str().map(str::to_owned);
@@ -786,6 +786,34 @@ mod tests {
             assert_eq!(ready["session_id"], "session");
             (gateway, peer)
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_moves_the_payload_without_copying_it() {
+        let discord = Discord::new().await;
+        let (socket, _peer) = tokio::join!(open(&discord.url), discord.accept(SLOW_HEARTBEAT));
+        let mut connection = Connection {
+            socket: socket.unwrap(),
+            sequence: None,
+            interval: SLOW_HEARTBEAT,
+            next_heartbeat: Instant::now(),
+            acked: true,
+            token: "token".into(),
+            session_id: None,
+            resume_url: None,
+            limiter: limiter(),
+            resumes: 0,
+        };
+        let message = json!({
+            "op": DISPATCH,
+            "s": 2,
+            "t": "READY_SUPPLEMENTAL",
+            "d": { "large": "x".repeat(1024 * 1024) },
+        });
+        let address = message["d"]["large"].as_str().unwrap().as_ptr();
+        let dispatch = connection.handle(message).await.unwrap().unwrap();
+        assert_eq!(dispatch.data["large"].as_str().unwrap().as_ptr(), address);
+        assert_eq!(connection.sequence, Some(2));
     }
 
     /// One connection, from Discord's side.
