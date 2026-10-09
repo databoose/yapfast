@@ -30,6 +30,41 @@ Omit `--preview` to sign in or restore your real account. If the GPU cannot
 start, Talk restarts itself with Skia Software and explains why. Renderer
 selection does not change session storage, encryption or the native audio backend.
 
+## Discord
+
+Talk can link a Discord account and replace the Discord app for everyday use.
+Discord doesn't allow third-party clients, so linking puts the account at risk.
+Talk says so before it shows the QR code. Nothing Discord-related appears until
+you link.
+
+Once linked, Talk shows your servers, channels, DMs and group DMs live. You can
+send messages, reply, edit, react and attach files. Embeds, custom emoji,
+stickers, spoilers, unread markers, notifications and member lists work. You can
+join server voice channels and make or answer DM calls, with mute, deafen,
+per-person volume and RNNoise. Go Live screen sharing and stream watching work
+too. The friends page handles friend requests and adding by username, and Talk
+sets your status and custom status.
+
+Not there yet:
+
+- Discord voice and Go Live work only on Linux. On Windows, joining Discord
+  voice stops with that message. Discord on Windows is otherwise untested.
+- Linking stops with an error if Discord asks for a captcha.
+- Threads and forum channels.
+- Search and pinned messages.
+- Forwarding messages as forwards.
+- Blocking and unblocking, and a list of blocked people. Messages from people
+  you blocked elsewhere already show collapsed.
+- Server folders, joining servers by invite, and leaving them.
+- Discord's push-to-talk and voice settings, the soundboard and camera video.
+- Polls, activities and server administration.
+- Marking an upload as a spoiler.
+- Animated custom emoji in messages show their first frame.
+- Mirroring Discord into Matrix.
+
+Use Discord in a browser for these until then. The
+[Discord plan](docs/discord.md) has the details and the order of work.
+
 ## Linux development
 
 On this NixOS host, enter the pinned environment with:

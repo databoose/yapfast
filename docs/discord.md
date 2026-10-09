@@ -836,8 +836,6 @@ In rough order. The browser covers these until then.
 - The blocked on the friends page, beside Online and All.
 - Blocking and unblocking from a profile.
 - Marking uploads as spoilers.
-- Tenor and Giphy "gifv" links, which are MP4s and need a video demuxer to
-  play; they show their still picture.
 - Animated custom emoji, which show their first frame.
 - Copying custom emoji: copied text has their private code points, not
   `:name:`.
