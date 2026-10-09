@@ -49,6 +49,26 @@ Discord pieces. The adapter updates widgets after model changes. A programmatic
 composer update uses the new room's draft, so it cannot overwrite that draft with
 the previous room's text.
 
+Timeline rows retain text, attachment dimensions and message actions for all
+loaded history. The UI reports visible item ids, with six rows of margin on
+each side, through `Action::VisibleMessages` and `Command::VisibleMessages`.
+Discord and Matrix download and decode previews for those items and release
+distant decoded handles. Reports are coalesced over 50 ms, reject old rooms,
+and refresh when temporary message ids become server event ids even if the
+row count stays the same. Discord's recent channels share an 8 MiB LRU cache
+of decoded preview pixels; closing a channel clears its own preview handles
+and the remembered application's handles. Active rows can hold additional
+images outside the cache budget.
+
+Virtualized server, DM, member, friend and message rows carry avatar URLs.
+`PictureStore` resolves them only when Slint instantiates their components,
+queues missing pictures for one batch, and updates visible bindings when
+pictures arrive. Its source registry holds weak pointers. Converted avatars
+and gallery previews share an 8 MiB Slint image cache; profiles and call
+controls still request their visible pictures directly. A one-second timer
+releases animation decoders and their last frames after they stop being used,
+and stops itself when no decoders need checking.
+
 ## How a UI change flows through the code
 
 A visible change usually touches each of these steps:

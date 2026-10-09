@@ -32,7 +32,7 @@ use crate::{
         ProfileServer, Reaction, Reply, Role, Video, VideoCommand, decode_preview, decode_view,
         plain_snippet,
     },
-    discord::{self, KEPT_CHANNELS, KEPT_MESSAGES, KEPT_PREVIEWS},
+    discord::{self, KEPT_CHANNELS, KEPT_MESSAGES},
     mention::{Mentioned, Target},
     network::Network,
 };

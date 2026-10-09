@@ -328,6 +328,7 @@ export struct EmbedCard {
 }
 export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
+    picture-url: string, reply-picture-url: string,
     /// The author's Discord role colour, when they have one.
     color: color, has-color: bool,
     /// The author is a Discord bot or webhook: tagged after their name.

@@ -196,25 +196,42 @@ export component DeviceToggle inherits Rectangle {
     }
 }
 
+// Virtualized components resolve pixels on demand and queue missing URLs.
+export global PictureStore {
+    in property <int> revision;
+    pure callback picture(string, int) -> image;
+    callback request(string);
+}
+
 // A person's picture, or a round initial in their own tint until it arrives;
 // optionally ringed while they speak.
 export component Avatar inherits Rectangle {
     in property <string> initial;
     in property <color> tint: #6b7280;
     in property <image> picture;
+    in property <string> picture-url;
+    property <image> shown-picture: root.picture-url != "" ? PictureStore.picture(root.picture-url, PictureStore.revision) : root.picture;
+    function request-picture() {
+        if root.picture-url != "" && root.shown-picture.width == 0 {
+            PictureStore.request(root.picture-url);
+        }
+    }
+    init => { root.request-picture(); }
+    changed picture-url => { root.request-picture(); }
+    changed shown-picture => { root.request-picture(); }
     in property <length> size: 40px;
     in property <bool> speaking;
     width: root.size; height: root.size;
     border-radius: root.size / 2;
-    background: root.picture.width > 0 ? transparent : root.tint;
-    if root.picture.width == 0: Text {
+    background: root.shown-picture.width > 0 ? transparent : root.tint;
+    if root.shown-picture.width == 0: Text {
         text: root.initial; color: #ffffff; font-size: root.size * 0.42; font-weight: 700;
         horizontal-alignment: center; vertical-alignment: center;
     }
-    if root.picture.width > 0: Rectangle {
+    if root.shown-picture.width > 0: Rectangle {
         width: root.size; height: root.size;
         border-radius: root.size / 2; clip: true;
-        Image { source: root.picture; width: root.size; height: root.size; image-fit: cover; }
+        Image { source: root.shown-picture; width: root.size; height: root.size; image-fit: cover; }
     }
     if root.speaking: Rectangle {
         x: -3px; y: -3px; width: root.size + 6px; height: root.size + 6px;

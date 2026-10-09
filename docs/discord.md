@@ -473,19 +473,21 @@ for the authors' member profiles.
 
 Talk keeps the open channel's messages in memory, and those of the 40
 channels open before it, so going back to one shows it at once. A closed
-channel keeps its newest 200 messages and the previews of its newest 4
-images (a decoded preview is about 400 KB, and the rest come back from disk
-quickly), and follows new messages, edits, deletions and reactions while
-it's kept. Opening it again loads the latest page in the background and fits
-it in: messages kept within the page's span that it lacks were deleted
+channel keeps its newest 200 messages as metadata and follows new messages,
+edits, deletions and reactions while it's kept. All channels share one
+8 MiB cache for decoded preview pixels, with least recently used eviction.
+Only messages in or near the timeline viewport request previews; evicted
+previews can be decoded again from the disk cache. Opening it again loads the
+latest page in the background and fits it in: messages kept within the page's span that it lacks were deleted
 meanwhile, and when a full page starts after everything kept, more came than
 a page holds, so only the page stays. The UI keeps the same 40 channels'
 last timeline and member list, so going back shows them before the chat side
 answers, without "Loading messages...". It keeps what the chat side keeps of
-each timeline, the newest 200 messages and 4 previews; the other previews
-show as loading until they come back from disk. Channels also go to disk, as
-the startup cache below describes, so a channel
-opened after a restart shows its saved messages while the latest page loads
+each timeline, the newest 200 messages as metadata. It drops decoded preview
+handles when closing a channel, so remembered UI timelines do not pin pixels
+outside the shared cache. Previews show as loading until the viewport requests
+them. Channels also go to disk, as the startup cache below describes, so a
+channel opened after a restart shows its saved messages while the latest page loads
 and fits in the same way.
 
 The open channel renders each message for the timeline once, with its

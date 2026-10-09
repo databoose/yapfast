@@ -1282,8 +1282,8 @@ fn asks_once_for_the_pictures_on_screen() {
     let mut app = connected();
     assert_eq!(
         asked(app.apply(discord_event(snapshot("ann")))),
-        ["icon.png"],
-        "a voice channel's people show only in its server"
+        Vec::<String>::new(),
+        "virtualized server icons are requested by the UI"
     );
     assert_eq!(
         asked(app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())))),
@@ -1304,6 +1304,11 @@ fn asks_once_for_the_pictures_on_screen() {
         }),
     });
     assert!(app.state.pictures.contains_key("icon.png"));
+    assert_eq!(
+        asked(app.dispatch(Action::LoadPictures(vec!["icon.png".into()]))),
+        ["icon.png"]
+    );
+    assert!(asked(app.dispatch(Action::LoadPictures(vec!["icon.png".into()]))).is_empty());
 }
 
 fn member(id: &str, name: &str) -> ChatMember {
@@ -1715,12 +1720,16 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
         ..Default::default()
     }));
     assert!(
-        effects.iter().any(|effect| matches!(
+        !effects.iter().any(|effect| matches!(
             effect,
             Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "ann.png")
         )),
-        "the DM list's avatars download"
+        "off-screen list avatars wait for the UI"
     );
+    assert!(matches!(
+        app.dispatch(Action::LoadPictures(vec!["ann.png".into()])).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls)))] if urls == &["ann.png"]
+    ));
     let listed: Vec<_> = app
         .state
         .scoped_rooms()
@@ -1924,12 +1933,16 @@ fn discord_friends_are_listed_and_messaged() {
     let effects = app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
     assert_eq!(app.state.selected, None);
     assert!(
-        effects.iter().any(|effect| matches!(
+        !effects.iter().any(|effect| matches!(
             effect,
             Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "3.png")
         )),
-        "the friends' avatars download"
+        "off-screen list avatars wait for the UI"
     );
+    assert!(matches!(
+        app.dispatch(Action::LoadPictures(vec!["3.png".into()])).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls)))] if urls == &["3.png"]
+    ));
 
     // A friend with a DM opens it; one without has it started.
     app.dispatch(Action::MessageFriend("2".into()));
@@ -2513,12 +2526,16 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
         ..Default::default()
     }));
     assert!(
-        effects.iter().any(|effect| matches!(
+        !effects.iter().any(|effect| matches!(
             effect,
             Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) if urls.iter().any(|url| url == "3.png")
         )),
-        "the requests' avatars download"
+        "off-screen list avatars wait for the UI"
     );
+    assert!(matches!(
+        app.dispatch(Action::LoadPictures(vec!["3.png".into()])).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls)))] if urls == &["3.png"]
+    ));
     let relations: Vec<_> = ["1", "2", "3", "4", "5"]
         .into_iter()
         .map(|user| app.state.relation(user))
@@ -2571,7 +2588,7 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
 }
 
 #[test]
-fn the_timeline_is_gone_through_for_pictures_only_once_it_changed() {
+fn custom_emoji_are_requested_only_for_nearby_messages_and_stale_views_are_ignored() {
     let asked = |effects: Vec<Effect>| -> Vec<String> {
         effects
             .into_iter()
@@ -2582,29 +2599,37 @@ fn the_timeline_is_gone_through_for_pictures_only_once_it_changed() {
             .collect()
     };
     let mut app = connected();
-    let first = ChatMessage {
-        avatar: Some("ann.png".into()),
-        ..message("e:$ann", false)
+    let messages: Vec<_> = (0..100)
+        .map(|index| ChatMessage {
+            emoji: vec![chat::CustomEmoji {
+                picture: format!("emoji/{index}"),
+                text: ":test:".into(),
+                id: index.to_string(),
+                animated: false,
+            }],
+            ..message(&format!("e:${index}"), false)
+        })
+        .collect();
+    assert!(
+        asked(app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages
+        }))
+        .is_empty()
+    );
+    let view = |room: &str, from, until| Action::VisibleMessages {
+        room: room.into(),
+        items: (from..until).map(|index| format!("e:${index}")).collect(),
     };
-    let timeline = |messages| Event::Timeline {
-        room: "dm".into(),
-        messages,
-    };
-    assert_eq!(asked(app.apply(timeline(vec![first.clone()]))), ["ann.png"]);
-    // As though it had gone: the same timeline isn't gone through again,
-    // and a keystroke asks for nothing.
-    app.requested_pictures.remove("ann.png");
-    let typing = Event::Typing {
-        room: "dm".into(),
-        names: vec!["Ann".into()],
-    };
-    assert!(asked(app.apply(typing)).is_empty());
+    assert_eq!(asked(app.dispatch(view("dm", 90, 100))).len(), 10);
+    assert!(asked(app.dispatch(view("dm", 90, 100))).is_empty());
+    assert!(app.dispatch(view("old-room", 0, 10)).is_empty());
+    assert_eq!(asked(app.dispatch(view("dm", 0, 10))).len(), 10);
     assert!(asked(app.dispatch(Action::SetDraft("Hi".into()))).is_empty());
-    assert_eq!(asked(app.apply(timeline(vec![first]))), ["ann.png"]);
 }
 
 #[test]
-fn closed_channels_keep_their_newest_messages_and_previews() {
+fn closed_channels_keep_metadata_without_pinning_previews() {
     let picture = Arc::new(Picture::default());
     let with_picture = |index: usize| ChatMessage {
         attachments: vec![crate::chat::Attachment {
@@ -2629,14 +2654,8 @@ fn closed_channels_keep_their_newest_messages_and_previews() {
         .map(|message| message.attachments[0].preview.is_some())
         .collect();
     assert!(
-        previews[..discord::KEPT_MESSAGES - discord::KEPT_PREVIEWS]
-            .iter()
-            .all(|shown| !shown)
-    );
-    assert!(
-        previews[discord::KEPT_MESSAGES - discord::KEPT_PREVIEWS..]
-            .iter()
-            .all(|shown| *shown)
+        previews.iter().all(|shown| !shown),
+        "remembered UI metadata does not pin decoded previews"
     );
 }
 

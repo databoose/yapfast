@@ -159,6 +159,10 @@ impl Adapter {
     }
 
     pub(super) fn refresh(&mut self, window: &TalkWindow) {
+        refresh_avatar_sources(&self.app.state);
+        window
+            .global::<PictureStore>()
+            .set_revision(self.app.state.picture_changes as i32);
         self.show_viewer(window);
         self.show_profile(window);
         let changes = Changes::read(self, window);
@@ -332,7 +336,8 @@ impl Adapter {
                     id: server.id.clone().into(),
                     name: server.name.clone().into(),
                     initial: initials(&server.name),
-                    picture: cached_picture(&mut self.pictures, state, server.icon.as_deref()),
+                    picture: slint::Image::default(),
+                    picture_url: server.icon.as_deref().unwrap_or_default().into(),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
                     unread: server
                         .channels
@@ -373,7 +378,8 @@ impl Adapter {
                 name: request.name.as_str().into(),
                 initial: initial(&request.name),
                 tint: tint(&request.id),
-                picture: cached_picture(&mut self.pictures, state, request.avatar.as_deref()),
+                picture: slint::Image::default(),
+                picture_url: request.avatar.as_deref().unwrap_or_default().into(),
                 incoming: request.incoming,
                 detail: match (request.incoming, request.spam) {
                     (true, true) => "Maybe spam",
@@ -413,7 +419,8 @@ impl Adapter {
                 name: friend.name.as_str().into(),
                 initial: initial(&friend.name),
                 tint: tint(&friend.id),
-                picture: cached_picture(&mut self.pictures, state, friend.avatar.as_deref()),
+                picture: slint::Image::default(),
+                picture_url: friend.avatar.as_deref().unwrap_or_default().into(),
                 presence: presence_name(Some(friend.presence.unwrap_or(Presence::Offline))).into(),
                 activity: friend
                     .activity
@@ -445,31 +452,23 @@ impl Adapter {
                     })),
         );
         let dm_icon = self.icons.dm.clone();
-        let request_row = |room: &talk_core::chat::ChatRoom,
-                           pictures: &mut HashMap<String, slint::Image>| {
-            RoomRow {
-                id: room.id.clone().into(),
-                name: room.name.clone().into(),
-                icon: dm_icon.clone(),
-                direct: true,
-                initial: initial(&room.name),
-                tint: tint(&room.id),
-                picture: cached_picture(pictures, state, room.avatar.as_deref()),
-                discord: true,
-                person: room.person.is_some(),
-                unread: room.unread > 0,
-                ..Default::default()
-            }
+        let request_row = |room: &&talk_core::chat::ChatRoom| RoomRow {
+            id: room.id.clone().into(),
+            name: room.name.clone().into(),
+            icon: dm_icon.clone(),
+            direct: true,
+            initial: initial(&room.name),
+            tint: tint(&room.id),
+            picture: slint::Image::default(),
+            picture_url: room.avatar.as_deref().unwrap_or_default().into(),
+            discord: true,
+            person: room.person.is_some(),
+            unread: room.unread > 0,
+            ..Default::default()
         };
-        let rows: Vec<_> = message_requests
-            .iter()
-            .map(|room| request_row(room, &mut self.pictures))
-            .collect();
+        let rows: Vec<_> = message_requests.iter().map(&request_row).collect();
         update_model(&self.models.message_requests, rows);
-        let rows: Vec<_> = spam
-            .iter()
-            .map(|room| request_row(room, &mut self.pictures))
-            .collect();
+        let rows: Vec<_> = spam.iter().map(&request_row).collect();
         update_model(&self.models.spam_rooms, rows);
         if direct {
             listed.retain(|room| {
@@ -517,7 +516,8 @@ impl Adapter {
                     direct: room.direct,
                     initial: initial(&room.name),
                     tint: tint(&room.id),
-                    picture: cached_picture(&mut self.pictures, state, room.avatar.as_deref()),
+                    picture: slint::Image::default(),
+                    picture_url: room.avatar.as_deref().unwrap_or_default().into(),
                     discord: room.direct && room.network == Network::Discord,
                     locked: room.locked,
                     person: room.person.is_some(),
@@ -715,7 +715,8 @@ impl Adapter {
                     name: member.name.clone().into(),
                     initial: initial(&member.name),
                     tint: tint(&member.name),
-                    picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                    picture: slint::Image::default(),
+                    picture_url: member.avatar.as_deref().unwrap_or_default().into(),
                     presence: presence_name(member.presence).into(),
                     color: role_color(member.color),
                     has_color: member.color.is_some(),
@@ -793,7 +794,8 @@ impl Adapter {
                 name: member.name.clone().into(),
                 initial: initial(&member.name),
                 tint: tint(&member.name),
-                picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                picture: slint::Image::default(),
+                picture_url: member.avatar.as_deref().unwrap_or_default().into(),
                 color: role_color(member.color),
                 has_color: member.color.is_some(),
                 ..Default::default()
@@ -1172,19 +1174,19 @@ impl Adapter {
                     let new_day = !day.is_empty()
                         && before.is_none_or(|before| self::day(before.timestamp) != day);
                     row.first = new_day || before.is_none_or(|before| !continues(before, message));
-                    row.picture = if collapsed(message, &self.revealed) {
-                        slint::Image::default()
+                    row.picture = slint::Image::default();
+                    row.picture_url = if collapsed(message, &self.revealed) {
+                        SharedString::default()
                     } else {
-                        cached_picture(&mut self.pictures, state, message.avatar.as_deref())
+                        message.avatar.as_deref().unwrap_or_default().into()
                     };
-                    row.reply_picture = cached_picture(
-                        &mut self.pictures,
-                        state,
-                        message
-                            .reply
-                            .as_ref()
-                            .and_then(|reply| reply.avatar.as_deref()),
-                    );
+                    row.reply_picture = slint::Image::default();
+                    row.reply_picture_url = message
+                        .reply
+                        .as_ref()
+                        .and_then(|reply| reply.avatar.as_deref())
+                        .unwrap_or_default()
+                        .into();
                     row.day = if new_day {
                         day.into()
                     } else {
@@ -1198,6 +1200,11 @@ impl Adapter {
                 })
                 .collect();
             show_rows(&self.models.messages, rows);
+            // A sent echo can get its event id without changing the row count
+            // or scroll indexes. Report the new item ids after layout settles.
+            if messages_changed || selection_changed || reset {
+                window.invoke_media_viewport();
+            }
             // A jump to a message places the list itself, even one made after
             // this refresh; see `show_message`.
             let weak = window.as_weak();

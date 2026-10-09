@@ -87,6 +87,31 @@ pub(super) fn cached_picture(
     image
 }
 
+/// The UI asks for avatars only as virtualized components use them. Weak
+/// sources do not pin decoded core pictures; conversions share the bounded
+/// preview cache rather than living in every off-screen row.
+pub(super) fn refresh_avatar_sources(state: &AppState) {
+    AVATAR_SOURCES.with_borrow_mut(|sources| {
+        *sources = state
+            .pictures
+            .iter()
+            .map(|(url, picture)| (url.clone(), Arc::downgrade(picture)))
+            .collect();
+    });
+}
+
+pub(super) fn avatar_picture(url: &str) -> slint::Image {
+    let source =
+        AVATAR_SOURCES.with_borrow(|sources| sources.get(url).and_then(std::sync::Weak::upgrade));
+    source.map_or_else(slint::Image::default, |source| {
+        PREVIEWS.with_borrow_mut(|cache| cache.image(&source, false))
+    })
+}
+
+thread_local! {
+    static AVATAR_SOURCES: RefCell<HashMap<String, std::sync::Weak<Picture>>> = RefCell::default();
+}
+
 /// A full image's size once shrunk to the viewer's largest.
 pub(super) fn fit(width: u32, height: u32) -> (u32, u32) {
     use talk_core::chat::{VIEW_HEIGHT, VIEW_WIDTH};
@@ -235,8 +260,8 @@ thread_local! {
     /// Animations' frames handed to Slint, so a row built again shares its
     /// picture's.
     static FRAMES: RefCell<Vec<std::rc::Weak<Frames>>> = RefCell::default();
-    /// When idle animations last gave up their decoders.
-    static SWEPT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    /// Runs while decoders are in use, including after the last row scrolls away.
+    static FRAME_SWEEP: slint::Timer = slint::Timer::default();
 }
 
 /// How long an animation keeps its decoder after its last frame showed, as
@@ -257,7 +282,7 @@ struct Decoding {
     /// The index of the next.
     next: usize,
     shown: Option<(usize, slint::Image)>,
-    used: Option<std::time::Instant>,
+    used: Option<Duration>,
 }
 
 impl Model for Frames {
@@ -271,7 +296,7 @@ impl Model for Frames {
     }
 
     fn row_data(&self, row: usize) -> Option<slint::Image> {
-        let now = std::time::Instant::now();
+        let now = Duration::from_millis(i_slint_core::animations::current_tick().0);
         let image = {
             let mut decoding = self.decoding.borrow_mut();
             decoding.used = Some(now);
@@ -280,7 +305,17 @@ impl Model for Frames {
                 _ => self.decode(&mut decoding, row),
             }
         };
-        sweep(now);
+        FRAME_SWEEP.with(|timer| {
+            if !timer.running() {
+                timer.start(slint::TimerMode::Repeated, IDLE_FRAMES, || {
+                    if !sweep(Duration::from_millis(
+                        i_slint_core::animations::current_tick().0,
+                    )) {
+                        FRAME_SWEEP.with(slint::Timer::stop);
+                    }
+                });
+            }
+        });
         image
     }
 
@@ -324,28 +359,25 @@ impl Frames {
 }
 
 /// Lets animations that stopped showing give up their decoders and frames.
-fn sweep(now: std::time::Instant) {
-    if SWEPT
-        .get()
-        .is_some_and(|swept| now.duration_since(swept) < IDLE_FRAMES)
-    {
-        return;
-    }
-    SWEPT.set(Some(now));
+fn sweep(now: Duration) -> bool {
+    let mut active = false;
     FRAMES.with_borrow(|cache| {
         for frames in cache.iter().filter_map(std::rc::Weak::upgrade) {
             // The one decoding now is in use.
             let Ok(mut decoding) = frames.decoding.try_borrow_mut() else {
+                active = true;
                 continue;
             };
             if decoding
                 .used
-                .is_some_and(|used| now.duration_since(used) >= IDLE_FRAMES)
+                .is_some_and(|used| now.saturating_sub(used) >= IDLE_FRAMES)
             {
                 *decoding = Decoding::default();
             }
+            active |= decoding.used.is_some();
         }
     });
+    active
 }
 
 /// A picture shrunk to a few pixels, which Slint smooths into a blur when it's
@@ -547,7 +579,60 @@ mod tests {
     }
 
     #[test]
+    fn avatar_sources_are_weak_and_pixels_are_converted_only_when_requested() {
+        PREVIEWS.set(Previews::default());
+        let mut state = AppState::default();
+        let source = Arc::new(Picture {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+            ..Default::default()
+        });
+        let weak = Arc::downgrade(&source);
+        state.pictures.insert("avatar".into(), source);
+        refresh_avatar_sources(&state);
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 0));
+        let shown = avatar_picture("avatar");
+        assert_eq!(shown, avatar_picture("avatar"));
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 4));
+        drop(state);
+        assert!(
+            weak.upgrade().is_none(),
+            "neither registry nor converted cache pins core pixels"
+        );
+        assert_eq!(avatar_picture("avatar").size().width, 0);
+        assert_eq!(
+            shown.size().width,
+            1,
+            "a component's image handle stays valid"
+        );
+        AVATAR_SOURCES.with_borrow_mut(HashMap::clear);
+        PREVIEWS.set(Previews::default());
+    }
+
+    #[test]
+    fn idle_animation_releases_its_decoder_without_another_frame_request() {
+        i_slint_backend_testing::init_no_event_loop();
+        let file = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testing/fixtures/gif-h264.mp4"),
+        )
+        .unwrap();
+        let picture = Arc::new(talk_core::chat::decode_picture(&file, 32, 32).unwrap());
+        let (frames, _) = animation(&picture);
+        let shown = frames.row_data(0).unwrap();
+        let model = FRAMES.with_borrow(|cache| cache.last().unwrap().upgrade().unwrap());
+        assert!(model.decoding.borrow().frames.is_some());
+        i_slint_backend_testing::mock_elapsed_time(IDLE_FRAMES * 2);
+        slint::platform::update_timers_and_animations();
+        assert!(model.decoding.borrow().frames.is_none());
+        assert!(model.decoding.borrow().shown.is_none());
+        FRAME_SWEEP.with(|timer| assert!(!timer.running()));
+        assert_eq!(shown.size(), frames.row_data(0).unwrap().size());
+    }
+
+    #[test]
     fn animations_decode_the_frame_showing_and_let_it_go_when_idle() {
+        i_slint_backend_testing::init_no_event_loop();
         let file = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testing/fixtures/gif-h264.mp4"),
         )
@@ -568,9 +653,8 @@ mod tests {
         assert!(frames == animation(&picture).0);
         // Idle, it gives up its decoder, and decodes again when it shows.
         let model = FRAMES.with_borrow(|cache| cache[0].upgrade().unwrap());
-        model.decoding.borrow_mut().used = Some(std::time::Instant::now() - IDLE_FRAMES);
-        SWEPT.set(None);
-        sweep(std::time::Instant::now());
+        i_slint_backend_testing::mock_elapsed_time(IDLE_FRAMES * 2);
+        slint::platform::update_timers_and_animations();
         assert!(
             model.decoding.borrow().frames.is_none() && model.decoding.borrow().shown.is_none()
         );

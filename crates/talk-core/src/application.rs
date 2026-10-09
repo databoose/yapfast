@@ -695,6 +695,11 @@ pub enum Action {
     /// message, as the timeline does when scrolled near its top, unless one
     /// is on its way or the first message is loaded.
     Earlier,
+    /// Items in or near the selected timeline's viewport, in timeline order.
+    VisibleMessages {
+        room: String,
+        items: Vec<String>,
+    },
     /// Show the selected room's message with this item, loading earlier
     /// history until it's there; see [`AppState::jump`].
     Jump(String),
@@ -822,6 +827,7 @@ pub struct Application {
     /// The timeline whose pictures were asked for, so an unchanged one isn't
     /// gone through again.
     pictured_timeline: Arc<Vec<ChatMessage>>,
+    visible_messages: Vec<String>,
     /// How many pictures were kept the last time those off screen went.
     pictures_kept: usize,
     /// Names searched for in the selected room, lowercased.
@@ -879,15 +885,18 @@ const KEPT_PICTURES: usize = 400;
 fn pictures_on_screen<'a>(
     state: &'a AppState,
     timeline: &'a [ChatMessage],
+    list_avatars: bool,
 ) -> impl Iterator<Item = &'a str> {
     state
         .servers
         .iter()
+        .filter(move |_| list_avatars)
         .filter_map(|server| server.icon.as_deref())
         .chain(state.account_avatar.as_deref())
         .chain(
             state
                 .scoped_rooms()
+                .filter(move |_| list_avatars)
                 .filter_map(|room| room.avatar.as_deref())
                 .take(LISTED_PICTURES),
         )
@@ -900,6 +909,7 @@ fn pictures_on_screen<'a>(
             state
                 .friend_requests
                 .iter()
+                .filter(move |_| list_avatars)
                 .filter(|_| state.navigation == Navigation::DirectMessages)
                 .filter_map(|request| request.avatar.as_deref()),
         )
@@ -907,6 +917,7 @@ fn pictures_on_screen<'a>(
             state
                 .friends
                 .iter()
+                .filter(move |_| list_avatars)
                 .filter(|_| state.dm_screen == Some(DmScreen::Friends))
                 .filter_map(|friend| friend.avatar.as_deref()),
         )
@@ -945,6 +956,7 @@ fn pictures_on_screen<'a>(
         .chain(
             timeline
                 .iter()
+                .filter(move |_| list_avatars)
                 .flat_map(|message| {
                     let reply = message
                         .reply
@@ -962,6 +974,7 @@ fn pictures_on_screen<'a>(
             state
                 .members
                 .iter()
+                .filter(move |_| list_avatars)
                 .flatten()
                 .flatten()
                 .chain(&state.found_members)
@@ -969,6 +982,7 @@ fn pictures_on_screen<'a>(
                     state
                         .role
                         .iter()
+                        .filter(move |_| list_avatars)
                         .flat_map(|role| role.members.iter().flatten()),
                 )
                 .filter_map(|member| member.avatar.as_deref()),
@@ -982,23 +996,12 @@ fn pictures_on_screen<'a>(
         )
 }
 
-/// A closed channel's timeline as it's kept to show again: what the Discord
-/// side keeps of it, its newest messages and the previews of their newest
-/// images. The others show as loading until the channel sends them again.
+/// A closed channel's recent message metadata, ready to show on reopening.
+/// Preview ownership stays in the backend's shared byte-bounded cache.
 fn shelved(messages: &[ChatMessage]) -> Vec<ChatMessage> {
     let mut kept = messages[messages.len().saturating_sub(discord::KEPT_MESSAGES)..].to_vec();
-    let mut previews = discord::KEPT_PREVIEWS;
-    for attachment in kept
-        .iter_mut()
-        .rev()
-        .flat_map(|message| message.attachments.iter_mut().rev())
-        .filter(|attachment| attachment.preview.is_some())
-    {
-        if previews > 0 {
-            previews -= 1;
-        } else {
-            attachment.preview = None;
-        }
+    for attachment in kept.iter_mut().flat_map(|message| &mut message.attachments) {
+        attachment.preview = None;
     }
     kept
 }
@@ -1037,10 +1040,32 @@ impl Application {
         let timeline = if Arc::ptr_eq(&self.pictured_timeline, &state.messages) {
             &[][..]
         } else {
-            state.messages.as_slice()
+            match self
+                .visible_messages
+                .first()
+                .zip(self.visible_messages.last())
+            {
+                Some((first, last)) => {
+                    let first = state
+                        .messages
+                        .iter()
+                        .position(|message| &message.item == first);
+                    let last = state
+                        .messages
+                        .iter()
+                        .position(|message| &message.item == last);
+                    match first.zip(last) {
+                        Some((first, last)) if first <= last => &state.messages[first..=last],
+                        _ => &[],
+                    }
+                }
+                None => &[],
+            }
         };
         let mut wanted = Vec::new();
-        for url in pictures_on_screen(state, timeline) {
+        // Virtualized UI rows request their own avatars; this covers profiles,
+        // calls and the custom emoji in nearby messages.
+        for url in pictures_on_screen(state, timeline, false) {
             if !self.requested_pictures.contains(url) {
                 self.requested_pictures.insert(url.to_owned());
                 wanted.push(url.to_owned());
@@ -1064,7 +1089,7 @@ impl Application {
         if self.state.pictures.len() <= KEPT_PICTURES.max(2 * self.pictures_kept) {
             return;
         }
-        let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages)
+        let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages, true)
             .map(str::to_owned)
             .collect();
         // Discord's CDN keeps custom emoji under /emojis/.
@@ -1078,6 +1103,14 @@ impl Application {
 
     fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
+            Action::VisibleMessages { room, items } => {
+                if self.state.selected.as_ref() != Some(&room) || self.visible_messages == items {
+                    return vec![];
+                }
+                self.visible_messages = items.clone();
+                self.pictured_timeline = Arc::new(Vec::new());
+                vec![Effect::Backend(Command::VisibleMessages { room, items })]
+            }
             Action::Navigate(navigation) => self.navigate(navigation),
             Action::OpenDmScreen(screen) => self.open_dm_screen(screen),
             Action::MessageFriend(user) => self.message_friend(user),

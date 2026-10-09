@@ -3,6 +3,72 @@
 use super::*;
 
 pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // UI bindings can request images while refresh borrows the adapter.
+    // Deliver their requests in one batch after the current UI work.
+    let pending = Rc::new(RefCell::new(HashSet::new()));
+    let timer = Rc::new(slint::Timer::default());
+    let state = Rc::downgrade(adapter);
+    let weak = window.as_weak();
+    window
+        .global::<PictureStore>()
+        .on_picture(|url, _revision| avatar_picture(url.as_str()));
+    window.global::<PictureStore>().on_request(move |url| {
+        if url.is_empty() {
+            return;
+        }
+        pending.borrow_mut().insert(url.to_string());
+        if !timer.running() {
+            let (pending, state, weak) = (pending.clone(), state.clone(), weak.clone());
+            timer.start(
+                slint::TimerMode::SingleShot,
+                Duration::from_millis(50),
+                move || {
+                    let urls = pending.borrow_mut().drain().collect();
+                    if let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) {
+                        adapter
+                            .borrow_mut()
+                            .action(&window, Action::LoadPictures(urls));
+                    }
+                },
+            );
+        }
+    });
+    let timer = Rc::new(slint::Timer::default());
+    let state = Rc::downgrade(adapter);
+    let weak = window.as_weak();
+    window.on_media_viewport(move || {
+        if timer.running() {
+            return;
+        }
+        let (state, weak) = (state.clone(), weak.clone());
+        timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(50),
+            move || {
+                let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
+                    return;
+                };
+                let mut adapter = adapter.borrow_mut();
+                let messages = &adapter.app.state.messages;
+                let Some(room) = adapter.app.state.selected.clone() else {
+                    return;
+                };
+                if messages.is_empty() || window.get_top_index() < 0 {
+                    return;
+                }
+                const MARGIN: usize = 6;
+                let first = (window.get_top_index() as usize).min(messages.len() - 1);
+                let last = (window.get_bottom_index().max(window.get_top_index()) as usize)
+                    .min(messages.len() - 1);
+                let items = messages[first.saturating_sub(MARGIN)
+                    ..=last.saturating_add(MARGIN).min(messages.len() - 1)]
+                    .iter()
+                    .map(|message| message.item.clone())
+                    .collect();
+                adapter.action(&window, Action::VisibleMessages { room, items });
+            },
+        );
+    });
     let state = Rc::downgrade(adapter);
     let weak = window.as_weak();
     OPEN.with(|open| {

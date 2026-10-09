@@ -2591,6 +2591,8 @@ function withDeviceCookie(req: Request, response: Response) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// Private test diagnostics: how much media the UI actually asks for.
+const mediaRequests = { avatars: 0, previews: 0 };
 const server = Bun.serve<SocketData>({
   hostname: args.host,
   port: Number(args.port),
@@ -2598,6 +2600,14 @@ const server = Bun.serve<SocketData>({
     const url = new URL(req.url);
     const path = url.pathname;
     const origin = url.origin;
+    if (path === "/_control/media-requests") {
+      if (req.method === "POST") Object.assign(mediaRequests, { avatars: 0, previews: 0 });
+      return Response.json(mediaRequests);
+    }
+    if (req.method === "GET") {
+      if (/^\/(icons|avatars|banners|embed\/avatars|guilds)\//.test(path)) mediaRequests.avatars++;
+      if (/^\/(attachments|media\/attachments|external)\//.test(path)) mediaRequests.previews++;
+    }
     // Slowed, so loading states can be seen: history, attachments and links' pictures.
     if (slowMs > 0 && req.method === "GET" && (/\/channels\/\d+\/messages$/.test(path) || path.startsWith("/attachments/") || path.startsWith("/external/"))) {
       await Bun.sleep(slowMs);

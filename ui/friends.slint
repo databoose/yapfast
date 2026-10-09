@@ -10,6 +10,7 @@ export struct FriendRequestRow {
     incoming: bool,
     /// "Incoming friend request" and the like.
     detail: string,
+    picture-url: string,
 }
 
 // A friend request in the DM list: accepted or ignored when it came to this
@@ -29,7 +30,7 @@ export component FriendRequest inherits Rectangle {
         padding-left: 8px; padding-right: 8px; spacing: 12px;
         Middle {
             Avatar {
-                size: 32px; initial: root.request.initial; tint: root.request.tint; picture: root.request.picture;
+                size: 32px; initial: root.request.initial; tint: root.request.tint; picture: root.request.picture; picture-url: root.request.picture-url;
                 DiscordBadge { x: -2px; y: -2px; size: 13px; ring: pointer.has-hover ? Theme.hover : root.surface; }
             }
         }
@@ -68,6 +69,7 @@ export struct FriendRow {
     presence: string,
     /// Their custom status or what they're doing.
     activity: string,
+    picture-url: string,
 }
 
 // A friend in the friends list. Clicking it opens your DM with them.
@@ -89,7 +91,7 @@ export component FriendItem inherits Rectangle {
         Middle {
             Rectangle {
                 width: 32px; height: 32px;
-                Avatar { size: 32px; initial: root.friend.initial; tint: root.friend.tint; picture: root.friend.picture; }
+                Avatar { size: 32px; initial: root.friend.initial; tint: root.friend.tint; picture: root.friend.picture; picture-url: root.friend.picture-url; }
                 StatusDot { x: 20px; y: 20px; presence: root.friend.presence; ring: root.surface; }
             }
         }
@@ -225,14 +227,14 @@ export component RequestsScreen inherits Rectangle {
             for room in root.message-requests: ChannelRow {
                 text: room.name; label: room.name + ", message request" + (room.unread ? ", unread" : "");
                 icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
-                picture: room.picture; discord: room.discord; unread: room.unread;
+                picture: room.picture; picture-url: room.picture-url; discord: room.discord; unread: room.unread;
                 clicked => { root.open(room.id); }
             }
             if root.spam.length > 0: RequestsHeading { text: "SPAM — " + root.spam.length; }
             for room in root.spam: ChannelRow {
                 text: room.name; label: room.name + ", spam";
                 icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
-                picture: room.picture; discord: room.discord;
+                picture: room.picture; picture-url: room.picture-url; discord: room.discord;
                 clicked => { root.open(room.id); }
             }
         }

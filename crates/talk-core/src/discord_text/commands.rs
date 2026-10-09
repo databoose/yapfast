@@ -64,6 +64,7 @@ pub fn command(
         | Command::Cancel { room, .. }
         | Command::SaveAttachment { room, .. }
         | Command::ViewImage { room, .. }
+        | Command::VisibleMessages { room, .. }
         | Command::Earlier(room) => room.clone(),
         Command::Forward { room, target, .. }
             if Network::of(room) == Network::Discord || Network::of(target) == Network::Discord =>
@@ -111,7 +112,7 @@ pub fn command(
             channels.open = Some(channel);
             return;
         }
-        match OpenChannel::open(discord, &room, done) {
+        match OpenChannel::open(discord, &room, done, channels.previews.clone()) {
             // The member list follows as Live::Members.
             Some(mut channel) => {
                 // Shown at once as it was kept on disk, while the latest page loads.
@@ -155,6 +156,11 @@ pub fn command(
         return;
     };
     match command {
+        Command::VisibleMessages { items, .. } => {
+            if channel.visible(items) {
+                publish(channel, discord, done, events);
+            }
+        }
         Command::Send {
             room,
             body,

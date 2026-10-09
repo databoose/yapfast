@@ -125,6 +125,7 @@ impl Application {
         self.read_marker = read_marker.map(|marker| (marker, 0));
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
+        self.visible_messages.clear();
         self.state.members = None;
         if !self.state.preview
             && let Some(index) = self.shown.iter().position(|shown| shown.room == id)
@@ -195,6 +196,7 @@ impl Application {
         self.read_marker = None;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
+        self.visible_messages.clear();
         self.state.members = None;
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
         if self.state.preview {

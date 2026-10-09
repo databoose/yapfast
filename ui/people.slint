@@ -13,6 +13,7 @@ export struct MemberRow {
     color: color, has-color: bool,
     /// A custom status or what they're doing, under the name.
     activity: string,
+    picture-url: string,
 }
 
 // The open room's members, grouped by role under the conversation header.
@@ -57,7 +58,7 @@ export component MemberPanel inherits Rectangle {
                     Middle {
                         Rectangle {
                             width: 32px; height: 32px;
-                            Avatar { size: 32px; initial: member.initial; tint: member.tint; picture: member.picture; opacity: member.presence == "offline" ? 0.4 : 1; }
+                            Avatar { size: 32px; initial: member.initial; tint: member.tint; picture: member.picture; picture-url: member.picture-url; opacity: member.presence == "offline" ? 0.4 : 1; }
                             if member.presence != "" && member.presence != "offline": StatusDot { x: 20px; y: 20px; presence: member.presence; ring: Theme.sidebar; }
                         }
                     }
@@ -447,7 +448,7 @@ export component RoleCard inherits Rectangle {
                     accessible-action-default => { root.choose-member(member.id); }
                     HorizontalLayout {
                         padding-left: 6px; padding-right: 6px; spacing: 10px;
-                        Middle { Avatar { size: 28px; initial: member.initial; tint: member.tint; picture: member.picture; } }
+                        Middle { Avatar { size: 28px; initial: member.initial; tint: member.tint; picture: member.picture; picture-url: member.picture-url; } }
                         Text { text: member.name; color: member.has-color ? member.color : Theme.text; font-size: 15px; font-weight: 500; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                     }
                     member-touch := TouchArea {

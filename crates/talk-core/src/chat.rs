@@ -849,6 +849,12 @@ pub enum Command {
     /// [`Event::HistoryLoaded`] follows. A backend loads one page at a time
     /// per room, and answers at once when the first message is loaded.
     Earlier(String),
+    /// The timeline items in or near the viewport. Only their image previews
+    /// need decoding; metadata for other loaded items stays available.
+    VisibleMessages {
+        room: String,
+        items: Vec<String>,
+    },
     Recover(String),
     RefreshTrust,
     RetrySync,
@@ -929,6 +935,7 @@ impl Command {
             | Command::PlayVideo { room, .. }
             | Command::Typing { room, .. }
             | Command::SaveDraft { room, .. }
+            | Command::VisibleMessages { room, .. }
             | Command::Earlier(room) => network(room),
             // Discord turns down forwarding from or to its channels.
             Command::Forward { room, target, .. } => match network(room) {
@@ -1615,6 +1622,20 @@ mod tests {
             (send(&matrix), Route::Matrix),
             (send(&discord), Route::Discord),
             (Command::Earlier(discord.clone()), Route::Discord),
+            (
+                Command::VisibleMessages {
+                    room: matrix.clone(),
+                    items: vec![],
+                },
+                Route::Matrix,
+            ),
+            (
+                Command::VisibleMessages {
+                    room: discord.clone(),
+                    items: vec![],
+                },
+                Route::Discord,
+            ),
             (forward(&matrix, &matrix), Route::Matrix),
             (forward(&matrix, &discord), Route::Discord),
             (forward(&discord, &matrix), Route::Discord),

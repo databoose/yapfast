@@ -310,6 +310,8 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         .map(|reply| reply.author.as_str())
         .unwrap_or_default();
     let row = MessageRow {
+        picture_url: SharedString::default(),
+        reply_picture_url: SharedString::default(),
         id: message.id.clone().into(),
         item: message.item.clone().into(),
         author: message.author.clone().into(),
@@ -318,7 +320,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         bot: message.bot,
         initial: initial(&message.author),
         tint: tint(&message.author),
-        // Set from the picture cache when the timeline is built.
+        // Virtualized avatars resolve their URLs when their components are built.
         picture: slint::Image::default(),
         body: message.body.clone().into(),
         time: message.time.clone().into(),
@@ -346,7 +348,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         reply_author: reply_author.into(),
         reply_initial: initial(reply_author),
         reply_tint: tint(reply_author),
-        // Set from the picture cache when the timeline is built.
+        // Virtualized avatars resolve their URLs when their components are built.
         reply_picture: slint::Image::default(),
         reply_body: message
             .reply
