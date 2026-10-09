@@ -454,8 +454,68 @@ pub struct Picture {
 pub struct Animation {
     /// How long each frame shows, in milliseconds.
     pub delays: Vec<u32>,
-    file: Arc<[u8]>,
+    file: AnimationFile,
     format: AnimationFormat,
+}
+
+/// Where an animation's file is: in memory, or on disk, where Talk keeps
+/// the pictures it downloaded, and where it takes no memory.
+#[derive(Debug, PartialEq, Eq)]
+enum AnimationFile {
+    Memory(Arc<[u8]>),
+    Disk(PathBuf),
+}
+
+impl AnimationFile {
+    fn open(&self) -> Option<AnimationReader> {
+        match self {
+            Self::Memory(data) => Some(AnimationReader::Memory(std::io::Cursor::new(data.clone()))),
+            Self::Disk(path) => std::fs::File::open(path)
+                .inspect_err(|error| tracing::debug!(%error, "could not read an animation"))
+                .ok()
+                .map(|file| AnimationReader::Disk(std::io::BufReader::new(file))),
+        }
+    }
+}
+
+/// An animation's file, read from the start.
+pub(crate) enum AnimationReader {
+    Memory(std::io::Cursor<Arc<[u8]>>),
+    Disk(std::io::BufReader<std::fs::File>),
+}
+
+impl std::io::Read for AnimationReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Memory(reader) => reader.read(buffer),
+            Self::Disk(reader) => reader.read(buffer),
+        }
+    }
+}
+
+impl std::io::BufRead for AnimationReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        match self {
+            Self::Memory(reader) => reader.fill_buf(),
+            Self::Disk(reader) => reader.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Self::Memory(reader) => reader.consume(amount),
+            Self::Disk(reader) => reader.consume(amount),
+        }
+    }
+}
+
+impl std::io::Seek for AnimationReader {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Memory(reader) => reader.seek(to),
+            Self::Disk(reader) => reader.seek(to),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -475,7 +535,9 @@ impl Picture {
             return Box::new(std::iter::empty());
         };
         let (width, height) = (self.width, self.height);
-        let file = animation.file.clone();
+        let Some(file) = animation.file.open() else {
+            return Box::new(std::iter::empty());
+        };
         let frames: Box<dyn Iterator<Item = Vec<u8>>> = match animation.format {
             #[cfg(feature = "discord")]
             AnimationFormat::Video => crate::video::frames(file, width, height),
@@ -489,6 +551,21 @@ impl Picture {
             },
         };
         Box::new(frames.take(animation.delays.len()))
+    }
+
+    /// Reads an animation's frames from `file` from now on, rather than
+    /// keeping its bytes in memory: `file` is the one it was decoded from,
+    /// kept on disk. A file of another size isn't, and is left alone.
+    pub fn read_from(&mut self, file: PathBuf) {
+        let Some(animation) = &mut self.animation else {
+            return;
+        };
+        let AnimationFile::Memory(data) = &animation.file else {
+            return;
+        };
+        if std::fs::metadata(&file).is_ok_and(|kept| kept.len() == data.len() as u64) {
+            animation.file = AnimationFile::Disk(file);
+        }
     }
 }
 
@@ -1057,8 +1134,7 @@ fn decode_animation(
         ImageFormat::WebP => AnimationFormat::WebP,
         _ => return None,
     };
-    let file: Arc<[u8]> = Arc::from(data);
-    let ((full_width, full_height), frames) = image_frames(file.clone(), format)?;
+    let ((full_width, full_height), frames) = image_frames(std::io::Cursor::new(data), format)?;
     let (width, height) = fit(full_width, full_height, width, height);
     let mut first = None;
     let mut delays = Vec::new();
@@ -1079,7 +1155,7 @@ fn decode_animation(
         rgba: first?,
         animation: Some(Animation {
             delays,
-            file,
+            file: AnimationFile::Memory(Arc::from(data)),
             format,
         }),
     })
@@ -1087,13 +1163,12 @@ fn decode_animation(
 
 /// An animated GIF, PNG or WebP's size and frames, which decode as they're
 /// taken; none for a still picture.
-fn image_frames(
-    file: Arc<[u8]>,
+fn image_frames<'a>(
+    cursor: impl std::io::BufRead + std::io::Seek + 'a,
     format: AnimationFormat,
-) -> Option<((u32, u32), image::Frames<'static>)> {
+) -> Option<((u32, u32), image::Frames<'a>)> {
     use image::{AnimationDecoder, ImageDecoder, codecs};
     const MAX_SIDE: u32 = 8192;
-    let cursor = std::io::Cursor::new(file);
     let fits = |(w, h): (u32, u32)| (w <= MAX_SIDE && h <= MAX_SIDE).then_some((w, h));
     match format {
         AnimationFormat::Gif => {
@@ -1145,7 +1220,7 @@ impl Animation {
     pub(crate) fn video(file: Arc<[u8]>, delays: Vec<u32>) -> Self {
         Self {
             delays,
-            file,
+            file: AnimationFile::Memory(file),
             format: AnimationFormat::Video,
         }
     }
@@ -1567,6 +1642,33 @@ mod tests {
         // A still picture has no frames.
         let still = decode_picture(&gif(8, 1), 360, 270).unwrap();
         assert!(still.animation.is_none() && still.frames().next().is_none());
+    }
+
+    #[test]
+    fn animations_read_their_frames_from_the_kept_file() {
+        let data = gif(8, 3);
+        let mut picture = decode_picture(&data, 360, 270).unwrap();
+        let frames: Vec<_> = picture.frames().collect();
+        let directory = tempfile::tempdir().unwrap();
+        // Another file isn't the one it came from.
+        let other = directory.path().join("other.gif");
+        std::fs::write(&other, gif(8, 4)).unwrap();
+        picture.read_from(other);
+        let memory = |picture: &Picture| {
+            matches!(
+                picture.animation.as_ref().unwrap().file,
+                AnimationFile::Memory(_)
+            )
+        };
+        assert!(memory(&picture));
+        let kept = directory.path().join("kept.gif");
+        std::fs::write(&kept, &data).unwrap();
+        picture.read_from(kept.clone());
+        assert!(!memory(&picture));
+        assert_eq!(picture.frames().collect::<Vec<_>>(), frames);
+        // Gone, it has no frames, and its first stays.
+        std::fs::remove_file(&kept).unwrap();
+        assert!(picture.frames().next().is_none());
     }
 
     #[test]

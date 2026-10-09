@@ -61,6 +61,19 @@ const LAST_WAIT: Duration = Duration::from_secs(5 * 60);
 /// The server part of a DM's room id.
 pub const DM_GUILD: &str = "@me";
 
+/// A picture decoded from what was downloaded from `url`. When it's an
+/// animation and Talk keeps the file on disk, its frames read from there
+/// rather than from a copy in memory.
+#[cfg(feature = "discord")]
+pub(crate) fn read_kept(url: &str, mut picture: chat::Picture) -> chat::Picture {
+    if picture.animation.is_some()
+        && let Some(file) = talk_discord::cache::kept_picture(url)
+    {
+        picture.read_from(file);
+    }
+    picture
+}
+
 pub fn server_id(guild: &str) -> String {
     format!("{PREFIX}{guild}")
 }
@@ -532,9 +545,12 @@ impl Pictures {
                 } else {
                     (PICTURE_SIZE, PICTURE_SIZE)
                 };
-                let decoded =
-                    tokio::task::spawn_blocking(move || chat::decode_picture(&data, width, height))
-                        .await;
+                let address = url.clone();
+                let decoded = tokio::task::spawn_blocking(move || {
+                    chat::decode_picture(&data, width, height)
+                        .map(|picture| read_kept(&address, picture))
+                })
+                .await;
                 match decoded {
                     Ok(Some(picture)) => {
                         let _ = events.send(Event::Picture {

@@ -613,12 +613,17 @@ impl OpenChannel {
         let (discord, done) = (discord.clone(), done.clone());
         self.tasks.spawn(async move {
             let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
-                Ok(data) => tokio::task::spawn_blocking(move || decode_view(&data))
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(Arc::new)
-                    .ok_or("Talk can't show this image. Save it to open it elsewhere."),
+                Ok(data) => tokio::task::spawn_blocking({
+                    let url = url.clone();
+                    move || {
+                        decode_view(&data).map(|picture| crate::discord::read_kept(&url, picture))
+                    }
+                })
+                .await
+                .ok()
+                .flatten()
+                .map(Arc::new)
+                .ok_or("Talk can't show this image. Save it to open it elsewhere."),
                 Err(_) => Err("Talk couldn't download this image from Discord. Try again."),
             };
             let _ = done.send(Done::Image {
@@ -863,11 +868,17 @@ impl OpenChannel {
         let room = self.room.clone();
         self.tasks.spawn(async move {
             let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
-                Ok(data) => tokio::task::spawn_blocking(move || decode_preview(&data))
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(Arc::new),
+                Ok(data) => tokio::task::spawn_blocking({
+                    let url = url.clone();
+                    move || {
+                        decode_preview(&data)
+                            .map(|picture| crate::discord::read_kept(&url, picture))
+                    }
+                })
+                .await
+                .ok()
+                .flatten()
+                .map(Arc::new),
                 Err(_) => None,
             };
             let _ = done.send(Done::Picture { room, url, picture });

@@ -302,6 +302,11 @@ pub(crate) async fn picture(url: &str) -> Option<Vec<u8>> {
     .ok()?
 }
 
+/// Where the picture at `url` is kept, if it is.
+pub fn kept_picture(url: &str) -> Option<PathBuf> {
+    picture_file(url).filter(|file| file.is_file())
+}
+
 /// Keeps the picture downloaded from `url`, if it's one Talk keeps.
 pub(crate) async fn keep_picture(url: &str, data: Vec<u8>) {
     if data.len() > LARGEST_PICTURE {

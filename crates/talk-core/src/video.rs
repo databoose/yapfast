@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Result, bail};
 
 pub use crate::chat::fit;
-use crate::chat::{Animation, Picture};
+use crate::chat::{Animation, AnimationReader, Picture};
 
 #[repr(C)]
 struct Raw {
@@ -74,6 +74,15 @@ pub trait Source: Read + Seek + Send {
 impl<T: AsRef<[u8]> + Send> Source for std::io::Cursor<T> {
     fn size(&mut self) -> Option<u64> {
         Some(self.get_ref().as_ref().len() as u64)
+    }
+}
+
+impl Source for AnimationReader {
+    fn size(&mut self) -> Option<u64> {
+        match self {
+            Self::Memory(reader) => reader.size(),
+            Self::Disk(reader) => reader.get_ref().metadata().ok().map(|kept| kept.len()),
+        }
     }
 }
 
@@ -302,11 +311,11 @@ pub fn decode_animation(data: &[u8], width: u32, height: u32) -> Option<Picture>
 /// decoded as it's taken. One thread decodes them: they're small, and come
 /// one at a time.
 pub(crate) fn frames(
-    file: Arc<[u8]>,
+    file: AnimationReader,
     width: u32,
     height: u32,
 ) -> Box<dyn Iterator<Item = Vec<u8>>> {
-    let Some(mut video) = Video::open_with(std::io::Cursor::new(file), false, 1) else {
+    let Some(mut video) = Video::open_with(file, false, 1) else {
         return Box::new(std::iter::empty());
     };
     Box::new(std::iter::from_fn(move || {
