@@ -497,6 +497,93 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
 }
 
 #[test]
+fn spoilers_go_to_discord_named_as_spoilers() {
+    assert_eq!(upload_name("cat.png", true), "SPOILER_cat.png");
+    assert_eq!(upload_name("SPOILER_cat.png", true), "SPOILER_cat.png");
+    assert_eq!(upload_name("cat.png", false), "cat.png");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn a_file_marked_as_a_spoiler_arrives_as_one() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    command(
+        Command::Open(room.clone()),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| matches!(event, Event::Timeline { .. }).then_some(()),
+    )
+    .await;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("plot.txt");
+    std::fs::write(&path, "the butler did it").unwrap();
+    command(
+        Command::Send {
+            room: room.clone(),
+            body: String::new(),
+            reply: None,
+            files: vec![OutgoingFile {
+                path,
+                spoiler: true,
+            }],
+        },
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    // Covered while it sends, and once Discord has it.
+    let spoiler = |delivery: Delivery| {
+        move |event: &Event| match event {
+            Event::Timeline { messages, .. } => messages
+                .iter()
+                .find(|message| {
+                    message.delivery == delivery
+                        && message
+                            .attachments
+                            .iter()
+                            .any(|file| file.name.ends_with("plot.txt"))
+                })
+                .map(|message| message.attachments[0].clone()),
+            _ => None,
+        }
+    };
+    let sending = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        spoiler(Delivery::Sending),
+    )
+    .await;
+    assert!(sending.spoiler);
+    let sent = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        spoiler(Delivery::Sent),
+    )
+    .await;
+    assert!(sent.spoiler && sent.name == "SPOILER_plot.txt");
+}
+
+#[test]
 fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     open.loaded(
