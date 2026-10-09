@@ -59,7 +59,7 @@ Not there yet:
 - Discord's push-to-talk and voice settings, the soundboard and camera video.
 - Polls, activities and server administration.
 - Marking an upload as a spoiler.
-- Animated custom emoji and Tenor or Giphy GIF links show a still picture.
+- Animated custom emoji in messages show their first frame.
 - Mirroring Discord into Matrix.
 
 Use Discord in a browser for these until then. The
