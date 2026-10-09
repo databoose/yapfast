@@ -684,14 +684,64 @@ async fn talks_to_the_fake_server() {
     assert_eq!(card.author, "Status Bot");
     assert_eq!(card.embeds[0].fields.len(), 4);
     // Pictures come from Discord's proxy; the linked site is never asked.
+    // The GIF is an MP4, with its first frame as a picture.
     let preview = gif.attachments[0].preview_url.as_deref().unwrap();
-    assert!(!discord.download(preview, 1 << 20).await.unwrap().is_empty());
+    assert_eq!(
+        &discord.download(preview, 1 << 20).await.unwrap()[4..8],
+        b"ftyp"
+    );
+    let still = gif.attachments[0].still_url.as_deref().unwrap();
+    assert!(!discord.download(still, 1 << 20).await.unwrap().is_empty());
     assert!(
         discord
             .download("https://example.com/bike.png", 1 << 20)
             .await
             .is_err()
     );
+
+    // An attached video plays from its file, which downloads as it plays,
+    // under a poster the media proxy makes.
+    control
+        .post(format!("{server}/_control/clip"))
+        .send()
+        .await
+        .unwrap();
+    let posted = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.content == "Watch this" => Some(message),
+        _ => None,
+    })
+    .await;
+    let clip = &posted.attachments[0];
+    assert!(!clip.image && clip.dimensions == Some((480, 270)));
+    let poster = clip.preview_url.as_deref().unwrap();
+    assert!(!discord.download(poster, 1 << 20).await.unwrap().is_empty());
+    let path = std::env::temp_dir().join(format!("talk-clip-{}.mp4", std::process::id()));
+    let mut file = std::fs::File::create(&path).unwrap();
+    let size = discord
+        .download_into(clip.video_url.as_deref().unwrap(), &mut file, 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(Some(size), clip.size);
+    let downloaded = std::fs::read(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(&downloaded[4..8], b"ftyp");
+    // So does a linked post's, its card's thumbnail the poster.
+    let linked = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.content.starts_with("https://vxtwitter.com/") => {
+            Some(message)
+        }
+        _ => None,
+    })
+    .await;
+    assert!(linked.embeds[0].video);
+    let poster = &linked.attachments[0];
+    assert_eq!(poster.shown, Shown::Poster(0));
+    let mut file = std::fs::File::create(&path).unwrap();
+    discord
+        .download_into(poster.video_url.as_deref().unwrap(), &mut file, 1 << 20)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_file(&path);
 
     // Go Live: watching Bob needs the voice channel; then Alice joins the
     // call, watches him and shares her own screen.

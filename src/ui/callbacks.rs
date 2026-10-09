@@ -3,6 +3,72 @@
 use super::*;
 
 pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // UI bindings can request images while refresh borrows the adapter.
+    // Deliver their requests in one batch after the current UI work.
+    let pending = Rc::new(RefCell::new(HashSet::new()));
+    let timer = Rc::new(slint::Timer::default());
+    let state = Rc::downgrade(adapter);
+    let weak = window.as_weak();
+    window
+        .global::<PictureStore>()
+        .on_picture(|url, _revision| avatar_picture(url.as_str()));
+    window.global::<PictureStore>().on_request(move |url| {
+        if url.is_empty() {
+            return;
+        }
+        pending.borrow_mut().insert(url.to_string());
+        if !timer.running() {
+            let (pending, state, weak) = (pending.clone(), state.clone(), weak.clone());
+            timer.start(
+                slint::TimerMode::SingleShot,
+                Duration::from_millis(50),
+                move || {
+                    let urls = pending.borrow_mut().drain().collect();
+                    if let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) {
+                        adapter
+                            .borrow_mut()
+                            .action(&window, Action::LoadPictures(urls));
+                    }
+                },
+            );
+        }
+    });
+    let timer = Rc::new(slint::Timer::default());
+    let state = Rc::downgrade(adapter);
+    let weak = window.as_weak();
+    window.on_media_viewport(move || {
+        if timer.running() {
+            return;
+        }
+        let (state, weak) = (state.clone(), weak.clone());
+        timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(50),
+            move || {
+                let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
+                    return;
+                };
+                let mut adapter = adapter.borrow_mut();
+                let messages = &adapter.app.state.messages;
+                let Some(room) = adapter.app.state.selected.clone() else {
+                    return;
+                };
+                if messages.is_empty() || window.get_top_index() < 0 {
+                    return;
+                }
+                const MARGIN: usize = 6;
+                let first = (window.get_top_index() as usize).min(messages.len() - 1);
+                let last = (window.get_bottom_index().max(window.get_top_index()) as usize)
+                    .min(messages.len() - 1);
+                let items = messages[first.saturating_sub(MARGIN)
+                    ..=last.saturating_add(MARGIN).min(messages.len() - 1)]
+                    .iter()
+                    .map(|message| message.item.clone())
+                    .collect();
+                adapter.action(&window, Action::VisibleMessages { room, items });
+            },
+        );
+    });
     let state = Rc::downgrade(adapter);
     let weak = window.as_weak();
     OPEN.with(|open| {
@@ -874,6 +940,136 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             .and_then(|frames| frames.take(image))
         {
             window.set_watch_frame(frame);
+        }
+        let video = adapter.app.state.video.as_ref();
+        let taken =
+            video.and_then(|video| Some((video, video.frames.as_ref()?.take_timed(image)?)));
+        if taken.is_none() && video.is_some_and(|video| !video.playing && !video.loading) {
+            // Half a second without a picture: a paused video's ticks stop.
+            adapter.video_quiet.set(adapter.video_quiet.get() + 1);
+            if adapter.video_quiet.get() > 15 {
+                window.set_video_active(false);
+            }
+        }
+        if let Some((video, (frame, time))) = taken {
+            adapter.video_quiet.set(0);
+            let player = window.global::<VideoPlayer>();
+            player.set_frame(frame);
+            player.set_has_frame(true);
+            // The last picture shows a little before the end.
+            let time = match video.duration_ms {
+                Some(duration) if video.ended => duration,
+                _ => time,
+            };
+            if let Some(duration) = video.duration_ms.filter(|duration| *duration > 0) {
+                player.set_progress((time as f64 / duration as f64).min(1.0) as f32);
+            }
+            player.set_time(refresh::video_time(time, video.duration_ms).into());
+        }
+    });
+    // The video playing: started from its cell, controlled from its bar.
+    let player = window.global::<VideoPlayer>();
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_play(move |item, index, width, height| {
+        if let Some(window) = weak.upgrade() {
+            let scale = window.window().scale_factor();
+            let pixels = |side: f32| (side * scale).round().max(1.0) as u32;
+            let (width, height) = (pixels(width), pixels(height));
+            let action = Action::PlayVideo {
+                item: item.into(),
+                index: index as usize,
+                width,
+                height,
+            };
+            let mut adapter = state.borrow_mut();
+            adapter.video_cell.set((width, height));
+            adapter.action(&window, action);
+        }
+    });
+    // Full screen, its pictures come at the viewer's size; back in its
+    // cell, at the cell's.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_expand(move |expanded| {
+        if let Some(window) = weak.upgrade() {
+            window.global::<VideoPlayer>().set_expanded(expanded);
+            if !expanded {
+                let mut adapter = state.borrow_mut();
+                let (width, height) = adapter.video_cell.get();
+                adapter.action(&window, Action::Video(VideoCommand::Size { width, height }));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_resize(move |width, height| {
+        if let Some(window) = weak.upgrade()
+            && window.global::<VideoPlayer>().get_expanded()
+        {
+            let scale = window.window().scale_factor();
+            let pixels = |side: f32| (side * scale).round().max(1.0) as u32;
+            let size = VideoCommand::Size {
+                width: pixels(width),
+                height: pixels(height),
+            };
+            state.borrow_mut().action(&window, Action::Video(size));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_toggle(move || {
+        if let Some(window) = weak.upgrade() {
+            let playing = state
+                .borrow()
+                .app
+                .state
+                .video
+                .as_ref()
+                .is_some_and(|video| video.playing);
+            let command = if playing {
+                VideoCommand::Pause
+            } else {
+                VideoCommand::Play
+            };
+            state.borrow_mut().action(&window, Action::Video(command));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_seek(move |fraction| {
+        if let Some(window) = weak.upgrade() {
+            let duration = state
+                .borrow()
+                .app
+                .state
+                .video
+                .as_ref()
+                .and_then(|video| video.duration_ms);
+            if let Some(duration) = duration {
+                let at = (f64::from(fraction.clamp(0.0, 1.0)) * duration as f64) as u64;
+                state
+                    .borrow_mut()
+                    .action(&window, Action::Video(VideoCommand::Seek(at)));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_mute(move |muted| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Video(VideoCommand::Mute(muted)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_change_volume(move |volume| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Video(VideoCommand::Volume(volume)));
         }
     });
     let state = adapter.clone();

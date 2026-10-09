@@ -2,6 +2,7 @@
 //! the messages as the timeline last showed them.
 
 use super::{
+    channels::SharedPreviews,
     render::{chat_embed, custom_emoji, mentions, sent_id},
     *,
 };
@@ -41,6 +42,8 @@ pub struct OpenChannel {
     dirty: bool,
     pub(super) pictures: HashMap<String, Option<Arc<Picture>>>,
     pub(super) requested: HashSet<String>,
+    visible: HashSet<u64>,
+    pub(super) previews: SharedPreviews,
     /// Loaded messages as the timeline last showed them, by snowflake, so a
     /// change renders only the messages it changed. A message leaves when it
     /// changes, and all leave when what they were rendered with changes.
@@ -56,8 +59,14 @@ impl OpenChannel {
     /// Opens a channel and starts loading its latest messages. What was kept
     /// on disk shows meanwhile, and the latest page fits in as it does for a
     /// channel kept in memory.
-    pub fn open(discord: &Discord, room: &str, done: &UnboundedSender<Done>) -> Option<Self> {
+    pub(super) fn open(
+        discord: &Discord,
+        room: &str,
+        done: &UnboundedSender<Done>,
+        previews: SharedPreviews,
+    ) -> Option<Self> {
         let mut open = Self::new(room)?;
+        open.previews = previews;
         for message in talk_discord::cache::messages(&open.channel) {
             open.messages.insert(message.order(), message);
             open.loaded = true;
@@ -82,6 +91,8 @@ impl OpenChannel {
             dirty: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
+            visible: HashSet::new(),
+            previews: SharedPreviews::default(),
             rendered: HashMap::new(),
             rendered_with: Rendering::default(),
             tasks: JoinSet::new(),
@@ -179,8 +190,8 @@ impl OpenChannel {
             .retain(|order, _| *order < since || *order > until || listed.contains(order));
     }
 
-    /// Keeps less once the channel closes: its newest messages, and the
-    /// newest of their image previews.
+    /// Keeps recent message metadata when closing. Decoded previews are
+    /// owned by the shared byte-bounded cache.
     pub(super) fn shelve(&mut self) {
         if self.messages.len() > KEPT_MESSAGES
             && let Some(&oldest) = self.messages.keys().nth_back(KEPT_MESSAGES - 1)
@@ -188,16 +199,9 @@ impl OpenChannel {
             self.messages = self.messages.split_off(&oldest);
             self.complete = false;
         }
-        let shown: HashSet<&String> = self
-            .messages
-            .values()
-            .rev()
-            .flat_map(|message| &message.attachments)
-            .filter_map(|attachment| attachment.preview_url.as_ref())
-            .take(KEPT_PREVIEWS)
-            .collect();
-        self.pictures.retain(|url, _| shown.contains(url));
-        self.requested.retain(|url| shown.contains(url));
+        self.pictures.clear();
+        self.requested.clear();
+        self.visible.clear();
         // Rendered messages hold their previews; they render again on opening.
         self.rendered = HashMap::new();
     }
@@ -531,20 +535,53 @@ impl OpenChannel {
         if !self.requested.contains(&url) {
             return;
         }
+        if let Some(picture) = &picture {
+            self.previews
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(url.clone(), picture.clone());
+        }
         for (order, message) in &self.messages {
-            if message
-                .attachments
-                .iter()
-                .any(|attachment| attachment.preview_url.as_ref() == Some(&url))
-            {
+            if message.attachments.iter().any(|attachment| {
+                attachment.preview_url.as_ref() == Some(&url)
+                    || attachment.still_url.as_ref() == Some(&url)
+            }) {
                 self.rendered.remove(order);
             }
         }
         self.pictures.insert(url, picture);
     }
 
+    /// Drops the previous view's decoded handles and asks only for media in
+    /// the new view. Cached previews can return without reading their files.
+    pub(super) fn visible(&mut self, items: Vec<String>) -> bool {
+        let visible: HashSet<_> = items
+            .iter()
+            .filter_map(|item| discord::item_order(item))
+            .collect();
+        if self.visible == visible {
+            return false;
+        }
+        self.visible = visible;
+        let urls: HashSet<_> = self
+            .messages
+            .iter()
+            .filter(|(order, _)| self.visible.contains(order))
+            .flat_map(|(_, message)| &message.attachments)
+            .flat_map(|attachment| attachment.preview_url.iter().chain(&attachment.still_url))
+            .collect();
+        self.pictures.retain(|url, _| urls.contains(url));
+        self.requested.retain(|url| urls.contains(url));
+        self.rendered.clear();
+        true
+    }
+
     /// A sent message's attachment at `index`.
-    fn attachment(&self, item: &str, index: usize) -> Option<&talk_discord::message::Attachment> {
+    pub(super) fn attachment(
+        &self,
+        item: &str,
+        index: usize,
+    ) -> Option<&talk_discord::message::Attachment> {
         sent_id(item)
             .and_then(|id| self.messages.get(&id.parse().unwrap_or_default()))
             .and_then(|message| message.attachments.get(index))
@@ -609,12 +646,17 @@ impl OpenChannel {
         let (discord, done) = (discord.clone(), done.clone());
         self.tasks.spawn(async move {
             let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
-                Ok(data) => tokio::task::spawn_blocking(move || decode_view(&data))
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(Arc::new)
-                    .ok_or("Talk can't show this image. Save it to open it elsewhere."),
+                Ok(data) => tokio::task::spawn_blocking({
+                    let url = url.clone();
+                    move || {
+                        decode_view(&data).map(|picture| crate::discord::read_kept(&url, picture))
+                    }
+                })
+                .await
+                .ok()
+                .flatten()
+                .map(Arc::new)
+                .ok_or("Talk can't show this image. Save it to open it elsewhere."),
                 Err(_) => Err("Talk couldn't download this image from Discord. Try again."),
             };
             let _ = done.send(Done::Image {
@@ -630,6 +672,7 @@ impl OpenChannel {
     /// lacks. Messages that didn't change since the last time come from
     /// [`OpenChannel::rendered`].
     pub fn publish(&mut self, discord: &Discord, done: &UnboundedSender<Done>) -> Vec<ChatMessage> {
+        while self.tasks.try_join_next().is_some() {}
         let snapshot = discord.snapshots().borrow().clone();
         let me = snapshot.user_id.clone().unwrap_or_default();
         let server = snapshot
@@ -713,6 +756,7 @@ impl OpenChannel {
                         preview_failed: false,
                         placement: Placement::Message,
                         spoiler: false,
+                        video: false,
                     })
                     .collect(),
                 ..Default::default()
@@ -747,37 +791,53 @@ impl OpenChannel {
             Some(system) => format!("{author} {system}"),
             None => discord.render(server, &message.content),
         };
-        let attachments =
-            message
-                .attachments
-                .iter()
-                .map(|attachment| {
-                    let preview = attachment.preview_url.as_ref().and_then(|url| {
-                        match self.pictures.get(url) {
-                            Some(picture) => Some(picture.clone()),
-                            None => {
-                                wanted.push(url.clone());
-                                None
-                            }
+        let attachments = message
+            .attachments
+            .iter()
+            .map(|attachment| {
+                let mut preview_of = |url: &String| match self.pictures.get(url) {
+                    Some(picture) => Some(picture.clone()),
+                    None => {
+                        if !self.visible.contains(&message.order()) {
+                            return None;
                         }
-                    });
-                    Attachment {
-                        name: attachment.name.clone(),
-                        size: attachment.size,
-                        image: attachment.image && attachment.preview_url.is_some(),
-                        dimensions: attachment.dimensions,
-                        preview_failed: matches!(preview, Some(None)),
-                        preview: preview.flatten(),
-                        placement: match attachment.shown {
-                            Shown::Message => Placement::Message,
-                            Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
-                            Shown::Thumbnail(index) => Placement::Thumbnail(index),
-                            Shown::Sticker => Placement::Sticker,
-                        },
-                        spoiler: attachment.spoiler,
+                        if let Some(picture) = self
+                            .previews
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(url)
+                        {
+                            return Some(Some(picture));
+                        }
+                        wanted.push(url.clone());
+                        None
                     }
-                })
-                .collect();
+                };
+                let mut preview = attachment.preview_url.as_ref().and_then(&mut preview_of);
+                // A GIF's video that can't be shown gives way to its picture.
+                if matches!(preview, Some(None))
+                    && let Some(still) = &attachment.still_url
+                {
+                    preview = preview_of(still);
+                }
+                Attachment {
+                    name: attachment.name.clone(),
+                    size: attachment.size,
+                    image: attachment.image && attachment.preview_url.is_some(),
+                    dimensions: attachment.dimensions,
+                    preview_failed: matches!(preview, Some(None)),
+                    preview: preview.flatten(),
+                    placement: match attachment.shown {
+                        Shown::Message => Placement::Message,
+                        Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
+                        Shown::Thumbnail(index) => Placement::Thumbnail(index),
+                        Shown::Sticker => Placement::Sticker,
+                    },
+                    spoiler: attachment.spoiler,
+                    video: attachment.video_url.is_some(),
+                }
+            })
+            .collect();
         let embeds = message
             .embeds
             .iter()
@@ -853,11 +913,17 @@ impl OpenChannel {
         let room = self.room.clone();
         self.tasks.spawn(async move {
             let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
-                Ok(data) => tokio::task::spawn_blocking(move || decode_preview(&data))
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(Arc::new),
+                Ok(data) => tokio::task::spawn_blocking({
+                    let url = url.clone();
+                    move || {
+                        decode_preview(&data)
+                            .map(|picture| crate::discord::read_kept(&url, picture))
+                    }
+                })
+                .await
+                .ok()
+                .flatten()
+                .map(Arc::new),
                 Err(_) => None,
             };
             let _ = done.send(Done::Picture { room, url, picture });

@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer } from "messages.slint";
+import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -35,8 +35,9 @@ import { SignInScreen, VerifyBanner } from "sign-in.slint";
 export { Badges } from "theme.slint";
 export { PersonRow } from "voice.slint";
 export { ServerRow, RoomRow } from "rail.slint";
+export { PictureStore } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
-export { EmojiCell, EmojiRow, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow } from "messages.slint";
+export { EmojiCell, EmojiRow, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData } from "people.slint";
 export { FriendRequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow } from "dialogs.slint";
@@ -348,6 +349,8 @@ export component TalkWindow inherits Window {
     in property <string> watch-status;
     /// The newest picture of the watched stream, refreshed by stream-tick.
     in-out property <image> watch-frame;
+    /// A video plays in the open room: stream-tick brings its pictures to VideoPlayer.
+    in property <bool> video-active;
     in property <string> switch-prompt;
     /// Discord friend requests, message requests and spam, on the requests
     /// screen, which the top of the DM list opens.
@@ -598,6 +601,11 @@ export component TalkWindow inherits Window {
     out property <string> top-item;
     out property <length> top-edge;
     out property <int> bottom-index: -1;
+    callback media-viewport;
+    changed top-index => { root.media-viewport(); }
+    changed bottom-index => { root.media-viewport(); }
+    property <int> media-count: root.messages.length;
+    changed media-count => { root.media-viewport(); }
     property <int> view-tick;
     // Where the "New" divider's row starts in the view, while it's built. Its
     // line is 20px down the row, so it's out of view once the row is that far up.
@@ -647,7 +655,7 @@ export component TalkWindow inherits Window {
     property <bool> output-open: output-menu.is-open;
     changed input-open => { root.input-level = 0; root.meter-note = ""; root.metering(root.input-open); }
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
-    Timer { interval: 33ms; running: root.sharing || root.watching; triggered => { root.stream-tick(); } }
+    Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active; triggered => { root.stream-tick(); } }
     input-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);
@@ -1250,7 +1258,7 @@ export component TalkWindow inherits Window {
                                             if self.view-y <= 0px && self.view-y + self.height > 0px {
                                                 root.top-index = index; root.top-item = message.item; root.top-edge = self.view-y + self.height;
                                             }
-                                            if self.view-y < timeline.height && self.view-y + self.height >= timeline.height { root.bottom-index = index; }
+                                            if self.view-y < timeline.height && (self.view-y + self.height >= timeline.height || index == root.messages.length - 1) { root.bottom-index = index; }
                                             if message.unread-start { root.unread-y = self.view-y + self.top; }
                                         }
                                         init => { root.view-tick += 1; }
@@ -1339,7 +1347,7 @@ export component TalkWindow inherits Window {
                                                         }
                                                         if message.first: Avatar {
                                                             x: 0px; y: message.has-reply ? 24px : 2px;
-                                                            initial: message.initial; tint: message.tint; picture: message.picture;
+                                                            initial: message.initial; tint: message.tint; picture: message.picture; picture-url: message.picture-url;
                                                         }
                                                         if !message.first && root.active-item == message.item: Text {
                                                             x: 0px; y: 4px; width: 40px;
@@ -1358,7 +1366,7 @@ export component TalkWindow inherits Window {
                                                             accessible-action-default => { if message.reply-item != "" { root.jump-to(message.reply-item); } }
                                                             HorizontalLayout {
                                                                 spacing: 6px;
-                                                                if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; picture: message.reply-picture; } }
+                                                                if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; picture: message.reply-picture; picture-url: message.reply-picture-url; } }
                                                                 if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                                                 Text {
                                                                     text: message.reply-body; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
@@ -1886,6 +1894,11 @@ export component TalkWindow inherits Window {
         viewer-item: root.viewer-item; viewer-index: root.viewer-index; preview: root.preview;
         close-image => { root.close-image(); }
         step-image(step) => { root.step-image(step); }
+        save-attachment(item, index) => { root.save-attachment(item, index); }
+    }
+    // The video playing, shown large over everything; see VideoViewer.
+    if VideoPlayer.expanded && VideoPlayer.item != "": VideoViewer {
+        preview: root.preview;
         save-attachment(item, index) => { root.save-attachment(item, index); }
     }
     // Adding a Discord friend by username; see AddFriendDialog.

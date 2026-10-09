@@ -643,6 +643,17 @@ impl Discord {
         Ok(data)
     }
 
+    /// Downloads a file from Discord's CDN into `file` as it arrives,
+    /// returning its size; a video plays while it does.
+    pub async fn download_into(
+        &self,
+        url: &str,
+        file: &mut std::fs::File,
+        limit: u64,
+    ) -> Result<u64> {
+        self.api.download_into(url, file, limit).await
+    }
+
     /// Changes whenever a name, avatar or role that messages show changes.
     pub fn names_version(&self) -> u64 {
         self.read_names().version()

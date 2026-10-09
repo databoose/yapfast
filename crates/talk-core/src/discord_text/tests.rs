@@ -149,7 +149,7 @@ fn the_latest_page_fits_what_was_kept() {
 }
 
 #[test]
-fn closed_channels_keep_their_newest_messages_and_previews() {
+fn closed_channels_keep_metadata_without_pinning_previews() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     let with_image = |id: u64| Message {
         attachments: vec![talk_discord::message::Attachment {
@@ -160,6 +160,8 @@ fn closed_channels_keep_their_newest_messages_and_previews() {
             dimensions: None,
             preview_url: Some(format!("preview/{id}")),
             view_url: None,
+            still_url: None,
+            video_url: None,
             shown: Shown::Message,
             spoiler: false,
         }],
@@ -179,18 +181,13 @@ fn closed_channels_keep_their_newest_messages_and_previews() {
     open.shelve();
     assert_eq!(ids(&open), (50..total).collect::<Vec<_>>());
     assert!(!open.complete, "the oldest went, so they load again");
-    let mut kept: Vec<_> = open.pictures.keys().cloned().collect();
-    kept.sort();
-    assert_eq!(
-        kept,
-        (total - KEPT_PREVIEWS as u64..total)
-            .map(|id| format!("preview/{id}"))
-            .collect::<Vec<_>>()
+    assert!(
+        open.pictures.is_empty(),
+        "closed channels do not own decoded pixels"
     );
     open.picture(format!("preview/{}", total - 30), None);
-    assert_eq!(
-        open.pictures.len(),
-        KEPT_PREVIEWS,
+    assert!(
+        open.pictures.is_empty(),
         "a preview it gave up arrives late"
     );
 }
@@ -207,6 +204,8 @@ fn changes_render_again_only_the_messages_they_change() {
             dimensions: None,
             preview_url: Some("preview/9".into()),
             view_url: None,
+            still_url: None,
+            video_url: None,
             shown: Shown::Message,
             spoiler: false,
         }],
@@ -495,4 +494,141 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
             ..
         })
     ));
+}
+
+#[test]
+fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.loaded(
+        false,
+        vec![
+            Message {
+                attachments: vec![talk_discord::message::Attachment {
+                    name: "a.png".into(),
+                    size: None,
+                    url: "image".into(),
+                    image: true,
+                    dimensions: Some((1, 1)),
+                    preview_url: Some("preview".into()),
+                    view_url: None,
+                    still_url: None,
+                    video_url: None,
+                    shown: Shown::Message,
+                    spoiler: false,
+                }],
+                ..message("1", None)
+            },
+            message("2", None),
+        ],
+    );
+    assert!(open.visible(vec!["d:1".into()]));
+    assert!(!open.visible(vec!["d:1".into()]));
+    open.requested.insert("preview".into());
+    let picture = Arc::new(Picture {
+        width: 1,
+        height: 1,
+        rgba: vec![0; 4],
+        ..Default::default()
+    });
+    let weak = Arc::downgrade(&picture);
+    open.picture("preview".into(), Some(picture));
+    assert!(open.pictures["preview"].is_some());
+    open.rendered.insert(1, ChatMessage::default());
+    assert!(open.visible(vec!["d:2".into()]));
+    assert!(open.pictures.is_empty() && open.requested.is_empty() && open.rendered.is_empty());
+    open.picture("preview".into(), Some(Arc::new(Picture::default())));
+    assert!(
+        open.pictures.is_empty(),
+        "a late download cannot repopulate old rows"
+    );
+    let cached = open.previews.lock().unwrap().get("preview").unwrap();
+    assert!(Arc::ptr_eq(&cached, &weak.upgrade().unwrap()));
+    drop(cached);
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only the shared cache owns the decoded pixels"
+    );
+    open.shelve();
+    assert_eq!(weak.strong_count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn previews_follow_the_view_and_share_cache_across_channels() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let previews = channels::SharedPreviews::default();
+    let with_image = |id: &str| Message {
+        attachments: vec![talk_discord::message::Attachment {
+            name: "a.png".into(),
+            size: None,
+            url: String::new(),
+            image: true,
+            dimensions: Some((720, 540)),
+            preview_url: Some(format!(
+                "{}/external/viewport-{id}/720x540.png",
+                talk_discord::client::test_server().unwrap()
+            )),
+            view_url: None,
+            still_url: None,
+            video_url: None,
+            shown: Shown::Message,
+            spoiler: false,
+        }],
+        ..message(id, None)
+    };
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.previews = previews.clone();
+    open.loaded(false, vec![with_image("1"), with_image("2")]);
+    assert!(
+        open.publish(&discord, &done)
+            .iter()
+            .all(|row| row.attachments[0].preview.is_none())
+    );
+    assert!(
+        open.requested.is_empty(),
+        "loading history alone does not download images"
+    );
+    open.visible(vec!["d:1".into()]);
+    open.publish(&discord, &done);
+    assert_eq!(open.requested.len(), 1);
+    let work = tokio::time::timeout(Duration::from_secs(10), finished.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Done::Picture { url, picture, .. } = work else {
+        panic!("expected the visible preview")
+    };
+    let source = picture.as_ref().unwrap().clone();
+    open.picture(url, picture);
+    let rows = open.publish(&discord, &done);
+    assert!(Arc::ptr_eq(
+        rows[0].attachments[0].preview.as_ref().unwrap(),
+        &source
+    ));
+    assert!(rows[1].attachments[0].preview.is_none());
+    drop(rows);
+    open.shelve();
+    assert!(open.pictures.is_empty() && open.rendered.is_empty());
+    // A different chat using the same URL also reuses the cached allocation.
+    let mut other = OpenChannel::new("discord:10:12").unwrap();
+    other.previews = previews;
+    other.loaded(false, vec![with_image("1")]);
+    other.visible(vec!["d:1".into()]);
+    let rows = other.publish(&discord, &done);
+    assert!(Arc::ptr_eq(
+        rows[0].attachments[0].preview.as_ref().unwrap(),
+        &source
+    ));
+    assert!(
+        other.requested.is_empty(),
+        "cache hits do not start another download"
+    );
+    other.visible(vec![]);
+    assert!(
+        other.publish(&discord, &done)[0].attachments[0]
+            .preview
+            .is_none()
+    );
 }

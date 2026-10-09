@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -37,6 +37,8 @@ struct Header {
     _reserved: u32,
     /// Each slot's frame size, as width and height in pixels.
     sizes: [[AtomicU32; 2]; SLOTS as usize],
+    /// When each slot's frame shows in a video file, in milliseconds.
+    times: [AtomicU64; SLOTS as usize],
 }
 
 const _: () = assert!(size_of::<Header>() <= HEADER);
@@ -156,6 +158,11 @@ impl Frames {
     /// Calls `show` with the newest frame's width, height and RGBA pixels,
     /// if one arrived since the last call.
     pub fn take<T>(&self, show: impl FnOnce(u32, u32, &[u8]) -> T) -> Option<T> {
+        self.take_timed(show).map(|(shown, _)| shown)
+    }
+
+    /// As [`Self::take`], with when the frame shows in a video file.
+    pub fn take_timed<T>(&self, show: impl FnOnce(u32, u32, &[u8]) -> T) -> Option<(T, u64)> {
         let header = self.mapping.header();
         if header.middle.load(Ordering::Acquire) & FRESH == 0 {
             return None;
@@ -174,7 +181,8 @@ impl Frames {
         // SAFETY: the worker no longer writes this slot: it's the UI's front
         // until the UI swaps it back.
         let pixels = unsafe { std::slice::from_raw_parts(self.mapping.slot(*front), length) };
-        Some(show(width, height, pixels))
+        let time = header.times[*front as usize].load(Ordering::Relaxed);
+        Some((show(width, height, pixels), time))
     }
 }
 
@@ -204,6 +212,17 @@ impl Writer {
 
     /// Writes a frame with `fill`, which gets its RGBA pixels, then shows it.
     pub fn write(&mut self, width: u32, height: u32, fill: impl FnOnce(&mut [u8])) {
+        self.write_timed(width, height, 0, fill);
+    }
+
+    /// As [`Self::write`], for a frame of a video file showing at `time_ms`.
+    pub fn write_timed(
+        &mut self,
+        width: u32,
+        height: u32,
+        time_ms: u64,
+        fill: impl FnOnce(&mut [u8]),
+    ) {
         assert!(self.fits(width, height), "a frame larger than its slot");
         // SAFETY: the back slot is the worker's alone until it's swapped in.
         let pixels = unsafe {
@@ -214,6 +233,7 @@ impl Writer {
         let [w, h] = &header.sizes[self.back as usize];
         w.store(width, Ordering::Relaxed);
         h.store(height, Ordering::Relaxed);
+        header.times[self.back as usize].store(time_ms, Ordering::Relaxed);
         self.back = header.middle.swap(self.back | FRESH, Ordering::AcqRel) & !FRESH;
     }
 }
@@ -246,5 +266,9 @@ mod tests {
             frames.take(|_, _, pixels| pixels.to_vec()),
             Some(vec![9; 4])
         );
+
+        // A video's frames carry their time.
+        writer.write_timed(1, 1, 1234, |pixels| pixels.fill(0));
+        assert_eq!(frames.take_timed(|_, _, _| ()), Some(((), 1234)));
     }
 }

@@ -114,7 +114,200 @@ export struct ImageCell {
     frames: [image], delays: [int],
     /// On its way: a skeleton shows in its place, at the size it will take.
     loading: bool,
+    /// A video, whose poster the picture is: it plays in place.
+    video: bool,
 }
+
+// The video playing. The cell showing it binds to this, so its pictures
+// come without the timeline's rows changing.
+export global VideoPlayer {
+    in property <string> item;
+    in property <int> index: -1;
+    in property <image> frame;
+    in property <bool> has-frame;
+    in property <bool> loading;
+    in property <bool> playing;
+    in property <bool> ended;
+    in property <bool> sound;
+    in property <bool> muted;
+    /// How loud it plays unmuted, from 0 to 1 as the volume slider stands.
+    in property <float> volume: 1;
+    /// How far in, from 0 to 1, and as text, such as "0:12 / 1:30".
+    in property <float> progress;
+    in property <string> time;
+    in property <string> error;
+    /// Its attachment's name, its pictures' full size in pixels, and how
+    /// long it plays, in milliseconds; 0 until known.
+    in property <string> name;
+    in property <int> video-width;
+    in property <int> video-height;
+    in property <int> duration;
+    /// It shows large over everything, in VideoViewer.
+    in property <bool> expanded;
+    /// Plays an item's attachment in a cell of this size.
+    callback play(string, int, length, length);
+    /// Shows it large, or back in its cell.
+    callback expand(bool);
+    /// The viewer shows it at this size.
+    callback resize(length, length);
+    /// Plays or pauses the video playing.
+    callback toggle();
+    callback seek(float);
+    callback mute(bool);
+    /// Sets how loud it plays, unmuting it; 0 mutes it.
+    callback change-volume(float);
+}
+
+// A playing video's controls: play or pause, its time, a bar to move
+// through it, mute, and full screen.
+component VideoControls inherits HorizontalLayout {
+    padding-left: 4px; padding-right: 6px; spacing: 6px;
+    Middle {
+        IconButton {
+            size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
+            icon: VideoPlayer.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+            label: VideoPlayer.playing ? "Pause" : "Play";
+            clicked => { VideoPlayer.toggle(); }
+        }
+    }
+    Text { text: VideoPlayer.time; color: #ffffff; font-size: 12px; vertical-alignment: center; }
+    Rectangle {
+        horizontal-stretch: 1;
+        accessible-role: slider;
+        accessible-label: "Position";
+        accessible-value: round(VideoPlayer.progress * 100) + "%";
+        Rectangle {
+            height: 4px; border-radius: 2px; background: #ffffff4d;
+            Rectangle { x: 0; width: parent.width * clamp(VideoPlayer.progress, 0, 1); border-radius: 2px; background: #ffffff; }
+        }
+        TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); }
+            moved => { if self.pressed { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); } }
+        }
+    }
+    // Mute, with a slider over it for how loud, while the pointer is on
+    // either; the wheel turns it too.
+    if VideoPlayer.sound: Rectangle {
+        width: 28px;
+        sound := TouchArea {
+            property <bool> open: self.has-hover || level.pressed;
+            property <length> rise: 112px;
+            property <float> shown: level.pressed ? level.dragged : VideoPlayer.muted ? 0 : VideoPlayer.volume;
+            y: (parent.height - 28px) / 2 - (self.open ? self.rise : 0px);
+            height: 28px + (self.open ? self.rise : 0px);
+            scroll-event(event) => {
+                if event.delta-y == 0 { return reject; }
+                VideoPlayer.change-volume(clamp(self.shown + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1));
+                return accept;
+            }
+            Rectangle {
+                y: 0; width: 28px; height: sound.rise - 4px;
+                visible: sound.open;
+                border-radius: 6px; background: #000000cc;
+                accessible-role: slider;
+                accessible-label: "Volume";
+                accessible-value: round(sound.shown * 100) + "%";
+                accessible-value-minimum: 0;
+                accessible-value-maximum: 100;
+                accessible-action-set-value(value) => { VideoPlayer.change-volume(clamp(value.to-float() / 100, 0, 1)); }
+                track := Rectangle {
+                    x: (parent.width - self.width) / 2; y: 14px; width: 4px; height: parent.height - 28px;
+                    border-radius: 2px; background: #ffffff4d;
+                    Rectangle {
+                        y: parent.height * (1 - sound.shown); height: parent.height * sound.shown;
+                        border-radius: 2px; background: #ffffff;
+                    }
+                    Rectangle {
+                        width: 12px; height: 12px; border-radius: 6px; background: #ffffff;
+                        x: (parent.width - self.width) / 2; y: parent.height * (1 - sound.shown) - self.height / 2;
+                    }
+                }
+                level := TouchArea {
+                    enabled: sound.open;
+                    mouse-cursor: MouseCursor.pointer;
+                    property <float> dragged;
+                    property <float> at: clamp(1 - (self.mouse-y - track.y) / track.height, 0, 1);
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                            self.dragged = self.at;
+                            VideoPlayer.change-volume(self.at);
+                        }
+                    }
+                    moved => {
+                        if self.pressed {
+                            self.dragged = self.at;
+                            VideoPlayer.change-volume(self.at);
+                        }
+                    }
+                }
+            }
+            IconButton {
+                y: parent.height - 28px; height: 28px;
+                size: 28px; glyph: 16px; tint: #ffffff; tip-side: 2;
+                icon: VideoPlayer.muted ? @image-url("icons/volume-x.svg") : @image-url("icons/volume-2.svg");
+                label: VideoPlayer.muted ? "Unmute" : "Mute";
+                clicked => { VideoPlayer.mute(!VideoPlayer.muted); }
+            }
+        }
+    }
+    Middle {
+        IconButton {
+            size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
+            icon: VideoPlayer.expanded ? @image-url("icons/minimize.svg") : @image-url("icons/maximize.svg");
+            label: VideoPlayer.expanded ? "Exit full screen" : "Full screen";
+            clicked => { VideoPlayer.expand(!VideoPlayer.expanded); }
+        }
+    }
+}
+
+// A video in a gallery: its poster with a play button, then the video with
+// its controls, which show while the pointer is over it or it's paused.
+component VideoCell inherits Rectangle {
+    in property <string> item;
+    in property <ImageCell> cell;
+    property <bool> active: VideoPlayer.item == root.item && VideoPlayer.index == root.cell.index;
+    property <bool> failed: root.active && VideoPlayer.error != "";
+    accessible-role: button;
+    accessible-label: (root.active && VideoPlayer.playing ? "Pause " : "Play ") + root.cell.name;
+    accessible-action-default => { pointer.clicked(); }
+    if root.active && VideoPlayer.has-frame: Rectangle {
+        background: #000000;
+        Image { width: parent.width; height: parent.height; source: VideoPlayer.frame; image-fit: contain; }
+    }
+    // The bar is inside the cell's area, so the pointer on its controls is
+    // still over the cell and the bar stays.
+    pointer := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            if root.active && !root.failed { VideoPlayer.toggle(); } else { VideoPlayer.play(root.item, root.cell.index, root.width, root.height); }
+        }
+        if root.active && !root.failed && !VideoPlayer.loading && (pointer.has-hover || !VideoPlayer.playing): Rectangle {
+            y: parent.height - self.height; height: 36px;
+            background: @linear-gradient(0deg, #000000cc 0%, #00000000 100%);
+            // Between the controls, a click leaves the video be.
+            TouchArea { mouse-cursor: MouseCursor.default; }
+            VideoControls { }
+        }
+    }
+    if !root.active || root.failed || (VideoPlayer.ended && !pointer.has-hover): Rectangle {
+        width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
+        Path {
+            width: 18px; height: 20px; x: 17px; y: 14px;
+            commands: "M 0 0 L 18 10 L 0 20 Z"; fill: #ffffff;
+        }
+    }
+    if root.active && VideoPlayer.loading && !root.failed: Rectangle {
+        width: loading.preferred-width + 20px; height: 28px; border-radius: 14px; background: #000000b3;
+        loading := Text { text: "Loading..."; color: #ffffff; font-size: 13px; }
+    }
+    if root.failed: Rectangle {
+        y: parent.height - self.height - 8px; width: min(parent.width - 16px, problem.preferred-width + 20px); height: 28px;
+        border-radius: 6px; background: #000000cc;
+        problem := Text { text: VideoPlayer.error; color: #ffffff; font-size: 13px; overflow: elide; }
+    }
+}
+
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
 /// An embed's field, and a row of them: inline fields share a row.
@@ -135,6 +328,7 @@ export struct EmbedCard {
 }
 export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
+    picture-url: string, reply-picture-url: string,
     /// The author's Discord role colour, when they have one.
     color: color, has-color: bool,
     /// The author is a Discord bot or webhook: tagged after their name.
@@ -337,6 +531,9 @@ export component MessageGallery inherits HorizontalLayout {
                     if cell.spoiler { root.reveal-attachment(root.message.item, cell.index); } else { root.view-image(root.message.item, cell.index); }
                 }
             }
+            if cell.video && !cell.spoiler && !cell.loading && !root.preview: VideoCell {
+                width: parent.width; height: parent.height; item: root.message.item; cell: cell;
+            }
             if root.active-item == root.message.item && !root.preview && root.message.delivery == "" && !cell.spoiler: Rectangle {
                 x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
                 IconButton {
@@ -453,7 +650,7 @@ export component EmbedView inherits HorizontalLayout {
                             if cell.loading: Skeleton { width: parent.width; height: parent.height; }
                             if !cell.loading: Picture { still: cell.image; frames: cell.frames; delays: cell.delays; width: parent.width; height: parent.height; image-fit: cover; accessible-role: image; accessible-label: cell.spoiler ? "Spoiler" : cell.name; }
                             if cell.spoiler: SpoilerCover {}
-                            if root.embed.video && !cell.spoiler: Rectangle {
+                            if root.embed.video && !cell.spoiler && !cell.video: Rectangle {
                                 width: 48px; height: 48px; border-radius: 24px; background: #000000b3;
                                 Path {
                                     width: 18px; height: 20px; x: 17px; y: 14px;
@@ -466,6 +663,10 @@ export component EmbedView inherits HorizontalLayout {
                                     if cell.spoiler { root.reveal-attachment(root.item, cell.index); }
                                     else if root.embed.video { root.open-link(root.embed.url); } else { root.view-image(root.item, cell.index); }
                                 }
+                            }
+                            // A video file the media proxy has plays here; others open in the browser.
+                            if cell.video && !cell.spoiler && !cell.loading: VideoCell {
+                                width: parent.width; height: parent.height; item: root.item; cell: cell;
                             }
                         }
                     }
@@ -681,6 +882,79 @@ export component ImageViewer inherits Rectangle {
             x: (parent.width - self.width) / 2; y: parent.height - self.height - 20px;
             width: viewer-note-text.preferred-width + 24px; height: 32px; border-radius: 6px; background: #000000b3;
             viewer-note-text := Text { text: root.viewer-note; color: #ffffffd9; font-size: 13px; }
+        }
+    }
+}
+
+// The video playing, shown large over everything as ImageViewer shows an
+// image, enlarged to fit, with its controls under it. Escape, the close
+// button or a click outside the video brings it back to its cell; a click
+// on it or Space plays or pauses it, and the arrow keys move five seconds.
+export component VideoViewer inherits Rectangle {
+    in property <bool> preview;
+    callback save-attachment(string, int);
+    background: #000000e6;
+    accessible-role: groupbox;
+    accessible-label: "Video viewer";
+    TouchArea { clicked => { VideoPlayer.expand(false); } }
+    keys := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape { VideoPlayer.expand(false); return accept; }
+            if event.text == " " { VideoPlayer.toggle(); return accept; }
+            if VideoPlayer.duration > 0 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                VideoPlayer.seek(clamp(VideoPlayer.progress + (event.text == Key.LeftArrow ? -5000 : 5000) / VideoPlayer.duration, 0, 1));
+                return accept;
+            }
+            return reject;
+        }
+        // Between the title bar and the controls, 16:9 until the file says.
+        property <length> room-width: root.width - 80px;
+        property <length> room-height: root.height - 128px;
+        property <length> natural-width: VideoPlayer.video-width > 0 && VideoPlayer.video-height > 0 ? VideoPlayer.video-width * 1px : 1600px;
+        property <length> natural-height: VideoPlayer.video-width > 0 && VideoPlayer.video-height > 0 ? VideoPlayer.video-height * 1px : 900px;
+        property <float> scale: min(self.room-width / self.natural-width, self.room-height / self.natural-height);
+        screen := Rectangle {
+            width: keys.natural-width * keys.scale; height: keys.natural-height * keys.scale;
+            x: (parent.width - self.width) / 2; y: 64px + (keys.room-height - self.height) / 2;
+            background: #000000;
+            init => { VideoPlayer.resize(self.width, self.height); }
+            changed width => { VideoPlayer.resize(self.width, self.height); }
+            changed height => { VideoPlayer.resize(self.width, self.height); }
+            accessible-role: button;
+            accessible-label: (VideoPlayer.playing ? "Pause " : "Play ") + VideoPlayer.name;
+            accessible-action-default => { VideoPlayer.toggle(); }
+            if VideoPlayer.has-frame: Image { width: parent.width; height: parent.height; source: VideoPlayer.frame; image-fit: contain; }
+            TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { VideoPlayer.toggle(); } }
+            if VideoPlayer.loading && VideoPlayer.error == "": Rectangle {
+                width: loading.preferred-width + 20px; height: 28px; border-radius: 14px; background: #000000b3;
+                loading := Text { text: "Loading..."; color: #ffffff; font-size: 13px; }
+            }
+            if VideoPlayer.error != "": Rectangle {
+                width: min(parent.width - 16px, problem.preferred-width + 20px); height: 28px;
+                border-radius: 6px; background: #000000cc;
+                problem := Text { text: VideoPlayer.error; color: #ffffff; font-size: 13px; overflow: elide; }
+            }
+        }
+        Rectangle {
+            width: max(screen.width, 360px); height: 40px;
+            x: (parent.width - self.width) / 2; y: screen.y + screen.height + 8px;
+            TouchArea { }
+            VideoControls { }
+        }
+        HorizontalLayout {
+            y: 0px; height: 64px; padding-left: 20px; padding-right: 12px; spacing: 8px;
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 1;
+                Text { text: VideoPlayer.name; color: #ffffff; font-size: 15px; font-weight: 700; overflow: elide; }
+            }
+            if !root.preview: Middle {
+                IconButton {
+                    icon: @image-url("icons/download.svg"); label: "Save " + VideoPlayer.name; tint: #ffffff;
+                    clicked => { root.save-attachment(VideoPlayer.item, VideoPlayer.index); }
+                }
+            }
+            Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Exit full screen"; tint: #ffffff; clicked => { VideoPlayer.expand(false); } } }
         }
     }
 }

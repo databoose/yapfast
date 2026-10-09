@@ -1,6 +1,43 @@
 //! The open channel and those open lately, and who is typing in them.
 
 use super::*;
+use std::{collections::VecDeque, sync::Mutex};
+
+/// Decoded previews shared by all recent channels. Active rows hold their
+/// own handles; closing a channel leaves only this bounded cache owning pixels.
+#[derive(Default)]
+pub(super) struct PreviewCache {
+    pictures: VecDeque<(String, Arc<Picture>)>,
+    bytes: usize,
+}
+
+pub(super) const PREVIEW_CACHE_BYTES: usize = 8 * 1024 * 1024;
+pub(super) type SharedPreviews = Arc<Mutex<PreviewCache>>;
+
+impl PreviewCache {
+    pub(super) fn get(&mut self, url: &str) -> Option<Arc<Picture>> {
+        let index = self.pictures.iter().position(|(key, _)| key == url)?;
+        let kept = self.pictures.remove(index).unwrap();
+        let picture = kept.1.clone();
+        self.pictures.push_back(kept);
+        Some(picture)
+    }
+
+    pub(super) fn insert(&mut self, url: String, picture: Arc<Picture>) {
+        if let Some(index) = self.pictures.iter().position(|(key, _)| key == &url) {
+            self.bytes -= self.pictures.remove(index).unwrap().1.rgba.len();
+        }
+        let bytes = picture.rgba.len();
+        if bytes > PREVIEW_CACHE_BYTES {
+            return;
+        }
+        while self.bytes + bytes > PREVIEW_CACHE_BYTES {
+            self.bytes -= self.pictures.pop_front().unwrap().1.rgba.len();
+        }
+        self.bytes += bytes;
+        self.pictures.push_back((url, picture));
+    }
+}
 
 /// The open channel and those open lately, kept so going back to one shows
 /// it at once. Closed channels follow live events too, and the latest page
@@ -10,6 +47,7 @@ pub struct Channels {
     pub(super) open: Option<OpenChannel>,
     /// Newest last.
     pub(super) recent: Vec<OpenChannel>,
+    pub(super) previews: SharedPreviews,
     /// Who is typing in each channel, by user id, with their name and until when.
     pub(super) typing: HashMap<String, HashMap<String, (String, Instant)>>,
     /// Where this account last told Discord it's typing, and when.
@@ -84,5 +122,49 @@ impl Channels {
 pub(super) fn save(saved: Option<(String, Vec<Message>)>) {
     if let Some((channel, messages)) = saved {
         tokio::task::spawn_blocking(move || talk_discord::cache::save_messages(&channel, messages));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picture(bytes: usize) -> Arc<Picture> {
+        Arc::new(Picture {
+            rgba: vec![0; bytes],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn previews_evict_by_bytes_and_recent_use_without_invalidating_visible_handles() {
+        let mut cache = PreviewCache::default();
+        let first = picture(PREVIEW_CACHE_BYTES / 2);
+        let weak = Arc::downgrade(&first);
+        cache.insert("first".into(), first.clone());
+        cache.insert("second".into(), picture(PREVIEW_CACHE_BYTES / 2));
+        assert!(Arc::ptr_eq(&first, &cache.get("first").unwrap()));
+        cache.insert("third".into(), picture(PREVIEW_CACHE_BYTES / 2));
+        assert!(
+            cache.get("second").is_none(),
+            "least recently used leaves first"
+        );
+        cache.insert("fourth".into(), picture(PREVIEW_CACHE_BYTES / 2));
+        assert!(cache.get("first").is_none());
+        assert!(
+            weak.upgrade().is_some(),
+            "a visible row still owns its handle"
+        );
+        drop(first);
+        assert!(
+            weak.upgrade().is_none(),
+            "eviction releases the cache's ownership"
+        );
+        assert_eq!(cache.bytes, PREVIEW_CACHE_BYTES);
+        cache.insert("third".into(), picture(64));
+        assert_eq!(cache.bytes, PREVIEW_CACHE_BYTES / 2 + 64);
+        cache.insert("oversized".into(), picture(PREVIEW_CACHE_BYTES + 1));
+        assert!(cache.get("oversized").is_none());
+        assert_eq!(cache.bytes, PREVIEW_CACHE_BYTES / 2 + 64);
     }
 }

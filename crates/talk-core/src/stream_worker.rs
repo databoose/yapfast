@@ -97,6 +97,19 @@ pub enum Job {
         #[serde(default = "as_it_comes")]
         volume: f32,
     },
+    /// Plays the video file at `file`, which may still be downloading,
+    /// writing pictures that fit `width` by `height` to the frames file at
+    /// `frames`; see [`crate::video_player`].
+    Play {
+        file: PathBuf,
+        /// Its size, when known before it's downloaded.
+        size: Option<u64>,
+        frames: PathBuf,
+        width: u32,
+        height: u32,
+        speakers: Option<String>,
+        volume: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,8 +129,23 @@ pub enum Control {
     Send(StreamServer),
     /// Play a watched stream's sound, or not, as being deafened changes.
     Hear(bool),
-    /// Play a watched stream's sound this loud.
+    /// Play a watched stream's or a video's sound this loud.
     Volume(f32),
+    /// Play the video, from the start once it has ended.
+    Play,
+    Pause,
+    /// Move to this many milliseconds into the video.
+    Seek(u64),
+    /// Draw the video's pictures to fit this.
+    Size {
+        width: u32,
+        height: u32,
+    },
+    /// The video's file finished downloading, with this size; none when the
+    /// download failed.
+    Downloaded {
+        size: Option<u64>,
+    },
 }
 
 fn as_it_comes() -> f32 {
@@ -138,6 +166,16 @@ pub enum Report {
     /// data URI. The first comes once a picture isn't black, then one every
     /// 5 minutes, as Discord's client sends them.
     Preview { thumbnail: String },
+    /// The video file opened: how long it plays, when it says, its
+    /// pictures' size, and whether its sound plays.
+    Opened {
+        duration_ms: Option<u64>,
+        width: u32,
+        height: u32,
+        sound: bool,
+    },
+    /// The video played to its end, and waits there.
+    Finished,
     /// The job ended: without an error when it was told to stop.
     Ended { error: Option<String> },
 }
@@ -232,6 +270,28 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 controls: received,
             };
             watch(server, writer, (width, height), sound, &stop, report)
+        }
+        Job::Play {
+            file,
+            size,
+            frames,
+            width,
+            height,
+            speakers,
+            volume,
+        } => {
+            let writer = Writer::open(&frames)?;
+            report(Report::Ready);
+            let job = crate::video_player::Playing {
+                path: file,
+                size,
+                width,
+                height,
+                sound: true,
+                speakers,
+                volume,
+            };
+            crate::video_player::play(job, writer, received, &stop, report)
         }
     });
     report(Report::Ended {
@@ -462,7 +522,7 @@ fn watch(
             match control {
                 Control::Hear(hearing) => sound.hearing.store(hearing, Ordering::Relaxed),
                 Control::Volume(volume) => sound.volume.set(volume),
-                Control::Send(_) => {}
+                _ => {}
             }
         }
         if let Link::Ended(reason) = receiver.link() {
@@ -827,6 +887,35 @@ impl Worker {
         Ok((worker, frames, reports))
     }
 
+    /// Starts playing the video file at `file`, which may still be
+    /// downloading, with pictures that fit `width` by `height` for the UI in
+    /// a new [`Frames`].
+    pub fn play(
+        file: PathBuf,
+        size: Option<u64>,
+        (width, height): (u32, u32),
+        speakers: Option<String>,
+        volume: f32,
+    ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
+        let frames = Frames::create(WATCH_WIDTH, WATCH_HEIGHT)?;
+        let job = Job::Play {
+            file,
+            size,
+            frames: frames.path().context("the video frames file has no name")?,
+            width: width.min(WATCH_WIDTH),
+            height: height.min(WATCH_HEIGHT),
+            speakers,
+            volume,
+        };
+        let (worker, reports) = Self::start(&job)?;
+        Ok((worker, frames, reports))
+    }
+
+    /// Tells a playing video worker what to do.
+    pub fn tell(&mut self, control: &Control) -> Result<()> {
+        self.control(control)
+    }
+
     /// Tells a watching worker whether to play the stream's sound.
     pub fn hear(&mut self, hearing: bool) -> Result<()> {
         self.control(&Control::Hear(hearing))
@@ -872,6 +961,10 @@ impl Worker {
             writeln!(stdin, "{line}").context("could not reach the stream worker")?;
         }
         let (reports, receiver) = mpsc::unbounded_channel();
+        let unexpected = match job {
+            Job::Play { .. } => "The video stopped unexpectedly.",
+            _ => "Screen sharing stopped unexpectedly.",
+        };
         std::thread::Builder::new()
             .name("talk-stream-reports".into())
             .spawn(move || {
@@ -892,7 +985,7 @@ impl Worker {
                 }
                 if !ended {
                     let _ = reports.send(Report::Ended {
-                        error: Some("Screen sharing stopped unexpectedly.".into()),
+                        error: Some(unexpected.into()),
                     });
                 }
             })

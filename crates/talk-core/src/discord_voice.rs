@@ -504,6 +504,8 @@ pub(crate) async fn call(
                                 going.show_preview(discord, thumbnail);
                             }
                         }
+                        // Only a video's worker reports these.
+                        Some(Report::Opened { .. } | Report::Finished) => {}
                         Some(Report::Ended { error }) => {
                             if let Some(stopped) = share.take() {
                                 stopped.stop(discord, state);
@@ -585,7 +587,12 @@ pub(crate) async fn call(
                             }
                         }
                         WatchEvent::Report(Some(Report::Ended { error })) => stop = Some(error),
-                        WatchEvent::Report(Some(Report::Sharing { .. } | Report::Preview { .. })) => {}
+                        WatchEvent::Report(Some(
+                            Report::Sharing { .. }
+                            | Report::Preview { .. }
+                            | Report::Opened { .. }
+                            | Report::Finished,
+                        )) => {}
                         WatchEvent::Report(None) => stop = Some(None),
                     }
                     if let Some(error) = stop

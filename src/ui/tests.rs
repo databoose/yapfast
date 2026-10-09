@@ -399,6 +399,7 @@ fn pictures_on_their_way_hold_their_place_as_skeletons() {
         preview_failed,
         placement: Placement::Message,
         spoiler: false,
+        video: false,
     };
     let row = message_row_plain(&ChatMessage {
         attachments: vec![attachment("wide.png", false)],
@@ -439,6 +440,7 @@ fn a_selection_copies_the_pictures_it_runs_through() {
                 preview_failed: false,
                 placement: Placement::Message,
                 spoiler: false,
+                video: false,
             }],
             ..Default::default()
         },
@@ -1536,5 +1538,127 @@ fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
     assert!(
         refresh::unread_label(&[older]).starts_with("1 new message since 14:05 on "),
         "with the date when it wasn't today"
+    );
+}
+
+#[test]
+fn virtualized_lists_request_only_nearby_avatars() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_members_available(true);
+    let requested = Rc::new(RefCell::new(HashSet::new()));
+    let requests = requested.clone();
+    window
+        .global::<PictureStore>()
+        .on_picture(|_, _| slint::Image::default());
+    window.global::<PictureStore>().on_request(move |url| {
+        requests.borrow_mut().insert(url.to_string());
+    });
+    window.set_servers(ModelRc::new(VecModel::from(
+        (0..500)
+            .map(|index| ServerRow {
+                id: index.to_string().into(),
+                name: format!("Server {index}").into(),
+                picture_url: format!("server/{index}").into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    window.set_roster(ModelRc::new(VecModel::from(
+        (0..500)
+            .map(|index| MemberRow {
+                id: index.to_string().into(),
+                name: format!("Member {index}").into(),
+                picture_url: format!("member/{index}").into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let settle = || {
+        for _ in 0..10 {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(1100., 740.),
+                });
+        }
+    };
+    settle();
+    let first = requested.borrow().clone();
+    let servers = first
+        .iter()
+        .filter(|url| url.starts_with("server/"))
+        .count();
+    let members = first
+        .iter()
+        .filter(|url| url.starts_with("member/"))
+        .count();
+    assert!(
+        (1..30).contains(&servers),
+        "requested {servers} of 500 server icons"
+    );
+    assert!(
+        (1..35).contains(&members),
+        "requested {members} of 500 member avatars"
+    );
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(1000., 380.),
+            delta_x: 0.,
+            delta_y: -600.,
+        });
+    settle();
+    assert!(
+        requested
+            .borrow()
+            .iter()
+            .any(|url| !first.contains(url) && url.starts_with("member/"))
+    );
+    assert!(
+        requested.borrow().len() < 100,
+        "scrolling does not instantiate the whole list"
+    );
+    window.hide().unwrap();
+}
+
+#[test]
+fn replacing_a_temporary_item_reports_the_view_without_changing_row_count() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    adapter.borrow_mut().action(&window, Action::Preview);
+    let reported = Rc::new(Cell::new(0));
+    let reports = reported.clone();
+    window.on_media_viewport(move || reports.set(reports.get() + 1));
+    let count = window.get_messages().row_count();
+    let mut state = adapter.borrow_mut();
+    let room = state.app.state.selected.clone().unwrap();
+    let mut messages = (*state.app.state.messages).clone();
+    messages[0].item = "e:$confirmed".into();
+    state.apply(Event::Timeline { room, messages });
+    state.refresh(&window);
+    assert_eq!(window.get_messages().row_count(), count);
+    assert_eq!(
+        window.get_messages().row_data(0).unwrap().item,
+        "e:$confirmed"
+    );
+    assert!(
+        reported.get() > 0,
+        "the backend receives the new item ids without scrolling"
     );
 }

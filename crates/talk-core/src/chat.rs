@@ -339,6 +339,8 @@ pub struct MentionGroup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {
     Online,
+    /// Online, and only on a phone.
+    Mobile,
     Idle,
     DoNotDisturb,
     Offline,
@@ -442,20 +444,130 @@ pub struct Picture {
     pub height: u32,
     /// The picture, or an animation's first frame.
     pub rgba: Vec<u8>,
-    /// An animation's frames, the first being `rgba` again; empty for a still.
-    pub frames: Vec<Frame>,
+    /// What moves; none for a still.
+    pub animation: Option<Animation>,
 }
 
-/// A frame of an animation, and how long it shows.
+/// An animation, kept as its file and decoded a frame at a time as it shows:
+/// decoded whole, a few seconds of a GIF take tens of megabytes.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Frame {
-    pub rgba: Vec<u8>,
-    pub delay_ms: u32,
+pub struct Animation {
+    /// How long each frame shows, in milliseconds.
+    pub delays: Vec<u32>,
+    file: AnimationFile,
+    format: AnimationFormat,
 }
 
-/// The most memory an animation's frames take; longer ones keep fewer frames,
-/// each showing longer.
-const ANIMATION_BYTES: usize = 24 * 1024 * 1024;
+/// Where an animation's file is: in memory, or on disk, where Talk keeps
+/// the pictures it downloaded, and where it takes no memory.
+#[derive(Debug, PartialEq, Eq)]
+enum AnimationFile {
+    Memory(Arc<[u8]>),
+    Disk(PathBuf),
+}
+
+impl AnimationFile {
+    fn open(&self) -> Option<AnimationReader> {
+        match self {
+            Self::Memory(data) => Some(AnimationReader::Memory(std::io::Cursor::new(data.clone()))),
+            Self::Disk(path) => std::fs::File::open(path)
+                .inspect_err(|error| tracing::debug!(%error, "could not read an animation"))
+                .ok()
+                .map(|file| AnimationReader::Disk(std::io::BufReader::new(file))),
+        }
+    }
+}
+
+/// An animation's file, read from the start.
+pub(crate) enum AnimationReader {
+    Memory(std::io::Cursor<Arc<[u8]>>),
+    Disk(std::io::BufReader<std::fs::File>),
+}
+
+impl std::io::Read for AnimationReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Memory(reader) => reader.read(buffer),
+            Self::Disk(reader) => reader.read(buffer),
+        }
+    }
+}
+
+impl std::io::BufRead for AnimationReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        match self {
+            Self::Memory(reader) => reader.fill_buf(),
+            Self::Disk(reader) => reader.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Self::Memory(reader) => reader.consume(amount),
+            Self::Disk(reader) => reader.consume(amount),
+        }
+    }
+}
+
+impl std::io::Seek for AnimationReader {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Memory(reader) => reader.seek(to),
+            Self::Disk(reader) => reader.seek(to),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnimationFormat {
+    Gif,
+    Png,
+    WebP,
+    #[cfg(feature = "discord")]
+    Video,
+}
+
+impl Picture {
+    /// An animation's frames from the first, as RGBA at the picture's size,
+    /// each decoded as it's taken; none for a still.
+    pub fn frames(&self) -> Box<dyn Iterator<Item = Vec<u8>>> {
+        let Some(animation) = &self.animation else {
+            return Box::new(std::iter::empty());
+        };
+        let (width, height) = (self.width, self.height);
+        let Some(file) = animation.file.open() else {
+            return Box::new(std::iter::empty());
+        };
+        let frames: Box<dyn Iterator<Item = Vec<u8>>> = match animation.format {
+            #[cfg(feature = "discord")]
+            AnimationFormat::Video => crate::video::frames(file, width, height),
+            format => match image_frames(file, format) {
+                Some((_, frames)) => Box::new(
+                    frames
+                        .map_while(Result::ok)
+                        .map(move |frame| shrink(frame.into_buffer(), width, height)),
+                ),
+                None => Box::new(std::iter::empty()),
+            },
+        };
+        Box::new(frames.take(animation.delays.len()))
+    }
+
+    /// Reads an animation's frames from `file` from now on, rather than
+    /// keeping its bytes in memory: `file` is the one it was decoded from,
+    /// kept on disk. A file of another size isn't, and is left alone.
+    pub fn read_from(&mut self, file: PathBuf) {
+        let Some(animation) = &mut self.animation else {
+            return;
+        };
+        let AnimationFile::Memory(data) = &animation.file else {
+            return;
+        };
+        if std::fs::metadata(&file).is_ok_and(|kept| kept.len() == data.len() as u64) {
+            animation.file = AnimationFile::Disk(file);
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attachment {
@@ -470,6 +582,56 @@ pub struct Attachment {
     pub placement: Placement,
     /// Marked as a spoiler: its picture is covered until clicked.
     pub spoiler: bool,
+    /// A video that plays in place of its picture, which is its poster:
+    /// [`Command::PlayVideo`].
+    pub video: bool,
+}
+
+/// What [`Command::Video`] tells the video playing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VideoCommand {
+    /// Play, from the start once it ended.
+    Play,
+    Pause,
+    /// Move to this many milliseconds in.
+    Seek(u64),
+    /// Draw it to fit this many pixels, as when the window grows.
+    Size {
+        width: u32,
+        height: u32,
+    },
+    Mute(bool),
+    /// Play it this loud, from 0 to 1 as the slider stands, unmuted; 0
+    /// mutes it, keeping the level it had.
+    Volume(f32),
+    Stop,
+}
+
+/// The video playing in the conversation view.
+#[derive(Clone, Debug)]
+pub struct Video {
+    pub room: String,
+    pub item: String,
+    /// Its attachment's index in the item's attachments.
+    pub index: usize,
+    /// Its pictures, while it plays.
+    pub frames: Option<Arc<crate::frames::Frames>>,
+    /// How long it plays, once the file says.
+    pub duration_ms: Option<u64>,
+    /// Its pictures' full width and height, once its file opens.
+    pub size: Option<(u32, u32)>,
+    /// Until its file opens.
+    pub loading: bool,
+    pub playing: bool,
+    /// It played to its end.
+    pub ended: bool,
+    /// It has sound that plays.
+    pub sound: bool,
+    pub muted: bool,
+    /// How loud it plays unmuted, from 0 to 1 as the slider stands.
+    pub volume: f32,
+    /// Why it stopped, for the person.
+    pub error: Option<String>,
 }
 
 /// Where an attachment's picture shows.
@@ -648,6 +810,19 @@ pub enum Command {
         item: String,
         index: usize,
     },
+    /// Play an attachment's video where its poster shows, at most `width`
+    /// by `height` pixels, on `speakers`, stopping any other; it goes as
+    /// [`Event::Video`].
+    PlayVideo {
+        room: String,
+        item: String,
+        index: usize,
+        width: u32,
+        height: u32,
+        speakers: Option<String>,
+    },
+    /// Control the video playing.
+    Video(VideoCommand),
     /// Look for people to start a DM with; each network answers with
     /// [`Event::People`].
     FindPeople {
@@ -674,6 +849,12 @@ pub enum Command {
     /// [`Event::HistoryLoaded`] follows. A backend loads one page at a time
     /// per room, and answers at once when the first message is loaded.
     Earlier(String),
+    /// The timeline items in or near the viewport. Only their image previews
+    /// need decoding; metadata for other loaded items stays available.
+    VisibleMessages {
+        room: String,
+        items: Vec<String>,
+    },
     Recover(String),
     RefreshTrust,
     RetrySync,
@@ -740,7 +921,8 @@ impl Command {
         };
         match self {
             Command::Voice(_) => Route::Voice,
-            Command::Discord(_) => Route::Discord,
+            // Only Discord's videos play for now.
+            Command::Discord(_) | Command::Video(_) => Route::Discord,
             Command::Open(_) | Command::CloseRoom | Command::FindPeople { .. } => Route::Every,
             Command::Send { room, .. }
             | Command::Edit { room, .. }
@@ -750,8 +932,10 @@ impl Command {
             | Command::Cancel { room, .. }
             | Command::SaveAttachment { room, .. }
             | Command::ViewImage { room, .. }
+            | Command::PlayVideo { room, .. }
             | Command::Typing { room, .. }
             | Command::SaveDraft { room, .. }
+            | Command::VisibleMessages { room, .. }
             | Command::Earlier(room) => network(room),
             // Discord turns down forwarding from or to its channels.
             Command::Forward { room, target, .. } => match network(room) {
@@ -778,6 +962,8 @@ pub enum Event {
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(Arc<talk_discord::service::Snapshot>),
+    /// The video [`Command::PlayVideo`] plays, as it changes; none once it stops.
+    Video(Option<Video>),
     /// An image [`Command::ViewImage`] asked for, or why it can't show.
     Image {
         room: String,
@@ -915,6 +1101,10 @@ pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
 /// by `height`. A smaller image keeps its size: enlarging it would blur it
 /// and cost memory, and the viewer sizes images from their own dimensions.
 pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
+    #[cfg(feature = "discord")]
+    if crate::video::is_video(data) {
+        return crate::video::decode_animation(data, width, height);
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -939,90 +1129,115 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
         width: picture.width(),
         height: picture.height(),
         rgba: picture.into_raw(),
-        frames: Vec::new(),
+        animation: None,
     })
 }
 
-/// An animated GIF, PNG or WebP's frames, shrunk to fit `width` by `height`;
-/// none for a still picture. Past [`ANIMATION_BYTES`], every other frame is
-/// dropped and the rest show twice as long, as often as it takes.
+/// An animated GIF, PNG or WebP, shrunk to fit `width` by `height`; none for
+/// a still picture, or when a frame fails.
 fn decode_animation(
     data: &[u8],
     format: image::ImageFormat,
     width: u32,
     height: u32,
 ) -> Option<Picture> {
-    use image::{AnimationDecoder, ImageDecoder, ImageFormat, codecs};
-    const MAX_SIDE: u32 = 8192;
-    let cursor = || std::io::Cursor::new(data);
-    let fits = |(w, h): (u32, u32)| w <= MAX_SIDE && h <= MAX_SIDE;
-    let frames = match format {
-        ImageFormat::Gif => {
-            let decoder = codecs::gif::GifDecoder::new(cursor()).ok()?;
-            fits(decoder.dimensions()).then_some(())?;
-            decoder.into_frames()
-        }
-        ImageFormat::Png => {
-            let decoder = codecs::png::PngDecoder::new(cursor()).ok()?;
-            (fits(decoder.dimensions()) && decoder.is_apng().ok()?).then_some(())?;
-            decoder.apng().ok()?.into_frames()
-        }
-        ImageFormat::WebP => {
-            let decoder = codecs::webp::WebPDecoder::new(cursor()).ok()?;
-            (fits(decoder.dimensions()) && decoder.has_animation()).then_some(())?;
-            decoder.into_frames()
-        }
+    use image::ImageFormat;
+    let format = match format {
+        ImageFormat::Gif => AnimationFormat::Gif,
+        ImageFormat::Png => AnimationFormat::Png,
+        ImageFormat::WebP => AnimationFormat::WebP,
         _ => return None,
     };
-    let mut kept: Vec<Frame> = Vec::new();
-    let (mut size, mut step, mut skipped) = ((0, 0), 1, 0);
+    let ((full_width, full_height), frames) = image_frames(std::io::Cursor::new(data), format)?;
+    let (width, height) = fit(full_width, full_height, width, height);
+    let mut first = None;
+    let mut delays = Vec::new();
     for frame in frames {
         let frame = frame.ok()?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         // Browsers show frames meant for under 20 ms for 100 ms.
         let delay = numerator / denominator.max(1);
-        let delay = if delay < 20 { 100 } else { delay };
-        let buffer = frame.into_buffer();
-        if skipped % step != 0 {
-            if let Some(last) = kept.last_mut() {
-                last.delay_ms += delay;
-            }
-            skipped += 1;
-            continue;
-        }
-        skipped += 1;
-        let buffer = if buffer.width() > width || buffer.height() > height {
-            image::imageops::thumbnail(&buffer, width, height)
-        } else {
-            buffer
-        };
-        size = buffer.dimensions();
-        kept.push(Frame {
-            rgba: buffer.into_raw(),
-            delay_ms: delay,
-        });
-        if kept.iter().map(|frame| frame.rgba.len()).sum::<usize>() > ANIMATION_BYTES {
-            // An odd frame out takes the next one's time.
-            skipped = kept.len() % 2;
-            kept = kept
-                .chunks_mut(2)
-                .map(|pair| Frame {
-                    rgba: std::mem::take(&mut pair[0].rgba),
-                    delay_ms: pair.iter().map(|frame| frame.delay_ms).sum(),
-                })
-                .collect();
-            step *= 2;
+        delays.push(if delay < 20 { 100 } else { delay });
+        if first.is_none() {
+            first = Some(shrink(frame.into_buffer(), width, height));
         }
     }
-    if kept.len() < 2 {
-        return None;
-    }
+    (delays.len() > 1).then_some(())?;
     Some(Picture {
-        width: size.0,
-        height: size.1,
-        rgba: kept[0].rgba.clone(),
-        frames: kept,
+        width,
+        height,
+        rgba: first?,
+        animation: Some(Animation {
+            delays,
+            file: AnimationFile::Memory(Arc::from(data)),
+            format,
+        }),
     })
+}
+
+/// An animated GIF, PNG or WebP's size and frames, which decode as they're
+/// taken; none for a still picture.
+fn image_frames<'a>(
+    cursor: impl std::io::BufRead + std::io::Seek + 'a,
+    format: AnimationFormat,
+) -> Option<((u32, u32), image::Frames<'a>)> {
+    use image::{AnimationDecoder, ImageDecoder, codecs};
+    const MAX_SIDE: u32 = 8192;
+    let fits = |(w, h): (u32, u32)| (w <= MAX_SIDE && h <= MAX_SIDE).then_some((w, h));
+    match format {
+        AnimationFormat::Gif => {
+            let decoder = codecs::gif::GifDecoder::new(cursor).ok()?;
+            Some((fits(decoder.dimensions())?, decoder.into_frames()))
+        }
+        AnimationFormat::Png => {
+            let decoder = codecs::png::PngDecoder::new(cursor).ok()?;
+            decoder.is_apng().ok()?.then_some(())?;
+            let size = fits(decoder.dimensions())?;
+            Some((size, decoder.apng().ok()?.into_frames()))
+        }
+        AnimationFormat::WebP => {
+            let decoder = codecs::webp::WebPDecoder::new(cursor).ok()?;
+            decoder.has_animation().then_some(())?;
+            Some((fits(decoder.dimensions())?, decoder.into_frames()))
+        }
+        #[cfg(feature = "discord")]
+        AnimationFormat::Video => None,
+    }
+}
+
+/// A frame as RGBA at `width` by `height`, which it's no smaller than.
+fn shrink(frame: image::RgbaImage, width: u32, height: u32) -> Vec<u8> {
+    if frame.dimensions() == (width, height) {
+        frame.into_raw()
+    } else {
+        image::imageops::thumbnail(&frame, width, height).into_raw()
+    }
+}
+
+/// `width` by `height` shrunk to fit `max_width` by `max_height`, never
+/// enlarged, keeping its shape.
+pub fn fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
+    let scale = f64::min(
+        1.0,
+        f64::min(
+            f64::from(max_width) / f64::from(width),
+            f64::from(max_height) / f64::from(height),
+        ),
+    );
+    let side = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
+    (side(width), side(height))
+}
+
+#[cfg(feature = "discord")]
+impl Animation {
+    /// A video's, whose frames show for `delays`.
+    pub(crate) fn video(file: Arc<[u8]>, delays: Vec<u32>) -> Self {
+        Self {
+            delays,
+            file: AnimationFile::Memory(file),
+            format: AnimationFormat::Video,
+        }
+    }
 }
 
 /// The first line of a Markdown body as plain text, for reply quotes.
@@ -1365,13 +1580,17 @@ mod tests {
 
     /// An animated GIF of `count` frames of one colour each, 50 ms apiece.
     fn gif(side: u32, count: u8) -> Vec<u8> {
+        gif_sized(side, side, count)
+    }
+
+    fn gif_sized(width: u32, height: u32, count: u8) -> Vec<u8> {
         let mut data = Vec::new();
         {
             let mut encoder = image::codecs::gif::GifEncoder::new(&mut data);
             for index in 0..count {
                 let shade = image::Rgba([index.wrapping_mul(20), 0, 0, 255]);
                 let frame = image::Frame::from_parts(
-                    image::RgbaImage::from_pixel(side, side, shade),
+                    image::RgbaImage::from_pixel(width, height, shade),
                     0,
                     0,
                     image::Delay::from_numer_denom_ms(50, 1),
@@ -1403,6 +1622,20 @@ mod tests {
             (send(&matrix), Route::Matrix),
             (send(&discord), Route::Discord),
             (Command::Earlier(discord.clone()), Route::Discord),
+            (
+                Command::VisibleMessages {
+                    room: matrix.clone(),
+                    items: vec![],
+                },
+                Route::Matrix,
+            ),
+            (
+                Command::VisibleMessages {
+                    room: discord.clone(),
+                    items: vec![],
+                },
+                Route::Discord,
+            ),
             (forward(&matrix, &matrix), Route::Matrix),
             (forward(&matrix, &discord), Route::Discord),
             (forward(&discord, &matrix), Route::Discord),
@@ -1421,27 +1654,49 @@ mod tests {
     }
 
     #[test]
-    fn decodes_animations_within_their_memory() {
+    fn decodes_animations_a_frame_at_a_time() {
         let picture = decode_picture(&gif(8, 3), 360, 270).unwrap();
-        assert_eq!(picture.frames.len(), 3);
-        assert_eq!(picture.rgba, picture.frames[0].rgba);
-        assert_eq!(picture.frames[2].rgba[0], 40);
-        assert!(picture.frames.iter().all(|frame| frame.delay_ms == 50));
-        // 1.4 MB frames: 24 MB holds 17, so every other frame of 30 goes.
-        let long = decode_picture(&gif(600, 30), 1000, 1000).unwrap();
-        assert_eq!(long.frames.len(), 15);
-        assert!(long.frames.iter().all(|frame| frame.delay_ms == 100));
-        assert_eq!(
-            long.frames.iter().map(|frame| frame.delay_ms).sum::<u32>(),
-            1500
-        );
+        assert_eq!(picture.animation.as_ref().unwrap().delays, [50; 3]);
+        let frames: Vec<_> = picture.frames().collect();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(picture.rgba, frames[0]);
+        assert_eq!(frames[2][0], 40);
+        // Shrunk to fit, keeping their shape; again from the start.
+        let wide = decode_picture(&gif_sized(600, 300, 30), 360, 270).unwrap();
+        assert_eq!((wide.width, wide.height), (360, 180));
+        assert_eq!(wide.animation.as_ref().unwrap().delays.len(), 30);
+        assert!(wide.frames().all(|frame| frame.len() == 360 * 180 * 4));
+        assert_eq!(wide.frames().count(), 30);
         // A still picture has no frames.
-        assert!(
-            decode_picture(&gif(8, 1), 360, 270)
-                .unwrap()
-                .frames
-                .is_empty()
-        );
+        let still = decode_picture(&gif(8, 1), 360, 270).unwrap();
+        assert!(still.animation.is_none() && still.frames().next().is_none());
+    }
+
+    #[test]
+    fn animations_read_their_frames_from_the_kept_file() {
+        let data = gif(8, 3);
+        let mut picture = decode_picture(&data, 360, 270).unwrap();
+        let frames: Vec<_> = picture.frames().collect();
+        let directory = tempfile::tempdir().unwrap();
+        // Another file isn't the one it came from.
+        let other = directory.path().join("other.gif");
+        std::fs::write(&other, gif(8, 4)).unwrap();
+        picture.read_from(other);
+        let memory = |picture: &Picture| {
+            matches!(
+                picture.animation.as_ref().unwrap().file,
+                AnimationFile::Memory(_)
+            )
+        };
+        assert!(memory(&picture));
+        let kept = directory.path().join("kept.gif");
+        std::fs::write(&kept, &data).unwrap();
+        picture.read_from(kept.clone());
+        assert!(!memory(&picture));
+        assert_eq!(picture.frames().collect::<Vec<_>>(), frames);
+        // Gone, it has no frames, and its first stays.
+        std::fs::remove_file(&kept).unwrap();
+        assert!(picture.frames().next().is_none());
     }
 
     #[test]

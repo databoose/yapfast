@@ -53,7 +53,7 @@ pub(super) async fn run(
         let (error, up) = match connected {
             Ok((gateway, ready)) => {
                 let started = tokio::time::Instant::now();
-                let ended = connected_session(gateway, &ready, &mut requests, &mut shared).await;
+                let ended = connected_session(gateway, ready, &mut requests, &mut shared).await;
                 shared.lists.disconnected();
                 match ended {
                     Ended::Dropped => return,
@@ -126,14 +126,18 @@ enum Ended {
 
 async fn connected_session(
     gateway: Gateway,
-    ready: &Value,
+    ready: Value,
     requests: &mut mpsc::UnboundedReceiver<Request>,
     shared: &mut Shared,
 ) -> Ended {
-    let Some(me) = ready::user_id(ready).map(str::to_owned) else {
+    let Some(me) = ready::user_id(&ready).map(str::to_owned) else {
         return Ended::Failed(anyhow!("Discord's READY had no user"));
     };
-    let mut tracker = Tracker::from_ready(me, ready, shared.names.clone());
+    let mut tracker = Tracker::from_ready(me, &ready, shared.names.clone());
+    // READY can contain tens of megabytes of JSON. Only the parsed account
+    // state is needed while connected; release the payload before waiting.
+    drop(ready);
+    trim_startup_heap();
     tracker.keep_unavailable(&shared.snapshots.borrow().servers);
     shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
     let mut session = Session {
@@ -151,6 +155,19 @@ async fn connected_session(
         return Ended::Failed(error);
     }
     session.run(requests).await
+}
+
+/// glibc otherwise holds freed READY allocations for the entire session.
+/// Trim once after parsing, before the session starts handling requests.
+fn trim_startup_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: malloc_trim only returns unused allocator pages to the OS.
+        unsafe { malloc_trim(0) };
+    }
 }
 
 /// A connected session, and what it waits on.

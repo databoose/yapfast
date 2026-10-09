@@ -28,12 +28,10 @@ use crate::{
 
 pub(crate) const PREFIX: &str = "discord:";
 /// Discord channels kept after closing, so going back to one shows it at
-/// once, and of each, the newest messages and image previews kept: a preview
-/// is about 400 KB decoded. Previews come back from the disk quickly, so few
-/// are kept.
+/// once, and of each, the newest messages kept. Decoded previews use one
+/// eight MiB cache across these channels and come back from disk after eviction.
 pub const KEPT_CHANNELS: usize = 40;
 pub const KEPT_MESSAGES: usize = 200;
-pub const KEPT_PREVIEWS: usize = 4;
 /// The categories message requests are listed under in the DM list.
 pub const REQUESTS: &str = "Message requests";
 pub const SPAM: &str = "Spam";
@@ -60,6 +58,19 @@ const LAST_WAIT: Duration = Duration::from_secs(5 * 60);
 
 /// The server part of a DM's room id.
 pub const DM_GUILD: &str = "@me";
+
+/// A picture decoded from what was downloaded from `url`. When it's an
+/// animation and Talk keeps the file on disk, its frames read from there
+/// rather than from a copy in memory.
+#[cfg(feature = "discord")]
+pub(crate) fn read_kept(url: &str, mut picture: chat::Picture) -> chat::Picture {
+    if picture.animation.is_some()
+        && let Some(file) = talk_discord::cache::kept_picture(url)
+    {
+        picture.read_from(file);
+    }
+    picture
+}
 
 pub fn server_id(guild: &str) -> String {
     format!("{PREFIX}{guild}")
@@ -102,6 +113,7 @@ pub fn presence(presence: talk_discord::member_list::Presence) -> chat::Presence
     use talk_discord::member_list::Presence as Discord;
     match presence {
         Discord::Online => chat::Presence::Online,
+        Discord::Mobile => chat::Presence::Mobile,
         Discord::Idle => chat::Presence::Idle,
         Discord::DoNotDisturb => chat::Presence::DoNotDisturb,
         Discord::Offline => chat::Presence::Offline,
@@ -531,9 +543,12 @@ impl Pictures {
                 } else {
                     (PICTURE_SIZE, PICTURE_SIZE)
                 };
-                let decoded =
-                    tokio::task::spawn_blocking(move || chat::decode_picture(&data, width, height))
-                        .await;
+                let address = url.clone();
+                let decoded = tokio::task::spawn_blocking(move || {
+                    chat::decode_picture(&data, width, height)
+                        .map(|picture| read_kept(&address, picture))
+                })
+                .await;
                 match decoded {
                     Ok(Some(picture)) => {
                         let _ = events.send(Event::Picture {

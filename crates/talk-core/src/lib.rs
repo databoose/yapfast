@@ -41,6 +41,8 @@ pub mod mention;
 pub mod meter;
 pub mod network;
 #[cfg(feature = "discord")]
+pub mod playback;
+#[cfg(feature = "discord")]
 pub mod ring;
 pub mod runtime;
 #[cfg(feature = "matrix")]
@@ -50,6 +52,10 @@ pub mod spoiler;
 pub mod stream_audio;
 #[cfg(feature = "discord")]
 pub mod stream_worker;
+#[cfg(feature = "discord")]
+pub mod video;
+#[cfg(feature = "discord")]
+pub mod video_player;
 pub mod voice;
 #[cfg(feature = "matrix")]
 pub mod voice_demo;

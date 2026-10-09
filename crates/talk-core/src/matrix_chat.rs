@@ -75,6 +75,7 @@ struct OpenRoom {
     timeline: Arc<Timeline>,
     pictures: HashMap<String, Option<Arc<Picture>>>,
     requested: HashSet<String>,
+    visible: HashSet<String>,
     // Dropping the set when the room closes cancels its downloads and requests.
     tasks: JoinSet<()>,
     /// The member list being read; a newer membership change replaces it.
@@ -304,6 +305,7 @@ impl Matrix {
             Wake::Picture(room, key, picture) => {
                 if let Some(active) = &mut self.open
                     && active.id() == room
+                    && active.requested.contains(&key)
                 {
                     active.pictures.insert(key, picture);
                     publish_timeline(active, client, &self.media_sender, events).await;
@@ -419,6 +421,7 @@ impl Matrix {
                             timeline: Arc::new(active),
                             pictures: HashMap::new(),
                             requested: HashSet::new(),
+                            visible: HashSet::new(),
                             tasks: JoinSet::new(),
                             members: None,
                         };
@@ -587,6 +590,15 @@ impl Matrix {
                 };
                 let _ = events.send(Event::HistoryLoaded { room: id, history });
             }
+            Command::VisibleMessages { room, items } => {
+                if let Some(active) = open.as_mut().filter(|active| active.id() == room) {
+                    let visible = items.into_iter().collect();
+                    if active.visible != visible {
+                        active.visible = visible;
+                        publish_timeline(active, client, &self.media_sender, events).await;
+                    }
+                }
+            }
             Command::Recover(key) => {
                 if voice.states.borrow().active() {
                     let _ = events.send(Event::Error(
@@ -643,7 +655,11 @@ impl Matrix {
                 }
             }
             // `Command::route` sends these elsewhere.
-            Command::Voice(_) | Command::Discord(_) => {}
+            // Matrix videos are files to save for now.
+            Command::Voice(_)
+            | Command::Discord(_)
+            | Command::PlayVideo { .. }
+            | Command::Video(_) => {}
         }
         true
     }
@@ -1422,6 +1438,7 @@ async fn publish_timeline(
     let own = client.user_id().map(ToOwned::to_owned);
     let items = open.timeline.items().await;
     let mut messages = Vec::new();
+    let mut wanted = HashSet::new();
     for item in items.iter() {
         let Some(event) = item.as_event() else {
             continue;
@@ -1468,8 +1485,12 @@ async fn publish_timeline(
                             .and_then(|info| info.thumbnail_source.clone())
                             .unwrap_or_else(|| content.source.clone());
                         let key = media_key(&source);
-                        let cached = open.pictures.get(&key).cloned();
-                        if cached.is_none() && open.requested.insert(key.clone()) {
+                        let visible = open.visible.contains(&message.item);
+                        if visible {
+                            wanted.insert(key.clone());
+                        }
+                        let cached = visible.then(|| open.pictures.get(&key).cloned()).flatten();
+                        if visible && cached.is_none() && open.requested.insert(key.clone()) {
                             let client = client.clone();
                             let media = media.clone();
                             let room = room.clone();
@@ -1518,6 +1539,7 @@ async fn publish_timeline(
                             preview_failed: matches!(cached, Some(None)),
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                             preview: cached.flatten(),
                         }];
                     }
@@ -1536,6 +1558,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                         }];
                     }
                     MessageType::Video(content) => {
@@ -1553,6 +1576,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                         }];
                     }
                     MessageType::Audio(content) => {
@@ -1570,6 +1594,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             spoiler: false,
+                            video: false,
                         }];
                     }
                     _ => message.body = text.body().to_owned(),
@@ -1653,6 +1678,11 @@ async fn publish_timeline(
         messages.push(message);
     }
     let unread = open.timeline.room().num_unread_messages() > 0;
+    open.pictures.retain(|key, _| wanted.contains(key));
+    // Reply details use this same set; keep their event ids as well.
+    open.requested
+        .retain(|key| wanted.contains(key) || key.starts_with('$'));
+    while open.tasks.try_join_next().is_some() {}
     let _ = events.send(Event::Timeline { room, messages });
     if unread {
         // Showing a conversation reads it; the receipt stays on this account's devices too.
@@ -1754,6 +1784,7 @@ mod tests {
             timeline: Arc::new(TimelineBuilder::new(&room).build().await.unwrap()),
             pictures: HashMap::new(),
             requested: HashSet::new(),
+            visible: HashSet::new(),
             tasks: JoinSet::new(),
             members: None,
         }
@@ -2525,6 +2556,27 @@ mod tests {
                 _ => None,
             })
             .await;
+            let metadata = timeline_where(&mut events, |messages| {
+                messages.iter().any(|m| {
+                    m.delivery == Delivery::Sent
+                        && m.item.starts_with("e:")
+                        && m.attachments.first().is_some_and(|a| a.image)
+                })
+            })
+            .await;
+            assert!(
+                metadata
+                    .iter()
+                    .flat_map(|m| &m.attachments)
+                    .all(|a| a.preview.is_none()),
+                "off-screen Matrix images stay as metadata"
+            );
+            commands
+                .send(Command::VisibleMessages {
+                    room: room.clone(),
+                    items: metadata.iter().map(|m| m.item.clone()).collect(),
+                })
+                .unwrap();
             let messages = timeline_where(&mut events, |messages| {
                 messages.iter().any(|m| {
                     m.delivery == Delivery::Sent
@@ -2602,7 +2654,38 @@ mod tests {
                 })
                 .await;
             }
+            commands
+                .send(Command::VisibleMessages {
+                    room: room.clone(),
+                    items: vec![],
+                })
+                .unwrap();
+            timeline_where(&mut events, |messages| {
+                messages.iter().any(|m| m.item == sent.item)
+                    && messages
+                        .iter()
+                        .flat_map(|m| &m.attachments)
+                        .all(|a| a.preview.is_none())
+            })
+            .await;
             commands.send(Command::Open(other.to_string())).unwrap();
+            let metadata = timeline_where(&mut events, |messages| {
+                messages
+                    .iter()
+                    .any(|m| m.body == "plain reply" && m.delivery == Delivery::Sent)
+                    && messages.iter().any(|m| {
+                        m.delivery == Delivery::Sent
+                            && m.item.starts_with("e:")
+                            && m.attachments.first().is_some_and(|a| a.image)
+                    })
+            })
+            .await;
+            commands
+                .send(Command::VisibleMessages {
+                    room: other.to_string(),
+                    items: metadata.iter().map(|m| m.item.clone()).collect(),
+                })
+                .unwrap();
             timeline_where(&mut events, |messages| {
                 messages.iter().any(|m| {
                     m.body == "plain reply" && m.reply.is_none() && m.delivery == Delivery::Sent

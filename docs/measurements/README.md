@@ -8,6 +8,11 @@ memory by build, and
 [renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
 for a call with Skia Software, the default renderer.
 
+[Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
+records the first memory pass on a larger fake Discord account.
+[Viewport media and avatars, 2026-10-09](2026-10-09-linux-viewport-media.json)
+records the subsequent pass. Both comparisons appear below.
+
 Measurements use `fast` builds, as the owner decided on 2026-10-06, unless the
 question is the shipped build's absolute number; then use `release`. The
 [2026-10-05 profile comparison](2026-10-05-linux-fast-profile.json) found the
@@ -347,3 +352,199 @@ Reproduce: with the test stack up, build each feature set with `--profile fast`
 then the default) and copy each `target/fast/talk` to `target/networks/` as
 `talk-matrix`, `talk-discord` and `talk-combined`. Then `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
 The script starts the fake Discord itself.
+
+[Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
+compares the Discord-only `fast` build before and after freeing its READY
+payload and making UI preview copies on demand. The fake account has 100
+servers, 300 DMs, 12 extra channels and 60 authors. Its #general has 60
+messages, with an image every third extra message. Both builds use Skia
+Software at 1120×760, the same private display and fake server, and the same
+saved test account. Each view settles for four seconds and is sampled for
+five seconds. Two runs of each build alternate in the order before, after,
+after, before.
+
+| View | RSS before | RSS after | PSS before | PSS after | Live heap before | Live heap after |
+| --- | --- | --- | --- | --- | --- | --- |
+| DM list and Bob's conversation | 207–212 MiB | 158–164 MiB | 180–185 MiB | 132–138 MiB | 99.5–99.6 MiB | 67.6–67.8 MiB |
+| Image-heavy #general | 220–223 MiB | 170–176 MiB | 193–196 MiB | 139–150 MiB | 112.7–112.9 MiB | 74.9–75.0 MiB |
+
+The server view saves 48 MiB of RSS on average, 22%, and 38 MiB of live
+heap, 34%. Settled CPU is unchanged at 0–0.2% of one core. Captures of the
+same server view differ by 0.022% normalized pixel RMSE.
+
+The gateway previously cloned every JSON dispatch payload. The connection
+task then borrowed READY for the entire session, keeping its original JSON
+after the tracker had copied the fields it needed. It now moves dispatch
+payloads and releases READY before waiting on the session. On glibc it calls
+[`malloc_trim`](https://man7.org/linux/man-pages/man3/malloc_trim.3.html)
+once at that point, returning freed startup pages to the OS. Without the
+trim, much of the freed heap stayed resident.
+
+The UI previously copied every loaded gallery image, sticker and embed image
+into a Slint pixel buffer when building message rows, including rows outside
+the viewport. An immutable
+[Slint model](https://docs.slint.dev/latest/docs/rust/slint/trait.Model)
+now copies pixels when the row is requested. Converted previews share an
+eight MiB cache with least recently used eviction. Visible components keep
+their image handles after eviction. Source dimensions, spoiler covers,
+animation models, keyboard navigation and selection stay the same.
+
+This investigation also inspected the owner's live process read-only. It
+used 314 MiB RSS, 291 MiB PSS and 224 MiB anonymous memory with software
+rendering and 13 threads. It received no input and was not restarted, so
+the test account's saving is not a measured saving for that account. This
+comparison has no active call or Matrix session and does not measure Windows.
+
+The remaining media cost is in the backend's decoded previews for all loaded
+history and recent channels. Loading those by viewport, with a bounded decoded
+cache, would remove another copy for older images. Skia also copies visible
+Slint pixels into its own raster images. Sharing those pixels needs an owned
+buffer API with safe lifetimes; simply borrowing the bytes would be unsafe.
+These opportunities are unimplemented and their savings are unmeasured.
+
+A [follow-up font-manager experiment](2026-10-09-linux-font-manager.json)
+replaced Skia's system font manager with its
+[`custom_empty` manager](https://github.com/rust-skia/rust-skia/blob/master/skia-safe/src/core/font_mgr.rs),
+which loads the font data Fontique selected without another system font scan.
+It ran the same fake account and display in the order before, experiment,
+before, experiment. In the matched second server run, live heap fell by only
+0.50 MiB, or 0.45 MiB after a diagnostic heap trim. RSS did not improve.
+The matched captures differed by 0.000425% normalized pixel RMSE. The patch
+was discarded. Allocator retention varied enough to outweigh the small
+allocation saving, and the first server view also had an unread banner that
+disappeared on later opens.
+
+The next changes worth measuring are:
+
+- Decode previews near the timeline viewport and release distant ones. The
+  backend currently requests every preview in loaded history. One hundred
+  360×270 RGBA previews take 37 MiB before UI or renderer copies.
+- Give recent channels one byte budget for decoded previews. Forty closed
+  channels can keep four previews each, about 59 MiB at maximum dimensions.
+  The application and backend share these pictures, so that estimate counts
+  each decoded picture once. The disk cache can supply evicted previews on
+  reopening.
+- Request and convert avatars by viewport. The member panel creates visible
+  components through a `ListView`, but the application requests avatars for
+  the whole member list and the UI converts all of them. Each 128×128 avatar
+  costs 64 KiB in the core and another 64 KiB in Slint before renderer storage.
+- Release idle animation decoders on a timer. Their cleanup currently runs
+  only when another animation requests a frame; if the last visible animation
+  scrolls away, its decoder and shown frame can stay allocated in its model.
+
+These sizes describe allocations in the code, not measured savings on the
+owner's account. The follow-up read-only process sample was 229 MiB RSS,
+215 MiB PSS and 138 MiB anonymous memory. It received no input. The isolated
+test session was stopped and the previously optimized binary restored.
+
+Reproduce: save a Discord-only build of commit `4c46b06` and one with these
+changes, both built with `nix develop path:./nix --command cargo build --locked
+--profile fast --no-default-features --features desktop,discord`. Start each
+through `scripts/ui-session start --discord --fake-args '--servers 100 --dms
+300 --images 3 --channels 12 --authors 60' --bin PATH`. For each run, open
+DMs with `scripts/ui-session do 'click 36 36'`, wait four seconds, and sample
+the PID in `.local/ui-session/talk.pid` with `scripts/measure-process PID
+--seconds 5`. Repeat after opening the server with `'click 36 102'`. For
+allocator totals, set `TALK_UI_TEST_CONTROL` to a writable command file before
+starting the private session and append `stats` after each sample. Use a fresh
+command file on each restart, and retain the same fake server and test data
+between runs with `scripts/ui-session relaunch`. The JSON records the build
+hashes, individual samples and allocator totals.
+
+Validation passed `scripts/check --fast`, including formatting, documentation
+links, workspace tests, Clippy for each network combination, desktop and
+headless builds and smoke checks. Regression tests cover moving the gateway
+payload without copying it, lazy gallery allocation, cache bounds and valid
+image handles after eviction. Existing UI tests cover animation decoding,
+scrolling, selection, image copying and message actions.
+The fake Discord gateway integration and paginated-history integration also
+passed. Their runner returned 143 while its EXIT trap killed and waited for
+the fake server; the tests themselves both reported success.
+
+
+## 2026-10-09: viewport media and lazy avatars
+
+The [follow-up record](2026-10-09-linux-viewport-media.json) compares commit
+`3a5a109`, which includes the preceding startup fixes, with viewport-driven
+media loading and shared decoded previews. It implements the four proposals
+above. The Discord-only `fast` builds use the same private 1120×760 software
+renderer display and fake account: 100 servers, 300 DMs, 12 extra channels,
+60 authors, and three images in each generated gallery. There is no call.
+
+Two runs of each build alternate before, after, after, before. Each view
+settles for four seconds and is sampled for five seconds. The second pair
+starts with an empty media disk cache; the saved account, fake server, display
+and read markers are retained. The third optimized run checks the final
+implementation after the message-ID viewport fix, and is excluded from the
+paired averages. No sample uses a diagnostic allocator trim.
+
+| View | RSS before | RSS after | Live heap before | Live heap after |
+| --- | --- | --- | --- | --- |
+| DM list and Bob's conversation | 158–168 MiB | 140–141 MiB | 67.6–68.1 MiB | 50.4–50.6 MiB |
+| Image-heavy #general | 171–185 MiB | 145 MiB | 74.9–75.3 MiB | 52.6–52.7 MiB |
+| After twelve other chats, reopening #general | 203–220 MiB | 165–167 MiB | 104.0–104.4 MiB | 69.5–70.0 MiB |
+
+The paired server views save 33 MiB RSS on average, 19%, and 22 MiB live heap,
+30%. After chat switching, they save 46 MiB RSS, 22%, and 34 MiB live heap,
+33%. RSS varies more because glibc retains freed pages. Settled CPU samples
+remain at 0–0.4% of one core. The matched second server captures differ by
+0.028% normalized pixel RMSE. The final confirmation measures 145 MiB RSS in
+#general and 166 MiB after chat switching.
+
+With a cold disk cache, the initial server view requests 17 avatars and four
+previews, versus 155 avatars and 20 previews. After twelve other chats, the
+cumulative requests are 72 avatars and 40 previews, versus 215 and 260. The
+fake's `/_control/media-requests` endpoint counts downloads; warm disk hits
+bypass it.
+
+The UI reports visible timeline items with six rows of margin on either side,
+coalescing changes over 50 ms. Discord and Matrix decode previews for those
+items and drop distant handles. Discord's recent channels share an 8 MiB LRU
+budget for decoded RGBA pixels. Closing a channel drops preview handles from
+both its backend and remembered UI timeline; cached pixels can be reused on
+reopening, and evicted previews can be decoded again from disk. Visible rows
+can hold images beyond the cache budget.
+
+Virtualized server, DM, member, friend and message rows now carry avatar URLs.
+They request and convert pictures as Slint instantiates nearby components.
+Sources are weak pointers and converted avatars share the existing 8 MiB
+Slint preview cache. Profile and call controls retain their direct loading.
+A native regression with 500 servers and 500 members verifies that each list
+requests only a few dozen nearby pictures and requests new ones on scrolling.
+Core avatar retention still uses the existing application's retention policy.
+
+Idle animation decoders now release their decoding buffers and last shown
+frame on a one-second timer, including when no animation requests another
+frame. The timer stops when it has no active decoders. A regression failed
+with the previous opportunistic sweep and now passes using the testing clock.
+Another regression covers a temporary Matrix message ID becoming its server
+ID without changing the row count or scroll position.
+
+Reproduce with Discord-only builds of `3a5a109` and this change. Build each
+with `nix develop path:./nix --command cargo build --locked --profile fast
+--no-default-features --features desktop,discord`, saving the binary outside
+`target`. Start the baseline using `scripts/ui-session start --discord
+--fake-args '--servers 100 --dms 300 --images 3 --channels 12 --authors 60'
+--bin PATH`. Open DMs with `scripts/ui-session do 'click 36 36'`, then the
+server with `'click 36 102'`. For chat switching, click sidebar rows at
+`x=180`, `y=148+36*index` for index 1 through 12, waiting one second each,
+and reopen #general at `(180,148)`. Move the pointer to `(550,25)` before
+captures. Sample `.local/ui-session/talk.pid` with `scripts/measure-process
+PID --seconds 5`; allocator totals use the isolated test-control file as in
+the preceding record. Swap the saved binaries into `.local/ui-session/talk`
+by replacing the file and use `scripts/ui-session relaunch` to keep the same
+fake and display. Reset the fake's counters with `scripts/ui-session do
+'control media-requests'` before each relaunch. For the cold pair, remove only
+the disposable `.local/ui-session/data/discord-pictures` cache before relaunch.
+
+Core, native UI and fake Discord integration regressions pass. The Matrix-only
+integration covers encrypted image metadata before viewport requests,
+preview decoding and release, forwarding and saved drafts against the local
+disposable test stack. The owner's live Talk process received no UI input
+and was not restarted. Memory savings on that account are unmeasured.
+
+`scripts/check --fast` passed formatting, documentation links, Clippy for all
+network combinations, workspace tests (49 application, 129 core and 105
+protocol tests), desktop and headless builds and smoke checks. The private
+UI session was stopped and the Discord-only `target/fast/talk` rebuilt for
+the owner's next launch.

@@ -464,6 +464,42 @@ impl Api {
         Ok(data)
     }
 
+    /// Downloads a file from Discord's CDN or media proxy into `file` as it
+    /// arrives, as [`Self::download`] does, returning its size.
+    pub async fn download_into(
+        &self,
+        url: &str,
+        file: &mut std::fs::File,
+        limit: u64,
+    ) -> Result<u64> {
+        use std::io::Write;
+        let test_file = client::test_server()
+            .and_then(|server| url.strip_prefix(server))
+            .is_some_and(|path| path.starts_with('/'));
+        if !discord_file(url) && !test_file {
+            bail!("not a Discord file");
+        }
+        let mut response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .context("could not reach Discord")?;
+        if !response.status().is_success() {
+            return Err(Refused(response.status()).into());
+        }
+        let mut size = 0;
+        while let Some(chunk) = response.chunk().await.context("the download stopped")? {
+            size += chunk.len() as u64;
+            if size > limit {
+                bail!("the file is too large");
+            }
+            file.write_all(&chunk).context("could not keep the file")?;
+        }
+        file.flush().context("could not keep the file")?;
+        Ok(size)
+    }
+
     async fn json(&self, request: RequestBuilder) -> Result<Value> {
         let response = self.execute(request).await?;
         let body = response

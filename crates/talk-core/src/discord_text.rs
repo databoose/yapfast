@@ -29,9 +29,10 @@ use crate::{
         Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery,
         DiscordCommand, Embed, EmbedField, Event, History, MAX_PREVIEW_DOWNLOAD_BYTES,
         MentionGroup, Notification, Picture, Placement, Profile, ProfileFriend, ProfileRole,
-        ProfileServer, Reaction, Reply, Role, decode_preview, decode_view, plain_snippet,
+        ProfileServer, Reaction, Reply, Role, Video, VideoCommand, decode_preview, decode_view,
+        plain_snippet,
     },
-    discord::{self, KEPT_CHANNELS, KEPT_MESSAGES, KEPT_PREVIEWS},
+    discord::{self, KEPT_CHANNELS, KEPT_MESSAGES},
     mention::{Mentioned, Target},
     network::Network,
 };
@@ -59,6 +60,8 @@ const MEMBERS_WAIT: Duration = Duration::from_secs(8);
 const SAVE_EVERY: Duration = Duration::from_secs(20);
 /// Saving a file holds it in memory first.
 const MAX_SAVE_BYTES: usize = 100 * 1024 * 1024;
+/// The largest video that plays, past Discord's 500 MB limit for Nitro.
+const MAX_VIDEO_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Work for the open channel that finished in the background.
 pub enum Done {
@@ -113,6 +116,7 @@ pub(crate) enum Wake {
     Finished(Done),
     /// Time to put changed channels on disk.
     Save,
+    Video(crate::playback::Wake),
 }
 
 /// The linked Discord account in the chat actor: its connection and the open
@@ -128,6 +132,11 @@ pub(crate) struct Chat {
     finished: UnboundedReceiver<Done>,
     pictures: discord::Pictures,
     saving: tokio::time::Interval,
+    /// The video playing in the open channel.
+    video: Option<crate::playback::Playback>,
+    /// How loud the last video played, and whether muted: the next plays
+    /// the same.
+    video_sound: (f32, bool),
 }
 
 impl Drop for Chat {
@@ -172,6 +181,8 @@ impl Chat {
                 saving.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 saving
             },
+            video: None,
+            video_sound: (1.0, false),
         }))
     }
 
@@ -180,9 +191,37 @@ impl Chat {
     }
 
     pub(crate) fn command(&mut self, command: Command, events: &UnboundedSender<Event>) {
-        if let Command::Discord(DiscordCommand::Pictures(urls)) = command {
-            self.pictures.fetch(&self.discord, urls, events);
-            return;
+        match command {
+            Command::Discord(DiscordCommand::Pictures(urls)) => {
+                self.pictures.fetch(&self.discord, urls, events);
+                return;
+            }
+            Command::PlayVideo {
+                room,
+                item,
+                index,
+                width,
+                height,
+                speakers,
+            } => {
+                self.play_video(room, item, index, (width, height), speakers, events);
+                return;
+            }
+            Command::Video(VideoCommand::Stop) => {
+                self.stop_video(events);
+                return;
+            }
+            Command::Video(command) => {
+                if let Some(playback) = &mut self.video {
+                    playback.command(command);
+                    self.video_sound = (playback.video.volume, playback.video.muted);
+                    let _ = events.send(Event::Video(Some(playback.video.clone())));
+                }
+                return;
+            }
+            // A video plays only while its channel is open.
+            Command::Open(_) | Command::CloseRoom => self.stop_video(events),
+            _ => {}
         }
         self::command(
             command,
@@ -193,6 +232,81 @@ impl Chat {
         );
     }
 
+    fn stop_video(&mut self, events: &UnboundedSender<Event>) {
+        if self.video.take().is_some() {
+            let _ = events.send(Event::Video(None));
+        }
+    }
+
+    /// Plays an attachment's video in place of its poster, as it downloads,
+    /// in place of any other.
+    fn play_video(
+        &mut self,
+        room: String,
+        item: String,
+        index: usize,
+        frame: (u32, u32),
+        speakers: Option<String>,
+        events: &UnboundedSender<Event>,
+    ) {
+        self.video = None;
+        let mut video = Video {
+            room,
+            item,
+            index,
+            frames: None,
+            duration_ms: None,
+            size: None,
+            loading: true,
+            playing: true,
+            ended: false,
+            sound: false,
+            muted: self.video_sound.1,
+            volume: self.video_sound.0,
+            error: None,
+        };
+        let found = self
+            .channels
+            .open
+            .as_ref()
+            .filter(|channel| channel.room == video.room)
+            .and_then(|channel| channel.attachment(&video.item, index))
+            .and_then(|attachment| Some((attachment.video_url.clone()?, attachment.size)));
+        let Some((url, size)) = found else {
+            video.loading = false;
+            video.error = Some("This video is no longer available.".into());
+            let _ = events.send(Event::Video(Some(video)));
+            return;
+        };
+        let directory = talk_discord::cache::videos()
+            .unwrap_or_else(|| std::env::temp_dir().join("talk-videos"));
+        let discord = self.discord.clone();
+        let download = move |mut file: std::fs::File| async move {
+            discord
+                .download_into(&url, &mut file, MAX_VIDEO_BYTES)
+                .await
+        };
+        match crate::playback::Playback::start(
+            video.clone(),
+            &directory,
+            size,
+            frame,
+            speakers,
+            download,
+        ) {
+            Ok(playback) => {
+                let _ = events.send(Event::Video(Some(playback.video.clone())));
+                self.video = Some(playback);
+            }
+            Err(error) => {
+                tracing::warn!(error = format!("{error:#}"), "could not play a video");
+                video.loading = false;
+                video.error = Some("Talk couldn't play this video.".into());
+                let _ = events.send(Event::Video(Some(video)));
+            }
+        }
+    }
+
     /// Waits for Discord. Cancel safe: the chat actor handles what it returns.
     pub(crate) async fn wait(&mut self) -> Wake {
         tokio::select! {
@@ -200,6 +314,7 @@ impl Chat {
             event = next_live(&mut self.live) => Wake::Live(event),
             Some(finished) = self.finished.recv() => Wake::Finished(finished),
             _ = self.saving.tick() => Wake::Save,
+            wake = next_video(&mut self.video) => Wake::Video(wake),
         }
     }
 
@@ -230,8 +345,22 @@ impl Chat {
                 );
             }
             Wake::Save => self.channels.save(),
+            Wake::Video(wake) => {
+                if let Some(playback) = &mut self.video {
+                    playback.handle(wake);
+                    let _ = events.send(Event::Video(Some(playback.video.clone())));
+                }
+            }
             Wake::Snapshot(None) | Wake::Live(None) => {}
         }
+    }
+}
+
+/// What the playing video next does, or never without one.
+async fn next_video(video: &mut Option<crate::playback::Playback>) -> crate::playback::Wake {
+    match video {
+        Some(playback) => playback.wait().await,
+        None => std::future::pending().await,
     }
 }
 

@@ -298,7 +298,10 @@ streams by key (`guild:{server}:{channel}:{user}`) and
 states carry `self_stream`, which shows as a LIVE badge beside the person.
 
 Capture runs in a worker process, `talk --stream-worker`, so its buffers take
-memory only while sharing; the process exits when sharing stops.
+memory only while sharing; the process exits when sharing stops. Playing a
+video file runs there too (`Job::Play`, `video_player`), which also keeps
+FFmpeg's reading of files people sent out of the window's process. Its
+frames carry their time, which the seek bar shows.
 `stream_worker` starts it with one job as a JSON line and reads its reports
 back. On Linux it starts `/proc/self/exe`, the running Talk, since Talk's path
 names a deleted file once a rebuild or update replaces it. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
@@ -470,19 +473,21 @@ for the authors' member profiles.
 
 Talk keeps the open channel's messages in memory, and those of the 40
 channels open before it, so going back to one shows it at once. A closed
-channel keeps its newest 200 messages and the previews of its newest 4
-images (a decoded preview is about 400 KB, and the rest come back from disk
-quickly), and follows new messages, edits, deletions and reactions while
-it's kept. Opening it again loads the latest page in the background and fits
-it in: messages kept within the page's span that it lacks were deleted
+channel keeps its newest 200 messages as metadata and follows new messages,
+edits, deletions and reactions while it's kept. All channels share one
+8 MiB cache for decoded preview pixels, with least recently used eviction.
+Only messages in or near the timeline viewport request previews; evicted
+previews can be decoded again from the disk cache. Opening it again loads the
+latest page in the background and fits it in: messages kept within the page's span that it lacks were deleted
 meanwhile, and when a full page starts after everything kept, more came than
 a page holds, so only the page stays. The UI keeps the same 40 channels'
 last timeline and member list, so going back shows them before the chat side
 answers, without "Loading messages...". It keeps what the chat side keeps of
-each timeline, the newest 200 messages and 4 previews; the other previews
-show as loading until they come back from disk. Channels also go to disk, as
-the startup cache below describes, so a channel
-opened after a restart shows its saved messages while the latest page loads
+each timeline, the newest 200 messages as metadata. It drops decoded preview
+handles when closing a channel, so remembered UI timelines do not pin pixels
+outside the shared cache. Previews show as loading until the viewport requests
+them. Channels also go to disk, as the startup cache below describes, so a
+channel opened after a restart shows its saved messages while the latest page loads
 and fits in the same way.
 
 The open channel renders each message for the timeline once, with its
@@ -606,18 +611,50 @@ an error.
   moment after sending, and the preview arrives in a message update. A card
   shows the site, author, title, description, fields and footer behind a bar
   of its colour, with its picture large for articles and videos and small
-  beside the text otherwise. A video's picture opens the video in the
-  browser; other pictures open in the image viewer. A linked image or GIF
+  beside the text otherwise. A video the media proxy has (`video.proxy_url`)
+  plays in place, as an attached one does, under the card's thumbnail as its
+  poster, whatever the card's type: vxtwitter's posts come as `rich` cards
+  with one. Others, such as YouTube's, open in the browser. Other pictures open in the image viewer. A linked image or GIF
   shows with the message's images, without its address when that's all the
   message says. Pictures come through Discord's
   media proxy (`images-ext-*.discordapp.net`), so Talk never contacts the
   linked site, and embeds of a message marked to hide them don't show.
 - Animated GIFs, APNGs and animated WebPs play, in messages, as stickers and
-  in the image viewer. The media proxy keeps GIFs as GIFs (Talk asks it for
-  WebP only for still pictures). An animation's frames are decoded once, up to
-  24 MB of them, dropping every other frame until the rest fit; frames shorter
-  than 20 ms play at 100 ms, as browsers do. Tenor and Giphy links arrive as
-  MP4 "gifv" and show their still picture.
+  in the image viewer. The media proxy keeps GIFs as GIFs; other pictures
+  come as WebP, asked for with `animated=true` as Discord's client does, so
+  an animated one, such as vxtwitter's AVIF GIFs, stays animated rather than
+  turning into its first frame. An animation keeps its first frame in
+  memory, and its file in `discord-pictures/`, or in memory when it isn't
+  kept there, as one over 8 MB isn't. Its frames decode one at a time on the
+  UI thread as they show, reading the file, and a second after it last
+  showed, as when its row scrolls away, it lets its decoder go. Decoded
+  whole, a few seconds of a GIF took tens of megabytes, and an open channel
+  kept every one it had loaded. Frames shorter than 20 ms play at 100 ms, as
+  browsers do. Tenor and Giphy links arrive as MP4 "gifv" embeds, which play
+  the same way, silent and looping, from the proxy's copy of the MP4
+  (`video.proxy_url`): up to a minute of it, decoded by the FFmpeg, libvpx
+  and dav1d inside libwebrtc (`native/video.c`). One that can't be decoded
+  shows its still picture. It's named and saved as its video, not its
+  picture.
+- Attached videos show their poster, which the media proxy makes from the
+  first frame (`proxy_url?format=webp`), with a play button; they play in
+  place, with sound, under a bar to pause, move through them, mute and show
+  them full screen. Full screen, as the image viewer shows a picture, the
+  video is enlarged to fit the window with its bar under it; Space plays or
+  pauses it, the arrow keys move five seconds, and Escape brings it back to
+  its cell. The worker draws its pictures at the size they show: playing,
+  the next ones come at a new size; paused, the one showing is redrawn,
+  which moving back to it would hold up while playing. MP4, MOV and WebM
+  play, with H264, VP8, VP9 or AV1 pictures in 8-bit 4:2:0 and AAC, Opus,
+  MP3, Vorbis or FLAC sound; HEVC, which iPhones record, doesn't, as
+  libwebrtc's FFmpeg lacks it. The file downloads into `discord-videos/`
+  beside the account file, and plays as it arrives: the worker's reads wait
+  for the download. It goes when the video stops, as when the channel
+  closes. Sound plays on the call's speakers through PulseAudio, on Linux
+  only for now. Over the mute button a slider sets how loud, as does the
+  wheel; its travel is squared, so its middle sounds about half as loud.
+  Turning it to nothing mutes, and unmuting brings back the level it had.
+  The next video plays as loud, until Talk closes.
 - Spoilers, `||like this||`, show under an opaque cover that a click lifts.
   The cover is drawn by Talk's patched Slint text renderer over a link to
   `talk:spoiler/{item}/{n}`; see [building](building.md). A spoiler in a reply

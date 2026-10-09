@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Tip, Middle, Label } from "theme.slint";
-import { Avatar } from "controls.slint";
+import { Avatar, PictureStore } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { PersonRow, LivePill } from "voice.slint";
 
@@ -10,6 +10,7 @@ export struct ServerRow {
     unavailable: bool,
     /// Mentions waiting in its channels, such as "3" or "99+"; empty for none.
     badge: string,
+    picture-url: string,
 }
 
 export struct RoomRow {
@@ -17,6 +18,7 @@ export struct RoomRow {
     voice: bool, direct: bool, initial: string, tint: color,
     /// A DM's avatar or group icon, and whether it's a Discord DM.
     picture: image, discord: bool,
+    picture-url: string,
     /// Listed but not open to join, such as a Discord channel the account's roles keep it out of.
     locked: bool,
     /// A one-to-one DM, whose other person has a profile.
@@ -25,8 +27,8 @@ export struct RoomRow {
     people: [PersonRow],
     /// A DM with a call going on.
     call: bool,
-    /// A one-to-one Discord DM's other person: "online", "idle", "dnd" or
-    /// "offline", empty when unknown; and their custom status or what
+    /// A one-to-one Discord DM's other person: "online", "mobile", "idle",
+    /// "dnd" or "offline", empty when unknown; and their custom status or what
     /// they're doing, or a group DM's size.
     presence: string,
     detail: string,
@@ -45,6 +47,16 @@ export component RailItem inherits Rectangle {
     in property <image> icon;
     /// The server's own icon, filling the item instead of the initial.
     in property <image> picture;
+    in property <string> picture-url;
+    property <image> shown-picture: root.picture-url != "" ? PictureStore.picture(root.picture-url, PictureStore.revision) : root.picture;
+    function request-picture() {
+        if root.picture-url != "" && root.shown-picture.width == 0 {
+            PictureStore.request(root.picture-url);
+        }
+    }
+    init => { root.request-picture(); }
+    changed picture-url => { root.request-picture(); }
+    changed shown-picture => { root.request-picture(); }
     in property <bool> selected;
     in property <bool> unread;
     /// Mentions waiting, at the bottom right as in Discord; empty for none.
@@ -69,17 +81,17 @@ export component RailItem inherits Rectangle {
     tile := Rectangle {
         x: 12px; width: 48px; height: 48px;
         border-radius: root.lit ? 16px : 24px;
-        background: root.lit && root.picture.width == 0 ? Theme.accent : Theme.raised;
+        background: root.lit && root.shown-picture.width == 0 ? Theme.accent : Theme.raised;
         animate border-radius, background { duration: 160ms; easing: ease-out; }
         clip: true;
-        if root.picture.width > 0: Image {
-            source: root.picture; width: 48px; height: 48px; image-fit: cover;
+        if root.shown-picture.width > 0: Image {
+            source: root.shown-picture; width: 48px; height: 48px; image-fit: cover;
         }
         if root.icon.width > 0: Image {
             source: root.icon; width: 24px; height: 24px;
             colorize: root.lit ? Theme.on-accent : Theme.text;
         }
-        if root.icon.width == 0 && root.picture.width == 0: Text {
+        if root.icon.width == 0 && root.shown-picture.width == 0: Text {
             text: root.initial; font-size: 17px; font-weight: 700;
             color: root.lit ? Theme.on-accent : Theme.text;
         }
@@ -132,17 +144,19 @@ export component RailItem inherits Rectangle {
 }
 
 // A presence dot on a ring cut from the background, as in Discord: green when
-// online, a moon when idle, a bar when they don't want to be disturbed, and a
-// grey ring when offline. Anything else counts as offline.
+// online, a green phone standing up from it when online only on a phone, a
+// moon when idle, a bar when they don't want to be disturbed, and a grey ring
+// when offline. Anything else counts as offline.
 export component StatusDot inherits Rectangle {
     in property <string> presence;
     in property <color> ring;
-    property <bool> online: root.presence == "online" || root.presence == "idle" || root.presence == "dnd";
+    property <bool> mobile: root.presence == "mobile";
+    property <bool> online: root.presence == "online" || root.mobile || root.presence == "idle" || root.presence == "dnd";
     width: 16px; height: 16px; border-radius: 8px;
-    background: root.ring;
+    background: root.mobile ? transparent : root.ring;
     accessible-role: image;
-    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : root.presence == "online" ? "Online" : "Offline";
-    Rectangle {
+    accessible-label: root.presence == "dnd" ? "Do not disturb" : root.presence == "idle" ? "Idle" : root.presence == "online" ? "Online" : root.mobile ? "Online on mobile" : "Offline";
+    if !root.mobile: Rectangle {
         width: 10px; height: 10px; border-radius: 5px;
         background: root.presence == "dnd" ? Theme.danger : root.presence == "idle" ? Theme.accent : root.presence == "online" ? Theme.live : Theme.faint;
     }
@@ -155,6 +169,16 @@ export component StatusDot inherits Rectangle {
     if root.presence == "dnd": Rectangle {
         width: 6px; height: 2px; border-radius: 1px; background: root.ring;
     }
+    // The phone keeps the dot's ring and bottom edge, and stands taller.
+    if root.mobile: Rectangle {
+        y: root.height - self.height; height: root.height + 5px;
+        border-radius: 4px; background: root.ring;
+        Rectangle {
+            width: 10px; height: 15px; border-radius: 2px; background: Theme.live;
+            Rectangle { x: 2px; y: 2px; width: 6px; height: 9px; border-radius: 1px; background: root.ring; }
+            Rectangle { x: 4px; y: 12px; width: 2px; height: 2px; border-radius: 1px; background: root.ring; }
+        }
+    }
 }
 
 // A channel or DM in the sidebar.
@@ -166,6 +190,7 @@ export component ChannelRow inherits Rectangle {
     in property <string> initial;
     in property <color> tint;
     in property <image> picture;
+    in property <string> picture-url;
     /// Marks a Discord DM, as the rail marks Discord servers.
     in property <bool> discord;
     in property <bool> selected;
@@ -201,7 +226,7 @@ export component ChannelRow inherits Rectangle {
         padding-left: 8px; padding-right: 8px; spacing: root.person ? 12px : 8px;
         if root.person: Middle {
             Avatar {
-                size: 32px; initial: root.initial; tint: root.tint; picture: root.picture;
+                size: 32px; initial: root.initial; tint: root.tint; picture: root.picture; picture-url: root.picture-url;
                 if root.discord: DiscordBadge {
                     x: -2px; y: -2px; size: 13px;
                     ring: root.selected ? Theme.active : pointer.has-hover ? Theme.hover : Theme.sidebar;
@@ -320,7 +345,7 @@ export component ServerRail inherits Rectangle {
                 height: 48px + 8px;
                 RailItem {
                     y: 0px;
-                    initial: server.initial; picture: server.picture;
+                    initial: server.initial; picture: server.picture; picture-url: server.picture-url;
                     label: server.name + (server.discord ? ", Discord" : "") + (server.unavailable ? ", unavailable" : "")
                         + (server.badge != "" ? ", " + server.badge + " mentions" : server.unread ? ", unread" : "");
                     tip: server.unavailable ? server.name + " (unavailable in a Discord outage)" : server.discord ? server.name + " (Discord)" : server.name;
@@ -415,11 +440,11 @@ export component RoomList inherits VerticalLayout {
             if !room.hidden: ChannelRow {
                 text: room.name;
                 label: room.name + (room.discord ? ", Discord" : "")
-                    + (room.presence == "dnd" ? ", do not disturb" : room.presence != "" ? ", " + room.presence : "")
+                    + (room.presence == "dnd" ? ", do not disturb" : room.presence == "mobile" ? ", online on mobile" : room.presence != "" ? ", " + room.presence : "")
                     + (room.detail != "" ? ", " + room.detail : "")
                     + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                 icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
-                picture: room.picture; discord: room.discord;
+                picture: room.picture; picture-url: room.picture-url; discord: room.discord;
                 selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                 call: room.call; presence: room.presence; detail: room.detail;
                 clicked => { root.select-room(room.id); }

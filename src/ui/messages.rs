@@ -194,36 +194,43 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             .iter()
             .enumerate()
             .filter(|(_, attachment)| attachment.placement == placement)
-            .filter(|(_, attachment)| attachment.preview.is_some() || loading(attachment))
+            .filter(|(_, attachment)| {
+                attachment.preview.is_some() || loading(attachment) || attachment.video
+            })
             .map(|(index, attachment)| (index, attachment, attachment.preview.as_ref()))
             .collect()
     };
     let covered = |index: usize| !revealed.contains(&format!("{}/a{index}", message.item));
     let (images, gallery_width, gallery_height) = gallery(&previews(Placement::Message), &covered);
-    let stickers: Vec<ImageCell> = previews(Placement::Sticker)
+    let stickers = previews(Placement::Sticker)
         .into_iter()
         .map(|(index, attachment, preview)| {
             let Some(preview) = preview else {
-                return ImageCell {
-                    index: index as i32,
-                    name: attachment.name.clone().into(),
-                    width: STICKER_SIZE,
-                    height: STICKER_SIZE,
-                    loading: true,
-                    ..Default::default()
-                };
+                return (
+                    ImageCell {
+                        index: index as i32,
+                        name: attachment.name.clone().into(),
+                        width: STICKER_SIZE,
+                        height: STICKER_SIZE,
+                        loading: true,
+                        ..Default::default()
+                    },
+                    None,
+                );
             };
             let (frames, delays) = animation(preview);
-            ImageCell {
-                index: index as i32,
-                name: attachment.name.clone().into(),
-                image: picture(preview),
-                width: preview.width as i32,
-                height: preview.height as i32,
-                frames,
-                delays,
-                ..Default::default()
-            }
+            (
+                ImageCell {
+                    index: index as i32,
+                    name: attachment.name.clone().into(),
+                    width: preview.width as i32,
+                    height: preview.height as i32,
+                    frames,
+                    delays,
+                    ..Default::default()
+                },
+                Some(preview.clone()),
+            )
         })
         .collect();
     let embeds: Vec<EmbedCard> = message
@@ -255,7 +262,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
                 thumbnail_loading: thumbnail.is_some_and(|(_, _, preview)| preview.is_none()),
                 thumbnail_index: thumbnail.map_or(-1, |(index, _, _)| index as i32),
                 has_thumbnail: thumbnail.is_some(),
-                images: ModelRc::new(VecModel::from(images)),
+                images,
                 gallery_width,
                 gallery_height,
                 video: embed.video,
@@ -269,6 +276,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         .filter(|(_, attachment)| {
             attachment.preview.is_none()
                 && !loading(attachment)
+                && !attachment.video
                 && attachment.placement == Placement::Message
         })
         .map(|(index, attachment)| {
@@ -302,6 +310,8 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         .map(|reply| reply.author.as_str())
         .unwrap_or_default();
     let row = MessageRow {
+        picture_url: SharedString::default(),
+        reply_picture_url: SharedString::default(),
         id: message.id.clone().into(),
         item: message.item.clone().into(),
         author: message.author.clone().into(),
@@ -310,7 +320,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         bot: message.bot,
         initial: initial(&message.author),
         tint: tint(&message.author),
-        // Set from the picture cache when the timeline is built.
+        // Virtualized avatars resolve their URLs when their components are built.
         picture: slint::Image::default(),
         body: message.body.clone().into(),
         time: message.time.clone().into(),
@@ -338,7 +348,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         reply_author: reply_author.into(),
         reply_initial: initial(reply_author),
         reply_tint: tint(reply_author),
-        // Set from the picture cache when the timeline is built.
+        // Virtualized avatars resolve their URLs when their components are built.
         reply_picture: slint::Image::default(),
         reply_body: message
             .reply
@@ -364,10 +374,10 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
                 })
                 .collect::<Vec<_>>(),
         )),
-        images: ModelRc::new(VecModel::from(images)),
+        images,
         gallery_width,
         gallery_height,
-        stickers: ModelRc::new(VecModel::from(stickers)),
+        stickers: image_cells(stickers),
         files: ModelRc::new(VecModel::from(files)),
         embeds: ModelRc::new(VecModel::from(embeds)),
         hidden_card: SharedString::default(),

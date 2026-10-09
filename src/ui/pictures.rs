@@ -87,6 +87,31 @@ pub(super) fn cached_picture(
     image
 }
 
+/// The UI asks for avatars only as virtualized components use them. Weak
+/// sources do not pin decoded core pictures; conversions share the bounded
+/// preview cache rather than living in every off-screen row.
+pub(super) fn refresh_avatar_sources(state: &AppState) {
+    AVATAR_SOURCES.with_borrow_mut(|sources| {
+        *sources = state
+            .pictures
+            .iter()
+            .map(|(url, picture)| (url.clone(), Arc::downgrade(picture)))
+            .collect();
+    });
+}
+
+pub(super) fn avatar_picture(url: &str) -> slint::Image {
+    let source =
+        AVATAR_SOURCES.with_borrow(|sources| sources.get(url).and_then(std::sync::Weak::upgrade));
+    source.map_or_else(slint::Image::default, |source| {
+        PREVIEWS.with_borrow_mut(|cache| cache.image(&source, false))
+    })
+}
+
+thread_local! {
+    static AVATAR_SOURCES: RefCell<HashMap<String, std::sync::Weak<Picture>>> = RefCell::default();
+}
+
 /// A full image's size once shrunk to the viewer's largest.
 pub(super) fn fit(width: u32, height: u32) -> (u32, u32) {
     use talk_core::chat::{VIEW_HEIGHT, VIEW_WIDTH};
@@ -110,46 +135,249 @@ pub(super) fn picture(picture: &Picture) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// An animation's frames for Slint and how long each shows, in milliseconds;
-/// both empty for a still picture.
-pub(super) fn animation(picture: &Arc<Picture>) -> (ModelRc<slint::Image>, ModelRc<i32>) {
-    if picture.frames.len() < 2 {
-        return (ModelRc::default(), ModelRc::default());
+/// Gallery metadata is cheap to keep for the whole timeline. Copy pixels
+/// into Slint only when a visible row asks for its image.
+struct ImageCells(Vec<(ImageCell, Option<Arc<Picture>>)>);
+
+pub(super) fn image_cells(cells: Vec<(ImageCell, Option<Arc<Picture>>)>) -> ModelRc<ImageCell> {
+    ModelRc::new(ImageCells(cells))
+}
+
+impl Model for ImageCells {
+    type Data = ImageCell;
+
+    fn row_count(&self) -> usize {
+        self.0.len()
     }
-    let delays = ModelRc::new(VecModel::from(
-        picture
-            .frames
+
+    fn row_data(&self, row: usize) -> Option<ImageCell> {
+        let (cell, source) = self.0.get(row)?;
+        let mut cell = cell.clone();
+        if let Some(source) = source {
+            cell.image = PREVIEWS.with_borrow_mut(|cache| cache.image(source, cell.spoiler));
+        }
+        Some(cell)
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &()
+    }
+}
+
+/// Converted previews shared across row rebuilds, with an eight MiB limit.
+/// Visible Slint components keep their own handles after cache eviction.
+#[derive(Default)]
+struct Previews {
+    images: std::collections::VecDeque<CachedPreview>,
+    bytes: usize,
+}
+
+struct CachedPreview {
+    source: std::sync::Weak<Picture>,
+    spoiler: bool,
+    image: slint::Image,
+    bytes: usize,
+}
+
+const PREVIEW_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+impl Previews {
+    fn image(&mut self, source: &Arc<Picture>, spoiler: bool) -> slint::Image {
+        self.images
+            .retain(|cached| cached.source.strong_count() > 0);
+        self.bytes = self.images.iter().map(|cached| cached.bytes).sum();
+        let weak = Arc::downgrade(source);
+        if let Some(index) = self
+            .images
             .iter()
-            .map(|frame| i32::try_from(frame.delay_ms).unwrap_or(i32::MAX))
+            .position(|cached| cached.source.ptr_eq(&weak) && cached.spoiler == spoiler)
+        {
+            let cached = self.images.remove(index).unwrap();
+            let image = cached.image.clone();
+            self.images.push_back(cached);
+            return image;
+        }
+        let image = if spoiler {
+            blurred(source)
+        } else {
+            picture(source)
+        };
+        let size = image.size();
+        let bytes = size.width as usize * size.height as usize * 4;
+        if bytes <= PREVIEW_CACHE_BYTES {
+            while self.bytes + bytes > PREVIEW_CACHE_BYTES {
+                self.bytes -= self.images.pop_front().unwrap().bytes;
+            }
+            self.bytes += bytes;
+            self.images.push_back(CachedPreview {
+                source: weak,
+                spoiler,
+                image: image.clone(),
+                bytes,
+            });
+        }
+        image
+    }
+}
+
+thread_local! {
+    static PREVIEWS: RefCell<Previews> = RefCell::default();
+}
+
+/// An animation's frames for Slint and how long each shows, in milliseconds;
+/// both empty for a still picture. The frames decode as they show.
+pub(super) fn animation(picture: &Arc<Picture>) -> (ModelRc<slint::Image>, ModelRc<i32>) {
+    let Some(animation) = &picture.animation else {
+        return (ModelRc::default(), ModelRc::default());
+    };
+    let delays = ModelRc::new(VecModel::from(
+        animation
+            .delays
+            .iter()
+            .map(|delay| i32::try_from(*delay).unwrap_or(i32::MAX))
             .collect::<Vec<_>>(),
     ));
     let frames = FRAMES.with_borrow_mut(|cache| {
-        cache.retain(|(source, _)| source.strong_count() > 0);
-        if let Some((_, frames)) = cache
+        cache.retain(|frames| frames.strong_count() > 0);
+        let shared = cache
             .iter()
-            .find(|(source, _)| std::ptr::eq(source.as_ptr(), Arc::as_ptr(picture)))
-        {
-            return frames.clone();
-        }
-        let frames = ModelRc::new(VecModel::from(
-            picture
-                .frames
-                .iter()
-                .map(|frame| {
-                    slint::Image::from_rgba8(
-                        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                            &frame.rgba,
-                            picture.width,
-                            picture.height,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
-        cache.push((Arc::downgrade(picture), frames.clone()));
-        frames
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|frames| Arc::ptr_eq(&frames.picture, picture));
+        let frames = shared.unwrap_or_else(|| {
+            let frames = Rc::new(Frames {
+                picture: picture.clone(),
+                decoding: RefCell::default(),
+            });
+            cache.push(Rc::downgrade(&frames));
+            frames
+        });
+        ModelRc::from(frames)
     });
     (frames, delays)
+}
+
+thread_local! {
+    /// Animations' frames handed to Slint, so a row built again shares its
+    /// picture's.
+    static FRAMES: RefCell<Vec<std::rc::Weak<Frames>>> = RefCell::default();
+    /// Runs while decoders are in use, including after the last row scrolls away.
+    static FRAME_SWEEP: slint::Timer = slint::Timer::default();
+}
+
+/// How long an animation keeps its decoder after its last frame showed, as
+/// when its row scrolled away.
+const IDLE_FRAMES: Duration = Duration::from_secs(1);
+
+/// An animation's frames, decoded in order as Slint asks for them: only the
+/// one showing is kept, and only while it shows.
+struct Frames {
+    picture: Arc<Picture>,
+    decoding: RefCell<Decoding>,
+}
+
+#[derive(Default)]
+struct Decoding {
+    /// The frames still to come.
+    frames: Option<Box<dyn Iterator<Item = Vec<u8>>>>,
+    /// The index of the next.
+    next: usize,
+    shown: Option<(usize, slint::Image)>,
+    used: Option<Duration>,
+}
+
+impl Model for Frames {
+    type Data = slint::Image;
+
+    fn row_count(&self) -> usize {
+        self.picture
+            .animation
+            .as_ref()
+            .map_or(0, |animation| animation.delays.len())
+    }
+
+    fn row_data(&self, row: usize) -> Option<slint::Image> {
+        let now = Duration::from_millis(i_slint_core::animations::current_tick().0);
+        let image = {
+            let mut decoding = self.decoding.borrow_mut();
+            decoding.used = Some(now);
+            match &decoding.shown {
+                Some((shown, image)) if *shown == row => Some(image.clone()),
+                _ => self.decode(&mut decoding, row),
+            }
+        };
+        FRAME_SWEEP.with(|timer| {
+            if !timer.running() {
+                timer.start(slint::TimerMode::Repeated, IDLE_FRAMES, || {
+                    if !sweep(Duration::from_millis(
+                        i_slint_core::animations::current_tick().0,
+                    )) {
+                        FRAME_SWEEP.with(slint::Timer::stop);
+                    }
+                });
+            }
+        });
+        image
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &()
+    }
+}
+
+impl Frames {
+    /// Frame `row`, decoding on from the last or again from the first. A
+    /// frame that fails leaves the last one showing.
+    fn decode(&self, decoding: &mut Decoding, row: usize) -> Option<slint::Image> {
+        if decoding.frames.is_none() || decoding.next > row {
+            decoding.frames = Some(self.picture.frames());
+            decoding.next = 0;
+        }
+        let frames = decoding.frames.as_mut()?;
+        while decoding.next < row {
+            frames.next();
+            decoding.next += 1;
+        }
+        let Some(rgba) = frames.next() else {
+            return Some(
+                decoding
+                    .shown
+                    .as_ref()
+                    .map_or_else(|| picture(&self.picture), |(_, image)| image.clone()),
+            );
+        };
+        decoding.next += 1;
+        let image = slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                &rgba,
+                self.picture.width,
+                self.picture.height,
+            ),
+        );
+        decoding.shown = Some((row, image.clone()));
+        Some(image)
+    }
+}
+
+/// Lets animations that stopped showing give up their decoders and frames.
+fn sweep(now: Duration) -> bool {
+    let mut active = false;
+    FRAMES.with_borrow(|cache| {
+        for frames in cache.iter().filter_map(std::rc::Weak::upgrade) {
+            // The one decoding now is in use.
+            let Ok(mut decoding) = frames.decoding.try_borrow_mut() else {
+                active = true;
+                continue;
+            };
+            if decoding
+                .used
+                .is_some_and(|used| now.saturating_sub(used) >= IDLE_FRAMES)
+            {
+                *decoding = Decoding::default();
+            }
+            active |= decoding.used.is_some();
+        }
+    });
+    active
 }
 
 /// A picture shrunk to a few pixels, which Slint smooths into a blur when it's
@@ -185,7 +413,9 @@ pub(super) fn blurred(picture: &Picture) -> slint::Image {
 
 /// A picture whose preview is on its way, shown as a skeleton meanwhile.
 pub(super) fn loading(attachment: &talk_core::chat::Attachment) -> bool {
-    attachment.image && attachment.preview.is_none() && !attachment.preview_failed
+    (attachment.image || attachment.video)
+        && attachment.preview.is_none()
+        && !attachment.preview_failed
 }
 
 /// The size a preview will show at, from the picture's own size when known,
@@ -211,16 +441,18 @@ pub(super) fn coming_size(attachment: &talk_core::chat::Attachment) -> (i32, i32
 pub(super) fn gallery(
     previews: &[Preview<'_>],
     covered: &dyn Fn(usize) -> bool,
-) -> (Vec<ImageCell>, i32, i32) {
+) -> (ModelRc<ImageCell>, i32, i32) {
     const TILE: i32 = 178;
     const GAP: i32 = 4;
     let cell =
         |index: usize, attachment: &talk_core::chat::Attachment, preview: Option<&Arc<Picture>>| {
+            // A video whose poster didn't come plays all the same.
             let Some(preview) = preview else {
                 return ImageCell {
                     index: index as i32,
                     name: attachment.name.clone().into(),
-                    loading: true,
+                    loading: loading(attachment),
+                    video: attachment.video,
                     ..Default::default()
                 };
             };
@@ -229,8 +461,8 @@ pub(super) fn gallery(
                 return ImageCell {
                     index: index as i32,
                     name: attachment.name.clone().into(),
-                    image: blurred(preview),
                     spoiler,
+                    video: attachment.video,
                     ..Default::default()
                 };
             }
@@ -238,14 +470,14 @@ pub(super) fn gallery(
             ImageCell {
                 index: index as i32,
                 name: attachment.name.clone().into(),
-                image: picture(preview),
                 frames,
                 delays,
+                video: attachment.video,
                 ..Default::default()
             }
         };
     match previews {
-        [] => (vec![], 0, 0),
+        [] => (ModelRc::default(), 0, 0),
         [(index, attachment, preview)] => {
             let (width, height) = match preview {
                 Some(preview) => (preview.width as i32, preview.height as i32),
@@ -256,22 +488,176 @@ pub(super) fn gallery(
                 height,
                 ..cell(*index, attachment, *preview)
             };
-            (vec![image], width, height)
+            (image_cells(vec![(image, preview.cloned())]), width, height)
         }
         _ => {
             let cells = previews
                 .iter()
                 .enumerate()
-                .map(|(place, (index, attachment, preview))| ImageCell {
-                    x: (place % 2) as i32 * (TILE + GAP),
-                    y: (place / 2) as i32 * (TILE + GAP),
-                    width: TILE,
-                    height: TILE,
-                    ..cell(*index, attachment, *preview)
+                .map(|(place, (index, attachment, preview))| {
+                    (
+                        ImageCell {
+                            x: (place % 2) as i32 * (TILE + GAP),
+                            y: (place / 2) as i32 * (TILE + GAP),
+                            width: TILE,
+                            height: TILE,
+                            ..cell(*index, attachment, *preview)
+                        },
+                        preview.cloned(),
+                    )
                 })
                 .collect();
             let rows = previews.len().div_ceil(2) as i32;
-            (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
+            (
+                image_cells(cells),
+                2 * TILE + GAP,
+                rows * TILE + (rows - 1) * GAP,
+            )
         }
+    }
+}
+
+#[cfg(all(test, feature = "discord"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn galleries_copy_only_requested_previews_and_bound_their_cache() {
+        PREVIEWS.set(Previews::default());
+        let attachments: Vec<_> = (0..40)
+            .map(|index| talk_core::chat::Attachment {
+                name: format!("{index}.png"),
+                size: None,
+                image: true,
+                dimensions: Some((360, 240)),
+                preview: Some(Arc::new(Picture {
+                    width: 360,
+                    height: 240,
+                    rgba: vec![index; 360 * 240 * 4],
+                    ..Default::default()
+                })),
+                preview_failed: false,
+                placement: Placement::Message,
+                spoiler: false,
+                video: false,
+            })
+            .collect();
+        let row = message_row(
+            &ChatMessage {
+                attachments,
+                ..Default::default()
+            },
+            &HashSet::new(),
+        );
+        assert_eq!(row.images.row_count(), 40);
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 0));
+
+        let first = row.images.row_data(0).unwrap();
+        assert_eq!(
+            (first.image.size().width, first.image.size().height),
+            (360, 240)
+        );
+        assert_eq!(first.image, row.images.row_data(0).unwrap().image);
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 360 * 240 * 4));
+        for index in 1..row.images.row_count() {
+            row.images.row_data(index).unwrap();
+        }
+        PREVIEWS.with_borrow(|cache| {
+            assert!(cache.bytes <= PREVIEW_CACHE_BYTES);
+            assert!(cache.images.len() < row.images.row_count());
+        });
+        // Eviction cannot invalidate a handle held by a visible component.
+        assert_eq!(
+            (first.image.size().width, first.image.size().height),
+            (360, 240)
+        );
+        assert_eq!(
+            row.images.row_data(0).unwrap().image.size(),
+            first.image.size()
+        );
+        PREVIEWS.set(Previews::default());
+    }
+
+    #[test]
+    fn avatar_sources_are_weak_and_pixels_are_converted_only_when_requested() {
+        PREVIEWS.set(Previews::default());
+        let mut state = AppState::default();
+        let source = Arc::new(Picture {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+            ..Default::default()
+        });
+        let weak = Arc::downgrade(&source);
+        state.pictures.insert("avatar".into(), source);
+        refresh_avatar_sources(&state);
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 0));
+        let shown = avatar_picture("avatar");
+        assert_eq!(shown, avatar_picture("avatar"));
+        PREVIEWS.with_borrow(|cache| assert_eq!(cache.bytes, 4));
+        drop(state);
+        assert!(
+            weak.upgrade().is_none(),
+            "neither registry nor converted cache pins core pixels"
+        );
+        assert_eq!(avatar_picture("avatar").size().width, 0);
+        assert_eq!(
+            shown.size().width,
+            1,
+            "a component's image handle stays valid"
+        );
+        AVATAR_SOURCES.with_borrow_mut(HashMap::clear);
+        PREVIEWS.set(Previews::default());
+    }
+
+    #[test]
+    fn idle_animation_releases_its_decoder_without_another_frame_request() {
+        i_slint_backend_testing::init_no_event_loop();
+        let file = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testing/fixtures/gif-h264.mp4"),
+        )
+        .unwrap();
+        let picture = Arc::new(talk_core::chat::decode_picture(&file, 32, 32).unwrap());
+        let (frames, _) = animation(&picture);
+        let shown = frames.row_data(0).unwrap();
+        let model = FRAMES.with_borrow(|cache| cache.last().unwrap().upgrade().unwrap());
+        assert!(model.decoding.borrow().frames.is_some());
+        i_slint_backend_testing::mock_elapsed_time(IDLE_FRAMES * 2);
+        slint::platform::update_timers_and_animations();
+        assert!(model.decoding.borrow().frames.is_none());
+        assert!(model.decoding.borrow().shown.is_none());
+        FRAME_SWEEP.with(|timer| assert!(!timer.running()));
+        assert_eq!(shown.size(), frames.row_data(0).unwrap().size());
+    }
+
+    #[test]
+    fn animations_decode_the_frame_showing_and_let_it_go_when_idle() {
+        i_slint_backend_testing::init_no_event_loop();
+        let file = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testing/fixtures/gif-h264.mp4"),
+        )
+        .unwrap();
+        let picture = Arc::new(talk_core::chat::decode_picture(&file, 32, 32).unwrap());
+        let decoded: Vec<_> = picture.frames().collect();
+        let (frames, delays) = animation(&picture);
+        assert_eq!((frames.row_count(), delays.row_count()), (10, 10));
+        let pixels = |row: usize| {
+            let image = frames.row_data(row).unwrap();
+            image.to_rgba8().unwrap().as_bytes().to_vec()
+        };
+        // In turn, out of turn, and around again from the first.
+        for row in [0, 1, 1, 2, 7, 3, 0, 9] {
+            assert_eq!(pixels(row), decoded[row], "frame {row}");
+        }
+        // A row built again shares them.
+        assert!(frames == animation(&picture).0);
+        // Idle, it gives up its decoder, and decodes again when it shows.
+        let model = FRAMES.with_borrow(|cache| cache[0].upgrade().unwrap());
+        i_slint_backend_testing::mock_elapsed_time(IDLE_FRAMES * 2);
+        slint::platform::update_timers_and_animations();
+        assert!(
+            model.decoding.borrow().frames.is_none() && model.decoding.borrow().shown.is_none()
+        );
+        assert_eq!(pixels(4), decoded[4]);
     }
 }

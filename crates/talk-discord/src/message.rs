@@ -100,6 +100,14 @@ pub struct Attachment {
     pub preview_url: Option<String>,
     /// The image scaled down to fit the viewer, by the same proxy.
     pub view_url: Option<String>,
+    /// A still picture to show when the preview, a video, can't be shown:
+    /// a Tenor or Giphy GIF's first frame.
+    #[serde(default)]
+    pub still_url: Option<String>,
+    /// A video that plays in place of the picture, which is its poster: an
+    /// attached video, or a link's through the media proxy.
+    #[serde(default)]
+    pub video_url: Option<String>,
     pub shown: Shown,
     /// Marked as a spoiler: by a name starting `SPOILER_`, or by its flags.
     pub spoiler: bool,
@@ -313,27 +321,31 @@ pub fn parse(value: &Value) -> Option<Message> {
         .into_iter()
         .flatten()
         .filter_map(|attachment| {
-            let image = attachment["content_type"]
-                .as_str()
-                .is_some_and(|kind| kind.starts_with("image/"));
+            let kind = attachment["content_type"].as_str().unwrap_or_default();
+            let image = kind.starts_with("image/");
+            // The media proxy makes a video's poster from its first frame.
+            let video = kind.starts_with("video/");
+            let url: String = attachment["url"].as_str()?.into();
             let name = attachment["filename"].as_str()?;
             Some(Attachment {
                 name: name.into(),
                 size: attachment["size"].as_u64(),
-                url: attachment["url"].as_str()?.into(),
                 image,
-                dimensions: image
+                dimensions: (image || video)
                     .then(|| {
                         let side = |name: &str| u32::try_from(attachment[name].as_u64()?).ok();
                         Some((side("width")?, side("height")?))
                     })
                     .flatten(),
-                preview_url: image
-                    .then(|| scaled_url(attachment, PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                preview_url: (image || video)
+                    .then(|| scaled_url(attachment, PREVIEW_WIDTH, PREVIEW_HEIGHT, image))
                     .flatten(),
                 view_url: image
-                    .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT))
+                    .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT, true))
                     .flatten(),
+                video_url: video.then(|| url.clone()),
+                url,
+                still_url: None,
                 shown: Shown::Message,
                 spoiler: name.starts_with("SPOILER_")
                     || attachment["flags"].as_u64().unwrap_or_default() & IS_SPOILER != 0,
@@ -393,6 +405,8 @@ pub fn parse(value: &Value) -> Option<Message> {
             dimensions: Some((STICKER_SIZE, STICKER_SIZE)),
             preview_url: Some(url.clone()),
             view_url: Some(url),
+            still_url: None,
+            video_url: None,
             shown: Shown::Sticker,
             spoiler: false,
         });
@@ -455,8 +469,15 @@ pub const VIEW_HEIGHT: u64 = 1200;
 /// Asks Discord's media proxy for the image fitted into `max_width` by
 /// `max_height` and never enlarged, as the official client does, so a phone
 /// photo doesn't download in full. It comes as WebP, but a GIF stays a GIF,
-/// so it moves.
-pub(crate) fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) -> Option<String> {
+/// so it moves. With `animated`, as Discord's client asks, an animated
+/// picture, such as an AVIF, comes as an animated WebP rather than its first
+/// frame; a video's poster asks without, for its first frame alone.
+pub(crate) fn scaled_url(
+    attachment: &Value,
+    max_width: u64,
+    max_height: u64,
+    animated: bool,
+) -> Option<String> {
     let url = attachment["proxy_url"].as_str()?;
     let (width, height) = (
         attachment["width"].as_u64()?,
@@ -479,7 +500,11 @@ pub(crate) fn scaled_url(attachment: &Value, max_width: u64, max_height: u64) ->
             .split('?')
             .next()
             .is_some_and(|path| path.ends_with(".gif"));
-    let format = if gif { "" } else { "format=webp&" };
+    let format = match (gif, animated) {
+        (true, _) => "",
+        (false, true) => "animated=true&format=webp&",
+        (false, false) => "format=webp&",
+    };
     Some(format!(
         "{url}{separator}{format}width={}&height={}",
         fit(width),
@@ -1062,7 +1087,9 @@ mod tests {
             "edited_timestamp": "2026-10-06T10:00:00.000000+00:00",
             "referenced_message": {"id": "9", "author": {"id": "2", "username": "ann"}, "content": "hello"},
             "attachments": [{"filename": "cat.png", "size": 10, "url": "https://cdn/cat.png", "content_type": "image/png",
-                "proxy_url": "https://media/cat.png?ex=1", "width": 1440, "height": 540}],
+                "proxy_url": "https://media/cat.png?ex=1", "width": 1440, "height": 540},
+                {"filename": "clip.mp4", "size": 99, "url": "https://cdn/clip.mp4", "content_type": "video/mp4",
+                "proxy_url": "https://media/clip.mp4", "width": 1920, "height": 1080}],
             "reactions": [
                 {"emoji": {"id": null, "name": "👍"}, "count": 2, "me": true},
                 {"emoji": {"id": "5", "name": "pog"}, "count": 1, "me": false},
@@ -1083,13 +1110,23 @@ mod tests {
         assert!(message.attachments[0].image);
         assert_eq!(
             message.attachments[0].preview_url.as_deref(),
-            Some("https://media/cat.png?ex=1&format=webp&width=360&height=135")
+            Some("https://media/cat.png?ex=1&animated=true&format=webp&width=360&height=135")
         );
         assert_eq!(
             message.attachments[0].view_url.as_deref(),
-            Some("https://media/cat.png?ex=1&format=webp&width=1440&height=540"),
+            Some("https://media/cat.png?ex=1&animated=true&format=webp&width=1440&height=540"),
             "a small image isn't enlarged"
         );
+        // A video plays from the file, its poster from the media proxy.
+        let video = &message.attachments[1];
+        assert!(!video.image);
+        assert_eq!(video.video_url.as_deref(), Some("https://cdn/clip.mp4"));
+        assert_eq!(
+            video.preview_url.as_deref(),
+            Some("https://media/clip.mp4?format=webp&width=360&height=203")
+        );
+        assert_eq!(video.dimensions, Some((1920, 1080)));
+        assert_eq!(message.attachments[0].video_url, None);
         assert_eq!(message.reactions[1].key, ":pog:");
         assert_eq!(message.reactions[1].emoji, "pog:5");
         assert_eq!(message.timestamp(), 1_730_014_552);

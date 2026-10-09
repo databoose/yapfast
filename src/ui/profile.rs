@@ -157,6 +157,7 @@ pub(super) fn profile_data(
 pub(super) fn presence_name(presence: Option<Presence>) -> &'static str {
     match presence {
         Some(Presence::Online) => "online",
+        Some(Presence::Mobile) => "mobile",
         Some(Presence::Idle) => "idle",
         Some(Presence::DoNotDisturb) => "dnd",
         Some(Presence::Offline) => "offline",

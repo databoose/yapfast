@@ -30,6 +30,8 @@ pub(super) struct Reach {
     voice: bool,
     /// Pictures arrived, which can show anywhere.
     pictures: bool,
+    /// The video playing changed.
+    video: bool,
     pub(super) everything: bool,
 }
 
@@ -38,6 +40,7 @@ impl Reach {
         composer: true,
         voice: true,
         pictures: true,
+        video: true,
         everything: true,
     };
 
@@ -58,6 +61,10 @@ impl Reach {
                 pictures: true,
                 ..Self::default()
             },
+            Event::Video(_) => Self {
+                video: true,
+                ..Self::default()
+            },
             _ => Self::EVERYTHING,
         }
     }
@@ -67,6 +74,7 @@ impl Reach {
             composer: self.composer || other.composer,
             voice: self.voice || other.voice,
             pictures: self.pictures || other.pictures,
+            video: self.video || other.video,
             everything: self.everything || other.everything,
         }
     }
@@ -145,9 +153,16 @@ impl Adapter {
         if reach.voice {
             self.show_voice(window);
         }
+        if reach.video {
+            self.show_video(window);
+        }
     }
 
     pub(super) fn refresh(&mut self, window: &TalkWindow) {
+        refresh_avatar_sources(&self.app.state);
+        window
+            .global::<PictureStore>()
+            .set_revision(self.app.state.picture_changes as i32);
         self.show_viewer(window);
         self.show_profile(window);
         let changes = Changes::read(self, window);
@@ -168,6 +183,7 @@ impl Adapter {
         self.show_composer(window);
         self.show_messages(window, &changes);
         self.show_voice(window);
+        self.show_video(window);
         let state = &self.app.state;
         if changes.selection && state.selected_room().is_some_and(|room| !room.voice) {
             window.invoke_focus_composer();
@@ -320,7 +336,8 @@ impl Adapter {
                     id: server.id.clone().into(),
                     name: server.name.clone().into(),
                     initial: initials(&server.name),
-                    picture: cached_picture(&mut self.pictures, state, server.icon.as_deref()),
+                    picture: slint::Image::default(),
+                    picture_url: server.icon.as_deref().unwrap_or_default().into(),
                     selected: state.navigation == Navigation::Server(server.id.clone()),
                     unread: server
                         .channels
@@ -361,7 +378,8 @@ impl Adapter {
                 name: request.name.as_str().into(),
                 initial: initial(&request.name),
                 tint: tint(&request.id),
-                picture: cached_picture(&mut self.pictures, state, request.avatar.as_deref()),
+                picture: slint::Image::default(),
+                picture_url: request.avatar.as_deref().unwrap_or_default().into(),
                 incoming: request.incoming,
                 detail: match (request.incoming, request.spam) {
                     (true, true) => "Maybe spam",
@@ -401,7 +419,8 @@ impl Adapter {
                 name: friend.name.as_str().into(),
                 initial: initial(&friend.name),
                 tint: tint(&friend.id),
-                picture: cached_picture(&mut self.pictures, state, friend.avatar.as_deref()),
+                picture: slint::Image::default(),
+                picture_url: friend.avatar.as_deref().unwrap_or_default().into(),
                 presence: presence_name(Some(friend.presence.unwrap_or(Presence::Offline))).into(),
                 activity: friend
                     .activity
@@ -433,31 +452,23 @@ impl Adapter {
                     })),
         );
         let dm_icon = self.icons.dm.clone();
-        let request_row = |room: &talk_core::chat::ChatRoom,
-                           pictures: &mut HashMap<String, slint::Image>| {
-            RoomRow {
-                id: room.id.clone().into(),
-                name: room.name.clone().into(),
-                icon: dm_icon.clone(),
-                direct: true,
-                initial: initial(&room.name),
-                tint: tint(&room.id),
-                picture: cached_picture(pictures, state, room.avatar.as_deref()),
-                discord: true,
-                person: room.person.is_some(),
-                unread: room.unread > 0,
-                ..Default::default()
-            }
+        let request_row = |room: &&talk_core::chat::ChatRoom| RoomRow {
+            id: room.id.clone().into(),
+            name: room.name.clone().into(),
+            icon: dm_icon.clone(),
+            direct: true,
+            initial: initial(&room.name),
+            tint: tint(&room.id),
+            picture: slint::Image::default(),
+            picture_url: room.avatar.as_deref().unwrap_or_default().into(),
+            discord: true,
+            person: room.person.is_some(),
+            unread: room.unread > 0,
+            ..Default::default()
         };
-        let rows: Vec<_> = message_requests
-            .iter()
-            .map(|room| request_row(room, &mut self.pictures))
-            .collect();
+        let rows: Vec<_> = message_requests.iter().map(&request_row).collect();
         update_model(&self.models.message_requests, rows);
-        let rows: Vec<_> = spam
-            .iter()
-            .map(|room| request_row(room, &mut self.pictures))
-            .collect();
+        let rows: Vec<_> = spam.iter().map(&request_row).collect();
         update_model(&self.models.spam_rooms, rows);
         if direct {
             listed.retain(|room| {
@@ -505,7 +516,8 @@ impl Adapter {
                     direct: room.direct,
                     initial: initial(&room.name),
                     tint: tint(&room.id),
-                    picture: cached_picture(&mut self.pictures, state, room.avatar.as_deref()),
+                    picture: slint::Image::default(),
+                    picture_url: room.avatar.as_deref().unwrap_or_default().into(),
                     discord: room.direct && room.network == Network::Discord,
                     locked: room.locked,
                     person: room.person.is_some(),
@@ -703,7 +715,8 @@ impl Adapter {
                     name: member.name.clone().into(),
                     initial: initial(&member.name),
                     tint: tint(&member.name),
-                    picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                    picture: slint::Image::default(),
+                    picture_url: member.avatar.as_deref().unwrap_or_default().into(),
                     presence: presence_name(member.presence).into(),
                     color: role_color(member.color),
                     has_color: member.color.is_some(),
@@ -781,7 +794,8 @@ impl Adapter {
                 name: member.name.clone().into(),
                 initial: initial(&member.name),
                 tint: tint(&member.name),
-                picture: cached_picture(&mut self.pictures, state, member.avatar.as_deref()),
+                picture: slint::Image::default(),
+                picture_url: member.avatar.as_deref().unwrap_or_default().into(),
                 color: role_color(member.color),
                 has_color: member.color.is_some(),
                 ..Default::default()
@@ -1160,19 +1174,19 @@ impl Adapter {
                     let new_day = !day.is_empty()
                         && before.is_none_or(|before| self::day(before.timestamp) != day);
                     row.first = new_day || before.is_none_or(|before| !continues(before, message));
-                    row.picture = if collapsed(message, &self.revealed) {
-                        slint::Image::default()
+                    row.picture = slint::Image::default();
+                    row.picture_url = if collapsed(message, &self.revealed) {
+                        SharedString::default()
                     } else {
-                        cached_picture(&mut self.pictures, state, message.avatar.as_deref())
+                        message.avatar.as_deref().unwrap_or_default().into()
                     };
-                    row.reply_picture = cached_picture(
-                        &mut self.pictures,
-                        state,
-                        message
-                            .reply
-                            .as_ref()
-                            .and_then(|reply| reply.avatar.as_deref()),
-                    );
+                    row.reply_picture = slint::Image::default();
+                    row.reply_picture_url = message
+                        .reply
+                        .as_ref()
+                        .and_then(|reply| reply.avatar.as_deref())
+                        .unwrap_or_default()
+                        .into();
                     row.day = if new_day {
                         day.into()
                     } else {
@@ -1186,6 +1200,11 @@ impl Adapter {
                 })
                 .collect();
             show_rows(&self.models.messages, rows);
+            // A sent echo can get its event id without changing the row count
+            // or scroll indexes. Report the new item ids after layout settles.
+            if messages_changed || selection_changed || reset {
+                window.invoke_media_viewport();
+            }
             // A jump to a message places the list itself, even one made after
             // this refresh; see `show_message`.
             let weak = window.as_weak();
@@ -1566,6 +1585,73 @@ impl Adapter {
     }
 
     /// The image viewer: the full image once it arrives, the preview until then.
+    /// The video playing, which its cell shows through [`VideoPlayer`]; its
+    /// pictures come with each stream tick.
+    fn show_video(&mut self, window: &TalkWindow) {
+        let player = window.global::<VideoPlayer>();
+        let video = self.app.state.video.as_ref();
+        // Stream ticks bring its pictures, until a quiet moment while it
+        // isn't playing.
+        window.set_video_active(video.is_some_and(|video| video.frames.is_some()));
+        self.video_quiet.set(0);
+        let same = video.is_some_and(|video| {
+            player.get_item() == video.item.as_str() && player.get_index() == video.index as i32
+        });
+        if !same {
+            player.set_has_frame(false);
+            player.set_frame(slint::Image::default());
+            player.set_progress(0.0);
+            player.set_time(SharedString::default());
+            player.set_expanded(false);
+        }
+        let Some(video) = video else {
+            player.set_item(SharedString::default());
+            player.set_index(-1);
+            player.set_error(SharedString::default());
+            return;
+        };
+        player.set_item(video.item.clone().into());
+        player.set_index(video.index as i32);
+        player.set_loading(video.loading);
+        player.set_playing(video.playing);
+        player.set_ended(video.ended);
+        player.set_sound(video.sound);
+        player.set_muted(video.muted);
+        player.set_volume(video.volume);
+        player.set_error(video.error.clone().unwrap_or_default().into());
+        let attachment = self
+            .app
+            .state
+            .message(&video.item)
+            .and_then(|message| message.attachments.get(video.index));
+        player.set_name(attachment.map_or_else(SharedString::default, |attachment| {
+            attachment.name.as_str().into()
+        }));
+        let (width, height) = video
+            .size
+            .or_else(|| attachment.and_then(|attachment| attachment.dimensions))
+            .unwrap_or_default();
+        player.set_video_width(i32::try_from(width).unwrap_or(0));
+        player.set_video_height(i32::try_from(height).unwrap_or(0));
+        player.set_duration(
+            video
+                .duration_ms
+                .and_then(|duration| i32::try_from(duration).ok())
+                .unwrap_or(0),
+        );
+        if video.ended {
+            player.set_progress(1.0);
+        }
+        if !same || video.ended {
+            let at = if video.ended {
+                video.duration_ms.unwrap_or(0)
+            } else {
+                0
+            };
+            player.set_time(video_time(at, video.duration_ms).into());
+        }
+    }
+
     fn show_viewer(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         let viewing = state.viewer.as_ref().and_then(|viewer| {
@@ -1711,5 +1797,20 @@ pub(super) fn unread_label(unread: &[ChatMessage]) -> String {
         format!("{count} new {messages} since {}", first.time)
     } else {
         format!("{count} new {messages} since {} on {on}", first.time)
+    }
+}
+
+/// How far into a video, and how long it is when known, as "0:12 / 1:30".
+pub(super) fn video_time(at_ms: u64, duration_ms: Option<u64>) -> String {
+    let clock = |ms: u64| {
+        let seconds = ms / 1000;
+        match seconds / 3600 {
+            0 => format!("{}:{:02}", seconds / 60, seconds % 60),
+            hours => format!("{hours}:{:02}:{:02}", seconds / 60 % 60, seconds % 60),
+        }
+    };
+    match duration_ms {
+        Some(duration) => format!("{} / {}", clock(at_ms.min(duration)), clock(duration)),
+        None => clock(at_ms),
     }
 }
