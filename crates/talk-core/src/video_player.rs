@@ -412,8 +412,11 @@ fn take(shared: &Shared, progress: &Progress, control: Control) {
         Control::Size { width, height } => {
             if state.size != (width, height) {
                 state.size = (width, height);
-                // The picture showing is drawn again at the new size.
-                if let Some(shown) = state.shown {
+                // A still picture is drawn again at the new size. Playing,
+                // the next pictures come at it: moving back to the one
+                // showing would decode again from the keyframe before it on
+                // each change, holding the video while the window resizes.
+                if let Some(shown) = state.shown.filter(|_| !state.playing || state.ended) {
                     move_to(shared, &mut state, shown);
                 }
             }
@@ -983,6 +986,22 @@ mod tests {
         controls.send(Control::Play).unwrap();
         let mut last = shown();
         assert!(last > 1000);
+        // Resizing while it plays, as while dragging the window's edge,
+        // doesn't hold it back: pictures go on at the new size.
+        let mut times = vec![last];
+        for step in 0..20 {
+            controls
+                .send(Control::Size {
+                    width: 80 + step % 2 * 20,
+                    height: 80,
+                })
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            times.extend(frames.take_timed(|_, _, _| ()).map(|(_, time)| time));
+        }
+        assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
+        assert!(*times.last().unwrap() >= last + 100, "{times:?}");
+        last = *times.last().unwrap();
         controls.send(Control::Pause).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         if let Some((_, time)) = frames.take_timed(|_, _, _| ()) {

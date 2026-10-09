@@ -640,8 +640,9 @@ an error.
   them full screen. Full screen, as the image viewer shows a picture, the
   video is enlarged to fit the window with its bar under it; Space plays or
   pauses it, the arrow keys move five seconds, and Escape brings it back to
-  its cell. The worker draws its pictures at the size they show, so a change
-  of size redraws the picture showing, even while paused. MP4, MOV and WebM
+  its cell. The worker draws its pictures at the size they show: playing,
+  the next ones come at a new size; paused, the one showing is redrawn,
+  which moving back to it would hold up while playing. MP4, MOV and WebM
   play, with H264, VP8, VP9 or AV1 pictures in 8-bit 4:2:0 and AAC, Opus,
   MP3, Vorbis or FLAC sound; HEVC, which iPhones record, doesn't, as
   libwebrtc's FFmpeg lacks it. The file downloads into `discord-videos/`
