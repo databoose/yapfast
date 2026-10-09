@@ -615,6 +615,8 @@ pub struct Video {
     pub frames: Option<Arc<crate::frames::Frames>>,
     /// How long it plays, once the file says.
     pub duration_ms: Option<u64>,
+    /// Its pictures' full width and height, once its file opens.
+    pub size: Option<(u32, u32)>,
     /// Until its file opens.
     pub loading: bool,
     pub playing: bool,

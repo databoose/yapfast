@@ -660,6 +660,9 @@ struct Adapter {
     /// Stream ticks without a new picture of a video that isn't playing,
     /// after which they stop until the video changes.
     video_quiet: Cell<u32>,
+    /// The size, in pixels, of the cell the video playing shows in when it
+    /// isn't full screen.
+    video_cell: Cell<(u32, u32)>,
     /// Server icons and avatars already handed to Slint, by address.
     pictures: HashMap<String, slint::Image>,
     /// `AppState::picture_changes` when the message rows were last built.
@@ -758,6 +761,7 @@ impl Adapter {
                 sidebar: None,
                 pictures_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),
+                video_cell: Cell::new((0, 0)),
                 pictures: HashMap::new(),
                 pictures_seen: 0,
                 jumped: None,

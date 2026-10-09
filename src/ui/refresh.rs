@@ -1595,6 +1595,7 @@ impl Adapter {
             player.set_frame(slint::Image::default());
             player.set_progress(0.0);
             player.set_time(SharedString::default());
+            player.set_expanded(false);
         }
         let Some(video) = video else {
             player.set_item(SharedString::default());
@@ -1610,6 +1611,26 @@ impl Adapter {
         player.set_sound(video.sound);
         player.set_muted(video.muted);
         player.set_error(video.error.clone().unwrap_or_default().into());
+        let attachment = self
+            .app
+            .state
+            .message(&video.item)
+            .and_then(|message| message.attachments.get(video.index));
+        player.set_name(attachment.map_or_else(SharedString::default, |attachment| {
+            attachment.name.as_str().into()
+        }));
+        let (width, height) = video
+            .size
+            .or_else(|| attachment.and_then(|attachment| attachment.dimensions))
+            .unwrap_or_default();
+        player.set_video_width(i32::try_from(width).unwrap_or(0));
+        player.set_video_height(i32::try_from(height).unwrap_or(0));
+        player.set_duration(
+            video
+                .duration_ms
+                .and_then(|duration| i32::try_from(duration).ok())
+                .unwrap_or(0),
+        );
         if video.ended {
             player.set_progress(1.0);
         }

@@ -909,13 +909,45 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(window) = weak.upgrade() {
             let scale = window.window().scale_factor();
             let pixels = |side: f32| (side * scale).round().max(1.0) as u32;
+            let (width, height) = (pixels(width), pixels(height));
             let action = Action::PlayVideo {
                 item: item.into(),
                 index: index as usize,
+                width,
+                height,
+            };
+            let mut adapter = state.borrow_mut();
+            adapter.video_cell.set((width, height));
+            adapter.action(&window, action);
+        }
+    });
+    // Full screen, its pictures come at the viewer's size; back in its
+    // cell, at the cell's.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_expand(move |expanded| {
+        if let Some(window) = weak.upgrade() {
+            window.global::<VideoPlayer>().set_expanded(expanded);
+            if !expanded {
+                let mut adapter = state.borrow_mut();
+                let (width, height) = adapter.video_cell.get();
+                adapter.action(&window, Action::Video(VideoCommand::Size { width, height }));
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    player.on_resize(move |width, height| {
+        if let Some(window) = weak.upgrade()
+            && window.global::<VideoPlayer>().get_expanded()
+        {
+            let scale = window.window().scale_factor();
+            let pixels = |side: f32| (side * scale).round().max(1.0) as u32;
+            let size = VideoCommand::Size {
                 width: pixels(width),
                 height: pixels(height),
             };
-            state.borrow_mut().action(&window, action);
+            state.borrow_mut().action(&window, Action::Video(size));
         }
     });
     let state = adapter.clone();

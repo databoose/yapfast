@@ -188,6 +188,8 @@ struct State {
     show_next: bool,
     /// The largest pictures are drawn.
     size: (u32, u32),
+    /// When the picture showing shows in the file.
+    shown: Option<u64>,
     playing: bool,
     clock: Clock,
     volume: f32,
@@ -249,6 +251,7 @@ pub fn play(
             seek: None,
             show_next: true,
             size: (job.width, job.height),
+            shown: None,
             playing: true,
             clock: Clock {
                 at_ms: 0,
@@ -368,6 +371,7 @@ fn show(
             shown = true;
             if !late && writer.fits(picture.width, picture.height) {
                 state.show_next = false;
+                state.shown = Some(picture.time);
                 writer.write_timed(picture.width, picture.height, picture.time, |pixels| {
                     pixels.copy_from_slice(&picture.rgba);
                 });
@@ -405,7 +409,15 @@ fn take(shared: &Shared, progress: &Progress, control: Control) {
         }
         Control::Seek(time_ms) => move_to(shared, &mut state, time_ms),
         Control::Volume(volume) => state.volume = volume,
-        Control::Size { width, height } => state.size = (width, height),
+        Control::Size { width, height } => {
+            if state.size != (width, height) {
+                state.size = (width, height);
+                // The picture showing is drawn again at the new size.
+                if let Some(shown) = state.shown {
+                    move_to(shared, &mut state, shown);
+                }
+            }
+        }
         Control::Downloaded { size } => match size {
             Some(size) => progress.downloaded(size),
             None => progress.failed(),
@@ -450,6 +462,10 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
     // Pictures and sound before a move's time are decoded, not shown.
     let mut skip_until = 0;
     let mut last_picture = 0;
+    // Since the last move, the last picture skipped, and whether one came
+    // to show.
+    let mut skipped = None;
+    let mut queued = false;
     loop {
         let (generation, size) = {
             let mut state = shared.lock();
@@ -470,6 +486,8 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                         resampler.reset();
                     }
                     skip_until = time_ms;
+                    skipped = None;
+                    queued = false;
                     state = shared.lock();
                     continue;
                 }
@@ -495,8 +513,10 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                 let time = time.unwrap_or(last_picture + 40);
                 last_picture = time;
                 if time < skip_until {
+                    skipped = Some(time);
                     continue;
                 }
+                queued = true;
                 drop(state);
                 let (width, height) = fit(video.width, video.height, size.0, size.1);
                 let mut rgba = vec![0; width as usize * height as usize * 4];
@@ -539,6 +559,8 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                     at: 0,
                 });
             }
+            // A move past the last picture shows the last one.
+            Ok(Next::End) if !queued && skipped.is_some() => state.seek = skipped.take(),
             Ok(Next::End) => state.ended = true,
             // A read a move or stop interrupted; the loop takes the move.
             Err(_) if shared.interrupt.load(Ordering::Relaxed) => {}
@@ -939,11 +961,18 @@ mod tests {
         // Moving while it waits at the end shows the picture there; playing
         // goes on from it.
         controls.send(Control::Seek(1000)).unwrap();
-        let shown = || loop {
-            if let Some((_, time)) = frames.take_timed(|_, _, _| ()) {
-                return time;
+        let shown = || {
+            let waiting = Instant::now();
+            loop {
+                if let Some((_, time)) = frames.take_timed(|_, _, _| ()) {
+                    return time;
+                }
+                assert!(
+                    waiting.elapsed() < Duration::from_secs(5),
+                    "a picture shows"
+                );
+                std::thread::sleep(Duration::from_millis(5));
             }
-            std::thread::sleep(Duration::from_millis(5));
         };
         assert_eq!(shown(), 1000);
         std::thread::sleep(Duration::from_millis(200));
@@ -952,12 +981,36 @@ mod tests {
             "paused at the end"
         );
         controls.send(Control::Play).unwrap();
-        assert!(shown() > 1000);
+        let mut last = shown();
+        assert!(last > 1000);
         controls.send(Control::Pause).unwrap();
         std::thread::sleep(Duration::from_millis(100));
-        let _ = frames.take_timed(|_, _, _| ());
+        if let Some((_, time)) = frames.take_timed(|_, _, _| ()) {
+            last = time;
+        }
         std::thread::sleep(Duration::from_millis(200));
         assert!(frames.take_timed(|_, _, _| ()).is_none(), "paused");
+
+        // Larger, as in the viewer: the picture showing is drawn again at
+        // the new size, and it stays paused.
+        controls
+            .send(Control::Size {
+                width: 160,
+                height: 160,
+            })
+            .unwrap();
+        let redrawn = loop {
+            if let Some(redrawn) = frames.take_timed(|width, height, _| (width, height)) {
+                break redrawn;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(redrawn, ((160, 90), last));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(frames.take_timed(|_, _, _| ()).is_none(), "still paused");
+        // Moving past the last picture shows the last one.
+        controls.send(Control::Seek(60_000)).unwrap();
+        assert!(shown() >= 1900);
         stop.store(true, Ordering::Relaxed);
         player.join().unwrap().unwrap();
     }

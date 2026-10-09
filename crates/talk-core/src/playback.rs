@@ -10,7 +10,7 @@ use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use crate::{
     chat::{Video, VideoCommand},
-    stream_worker::{Control, Report, Worker},
+    stream_worker::{Control, Report, WATCH_HEIGHT, WATCH_WIDTH, Worker},
 };
 
 pub struct Playback {
@@ -102,10 +102,14 @@ impl Playback {
                 }
             }
             Wake::Report(Some(Report::Opened {
-                duration_ms, sound, ..
+                duration_ms,
+                width,
+                height,
+                sound,
             })) => {
                 self.video.loading = false;
                 self.video.duration_ms = duration_ms;
+                self.video.size = Some((width, height));
                 self.video.sound = sound;
             }
             Wake::Report(Some(Report::Finished)) => {
@@ -152,7 +156,11 @@ impl Playback {
                 self.video.ended = false;
                 Control::Seek(time_ms)
             }
-            VideoCommand::Size { width, height } => Control::Size { width, height },
+            // Pictures larger than the frames file holds wouldn't show.
+            VideoCommand::Size { width, height } => Control::Size {
+                width: width.min(WATCH_WIDTH),
+                height: height.min(WATCH_HEIGHT),
+            },
             VideoCommand::Mute(muted) => {
                 self.video.muted = muted;
                 Control::Volume(if muted { 0.0 } else { 1.0 })

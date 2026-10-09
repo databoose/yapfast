@@ -9,7 +9,7 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
   lucide-static 1.51.0.
 - chevron-left, chevron-right, ellipsis, forward, search and smile follow
   lucide-static 1.51.0's paths in the same wrapper.
-- pause, play and volume-x follow Lucide's paths in the same wrapper.
+- maximize, minimize, pause, play and volume-x follow Lucide's paths in the same wrapper.
 
 discord.svg is Discord's logo from Simple Icons 16.34.0
 (https://simpleicons.org/, CC0 1.0), filled white. It marks Discord servers

@@ -1132,6 +1132,7 @@ fn videos_play_in_the_open_room_until_it_closes() {
         index: 1,
         frames: None,
         duration_ms: Some(6000),
+        size: Some((480, 270)),
         loading: false,
         playing: true,
         ended: false,

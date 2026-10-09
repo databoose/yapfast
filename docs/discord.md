@@ -636,14 +636,19 @@ an error.
   picture.
 - Attached videos show their poster, which the media proxy makes from the
   first frame (`proxy_url?format=webp`), with a play button; they play in
-  place, with sound, under a bar to pause, move through them and mute.
-  MP4, MOV and WebM play, with H264, VP8, VP9 or AV1 pictures in 8-bit
-  4:2:0 and AAC, Opus, MP3, Vorbis or FLAC sound; HEVC, which iPhones
-  record, doesn't, as libwebrtc's FFmpeg lacks it. The file downloads into
-  `discord-videos/` beside the account file, and plays as it arrives: the
-  worker's reads wait for the download. It goes when the video stops, as
-  when the channel closes. Sound plays on the call's speakers through
-  PulseAudio, on Linux only for now.
+  place, with sound, under a bar to pause, move through them, mute and show
+  them full screen. Full screen, as the image viewer shows a picture, the
+  video is enlarged to fit the window with its bar under it; Space plays or
+  pauses it, the arrow keys move five seconds, and Escape brings it back to
+  its cell. The worker draws its pictures at the size they show, so a change
+  of size redraws the picture showing, even while paused. MP4, MOV and WebM
+  play, with H264, VP8, VP9 or AV1 pictures in 8-bit 4:2:0 and AAC, Opus,
+  MP3, Vorbis or FLAC sound; HEVC, which iPhones record, doesn't, as
+  libwebrtc's FFmpeg lacks it. The file downloads into `discord-videos/`
+  beside the account file, and plays as it arrives: the worker's reads wait
+  for the download. It goes when the video stops, as when the channel
+  closes. Sound plays on the call's speakers through PulseAudio, on Linux
+  only for now.
 - Spoilers, `||like this||`, show under an opaque cover that a click lifts.
   The cover is drawn by Talk's patched Slint text renderer over a link to
   `talk:spoiler/{item}/{n}`; see [building](building.md). A spoiler in a reply

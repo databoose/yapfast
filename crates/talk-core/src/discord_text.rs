@@ -251,6 +251,7 @@ impl Chat {
             index,
             frames: None,
             duration_ms: None,
+            size: None,
             loading: true,
             playing: true,
             ended: false,
