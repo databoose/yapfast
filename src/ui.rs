@@ -457,6 +457,8 @@ struct Layout {
     /// Each server's collapsed channel categories, by server ID, as their
     /// headings show them.
     collapsed: HashMap<String, std::collections::BTreeSet<String>>,
+    /// The rail's open folders, by folder ID.
+    open_folders: std::collections::BTreeSet<String>,
     /// How often this device added each reaction, for the frequent reactions.
     reactions: HashMap<String, u32>,
     /// List Discord channels hidden from this account, locked.

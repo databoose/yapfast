@@ -7,6 +7,8 @@
 // (default 56, 60 in all). `--servers N` adds N - 1 large, quiet servers, as a
 // busy account has, for measuring; POST /_control/busy-start makes Bob post
 // in their channels ten times a second, and /_control/busy-stop stops him.
+// `--folders` puts them in folders in Alice's server list: the first three in
+// a red "Games" folder, the next two in one without a name or colour.
 // `--dms N` adds N older DMs, each with a person of its own, every other one
 // a friend, as a busy account has. `--images N` attaches a picture of its own
 // to every Nth extra history message, for a channel heavy with previews.
@@ -100,6 +102,7 @@ const { values: args } = parseArgs({
     channels: { type: "string", default: "0" },
     authors: { type: "string", default: "0" },
     nitro: { type: "boolean", default: false },
+    folders: { type: "boolean", default: false },
     "cdn-delay": { type: "string", default: "0" },
     unread: { type: "string", default: "5" },
   },
@@ -959,6 +962,36 @@ const fillers = Array.from({ length: Math.max(0, Number(args.servers) - 1) }, (_
   };
 });
 const fillerList = [...fillerChannels.keys()];
+
+// The server list in Alice's settings, GuildFolders (field 14): "Server" on
+// its own, then each folder, then the other servers on their own. A folder
+// has an id, an Int64Value, and may have a name and a colour, wrappers too.
+if (args.folders) {
+  const varint = (field: number, value: bigint) => {
+    const out = [field << 3];
+    for (; value >= 0x80n; value >>= 7n) out.push(Number(value & 0x7fn) | 0x80);
+    return new Uint8Array([...out, Number(value)]);
+  };
+  const entry = (servers: string[], id?: number, name?: string, color?: number) => {
+    const packed = new Uint8Array(servers.length * 8);
+    servers.forEach((server, index) => new DataView(packed.buffer).setBigUint64(index * 8, BigInt(server), true));
+    return protoBytes(1, new Uint8Array([
+      ...protoBytes(1, packed),
+      ...(id === undefined ? [] : protoBytes(2, varint(1, BigInt(id)))),
+      ...(name === undefined ? [] : protoBytes(3, protoBytes(1, text(name)))),
+      ...(color === undefined ? [] : protoBytes(4, varint(1, BigInt(color)))),
+    ]));
+  };
+  const ids = fillers.map((filler) => filler.id);
+  const list = [
+    entry([GUILD]),
+    entry(ids.slice(0, 3), 1, "Games", 0xed4245),
+    entry(ids.slice(3, 5), 2),
+    ...ids.slice(5).map((id) => entry([id])),
+  ];
+  const folders = new Uint8Array(list.flatMap((bytes) => [...bytes]));
+  settings = Buffer.concat([Buffer.from(settings, "base64"), protoBytes(14, folders)]).toString("base64");
+}
 
 function ready(ws: Socket) {
   const { user: _, ...alice } = member(users.alice);

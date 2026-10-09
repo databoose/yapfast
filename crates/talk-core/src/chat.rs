@@ -217,6 +217,20 @@ pub struct ChatServer {
     pub unavailable: bool,
     /// The address of the server's icon; see [`DiscordCommand::Pictures`].
     pub icon: Option<String>,
+    /// The folder it sits in on the rail. A folder's servers come one after
+    /// another in [`RoomIndex::servers`].
+    pub folder: Option<ServerFolder>,
+}
+
+/// A folder of servers on the rail, as Discord's server list keeps them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerFolder {
+    /// Unique across networks, such as `discord-folder:7`.
+    pub id: String,
+    /// Its name; none when it has none, and the rail names it by its servers.
+    pub name: Option<String>,
+    /// Its colour as RGB; none for the default.
+    pub color: Option<u32>,
 }
 
 /// A room's standing from its power levels: Matrix's admin is 100 and moderator 50.

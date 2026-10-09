@@ -72,6 +72,10 @@ pub(crate) fn read_kept(url: &str, mut picture: chat::Picture) -> chat::Picture 
     picture
 }
 
+/// The start of a Discord folder's [`chat::ServerFolder::id`].
+#[cfg(feature = "discord")]
+const FOLDER_PREFIX: &str = "discord-folder:";
+
 pub fn server_id(guild: &str) -> String {
     format!("{PREFIX}{guild}")
 }
@@ -240,8 +244,13 @@ impl Index {
                 .into_iter()
                 .map(|indexed| (indexed.source.id.clone(), indexed))
                 .collect();
+        let folders: std::collections::HashMap<&str, &talk_discord::settings::Folder> = snapshot
+            .folders
+            .iter()
+            .flat_map(|folder| folder.servers.iter().map(move |id| (id.as_str(), folder)))
+            .collect();
         for server in &snapshot.servers {
-            let indexed = match kept.remove(&server.id) {
+            let mut indexed = match kept.remove(&server.id) {
                 Some(indexed) if indexed.current(snapshot, server, show_hidden, premium) => indexed,
                 _ => {
                     let (made, listed) = server_rooms(snapshot, server, show_hidden, premium);
@@ -258,6 +267,14 @@ impl Index {
                     }
                 }
             };
+            indexed.server.folder =
+                folders
+                    .get(server.id.as_str())
+                    .map(|folder| chat::ServerFolder {
+                        id: format!("{FOLDER_PREFIX}{}", folder.id),
+                        name: folder.name.clone(),
+                        color: folder.color,
+                    });
             self.servers.push(indexed);
         }
         let dms = dm_rooms(snapshot, premium, me);
@@ -429,6 +446,8 @@ fn server_rooms(
         muted: server.muted,
         unavailable: server.unavailable,
         icon: server.icon.clone(),
+        // Index::update sets it, since a folder changes without its servers.
+        folder: None,
     };
     (rooms, server)
 }
@@ -689,6 +708,16 @@ mod tests {
                 servers: vec![Arc::new(unread)],
                 ..first.clone()
             },
+            // The servers go into a folder, unchanged themselves.
+            Snapshot {
+                folders: vec![talk_discord::settings::Folder {
+                    id: "7".into(),
+                    name: Some("Games".into()),
+                    color: Some(0x5865f2),
+                    servers: vec!["10".into(), "20".into()],
+                }],
+                ..first.clone()
+            },
             first.clone(),
         ];
         let mut kept = Index::default();
@@ -698,6 +727,15 @@ mod tests {
             kept.update(snapshot, false, &mut rooms, &mut servers);
             let (new_rooms, new_servers) = index(snapshot, false);
             assert!(rooms == new_rooms && servers == new_servers);
+            let folders: Vec<_> = servers
+                .iter()
+                .map(|server| server.folder.as_ref().map(|folder| folder.id.as_str()))
+                .collect();
+            let foldered = !snapshot.folders.is_empty();
+            assert_eq!(
+                folders,
+                [foldered.then_some("discord-folder:7"); 2][..servers.len()]
+            );
         }
         assert_eq!(rooms.len(), 4);
     }

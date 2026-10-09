@@ -67,8 +67,9 @@ pub(super) struct Tracker {
     friends: Vec<String>,
     /// Those this account blocked, by user id.
     blocked: Vec<String>,
-    /// The server list's order, from the settings.
+    /// The server list's order and folders, from the settings.
     order: Vec<String>,
+    folders: Vec<settings::Folder>,
     /// This account's status and custom status, from its settings.
     pub(super) status: String,
     pub(super) custom_status: Option<CustomStatus>,
@@ -104,6 +105,7 @@ impl Tracker {
             friends: Vec::new(),
             blocked: Vec::new(),
             order: Vec::new(),
+            folders: Vec::new(),
             status: "online".into(),
             custom_status: None,
             requests: HashMap::new(),
@@ -643,8 +645,9 @@ impl Tracker {
         if let Some(custom) = read.custom {
             self.custom_status = custom;
         }
-        if let Some(order) = settings::server_order(encoded) {
-            self.order = order;
+        if let Some(list) = settings::server_list(encoded) {
+            self.order = list.order;
+            self.folders = list.folders;
             self.sort_servers();
         }
     }
@@ -947,6 +950,7 @@ impl Tracker {
                 premium_type: self.premium,
             }),
             servers,
+            folders: self.folders.clone(),
             conversations: self.conversations(&names),
             friends: self.friends.clone(),
             friend_list: self.friend_list(&names),
@@ -1235,6 +1239,28 @@ mod tests {
             order(&tracker),
             ["Delta", "Echo", "Charlie", "Bravo", "Alpha"]
         );
+        assert!(tracker.snapshot().folders.is_empty());
+
+        // A folder keeps its servers together, in its order.
+        let games = settings::Folder {
+            id: "7".into(),
+            name: Some("Games".into()),
+            color: None,
+            servers: vec!["40".into(), "10".into()],
+        };
+        tracker.apply(
+            &Event::UserSettingsProtoUpdate,
+            &json!({"settings": {"type": 1, "proto": settings::write_server_list(&[
+                settings::Folder { servers: vec!["20".into()], ..Default::default() },
+                games.clone(),
+                settings::Folder { servers: vec!["30".into()], ..Default::default() },
+            ])}}),
+        );
+        assert_eq!(
+            order(&tracker),
+            ["Echo", "Bravo", "Delta", "Alpha", "Charlie"]
+        );
+        assert_eq!(tracker.snapshot().folders, [games]);
     }
 
     #[test]

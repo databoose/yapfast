@@ -41,6 +41,7 @@ fn connected() -> Application {
             muted: false,
             unavailable: false,
             icon: None,
+            folder: None,
         }],
     }));
     app.apply(Event::Timeline {
@@ -110,6 +111,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
             muted: false,
             unavailable: false,
             icon: None,
+            folder: None,
         }],
     }));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
@@ -2881,6 +2883,7 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
             muted: false,
             unavailable: false,
             icon: None,
+            folder: None,
         }],
     }));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));

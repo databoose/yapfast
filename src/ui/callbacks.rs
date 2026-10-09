@@ -623,6 +623,19 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_toggle_folder(move |id| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        if !adapter.layout.open_folders.remove(id.as_str()) {
+            adapter.layout.open_folders.insert(id.into());
+        }
+        adapter.layout.write(&adapter.root);
+        // What the sidebar was built from leaves the layout out.
+        adapter.sidebar = None;
+        adapter.show_sidebar(&window);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_select_room(move |id| {
         if let Some(window) = weak.upgrade() {
             state

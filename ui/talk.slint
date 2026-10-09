@@ -34,7 +34,7 @@ import { SignInScreen, VerifyBanner } from "sign-in.slint";
 // Rust sees these, besides TalkWindow.
 export { Badges } from "theme.slint";
 export { PersonRow } from "voice.slint";
-export { ServerRow, RoomRow } from "rail.slint";
+export { ServerRow, RoomRow, FolderServer } from "rail.slint";
 export { PictureStore } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
 export { EmojiCell, EmojiRow, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
@@ -449,6 +449,8 @@ export component TalkWindow inherits Window {
     callback retry-sync;
     callback navigate-dms;
     callback navigate-server(string);
+    /// A folder on the rail was clicked: open or close it.
+    callback toggle-folder(string);
     callback select-room(string);
     callback draft-edited(string);
     callback filter-edited;
@@ -864,6 +866,7 @@ export component TalkWindow inherits Window {
                         dms-selected: root.dms-selected; dms-unread: root.dms-unread; dms-badge: root.dms-badge; servers: root.servers;
                         navigate-dms => { root.navigate-dms(); }
                         navigate-server(id) => { root.navigate-server(id); }
+                        toggle-folder(id) => { root.toggle-folder(id); }
                     }
                     // Channel sidebar: a lighter sheet held by the rail and the dock.
                     Rectangle {

@@ -22,6 +22,7 @@ impl Application {
                 muted: false,
                 unavailable: false,
                 icon: None,
+                folder: None,
             },
             ChatServer {
                 id: "coop".into(),
@@ -35,6 +36,7 @@ impl Application {
                 muted: false,
                 unavailable: false,
                 icon: None,
+                folder: None,
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());
