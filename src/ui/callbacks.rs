@@ -999,6 +999,15 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    player.on_change_volume(move |volume| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::Video(VideoCommand::Volume(volume)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_toggle_deafen(move || {
         if let Some(window) = weak.upgrade() {
             let deafened = state.borrow().app.state.voice.deafened;

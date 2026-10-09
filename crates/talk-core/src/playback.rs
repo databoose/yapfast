@@ -63,9 +63,11 @@ impl Playback {
             let _ = done.send(size);
         });
         let (worker, frames, reports) =
-            Worker::play(path.to_path_buf(), size, frame, speakers, 1.0).inspect_err(|_| {
-                download.abort();
-            })?;
+            Worker::play(path.to_path_buf(), size, frame, speakers, gain(&video)).inspect_err(
+                |_| {
+                    download.abort();
+                },
+            )?;
         Ok(Self {
             video: Video {
                 frames: Some(Arc::new(frames)),
@@ -163,7 +165,11 @@ impl Playback {
             },
             VideoCommand::Mute(muted) => {
                 self.video.muted = muted;
-                Control::Volume(if muted { 0.0 } else { 1.0 })
+                Control::Volume(gain(&self.video))
+            }
+            VideoCommand::Volume(volume) => {
+                turn(&mut self.video, volume);
+                Control::Volume(gain(&self.video))
             }
             // Dropping the playback stops it.
             VideoCommand::Stop => return,
@@ -180,10 +186,65 @@ impl Drop for Playback {
     }
 }
 
+/// Sets how loud a video plays; 0 mutes it, keeping its level for when
+/// it's unmuted.
+fn turn(video: &mut Video, volume: f32) {
+    let volume = volume.clamp(0.0, 1.0);
+    video.muted = volume == 0.0;
+    if volume > 0.0 {
+        video.volume = volume;
+    }
+}
+
+/// What the video's sound is multiplied by. Loudness is heard roughly as
+/// the square of the slider's travel, so its middle sounds half as loud.
+fn gain(video: &Video) -> f32 {
+    if video.muted {
+        0.0
+    } else {
+        video.volume * video.volume
+    }
+}
+
 /// The worker's next report, or never once they ended.
 async fn next(reports: &mut Option<UnboundedReceiver<Report>>) -> Option<Report> {
     let Some(receiver) = reports else {
         return std::future::pending().await;
     };
     receiver.recv().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_volume_slider_turns_the_sound_and_zero_mutes_it() {
+        let mut video = Video {
+            room: "r".into(),
+            item: "i".into(),
+            index: 0,
+            frames: None,
+            duration_ms: None,
+            size: None,
+            loading: false,
+            playing: true,
+            ended: false,
+            sound: true,
+            muted: false,
+            volume: 1.0,
+            error: None,
+        };
+        assert_eq!(gain(&video), 1.0);
+        turn(&mut video, 0.5);
+        assert_eq!(gain(&video), 0.25, "half the travel sounds half as loud");
+        turn(&mut video, 0.0);
+        assert!(video.muted);
+        assert_eq!(gain(&video), 0.0);
+        video.muted = false;
+        assert_eq!(gain(&video), 0.25, "unmuting brings back the level it had");
+        turn(&mut video, 2.0);
+        assert!(!video.muted);
+        assert_eq!(gain(&video), 1.0, "it doesn't go past full");
+    }
 }

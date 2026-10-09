@@ -648,7 +648,10 @@ an error.
   beside the account file, and plays as it arrives: the worker's reads wait
   for the download. It goes when the video stops, as when the channel
   closes. Sound plays on the call's speakers through PulseAudio, on Linux
-  only for now.
+  only for now. Over the mute button a slider sets how loud, as does the
+  wheel; its travel is squared, so its middle sounds about half as loud.
+  Turning it to nothing mutes, and unmuting brings back the level it had.
+  The next video plays as loud, until Talk closes.
 - Spoilers, `||like this||`, show under an opaque cover that a click lifts.
   The cover is drawn by Talk's patched Slint text renderer over a link to
   `talk:spoiler/{item}/{n}`; see [building](building.md). A spoiler in a reply

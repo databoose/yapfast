@@ -134,6 +134,9 @@ pub(crate) struct Chat {
     saving: tokio::time::Interval,
     /// The video playing in the open channel.
     video: Option<crate::playback::Playback>,
+    /// How loud the last video played, and whether muted: the next plays
+    /// the same.
+    video_sound: (f32, bool),
 }
 
 impl Drop for Chat {
@@ -179,6 +182,7 @@ impl Chat {
                 saving
             },
             video: None,
+            video_sound: (1.0, false),
         }))
     }
 
@@ -210,6 +214,7 @@ impl Chat {
             Command::Video(command) => {
                 if let Some(playback) = &mut self.video {
                     playback.command(command);
+                    self.video_sound = (playback.video.volume, playback.video.muted);
                     let _ = events.send(Event::Video(Some(playback.video.clone())));
                 }
                 return;
@@ -256,7 +261,8 @@ impl Chat {
             playing: true,
             ended: false,
             sound: false,
-            muted: false,
+            muted: self.video_sound.1,
+            volume: self.video_sound.0,
             error: None,
         };
         let found = self

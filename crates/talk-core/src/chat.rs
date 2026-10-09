@@ -601,6 +601,9 @@ pub enum VideoCommand {
         height: u32,
     },
     Mute(bool),
+    /// Play it this loud, from 0 to 1 as the slider stands, unmuted; 0
+    /// mutes it, keeping the level it had.
+    Volume(f32),
     Stop,
 }
 
@@ -625,6 +628,8 @@ pub struct Video {
     /// It has sound that plays.
     pub sound: bool,
     pub muted: bool,
+    /// How loud it plays unmuted, from 0 to 1 as the slider stands.
+    pub volume: f32,
     /// Why it stopped, for the person.
     pub error: Option<String>,
 }

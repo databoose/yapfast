@@ -1610,6 +1610,7 @@ impl Adapter {
         player.set_ended(video.ended);
         player.set_sound(video.sound);
         player.set_muted(video.muted);
+        player.set_volume(video.volume);
         player.set_error(video.error.clone().unwrap_or_default().into());
         let attachment = self
             .app

@@ -1138,6 +1138,7 @@ fn videos_play_in_the_open_room_until_it_closes() {
         ended: false,
         sound: true,
         muted: false,
+        volume: 1.0,
         error: None,
     };
     app.apply(Event::Video(Some(video("elsewhere"))));

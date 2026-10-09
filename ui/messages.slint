@@ -130,6 +130,8 @@ export global VideoPlayer {
     in property <bool> ended;
     in property <bool> sound;
     in property <bool> muted;
+    /// How loud it plays unmuted, from 0 to 1 as the volume slider stands.
+    in property <float> volume: 1;
     /// How far in, from 0 to 1, and as text, such as "0:12 / 1:30".
     in property <float> progress;
     in property <string> time;
@@ -152,6 +154,8 @@ export global VideoPlayer {
     callback toggle();
     callback seek(float);
     callback mute(bool);
+    /// Sets how loud it plays, unmuting it; 0 mutes it.
+    callback change-volume(float);
 }
 
 // A playing video's controls: play or pause, its time, a bar to move
@@ -182,12 +186,69 @@ component VideoControls inherits HorizontalLayout {
             moved => { if self.pressed { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); } }
         }
     }
-    if VideoPlayer.sound: Middle {
-        IconButton {
-            size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
-            icon: VideoPlayer.muted ? @image-url("icons/volume-x.svg") : @image-url("icons/volume-2.svg");
-            label: VideoPlayer.muted ? "Unmute" : "Mute";
-            clicked => { VideoPlayer.mute(!VideoPlayer.muted); }
+    // Mute, with a slider over it for how loud, while the pointer is on
+    // either; the wheel turns it too.
+    if VideoPlayer.sound: Rectangle {
+        width: 28px;
+        sound := TouchArea {
+            property <bool> open: self.has-hover || level.pressed;
+            property <length> rise: 112px;
+            property <float> shown: level.pressed ? level.dragged : VideoPlayer.muted ? 0 : VideoPlayer.volume;
+            y: (parent.height - 28px) / 2 - (self.open ? self.rise : 0px);
+            height: 28px + (self.open ? self.rise : 0px);
+            scroll-event(event) => {
+                if event.delta-y == 0 { return reject; }
+                VideoPlayer.change-volume(clamp(self.shown + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1));
+                return accept;
+            }
+            Rectangle {
+                y: 0; width: 28px; height: sound.rise - 4px;
+                visible: sound.open;
+                border-radius: 6px; background: #000000cc;
+                accessible-role: slider;
+                accessible-label: "Volume";
+                accessible-value: round(sound.shown * 100) + "%";
+                accessible-value-minimum: 0;
+                accessible-value-maximum: 100;
+                accessible-action-set-value(value) => { VideoPlayer.change-volume(clamp(value.to-float() / 100, 0, 1)); }
+                track := Rectangle {
+                    x: (parent.width - self.width) / 2; y: 14px; width: 4px; height: parent.height - 28px;
+                    border-radius: 2px; background: #ffffff4d;
+                    Rectangle {
+                        y: parent.height * (1 - sound.shown); height: parent.height * sound.shown;
+                        border-radius: 2px; background: #ffffff;
+                    }
+                    Rectangle {
+                        width: 12px; height: 12px; border-radius: 6px; background: #ffffff;
+                        x: (parent.width - self.width) / 2; y: parent.height * (1 - sound.shown) - self.height / 2;
+                    }
+                }
+                level := TouchArea {
+                    enabled: sound.open;
+                    mouse-cursor: MouseCursor.pointer;
+                    property <float> dragged;
+                    property <float> at: clamp(1 - (self.mouse-y - track.y) / track.height, 0, 1);
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                            self.dragged = self.at;
+                            VideoPlayer.change-volume(self.at);
+                        }
+                    }
+                    moved => {
+                        if self.pressed {
+                            self.dragged = self.at;
+                            VideoPlayer.change-volume(self.at);
+                        }
+                    }
+                }
+            }
+            IconButton {
+                y: parent.height - 28px; height: 28px;
+                size: 28px; glyph: 16px; tint: #ffffff; tip-side: 2;
+                icon: VideoPlayer.muted ? @image-url("icons/volume-x.svg") : @image-url("icons/volume-2.svg");
+                label: VideoPlayer.muted ? "Unmute" : "Mute";
+                clicked => { VideoPlayer.mute(!VideoPlayer.muted); }
+            }
         }
     }
     Middle {
@@ -207,8 +268,6 @@ component VideoCell inherits Rectangle {
     in property <ImageCell> cell;
     property <bool> active: VideoPlayer.item == root.item && VideoPlayer.index == root.cell.index;
     property <bool> failed: root.active && VideoPlayer.error != "";
-    /// The pointer is over the control bar, which the cell's own area is under.
-    property <bool> over-bar;
     accessible-role: button;
     accessible-label: (root.active && VideoPlayer.playing ? "Pause " : "Play ") + root.cell.name;
     accessible-action-default => { pointer.clicked(); }
@@ -216,10 +275,19 @@ component VideoCell inherits Rectangle {
         background: #000000;
         Image { width: parent.width; height: parent.height; source: VideoPlayer.frame; image-fit: contain; }
     }
+    // The bar is inside the cell's area, so the pointer on its controls is
+    // still over the cell and the bar stays.
     pointer := TouchArea {
         mouse-cursor: MouseCursor.pointer;
         clicked => {
             if root.active && !root.failed { VideoPlayer.toggle(); } else { VideoPlayer.play(root.item, root.cell.index, root.width, root.height); }
+        }
+        if root.active && !root.failed && !VideoPlayer.loading && (pointer.has-hover || !VideoPlayer.playing): Rectangle {
+            y: parent.height - self.height; height: 36px;
+            background: @linear-gradient(0deg, #000000cc 0%, #00000000 100%);
+            // Between the controls, a click leaves the video be.
+            TouchArea { mouse-cursor: MouseCursor.default; }
+            VideoControls { }
         }
     }
     if !root.active || root.failed || (VideoPlayer.ended && !pointer.has-hover): Rectangle {
@@ -237,14 +305,6 @@ component VideoCell inherits Rectangle {
         y: parent.height - self.height - 8px; width: min(parent.width - 16px, problem.preferred-width + 20px); height: 28px;
         border-radius: 6px; background: #000000cc;
         problem := Text { text: VideoPlayer.error; color: #ffffff; font-size: 13px; overflow: elide; }
-    }
-    if root.active && !root.failed && !VideoPlayer.loading && (pointer.has-hover || root.over-bar || !VideoPlayer.playing): Rectangle {
-        y: parent.height - self.height; height: 36px;
-        background: @linear-gradient(0deg, #000000cc 0%, #00000000 100%);
-        TouchArea {
-            changed has-hover => { root.over-bar = self.has-hover; }
-        }
-        VideoControls { }
     }
 }
 
