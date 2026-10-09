@@ -111,45 +111,152 @@ pub(super) fn picture(picture: &Picture) -> slint::Image {
 }
 
 /// An animation's frames for Slint and how long each shows, in milliseconds;
-/// both empty for a still picture.
+/// both empty for a still picture. The frames decode as they show.
 pub(super) fn animation(picture: &Arc<Picture>) -> (ModelRc<slint::Image>, ModelRc<i32>) {
-    if picture.frames.len() < 2 {
+    let Some(animation) = &picture.animation else {
         return (ModelRc::default(), ModelRc::default());
-    }
+    };
     let delays = ModelRc::new(VecModel::from(
-        picture
-            .frames
+        animation
+            .delays
             .iter()
-            .map(|frame| i32::try_from(frame.delay_ms).unwrap_or(i32::MAX))
+            .map(|delay| i32::try_from(*delay).unwrap_or(i32::MAX))
             .collect::<Vec<_>>(),
     ));
     let frames = FRAMES.with_borrow_mut(|cache| {
-        cache.retain(|(source, _)| source.strong_count() > 0);
-        if let Some((_, frames)) = cache
+        cache.retain(|frames| frames.strong_count() > 0);
+        let shared = cache
             .iter()
-            .find(|(source, _)| std::ptr::eq(source.as_ptr(), Arc::as_ptr(picture)))
-        {
-            return frames.clone();
-        }
-        let frames = ModelRc::new(VecModel::from(
-            picture
-                .frames
-                .iter()
-                .map(|frame| {
-                    slint::Image::from_rgba8(
-                        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                            &frame.rgba,
-                            picture.width,
-                            picture.height,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
-        cache.push((Arc::downgrade(picture), frames.clone()));
-        frames
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|frames| Arc::ptr_eq(&frames.picture, picture));
+        let frames = shared.unwrap_or_else(|| {
+            let frames = Rc::new(Frames {
+                picture: picture.clone(),
+                decoding: RefCell::default(),
+            });
+            cache.push(Rc::downgrade(&frames));
+            frames
+        });
+        ModelRc::from(frames)
     });
     (frames, delays)
+}
+
+thread_local! {
+    /// Animations' frames handed to Slint, so a row built again shares its
+    /// picture's.
+    static FRAMES: RefCell<Vec<std::rc::Weak<Frames>>> = RefCell::default();
+    /// When idle animations last gave up their decoders.
+    static SWEPT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// How long an animation keeps its decoder after its last frame showed, as
+/// when its row scrolled away.
+const IDLE_FRAMES: Duration = Duration::from_secs(1);
+
+/// An animation's frames, decoded in order as Slint asks for them: only the
+/// one showing is kept, and only while it shows.
+struct Frames {
+    picture: Arc<Picture>,
+    decoding: RefCell<Decoding>,
+}
+
+#[derive(Default)]
+struct Decoding {
+    /// The frames still to come.
+    frames: Option<Box<dyn Iterator<Item = Vec<u8>>>>,
+    /// The index of the next.
+    next: usize,
+    shown: Option<(usize, slint::Image)>,
+    used: Option<std::time::Instant>,
+}
+
+impl Model for Frames {
+    type Data = slint::Image;
+
+    fn row_count(&self) -> usize {
+        self.picture
+            .animation
+            .as_ref()
+            .map_or(0, |animation| animation.delays.len())
+    }
+
+    fn row_data(&self, row: usize) -> Option<slint::Image> {
+        let now = std::time::Instant::now();
+        let image = {
+            let mut decoding = self.decoding.borrow_mut();
+            decoding.used = Some(now);
+            match &decoding.shown {
+                Some((shown, image)) if *shown == row => Some(image.clone()),
+                _ => self.decode(&mut decoding, row),
+            }
+        };
+        sweep(now);
+        image
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &()
+    }
+}
+
+impl Frames {
+    /// Frame `row`, decoding on from the last or again from the first. A
+    /// frame that fails leaves the last one showing.
+    fn decode(&self, decoding: &mut Decoding, row: usize) -> Option<slint::Image> {
+        if decoding.frames.is_none() || decoding.next > row {
+            decoding.frames = Some(self.picture.frames());
+            decoding.next = 0;
+        }
+        let frames = decoding.frames.as_mut()?;
+        while decoding.next < row {
+            frames.next();
+            decoding.next += 1;
+        }
+        let Some(rgba) = frames.next() else {
+            return Some(
+                decoding
+                    .shown
+                    .as_ref()
+                    .map_or_else(|| picture(&self.picture), |(_, image)| image.clone()),
+            );
+        };
+        decoding.next += 1;
+        let image = slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                &rgba,
+                self.picture.width,
+                self.picture.height,
+            ),
+        );
+        decoding.shown = Some((row, image.clone()));
+        Some(image)
+    }
+}
+
+/// Lets animations that stopped showing give up their decoders and frames.
+fn sweep(now: std::time::Instant) {
+    if SWEPT
+        .get()
+        .is_some_and(|swept| now.duration_since(swept) < IDLE_FRAMES)
+    {
+        return;
+    }
+    SWEPT.set(Some(now));
+    FRAMES.with_borrow(|cache| {
+        for frames in cache.iter().filter_map(std::rc::Weak::upgrade) {
+            // The one decoding now is in use.
+            let Ok(mut decoding) = frames.decoding.try_borrow_mut() else {
+                continue;
+            };
+            if decoding
+                .used
+                .is_some_and(|used| now.duration_since(used) >= IDLE_FRAMES)
+            {
+                *decoding = Decoding::default();
+            }
+        }
+    });
 }
 
 /// A picture shrunk to a few pixels, which Slint smooths into a blur when it's
@@ -279,5 +386,41 @@ pub(super) fn gallery(
             let rows = previews.len().div_ceil(2) as i32;
             (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
         }
+    }
+}
+
+#[cfg(all(test, feature = "discord"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn animations_decode_the_frame_showing_and_let_it_go_when_idle() {
+        let file = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testing/fixtures/gif-h264.mp4"),
+        )
+        .unwrap();
+        let picture = Arc::new(talk_core::chat::decode_picture(&file, 32, 32).unwrap());
+        let decoded: Vec<_> = picture.frames().collect();
+        let (frames, delays) = animation(&picture);
+        assert_eq!((frames.row_count(), delays.row_count()), (10, 10));
+        let pixels = |row: usize| {
+            let image = frames.row_data(row).unwrap();
+            image.to_rgba8().unwrap().as_bytes().to_vec()
+        };
+        // In turn, out of turn, and around again from the first.
+        for row in [0, 1, 1, 2, 7, 3, 0, 9] {
+            assert_eq!(pixels(row), decoded[row], "frame {row}");
+        }
+        // A row built again shares them.
+        assert!(frames == animation(&picture).0);
+        // Idle, it gives up its decoder, and decodes again when it shows.
+        let model = FRAMES.with_borrow(|cache| cache[0].upgrade().unwrap());
+        model.decoding.borrow_mut().used = Some(std::time::Instant::now() - IDLE_FRAMES);
+        SWEPT.set(None);
+        sweep(std::time::Instant::now());
+        assert!(
+            model.decoding.borrow().frames.is_none() && model.decoding.borrow().shown.is_none()
+        );
+        assert_eq!(pixels(4), decoded[4]);
     }
 }

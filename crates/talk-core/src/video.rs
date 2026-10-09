@@ -6,11 +6,13 @@
 use std::{
     ffi::{c_int, c_uchar, c_uint, c_void},
     io::{Read, Seek, SeekFrom},
+    sync::Arc,
 };
 
 use anyhow::{Result, bail};
 
-use crate::chat::Picture;
+pub use crate::chat::fit;
+use crate::chat::{Animation, Picture};
 
 #[repr(C)]
 struct Raw {
@@ -69,9 +71,9 @@ pub trait Source: Read + Seek + Send {
     fn size(&mut self) -> Option<u64>;
 }
 
-impl Source for std::io::Cursor<&[u8]> {
+impl<T: AsRef<[u8]> + Send> Source for std::io::Cursor<T> {
     fn size(&mut self) -> Option<u64> {
-        Some(self.get_ref().len() as u64)
+        Some(self.get_ref().as_ref().len() as u64)
     }
 }
 
@@ -143,6 +145,11 @@ impl<'a> Video<'a> {
     /// with `sound`, its sound.
     pub fn open(source: impl Source + 'a, sound: bool) -> Option<Self> {
         let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4));
+        Self::open_with(source, sound, threads)
+    }
+
+    /// As [`Self::open`], decoding on up to `threads` threads.
+    fn open_with(source: impl Source + 'a, sound: bool, threads: usize) -> Option<Self> {
         let mut source: Box<Box<dyn Source + 'a>> = Box::new(Box::new(source));
         let mut info = Info::default();
         // SAFETY: the source stays boxed in the video for as long as FFmpeg reads it.
@@ -238,69 +245,83 @@ impl Drop for Video<'_> {
     }
 }
 
-/// A video as an animation that fits `width` by `height`, as a GIF's frames
-/// are: silent, looping, at most a minute of it.
+/// A video as an animation that fits `width` by `height`, as a GIF is:
+/// silent, looping, at most a minute of it. Each picture shows until the
+/// next one's time; the last, and any without a time, as long as the one
+/// before. A video that fails partway shows what came before.
 pub fn decode_animation(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     let mut video = Video::open(std::io::Cursor::new(data), false)?;
     let (width, height) = fit(video.width, video.height, width, height);
-    let mut next = || {
-        let decoded = video.decode().and_then(|next| match next {
-            Next::Picture(time) => {
-                let mut rgba = vec![0; width as usize * height as usize * 4];
-                video.picture(&mut rgba, width, height)?;
-                Ok(image::RgbaImage::from_raw(width, height, rgba).map(|picture| (picture, time)))
-            }
-            Next::Sound(_) | Next::End => Ok(None),
-        });
-        // A video that fails partway shows what came before.
-        decoded.unwrap_or_else(|error| {
-            tracing::debug!(%error, "could not decode a video's picture");
-            None
-        })
-    };
-    // Each picture shows until the next one's time. The last, and any
-    // without a time, show as long as the one before.
-    let mut held: Option<(image::RgbaImage, u64)> = None;
-    let mut delay = 100;
-    let mut done = false;
-    let frames = std::iter::from_fn(|| {
-        if done {
-            return None;
-        }
-        let (shown, start) = match held.take() {
-            Some(held) => held,
-            None => {
-                let (picture, time) = next()?;
-                (picture, time.unwrap_or(0))
+    let mut first = None;
+    let mut delays = Vec::new();
+    let (mut start, mut delay) = (None::<u64>, 100);
+    loop {
+        let time = match video.decode() {
+            Ok(Next::Picture(time)) => time,
+            Ok(Next::Sound(_)) => continue,
+            Ok(Next::End) => break,
+            Err(error) => {
+                tracing::debug!(%error, "could not decode a video's picture");
+                break;
             }
         };
-        match next() {
-            Some((picture, time)) if start < ANIMATION_MS => {
-                let time = time.unwrap_or(start + u64::from(delay));
-                if time > start {
-                    delay = (time - start).min(10_000) as u32;
-                }
-                held = Some((picture, time.max(start)));
-            }
-            _ => done = true,
+        if first.is_none() {
+            let mut rgba = vec![0; width as usize * height as usize * 4];
+            video.picture(&mut rgba, width, height).ok()?;
+            first = Some(rgba);
         }
-        Some(Some((shown, delay)))
-    });
-    crate::chat::animate(frames, width, height)
+        let shows = match start {
+            None => time.unwrap_or(0),
+            Some(before) => {
+                let time = time.unwrap_or(before + u64::from(delay));
+                if time > before {
+                    delay = (time - before).min(10_000) as u32;
+                }
+                delays.push(delay);
+                time.max(before)
+            }
+        };
+        start = Some(shows);
+        if shows >= ANIMATION_MS {
+            break;
+        }
+    }
+    start?;
+    delays.push(delay);
+    let rgba = first?;
+    let animation = (delays.len() > 1).then(|| Animation::video(Arc::from(data), delays));
+    Some(Picture {
+        width,
+        height,
+        rgba,
+        animation,
+    })
 }
 
-/// `width` by `height` shrunk to fit `max_width` by `max_height`, never
-/// enlarged, keeping its shape.
-pub fn fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
-    let scale = f64::min(
-        1.0,
-        f64::min(
-            f64::from(max_width) / f64::from(width),
-            f64::from(max_height) / f64::from(height),
-        ),
-    );
-    let side = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
-    (side(width), side(height))
+/// A video animation's pictures from the first, at `width` by `height`, each
+/// decoded as it's taken. One thread decodes them: they're small, and come
+/// one at a time.
+pub(crate) fn frames(
+    file: Arc<[u8]>,
+    width: u32,
+    height: u32,
+) -> Box<dyn Iterator<Item = Vec<u8>>> {
+    let Some(mut video) = Video::open_with(std::io::Cursor::new(file), false, 1) else {
+        return Box::new(std::iter::empty());
+    };
+    Box::new(std::iter::from_fn(move || {
+        loop {
+            match video.decode().ok()? {
+                Next::Picture(_) => {
+                    let mut rgba = vec![0; width as usize * height as usize * 4];
+                    video.picture(&mut rgba, width, height).ok()?;
+                    return Some(rgba);
+                }
+                Next::Sound(_) => {}
+                Next::End => return None,
+            }
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -343,18 +364,16 @@ mod tests {
             let picture =
                 crate::chat::decode_picture(&data, 32, 32).unwrap_or_else(|| panic!("{name}"));
             assert_eq!((picture.width, picture.height), (32, 18), "{name}");
-            assert_eq!(picture.frames.len(), 10, "{name}");
-            assert!(
-                picture.frames.iter().all(|frame| frame.delay_ms == 100),
-                "{name}: {:?}",
-                picture
-                    .frames
-                    .iter()
-                    .map(|frame| frame.delay_ms)
-                    .collect::<Vec<_>>()
+            assert_eq!(
+                picture.animation.as_ref().unwrap().delays,
+                [100; 10],
+                "{name}"
             );
+            let frames: Vec<_> = picture.frames().collect();
+            assert_eq!(frames.len(), 10, "{name}");
+            assert_eq!(frames[0], picture.rgba, "{name}");
             // The test pattern moves, so the pictures differ.
-            assert_ne!(picture.frames[0].rgba, picture.frames[5].rgba, "{name}");
+            assert_ne!(frames[0], frames[5], "{name}");
             assert!(picture.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
         }
         assert!(decode_animation(b"\0\0\0\x20ftypisom not really", 32, 32).is_none());

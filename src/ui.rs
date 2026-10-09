@@ -1151,13 +1151,6 @@ fn initials(name: &str) -> SharedString {
 
 use talk_core::chat::file_size;
 
-thread_local! {
-    /// Animations' frames handed to Slint, by the picture they're from, so a
-    /// row built again shares them.
-    static FRAMES: RefCell<Vec<(std::sync::Weak<Picture>, ModelRc<slint::Image>)>> =
-        RefCell::default();
-}
-
 /// An attachment's place in a message, the attachment, and its preview once
 /// it has arrived.
 type Preview<'a> = (

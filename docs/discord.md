@@ -621,9 +621,12 @@ an error.
   in the image viewer. The media proxy keeps GIFs as GIFs; other pictures
   come as WebP, asked for with `animated=true` as Discord's client does, so
   an animated one, such as vxtwitter's AVIF GIFs, stays animated rather than
-  turning into its first frame. An animation's frames are decoded once, up to
-  24 MB of them, dropping every other frame until the rest fit; frames shorter
-  than 20 ms play at 100 ms, as browsers do. Tenor and Giphy links arrive as
+  turning into its first frame. An animation keeps its file and first frame;
+  its frames decode one at a time on the UI thread as they show, and a second
+  after it last showed, as when its row scrolls away, it lets its decoder go.
+  Decoded whole, a few seconds of a GIF took tens of megabytes, and an open
+  channel kept every one it had loaded. Frames shorter than 20 ms play at
+  100 ms, as browsers do. Tenor and Giphy links arrive as
   MP4 "gifv" embeds, which play the same way, silent and looping, from the
   proxy's copy of the MP4 (`video.proxy_url`): up to a minute of it, decoded
   by the FFmpeg, libvpx and dav1d inside libwebrtc (`native/video.c`). One
