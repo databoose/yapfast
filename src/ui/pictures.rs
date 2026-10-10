@@ -28,6 +28,12 @@ pub(super) fn qr_code(address: &str) -> Option<slint::Image> {
 
 /// The picture at `url` once it has arrived, converted for Slint only once.
 /// Reads a picture waiting in the composer off the UI thread, then shows its preview.
+/// A staged file's picture, and the blur it shows as a spoiler.
+pub(super) struct Thumbnail {
+    pub(super) picture: slint::Image,
+    pub(super) covered: slint::Image,
+}
+
 pub(super) fn load_thumbnail(
     runtime: &BackgroundRuntime,
     weak: std::rc::Weak<RefCell<Adapter>>,
@@ -52,12 +58,13 @@ pub(super) fn load_thumbnail(
         let Some(slot) = adapter.thumbnails.get_mut(&path) else {
             return;
         };
-        *slot = picture.map(|picture| {
-            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+        *slot = picture.map(|picture| Thumbnail {
+            picture: slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
                 &picture.rgba,
                 picture.width,
                 picture.height,
-            ))
+            )),
+            covered: blurred(&picture),
         });
         if let Some(window) = window {
             adapter.refresh(&window);

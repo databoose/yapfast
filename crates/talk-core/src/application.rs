@@ -573,6 +573,12 @@ impl AppState {
             && self.staged().len() < chat::MAX_FILES
     }
 
+    /// Whether the next message's files can be marked as spoilers.
+    pub fn can_mark_spoilers(&self) -> bool {
+        self.selected_room()
+            .is_some_and(|room| room.capabilities.spoilers)
+    }
+
     /// Whether a message can be forwarded into this conversation from this
     /// device. Forwarding doesn't cross into Discord yet.
     pub fn can_forward_to(&self, room: &ChatRoom) -> bool {
@@ -666,6 +672,8 @@ pub enum Action {
     Stage(Vec<PathBuf>),
     /// Take the file at this index out of the next message.
     Unstage(usize),
+    /// Mark the file at this index of the next message as a spoiler, or not.
+    ToggleSpoiler(usize),
     /// Save the attachment at `index` of an item.
     SaveAttachment {
         item: String,
@@ -1170,6 +1178,7 @@ impl Application {
                 vec![]
             }
             Action::Unstage(index) => self.unstage(index),
+            Action::ToggleSpoiler(index) => self.toggle_spoiler(index),
             Action::SaveAttachment { item, index, path } => self.save_attachment(item, index, path),
             Action::ViewImage { item, index } => self.view_image(item, index),
             Action::PlayVideo {

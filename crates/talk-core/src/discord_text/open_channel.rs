@@ -20,6 +20,7 @@ pub(super) struct PendingFile {
     path: PathBuf,
     name: String,
     size: u64,
+    spoiler: bool,
 }
 
 pub struct OpenChannel {
@@ -304,7 +305,7 @@ impl OpenChannel {
         done: &UnboundedSender<Done>,
         body: String,
         reply: Option<String>,
-        files: Vec<PathBuf>,
+        files: Vec<OutgoingFile>,
     ) -> Result<(), &'static str> {
         if (body.trim().is_empty() && files.is_empty()) || body.chars().count() > MAX_CHARS {
             return Err("Discord messages must contain text and be at most 2,000 characters.");
@@ -314,7 +315,7 @@ impl OpenChannel {
         }
         let files = files
             .into_iter()
-            .map(|path| {
+            .map(|OutgoingFile { path, spoiler }| {
                 let metadata =
                     std::fs::metadata(&path).map_err(|_| "Talk could not read a file.")?;
                 let name = path
@@ -326,6 +327,7 @@ impl OpenChannel {
                     path,
                     name,
                     size: metadata.len(),
+                    spoiler,
                 })
             })
             .collect::<Result<Vec<_>, &'static str>>()?;
@@ -380,16 +382,16 @@ impl OpenChannel {
         let files: Vec<_> = pending
             .files
             .iter()
-            .map(|file| (file.path.clone(), file.name.clone()))
+            .map(|file| (file.path.clone(), file.name.clone(), file.spoiler))
             .collect();
         tokio::spawn(async move {
             let result = async {
                 let mut read = Vec::with_capacity(files.len());
-                for (path, name) in files {
+                for (path, name, spoiler) in files {
                     let data = tokio::fs::read(&path)
                         .await
                         .map_err(|_| format!("Talk could not read {name}."))?;
-                    read.push((name, data));
+                    read.push((upload_name(&name, spoiler), data));
                 }
                 discord
                     .send(&guild, &channel, &body, &nonce, reply.as_deref(), read)
@@ -755,7 +757,7 @@ impl OpenChannel {
                         preview: None,
                         preview_failed: false,
                         placement: Placement::Message,
-                        spoiler: false,
+                        spoiler: file.spoiler,
                         video: false,
                     })
                     .collect(),
@@ -971,3 +973,15 @@ impl Rendering {
         self.names == other.names && self.me == other.me && self.blocked == other.blocked && server
     }
 }
+
+/// The name a file goes to Discord under. Discord marks a spoiler by its name
+/// starting `SPOILER_`, as its own client sends one.
+pub(super) fn upload_name(name: &str, spoiler: bool) -> String {
+    if spoiler && !name.starts_with(SPOILER) {
+        format!("{SPOILER}{name}")
+    } else {
+        name.to_owned()
+    }
+}
+
+const SPOILER: &str = "SPOILER_";
