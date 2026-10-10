@@ -1,5 +1,6 @@
 //! The account's status as Discord's user settings keep it: online, idle, do not
-//! disturb or invisible, and a custom status; and the order of its servers.
+//! disturb or invisible, and a custom status; and its server list's order and
+//! folders.
 //! The settings are a protobuf message, `PreloadedUserSettings`, in base64;
 //! Talk reads its `status` and `guild_folders` fields and writes only `status`,
 //! by hand.
@@ -28,6 +29,11 @@ const FOLDERS: u64 = 1;
 const GUILD_POSITIONS: u64 = 2;
 /// `GuildFolder.guild_ids`: one server outside a folder, or a folder's.
 const FOLDER_GUILDS: u64 = 1;
+/// `GuildFolder`'s `id`, an `Int64Value` that only a folder has; its `name`,
+/// a `StringValue`; and its `color`, a `UInt64Value` holding RGB.
+const FOLDER_ID: u64 = 2;
+const FOLDER_NAME: u64 = 3;
+const FOLDER_COLOR: u64 = 4;
 
 const VARINT: u64 = 0;
 const FIXED64: u64 = 1;
@@ -117,10 +123,30 @@ pub fn read(encoded: &str) -> StatusSettings {
     settings
 }
 
-/// The account's servers in the order its server list shows them, each
-/// folder's in its place. `None` when the settings don't say: a partial
-/// update leaves the order as it was.
-pub fn server_order(encoded: &str) -> Option<Vec<String>> {
+/// A folder in the account's server list.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Folder {
+    /// Discord's id for it.
+    pub id: String,
+    /// Its name; none when it has none, and the rail names it by its servers.
+    pub name: Option<String>,
+    /// Its colour as RGB; none for Discord's default.
+    pub color: Option<u32>,
+    /// Its servers' ids, in order.
+    pub servers: Vec<String>,
+}
+
+/// The account's server list, as its settings keep it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerList {
+    /// Every server it places, in order, each folder's in its place.
+    pub order: Vec<String>,
+    pub folders: Vec<Folder>,
+}
+
+/// The account's server list. `None` when the settings don't say: a partial
+/// update leaves it as it was.
+pub fn server_list(encoded: &str) -> Option<ServerList> {
     let data = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .ok()?;
@@ -128,36 +154,109 @@ pub fn server_order(encoded: &str) -> Option<Vec<String>> {
         Field::Bytes(bytes) if number == GUILD_FOLDERS => Some(bytes),
         _ => None,
     })?;
-    let mut order = Vec::new();
+    let mut list = ServerList::default();
     let mut positions = Vec::new();
     for (number, value) in fields(folders) {
         match (number, value) {
-            (FOLDERS, Field::Bytes(folder)) => {
-                for (number, value) in fields(folder) {
-                    if number == FOLDER_GUILDS {
-                        order.extend(fixed64s(value));
+            (FOLDERS, Field::Bytes(entry)) => {
+                let mut folder = Folder::default();
+                let mut id = None;
+                for (number, value) in fields(entry) {
+                    match (number, value) {
+                        (FOLDER_GUILDS, value) => folder
+                            .servers
+                            .extend(fixed64s(value).into_iter().map(|id| id.to_string())),
+                        (FOLDER_ID, Field::Bytes(wrapper)) => id = Some(wrapped_varint(wrapper)),
+                        (FOLDER_NAME, Field::Bytes(wrapper)) => {
+                            folder.name = fields(wrapper)
+                                .find_map(|(number, value)| match value {
+                                    Field::Bytes(text) if number == 1 => {
+                                        Some(String::from_utf8_lossy(text).into_owned())
+                                    }
+                                    _ => None,
+                                })
+                                .filter(|name| !name.trim().is_empty());
+                        }
+                        (FOLDER_COLOR, Field::Bytes(wrapper)) => {
+                            folder.color = u32::try_from(wrapped_varint(wrapper)).ok();
+                        }
+                        _ => {}
                     }
+                }
+                list.order.extend(folder.servers.iter().cloned());
+                // An entry without an id is one server outside any folder.
+                if let Some(id) = id
+                    && !folder.servers.is_empty()
+                {
+                    folder.id = id.to_string();
+                    list.folders.push(folder);
                 }
             }
             (GUILD_POSITIONS, value) => positions.extend(fixed64s(value)),
             _ => {}
         }
     }
-    if order.is_empty() {
-        order = positions;
+    if list.order.is_empty() {
+        list.order = positions.into_iter().map(|id| id.to_string()).collect();
     }
-    Some(order.into_iter().map(|id| id.to_string()).collect())
+    Some(list)
+}
+
+/// The value of a wrapper such as `Int64Value`, whose field 1 is a varint;
+/// 0, protobuf's default, when it's left out.
+fn wrapped_varint(wrapper: &[u8]) -> u64 {
+    fields(wrapper)
+        .find_map(|(number, value)| match value {
+            Field::Varint(value) if number == 1 => Some(value),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// Base64 settings holding only a server order: each folder's servers, a
 /// server outside a folder as a folder of one.
 #[cfg(test)]
 pub(crate) fn write_server_order(folders: &[&[u64]]) -> String {
+    let entries: Vec<_> = folders
+        .iter()
+        .map(|servers| Folder {
+            servers: servers.iter().map(u64::to_string).collect(),
+            ..Folder::default()
+        })
+        .collect();
+    write_server_list(&entries)
+}
+
+/// Base64 settings holding only a server list. An entry with an empty `id`
+/// is a server outside any folder.
+#[cfg(test)]
+pub(crate) fn write_server_list(entries: &[Folder]) -> String {
     let mut message = Vec::new();
-    for servers in folders {
-        let packed: Vec<u8> = servers.iter().flat_map(|id| id.to_le_bytes()).collect();
+    for entry in entries {
+        let packed: Vec<u8> = entry
+            .servers
+            .iter()
+            .flat_map(|id| id.parse::<u64>().unwrap().to_le_bytes())
+            .collect();
         let mut folder = Vec::new();
         put_bytes(&mut folder, FOLDER_GUILDS, &packed);
+        if let Ok(id) = entry.id.parse::<u64>() {
+            let mut wrapper = Vec::new();
+            put_varint(&mut wrapper, 1 << 3 | VARINT);
+            put_varint(&mut wrapper, id);
+            put_bytes(&mut folder, FOLDER_ID, &wrapper);
+        }
+        if let Some(name) = &entry.name {
+            let mut wrapper = Vec::new();
+            put_bytes(&mut wrapper, 1, name.as_bytes());
+            put_bytes(&mut folder, FOLDER_NAME, &wrapper);
+        }
+        if let Some(color) = entry.color {
+            let mut wrapper = Vec::new();
+            put_varint(&mut wrapper, 1 << 3 | VARINT);
+            put_varint(&mut wrapper, u64::from(color));
+            put_bytes(&mut folder, FOLDER_COLOR, &wrapper);
+        }
         put_bytes(&mut message, FOLDERS, &folder);
     }
     let mut settings = Vec::new();
@@ -244,7 +343,7 @@ pub fn presence(status: &str, custom: Option<&CustomStatus>, now_ms: u64) -> Val
 }
 
 enum Field<'a> {
-    Varint,
+    Varint(u64),
     Fixed64(u64),
     Bytes(&'a [u8]),
     Fixed32,
@@ -255,10 +354,7 @@ fn fields(mut data: &[u8]) -> impl Iterator<Item = (u64, Field<'_>)> {
     std::iter::from_fn(move || {
         let key = varint(&mut data)?;
         let value = match key & 7 {
-            VARINT => {
-                varint(&mut data)?;
-                Field::Varint
-            }
+            VARINT => Field::Varint(varint(&mut data)?),
             FIXED64 => {
                 let (bytes, rest) = data.split_first_chunk::<8>()?;
                 data = rest;
@@ -319,6 +415,33 @@ fn put_fixed64(out: &mut Vec<u8>, number: u64, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_server_list_with_its_folders() {
+        let folder = |id: &str, name: Option<&str>, color, servers: &[&str]| Folder {
+            id: id.into(),
+            name: name.map(Into::into),
+            color,
+            servers: servers.iter().map(|&id| id.into()).collect(),
+        };
+        let written = write_server_list(&[
+            folder("", None, None, &["30"]),
+            folder("7", Some("Games"), Some(0x5865f2), &["10", "40"]),
+            folder("8", Some(" "), None, &["20"]),
+        ]);
+        let list = server_list(&written).unwrap();
+        assert_eq!(list.order, ["30", "10", "40", "20"]);
+        assert_eq!(
+            list.folders,
+            [
+                folder("7", Some("Games"), Some(0x5865f2), &["10", "40"]),
+                // A blank name counts as none; a folder of one is still a folder.
+                folder("8", None, None, &["20"]),
+            ]
+        );
+        // Settings that leave the list out don't empty it.
+        assert_eq!(server_list(&write_status("idle")), None);
+    }
 
     #[test]
     fn reads_and_writes_the_custom_status() {
@@ -386,7 +509,10 @@ mod tests {
         put_bytes(&mut settings, STATUS, b"");
         put_bytes(&mut settings, GUILD_FOLDERS, &folders);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&settings);
-        assert_eq!(server_order(&encoded).unwrap(), ["30", "10", "20", "5"]);
+        assert_eq!(
+            server_list(&encoded).unwrap().order,
+            ["30", "10", "20", "5"]
+        );
 
         // Older settings keep only the flat order.
         let mut folders = Vec::new();
@@ -394,8 +520,8 @@ mod tests {
         let mut settings = Vec::new();
         put_bytes(&mut settings, GUILD_FOLDERS, &folders);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&settings);
-        assert_eq!(server_order(&encoded).unwrap(), ["2", "1"]);
-        assert_eq!(server_order(&write_custom(None)), None);
+        assert_eq!(server_list(&encoded).unwrap().order, ["2", "1"]);
+        assert_eq!(server_list(&write_custom(None)), None);
     }
 
     #[test]

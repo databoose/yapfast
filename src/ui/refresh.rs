@@ -329,37 +329,7 @@ impl Adapter {
             .collect();
         update_model(
             &self.models.servers,
-            state
-                .servers
-                .iter()
-                .map(|server| ServerRow {
-                    id: server.id.clone().into(),
-                    name: server.name.clone().into(),
-                    initial: initials(&server.name),
-                    picture: slint::Image::default(),
-                    picture_url: server.icon.as_deref().unwrap_or_default().into(),
-                    selected: state.navigation == Navigation::Server(server.id.clone()),
-                    unread: server
-                        .channels
-                        .iter()
-                        .filter_map(|channel| rooms_by_id.get(channel.as_str()))
-                        .any(|room| {
-                            (room.mentions > 0 || (room.unread > 0 && !server.muted))
-                                && !room.direct
-                        }),
-                    discord: server.discord,
-                    unavailable: server.unavailable,
-                    badge: count_badge(
-                        server
-                            .channels
-                            .iter()
-                            .filter_map(|channel| rooms_by_id.get(channel.as_str()))
-                            .filter(|room| !room.direct)
-                            .map(|room| room.mentions)
-                            .sum(),
-                    ),
-                })
-                .collect(),
+            rail_rows(state, &rooms_by_id, &self.layout.open_folders),
         );
         let mut listed_text = false;
         let mut listed_voice = false;
@@ -1737,6 +1707,126 @@ impl Adapter {
             Some(place) if images.len() > 1 => format!("{} / {}", place + 1, images.len()).into(),
             _ => SharedString::default(),
         });
+    }
+}
+
+/// The rail's rows: each server, and each folder with its servers after it
+/// while it's open.
+pub(super) fn rail_rows(
+    state: &AppState,
+    rooms_by_id: &HashMap<&str, &talk_core::chat::ChatRoom>,
+    open_folders: &std::collections::BTreeSet<String>,
+) -> Vec<ServerRow> {
+    // A server's channels: whether any is unread, and its mentions.
+    let marks = |server: &talk_core::chat::ChatServer| {
+        let rooms = || {
+            server
+                .channels
+                .iter()
+                .filter_map(|channel| rooms_by_id.get(channel.as_str()))
+                .filter(|room| !room.direct)
+        };
+        (
+            rooms().any(|room| room.mentions > 0 || (room.unread > 0 && !server.muted)),
+            rooms().map(|room| room.mentions).sum::<u64>(),
+        )
+    };
+    let selected = |server: &talk_core::chat::ChatServer| {
+        state.navigation == Navigation::Server(server.id.clone())
+    };
+    let mut rows = Vec::with_capacity(state.servers.len());
+    let mut servers = state.servers.iter().peekable();
+    while let Some(server) = servers.next() {
+        let Some(folder) = &server.folder else {
+            let (unread, mentions) = marks(server);
+            rows.push(server_row(server, selected(server), unread, mentions));
+            continue;
+        };
+        let mut inside = vec![server];
+        while let Some(next) = servers.next_if(|next| next.folder.as_ref() == Some(folder)) {
+            inside.push(next);
+        }
+        let open = open_folders.contains(&folder.id);
+        let tint = folder.color.map_or(FOLDER_COLOR, |rgb| {
+            let [_, red, green, blue] = rgb.to_be_bytes();
+            slint::Color::from_rgb_u8(red, green, blue)
+        });
+        let (unread, mentions) = inside
+            .iter()
+            .map(|server| marks(server))
+            .fold((false, 0), |(unread, mentions), (one, more)| {
+                (unread || one, mentions + more)
+            });
+        let name = folder.name.clone().unwrap_or_else(|| {
+            let mut names: Vec<_> = inside
+                .iter()
+                .take(3)
+                .map(|server| server.name.as_str())
+                .collect();
+            if inside.len() > 3 {
+                names.push("…");
+            }
+            names.join(", ")
+        });
+        rows.push(ServerRow {
+            id: folder.id.as_str().into(),
+            name: name.into(),
+            selected: inside.iter().any(|server| selected(server)),
+            unread,
+            badge: count_badge(mentions),
+            discord: true,
+            folder: true,
+            open,
+            tint,
+            preview: ModelRc::new(VecModel::from(
+                inside
+                    .iter()
+                    .take(4)
+                    .map(|server| FolderServer {
+                        initial: initials(&server.name),
+                        picture_url: server.icon.as_deref().unwrap_or_default().into(),
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            ..Default::default()
+        });
+        if open {
+            let last = inside.len() - 1;
+            for (index, server) in inside.into_iter().enumerate() {
+                let (unread, mentions) = marks(server);
+                rows.push(ServerRow {
+                    nested: true,
+                    last: index == last,
+                    tint,
+                    ..server_row(server, selected(server), unread, mentions)
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// Discord's colour for a folder that wasn't given one.
+const FOLDER_COLOR: slint::Color = slint::Color::from_rgb_u8(0x58, 0x65, 0xf2);
+
+fn server_row(
+    server: &talk_core::chat::ChatServer,
+    selected: bool,
+    unread: bool,
+    mentions: u64,
+) -> ServerRow {
+    ServerRow {
+        id: server.id.clone().into(),
+        name: server.name.clone().into(),
+        initial: initials(&server.name),
+        picture: slint::Image::default(),
+        picture_url: server.icon.as_deref().unwrap_or_default().into(),
+        selected,
+        unread,
+        discord: server.discord,
+        unavailable: server.unavailable,
+        badge: count_badge(mentions),
+        ..Default::default()
     }
 }
 

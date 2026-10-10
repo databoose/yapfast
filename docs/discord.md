@@ -577,8 +577,18 @@ an error.
   do not disturb, or the grey ring when invisible or disconnected.
 - Discord servers keep the order the account's server list has in Discord,
   from `guild_folders` in its settings, and follow it when it changes
-  elsewhere. A folder's servers show in its place, without the folder. A
-  server the settings don't list yet, such as one just joined, goes first.
+  elsewhere. A server the settings don't list yet, such as one just joined,
+  goes first.
+- Folders show in the rail as in Discord. Closed, a folder is a tile of its
+  colour holding its first four servers' icons, with the pill, unread dot
+  and mention count of all its servers; its tooltip is its name, or its
+  servers' names when it has none. Clicking opens it: a folder icon in its
+  colour, its servers below it on a strip of that colour. Talk remembers the
+  open folders on this device, in `layout.json`, as Discord's client keeps
+  them per device. Settings entries with an id are folders, read with their
+  name and colour (`GuildFolder` fields 2 to 4, each in a wrapper); one
+  without is a server on its own. Folders can't be made or changed in Talk
+  yet. `--folders` gives the fake Discord's filler servers two folders.
 - A server out of reach in a Discord outage (`GUILD_DELETE` with
   `unavailable`, or READY listing it so) stays in the rail, faded, as last
   known, until its `GUILD_CREATE` brings it back. Only a `GUILD_DELETE`
@@ -828,7 +838,7 @@ In rough order. The browser covers these until then.
 - Search and pinned messages.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.
-- Server folders in the rail.
+- Making and changing server folders.
 - Joining servers by invite, and leaving them.
 - Discord's push-to-talk, and its voice settings.
 - Audio on Windows.

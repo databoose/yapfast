@@ -153,6 +153,10 @@ pub struct Snapshot {
     /// Shared between snapshots while unchanged, so publishing one copies
     /// only the servers that changed.
     pub servers: Vec<Arc<Server>>,
+    /// The folders in the account's server list. Their servers sit together
+    /// in [`Self::servers`], in the folder's order.
+    #[serde(default)]
+    pub folders: Vec<settings::Folder>,
     /// DMs and group DMs, the latest conversation first.
     pub conversations: Vec<Conversation>,
     /// The account's friends, by user id.

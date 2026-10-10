@@ -1662,3 +1662,80 @@ fn replacing_a_temporary_item_reports_the_view_without_changing_row_count() {
         "the backend receives the new item ids without scrolling"
     );
 }
+
+#[test]
+fn a_folder_on_the_rail_holds_its_servers_until_opened() {
+    let folder = talk_core::chat::ServerFolder {
+        id: "discord-folder:7".into(),
+        name: None,
+        color: Some(0xff0000),
+    };
+    let server =
+        |id: &str, folder: Option<&talk_core::chat::ServerFolder>| talk_core::chat::ChatServer {
+            id: id.into(),
+            name: id.into(),
+            channels: vec![],
+            discord: true,
+            muted: false,
+            unavailable: false,
+            icon: Some(format!("{id}.png")),
+            folder: folder.cloned(),
+        };
+    let mut state = AppState::default();
+    state.servers = vec![
+        server("Alpha", None),
+        server("Bravo", Some(&folder)),
+        server("Charlie", Some(&folder)),
+        server("Delta", None),
+    ];
+    state.navigation = Navigation::Server("Charlie".into());
+    let shown = |open: &[&str]| {
+        let open = open.iter().map(|&id| id.to_owned()).collect();
+        refresh::rail_rows(&state, &HashMap::new(), &open)
+    };
+    let rows = |rows: &[ServerRow]| -> Vec<(String, bool, bool, bool, bool)> {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.id.to_string(),
+                    row.folder,
+                    row.nested,
+                    row.last,
+                    row.selected,
+                )
+            })
+            .collect()
+    };
+    let closed = shown(&[]);
+    assert_eq!(
+        rows(&closed),
+        [
+            ("Alpha".into(), false, false, false, false),
+            // Closed, it shows that one of its servers is selected.
+            ("discord-folder:7".into(), true, false, false, true),
+            ("Delta".into(), false, false, false, false),
+        ]
+    );
+    // Without a name, it's named by its servers.
+    assert_eq!(closed[1].name, "Bravo, Charlie");
+    assert_eq!(closed[1].tint, slint::Color::from_rgb_u8(0xff, 0, 0));
+    let preview: Vec<_> = closed[1]
+        .preview
+        .iter()
+        .map(|server| server.picture_url.to_string())
+        .collect();
+    assert_eq!(preview, ["Bravo.png", "Charlie.png"]);
+
+    let open = shown(&["discord-folder:7"]);
+    assert_eq!(
+        rows(&open),
+        [
+            ("Alpha".into(), false, false, false, false),
+            ("discord-folder:7".into(), true, false, false, true),
+            ("Bravo".into(), false, true, false, false),
+            ("Charlie".into(), false, true, true, true),
+            ("Delta".into(), false, false, false, false),
+        ]
+    );
+    assert!(open[1].open && open[3].tint == open[1].tint);
+}

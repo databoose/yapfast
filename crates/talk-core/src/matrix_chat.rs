@@ -880,6 +880,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             muted: false,
             unavailable: false,
             icon: None,
+            folder: None,
         });
     }
     for room in client
