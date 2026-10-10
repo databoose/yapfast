@@ -455,10 +455,10 @@ impl Matrix {
             } => {
                 typing_notice(client, &room, false);
                 // A Matrix message carries one file, so each goes on its own,
-                // then the text.
+                // then the text. Matrix has no spoiler for a file.
                 let mut result = Ok(());
-                for path in &files {
-                    result = attach(session, open.as_ref(), &room, path).await;
+                for file in &files {
+                    result = attach(session, open.as_ref(), &room, &file.path).await;
                     if result.is_err() {
                         break;
                     }
@@ -2546,7 +2546,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
-                    files: vec![picture.clone()],
+                    files: vec![picture.clone().into()],
                 })
                 .unwrap();
             receive(&mut events, |event| match event {
@@ -2712,7 +2712,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
-                    files: vec![file],
+                    files: vec![file.into()],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -3026,7 +3026,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
-                    files: vec![picture],
+                    files: vec![picture.into()],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -3042,7 +3042,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
-                    files: vec![notes],
+                    files: vec![notes.into()],
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {

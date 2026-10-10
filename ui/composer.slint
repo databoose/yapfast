@@ -1,18 +1,21 @@
 import { Theme, Middle } from "theme.slint";
-import { ActionButton, IconButton, Avatar } from "controls.slint";
+import { ActionButton, IconButton, Avatar, SpoilerCover } from "controls.slint";
 import { EmojiCell, EmojiFace } from "messages.slint";
 
-/// A file waiting to go with the next message.
-export struct StagedFile { name: string, size: string, has-picture: bool, picture: image }
+/// A file waiting to go with the next message. A spoiler's picture is blurred.
+export struct StagedFile { name: string, size: string, has-picture: bool, picture: image, spoiler: bool }
 
 // A file waiting to go with the next message: its picture or a file icon, its
-// name and size, and a button that takes it out.
+// name and size, and buttons that mark it as a spoiler, where the room has
+// them, and take it out.
 export component StagedTile inherits Rectangle {
     in property <StagedFile> file;
+    in property <bool> can-spoil;
     callback remove;
+    callback toggle-spoiler;
     width: 120px; height: 140px; border-radius: 8px; background: Theme.raised;
     accessible-role: groupbox;
-    accessible-label: root.file.name + ", " + root.file.size;
+    accessible-label: root.file.name + ", " + root.file.size + (root.file.spoiler ? ", spoiler" : "");
     VerticalLayout {
         padding: 6px; spacing: 2px;
         Rectangle {
@@ -22,9 +25,20 @@ export component StagedTile inherits Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                 width: 32px; height: 32px; source: @image-url("icons/file.svg"); colorize: Theme.muted;
             }
+            if root.file.spoiler: SpoilerCover { width: parent.width; height: parent.height; }
         }
         Text { text: root.file.name; color: Theme.text; font-size: 13px; font-weight: 500; overflow: elide; }
         Text { text: root.file.size; color: Theme.muted; font-size: 12px; overflow: elide; }
+    }
+    if root.can-spoil: Rectangle {
+        x: parent.width - 2 * self.width - 8px; y: 4px; width: 28px; height: 28px; border-radius: 14px;
+        background: #000000b3;
+        IconButton {
+            icon: root.file.spoiler ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg");
+            label: root.file.spoiler ? "Stop covering " + root.file.name : "Mark " + root.file.name + " as a spoiler";
+            size: 28px; glyph: 16px; radius: 14px; tint: #ffffff;
+            clicked => { root.toggle-spoiler(); }
+        }
     }
     Rectangle {
         x: parent.width - self.width - 4px; y: 4px; width: 28px; height: 28px; border-radius: 14px;

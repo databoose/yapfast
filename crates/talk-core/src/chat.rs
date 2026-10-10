@@ -122,6 +122,8 @@ pub struct Staged {
     pub size: u64,
     /// A picture the composer can preview.
     pub image: bool,
+    /// Covered until clicked, where the room's network has spoilers.
+    pub spoiler: bool,
 }
 
 impl Staged {
@@ -154,7 +156,25 @@ impl Staged {
             name,
             size: metadata.len(),
             image,
+            spoiler: false,
         })
+    }
+}
+
+/// A file going with a message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutgoingFile {
+    pub path: PathBuf,
+    /// Marked as a spoiler, which only Discord keeps.
+    pub spoiler: bool,
+}
+
+impl From<PathBuf> for OutgoingFile {
+    fn from(path: PathBuf) -> Self {
+        Self {
+            path,
+            spoiler: false,
+        }
     }
 }
 
@@ -780,7 +800,7 @@ pub enum Command {
         room: String,
         body: String,
         reply: Option<String>,
-        files: Vec<PathBuf>,
+        files: Vec<OutgoingFile>,
     },
     Edit {
         room: String,

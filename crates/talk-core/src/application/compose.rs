@@ -121,6 +121,20 @@ impl Application {
         vec![]
     }
 
+    pub(super) fn toggle_spoiler(&mut self, index: usize) -> Vec<Effect> {
+        if self.state.can_mark_spoilers()
+            && let Some(id) = self.state.selected.clone()
+            && let Some(file) = self
+                .state
+                .staged
+                .get_mut(&id)
+                .and_then(|staged| staged.get_mut(index))
+        {
+            file.spoiler = !file.spoiler;
+        }
+        vec![]
+    }
+
     pub(super) fn send(&mut self) -> Vec<Effect> {
         if !self.state.can_send() {
             return vec![];
@@ -201,13 +215,16 @@ impl Application {
                 body,
             })],
             compose => {
-                let files: Vec<PathBuf> = self
+                let files: Vec<chat::OutgoingFile> = self
                     .state
                     .staged()
                     .iter()
-                    .map(|file| file.path.clone())
+                    .map(|file| chat::OutgoingFile {
+                        path: file.path.clone(),
+                        spoiler: file.spoiler,
+                    })
                     .collect();
-                self.sent_files.clone_from(&files);
+                self.sent_files = files.iter().map(|file| file.path.clone()).collect();
                 vec![Effect::Backend(Command::Send {
                     room: id,
                     body,

@@ -326,7 +326,9 @@ fn message_text(row: &MessageRow) -> String {
 }
 
 /// A command file through which the private test compositor can hide, destroy
-/// and recreate the window while Talk keeps running, as a tray would.
+/// and recreate the window while Talk keeps running, as a tray would, and add
+/// a file to the next message with `stage PATH`, as a paste would: the private
+/// display has no clipboard or file chooser to do it with.
 fn test_control() -> Option<PathBuf> {
     isolated_display()
         .then(|| std::env::var_os("TALK_UI_TEST_CONTROL"))
@@ -387,6 +389,15 @@ fn control(
                         Ok(())
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
+                    command if command.starts_with("stage ") => {
+                        if let Some(window) = window.borrow().as_ref() {
+                            let path = PathBuf::from(&command["stage ".len()..]);
+                            adapter
+                                .borrow_mut()
+                                .action(window, Action::Stage(vec![path]));
+                        }
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
                 if let Err(error) = result {
@@ -702,7 +713,7 @@ struct Adapter {
     meter: Option<InputMeter>,
     /// Previews of the pictures waiting in the composer, by file; `None` while
     /// one is read, or when it can't be.
-    thumbnails: HashMap<PathBuf, Option<slint::Image>>,
+    thumbnails: HashMap<PathBuf, Option<pictures::Thumbnail>>,
     /// Where pasted pictures are saved until they're sent; removed as Talk closes.
     pasted: Option<tempfile::TempDir>,
     /// Ringing for a DM call that rings this account.

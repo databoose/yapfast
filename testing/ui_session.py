@@ -54,7 +54,9 @@ CHARACTERS.update({' ': (57, False), '-': (12, False), '=': (13, False), ';': (3
                    ':': (39, True), '?': (53, True), '(': (10, True), ')': (11, True)})
 
 fake = None
-environment = dict(os.environ, TALK_UI_TEST_SIZE=args.size)
+# Talk reads commands for its window from this file; see `test_control` in src/ui.rs.
+window_control = state / 'window-control'
+environment = dict(os.environ, TALK_UI_TEST_SIZE=args.size, TALK_UI_TEST_CONTROL=str(window_control))
 if args.discord:
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
@@ -81,6 +83,8 @@ talk = None
 
 def launch():
     global talk
+    # A new Talk would run every line again.
+    window_control.write_text('')
     # Talk takes --preview only before --data-dir.
     talk = subprocess.Popen([str(args.bin), '--renderer', args.renderer, *talk_args, '--data-dir', str(data)],
                             env=environment, stdout=(state / 'talk.log').open('ab'),
@@ -187,6 +191,14 @@ def perform(command):
         time.sleep(.2)
     elif verb == 'shot':
         return shot(*values)
+    elif verb == 'stage':
+        path = (ROOT / rest).resolve()
+        if not path.is_file():
+            raise ValueError(f'no file at {path}')
+        with window_control.open('a') as window:
+            window.write(f'stage {path}\n')
+        # Talk reads the file every half second.
+        time.sleep(.8)
     else:
         raise ValueError(f'unknown command {verb!r}')
     return ''

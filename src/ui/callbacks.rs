@@ -541,6 +541,13 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         }
     });
     let state = adapter.clone();
+    window.on_toggle_spoiler(move |index| {
+        let mut adapter = state.borrow_mut();
+        if let (Ok(index), Some(window)) = (usize::try_from(index), adapter.window.upgrade()) {
+            adapter.action(&window, Action::ToggleSpoiler(index));
+        }
+    });
+    let state = adapter.clone();
     window.on_paste_into_composer(move || state.borrow_mut().paste());
     let state = adapter.clone();
     window.on_save_attachment(move |item, index| {

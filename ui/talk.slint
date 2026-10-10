@@ -211,6 +211,9 @@ export component TalkWindow inherits Window {
     /// Files waiting to go with the next message.
     in property <[StagedFile]> staged;
     callback unstage(int);
+    /// The room's network covers files marked as spoilers.
+    in property <bool> can-mark-spoilers;
+    callback toggle-spoiler(int);
     callback paste-into-composer;
     public function paste-composer-text() { composer.paste-text(); }
     in property <string> confirm-delete;
@@ -1583,8 +1586,9 @@ export component TalkWindow inherits Window {
                                         staged-row := HorizontalLayout {
                                             padding: 10px; padding-bottom: 2px; spacing: 8px; alignment: start;
                                             for file[index] in root.staged: StagedTile {
-                                                file: file;
+                                                file: file; can-spoil: root.can-mark-spoilers;
                                                 remove => { root.unstage(index); }
+                                                toggle-spoiler => { root.toggle-spoiler(index); }
                                             }
                                         }
                                     }

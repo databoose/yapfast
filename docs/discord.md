@@ -670,7 +670,10 @@ an error.
   `talk:spoiler/{item}/{n}`; see [building](building.md). A spoiler in a reply
   or a notification reads "(spoiler)". Attachments named `SPOILER_...` or
   flagged as spoilers, and pictures linked inside a spoiler, show blurred with
-  a "Spoiler" label until clicked. Revealing lasts while Talk runs.
+  a "Spoiler" label until clicked. Revealing lasts while Talk runs. The eye
+  on a file waiting in the composer marks it as a spoiler, which blurs its
+  thumbnail; Talk uploads it as `SPOILER_` and its name, as Discord's client
+  does. Matrix has no spoiler for a file, so its rooms don't offer the eye.
 - Custom emoji show as pictures: in messages, as reactions and in the emoji
   picker, which lists them by server after the frequently used ones, the open
   server's first. In messages Talk draws them as text: each emoji whose
@@ -845,7 +848,6 @@ In rough order. The browser covers these until then.
 - A captcha fallback for linking, through a small embedded web view.
 - The blocked on the friends page, beside Online and All.
 - Blocking and unblocking from a profile.
-- Marking uploads as spoilers.
 - Animated custom emoji, which show their first frame.
 - Copying custom emoji: copied text has their private code points, not
   `:name:`.

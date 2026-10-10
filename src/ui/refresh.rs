@@ -936,13 +936,20 @@ impl Adapter {
         );
         window.set_can_send(state.can_send());
         window.set_can_attach(state.can_attach());
+        window.set_can_mark_spoilers(state.can_mark_spoilers());
         let staged = state.staged();
         self.thumbnails
             .retain(|path, _| staged.iter().any(|file| &file.path == path));
         let mut rows = Vec::with_capacity(staged.len());
         for file in staged {
             let picture = match self.thumbnails.get(&file.path) {
-                Some(picture) => picture.clone(),
+                Some(thumbnail) => thumbnail.as_ref().map(|thumbnail| {
+                    if file.spoiler {
+                        thumbnail.covered.clone()
+                    } else {
+                        thumbnail.picture.clone()
+                    }
+                }),
                 None => {
                     if file.image {
                         self.thumbnails.insert(file.path.clone(), None);
@@ -956,6 +963,7 @@ impl Adapter {
                 size: file_size(file.size).into(),
                 has_picture: picture.is_some(),
                 picture: picture.unwrap_or_default(),
+                spoiler: file.spoiler,
             });
         }
         update_model(&self.models.staged, rows);

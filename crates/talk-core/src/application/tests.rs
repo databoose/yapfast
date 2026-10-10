@@ -612,7 +612,7 @@ fn files_wait_in_the_composer_until_sent() {
     };
     assert_eq!(
         (body.as_str(), files.clone()),
-        ("", vec![picture.clone(), notes.clone()])
+        ("", vec![picture.clone().into(), notes.clone().into()])
     );
     app.apply(Event::SendResult {
         room: "dm".into(),
@@ -623,6 +623,33 @@ fn files_wait_in_the_composer_until_sent() {
         app.state.staged().is_empty(),
         "sent files leave the composer"
     );
+    // Only a network with spoilers marks files as them.
+    app.dispatch(Action::Stage(vec![picture.clone(), notes.clone()]));
+    app.dispatch(Action::ToggleSpoiler(0));
+    assert!(
+        !app.state.staged()[0].spoiler,
+        "Matrix has no spoiler files"
+    );
+    let room = app
+        .state
+        .rooms
+        .iter_mut()
+        .find(|room| room.id == "dm")
+        .unwrap();
+    room.capabilities = Network::Discord.capabilities();
+    app.dispatch(Action::ToggleSpoiler(1));
+    app.dispatch(Action::ToggleSpoiler(1));
+    app.dispatch(Action::ToggleSpoiler(0));
+    let Command::Send { files, .. } = send_command(app.dispatch(Action::Send)) else {
+        unreachable!()
+    };
+    let spoilers: Vec<_> = files.iter().map(|file| file.spoiler).collect();
+    assert_eq!(spoilers, [true, false]);
+    app.apply(Event::SendResult {
+        room: "dm".into(),
+        body: String::new(),
+        result: Ok(()),
+    });
     app.dispatch(Action::Stage(vec![picture.clone(); chat::MAX_FILES + 1]));
     assert_eq!(app.state.staged().len(), chat::MAX_FILES);
     assert_eq!(
