@@ -12,7 +12,7 @@ use slint::{
     fontique_011::{fontique, shared_collection},
 };
 use talk_core::chat::EmojiSet;
-use talk_ui::{EmojiCell, EmojiRow};
+use talk_ui::{EmojiCell, EmojiRow, EmojiSection};
 
 use crate::custom_emoji;
 
@@ -77,19 +77,28 @@ pub fn cell(key: &str) -> EmojiCell {
 
 /// Gives the picker's custom emoji the pictures that arrived since its rows
 /// were built, changing only those cells.
-pub fn fill_pictures(rows: &VecModel<EmojiRow>) {
+pub fn fill_pictures(rows: &VecModel<EmojiRow>, sections: &VecModel<EmojiSection>) {
     for row in rows.iter() {
         for (index, shown) in row.cells.iter().enumerate() {
-            if shown.picture.size().width > 0 || !shown.key.contains(':') {
-                continue;
-            }
-            let picture = cell(&shown.key).picture;
-            if picture.size().width > 0 {
-                row.cells
-                    .set_row_data(index, EmojiCell { picture, ..shown });
+            if let Some(filled) = with_picture(shown) {
+                row.cells.set_row_data(index, filled);
             }
         }
     }
+    for (index, section) in sections.iter().enumerate() {
+        if let Some(icon) = with_picture(section.icon.clone()) {
+            sections.set_row_data(index, EmojiSection { icon, ..section });
+        }
+    }
+}
+
+/// A custom emoji shown without its picture, with the picture once it has arrived.
+fn with_picture(shown: EmojiCell) -> Option<EmojiCell> {
+    if shown.picture.size().width > 0 || !shown.key.contains(':') {
+        return None;
+    }
+    let picture = cell(&shown.key).picture;
+    (picture.size().width > 0).then_some(EmojiCell { picture, ..shown })
 }
 
 /// A custom emoji's reaction key, Discord's `name:id`.
@@ -173,31 +182,44 @@ pub fn suggestions(query: &str, custom: &[EmojiSet], limit: usize) -> Vec<EmojiC
 
 /// The picker's rows: with no query, frequently used emoji, the custom emoji of
 /// each server in `custom`, and then every category under its heading; otherwise
-/// the emoji whose name or shortcode contains the query.
-pub fn rows(query: &str, frequent: &[String], custom: &[EmojiSet]) -> Vec<EmojiRow> {
+/// the emoji whose name or shortcode contains the query. With no query, also
+/// the sections the sidebar jumps to, each shown by `server_icon` for a server
+/// that has one, and its first emoji otherwise.
+pub fn rows(
+    query: &str,
+    frequent: &[String],
+    custom: &[EmojiSet],
+    server_icon: impl Fn(&EmojiSet) -> Option<slint::Image>,
+) -> (Vec<EmojiRow>, Vec<EmojiSection>) {
     let query = query.trim().trim_matches(':').to_lowercase();
     let available = || emojis::iter().filter(|emoji| emoji.unicode_version() <= NEWEST);
-    let custom_keys: Vec<(String, Vec<String>)> = custom
+    let custom_keys: Vec<Vec<String>> = custom
         .iter()
         .map(|set| {
-            let keys = set
-                .emoji
+            set.emoji
                 .iter()
                 .filter(|emoji| query.is_empty() || emoji.text.to_lowercase().contains(&query))
                 .map(custom_key)
-                .collect();
-            (set.server.to_uppercase(), keys)
+                .collect()
         })
         .collect();
     let mut rows = Vec::new();
-    let mut section = |heading: &str, glyphs: Vec<String>| {
+    let mut sections = Vec::new();
+    // A section under a heading of its icon's name, or the matches, under none.
+    let mut section = |icon: Option<EmojiCell>, glyphs: Vec<String>| {
         if glyphs.is_empty() {
             return;
         }
-        if !heading.is_empty() {
+        if let Some(icon) = icon {
+            let row = rows.len();
             rows.push(EmojiRow {
-                heading: heading.into(),
+                heading: icon.name.to_uppercase().into(),
                 cells: ModelRc::default(),
+            });
+            sections.push(EmojiSection {
+                row: row as i32,
+                end: (row + 1 + glyphs.len().div_ceil(COLUMNS)) as i32,
+                icon,
             });
         }
         for chunk in glyphs.chunks(COLUMNS) {
@@ -209,12 +231,17 @@ pub fn rows(query: &str, frequent: &[String], custom: &[EmojiSet]) -> Vec<EmojiR
             });
         }
     };
+    let titled = |glyph: &str, name: &str| EmojiCell {
+        name: name.into(),
+        ..cell(glyph)
+    };
     if !query.is_empty() {
         section(
-            "",
+            None,
             custom_keys
                 .iter()
-                .flat_map(|(_, keys)| keys.iter().cloned())
+                .flatten()
+                .cloned()
                 .chain(
                     available()
                         .filter(|emoji| {
@@ -225,26 +252,33 @@ pub fn rows(query: &str, frequent: &[String], custom: &[EmojiSet]) -> Vec<EmojiR
                 )
                 .collect(),
         );
-        return rows;
+        return (rows, sections);
     }
-    section("FREQUENTLY USED", frequent.to_vec());
-    for (server, keys) in &custom_keys {
-        section(server, keys.clone());
+    section(Some(titled("🕒", "Frequently used")), frequent.to_vec());
+    for (set, keys) in custom.iter().zip(custom_keys) {
+        let Some(first) = keys.first() else { continue };
+        let first = cell(first);
+        let icon = EmojiCell {
+            name: set.server.as_str().into(),
+            picture: server_icon(set).unwrap_or(first.picture.clone()),
+            ..first
+        };
+        section(Some(icon), keys);
     }
     for group in emojis::Group::iter() {
-        let heading = match group {
-            emojis::Group::SmileysAndEmotion => "SMILEYS & EMOTION",
-            emojis::Group::PeopleAndBody => "PEOPLE & BODY",
-            emojis::Group::AnimalsAndNature => "ANIMALS & NATURE",
-            emojis::Group::FoodAndDrink => "FOOD & DRINK",
-            emojis::Group::TravelAndPlaces => "TRAVEL & PLACES",
-            emojis::Group::Activities => "ACTIVITIES",
-            emojis::Group::Objects => "OBJECTS",
-            emojis::Group::Symbols => "SYMBOLS",
-            emojis::Group::Flags => "FLAGS",
+        let (glyph, name) = match group {
+            emojis::Group::SmileysAndEmotion => ("😀", "Smileys & emotion"),
+            emojis::Group::PeopleAndBody => ("👋", "People & body"),
+            emojis::Group::AnimalsAndNature => ("🐻", "Animals & nature"),
+            emojis::Group::FoodAndDrink => ("🍔", "Food & drink"),
+            emojis::Group::TravelAndPlaces => ("✈️", "Travel & places"),
+            emojis::Group::Activities => ("⚽", "Activities"),
+            emojis::Group::Objects => ("💡", "Objects"),
+            emojis::Group::Symbols => ("🔣", "Symbols"),
+            emojis::Group::Flags => ("🏁", "Flags"),
         };
         section(
-            heading,
+            Some(titled(glyph, name)),
             group
                 .emojis()
                 .filter(|emoji| emoji.unicode_version() <= NEWEST)
@@ -252,7 +286,7 @@ pub fn rows(query: &str, frequent: &[String], custom: &[EmojiSet]) -> Vec<EmojiR
                 .collect(),
         );
     }
-    rows
+    (rows, sections)
 }
 
 /// Register the first installed emoji font with color bitmaps and no COLR
@@ -378,6 +412,7 @@ mod tests {
     fn pictures_fill_the_picker_in_place() {
         let custom = [EmojiSet {
             server: "Games".into(),
+            icon: None,
             emoji: vec![talk_core::chat::CustomEmoji {
                 text: ":gg:".into(),
                 id: "77".into(),
@@ -385,7 +420,9 @@ mod tests {
                 picture: String::new(),
             }],
         }];
-        let model = VecModel::from(rows("", &[], &custom));
+        let (rows, sections) = rows("", &[], &custom, |_| None);
+        let model = VecModel::from(rows);
+        let sections = VecModel::from(sections);
         let cells = model.row_data(1).unwrap().cells;
         assert_eq!(cells.row_data(0).unwrap().picture.size().width, 0);
         let picture = talk_core::chat::Picture {
@@ -396,7 +433,7 @@ mod tests {
         };
         assert!(custom_emoji::add_images([("77", &picture)]));
         assert!(!custom_emoji::add_images([("77", &picture)]), "kept once");
-        fill_pictures(&model);
+        fill_pictures(&model, &sections);
         // The same row model, with the cell's picture now in it.
         let gg = cells.row_data(0).unwrap();
         assert_eq!(gg.picture.size().width, 2);
@@ -404,20 +441,32 @@ mod tests {
             gg.glyph, ":gg:",
             "its glyph is for text, which needs a font"
         );
+        // A server without an icon is shown in the sidebar by its first emoji.
+        assert_eq!(sections.row_data(0).unwrap().icon.picture.size().width, 2);
     }
 
     #[test]
     fn the_picker_lists_categories_or_matches_and_names_emoji() {
-        let all = rows("", &["🔥".into()], &[]);
+        let (all, sections) = rows("", &["🔥".into()], &[], |_| None);
         assert_eq!(all[0].heading, "FREQUENTLY USED");
         assert_eq!(all[1].cells.row_count(), 1);
         assert_eq!(all[2].heading, "SMILEYS & EMOTION");
         assert!(all.iter().all(|row| row.cells.row_count() <= COLUMNS));
-        let found = rows(":pizza", &[], &[]);
+        // The sidebar jumps to each heading; a section ends where the next begins.
+        assert_eq!(sections.len(), 1 + emojis::Group::iter().count());
+        assert_eq!((sections[0].row, sections[0].end), (0, 2));
+        assert_eq!(sections[1].icon.name, "Smileys & emotion");
+        for (section, next) in sections.iter().zip(&sections[1..]) {
+            assert!(!all[section.row as usize].heading.is_empty());
+            assert_eq!(section.end, next.row);
+        }
+        assert_eq!(sections.last().unwrap().end as usize, all.len());
+        let (found, sections) = rows(":pizza", &[], &[], |_| None);
         assert_eq!(found.len(), 1);
+        assert!(sections.is_empty(), "matches have no sections");
         assert!(found[0].heading.is_empty());
         assert_eq!(found[0].cells.row_data(0).unwrap().glyph, "🍕");
-        assert!(rows("no such emoji", &[], &[]).is_empty());
+        assert!(rows("no such emoji", &[], &[], |_| None).0.is_empty());
         assert_eq!(cell("👍").name, "Thumbs up");
         // The composer gets the emoji, or a custom emoji's name.
         assert_eq!(composer_text("👍"), "👍");
@@ -426,6 +475,7 @@ mod tests {
         // A server's custom emoji follow those used often, and match by name.
         let custom = [EmojiSet {
             server: "Games".into(),
+            icon: None,
             emoji: vec![talk_core::chat::CustomEmoji {
                 text: ":pog:".into(),
                 id: "5".into(),
@@ -433,12 +483,23 @@ mod tests {
                 picture: String::new(),
             }],
         }];
-        let all = rows("", &[], &custom);
+        let icon = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(3, 3));
+        let (all, sections) = rows("", &[], &custom, |_| Some(icon.clone()));
         assert_eq!(all[0].heading, "GAMES");
         let pog = all[1].cells.row_data(0).unwrap();
         assert_eq!((pog.glyph.as_str(), pog.key.as_str()), (":pog:", "pog:5"));
+        assert_eq!(sections[0].icon.name, "Games");
         assert_eq!(
-            rows("po", &[], &custom)[0].cells.row_data(0).unwrap().key,
+            sections[0].icon.picture.size().width,
+            3,
+            "the server's icon"
+        );
+        assert_eq!(
+            rows("po", &[], &custom, |_| None).0[0]
+                .cells
+                .row_data(0)
+                .unwrap()
+                .key,
             "pog:5"
         );
     }
@@ -455,6 +516,7 @@ mod tests {
 
         let custom = [EmojiSet {
             server: "Games".into(),
+            icon: None,
             emoji: vec![talk_core::chat::CustomEmoji {
                 text: ":thunk:".into(),
                 id: "5".into(),

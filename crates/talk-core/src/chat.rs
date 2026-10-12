@@ -433,6 +433,8 @@ pub const EMOJI_PICTURE_SIZE: u32 = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmojiSet {
     pub server: String,
+    /// The address of the server's icon; see [`ChatServer::icon`].
+    pub icon: Option<String>,
     pub emoji: Vec<CustomEmoji>,
 }
 

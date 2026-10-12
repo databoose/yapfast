@@ -1741,6 +1741,7 @@ impl Application {
                 .into_iter()
                 .map(|server| chat::EmojiSet {
                     server: server.name.clone(),
+                    icon: server.icon.clone(),
                     emoji: server
                         .emojis
                         .iter()

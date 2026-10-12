@@ -368,10 +368,20 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 .collect();
             adapter.action(&window, Action::LoadPictures(pictures));
         }
-        update_model(
-            &adapter.models.emoji_rows,
-            emoji::rows(&query, &adapter.app.frequent_reactions(16), &custom),
+        let (rows, sections) = emoji::rows(
+            &query,
+            &adapter.app.frequent_reactions(16),
+            &custom,
+            |set| {
+                let icon = adapter.app.state.pictures.get(set.icon.as_deref()?)?;
+                Some(picture(icon))
+            },
         );
+        update_model(&adapter.models.emoji_rows, rows);
+        // Matches have no sections; the sidebar keeps those it jumps back to.
+        if !sections.is_empty() {
+            update_model(&adapter.models.emoji_sections, sections);
+        }
     });
     let state = adapter.clone();
     let weak = window.as_weak();
