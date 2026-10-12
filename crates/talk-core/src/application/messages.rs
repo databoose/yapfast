@@ -238,7 +238,7 @@ impl Application {
         if self.state.preview {
             let item = uuid::Uuid::new_v4().to_string();
             let messages = self.samples.entry(target.clone()).or_default();
-            messages.push(ChatMessage {
+            messages.push(Arc::new(ChatMessage {
                 id: item.clone(),
                 item,
                 author: "You".into(),
@@ -249,7 +249,7 @@ impl Application {
                 formatted: message.formatted,
                 attachments: message.attachments,
                 ..sample_actions()
-            });
+            }));
             if target == source {
                 self.state.messages = Arc::new(messages.clone());
             }
@@ -288,7 +288,7 @@ impl Application {
         if let Some(messages) = self.samples.get_mut(room)
             && let Some(message) = messages.iter_mut().find(|message| message.item == item)
         {
-            change(message);
+            change(Arc::make_mut(message));
             self.state.messages = Arc::new(messages.clone());
         }
     }
@@ -367,10 +367,10 @@ impl Application {
             self.read_marker = Some((marker, pages));
             return vec![];
         }
-        let unread = |message: &ChatMessage| !message.own;
+        let unread = |message: &Arc<ChatMessage>| !message.own;
         let first = match discord::item_order(&marker) {
             Some(read) => {
-                let after = |message: &ChatMessage| {
+                let after = |message: &Arc<ChatMessage>| {
                     discord::item_order(&message.item).is_some_and(|order| order > read)
                 };
                 let reached = messages.iter().any(|message| {

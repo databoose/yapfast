@@ -113,18 +113,20 @@ impl Application {
                 lines
                     .into_iter()
                     .enumerate()
-                    .map(|(i, (author, body))| ChatMessage {
-                        id: format!("{room}-{i}"),
-                        item: format!("{room}-{i}"),
-                        author: author.into(),
-                        sender: author.into(),
-                        formatted: has_markdown(body),
-                        body: body.into(),
-                        time: format!("19:{:02}", 20 + i),
-                        own: author == "You",
-                        can_edit: author == "You",
-                        can_delete: author == "You",
-                        ..sample_actions()
+                    .map(|(i, (author, body))| {
+                        Arc::new(ChatMessage {
+                            id: format!("{room}-{i}"),
+                            item: format!("{room}-{i}"),
+                            author: author.into(),
+                            sender: author.into(),
+                            formatted: has_markdown(body),
+                            body: body.into(),
+                            time: format!("19:{:02}", 20 + i),
+                            own: author == "You",
+                            can_edit: author == "You",
+                            can_delete: author == "You",
+                            ..sample_actions()
+                        })
                     })
                     .collect(),
             );

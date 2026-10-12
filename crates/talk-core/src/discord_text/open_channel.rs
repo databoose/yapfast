@@ -52,7 +52,7 @@ pub struct OpenChannel {
     /// Loaded messages as the timeline last showed them, by snowflake, so a
     /// change renders only the messages it changed. A message leaves when it
     /// changes, and all leave when what they were rendered with changes.
-    pub(super) rendered: HashMap<u64, ChatMessage>,
+    pub(super) rendered: HashMap<u64, Arc<ChatMessage>>,
     rendered_with: Rendering,
     // Loading goes on after the channel closes, and dropping the set when
     // it leaves the recent channels cancels it. What the person did, such
@@ -700,7 +700,11 @@ impl OpenChannel {
     /// The channel as Talk's timeline. Starts downloading image previews it
     /// lacks. Messages that didn't change since the last time come from
     /// [`OpenChannel::rendered`].
-    pub fn publish(&mut self, discord: &Discord, done: &UnboundedSender<Done>) -> Vec<ChatMessage> {
+    pub fn publish(
+        &mut self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+    ) -> Vec<Arc<ChatMessage>> {
         while self.tasks.try_join_next().is_some() {}
         let snapshot = discord.snapshots().borrow().clone();
         let me = snapshot.user_id.clone().unwrap_or_default();
@@ -735,16 +739,16 @@ impl OpenChannel {
             };
             let row = match kept.remove(order) {
                 Some(row) if row.id == id => row,
-                _ => self.render(discord, &snapshot, server, message, id, &mut wanted),
+                _ => Arc::new(self.render(discord, &snapshot, server, message, id, &mut wanted)),
             };
-            self.rendered.insert(*order, row.clone());
+            self.rendered.insert(*order, Arc::clone(&row));
             rows.push(row);
         }
         let me_name = name(&me, "You");
         let me_avatar = discord.avatar(Some(&self.guild), &me);
         let me_color = server.and_then(|server| discord.color(server, &me));
         for pending in &self.pending {
-            rows.push(ChatMessage {
+            rows.push(Arc::new(ChatMessage {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
                 author: me_name.clone(),
@@ -789,7 +793,7 @@ impl OpenChannel {
                     })
                     .collect(),
                 ..Default::default()
-            });
+            }));
         }
         for url in wanted {
             self.fetch_picture(discord, done, url);

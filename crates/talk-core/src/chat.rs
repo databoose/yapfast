@@ -1138,7 +1138,9 @@ pub enum Event {
     Rooms(RoomIndex),
     Timeline {
         room: String,
-        messages: Vec<ChatMessage>,
+        /// Shared, so a backend can send rows that didn't change again
+        /// without copying them.
+        messages: Vec<Arc<ChatMessage>>,
     },
     RoomError {
         room: String,

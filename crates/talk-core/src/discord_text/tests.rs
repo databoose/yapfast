@@ -260,7 +260,7 @@ fn changes_render_again_only_the_messages_they_change() {
     open.loaded(false, shown([page([3, 5, 7]), vec![with_image]].concat()));
     let show = |open: &mut OpenChannel| {
         for order in [3, 5, 7, 9] {
-            open.rendered.insert(order, ChatMessage::default());
+            open.rendered.insert(order, Arc::default());
         }
     };
     let kept = |open: &OpenChannel| {
@@ -685,7 +685,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let weak = Arc::downgrade(&picture);
     open.picture("preview".into(), Some(picture));
     assert!(open.pictures["preview"].is_some());
-    open.rendered.insert(1, ChatMessage::default());
+    open.rendered.insert(1, Arc::default());
     assert!(open.visible(vec!["d:2".into()]));
     assert!(open.pictures.is_empty() && open.requested.is_empty() && open.rendered.is_empty());
     open.picture("preview".into(), Some(Arc::new(Picture::default())));

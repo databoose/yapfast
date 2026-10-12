@@ -255,7 +255,7 @@ pub struct AppState {
     pub navigation: Navigation,
     pub selected: Option<String>,
     pub room_ready: bool,
-    pub messages: Arc<Vec<ChatMessage>>,
+    pub messages: Arc<Vec<Arc<ChatMessage>>>,
     /// The selected room's joined members, by role and then name; `None` while loading.
     pub members: Option<Result<Vec<ChatMember>, &'static str>>,
     /// A page of earlier history is on its way.
@@ -336,7 +336,10 @@ impl AppState {
     }
 
     pub fn message(&self, item: &str) -> Option<&ChatMessage> {
-        self.messages.iter().find(|message| message.item == item)
+        self.messages
+            .iter()
+            .find(|message| message.item == item)
+            .map(Arc::as_ref)
     }
 
     /// Whether this account's devices can write to the selected room.
@@ -441,7 +444,7 @@ impl AppState {
         if let Some(member) = known {
             return Some(member.clone());
         }
-        let sender = |message: &&ChatMessage| {
+        let sender = |message: &&Arc<ChatMessage>| {
             message.sender == user || discord::sender_user(&message.sender) == Some(user)
         };
         if let Some(message) = self.messages.iter().rev().find(sender) {
@@ -839,14 +842,14 @@ pub struct Application {
     #[cfg(feature = "discord")]
     discord_index: discord::Index,
     last_selected: HashMap<Navigation, String>,
-    samples: HashMap<String, Vec<ChatMessage>>,
+    samples: HashMap<String, Vec<Arc<ChatMessage>>>,
     /// How often this device added each reaction.
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
     /// The timeline whose pictures were asked for, so an unchanged one isn't
     /// gone through again.
-    pictured_timeline: Arc<Vec<ChatMessage>>,
+    pictured_timeline: Arc<Vec<Arc<ChatMessage>>>,
     visible_messages: Vec<String>,
     /// How many pictures other than custom emoji were kept the last time
     /// those off screen went.
@@ -887,7 +890,7 @@ struct Seeking {
 
 struct Shown {
     room: String,
-    messages: Arc<Vec<ChatMessage>>,
+    messages: Arc<Vec<Arc<ChatMessage>>>,
     members: Option<Result<Vec<ChatMember>, &'static str>>,
 }
 
@@ -907,7 +910,7 @@ const KEPT_PICTURES: usize = 400;
 /// member list, profiles and people to start a DM with.
 fn pictures_on_screen<'a>(
     state: &'a AppState,
-    timeline: &'a [ChatMessage],
+    timeline: &'a [Arc<ChatMessage>],
     list_avatars: bool,
 ) -> impl Iterator<Item = &'a str> {
     state
@@ -1026,10 +1029,19 @@ fn is_custom_emoji(url: &str) -> bool {
 
 /// A closed channel's recent message metadata, ready to show on reopening.
 /// Preview ownership stays in the backend's shared byte-bounded cache.
-fn shelved(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+/// Rows without previews stay shared with the timeline.
+fn shelved(messages: &[Arc<ChatMessage>]) -> Vec<Arc<ChatMessage>> {
     let mut kept = messages[messages.len().saturating_sub(discord::KEPT_MESSAGES)..].to_vec();
-    for attachment in kept.iter_mut().flat_map(|message| &mut message.attachments) {
-        attachment.preview = None;
+    for message in &mut kept {
+        if message
+            .attachments
+            .iter()
+            .any(|file| file.preview.is_some())
+        {
+            for attachment in &mut Arc::make_mut(message).attachments {
+                attachment.preview = None;
+            }
+        }
     }
     kept
 }

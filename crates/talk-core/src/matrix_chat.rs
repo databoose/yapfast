@@ -1715,7 +1715,7 @@ async fn publish_timeline(
         let seconds: u64 = event.timestamp().as_secs().into();
         message.time = crate::clock::time(seconds);
         message.timestamp = seconds;
-        messages.push(message);
+        messages.push(Arc::new(message));
     }
     let unread = open.timeline.room().num_unread_messages() > 0;
     open.pictures.retain(|key, _| wanted.contains(key));
@@ -1779,8 +1779,8 @@ mod tests {
     /// Wait for a timeline publication whose messages satisfy `check`.
     async fn timeline_where(
         events: &mut UnboundedReceiver<Event>,
-        mut check: impl FnMut(&[ChatMessage]) -> bool,
-    ) -> Vec<ChatMessage> {
+        mut check: impl FnMut(&[Arc<ChatMessage>]) -> bool,
+    ) -> Vec<Arc<ChatMessage>> {
         receive(events, |event| match event {
             Event::Timeline { messages, .. } if check(&messages) => Some(messages),
             Event::RoomError { message, .. } => panic!("{message}"),

@@ -1765,7 +1765,8 @@ fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
         message(false, true),
         message(true, false),
         message(false, false),
-    ];
+    ]
+    .map(Arc::new);
     assert_eq!(
         refresh::unread_label(&unread),
         "2 new messages since 14:05",
@@ -1780,7 +1781,7 @@ fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
         ..message(false, false)
     };
     assert!(
-        refresh::unread_label(&[older]).starts_with("1 new message since 14:05 on "),
+        refresh::unread_label(&[Arc::new(older)]).starts_with("1 new message since 14:05 on "),
         "with the date when it wasn't today"
     );
 }
@@ -1893,7 +1894,7 @@ fn replacing_a_temporary_item_reports_the_view_without_changing_row_count() {
     let mut state = adapter.borrow_mut();
     let room = state.app.state.selected.clone().unwrap();
     let mut messages = (*state.app.state.messages).clone();
-    messages[0].item = "e:$confirmed".into();
+    Arc::make_mut(&mut messages[0]).item = "e:$confirmed".into();
     state.apply(Event::Timeline { room, messages });
     state.refresh(&window);
     assert_eq!(window.get_messages().row_count(), count);
@@ -1996,7 +1997,7 @@ fn closing_the_viewer_lets_go_of_its_picture() {
     )
     .unwrap();
     let mut adapter = adapter.borrow_mut();
-    adapter.app.state.messages = Arc::new(vec![ChatMessage {
+    adapter.app.state.messages = Arc::new(vec![Arc::new(ChatMessage {
         item: "i0".into(),
         attachments: vec![talk_core::chat::Attachment {
             name: "a.png".into(),
@@ -2015,7 +2016,7 @@ fn closing_the_viewer_lets_go_of_its_picture() {
             video: false,
         }],
         ..Default::default()
-    }]);
+    })]);
     adapter.app.state.viewer = Some(talk_core::application::Viewer {
         item: "i0".into(),
         index: 0,
