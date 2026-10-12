@@ -486,8 +486,12 @@ struct Layout {
     unmute_on_join: bool,
     /// Your voice is evened out in calls; on unless turned off.
     level_voice: Option<bool>,
-    /// What takes out noise in Discord calls; DeepFilterNet unless changed.
+    /// What takes out noise in Discord calls, and how far; DeepFilterNet,
+    /// fully, unless changed.
     noise_suppression: talk_core::noise::Suppressor,
+    noise_strength: talk_core::noise::Strength,
+    /// The quietest speech Discord calls send, in dBFS; -60 unless changed.
+    input_sensitivity: Option<i32>,
     /// How loud people sound in calls, and their streams, by Discord or
     /// Matrix user id; see [`talk_core::volume`]. Unlisted people are as they
     /// come.
@@ -502,7 +506,42 @@ struct Layout {
     notification_text: Option<bool>,
 }
 
+/// The noise suppression settings' choices, in the order they show.
+const SUPPRESSORS: [talk_core::noise::Suppressor; 3] = [
+    talk_core::noise::Suppressor::DeepFilterNet,
+    talk_core::noise::Suppressor::RNNoise,
+    talk_core::noise::Suppressor::Off,
+];
+const STRENGTHS: [talk_core::noise::Strength; 3] = [
+    talk_core::noise::Strength::Full,
+    talk_core::noise::Strength::Medium,
+    talk_core::noise::Strength::Light,
+];
+
+/// Where a setting's value is among its choices.
+fn choice<T: PartialEq>(choices: &[T], value: T) -> i32 {
+    choices
+        .iter()
+        .position(|choice| *choice == value)
+        .unwrap_or(0) as i32
+}
+
+/// The choice a setting shows at an index; the first if there's none.
+fn chosen<T: Copy>(choices: &[T], index: i32) -> T {
+    choices
+        .get(usize::try_from(index).unwrap_or(0))
+        .copied()
+        .unwrap_or(choices[0])
+}
+
 impl Layout {
+    /// The voice gate's sensitivity, in whole dBFS from -80 to 0.
+    fn sensitivity(&self) -> i32 {
+        self.input_sensitivity
+            .unwrap_or(talk_core::noise::DEFAULT_SENSITIVITY as i32)
+            .clamp(-80, 0)
+    }
+
     fn read(root: &std::path::Path) -> Self {
         std::fs::read(root.join(LAYOUT))
             .ok()
@@ -522,8 +561,13 @@ impl Layout {
         window.set_unmute_on_join(self.unmute_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
         talk_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
-        window.set_rnnoise(self.noise_suppression == talk_core::noise::Suppressor::RNNoise);
+        window.set_noise_suppression(choice(&SUPPRESSORS, self.noise_suppression));
+        window.set_noise_strength(choice(&STRENGTHS, self.noise_strength));
         talk_core::noise::set(self.noise_suppression);
+        talk_core::noise::set_strength(self.noise_strength);
+        let sensitivity = self.sensitivity();
+        window.set_sensitivity(sensitivity);
+        talk_core::noise::set_sensitivity(sensitivity as f32);
         for (person, volume) in &self.volumes {
             talk_core::volume::set(talk_core::volume::Kind::Voice, person, *volume);
         }
@@ -715,6 +759,10 @@ struct Adapter {
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
     meter: Option<InputMeter>,
+    /// Runs the microphone through Discord's processing while voice settings
+    /// show the voice gate's sensitivity.
+    #[cfg(feature = "discord")]
+    gate_meter: Option<talk_core::discord_audio::GateMeter>,
     /// Previews of the pictures waiting in the composer, by file; `None` while
     /// one is read, or when it can't be.
     thumbnails: HashMap<PathBuf, Option<pictures::Thumbnail>>,
@@ -795,6 +843,8 @@ impl Adapter {
                 viewer_size: None,
                 dialog: None,
                 meter: None,
+                #[cfg(feature = "discord")]
+                gate_meter: None,
                 thumbnails: HashMap::new(),
                 pasted: None,
                 #[cfg(feature = "discord")]

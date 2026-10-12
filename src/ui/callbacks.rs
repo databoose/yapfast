@@ -465,12 +465,12 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.unmute_on_join = window.get_unmute_on_join();
         layout.level_voice = Some(window.get_level_voice());
         talk_core::leveling::set_enabled(window.get_level_voice());
-        layout.noise_suppression = if window.get_rnnoise() {
-            talk_core::noise::Suppressor::RNNoise
-        } else {
-            talk_core::noise::Suppressor::DeepFilterNet
-        };
+        layout.noise_suppression = chosen(&SUPPRESSORS, window.get_noise_suppression());
+        layout.noise_strength = chosen(&STRENGTHS, window.get_noise_strength());
         talk_core::noise::set(layout.noise_suppression);
+        talk_core::noise::set_strength(layout.noise_strength);
+        layout.input_sensitivity = Some(window.get_sensitivity());
+        talk_core::noise::set_sensitivity(layout.sensitivity() as f32);
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_sound = Some(window.get_notification_sound());
@@ -1127,6 +1127,11 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 if adapter.meter.is_some() {
                     adapter.meter = Some(InputMeter::start(Some(&id)));
                 }
+                #[cfg(feature = "discord")]
+                if adapter.gate_meter.is_some() {
+                    adapter.gate_meter =
+                        Some(talk_core::discord_audio::GateMeter::start(Some(&id)));
+                }
                 adapter.action(&window, Action::Voice(voice::Command::Microphone(id)));
             }
         }
@@ -1173,4 +1178,31 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             }));
         }
     });
+    #[cfg(feature = "discord")]
+    {
+        let state = adapter.clone();
+        window.on_gate_metering(move |on| {
+            let mut adapter = state.borrow_mut();
+            let microphone = adapter.app.state.voice.microphone.clone();
+            adapter.gate_meter =
+                on.then(|| talk_core::discord_audio::GateMeter::start(microphone.as_deref()));
+        });
+        let state = adapter.clone();
+        let weak = window.as_weak();
+        window.on_gate_meter_tick(move || {
+            if let (Some(window), Some(meter)) = (weak.upgrade(), &state.borrow().gate_meter) {
+                window.set_gate_level(meter.level().max(-100.0));
+                window.set_gate_sending(meter.sending());
+                window.set_gate_meter_note(SharedString::from(
+                    if !talk_core::discord_audio::AVAILABLE {
+                        "Discord voice and its level work on Linux for now."
+                    } else if meter.failed() {
+                        "Talk can't read this microphone. Check that it's connected, or choose another."
+                    } else {
+                        ""
+                    },
+                ));
+            }
+        });
+    }
 }

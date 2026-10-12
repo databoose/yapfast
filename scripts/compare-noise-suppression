@@ -3,9 +3,10 @@
 # RNNoise, on speech mixed with keyboard typing, a fan and hiss: their cost
 # per 10 ms block, how far behind their input they are, how much noise is left
 # and how speech fares, and what the voice gate sends.
-# Usage: scripts/compare-noise-suppression. It downloads its recordings from
-# Wikimedia Commons once, into .local/noise-suppression, and prints tables;
-# docs/discord.md records the results.
+# Usage: scripts/compare-noise-suppression [LIMIT], LIMIT limiting how far
+# the suppressors turn noise down, in dB, as the setting does. It downloads
+# its recordings from Wikimedia Commons once, into .local/noise-suppression,
+# and prints tables; docs/discord.md records the results.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -14,7 +15,10 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 work=.local/noise-suppression
-mkdir -p "$work/download" "$work/raw" "$work/out/alone" "$work/out/chain"
+limit=${1:-100}
+out="$work/out/limit-$limit"
+mkdir -p "$work/download" "$work/raw" "$out/alone" "$out/chain"
+export TALK_NOISE_LIMIT=$limit
 
 # Name, then the file on Wikimedia Commons, with its licence.
 sources=(
@@ -49,16 +53,16 @@ tests=$(cargo test --profile fast --locked -p talk-core --no-run --message-forma
   jq -r 'select(.profile.test == true and .target.name == "talk_core" and .executable != null) | .executable')
 for mix in clean typing fan hiss typing_fan typing_hiss quiet_typing_fan quiet_typing_hiss; do
   echo "== $mix"
-  TALK_NOISE_IN="$work/mixes/$mix.f32" TALK_NOISE_OUT="$work/out/alone/${mix}_" \
+  TALK_NOISE_IN="$work/mixes/$mix.f32" TALK_NOISE_OUT="$out/alone/${mix}_" \
     "$tests" --exact noise::tests::compares_suppressors --ignored --nocapture |
     grep -E 'loaded|blocks'
-  for suppressor in deepfilternet rnnoise; do
+  for suppressor in deepfilternet rnnoise off; do
     TALK_SUPPRESSOR=$suppressor TALK_AUDIO_IN="$work/mixes/$mix.s16" \
-      TALK_AUDIO_OUT="$work/out/chain/${mix}_$suppressor.s16" \
+      TALK_AUDIO_OUT="$out/chain/${mix}_$suppressor.s16" \
       "$tests" --exact discord_audio::linux::processes_a_recording --ignored --nocapture \
-      >"$work/out/chain/${mix}_$suppressor.log"
-    echo "whole microphone, $suppressor: $(grep -o '[0-9.]*µs a block' "$work/out/chain/${mix}_$suppressor.log")"
+      >"$out/chain/${mix}_$suppressor.log"
+    echo "whole microphone, $suppressor: $(grep -o '[0-9.]*µs a block' "$out/chain/${mix}_$suppressor.log")"
   done
 done
 echo
-python score "$work/mixes" "$work/out"
+python score "$work/mixes" "$out"

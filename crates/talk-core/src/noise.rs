@@ -1,7 +1,8 @@
-//! Noise suppression for Discord voice's microphone. DeepFilterNet 3 takes
-//! out noise by default, keyboard clicks included; RNNoise stays available to
-//! compare. Both work on 10 ms blocks at 48 kHz, as the microphone does.
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Noise suppression for Discord voice's microphone, and the voice gate's
+//! sensitivity. DeepFilterNet 3 takes out noise by default, keyboard clicks
+//! included; RNNoise stays available to compare. Both work on 10 ms blocks at
+//! 48 kHz, as the microphone does.
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,22 +13,89 @@ pub enum Suppressor {
     #[default]
     DeepFilterNet,
     RNNoise,
+    /// Leaves the noise in; RNNoise still tells the gate which blocks are
+    /// speech.
+    Off,
 }
 
-static RNNOISE: AtomicBool = AtomicBool::new(false);
+/// How far the suppressor turns noise down. Less leaves some of the room in,
+/// which can sound more natural. Below 20 dB, DeepFilterNet's leftover typing
+/// got past the voice gate's level: at 12 dB the gate sent 81-86% of pauses
+/// with typing, rather than 6.4% at full strength.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Strength {
+    /// Takes out all the noise it can.
+    #[default]
+    Full,
+    Medium,
+    Light,
+}
+
+impl Strength {
+    /// The attenuation limit, in dB.
+    fn limit(self) -> f32 {
+        match self {
+            Strength::Full => FULL,
+            Strength::Medium => 30.0,
+            Strength::Light => 20.0,
+        }
+    }
+}
+
+/// An attenuation limit of this many dB or more takes out all the noise the
+/// network can.
+const FULL: f32 = 100.0;
+
+/// The quietest speech the voice gate sends unless changed, in RMS dBFS after
+/// processing.
+pub const DEFAULT_SENSITIVITY: f32 = -60.0;
+
+static SUPPRESSOR: AtomicU8 = AtomicU8::new(0);
+static LIMIT: AtomicU32 = AtomicU32::new(FULL.to_bits());
+static SENSITIVITY: AtomicU32 = AtomicU32::new(DEFAULT_SENSITIVITY.to_bits());
 
 /// Chooses the suppressor for every call; a call going on switches at its
 /// next block.
 pub fn set(suppressor: Suppressor) {
-    RNNOISE.store(suppressor == Suppressor::RNNoise, Ordering::Relaxed);
+    SUPPRESSOR.store(suppressor as u8, Ordering::Relaxed);
 }
 
 pub fn chosen() -> Suppressor {
-    if RNNOISE.load(Ordering::Relaxed) {
-        Suppressor::RNNoise
-    } else {
-        Suppressor::DeepFilterNet
+    match SUPPRESSOR.load(Ordering::Relaxed) {
+        1 => Suppressor::RNNoise,
+        2 => Suppressor::Off,
+        _ => Suppressor::DeepFilterNet,
     }
+}
+
+/// Sets how far every call's suppressor turns noise down; a call going on
+/// takes it at its next block.
+pub fn set_strength(strength: Strength) {
+    set_limit(strength.limit());
+}
+
+/// Limits how far the suppressor turns noise down, in dB, by mixing some of
+/// the microphone back in.
+pub(crate) fn set_limit(decibels: f32) {
+    LIMIT.store(decibels.to_bits(), Ordering::Relaxed);
+}
+
+#[cfg(feature = "discord")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn limit() -> f32 {
+    f32::from_bits(LIMIT.load(Ordering::Relaxed))
+}
+
+/// Sets the quietest speech the voice gate sends in every call, in RMS dBFS
+/// after processing; a call going on takes it at its next block.
+pub fn set_sensitivity(decibels: f32) {
+    SENSITIVITY.store(decibels.to_bits(), Ordering::Relaxed);
+}
+
+#[cfg(feature = "discord")]
+pub(crate) fn sensitivity() -> f32 {
+    f32::from_bits(SENSITIVITY.load(Ordering::Relaxed))
 }
 
 #[cfg(feature = "discord")]
@@ -63,19 +131,27 @@ mod denoise {
     pub(crate) struct Denoiser {
         suppressor: Suppressor,
         network: Network,
+        /// The attenuation limit in dB, and the share of the microphone it
+        /// mixes back in.
+        limit: f32,
+        mix: f32,
         noisy: Vec<f32>,
         clean: Vec<f32>,
+        /// RNNoise's output is a block behind: the input it lines up with.
+        previous: Vec<f32>,
     }
 
     enum Network {
         DeepFilterNet(Box<DfTract>),
         RNNoise(Box<nnnoiseless::DenoiseState<'static>>),
+        /// RNNoise only hears speech; the block goes out as it came.
+        Off(Box<nnnoiseless::DenoiseState<'static>>),
     }
 
     impl Denoiser {
         /// DeepFilterNet takes about 200 ms to load. If it doesn't, RNNoise
         /// stands in.
-        pub(crate) fn new(suppressor: Suppressor) -> Self {
+        pub(crate) fn new(suppressor: Suppressor, limit: f32) -> Self {
             let network = match suppressor {
                 Suppressor::DeepFilterNet => match deep_filter_net() {
                     Ok(network) => Network::DeepFilterNet(Box::new(network)),
@@ -85,12 +161,39 @@ mod denoise {
                     }
                 },
                 Suppressor::RNNoise => Network::RNNoise(nnnoiseless::DenoiseState::new()),
+                Suppressor::Off => Network::Off(nnnoiseless::DenoiseState::new()),
             };
-            Self {
+            let mut denoiser = Self {
                 suppressor,
                 network,
+                limit: f32::NAN,
+                mix: 0.0,
                 noisy: vec![0.0; BLOCK],
                 clean: vec![0.0; BLOCK],
+                previous: vec![0.0; BLOCK],
+            };
+            denoiser.limit(limit);
+            denoiser
+        }
+
+        /// Limits how far noise is turned down, in dB; [`super::FULL`] or
+        /// more takes out all it can. libDF mixes the microphone back into
+        /// its spectrum; RNNoise's output gets the same mix of the block it
+        /// lines up with.
+        pub(crate) fn limit(&mut self, decibels: f32) {
+            if decibels == self.limit {
+                return;
+            }
+            self.limit = decibels;
+            self.mix = if decibels >= super::FULL {
+                0.0
+            } else {
+                10f32.powf(-decibels.max(1.0) / 20.0)
+            };
+            if let Network::DeepFilterNet(network) = &mut self.network {
+                // libDF skips the network below 0.01 dB and calls every
+                // block speech.
+                network.set_atten_lim(decibels.max(1.0));
             }
         }
 
@@ -125,7 +228,17 @@ mod denoise {
                 }
                 Network::RNNoise(network) => {
                     self.noisy.copy_from_slice(block);
-                    network.process_frame(block, &self.noisy) >= SPEECH_PROBABILITY
+                    let probability = network.process_frame(block, &self.noisy);
+                    if self.mix > 0.0 {
+                        for (sample, noisy) in block.iter_mut().zip(&self.previous) {
+                            *sample += (noisy - *sample) * self.mix;
+                        }
+                    }
+                    std::mem::swap(&mut self.previous, &mut self.noisy);
+                    probability >= SPEECH_PROBABILITY
+                }
+                Network::Off(network) => {
+                    network.process_frame(&mut self.clean, block) >= SPEECH_PROBABILITY
                 }
             }
         }
@@ -147,12 +260,61 @@ mod tests {
 
     use super::*;
 
+    /// What's left of 2 s of steady noise after a denoiser, in dB below it.
+    fn turned_down(suppressor: Suppressor, strength: Strength) -> f32 {
+        let mut denoiser = Denoiser::new(suppressor, strength.limit());
+        let (mut seed, mut before, mut after) = (1u32, 0.0, 0.0);
+        for index in 0..200 {
+            let mut block: Vec<f32> = (0..BLOCK)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (seed >> 16) as f32 / 65536.0 * 2000.0 - 1000.0
+                })
+                .collect();
+            let energy = |block: &[f32]| block.iter().map(|sample| sample * sample).sum::<f32>();
+            // The networks take a while to learn the noise.
+            if index >= 100 {
+                before += energy(&block);
+            }
+            denoiser.block(&mut block);
+            if index >= 100 {
+                after += energy(&block);
+            }
+        }
+        10.0 * (before / after).log10()
+    }
+
+    #[test]
+    fn a_lighter_strength_leaves_more_noise_and_off_leaves_it_all() {
+        for suppressor in [Suppressor::DeepFilterNet, Suppressor::RNNoise] {
+            let [full, medium, light] =
+                [Strength::Full, Strength::Medium, Strength::Light].map(|strength| {
+                    let down = turned_down(suppressor, strength);
+                    // DeepFilterNet takes white noise down to its limit;
+                    // RNNoise hardly hears it as noise.
+                    if suppressor == Suppressor::DeepFilterNet && strength != Strength::Full {
+                        assert!(
+                            (down - strength.limit()).abs() < 1.0,
+                            "{strength:?}: {down} dB"
+                        );
+                    }
+                    down
+                });
+            assert!(
+                full > medium && medium > light && light > 0.0,
+                "{suppressor:?}"
+            );
+        }
+        assert_eq!(turned_down(Suppressor::Off, Strength::Full), 0.0);
+    }
+
     /// Runs a recording through both suppressors alone, without the rest of
     /// the microphone's processing: raw mono f32 48 kHz in full scale from
     /// `TALK_NOISE_IN`, written to `TALK_NOISE_OUT` + `deepfilternet.f32` and
     /// `rnnoise.f32`, with a CSV beside each of every block's microseconds,
     /// DeepFilterNet's SNR estimate and RNNoise's speech probability. It
     /// prints how long DeepFilterNet took to load and the memory it took.
+    /// `TALK_NOISE_LIMIT` limits the attenuation, in dB.
     #[test]
     #[ignore = "needs TALK_NOISE_IN and TALK_NOISE_OUT"]
     fn compares_suppressors() {
@@ -176,13 +338,14 @@ mod tests {
                 / 1024.0
         };
         let (before, started) = (resident(), Instant::now());
-        let mut denoisers = vec![Denoiser::new(Suppressor::DeepFilterNet)];
+        let limit = std::env::var("TALK_NOISE_LIMIT").map_or(FULL, |limit| limit.parse().unwrap());
+        let mut denoisers = vec![Denoiser::new(Suppressor::DeepFilterNet, limit)];
         println!(
             "DeepFilterNet loaded in {:?}, taking {:.1} MiB",
             started.elapsed(),
             resident() - before
         );
-        denoisers.push(Denoiser::new(Suppressor::RNNoise));
+        denoisers.push(Denoiser::new(Suppressor::RNNoise, limit));
         let mut snr = df::tract::DfTract::new(
             df::tract::DfParams::default(),
             &df::tract::RuntimeParams::default(),

@@ -156,7 +156,7 @@ def score(mixes, out):
     print("\nThe whole microphone, with echo cancellation, gain control and the gate.")
     print(f"{'mix':18} {'':14} {'speech sent':>11} {'pauses sent':>11} {'opened in pauses':>16}")
     for name in MIXES:
-        for suppressor in SUPPRESSORS:
+        for suppressor in SUPPRESSORS + ["off"]:
             log = out / f"chain/{name}_{suppressor}.log"
             sent = sent_blocks(log, len(truth))
             opened = sum(truth[round(float(m[1]) * 100)] == 0 for m in

@@ -181,6 +181,8 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
         link_previews: Some(false),
         unmute_on_join: true,
         noise_suppression: talk_core::noise::Suppressor::RNNoise,
+        noise_strength: talk_core::noise::Strength::Light,
+        input_sensitivity: Some(-45),
         ..Default::default()
     };
     let row = layout.restyle(&message, message_row(&message, &HashSet::new()));
@@ -222,16 +224,26 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     let window = TalkWindow::new().unwrap();
     layout.apply(&window);
     assert!(window.get_twelve_hour_clock() && !window.get_link_previews());
-    // Discord calls suppress noise with the chosen network.
-    assert!(window.get_rnnoise());
+    // Discord calls suppress noise with the chosen network, as far as chosen.
+    assert_eq!(window.get_noise_suppression(), 1);
+    assert_eq!(window.get_noise_strength(), 2);
     assert_eq!(
         talk_core::noise::chosen(),
         talk_core::noise::Suppressor::RNNoise
     );
-    assert_eq!(
-        serde_json::to_value(&layout).unwrap()["noise_suppression"],
-        "rnnoise"
-    );
+    let saved = serde_json::to_value(&layout).unwrap();
+    assert_eq!(saved["noise_suppression"], "rnnoise");
+    assert_eq!(saved["noise_strength"], "light");
+    assert_eq!(window.get_sensitivity(), -45);
+    assert_eq!(defaults.sensitivity(), -60);
+    let out_of_range = Layout {
+        input_sensitivity: Some(12),
+        ..Default::default()
+    };
+    assert_eq!(out_of_range.sensitivity(), 0);
+    // The third choice is Off; an index out of range is the default.
+    assert_eq!(chosen(&SUPPRESSORS, 2), talk_core::noise::Suppressor::Off);
+    assert_eq!(chosen(&STRENGTHS, -1), talk_core::noise::Strength::Full);
     assert_eq!(window.get_message_font_size(), 18.);
     // Joining a call turns the microphone on once it connects.
     let unmuted = Rc::new(Cell::new(false));

@@ -7,7 +7,7 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate, [DeepFilterNet noise suppression](#microphone) | Audio on Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength | Audio on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications, member lists | Threads, forums, search, pins, forwarding |
@@ -284,12 +284,37 @@ to 3.91) and took up to 5 dB off speech over a fan.
 RNNoise, through `nnnoiseless` (BSD-3-Clause), was the suppressor until
 2026-10-12. On real calls it let keyboard clicks through, and they held the
 gate open. Settings → Voice & audio → "Noise suppression in Discord calls"
-still chooses it, to compare the two; Talk keeps the choice in `layout.json`
-as `noise_suppression`. A call going on switches at its next block, after
-DeepFilterNet's 0.2 s load if switching to it.
+still chooses it, to compare the two, as does Off, for a quiet room: RNNoise
+then only tells the gate which blocks are speech. Talk keeps the choice in
+`layout.json` as `noise_suppression`. A call going on switches at its next
+block, after DeepFilterNet's 0.2 s load if switching to it.
 
-The voice gate opens on a block louder than -42 dBFS, or one the suppressor
-takes for speech above -60 dBFS, and holds 400 ms. DeepFilterNet takes a block
+"Noise suppression strength" limits how far noise is turned down: Full takes
+out all it can, Medium at most 30 dB and Light 20 dB (`noise_strength`). libDF
+mixes the microphone back into its output spectrum to keep to the limit;
+RNNoise's output gets the same mix of the input it lines up with, a block
+earlier. Below 20 dB, typing that DeepFilterNet left got past the gate's level
+after gain control, so there's no lighter step. PESQ falls as the limit does,
+since it counts what's left of the noise against clean speech:
+
+| DeepFilterNet's limit | Full | 30 dB | 20 dB | 12 dB |
+| --- | --- | --- | --- | --- |
+| PESQ, typing | 3.05 | 2.81 | 2.62 | 2.30 |
+| PESQ, fan | 3.37 | 3.33 | 3.21 | 2.97 |
+| PESQ, clean speech | 4.53 | 4.54 | 4.56 | 4.59 |
+| Typing left in pauses, mean and loudest block | -79, -53 dBFS | -67, -52 | -58, -45 | -50, -37 |
+| Pauses sent with typing | 6.3-6.4% | 6.3-6.4% | 6.5-11% | 81-86% |
+| Times typing opened the gate in pauses, each mix | 0 | 0 | 0-2 | 17-19 |
+
+The voice gate opens on a block the suppressor takes for speech that's louder
+than the input sensitivity, -60 dBFS unless changed, or on any block 18 dB
+louder still, and holds 400 ms. Levels are RMS over the block, after gain
+control. "Input sensitivity in Discord calls" sets it from -80 to 0 dBFS
+(`input_sensitivity`); behind its handle, the microphone's level goes from
+green through orange at -18 dBFS to red at -6, with whether the gate is open.
+While the setting shows, Talk runs the chosen microphone through a call's
+processing on a thread of its own, `talk-gate-meter`, and sends nothing; in a
+call that's a second copy of the processing. DeepFilterNet takes a block
 for speech when its own estimate of the block's SNR is at least 5 dB, RNNoise
 when its speech probability is at least 0.6. In a simulation of the gate on
 the mixes below, a 0 dB threshold let typing open it in pauses, and 10 dB
@@ -302,7 +327,8 @@ gate closes. It stays shut for the first 200 ms after the microphone opens,
 while the suppressor learns the noise. Opus stays at songbird's 128 kbps in
 its music mode.
 
-`scripts/compare-noise-suppression` compares the two on 90 s of speech, two
+`scripts/compare-noise-suppression [LIMIT]` compares the two, and Off through
+the whole microphone, at a strength's limit in dB, on 90 s of speech, two
 Spoken Wikipedia readings at -26 dBFS with 1.5-4 s pauses, mixed with four
 keyboard recordings (95% of blocks below -32 dBFS), a recorded fan high-passed
 as WebRTC does (-42 dBFS), pink hiss (-45 dBFS), and pairs of them; for the
@@ -336,7 +362,8 @@ microphone in a room, and nothing compared Krisp.
 To hear the processing, run a recording through it: raw mono 16-bit 48 kHz in
 `TALK_AUDIO_IN`, with `TALK_AUDIO_OUT` and optionally `TALK_AUDIO_SENT`, then
 `cargo test -p talk-core processes_a_recording -- --ignored --nocapture`.
-`TALK_SUPPRESSOR=rnnoise` runs it with RNNoise.
+`TALK_SUPPRESSOR=rnnoise` or `off` chooses the suppressor, and
+`TALK_NOISE_LIMIT` limits it in dB.
 
 ### Screen sharing
 

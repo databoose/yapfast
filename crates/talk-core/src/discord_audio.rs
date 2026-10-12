@@ -7,7 +7,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{Receiver, SyncSender, TrySendError},
     },
     time::{Duration, Instant},
@@ -125,10 +125,10 @@ fn decibels(samples: &[i16]) -> f32 {
     10.0 * power.max(1e-10).log10()
 }
 
-/// The gate opens on a block louder than this, in RMS dBFS, after processing,
-const GATE_OPEN: f32 = -42.0;
-/// or on one the suppressor takes for speech that's louder than this.
-const SPEECH_FLOOR: f32 = -60.0;
+/// The gate opens on a block the suppressor takes for speech that's louder
+/// than the sensitivity, in RMS dBFS after processing, or on any block this
+/// many dB louder still.
+const NOT_SPEECH: f32 = 18.0;
 /// It stays open this many 10 ms blocks after the last that would open it.
 const GATE_HOLD: u32 = 40;
 /// Blocks kept from before the gate opens and sent when it does: a word's
@@ -140,11 +140,23 @@ const BEFORE_OPENING: usize = 10;
 const WARM_UP: u32 = 20;
 
 /// Sends the microphone only while someone talks, starting a little before.
-#[derive(Default)]
 struct Gate {
+    /// The quietest speech it opens on, in RMS dBFS.
+    sensitivity: f32,
     hold: u32,
     heard: u32,
     before: VecDeque<Vec<f32>>,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            sensitivity: crate::noise::DEFAULT_SENSITIVITY,
+            hold: 0,
+            heard: 0,
+            before: VecDeque::new(),
+        }
+    }
 }
 
 impl Gate {
@@ -159,7 +171,12 @@ impl Gate {
         let was_open = self.is_open();
         self.heard = self.heard.saturating_add(1);
         let warm = self.heard > WARM_UP;
-        if warm && (level > GATE_OPEN || (speech && level > SPEECH_FLOOR)) {
+        let floor = if speech {
+            self.sensitivity
+        } else {
+            self.sensitivity + NOT_SPEECH
+        };
+        if warm && level > floor {
             self.hold = GATE_HOLD;
         } else {
             self.hold = self.hold.saturating_sub(1);
@@ -216,6 +233,75 @@ impl Drop for Capture {
     }
 }
 
+/// The Discord microphone's level as the voice gate hears it, after all the
+/// processing, and whether the gate would be open: for setting the
+/// sensitivity. It opens the microphone itself and sends nothing, so it works
+/// outside calls and beside one. Stops when dropped.
+pub struct GateMeter {
+    shared: Arc<MeterShared>,
+}
+
+struct MeterShared {
+    /// RMS dBFS, as f32 bits, held a moment so speech reads steadily.
+    level: AtomicU32,
+    open: AtomicBool,
+    stop: AtomicBool,
+    failed: AtomicBool,
+}
+
+impl GateMeter {
+    /// Starts measuring `microphone`, a device id from
+    /// [`crate::voice::State`], or the system default for `None`.
+    pub fn start(microphone: Option<&str>) -> Self {
+        let shared = Arc::new(MeterShared {
+            level: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
+            open: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            failed: AtomicBool::new(!AVAILABLE),
+        });
+        #[cfg(target_os = "linux")]
+        {
+            let microphone = microphone.map(str::to_owned);
+            let worker = shared.clone();
+            let spawned = std::thread::Builder::new()
+                .name("talk-gate-meter".into())
+                .spawn(move || {
+                    if let Err(error) = linux::measure(microphone.as_deref(), &worker) {
+                        tracing::warn!(%error, "could not measure the Discord microphone");
+                        worker.failed.store(true, Ordering::Relaxed);
+                    }
+                });
+            if spawned.is_err() {
+                shared.failed.store(true, Ordering::Relaxed);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = microphone;
+        Self { shared }
+    }
+
+    /// In RMS dBFS; minus infinity before the first block.
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.shared.level.load(Ordering::Relaxed))
+    }
+
+    /// Whether the gate would be open, sending the microphone.
+    pub fn sending(&self) -> bool {
+        self.shared.open.load(Ordering::Relaxed)
+    }
+
+    /// The microphone could not be opened or stopped delivering sound.
+    pub fn failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for GateMeter {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub use linux::{capture, speakers};
 
@@ -259,7 +345,7 @@ mod linux {
     use livekit::webrtc::native::apm::AudioProcessingModule;
     use talk_discord::voice::{CHANNELS, FRAME, Microphone, SAMPLE_RATE, Track};
 
-    use super::{Capture, Gate, Reverse, Speakers, decibels};
+    use super::{Capture, Gate, MeterShared, Reverse, Speakers, decibels};
     use crate::{meter::pulse, noise::Denoiser};
 
     /// Frames waiting for the speakers; more than this and new ones are dropped.
@@ -337,6 +423,8 @@ mod linux {
         gain: AudioProcessingModule,
         leveler: crate::leveling::Leveler,
         pub(super) gate: Gate,
+        /// The last block's level as the gate heard it, in RMS dBFS.
+        pub(super) level: f32,
         samples: Vec<f32>,
     }
 
@@ -346,10 +434,11 @@ mod linux {
             let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
             Self {
                 echo,
-                denoiser: Denoiser::new(crate::noise::chosen()),
+                denoiser: Denoiser::new(crate::noise::chosen(), crate::noise::limit()),
                 gain: AudioProcessingModule::new(false, true, false, false),
                 leveler: crate::leveling::Leveler::default(),
                 gate: Gate::default(),
+                level: f32::NEG_INFINITY,
                 samples: vec![0.0; BLOCK],
             }
         }
@@ -368,8 +457,9 @@ mod linux {
             let chosen = crate::noise::chosen();
             if self.denoiser.suppressor() != chosen {
                 tracing::info!(?chosen, "Discord microphone switches noise suppression");
-                self.denoiser = Denoiser::new(chosen);
+                self.denoiser = Denoiser::new(chosen, crate::noise::limit());
             }
+            self.denoiser.limit(crate::noise::limit());
             for (value, sample) in self.samples.iter_mut().zip(block.iter()) {
                 *value = f32::from(*sample);
             }
@@ -381,6 +471,7 @@ mod linux {
             // The gate hears the voice before leveling, which could lift
             // noise past it.
             let level = decibels(block);
+            self.level = level;
             let mut samples: Vec<f32> = block.iter().map(|sample| f32::from(*sample)).collect();
             self.leveler
                 .process(&mut samples, SAMPLE_RATE, crate::leveling::enabled());
@@ -390,8 +481,37 @@ mod linux {
             for value in &mut samples {
                 *value /= 32768.0;
             }
+            self.gate.sensitivity = crate::noise::sensitivity();
             self.gate.block(samples, level, speech)
         }
+    }
+
+    /// Runs the microphone through a call's processing for [`super::GateMeter`]
+    /// until it stops. The level falls 90 dB a second, as the input menu's
+    /// does, and rises at once.
+    pub(super) fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
+        let source = pulse::source(microphone)?;
+        let stream = open(Direction::Record, source.as_deref(), 1, BLOCK * 2)?;
+        let mut processing = Processing::new();
+        let mut bytes = vec![0u8; BLOCK * 2];
+        let mut block = vec![0i16; BLOCK];
+        let mut shown = f32::NEG_INFINITY;
+        while !shared.stop.load(Ordering::Relaxed) {
+            stream
+                .read(&mut bytes)
+                .map_err(|error| anyhow!("{error}"))
+                .context("the microphone stopped")?;
+            for (sample, pair) in block.iter_mut().zip(bytes.chunks_exact(2)) {
+                *sample = i16::from_le_bytes([pair[0], pair[1]]);
+            }
+            processing.block(&mut block);
+            shown = processing.level.max(shown - 0.9);
+            shared.level.store(shown.to_bits(), Ordering::Relaxed);
+            shared
+                .open
+                .store(processing.gate.is_open(), Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// Opens the microphone and sends its processed audio while someone talks:
@@ -476,12 +596,16 @@ mod linux {
     /// Runs a recording through the microphone's processing: raw mono 16-bit
     /// 48 kHz from `TALK_AUDIO_IN`, written processed to `TALK_AUDIO_OUT`, and
     /// what was sent to `TALK_AUDIO_SENT`, with silence where the gate was
-    /// closed. `TALK_SUPPRESSOR=rnnoise` suppresses noise with RNNoise.
+    /// closed. `TALK_SUPPRESSOR` chooses the suppressor (`rnnoise`, `off`), and
+    /// `TALK_NOISE_LIMIT` limits its attenuation, in dB.
     #[test]
     #[ignore = "needs TALK_AUDIO_IN and TALK_AUDIO_OUT"]
     fn processes_a_recording() {
-        if std::env::var("TALK_SUPPRESSOR").is_ok_and(|name| name == "rnnoise") {
-            crate::noise::set(crate::noise::Suppressor::RNNoise);
+        if let Ok(name) = std::env::var("TALK_SUPPRESSOR") {
+            crate::noise::set(serde_json::from_value(name.into()).unwrap());
+        }
+        if let Ok(limit) = std::env::var("TALK_NOISE_LIMIT") {
+            crate::noise::set_limit(limit.parse().unwrap());
         }
         let input = std::fs::read(std::env::var("TALK_AUDIO_IN").unwrap()).unwrap();
         let mut processing = Processing::new();
@@ -626,6 +750,31 @@ mod tests {
         // Loud noise opens it whatever the suppressor says; quiet noise doesn't.
         assert!(gate.block(block(0.0), -55.0, false).is_empty());
         assert_eq!(gate.block(block(1.0), -30.0, false).len(), 3);
+    }
+
+    #[test]
+    fn the_sensitivity_sets_how_loud_sound_must_be_to_open_the_gate() {
+        let mut gate = Gate {
+            sensitivity: -30.0,
+            ..Gate::default()
+        };
+        let block = || vec![0.0; 480];
+        for _ in 0..WARM_UP {
+            gate.block(block(), -100.0, false);
+        }
+        // Speech must be louder than the sensitivity, and other sounds 18 dB
+        // louder still.
+        assert!(gate.block(block(), -35.0, true).is_empty());
+        assert!(gate.block(block(), -15.0, false).is_empty());
+        assert!(!gate.block(block(), -25.0, true).is_empty());
+        let mut gate = Gate {
+            sensitivity: -30.0,
+            ..Gate::default()
+        };
+        for _ in 0..WARM_UP {
+            gate.block(block(), -100.0, false);
+        }
+        assert!(!gate.block(block(), -10.0, false).is_empty());
     }
 
     #[test]
