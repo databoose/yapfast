@@ -13,12 +13,13 @@ use matrix_sdk::{
     attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo},
     event_handler::EventHandlerHandle,
     media::{MediaFormat, MediaRequestParameters},
-    room::edit::EditedContent,
+    room::{MessagesOptions, edit::EditedContent},
     ruma::{
         OwnedEventId, OwnedRoomId, OwnedTransactionId, UInt, UserId,
         api::client::receipt::create_receipt::v3::ReceiptType,
         events::{
             Mentions, SyncStateEvent,
+            receipt::ReceiptThread,
             room::{
                 MediaSource,
                 member::RoomMemberEventContent,
@@ -445,6 +446,7 @@ impl Matrix {
                 }
             }
             Command::Typing { room, typing } => typing_notice(client, &room, typing),
+            Command::MarkRead { room, .. } => mark_read(client, &room),
             Command::FindPeople { query } => find_people(client, query, events),
             Command::StartDm { id, .. } => start_dm(client, id, events),
             Command::Send {
@@ -779,6 +781,39 @@ fn start_dm(client: &Client, id: String, events: &UnboundedSender<Event>) {
             Err(_) => Err("That isn't a Matrix id, such as @name:example.org.".into()),
         };
         let _ = events.send(Event::DmStarted(result));
+    });
+}
+
+/// Marks a room read with a receipt on its newest event, which the
+/// homeserver names, as the room may not be open. The receipt also clears
+/// the room's unread flag.
+fn mark_read(client: &Client, room: &str) {
+    let Some(room) = OwnedRoomId::try_from(room)
+        .ok()
+        .and_then(|id| client.get_room(&id))
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut options = MessagesOptions::backward();
+        options.limit = UInt::from(1u32);
+        let newest = match room.messages(options).await {
+            Ok(messages) => messages
+                .chunk
+                .iter()
+                .find_map(|event| event.event_id().map(ToOwned::to_owned)),
+            Err(error) => {
+                tracing::debug!(%error, "could not find a room's newest event to mark it read");
+                None
+            }
+        };
+        if let Some(event) = newest
+            && let Err(error) = room
+                .send_single_receipt(ReceiptType::Read, ReceiptThread::Unthreaded, event)
+                .await
+        {
+            tracing::debug!(%error, "could not mark a room read");
+        }
     });
 }
 

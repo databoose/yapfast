@@ -41,6 +41,8 @@
 // Carol, whom she has none with yet.
 // POST /_control/typing makes Bob start typing in #general, or with ?dm in
 // his DM; GET /_control/typed lists the channels Alice said she was typing in.
+// GET /_control/acks lists Alice's read acknowledgements, oldest first: each
+// request's channels, several for POST /read-states/ack-bulk.
 // POST /_control/react makes Carol add or take back a reaction on the newest
 // message in #general.
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
@@ -2215,8 +2217,25 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)\/ack$/))) {
     if (!messages.has(m[1]!)) return notFound("Unknown Channel", 10003);
     readStates.set(m[1]!, { last: m[2]!, mentions: 0 });
+    acks.push([m[1]!]);
     dispatch("MESSAGE_ACK", { channel_id: m[1], message_id: m[2], version: 1, mention_count: 0 });
     return json({ token: null });
+  }
+
+  if (method === "POST" && path === "/read-states/ack-bulk") {
+    const body: any = await req.json();
+    const reads: any[] = body.read_states;
+    if (!Array.isArray(reads) || reads.length === 0 || reads.length > 100
+        || reads.some((read) => typeof read.channel_id !== "string" || typeof read.message_id !== "string")) {
+      return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    }
+    for (const read of reads) {
+      if (!messages.has(read.channel_id)) continue;
+      readStates.set(read.channel_id, { last: read.message_id, mentions: 0 });
+      dispatch("MESSAGE_ACK", { channel_id: read.channel_id, message_id: read.message_id, version: 1, mention_count: 0 });
+    }
+    acks.push(reads.map((read) => read.channel_id));
+    return empty();
   }
 
   // Accepting a message request makes it a DM; ignoring it closes the DM.
@@ -2600,6 +2619,8 @@ let busy: ReturnType<typeof setInterval> | undefined;
 let busyCount = 0;
 // Channels Alice said she was typing in, oldest first.
 const typed: string[] = [];
+// Each read acknowledgement's channels, oldest first.
+const acks: string[][] = [];
 let chatCount = 0;
 
 function chatTick(origin: string) {
@@ -2919,6 +2940,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/typed") {
       return Response.json(typed);
+    }
+    if (req.method === "GET" && path === "/_control/acks") {
+      return Response.json(acks);
     }
     if (req.method === "POST" && path === "/_control/busy-start") {
       if (fillerList.length === 0) return new Response("no filler servers; start with --servers N\n", { status: 400 });

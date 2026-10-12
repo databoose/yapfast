@@ -634,6 +634,10 @@ Each server in the rail shows its mentions as a count, and the DM button
 counts DM mentions and the friend requests waiting for an answer.
 Showing an unread channel marks it read, and with the "Mark messages read on
 Discord" setting, on by default, acknowledges it on Discord within a second.
+Reads within that second go together: one channel as its own
+acknowledgement, several, as when a server is marked read from its menu, in
+one `POST /read-states/ack-bulk` of up to 100 channels, as the official
+client does.
 Before it does, Talk notes the channel's last read message, from READY's read
 state or the last acknowledgement since, and the "New" divider goes above the
 first message after it from someone else. Snowflakes order messages, so the

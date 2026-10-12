@@ -25,6 +25,8 @@ mod profiles;
 mod rooms;
 mod session;
 
+pub use rooms::{MenuChoice, network_id, network_link};
+
 use calls::call_sounds;
 use compose::has_markdown;
 use preview::{preview_members, sample_actions};
@@ -638,6 +640,9 @@ pub enum Relation {
 pub enum Action {
     Navigate(Navigation),
     SelectRoom(String),
+    /// Mark a listed conversation read, or every conversation of a listed
+    /// server, as their menus do.
+    MarkRead(String),
     /// Go to wherever a conversation is listed and open it, as a notification does.
     Open(String),
     SetDraft(String),
@@ -738,8 +743,9 @@ pub enum Action {
     Befriend(String),
     /// Show a screen of the DM list in place of the conversation.
     OpenDmScreen(DmScreen),
-    /// Open the DM with a Discord friend, starting one if there's none.
-    MessageFriend(String),
+    /// Open the DM with someone, by Discord user id or Matrix ID, starting
+    /// one with a Discord friend or a Matrix user if there's none.
+    MessagePerson(String),
     /// Show or hide the other person's profile beside a one-to-one DM.
     ShowProfilePanel(bool),
     /// Ignore a Discord user's friend request, or cancel this account's.
@@ -1127,13 +1133,14 @@ impl Application {
             }
             Action::Navigate(navigation) => self.navigate(navigation),
             Action::OpenDmScreen(screen) => self.open_dm_screen(screen),
-            Action::MessageFriend(user) => self.message_friend(user),
+            Action::MessagePerson(user) => self.message_person(user),
             Action::ShowProfilePanel(shown) => {
                 self.state.profile_panel = shown;
                 self.show_panel_profile()
             }
             Action::Open(id) => self.open(id),
             Action::SelectRoom(id) => self.select_room(id),
+            Action::MarkRead(id) => self.mark_read(id),
             Action::EditLast => self.edit_last(),
             Action::OpenNewDm => self.open_new_dm(),
             Action::NewDmQuery(query) => {

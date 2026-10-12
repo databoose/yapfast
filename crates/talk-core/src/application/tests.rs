@@ -922,6 +922,118 @@ fn clicking_a_voice_channel_joins_it_and_asks_before_leaving_another() {
 }
 
 #[test]
+fn menus_offer_what_fits_their_conversation_or_server() {
+    use MenuChoice::*;
+    let mut app = connected();
+    let mut rooms = app.state.rooms.clone();
+    rooms
+        .iter_mut()
+        .find(|room| room.id == "general")
+        .unwrap()
+        .unread = 4;
+    rooms
+        .iter_mut()
+        .find(|room| room.id == "games")
+        .unwrap()
+        .mentions = 1;
+    let servers = app.state.servers.clone();
+    app.apply(Event::Rooms(RoomIndex { rooms, servers }));
+    assert_eq!(app.state.menu_choices("dm"), [Profile, CopyLink, CopyId]);
+    assert_eq!(
+        app.state.menu_choices("general"),
+        [MarkRead, CopyLink, CopyId]
+    );
+    assert_eq!(
+        app.state.menu_choices("lounge"),
+        [JoinVoice, CopyLink, CopyId]
+    );
+    assert_eq!(
+        app.state.menu_choices("friends"),
+        [MarkRead, CopyLink, CopyId]
+    );
+    assert!(app.state.menu_choices("gone").is_empty());
+
+    let marked = |effects: Vec<Effect>| -> Vec<String> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Backend(Command::MarkRead { room, .. }) => Some(room),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        marked(app.dispatch(Action::MarkRead("general".into()))),
+        ["general"]
+    );
+    assert!(
+        marked(app.dispatch(Action::MarkRead("lounge".into()))).is_empty(),
+        "nothing unread"
+    );
+    // A server marks each of its unread channels read.
+    assert_eq!(
+        marked(app.dispatch(Action::MarkRead("friends".into()))),
+        ["general", "games"]
+    );
+
+    // The preview's rooms are on no network, and its calls join at once.
+    let mut app = Application::default();
+    app.dispatch(Action::Preview);
+    assert_eq!(app.state.menu_choices("lounge"), [JoinVoice]);
+    assert!(app.state.menu_choices("friends").is_empty());
+    app.dispatch(Action::RequestJoinVoice("lounge".into()));
+    assert!(app.state.menu_choices("lounge").is_empty(), "already in it");
+}
+
+#[test]
+fn matrix_peoples_menus_offer_a_dm_but_not_to_this_account() {
+    use MenuChoice::*;
+    let mut app = connected();
+    // In an open room, a Matrix ID is enough for a profile card.
+    assert_eq!(app.state.person_choices("@alice:test"), [Profile, CopyId]);
+    assert_eq!(
+        app.state.person_choices("@dm:preview.local"),
+        [Profile, Message, CopyId]
+    );
+    assert_eq!(
+        app.state.person_choices("@bob:test"),
+        [Profile, Message, CopyId]
+    );
+    // An existing DM opens; a new one starts.
+    app.dispatch(Action::SelectRoom("general".into()));
+    app.dispatch(Action::MessagePerson("@dm:preview.local".into()));
+    assert_eq!(app.state.selected.as_deref(), Some("dm"));
+    assert!(matches!(
+        app.dispatch(Action::MessagePerson("@bob:test".into())).as_slice(),
+        [Effect::Backend(Command::StartDm { id, discord: false })] if id == "@bob:test"
+    ));
+}
+
+#[test]
+fn rooms_and_servers_link_and_name_themselves_as_their_networks_do() {
+    assert_eq!(
+        network_link("discord:10:21"),
+        "https://discord.com/channels/10/21"
+    );
+    assert_eq!(
+        network_link("discord:@me:30"),
+        "https://discord.com/channels/@me/30"
+    );
+    assert_eq!(
+        network_link("discord:10"),
+        "https://discord.com/channels/10"
+    );
+    assert_eq!(
+        network_link("!abc:example.org"),
+        "https://matrix.to/#/!abc:example.org?via=example.org"
+    );
+    assert_eq!(network_link("!abc"), "https://matrix.to/#/!abc");
+    assert_eq!(network_id("discord:10:21"), "21");
+    assert_eq!(network_id("discord:10"), "10");
+    assert_eq!(network_id("!abc:example.org"), "!abc:example.org");
+}
+
+#[test]
 fn the_preview_lists_and_chooses_real_devices_across_calls() {
     let mut app = Application::default();
     app.dispatch(Action::Preview);
@@ -1786,7 +1898,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     });
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::MarkRead { room, sync: true }))] if room == "discord:10:21"
+        [Effect::Backend(Command::MarkRead { room, sync: true })] if room == "discord:10:21"
     ));
     assert!(app.state.can_write(), "Discord doesn't need Matrix trust");
     assert!(app.state.can_attach());
@@ -1892,7 +2004,7 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
     });
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::MarkRead { room, .. }))] if room == "discord:@me:30"
+        [Effect::Backend(Command::MarkRead { room, .. })] if room == "discord:@me:30"
     ));
     assert!(app.state.can_write(), "Discord DMs don't need Matrix trust");
     assert!(!app.state.lists_members(), "a DM lists no members");
@@ -2084,27 +2196,37 @@ fn discord_friends_are_listed_and_messaged() {
         [Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls)))] if urls == &["3.png"]
     ));
 
+    // With no conversation open, only a friend's DM has their profile.
+    assert_eq!(
+        app.state.person_choices("2"),
+        [MenuChoice::Profile, MenuChoice::Message, MenuChoice::CopyId]
+    );
+    assert_eq!(
+        app.state.person_choices("3"),
+        [MenuChoice::Message, MenuChoice::CopyId]
+    );
+
     // A friend with a DM opens it; one without has it started.
-    app.dispatch(Action::MessageFriend("2".into()));
+    app.dispatch(Action::MessagePerson("2".into()));
     assert_eq!(app.state.selected.as_deref(), Some("discord:@me:30"));
     assert_eq!(app.state.dm_screen, None);
     app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
     assert!(matches!(
-        app.dispatch(Action::MessageFriend("3".into())).as_slice(),
+        app.dispatch(Action::MessagePerson("3".into())).as_slice(),
         [Effect::Backend(Command::StartDm { id, discord: true })] if id == "3"
     ));
     app.apply(Event::DmStarted(Ok("discord:@me:31".into())));
     app.apply(discord_event(snapshot(&[("30", "2"), ("31", "3")])));
     assert_eq!(app.state.selected.as_deref(), Some("discord:@me:31"));
     assert!(
-        app.dispatch(Action::MessageFriend("9".into())).is_empty(),
+        app.dispatch(Action::MessagePerson("9".into())).is_empty(),
         "only friends"
     );
 
     // A DM that couldn't start says why.
     app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
     app.apply(discord_event(snapshot(&[])));
-    app.dispatch(Action::MessageFriend("2".into()));
+    app.dispatch(Action::MessagePerson("2".into()));
     app.apply(Event::DmStarted(Err("Could not start the DM".into())));
     assert_eq!(app.state.notice.as_deref(), Some("Could not start the DM"));
 }
@@ -2691,6 +2813,22 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
             Relation::Stranger
         ]
     );
+    // Someone's menu offers what fits how they stand with this account.
+    use MenuChoice::*;
+    let choices: Vec<_> = ["1", "2", "3", "4", "5"]
+        .into_iter()
+        .map(|user| app.state.person_choices(user))
+        .collect();
+    assert_eq!(
+        choices,
+        [
+            vec![CopyId],
+            vec![Message, CopyId],
+            vec![AcceptFriend, CopyId],
+            vec![CancelFriendRequest, CopyId],
+            vec![AddFriend, CopyId],
+        ]
+    );
     let sent = |effects: Vec<Effect>| -> Option<(String, bool)> {
         match effects.as_slice() {
             [Effect::Backend(Command::Discord(DiscordCommand::Friend { user, add }))] => {
@@ -2896,9 +3034,7 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     assert!(
         matches!(
             effects.as_slice(),
-            [Effect::Backend(Command::Discord(
-                DiscordCommand::MarkRead { .. }
-            ))]
+            [Effect::Backend(Command::MarkRead { .. })]
         ),
         "the last read message is loaded, so no earlier history is"
     );

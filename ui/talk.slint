@@ -20,7 +20,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, Middle } from "theme.slint";
-import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, MenuItem, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
+import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
@@ -278,7 +278,12 @@ export component TalkWindow inherits Window {
     /// The member whose card is beside the list, highlighted in it.
     in property <string> profile-member;
     callback show-profile(string);
-    callback show-dm-profile(string);
+    /// A server's, conversation's or person's menu: what it offers, filled in
+    /// when it's asked for, and the choice made. Each names its server,
+    /// conversation or person by id, and whether it's a person.
+    in property <[MenuRow]> menu-rows;
+    callback prepare-menu(string, bool);
+    callback choose-menu(string, bool, string);
     /// Show a mutual friend's profile, by Discord user id: as a card, or large.
     callback show-friend-profile(string, bool);
     /// A mutual server's card, beside the profile that lists it.
@@ -646,7 +651,7 @@ export component TalkWindow inherits Window {
         && -timeline.content-y < timeline.height;
     changed wants-earlier => { if self.wants-earlier { root.earlier(); } }
     // Formatted messages are not selectable, so Copy goes through a hidden text field.
-    function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
+    public function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
     clipboard := TextInput { visible: false; width: 0px; height: 0px; }
     // A tooltip must not outlive the toolbar that showed it.
     changed active-item => { Tip.text = ""; }
@@ -760,23 +765,30 @@ export component TalkWindow inherits Window {
     property <MessageRow> menu-message;
     property <string> menu-item: menu-open ? root.menu-message.item : "";
     property <bool> menu-open: message-menu.is-open;
-    // The DM whose menu is open.
-    property <string> menu-room;
-    room-menu := PopupWindow {
-        width: 200px; height: room-menu-content.preferred-height;
+    // The server, conversation or person whose menu is open. A profile chosen
+    // from a person's menu opens where the menu did.
+    property <string> menu-target;
+    property <bool> menu-person;
+    function open-context-menu(id: string, person: bool, x: length, y: length) {
+        root.anchor(x, y, 0px, 0px, true);
+        root.menu-target = id;
+        root.menu-person = person;
+        root.prepare-menu(id, person);
+        if root.menu-rows.length > 0 { context-menu.show(); }
+    }
+    context-menu := PopupWindow {
+        width: 200px; height: context-menu-content.content-height;
         x: max(8px, min(root.width - self.width - 8px, root.anchor-x));
         y: root.anchor-y + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height);
         close-policy: PopupClosePolicy.close-on-click-outside;
-        Rectangle {
-            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
-            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
-            room-menu-content := VerticalLayout {
-                padding: 6px;
-                MenuItem {
-                    text: "Profile"; icon: @image-url("icons/user.svg");
-                    clicked => { root.show-dm-profile(root.menu-room); room-menu.close(); }
-                }
+        context-menu-content := ContextMenu {
+            rows: root.menu-rows;
+            chose(id) => {
+                if root.menu-person { root.profile-at-pointer = true; }
+                root.choose-menu(root.menu-target, root.menu-person, id);
+                context-menu.close();
             }
+            close => { context-menu.close(); }
         }
     }
     // The status menu opens above the account panel, along its left edge.
@@ -895,6 +907,7 @@ export component TalkWindow inherits Window {
                         navigate-dms => { root.navigate-dms(); }
                         navigate-server(id) => { root.navigate-server(id); }
                         toggle-folder(id) => { root.toggle-folder(id); }
+                        open-server-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
                     }
                     // Channel sidebar: a lighter sheet held by the rail and the dock.
                     Rectangle {
@@ -933,11 +946,7 @@ export component TalkWindow inherits Window {
                                 select-room(id) => { root.select-room(id); }
                                 open-friends => { root.open-friends(); }
                                 open-requests => { root.open-requests(); }
-                                open-room-menu(id, x, y) => {
-                                    root.anchor(x, y, 0px, 0px, true);
-                                    root.menu-room = id;
-                                    room-menu.show();
-                                }
+                                open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
                                 open-volume(person, x, y) => { root.open-volume(person, x, y); }
                                 watch-stream(id) => { root.watch-stream(id); }
                                 toggle-category(heading) => { root.toggle-category(heading); }
@@ -1380,6 +1389,24 @@ export component TalkWindow inherits Window {
                                                             x: 0px; y: message.has-reply ? 24px : 2px;
                                                             initial: message.initial; tint: message.tint; picture: message.picture; picture-url: message.picture-url;
                                                         }
+                                                        // Clicking the author's avatar shows their card beside it;
+                                                        // a right click opens their menu.
+                                                        if message.first && message.sender != "": TouchArea {
+                                                            x: 0px; y: message.has-reply ? 24px : 2px; width: 40px; height: 40px;
+                                                            mouse-cursor: MouseCursor.pointer;
+                                                            clicked => {
+                                                                root.active-item = message.item;
+                                                                root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
+                                                                root.profile-at-pointer = true;
+                                                                root.show-profile(message.sender);
+                                                            }
+                                                            pointer-event(event) => {
+                                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                                                    root.active-item = message.item;
+                                                                    root.open-context-menu(message.sender, true, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                                                }
+                                                            }
+                                                        }
                                                         if !message.first && root.active-item == message.item: Text {
                                                             x: 0px; y: 4px; width: 40px;
                                                             text: message.short-time; color: Theme.muted; font-size: 12px; font-weight: 500;
@@ -1544,6 +1571,7 @@ export component TalkWindow inherits Window {
                                 filter-edited => { root.friend-filter-edited(); }
                                 message(id) => { root.message-friend(id); }
                                 add-friend => { root.open-add-friend(); }
+                                open-friend-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
                             }
                             // The conversation's opening, or what to do when none is chosen.
                             if !root.room-selected && !root.requests-open && !root.friends-open: NoConversation {
@@ -1690,6 +1718,7 @@ export component TalkWindow inherits Window {
                     if root.members-docked: MemberPanel {
                         width: 240px; rows: root.roster; note: root.roster-note; selected: root.profile-member;
                         open-profile(id, y) => { root.profile-y = y; root.profile-at-pointer = false; root.show-profile(id); }
+                        open-member-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
                     }
                     if root.profile-docked: Rectangle {
                         width: 300px;

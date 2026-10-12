@@ -17,9 +17,10 @@ next default build.
 The display is the window's size, so coordinates are window coordinates.
 
 do commands, run in order; the first error stops the rest:
-  click X Y | move X Y | scroll PIXELS (negative scrolls up)
+  click X Y | rightclick X Y | move X Y | scroll PIXELS (negative scrolls up)
   key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace
-      delete space up down left right home end pageup pagedown, a-z, 0-9)
+      delete space up down left right home end pageup pagedown f10 menu,
+      a-z, 0-9)
   type TEXT (US layout letters, digits and common punctuation)
   sleep SECONDS | pid
   shot NAME [X Y W H]   saves .local/ui-session/shots/NAME.png, cropped if asked

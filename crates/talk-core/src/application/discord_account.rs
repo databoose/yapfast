@@ -14,26 +14,6 @@ impl Application {
         if open { vec![] } else { self.deselect() }
     }
 
-    pub(super) fn message_friend(&mut self, user: String) -> Vec<Effect> {
-        let open = self
-            .state
-            .rooms
-            .iter()
-            .find(|room| room.direct && room.person.as_ref() == Some(&user))
-            .map(|room| room.id.clone());
-        if let Some(room) = open {
-            return self.dispatch(Action::Open(room));
-        }
-        if self.state.preview || !self.state.discord_friends.contains(&user) {
-            return vec![];
-        }
-        self.starting_dm = true;
-        vec![Effect::Backend(Command::StartDm {
-            id: user,
-            discord: true,
-        })]
-    }
-
     pub(super) fn add_friend(&mut self, username: String) -> Vec<Effect> {
         let username = username.trim().trim_start_matches('@').to_lowercase();
         let Some(dialog) = self
@@ -146,12 +126,10 @@ impl Application {
                     && room.network == Network::Discord
                     && (room.unread > 0 || room.mentions > 0) =>
             {
-                vec![Effect::Backend(Command::Discord(
-                    DiscordCommand::MarkRead {
-                        room: room.id.clone(),
-                        sync: self.state.sync_discord_reads,
-                    },
-                ))]
+                vec![Effect::Backend(Command::MarkRead {
+                    room: room.id.clone(),
+                    sync: self.state.sync_discord_reads,
+                })]
             }
             _ => vec![],
         }

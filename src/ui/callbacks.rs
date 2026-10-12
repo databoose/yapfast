@@ -215,7 +215,31 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     }
     bind_item!(on_reply, Action::Reply);
     bind_item!(on_jump_to, Action::Jump);
-    bind_item!(on_show_dm_profile, Action::ShowDmProfile);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_prepare_menu(move |id, person| {
+            if let Some(window) = weak.upgrade() {
+                let rows = menus::menu(&adapter.borrow(), &id, person);
+                window.set_menu_rows(ModelRc::new(VecModel::from(rows)));
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_choose_menu(move |target, person, id| {
+            if let Some(window) = weak.upgrade() {
+                menus::choose(
+                    &mut adapter.borrow_mut(),
+                    &window,
+                    target.into(),
+                    person,
+                    &id,
+                );
+            }
+        });
+    }
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();
@@ -264,7 +288,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_open_add_friend, Action::OpenAddFriend);
     bind!(on_open_requests, Action::OpenDmScreen(DmScreen::Requests));
     bind!(on_open_friends, Action::OpenDmScreen(DmScreen::Friends));
-    bind_item!(on_message_friend, Action::MessageFriend);
+    bind_item!(on_message_friend, Action::MessagePerson);
     bind!(on_link_discord, Action::LinkDiscord);
     bind!(on_cancel_discord_link, Action::CancelDiscordLink);
     bind!(on_unlink_discord, Action::UnlinkDiscord);

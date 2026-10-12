@@ -315,6 +315,9 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         id: message.id.clone().into(),
         item: message.item.clone().into(),
         author: message.author.clone().into(),
+        sender: discord::sender_user(&message.sender)
+            .unwrap_or(&message.sender)
+            .into(),
         color: role_color(message.color),
         has_color: message.color.is_some(),
         bot: message.bot,
@@ -399,6 +402,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         );
         return MessageRow {
             author: "Blocked user".into(),
+            sender: SharedString::default(),
             author_styled: bold("Blocked user"),
             initial: "?".into(),
             tint: Default::default(),

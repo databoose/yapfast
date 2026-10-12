@@ -2,6 +2,162 @@
 
 use super::*;
 
+/// What a conversation's or server's menu offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuChoice {
+    MarkRead,
+    JoinVoice,
+    /// The other person's profile, in a one-to-one DM.
+    Profile,
+    /// Open the DM with someone, starting it if need be.
+    Message,
+    /// Send someone a Discord friend request, accept theirs, or cancel
+    /// this account's.
+    AddFriend,
+    AcceptFriend,
+    CancelFriendRequest,
+    /// Copy a link to it that its network's apps open.
+    CopyLink,
+    /// Copy its id as its network knows it.
+    CopyId,
+}
+
+impl AppState {
+    /// What the menu of a listed server or conversation offers, in order;
+    /// nothing for one that isn't listed.
+    pub fn menu_choices(&self, id: &str) -> Vec<MenuChoice> {
+        if self.servers.iter().any(|server| server.id == id) {
+            self.server_choices(id)
+        } else {
+            self.room_choices(id)
+        }
+    }
+
+    /// What someone's menu offers, by Discord user id or Matrix ID: their
+    /// profile when Talk knows them, a DM, and Discord friendship.
+    pub fn person_choices(&self, user: &str) -> Vec<MenuChoice> {
+        let me =
+            self.discord_user.as_deref() == Some(user) || self.account.as_deref() == Some(user);
+        let mut choices = vec![];
+        // A profile comes from a conversation: the open one, or a friend's DM.
+        let listed = self.selected_room().is_some() && self.person(user).is_some();
+        let friend = self.friends.iter().any(|friend| friend.id == user)
+            && (self.selected.is_some() || self.dm_with(user).is_some());
+        if listed || friend {
+            choices.push(MenuChoice::Profile);
+        }
+        if !me && self.can_message(user) {
+            choices.push(MenuChoice::Message);
+        }
+        // Matrix IDs start with `@`; Discord user ids are numbers.
+        if !me && !self.preview && !user.starts_with('@') && self.discord_user.is_some() {
+            match self.relation(user) {
+                Relation::Stranger => choices.push(MenuChoice::AddFriend),
+                Relation::Incoming => choices.push(MenuChoice::AcceptFriend),
+                Relation::Outgoing => choices.push(MenuChoice::CancelFriendRequest),
+                Relation::Friend | Relation::Me => {}
+            }
+        }
+        if !self.preview {
+            choices.push(MenuChoice::CopyId);
+        }
+        choices
+    }
+
+    /// Whether Talk can open a DM with someone: one that's listed, or a new
+    /// one with a Discord friend or a Matrix user.
+    fn can_message(&self, user: &str) -> bool {
+        self.dm_with(user).is_some()
+            || (!self.preview
+                && (user.starts_with('@')
+                    || self.discord_friends.iter().any(|friend| friend == user)))
+    }
+
+    /// The listed one-to-one DM with someone.
+    fn dm_with(&self, user: &str) -> Option<&ChatRoom> {
+        self.rooms
+            .iter()
+            .find(|room| room.direct && room.person.as_deref() == Some(user))
+    }
+
+    /// What a listed conversation's menu offers. The preview's rooms have no
+    /// network to read them on or link to.
+    fn room_choices(&self, id: &str) -> Vec<MenuChoice> {
+        let Some(room) = self.rooms.iter().find(|room| room.id == id) else {
+            return vec![];
+        };
+        let mut choices = vec![];
+        if !self.preview && unread(room) {
+            choices.push(MenuChoice::MarkRead);
+        }
+        let connected = self.voice.active() && self.voice.room.as_deref() == Some(id);
+        if room.voice && !connected && self.can_join_voice(id) {
+            choices.push(MenuChoice::JoinVoice);
+        }
+        if room.person.is_some() {
+            choices.push(MenuChoice::Profile);
+        }
+        if !self.preview {
+            choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
+        }
+        choices
+    }
+
+    /// What a listed server's menu offers.
+    fn server_choices(&self, id: &str) -> Vec<MenuChoice> {
+        let mut choices = vec![];
+        if self.preview {
+            return choices;
+        }
+        if self.unread_channels(id).next().is_some() {
+            choices.push(MenuChoice::MarkRead);
+        }
+        choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
+        choices
+    }
+
+    /// The server's channels with messages to read.
+    fn unread_channels(&self, id: &str) -> impl Iterator<Item = &ChatRoom> {
+        let channels = self
+            .servers
+            .iter()
+            .find(|server| server.id == id)
+            .map(|server| server.channels.as_slice())
+            .unwrap_or_default();
+        self.rooms
+            .iter()
+            .filter(move |room| channels.contains(&room.id) && unread(room))
+    }
+}
+
+fn unread(room: &ChatRoom) -> bool {
+    room.unread > 0 || room.mentions > 0
+}
+
+/// A link to a room or server that its network's apps open: Discord's own,
+/// or matrix.to's, through the server a Matrix id names when it names one.
+pub fn network_link(id: &str) -> String {
+    match id.strip_prefix(discord::PREFIX) {
+        Some(discord) => format!(
+            "https://discord.com/channels/{}",
+            discord.replacen(':', "/", 1)
+        ),
+        None => match id.split_once(':') {
+            Some((_, server)) => format!("https://matrix.to/#/{id}?via={server}"),
+            None => format!("https://matrix.to/#/{id}"),
+        },
+    }
+}
+
+/// A room's or server's id as its network knows it: a Discord channel's or
+/// server's, or a Matrix room's or Space's.
+pub fn network_id(id: &str) -> &str {
+    match id.strip_prefix(discord::PREFIX) {
+        Some(discord) => discord.rsplit(':').next().unwrap_or(discord),
+        None => id,
+    }
+}
+
 impl Application {
     pub(super) fn navigate(&mut self, navigation: Navigation) -> Vec<Effect> {
         if self.state.navigation == navigation {
@@ -51,6 +207,39 @@ impl Application {
             effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
         }
         effects
+    }
+
+    pub(super) fn message_person(&mut self, user: String) -> Vec<Effect> {
+        if let Some(room) = self.state.dm_with(&user) {
+            let room = room.id.clone();
+            return self.dispatch(Action::Open(room));
+        }
+        if !self.state.can_message(&user) {
+            return vec![];
+        }
+        self.starting_dm = true;
+        let discord = !user.starts_with('@');
+        vec![Effect::Backend(Command::StartDm { id: user, discord })]
+    }
+
+    /// Marks a conversation read, or every conversation of a server.
+    pub(super) fn mark_read(&mut self, id: String) -> Vec<Effect> {
+        if !self.state.menu_choices(&id).contains(&MenuChoice::MarkRead) {
+            return vec![];
+        }
+        let sync = self.state.sync_discord_reads;
+        let rooms: Vec<String> = if self.state.servers.iter().any(|server| server.id == id) {
+            self.state
+                .unread_channels(&id)
+                .map(|room| room.id.clone())
+                .collect()
+        } else {
+            vec![id]
+        };
+        rooms
+            .into_iter()
+            .map(|room| Effect::Backend(Command::MarkRead { room, sync }))
+            .collect()
     }
 
     pub(super) fn open_new_dm(&mut self) -> Vec<Effect> {

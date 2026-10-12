@@ -3,12 +3,11 @@
 use super::*;
 
 impl Application {
+    /// Shows someone in the open conversation, or else a Discord friend.
     pub(super) fn show_profile(&mut self, user: String, large: bool) -> Vec<Effect> {
-        let Some(room) = self.state.selected_room() else {
-            return vec![];
-        };
-        let Some(member) = self.state.person(&user) else {
-            return vec![];
+        let (Some(room), Some(member)) = (self.state.selected_room(), self.state.person(&user))
+        else {
+            return self.show_friend_profile(user, large);
         };
         let member = &member;
         let discord = room.network == Network::Discord;
