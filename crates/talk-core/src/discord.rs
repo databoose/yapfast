@@ -351,13 +351,13 @@ fn server_rooms(
     show_hidden: bool,
     premium: u8,
 ) -> (Vec<ChatRoom>, ChatServer) {
-    let mut rooms = Vec::new();
     let text = server.text_channels.iter().map(|channel| (false, channel));
     let voice = server.voice_channels.iter().map(|channel| (true, channel));
     let mut listed: Vec<_> = text
         .chain(voice)
         .filter(|(_, channel)| show_hidden || channel.access != Access::Hidden)
         .collect();
+    let mut rooms = Vec::with_capacity(listed.len());
     listed.sort_by_cached_key(|(voice, channel)| {
         (
             server.category_order(channel),
@@ -637,6 +637,8 @@ mod tests {
                     };
                     (id.to_owned(), category)
                 })
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>()
                 .into(),
             ..Default::default()
         };

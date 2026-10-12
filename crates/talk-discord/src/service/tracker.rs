@@ -289,7 +289,7 @@ impl Tracker {
                 else {
                     return false;
                 };
-                server.emojis = ready::emojis(&data["emojis"]);
+                server.emojis = std::sync::Arc::new(ready::emojis(&data["emojis"]));
                 true
             }
             // Carries the server's own fields, without its channels or members.

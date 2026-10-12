@@ -89,6 +89,17 @@ impl Channels {
         }
     }
 
+    /// Applies a live event to the closed channels. Each keeps only its
+    /// newest messages, as on closing; a busy one would otherwise grow for
+    /// the whole session.
+    pub(super) fn follow(&mut self, event: &Live) {
+        for kept in &mut self.recent {
+            if kept.live(event) {
+                kept.trim();
+            }
+        }
+    }
+
     /// Puts the newest messages of the channels that changed on disk.
     pub(super) fn save(&mut self) {
         for channel in self.open.iter_mut().chain(&mut self.recent) {
@@ -131,7 +142,7 @@ mod tests {
 
     fn picture(bytes: usize) -> Arc<Picture> {
         Arc::new(Picture {
-            rgba: vec![0; bytes],
+            rgba: crate::chat::Pixels::new(0, 0, vec![0; bytes]),
             ..Default::default()
         })
     }

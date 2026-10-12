@@ -344,6 +344,7 @@ async fn worker(
                     state.error = Some(error.to_string());
                 }
                 state.disconnected();
+                trim_after_call();
             }
             Command::Devices => match devices(&mut state) {
                 Ok(()) => state.error = None,
@@ -363,6 +364,23 @@ async fn worker(
         }
         snapshots.send_replace(state.clone());
     }
+}
+
+/// glibc keeps the heap a call freed for reuse, 17-20 MiB in a fake Discord
+/// call with the microphone on, so Talk would stay at its size in the call.
+/// Return it once the call has finished freeing it: its audio threads and
+/// connections close on their own after it ends, and a Discord call had freed
+/// everything 2 s after leaving.
+fn trim_after_call() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    tokio::task::spawn_local(async {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: malloc_trim only returns unused allocator pages to the OS.
+        unsafe { malloc_trim(0) };
+    });
 }
 
 /// One call, from joining until leaving, on the network the channel is from.

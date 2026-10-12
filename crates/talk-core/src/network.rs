@@ -44,7 +44,7 @@ impl Network {
 
 /// What a room's network lets Talk do there, for the UI to follow rather
 /// than asking which network the room is on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Capabilities {
     /// Messages can be forwarded into it, and from it.
     pub forward: bool,

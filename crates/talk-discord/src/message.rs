@@ -1222,7 +1222,7 @@ mod tests {
         );
         let server = Server {
             id: "10".into(),
-            role_names: HashMap::from([("30".into(), "Mods".into())]),
+            role_names: HashMap::from([("30".into(), "Mods".into())]).into(),
             text_channels: vec![ready::Channel {
                 id: "11".into(),
                 name: "general".into(),
@@ -1325,7 +1325,8 @@ mod tests {
             role_colors: HashMap::from([
                 ("30".into(), (1, 0x3498db)),
                 ("31".into(), (2, 0xe91e63)),
-            ]),
+            ])
+            .into(),
             ..Default::default()
         };
         assert_eq!(

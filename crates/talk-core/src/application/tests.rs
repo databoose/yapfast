@@ -1551,7 +1551,7 @@ fn asks_once_for_the_pictures_on_screen() {
         picture: Arc::new(Picture {
             width: 1,
             height: 1,
-            rgba: vec![0; 4],
+            rgba: crate::chat::Pixels::new(1, 1, vec![0; 4]),
             ..Default::default()
         }),
     });
@@ -1772,7 +1772,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
                 name: "general".into(),
                 ..Default::default()
             }],
-            emojis: vec![emoji("5", "talk", false), emoji("6", "party", true)],
+            emojis: vec![emoji("5", "talk", false), emoji("6", "party", true)].into(),
             ..Default::default()
         })],
         ..Default::default()
@@ -2959,8 +2959,8 @@ fn pictures_off_screen_go_once_many_have_arrived() {
     let emoji = "https://cdn.discordapp.com/emojis/5.png?size=64";
     app.requested_pictures.insert(emoji.into());
     arrive(&mut app, emoji.into());
-    // The last of these is one more than are kept.
-    for index in 0..KEPT_PICTURES - 1 {
+    // The last of these is one more than are kept, the emoji aside.
+    for index in 0..KEPT_PICTURES {
         app.requested_pictures.insert(format!("{index}.png"));
         arrive(&mut app, format!("{index}.png"));
     }
@@ -2976,7 +2976,31 @@ fn pictures_off_screen_go_once_many_have_arrived() {
         !app.requested_pictures.contains("1.png"),
         "asked for again when shown"
     );
-    assert_eq!(app.state.picture_changes, KEPT_PICTURES as u64 + 1);
+    assert_eq!(app.state.picture_changes, KEPT_PICTURES as u64 + 2);
+}
+
+#[test]
+fn custom_emoji_kept_do_not_let_other_pictures_pile_up() {
+    let mut app = connected();
+    let mut arrive = |url: String| {
+        app.requested_pictures.insert(url.clone());
+        app.apply(Event::Picture {
+            url,
+            picture: Arc::new(Picture::default()),
+        });
+    };
+    // A few servers' emoji, as the picker asks for them.
+    for index in 0..2 * KEPT_PICTURES {
+        arrive(format!("https://cdn.discordapp.com/emojis/{index}.png"));
+    }
+    for index in 0..=KEPT_PICTURES {
+        arrive(format!("{index}.png"));
+    }
+    assert_eq!(
+        app.state.pictures.len(),
+        2 * KEPT_PICTURES,
+        "only the emoji stay"
+    );
 }
 
 #[cfg(feature = "discord")]

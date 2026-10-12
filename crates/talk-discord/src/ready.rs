@@ -2,7 +2,10 @@
 //! different shape from bots, and capability bits change it further, so read
 //! fields defensively.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde_json::Value;
 
@@ -39,20 +42,23 @@ pub struct Server {
     /// Text and announcement channels, in Discord's order.
     pub text_channels: Vec<Channel>,
     pub voice_channels: Vec<Channel>,
+    // The categories, roles and emoji are shared, as the channels' overwrites
+    // are: a snapshot copies each server to set what's this account's, and
+    // they're most of a large server.
     /// Categories by id, which group and order the channels in them.
-    pub categories: HashMap<String, Category>,
+    pub categories: Arc<HashMap<String, Category>>,
     pub owner_id: Option<String>,
     /// Each role's permission bits, by role id. The @everyone role has the
     /// server's id.
-    pub roles: HashMap<String, u64>,
+    pub roles: Arc<HashMap<String, u64>>,
     /// Role names by id, for mentions.
-    pub role_names: HashMap<String, String>,
+    pub role_names: Arc<HashMap<String, String>>,
     /// The position and RGB colour of each coloured role, by id.
-    pub role_colors: HashMap<String, (i64, u32)>,
+    pub role_colors: Arc<HashMap<String, (i64, u32)>>,
     /// Each role's position, by id: higher roles list first.
-    pub role_positions: HashMap<String, i64>,
+    pub role_positions: Arc<HashMap<String, i64>>,
     /// Roles anyone may mention, by id.
-    pub mentionable_roles: HashSet<String>,
+    pub mentionable_roles: Arc<HashSet<String>>,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -70,7 +76,7 @@ pub struct Server {
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,
     /// Its custom emoji, by name.
-    pub emojis: Vec<Emoji>,
+    pub emojis: Arc<Vec<Emoji>>,
     /// When this account joined it, as Discord's ISO 8601 time.
     pub joined_at: Option<String>,
     /// Out of reach in a Discord outage: still listed, with what was last
@@ -117,7 +123,7 @@ pub struct Channel {
     pub position: i64,
     /// The category the channel sits in.
     pub parent: Option<String>,
-    pub overwrites: Vec<Overwrite>,
+    pub overwrites: Arc<Vec<Overwrite>>,
     /// What this account may do here, and the rest below, are set when the
     /// service publishes it.
     pub access: Access,
@@ -307,7 +313,7 @@ impl Server {
                 }
             }
             Some(GUILD_CATEGORY) => {
-                self.categories.insert(
+                Arc::make_mut(&mut self.categories).insert(
                     id.to_owned(),
                     Category {
                         name: channel["name"].as_str().unwrap_or_default().to_owned(),
@@ -323,7 +329,7 @@ impl Server {
     pub fn remove_channel(&mut self, id: &str) {
         self.text_channels.retain(|channel| channel.id != id);
         self.voice_channels.retain(|channel| channel.id != id);
-        self.categories.remove(id);
+        Arc::make_mut(&mut self.categories).remove(id);
     }
 
     /// The channel's category, if it has one this server still lists.
@@ -431,36 +437,36 @@ impl Server {
     pub fn put_role(&mut self, value: &Value) {
         if let Some((id, permissions)) = role(value) {
             if let Some(name) = value["name"].as_str() {
-                self.role_names.insert(id.clone(), name.to_owned());
+                Arc::make_mut(&mut self.role_names).insert(id.clone(), name.to_owned());
             }
             if value["mentionable"].as_bool() == Some(true) {
-                self.mentionable_roles.insert(id.clone());
+                Arc::make_mut(&mut self.mentionable_roles).insert(id.clone());
             } else {
-                self.mentionable_roles.remove(&id);
+                Arc::make_mut(&mut self.mentionable_roles).remove(&id);
             }
-            self.role_positions
+            Arc::make_mut(&mut self.role_positions)
                 .insert(id.clone(), value["position"].as_i64().unwrap_or_default());
             match value["color"].as_u64().filter(|color| *color != 0) {
                 Some(color) => {
                     let position = value["position"].as_i64().unwrap_or_default();
-                    self.role_colors
+                    Arc::make_mut(&mut self.role_colors)
                         .insert(id.clone(), (position, color as u32));
                 }
                 None => {
-                    self.role_colors.remove(&id);
+                    Arc::make_mut(&mut self.role_colors).remove(&id);
                 }
             }
-            self.roles.insert(id, permissions);
+            Arc::make_mut(&mut self.roles).insert(id, permissions);
         }
     }
 
     /// Removes a deleted role.
     pub fn remove_role(&mut self, id: &str) {
-        self.roles.remove(id);
-        self.role_names.remove(id);
-        self.role_colors.remove(id);
-        self.role_positions.remove(id);
-        self.mentionable_roles.remove(id);
+        Arc::make_mut(&mut self.roles).remove(id);
+        Arc::make_mut(&mut self.role_names).remove(id);
+        Arc::make_mut(&mut self.role_colors).remove(id);
+        Arc::make_mut(&mut self.role_positions).remove(id);
+        Arc::make_mut(&mut self.mentionable_roles).remove(id);
     }
 
     /// Whether `user`, holding `roles`, may mention @everyone, @here and every role
@@ -565,7 +571,7 @@ pub fn server(guild: &Value) -> Option<Server> {
         member_count: guild["member_count"].as_u64(),
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
-        emojis: emojis(&guild["emojis"]),
+        emojis: Arc::new(emojis(&guild["emojis"])),
         joined_at: guild["joined_at"].as_str().map(str::to_owned),
         unavailable: guild["unavailable"].as_bool().unwrap_or(false),
         ..Default::default()
@@ -584,7 +590,7 @@ pub fn server(guild: &Value) -> Option<Server> {
 }
 
 fn parse_channel(channel: &Value) -> Option<Channel> {
-    let overwrites = channel["permission_overwrites"]
+    let overwrites: Vec<Overwrite> = channel["permission_overwrites"]
         .as_array()
         .into_iter()
         .flatten()
@@ -603,7 +609,7 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
         name: channel["name"].as_str().unwrap_or_default().to_owned(),
         position: channel["position"].as_i64().unwrap_or_default(),
         parent: channel["parent_id"].as_str().map(str::to_owned),
-        overwrites,
+        overwrites: Arc::new(overwrites),
         ..Default::default()
     })
 }
@@ -725,7 +731,7 @@ mod tests {
         };
         let channel = |id: &str, overwrites: Vec<Overwrite>| Channel {
             id: id.into(),
-            overwrites,
+            overwrites: overwrites.into(),
             ..Default::default()
         };
         let server = Server {
@@ -772,7 +778,8 @@ mod tests {
                 ("10".into(), everyone),
                 ("20".into(), 0),
                 ("30".into(), ADMINISTRATOR),
-            ]),
+            ])
+            .into(),
             ..Default::default()
         };
         let open = Channel::default();
@@ -791,7 +798,8 @@ mod tests {
                     allow: VIEW_CHANNEL,
                     deny: 0,
                 },
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
         // Visible, but one member may not connect.
@@ -801,7 +809,8 @@ mod tests {
                 member: true,
                 allow: 0,
                 deny: CONNECT,
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
         assert_eq!(server.access(&open, "1", &[]), Access::Join);

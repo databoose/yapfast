@@ -321,9 +321,7 @@ fn closed_channels_follow_live_events_and_open_again() {
     channels.open = Some(first);
     channels.close();
     assert!(channels.open.is_none());
-    for kept in &mut channels.recent {
-        kept.live(&Live::Created(message("7", None)));
-    }
+    channels.follow(&Live::Created(message("7", None)));
     assert!(channels.get_mut("discord:10:11").is_some());
     let again = channels.reopen("discord:10:11").unwrap();
     assert_eq!(ids(&again), [3, 5, 7]);
@@ -338,6 +336,22 @@ fn closed_channels_follow_live_events_and_open_again() {
         channels.get_mut("discord:10:0").is_none(),
         "the oldest went"
     );
+}
+
+#[test]
+fn a_busy_closed_channel_keeps_only_its_newest_messages() {
+    let mut channels = Channels::default();
+    let mut busy = OpenChannel::new("discord:10:11").unwrap();
+    busy.loaded(false, page([1, 2]));
+    channels.open = Some(busy);
+    channels.close();
+    let total = KEPT_MESSAGES as u64 + 50;
+    for id in 3..=total {
+        channels.follow(&Live::Created(message(&id.to_string(), None)));
+    }
+    let busy = channels.reopen("discord:10:11").unwrap();
+    assert_eq!(ids(&busy), (51..=total).collect::<Vec<_>>());
+    assert!(!busy.complete, "the oldest went, so they load again");
 }
 
 /// The fake Discord's server and its #general.
@@ -614,7 +628,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let picture = Arc::new(Picture {
         width: 1,
         height: 1,
-        rgba: vec![0; 4],
+        rgba: crate::chat::Pixels::new(1, 1, vec![0; 4]),
         ..Default::default()
     });
     let weak = Arc::downgrade(&picture);
