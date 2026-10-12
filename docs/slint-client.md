@@ -26,7 +26,7 @@ No remote push is part of this migration.
 - A Discord-style layout set in Atkinson Hyperlegible Next (see [Chat UI](chat-ui.md#layout-and-look)),
   Lucide SVG icons, custom text fields, and window sizing from 1120×760 down to
   800×560. Settings cover the window in sections: account, voice and audio, messages
-  (text size, clock and link previews), notifications and Discord, closed by its close
+  (text size, clock and link previews), notifications, sounds and Discord, closed by its close
   button or Escape. Desktop notifications for DMs and mentions show while Talk isn't in
   front; clicking one opens the conversation.
 

@@ -4,7 +4,18 @@ use super::{preview::preview_room, *};
 fn discord_event(snapshot: talk_discord::service::Snapshot) -> Event {
     Event::Discord(Arc::new(snapshot))
 }
-use crate::chat::RoomIndex;
+use crate::{chat::RoomIndex, sounds::Sound};
+
+/// The sounds among effects, in order.
+fn sounds(effects: &[Effect]) -> Vec<Sound> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Sound(sound) => Some(*sound),
+            _ => None,
+        })
+        .collect()
+}
 
 fn connected() -> Application {
     let mut app = Application::default();
@@ -172,6 +183,7 @@ fn notifications_name_the_place_and_open_it() {
             author: "Sam".into(),
             body: "Thinking co-op".into(),
             avatar: None,
+            mention: false,
         }));
         match effects.as_slice() {
             [Effect::Notify(alert)] => (alert.room.clone(), alert.title.clone()),
@@ -949,9 +961,10 @@ fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
     assert_eq!(app.state.messages.len(), 6);
     assert_eq!(app.state.messages.last().unwrap().body, "Local message");
     assert!(app.state.draft().is_empty());
-    assert!(
-        app.dispatch(Action::RequestJoinVoice("lounge".into()))
-            .is_empty()
+    // The preview's calls sound as real ones do.
+    assert_eq!(
+        sounds(&app.dispatch(Action::RequestJoinVoice("lounge".into()))),
+        [Sound::Join]
     );
     assert_eq!(app.state.voice.phase, Phase::Connected);
     assert!(app.state.voice.muted);
@@ -968,21 +981,119 @@ fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
     app.dispatch(Action::CancelVoiceSwitch);
     assert_eq!(app.state.voice.room.as_deref(), Some("lounge"));
     app.dispatch(Action::RequestJoinVoice("party-voice".into()));
-    assert!(app.dispatch(Action::ConfirmVoiceSwitch).is_empty());
-    assert_eq!(app.state.voice.room.as_deref(), Some("party-voice"));
-    assert!(
-        app.dispatch(Action::Voice(voice::Command::Deafen(true)))
-            .is_empty()
+    assert_eq!(
+        sounds(&app.dispatch(Action::ConfirmVoiceSwitch)),
+        [Sound::Leave, Sound::Join]
     );
-    app.dispatch(Action::Voice(voice::Command::Deafen(false)));
+    assert_eq!(app.state.voice.room.as_deref(), Some("party-voice"));
+    assert_eq!(
+        sounds(&app.dispatch(Action::Voice(voice::Command::Deafen(true)))),
+        [Sound::Deafen]
+    );
+    assert_eq!(
+        sounds(&app.dispatch(Action::Voice(voice::Command::Deafen(false)))),
+        [Sound::Undeafen]
+    );
     assert!(app.state.voice.muted);
     // Unmuting while deafened undeafens too.
     app.dispatch(Action::Voice(voice::Command::Deafen(true)));
-    app.dispatch(Action::Voice(voice::Command::Mute(false)));
+    assert_eq!(
+        sounds(&app.dispatch(Action::Voice(voice::Command::Mute(false)))),
+        [Sound::Undeafen]
+    );
     assert!(!app.state.voice.muted && !app.state.voice.deafened);
+    assert_eq!(
+        sounds(&app.dispatch(Action::Voice(voice::Command::Mute(true)))),
+        [Sound::Mute]
+    );
+    // The preference that unmutes on joining does so without a sound.
+    assert!(app.dispatch(Action::UnmuteOnJoin).is_empty());
+    assert!(!app.state.voice.muted);
     assert!(app.dispatch(Action::Logout).is_empty());
     assert!(!app.state.preview);
     assert!(!app.state.voice.active());
+}
+
+#[test]
+fn calls_sound_as_people_come_and_go_but_not_while_reconnecting_or_ringing() {
+    let mut app = connected();
+    let person = |id: &str, local: bool, connected: bool| voice::Participant {
+        id: id.into(),
+        user: id.into(),
+        person: id.into(),
+        local,
+        muted: false,
+        deafened: false,
+        speaking: false,
+        connected,
+        problem: None,
+        streaming: false,
+        avatar: None,
+    };
+    let call = |phase: Phase, people: &[(&str, bool)]| voice::State {
+        phase,
+        room: Some("lounge".into()),
+        name: "Lounge".into(),
+        muted: false,
+        participants: std::iter::once(person("me", true, true))
+            .chain(
+                people
+                    .iter()
+                    .map(|&(id, connected)| person(id, false, connected)),
+            )
+            .collect(),
+        ..Default::default()
+    };
+    let mut heard = |state: voice::State| sounds(&app.apply(Event::Voice(state)));
+    assert_eq!(heard(call(Phase::Joining, &[])), []);
+    // Those already there when this account arrives make no sound of their own.
+    assert_eq!(
+        heard(call(Phase::Connected, &[("sam", true)])),
+        [Sound::Join]
+    );
+    // Someone a DM call is ringing isn't there until they answer.
+    assert_eq!(
+        heard(call(Phase::Connected, &[("sam", true), ("kim", false)])),
+        []
+    );
+    assert_eq!(
+        heard(call(Phase::Connected, &[("sam", true), ("kim", true)])),
+        [Sound::Join]
+    );
+    // Two going at once make one sound.
+    assert_eq!(heard(call(Phase::Connected, &[])), [Sound::Leave]);
+    assert_eq!(heard(call(Phase::Reconnecting, &[])), []);
+    assert_eq!(heard(call(Phase::Connected, &[("sam", true)])), []);
+    assert_eq!(heard(call(Phase::Leaving, &[])), [Sound::Leave]);
+    assert_eq!(heard(voice::State::default()), []);
+
+    // Muting sounds as it's asked for, rather than once the call confirms it.
+    app.apply(Event::Voice(call(Phase::Connected, &[])));
+    let effects = app.dispatch(Action::Voice(voice::Command::Mute(true)));
+    assert!(matches!(
+        effects.as_slice(),
+        [
+            Effect::Backend(Command::Voice(voice::Command::Mute(true))),
+            Effect::Sound(Sound::Mute)
+        ]
+    ));
+    assert!(matches!(
+        app.dispatch(Action::UnmuteOnJoin).as_slice(),
+        [Effect::Backend(Command::Voice(voice::Command::Mute(false)))]
+    ));
+}
+
+#[test]
+fn notifications_say_whether_they_mention_this_account() {
+    let mut app = connected();
+    let effects = app.apply(Event::Notify(chat::Notification {
+        room: "games".into(),
+        author: "Sam".into(),
+        body: "@alice co-op?".into(),
+        avatar: None,
+        mention: true,
+    }));
+    assert!(matches!(effects.as_slice(), [Effect::Notify(alert)] if alert.mention && !alert.call));
 }
 
 #[test]
@@ -2520,6 +2631,7 @@ fn sets_the_status_and_holds_notifications_while_busy() {
             author: "Sam".into(),
             body: "Around?".into(),
             avatar: None,
+            mention: false,
         }))
     };
     assert!(

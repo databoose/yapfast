@@ -1,6 +1,40 @@
-//! Joining and switching calls, and answering them.
+//! Joining and switching calls, and answering them, and the sounds they make.
 
 use super::*;
+use crate::sounds::Sound;
+
+/// The sound a change in the call makes: this account joining or leaving it,
+/// or, while it's there, someone else connecting or going. People arriving
+/// together make one sound. Reconnecting makes none, and nor do those a DM
+/// call is still ringing, until they answer.
+pub(super) fn call_sounds(before: &voice::State, after: &voice::State) -> Vec<Effect> {
+    let here = |state: &voice::State| matches!(state.phase, Phase::Connected | Phase::Reconnecting);
+    let others = |state: &voice::State| -> HashSet<String> {
+        state
+            .participants
+            .iter()
+            .filter(|person| !person.local && person.connected)
+            .map(|person| person.id.clone())
+            .collect()
+    };
+    let sound = if after.phase == Phase::Connected && (!here(before) || before.room != after.room) {
+        Some(Sound::Join)
+    } else if here(before) && !here(after) {
+        Some(Sound::Leave)
+    } else if before.phase == Phase::Connected && after.phase == Phase::Connected {
+        let (before, after) = (others(before), others(after));
+        if !after.is_subset(&before) {
+            Some(Sound::Join)
+        } else if !before.is_subset(&after) {
+            Some(Sound::Leave)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    sound.map(Effect::Sound).into_iter().collect()
+}
 
 impl Application {
     pub(super) fn request_join_voice(&mut self, id: String) -> Vec<Effect> {
@@ -43,13 +77,35 @@ impl Application {
         effects
     }
 
+    /// A call command, with the sound of muting or deafening in a call.
     pub(super) fn voice_command(&mut self, command: voice::Command) -> Vec<Effect> {
+        let connected = self.state.voice.phase == Phase::Connected;
+        let sound = match &command {
+            _ if !connected => None,
+            voice::Command::Deafen(true) => Some(Sound::Deafen),
+            // Unmuting undeafens too.
+            voice::Command::Deafen(false) | voice::Command::Mute(false)
+                if self.state.voice.deafened =>
+            {
+                Some(Sound::Undeafen)
+            }
+            voice::Command::Mute(true) => Some(Sound::Mute),
+            voice::Command::Mute(false) => Some(Sound::Unmute),
+            _ => None,
+        };
+        let mut effects = self.voice_command_quietly(command);
+        effects.extend(sound.map(Effect::Sound));
+        effects
+    }
+
+    pub(super) fn voice_command_quietly(&mut self, command: voice::Command) -> Vec<Effect> {
         if matches!(command, voice::Command::Leave) {
             self.state.switch_voice = None;
         }
         if !self.state.preview {
             return vec![Effect::Backend(Command::Voice(command))];
         }
+        let before = self.state.voice.clone();
         match command {
             voice::Command::Join(id) => {
                 if let Some(room) = self
@@ -100,6 +156,6 @@ impl Application {
         for participant in &mut self.state.voice.participants {
             participant.muted = self.state.voice.muted;
         }
-        vec![]
+        call_sounds(&before, &self.state.voice)
     }
 }

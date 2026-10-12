@@ -461,13 +461,14 @@ export component DeviceMenu inherits Rectangle {
     }
 }
 
-// How loud someone sounds, from 0% to 200% as Discord allows: a marigold fill
-// up to the value over a mark at 100%, which a drag snaps to nearby. Dragging
-// reports each step through `changed` and the last through `committed`; the
-// arrow keys move 5% at a time.
+// How loud something sounds, from 0% to `maximum`: a marigold fill up to the
+// value. Above 100%, as Discord allows for people, a mark shows 100%, and a
+// drag snaps to it nearby. Dragging reports each step through `changed` and the
+// last through `committed`; the arrow keys move 5% at a time.
 export component VolumeSlider inherits Rectangle {
     in property <string> label;
     in-out property <int> value: 100;
+    in property <int> maximum: 200;
     callback changed(int);
     callback committed(int);
     height: column.preferred-height;
@@ -475,13 +476,13 @@ export component VolumeSlider inherits Rectangle {
     accessible-label: root.label;
     accessible-value: root.value;
     accessible-value-minimum: 0;
-    accessible-value-maximum: 200;
+    accessible-value-maximum: root.maximum;
     accessible-value-step: 5;
     accessible-action-increment => { root.step(5); }
     accessible-action-decrement => { root.step(-5); }
     forward-focus: focus;
     function set(value: int) {
-        let clamped = max(0, min(200, value));
+        let clamped = max(0, min(root.maximum, value));
         if clamped != root.value {
             root.value = clamped;
             root.changed(clamped);
@@ -492,8 +493,8 @@ export component VolumeSlider inherits Rectangle {
         root.committed(root.value);
     }
     function point(x: length) {
-        let value = round(max(0, min(1, x / track.width)) * 200);
-        root.set(abs(value - 100) <= 4 ? 100 : value);
+        let value = round(max(0, min(1, x / track.width)) * root.maximum);
+        root.set(root.maximum > 100 && abs(value - 100) <= 4 ? 100 : value);
     }
     column := VerticalLayout {
         spacing: 6px;
@@ -505,12 +506,12 @@ export component VolumeSlider inherits Rectangle {
             height: 18px;
             Rectangle { y: (parent.height - self.height) / 2; height: 4px; border-radius: 2px; background: Theme.field; }
             Rectangle {
-                x: 0; y: (parent.height - self.height) / 2; width: parent.width * root.value / 200; height: 4px;
+                x: 0; y: (parent.height - self.height) / 2; width: parent.width * root.value / root.maximum; height: 4px;
                 border-radius: 2px; background: Theme.accent;
             }
-            Rectangle { x: parent.width / 2 - 1px; y: (parent.height - self.height) / 2; width: 2px; height: 10px; background: Theme.secondary; }
+            if root.maximum > 100: Rectangle { x: parent.width * 100 / root.maximum - 1px; y: (parent.height - self.height) / 2; width: 2px; height: 10px; background: Theme.secondary; }
             Rectangle {
-                x: parent.width * root.value / 200 - self.width / 2; y: (parent.height - self.height) / 2;
+                x: parent.width * root.value / root.maximum - self.width / 2; y: (parent.height - self.height) / 2;
                 width: 14px; height: 14px; border-radius: 7px; background: Theme.text;
                 border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
             }

@@ -1397,6 +1397,10 @@ async fn notification_of(
         author,
         body,
         avatar: None,
+        mention: notification
+            .actions
+            .iter()
+            .any(|action| action.is_highlight()),
     })
 }
 

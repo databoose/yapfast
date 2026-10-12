@@ -1347,6 +1347,8 @@ pub struct Notification {
     pub body: String,
     /// The address of the author's picture; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
+    /// It mentions this account, rather than notifying as any message there does.
+    pub mention: bool,
 }
 
 /// A notification ready to show: its conversation, a title naming who wrote where, the
@@ -1359,6 +1361,8 @@ pub struct Alert {
     pub picture: Option<Arc<Picture>>,
     /// A call ringing this account, rather than a message.
     pub call: bool,
+    /// A message mentioning this account.
+    pub mention: bool,
 }
 
 /// What woke the actor. Each network's own events are handled by its module.

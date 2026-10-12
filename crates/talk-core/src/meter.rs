@@ -153,7 +153,6 @@ pub(crate) mod pulse {
     }
 
     /// The PulseAudio sink behind a WebRTC playout device, named the same way.
-    #[cfg(feature = "discord")]
     pub(crate) fn sink(speakers: Option<&str>) -> Result<Option<String>> {
         device(speakers, true)
             .map_err(|error| error.context("these speakers are no longer connected"))

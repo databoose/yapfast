@@ -25,6 +25,30 @@ created until Unmute. Leaving releases the audio handle, and restarting Talk
 requires joining again. Preview calls are simulated, but the preview lists and
 chooses real devices without remembering them.
 
+## Sounds
+
+Talk plays its own short sounds when this account joins or leaves a call, and
+when others connect or go while it's there. It also plays them on mute, unmute,
+deafen and undeafen, and for messages that notify, with a brighter one for
+mentions. People arriving together make one sound. Reconnecting makes none, and
+someone a DM call is ringing makes one only once they answer. Muting sounds as
+it's asked for, rather than once the call confirms it. Turning the microphone
+on as a call connects, for the unmute-on-join preference, makes no sound, since
+joining already did. While deafened, only deafening's own sounds play. A message
+in the conversation in front of you makes no sound, and nor does any on Do Not
+Disturb.
+
+`sounds.rs` makes each sound as it plays, so nothing is bundled. The four sets
+are Felt piano, Soft marimba, Mellow Rhodes and Glow, all in F major pentatonic
+so any two sound well together. They play through PulseAudio on the call's
+speakers, so for now they're Linux-only, like ringing. Settings › Sounds chooses
+the set and the volume, from 0% to 200%. A slider's percentage becomes a gain
+by its square, which spreads the quiet settings along more of it. At 100%, the
+default, the loudest sounds peak 12 dB under full scale, and at 200% they reach
+it. Each sound can also have its own volume up to 100%, as a share of that one. `layout.json` remembers them. Desktop
+notifications ask the desktop to stay quiet, since Talk sounds itself; someone
+who had turned the desktop's sound off starts with messages and mentions at 0%.
+
 WebRTC's PulseAudio devices report no GUID, and LiveKit selects devices only by
 GUID, which always chose the first device. Talk names such devices `name:` and
 their reported name, and selects them by their current index instead.

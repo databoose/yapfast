@@ -26,6 +26,7 @@ use talk_core::{
     meter::{self, InputMeter},
     network::Network,
     runtime::BackgroundRuntime,
+    sounds::{self, Sound, SoundSet},
     spoiler,
     voice::{self, Phase},
 };
@@ -501,12 +502,27 @@ struct Layout {
     stream_volumes: std::collections::BTreeMap<String, f32>,
     /// Others see when this account is typing; on unless turned off.
     share_typing: Option<bool>,
-    /// Desktop notifications, their sound, and whether they say what messages say; on
-    /// unless turned off.
+    /// Desktop notifications, and whether they say what messages say; on unless
+    /// turned off.
     notifications: Option<bool>,
-    notification_sound: Option<bool>,
     notification_text: Option<bool>,
+    /// Whether notifications played the desktop's sound, before Talk had its own;
+    /// read once, to keep messages quiet for someone who turned it off.
+    #[serde(skip_serializing)]
+    notification_sound: Option<bool>,
+    /// The instrument Talk's sounds play on, and how loud they are as a slider's
+    /// percentage from 0% to 200%; [`DEFAULT_SOUND_VOLUME`] unless changed.
+    sound_set: SoundSet,
+    sound_volume: Option<u8>,
+    /// Each sound has its own volume too, against that one; [`Self::each_sound`]
+    /// holds them.
+    adjust_each_sound: bool,
+    /// Each sound's own volume as a percentage up to 100%, if it isn't 100%.
+    each_sound: std::collections::BTreeMap<Sound, u8>,
 }
+
+/// Talk's sounds start as they're made: 12 dB under full scale at the loudest.
+const DEFAULT_SOUND_VOLUME: u8 = 100;
 
 /// The noise suppression settings' choices, in the order they show.
 const SUPPRESSORS: [talk_core::noise::Suppressor; 3] = [
@@ -545,10 +561,31 @@ impl Layout {
     }
 
     fn read(root: &std::path::Path) -> Self {
-        std::fs::read(root.join(LAYOUT))
+        let mut layout: Self = std::fs::read(root.join(LAYOUT))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if layout.notification_sound.take() == Some(false) {
+            layout.adjust_each_sound = true;
+            layout.each_sound.insert(Sound::Message, 0);
+            layout.each_sound.insert(Sound::Mention, 0);
+        }
+        layout
+    }
+
+    /// A sound's own volume as a percentage: 100% unless adjusted.
+    fn each_sound(&self, sound: Sound) -> u8 {
+        self.each_sound
+            .get(&sound)
+            .copied()
+            .filter(|_| self.adjust_each_sound)
+            .unwrap_or(100)
+    }
+
+    /// How loud a sound plays, as a gain.
+    fn sound_gain(&self, sound: Sound) -> f32 {
+        sounds::gain(self.sound_volume.unwrap_or(DEFAULT_SOUND_VOLUME))
+            * sounds::gain(self.each_sound(sound))
     }
 
     fn apply(&self, window: &TalkWindow) {
@@ -580,8 +617,15 @@ impl Layout {
         }
         window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
-        window.set_notification_sound(self.notification_sound.unwrap_or(true));
         window.set_notification_text(self.notification_text.unwrap_or(true));
+        window.set_sound_set(choice(&SoundSet::ALL, self.sound_set));
+        window.set_sound_volume(self.sound_volume.unwrap_or(DEFAULT_SOUND_VOLUME).into());
+        window.set_adjust_each_sound(self.adjust_each_sound);
+        let each: Vec<i32> = Sound::ALL
+            .iter()
+            .map(|sound| self.each_sound.get(sound).copied().unwrap_or(100).into())
+            .collect();
+        window.set_each_sound(ModelRc::new(VecModel::from(each)));
     }
 
     /// A message's row as these preferences show it: its time on the chosen clock, and its
@@ -1028,15 +1072,26 @@ impl Adapter {
                     }
                 }
                 Effect::Notify(alert) => {
+                    // A message sounds unless it's in the conversation in front;
+                    // a call rings instead.
+                    let reading =
+                        FOCUSED.get() && self.app.state.selected.as_ref() == Some(&alert.room);
+                    if !alert.call && !reading {
+                        self.sound(if alert.mention {
+                            Sound::Mention
+                        } else {
+                            Sound::Message
+                        });
+                    }
                     // Only while Talk isn't in front: there the lists show what's new.
                     if self.layout.notifications.unwrap_or(true) && !FOCUSED.get() {
                         let style = crate::notify::Style {
                             text: self.layout.notification_text.unwrap_or(true),
-                            sound: self.layout.notification_sound.unwrap_or(true),
                         };
                         self.notifier.show(alert, style);
                     }
                 }
+                Effect::Sound(sound) => self.sound(sound),
                 Effect::Backend(Command::Typing { .. })
                     if !self.layout.share_typing.unwrap_or(true) => {}
                 Effect::Backend(command) => {
@@ -1084,6 +1139,26 @@ impl Adapter {
         }
     }
 
+    /// Plays one of Talk's sounds as the person set them. While deafened, only
+    /// deafening's own sounds play.
+    fn sound(&self, sound: Sound) {
+        let voice = &self.app.state.voice;
+        if voice.active() && voice.deafened && !matches!(sound, Sound::Deafen | Sound::Undeafen) {
+            return;
+        }
+        self.play(sound);
+    }
+
+    /// Plays a sound on the call's speakers, at the volume set for it.
+    fn play(&self, sound: Sound) {
+        sounds::play(
+            self.layout.sound_set,
+            sound,
+            self.layout.sound_gain(sound),
+            self.app.state.voice.speaker.as_deref(),
+        );
+    }
+
     fn action(&mut self, window: &TalkWindow, action: Action) {
         // A keystroke in the composer changes only the composer; the rest of
         // the window stays as it is.
@@ -1102,8 +1177,11 @@ impl Adapter {
         let reach = Reach::of(&event);
         let effects = self.app.apply(event);
         // What it set off, such as opening a DM that just started, can change
-        // anything.
-        let reach = if effects.is_empty() {
+        // anything; a sound changes nothing on screen.
+        let reach = if effects
+            .iter()
+            .all(|effect| matches!(effect, Effect::Sound(_)))
+        {
             reach
         } else {
             Reach::EVERYTHING

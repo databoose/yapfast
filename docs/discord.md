@@ -831,6 +831,8 @@ an error.
   status is Do Not Disturb. They show while Talk
   isn't in front, titled with who wrote where, and clicking one opens the
   conversation. On Linux they go to the freedesktop notification service.
+  Each also plays Talk's message sound, or its mention sound, unless it's in
+  the conversation in front; see [voice](voice.md#sounds).
 - Mentions in messages are links on a light fill, in the role's colour or the
   person's name colour, as Discord shows them. A person's opens their profile
   card beside the mention, and a role's lists the members Talk has seen with it (from member lists, messages
