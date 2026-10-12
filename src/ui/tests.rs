@@ -1983,3 +1983,48 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
     );
     assert!(open[1].open && open[3].tint == open[1].tint);
 }
+
+#[test]
+fn closing_the_viewer_lets_go_of_its_picture() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    let mut adapter = adapter.borrow_mut();
+    adapter.app.state.messages = Arc::new(vec![ChatMessage {
+        item: "i0".into(),
+        attachments: vec![talk_core::chat::Attachment {
+            name: "a.png".into(),
+            size: None,
+            image: true,
+            dimensions: Some((40, 30)),
+            preview: Some(Arc::new(Picture {
+                width: 40,
+                height: 30,
+                rgba: talk_core::chat::Pixels::new(40, 30, vec![128; 40 * 30 * 4]),
+                ..Default::default()
+            })),
+            preview_failed: false,
+            placement: talk_core::chat::Placement::Message,
+            spoiler: false,
+            video: false,
+        }],
+        ..Default::default()
+    }]);
+    adapter.app.state.viewer = Some(talk_core::application::Viewer {
+        item: "i0".into(),
+        index: 0,
+        pictures: HashMap::new(),
+    });
+    adapter.refresh(&window);
+    assert_eq!(window.get_viewer_image().size().width, 40);
+    adapter.app.state.viewer = None;
+    adapter.refresh(&window);
+    assert!(!window.get_viewer_open());
+    assert_eq!(window.get_viewer_image().size().width, 0);
+}

@@ -1643,7 +1643,13 @@ impl Adapter {
         });
         window.set_viewer_open(viewing.is_some());
         let Some((viewer, message, attachment)) = viewing else {
-            self.viewer_image = None;
+            // The window would keep the picture it showed, up to 9 MiB, until
+            // the next one.
+            if self.viewer_image.take().is_some() {
+                window.set_viewer_image(slint::Image::default());
+                window.set_viewer_frames(ModelRc::default());
+                window.set_viewer_delays(ModelRc::default());
+            }
             self.viewer_size = None;
             return;
         };
