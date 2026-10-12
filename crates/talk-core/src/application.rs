@@ -848,8 +848,11 @@ pub struct Application {
     /// gone through again.
     pictured_timeline: Arc<Vec<ChatMessage>>,
     visible_messages: Vec<String>,
-    /// How many pictures were kept the last time those off screen went.
+    /// How many pictures other than custom emoji were kept the last time
+    /// those off screen went.
     pictures_kept: usize,
+    /// How many of the pictures kept are custom emoji, which stay.
+    emoji_pictures: usize,
     /// Names searched for in the selected room, lowercased.
     searched: HashSet<String>,
     /// A conversation to open once it's listed, such as a DM just started.
@@ -1016,6 +1019,11 @@ fn pictures_on_screen<'a>(
         )
 }
 
+/// Discord's CDN keeps custom emoji under /emojis/.
+fn is_custom_emoji(url: &str) -> bool {
+    url.contains("/emojis/")
+}
+
 /// A closed channel's recent message metadata, ready to show on reopening.
 /// Preview ownership stays in the backend's shared byte-bounded cache.
 fn shelved(messages: &[ChatMessage]) -> Vec<ChatMessage> {
@@ -1102,23 +1110,27 @@ impl Application {
     /// show. So that pictures on screen don't make it go through them each
     /// time one arrives, it waits for twice as many as it kept last. Custom
     /// emoji stay: the emoji picker asks for hundreds at once, and they're
-    /// small.
+    /// small. They don't count towards when the others go, or the emoji of a
+    /// few servers would let thousands of avatars pile up.
     fn keep_picture(&mut self, url: String, picture: Arc<Picture>) {
-        self.state.pictures.insert(url, picture);
+        let emoji = is_custom_emoji(&url);
+        if self.state.pictures.insert(url, picture).is_none() && emoji {
+            self.emoji_pictures += 1;
+        }
         self.state.picture_changes += 1;
-        if self.state.pictures.len() <= KEPT_PICTURES.max(2 * self.pictures_kept) {
+        let others = self.state.pictures.len() - self.emoji_pictures;
+        if others <= KEPT_PICTURES.max(2 * self.pictures_kept) {
             return;
         }
         let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages, true)
             .map(str::to_owned)
             .collect();
-        // Discord's CDN keeps custom emoji under /emojis/.
-        let kept = |url: &String| shown.contains(url) || url.contains("/emojis/");
+        let kept = |url: &String| shown.contains(url) || is_custom_emoji(url);
         self.state.pictures.retain(|url, _| kept(url));
         let pictures = &self.state.pictures;
         self.requested_pictures
             .retain(|url| kept(url) || pictures.contains_key(url));
-        self.pictures_kept = self.state.pictures.len();
+        self.pictures_kept = self.state.pictures.len() - self.emoji_pictures;
     }
 
     fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
