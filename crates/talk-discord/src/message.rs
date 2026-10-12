@@ -38,6 +38,18 @@ const STICKER_SIZE: u32 = 160;
 /// The attachment flag that marks a spoiler.
 const IS_SPOILER: u64 = 1 << 3;
 
+/// A page of a channel's history, oldest first.
+#[derive(Debug)]
+pub struct Page {
+    /// The messages Talk shows, which may be fewer than Discord sent.
+    pub messages: Vec<Message>,
+    /// The snowflake of the oldest message Discord sent, shown or not;
+    /// earlier history is before it.
+    pub oldest: Option<u64>,
+    /// Discord sent a whole page, so there may be more before it.
+    pub full: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: String,

@@ -768,7 +768,7 @@ struct Adapter {
     selection_version: u64,
     reset_version: u64,
     /// The timeline shown, which tells the messages that changed since.
-    messages: Arc<Vec<ChatMessage>>,
+    messages: Arc<Vec<Arc<ChatMessage>>>,
     /// The rows built for those messages, by id, so the list keeps their state.
     rows: HashMap<String, MessageRow>,
     /// What the sidebar showed last, so it's built again only once that changes.

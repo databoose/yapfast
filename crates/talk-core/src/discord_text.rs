@@ -10,9 +10,8 @@ use std::{
 };
 
 use talk_discord::{
-    api::PAGE,
     member_list::ListedMember,
-    message::{Message, Reply as DiscordReply, Shown},
+    message::{Message, Page, Reply as DiscordReply, Shown},
     service::{Discord, Live, Snapshot, Status},
 };
 use tokio::{
@@ -68,7 +67,7 @@ pub enum Done {
     History {
         room: String,
         older: bool,
-        result: Result<Vec<Message>, String>,
+        result: Result<Page, String>,
     },
     Sent {
         room: String,

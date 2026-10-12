@@ -284,8 +284,8 @@ pub fn finished(
         }
         (Done::History { older, result, .. }, channel) => {
             let history = match (result, channel) {
-                (Ok(messages), Some(channel)) => {
-                    channel.loaded(older, messages);
+                (Ok(page), Some(channel)) => {
+                    channel.loaded(older, page);
                     changed = true;
                     if channel.complete {
                         History::Start

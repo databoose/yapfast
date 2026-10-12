@@ -174,7 +174,7 @@ impl Application {
                 compose => {
                     let item = uuid::Uuid::new_v4().to_string();
                     let messages = self.samples.entry(id.clone()).or_default();
-                    messages.push(ChatMessage {
+                    messages.push(Arc::new(ChatMessage {
                         id: item.clone(),
                         item,
                         author: "You".into(),
@@ -196,7 +196,7 @@ impl Application {
                             _ => None,
                         },
                         ..sample_actions()
-                    });
+                    }));
                     self.state.messages = Arc::new(messages.clone());
                     self.state.drafts.remove(&id);
                     self.state.compose.remove(&id);

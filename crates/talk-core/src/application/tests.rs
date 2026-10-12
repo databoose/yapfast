@@ -57,7 +57,7 @@ fn connected() -> Application {
     }));
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     app
 }
@@ -365,7 +365,7 @@ fn forwarding_sends_a_message_once_to_each_writable_conversation() {
     sent.can_forward = true;
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![sent],
+        messages: timeline(vec![sent]),
     });
     app.dispatch(Action::StartForward("e:$bob".into()));
     assert!(matches!(
@@ -406,6 +406,11 @@ fn room_membership_loss_moves_selection_and_server_loss_returns_to_dms() {
     }));
     assert_eq!(app.state.navigation, Navigation::DirectMessages);
     assert_eq!(app.state.selected.as_deref(), Some("dm"));
+}
+
+/// Rows as a backend sends them.
+fn timeline(messages: Vec<ChatMessage>) -> Vec<Arc<ChatMessage>> {
+    messages.into_iter().map(Arc::new).collect()
 }
 
 fn message(item: &str, own: bool) -> ChatMessage {
@@ -470,11 +475,11 @@ fn up_in_an_empty_composer_edits_the_newest_own_message() {
     let mut app = connected();
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![
+        messages: timeline(vec![
             message("e:$old", true),
             message("e:$mine", true),
             message("e:$bob", false),
-        ],
+        ]),
     });
     app.dispatch(Action::EditLast);
     assert!(matches!(app.state.compose(), Some(Compose::Edit { item, .. }) if item == "e:$mine"));
@@ -486,7 +491,7 @@ fn replies_edits_and_saved_drafts_share_one_composer() {
     let mut app = connected();
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("e:$bob", false), message("e:$mine", true)],
+        messages: timeline(vec![message("e:$bob", false), message("e:$mine", true)]),
     });
     app.apply(Event::Draft {
         room: "dm".into(),
@@ -556,7 +561,11 @@ fn deletion_needs_confirmation_and_queue_actions_need_a_pending_message() {
     pending.delivery = chat::Delivery::Failed;
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("e:$bob", false), message("e:$mine", true), pending],
+        messages: timeline(vec![
+            message("e:$bob", false),
+            message("e:$mine", true),
+            pending,
+        ]),
     });
     app.dispatch(Action::RequestDelete("e:$bob".into()));
     assert!(app.state.confirm_delete.is_none());
@@ -719,7 +728,7 @@ fn jumping_to_a_reply_loads_history_until_the_original_is_there() {
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("e:2"), message("e:3")],
+        messages: timeline(vec![message("e:2"), message("e:3")]),
     });
     app.dispatch(Action::Jump("e:3".into()));
     assert_eq!(app.state.jump, Some(("e:3".into(), 0)));
@@ -729,7 +738,7 @@ fn jumping_to_a_reply_loads_history_until_the_original_is_there() {
     assert_eq!(app.state.jump, Some(("e:3".into(), 0)));
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("e:1"), message("e:2"), message("e:3")],
+        messages: timeline(vec![message("e:1"), message("e:2"), message("e:3")]),
     });
     assert!(app.apply(more("dm")).is_empty());
     assert_eq!(app.state.jump, Some(("e:1".into(), 1)));
@@ -758,20 +767,20 @@ fn stale_timeline_and_history_events_do_not_replace_the_selected_room() {
     let messages = app.state.messages.clone();
     app.apply(Event::Timeline {
         room: "other".into(),
-        messages: vec![ChatMessage {
+        messages: timeline(vec![ChatMessage {
             id: "other-0".into(),
             author: "Other".into(),
             body: "Stale".into(),
             time: "now".into(),
             ..Default::default()
-        }],
+        }]),
     });
     assert!(Arc::ptr_eq(&messages, &app.state.messages));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
     assert!(!app.state.room_ready);
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     assert!(!app.state.room_ready);
     app.apply(more("dm"));
@@ -820,7 +829,7 @@ fn history_loads_a_page_at_a_time_until_the_first_message() {
     app.dispatch(Action::Navigate(Navigation::DirectMessages));
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     assert!(!app.state.history_start);
     assert!(earlier(&mut app));
@@ -836,7 +845,7 @@ fn a_timeline_that_drops_its_oldest_messages_has_history_to_load_again() {
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("d:1"), message("d:2")],
+        messages: timeline(vec![message("d:1"), message("d:2")]),
     });
     app.dispatch(Action::Earlier);
     app.apply(Event::HistoryLoaded {
@@ -846,12 +855,12 @@ fn a_timeline_that_drops_its_oldest_messages_has_history_to_load_again() {
     // A new message keeps the first one loaded.
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("d:1"), message("d:2"), message("d:3")],
+        messages: timeline(vec![message("d:1"), message("d:2"), message("d:3")]),
     });
     assert!(app.state.history_start);
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![message("d:9")],
+        messages: timeline(vec![message("d:9")]),
     });
     assert!(!app.state.history_start);
 }
@@ -1360,12 +1369,12 @@ fn videos_play_in_the_open_room_until_it_closes() {
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![ChatMessage {
+        messages: timeline(vec![ChatMessage {
             id: "m".into(),
             item: "e:m".into(),
             attachments: vec![file("notes.txt", false), file("clip.mp4", true)],
             ..Default::default()
-        }],
+        }]),
     });
     let play = |index| Action::PlayVideo {
         item: "e:m".into(),
@@ -1425,7 +1434,7 @@ fn the_viewer_steps_through_a_messages_images() {
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![ChatMessage {
+        messages: timeline(vec![ChatMessage {
             id: "m".into(),
             item: "e:m".into(),
             attachments: vec![
@@ -1434,7 +1443,7 @@ fn the_viewer_steps_through_a_messages_images() {
                 file("b.png", true),
             ],
             ..Default::default()
-        }],
+        }]),
     });
     let viewed = |effects: Vec<Effect>| -> Vec<usize> {
         effects
@@ -1648,7 +1657,7 @@ fn clicked_mentions_show_people_and_roles() {
     let mut app = connected();
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![ChatMessage {
+        messages: timeline(vec![ChatMessage {
             body: "@Riley ask @Mods".into(),
             mentions: vec![
                 Mentioned {
@@ -1663,7 +1672,7 @@ fn clicked_mentions_show_people_and_roles() {
                 },
             ],
             ..message("e:$bob", false)
-        }],
+        }]),
     });
     // Riley isn't listed, but the mention names them.
     app.dispatch(Action::ShowProfile {
@@ -1782,7 +1791,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
     let room = "discord:10:21".to_owned();
     app.apply(Event::Timeline {
         room: room.clone(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     app.apply(Event::Members {
         room: room.clone(),
@@ -1894,7 +1903,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     ));
     let effects = app.apply(Event::Timeline {
         room: "discord:10:21".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     assert!(matches!(
         effects.as_slice(),
@@ -1909,11 +1918,11 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
 
     app.apply(Event::Timeline {
         room: "discord:10:21".into(),
-        messages: vec![ChatMessage {
+        messages: timeline(vec![ChatMessage {
             item: "d:1".into(),
             body: "kept".into(),
             ..Default::default()
-        }],
+        }]),
     });
     app.apply(Event::Members {
         room: "discord:10:21".into(),
@@ -1923,7 +1932,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     assert!(!app.state.room_ready, "a channel not shown before loads");
     app.apply(Event::Timeline {
         room: "discord:10:22".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     assert!(!app.state.can_write(), "read-only channel");
     // Back to general: shown as it was left at once, while the backend
@@ -1934,7 +1943,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     assert_eq!(app.state.members, Some(Ok(vec![])));
     app.apply(Event::Timeline {
         room: "discord:10:21".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     app.apply(discord_event(Snapshot {
         status: Status::Offline("Reconnecting".into()),
@@ -2000,7 +2009,7 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
     ));
     let effects = app.apply(Event::Timeline {
         room: "discord:@me:30".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     assert!(matches!(
         effects.as_slice(),
@@ -2354,7 +2363,7 @@ fn discord_message_requests_are_answered_not_written_to() {
     app.dispatch(Action::SelectRoom("discord:@me:40".into()));
     app.apply(Event::Timeline {
         room: "discord:@me:40".into(),
-        messages: vec![],
+        messages: timeline(vec![]),
     });
     assert!(!app.state.can_write(), "replying waits for accepting");
     let effects = app.dispatch(Action::AnswerRequest(true));
@@ -2892,7 +2901,7 @@ fn custom_emoji_are_requested_only_for_nearby_messages_and_stale_views_are_ignor
     assert!(
         asked(app.apply(Event::Timeline {
             room: "dm".into(),
-            messages
+            messages: timeline(messages)
         }))
         .is_empty()
     );
@@ -2924,8 +2933,10 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
         }],
         ..message(&format!("e:${index}"), false)
     };
-    let timeline: Vec<_> = (0..discord::KEPT_MESSAGES + 50).map(with_picture).collect();
-    let kept = shelved(&timeline);
+    let rows: Vec<_> = (0..discord::KEPT_MESSAGES + 50)
+        .map(|id| Arc::new(with_picture(id)))
+        .collect();
+    let kept = shelved(&rows);
     assert_eq!(kept.len(), discord::KEPT_MESSAGES);
     assert_eq!(kept[0].id, "e:$50", "the oldest went");
     let previews: Vec<bool> = kept
@@ -2936,6 +2947,11 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
         previews.iter().all(|shown| !shown),
         "remembered UI metadata does not pin decoded previews"
     );
+    let plain = [Arc::new(message("e:$plain", false))];
+    assert!(
+        Arc::ptr_eq(&shelved(&plain)[0], &plain[0]),
+        "rows without previews aren't copied"
+    );
 }
 
 #[test]
@@ -2943,10 +2959,10 @@ fn pictures_off_screen_go_once_many_have_arrived() {
     let mut app = connected();
     app.apply(Event::Timeline {
         room: "dm".into(),
-        messages: vec![ChatMessage {
+        messages: timeline(vec![ChatMessage {
             avatar: Some("ann.png".into()),
             ..message("e:$ann", false)
-        }],
+        }]),
     });
     let arrive = |app: &mut Application, url: String| {
         app.apply(Event::Picture {
@@ -3053,7 +3069,7 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     assert_eq!(app.state.first_unread, None);
     let effects = app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(95..=110, &[104]),
+        messages: timeline(discord_messages(95..=110, &[104])),
     });
     assert!(
         matches!(
@@ -3070,7 +3086,7 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     app.apply(unread_channel(false, 110));
     app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(95..=111, &[104]),
+        messages: timeline(discord_messages(95..=111, &[104])),
     });
     assert_eq!(app.state.first_unread.as_deref(), Some("d:105"));
     assert_eq!(app.state.unread_jump, 1);
@@ -3084,7 +3100,7 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     app.dispatch(Action::SelectRoom(general.into()));
     app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(95..=111, &[104]),
+        messages: timeline(discord_messages(95..=111, &[104])),
     });
     assert_eq!(app.state.first_unread, None);
     assert!(app.dispatch(Action::JumpToUnread).is_empty());
@@ -3106,14 +3122,14 @@ fn opening_a_channel_loads_history_back_to_its_first_unread_message() {
     app.dispatch(Action::SelectRoom(general.into()));
     let effects = app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(100..110, &[]),
+        messages: timeline(discord_messages(100..110, &[])),
     });
     assert!(earlier(&effects), "every loaded message is unread");
     assert_eq!(app.state.first_unread, None);
     // The page comes as a timeline, then its outcome.
     let effects = app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages((40..48).chain(100..110), &[]),
+        messages: timeline(discord_messages((40..48).chain(100..110), &[])),
     });
     assert!(!earlier(&effects), "one page at a time");
     let effects = app.apply(more(general));
@@ -3126,13 +3142,13 @@ fn opening_a_channel_loads_history_back_to_its_first_unread_message() {
     // loads it again.
     app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(105..110, &[]),
+        messages: timeline(discord_messages(105..110, &[])),
     });
     assert_eq!(app.state.first_unread.as_deref(), Some("d:100"), "it stays");
     assert!(earlier(&app.dispatch(Action::JumpToUnread)));
     app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(95..110, &[]),
+        messages: timeline(discord_messages(95..110, &[])),
     });
     app.apply(more(general));
     assert_eq!(app.state.unread_jump, 2);
@@ -3147,14 +3163,14 @@ fn opening_a_channel_loads_history_back_to_its_first_unread_message() {
     let mut pages = 0;
     let mut effects = app.apply(Event::Timeline {
         room: general.into(),
-        messages: discord_messages(oldest..1010, &[]),
+        messages: timeline(discord_messages(oldest..1010, &[])),
     });
     while earlier(&effects) {
         pages += 1;
         oldest -= 10;
         app.apply(Event::Timeline {
             room: general.into(),
-            messages: discord_messages(oldest..1010, &[]),
+            messages: timeline(discord_messages(oldest..1010, &[])),
         });
         effects = app.apply(more(general));
     }
@@ -3192,13 +3208,13 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
     // so no history loads for it.
     let effects = app.apply(Event::Timeline {
         room: "general".into(),
-        messages: messages(&["e:3", "e:4"]),
+        messages: timeline(messages(&["e:3", "e:4"])),
     });
     assert!(effects.is_empty());
     assert_eq!(app.state.first_unread, None);
     app.apply(Event::Timeline {
         room: "general".into(),
-        messages: messages(&["e:1", "e:2", "e:3", "e:4"]),
+        messages: timeline(messages(&["e:1", "e:2", "e:3", "e:4"])),
     });
     assert_eq!(app.state.first_unread.as_deref(), Some("e:3"));
     assert_eq!(app.state.unread_jump, 1);

@@ -642,7 +642,10 @@ for (let index = 0; index < extra; index++) {
       png(w, h, (x, y) => [shade[0]! + Math.floor((55 * x) / w), shade[1]! + Math.floor((55 * y) / h), shade[2]!, 255]);
     files.push(addFile({ id: snowflake(ms, 1), channel: GENERAL, filename: `photo-${index}.png`, contentType: "image/png", data: draw(480, 320), width: 480, height: 320, draw }));
   }
-  post(GENERAL, users.bob, sample(index), ms, { files });
+  // The oldest of the latest page is a boost, which Talk doesn't show but
+  // which still counts toward the page.
+  if (index === extra - 50) post(GENERAL, users.bob, "", ms, { type: 8 });
+  else post(GENERAL, users.bob, sample(index), ms, { files });
 }
 
 // The channels of `--channels`, written by the people of `--authors`.

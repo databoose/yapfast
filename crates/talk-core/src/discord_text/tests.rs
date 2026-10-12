@@ -45,7 +45,7 @@ fn answers_discord_commands_while_discord_is_away() {
 #[test]
 fn live_events_echoes_and_failed_sends() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
-    open.loaded(false, vec![message("3", None), message("5", None)]);
+    open.loaded(false, shown(vec![message("3", None), message("5", None)]));
     assert!(open.complete, "a short first page is the whole channel");
     assert!(open.live(&Live::Created(message("7", None))));
     assert!(!open.live(&Live::Created(Message {
@@ -105,6 +105,15 @@ fn ids(open: &OpenChannel) -> Vec<u64> {
     open.messages.keys().copied().collect()
 }
 
+/// A page as Discord sends it, when Talk shows every message on it.
+fn shown(messages: Vec<Message>) -> Page {
+    Page {
+        oldest: messages.first().map(Message::order),
+        full: messages.len() >= talk_discord::api::PAGE,
+        messages,
+    }
+}
+
 /// A page of messages with these snowflakes, oldest first.
 fn page(ids: impl IntoIterator<Item = u64>) -> Vec<Message> {
     ids.into_iter()
@@ -116,8 +125,8 @@ fn page(ids: impl IntoIterator<Item = u64>) -> Vec<Message> {
 fn the_latest_page_fits_what_was_kept() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     // Two full pages kept: 1000 to 1099.
-    open.loaded(false, page(1050..1100));
-    open.loaded(true, page(1000..1050));
+    open.loaded(false, shown(page(1050..1100)));
+    open.loaded(true, shown(page(1000..1050)));
     assert!(!open.complete);
 
     // Since then 1060 was deleted, 1099 edited, and 1100 to 1109 came.
@@ -128,7 +137,7 @@ fn the_latest_page_fits_what_was_kept() {
         .find(|message| message.id == "1099")
         .unwrap()
         .content = "edited".into();
-    open.loaded(false, latest);
+    open.loaded(false, shown(latest));
     assert_eq!(
         ids(&open),
         (1000..1110).filter(|&id| id != 1060).collect::<Vec<_>>()
@@ -136,16 +145,53 @@ fn the_latest_page_fits_what_was_kept() {
     assert_eq!(open.messages[&1099].content, "edited");
 
     // A full page entirely newer than what's kept leaves a gap: only it stays.
-    open.loaded(false, page(2000..2050));
+    open.loaded(false, shown(page(2000..2050)));
     assert_eq!(ids(&open), (2000..2050).collect::<Vec<_>>());
     assert!(!open.complete);
 
     // A short page is the whole channel: what it lacks was deleted.
-    open.loaded(false, page([2010, 2049]));
+    open.loaded(false, shown(page([2010, 2049])));
     assert_eq!(ids(&open), [2010, 2049]);
     assert!(open.complete);
-    open.loaded(false, vec![]);
+    open.loaded(false, shown(vec![]));
     assert!(ids(&open).is_empty(), "every message deleted");
+}
+
+#[test]
+fn messages_talk_does_not_show_still_fill_a_page() {
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    // Discord sent fifty, the oldest a boost that Talk doesn't show.
+    let boosted = |messages| Page {
+        messages,
+        oldest: Some(1050),
+        full: true,
+    };
+    open.loaded(false, boosted(page(1051..1100)));
+    assert!(!open.complete, "a full page with a boost isn't the start");
+    assert_eq!(
+        open.earliest(),
+        Some(1050),
+        "earlier ones load from before the boost"
+    );
+
+    // A whole page of boosts moves on past them.
+    open.loaded(
+        true,
+        Page {
+            messages: vec![],
+            oldest: Some(1000),
+            full: true,
+        },
+    );
+    assert!(!open.complete);
+    assert_eq!(open.earliest(), Some(1000));
+    open.loaded(true, shown(page(990..1000)));
+    assert!(open.complete);
+    assert_eq!(open.earliest(), Some(990));
+
+    // The latest page starting at a boost after what's kept leaves no gap.
+    open.loaded(false, boosted(page(1051..1100)));
+    assert_eq!(open.earliest(), Some(990));
 }
 
 #[test]
@@ -169,9 +215,9 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
     };
     // Fifty more than it keeps, the newest page with pictures.
     let total = KEPT_MESSAGES as u64 + 50;
-    open.loaded(false, (total - 50..total).map(with_image).collect());
+    open.loaded(false, shown((total - 50..total).map(with_image).collect()));
     for start in (0..(total - 50) / 50).rev().map(|page| page * 50) {
-        open.loaded(true, page(start..start + 50));
+        open.loaded(true, shown(page(start..start + 50)));
     }
     for id in total - 50..total {
         let url = format!("preview/{id}");
@@ -211,10 +257,10 @@ fn changes_render_again_only_the_messages_they_change() {
         }],
         ..message("9", None)
     };
-    open.loaded(false, [page([3, 5, 7]), vec![with_image]].concat());
+    open.loaded(false, shown([page([3, 5, 7]), vec![with_image]].concat()));
     let show = |open: &mut OpenChannel| {
         for order in [3, 5, 7, 9] {
-            open.rendered.insert(order, ChatMessage::default());
+            open.rendered.insert(order, Arc::default());
         }
     };
     let kept = |open: &OpenChannel| {
@@ -292,7 +338,7 @@ fn messages_render_again_once_what_they_show_changes() {
 fn channels_go_to_disk_once_they_change() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     assert!(open.take_changes().is_none(), "nothing to save yet");
-    open.loaded(false, page(1..=3));
+    open.loaded(false, shown(page(1..=3)));
     let (channel, saved) = open.take_changes().unwrap();
     assert_eq!(channel, "11");
     assert_eq!(saved.len(), 3);
@@ -317,7 +363,7 @@ fn channels_go_to_disk_once_they_change() {
 fn closed_channels_follow_live_events_and_open_again() {
     let mut channels = Channels::default();
     let mut first = OpenChannel::new("discord:10:11").unwrap();
-    first.loaded(false, page([3, 5]));
+    first.loaded(false, shown(page([3, 5])));
     channels.open = Some(first);
     channels.close();
     assert!(channels.open.is_none());
@@ -342,7 +388,7 @@ fn closed_channels_follow_live_events_and_open_again() {
 fn a_busy_closed_channel_keeps_only_its_newest_messages() {
     let mut channels = Channels::default();
     let mut busy = OpenChannel::new("discord:10:11").unwrap();
-    busy.loaded(false, page([1, 2]));
+    busy.loaded(false, shown(page([1, 2])));
     channels.open = Some(busy);
     channels.close();
     let total = KEPT_MESSAGES as u64 + 50;
@@ -442,7 +488,12 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
         },
     )
     .await;
-    assert_eq!(first, talk_discord::api::PAGE, "the latest page");
+    // The fake's boost is on it, unless the service tests have posted since.
+    let page = talk_discord::api::PAGE;
+    assert!(
+        (page - 1..=page).contains(&first),
+        "the latest page, less a boost on it"
+    );
     let mut pages = 0;
     let history = loop {
         // Asking twice while a page loads loads it once.
@@ -602,7 +653,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     open.loaded(
         false,
-        vec![
+        shown(vec![
             Message {
                 attachments: vec![talk_discord::message::Attachment {
                     name: "a.png".into(),
@@ -620,7 +671,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
                 ..message("1", None)
             },
             message("2", None),
-        ],
+        ]),
     );
     assert!(open.visible(vec!["d:1".into()]));
     assert!(!open.visible(vec!["d:1".into()]));
@@ -634,7 +685,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let weak = Arc::downgrade(&picture);
     open.picture("preview".into(), Some(picture));
     assert!(open.pictures["preview"].is_some());
-    open.rendered.insert(1, ChatMessage::default());
+    open.rendered.insert(1, Arc::default());
     assert!(open.visible(vec!["d:2".into()]));
     assert!(open.pictures.is_empty() && open.requested.is_empty() && open.rendered.is_empty());
     open.picture("preview".into(), Some(Arc::new(Picture::default())));
@@ -681,7 +732,7 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
     };
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     open.previews = previews.clone();
-    open.loaded(false, vec![with_image("1"), with_image("2")]);
+    open.loaded(false, shown(vec![with_image("1"), with_image("2")]));
     assert!(
         open.publish(&discord, &done)
             .iter()
@@ -715,7 +766,7 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
     // A different chat using the same URL also reuses the cached allocation.
     let mut other = OpenChannel::new("discord:10:12").unwrap();
     other.previews = previews;
-    other.loaded(false, vec![with_image("1")]);
+    other.loaded(false, shown(vec![with_image("1")]));
     other.visible(vec!["d:1".into()]);
     let rows = other.publish(&discord, &done);
     assert!(Arc::ptr_eq(

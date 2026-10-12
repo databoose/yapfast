@@ -34,6 +34,10 @@ pub struct OpenChannel {
     pub(super) sent: HashSet<String>,
     /// The channel's first message is loaded.
     pub(super) complete: bool,
+    /// The oldest message Discord sent that Talk doesn't show, such as a
+    /// boost, when it's older than every loaded message, so earlier history
+    /// loads from before it.
+    hidden: Option<u64>,
     /// A page of earlier history is on its way.
     pub(super) loading_earlier: bool,
     /// A page of messages arrived, or was kept on disk, so there's something
@@ -48,7 +52,7 @@ pub struct OpenChannel {
     /// Loaded messages as the timeline last showed them, by snowflake, so a
     /// change renders only the messages it changed. A message leaves when it
     /// changes, and all leave when what they were rendered with changes.
-    pub(super) rendered: HashMap<u64, ChatMessage>,
+    pub(super) rendered: HashMap<u64, Arc<ChatMessage>>,
     rendered_with: Rendering,
     // Loading goes on after the channel closes, and dropping the set when
     // it leaves the recent channels cancels it. What the person did, such
@@ -87,6 +91,7 @@ impl OpenChannel {
             pending: Vec::new(),
             sent: HashSet::new(),
             complete: false,
+            hidden: None,
             loading_earlier: false,
             loaded: false,
             dirty: false,
@@ -115,13 +120,16 @@ impl OpenChannel {
         if std::mem::replace(&mut self.loading_earlier, true) {
             return true;
         }
-        let oldest = self
-            .messages
-            .values()
-            .next()
-            .map(|message| message.id.clone());
-        self.load(discord, done, Some(oldest.unwrap_or_default()));
+        let before = self.earliest().map(|id| id.to_string());
+        self.load(discord, done, Some(before.unwrap_or_default()));
         true
+    }
+
+    /// The oldest message Discord sent, shown or not; earlier history is
+    /// before it.
+    pub(super) fn earliest(&self) -> Option<u64> {
+        let oldest = self.messages.keys().next().copied();
+        self.hidden.into_iter().chain(oldest).min()
     }
 
     fn load(&mut self, discord: &Discord, done: &UnboundedSender<Done>, before: Option<String>) {
@@ -147,19 +155,29 @@ impl OpenChannel {
         });
     }
 
-    pub fn loaded(&mut self, older: bool, messages: Vec<Message>) {
+    pub fn loaded(&mut self, older: bool, page: Page) {
         self.loading_earlier &= !older;
         self.loaded = true;
         self.dirty = true;
         if !older {
-            self.latest(&messages);
+            self.latest(&page);
         }
-        // A short page reaches the channel's first message.
-        if messages.len() < PAGE {
+        // A short page reaches the channel's first message. Counting only
+        // the messages shown would stop at the first page with a boost.
+        if !page.full {
             self.complete = true;
         }
-        for message in messages {
+        for message in page.messages {
             self.insert(message);
+        }
+        if let Some(oldest) = page.oldest
+            && self
+                .messages
+                .keys()
+                .next()
+                .is_none_or(|&first| oldest < first)
+        {
+            self.hidden = Some(oldest);
         }
     }
 
@@ -167,26 +185,31 @@ impl OpenChannel {
     /// that it lacks were deleted while the channel wasn't followed, and
     /// kept ones older than a full page that starts after them leave a gap,
     /// so they go.
-    fn latest(&mut self, page: &[Message]) {
-        let (Some(first), Some(last)) = (page.first(), page.last()) else {
-            self.messages.clear();
-            return;
-        };
-        let full = page.len() >= PAGE;
-        if full
+    fn latest(&mut self, page: &Page) {
+        let since = page.oldest.filter(|_| page.full).unwrap_or(0);
+        if page.full
             && self
                 .messages
                 .keys()
                 .next_back()
-                .is_some_and(|&newest| newest < first.order())
+                .is_some_and(|&newest| newest < since)
         {
             self.messages.clear();
+            self.hidden = None;
             self.complete = false;
             return;
         }
-        let since = if full { first.order() } else { 0 };
+        let Some(last) = page.messages.last() else {
+            // A full page of messages Talk doesn't show says nothing of
+            // what's kept; a short one is the whole channel.
+            if !page.full {
+                self.messages.clear();
+                self.hidden = None;
+            }
+            return;
+        };
         let until = last.order();
-        let listed: HashSet<u64> = page.iter().map(Message::order).collect();
+        let listed: HashSet<u64> = page.messages.iter().map(Message::order).collect();
         self.messages
             .retain(|order, _| *order < since || *order > until || listed.contains(order));
     }
@@ -206,6 +229,7 @@ impl OpenChannel {
     pub(super) fn trim(&mut self) {
         while self.messages.len() > KEPT_MESSAGES {
             self.messages.pop_first();
+            self.hidden = None;
             self.complete = false;
         }
     }
@@ -676,7 +700,11 @@ impl OpenChannel {
     /// The channel as Talk's timeline. Starts downloading image previews it
     /// lacks. Messages that didn't change since the last time come from
     /// [`OpenChannel::rendered`].
-    pub fn publish(&mut self, discord: &Discord, done: &UnboundedSender<Done>) -> Vec<ChatMessage> {
+    pub fn publish(
+        &mut self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+    ) -> Vec<Arc<ChatMessage>> {
         while self.tasks.try_join_next().is_some() {}
         let snapshot = discord.snapshots().borrow().clone();
         let me = snapshot.user_id.clone().unwrap_or_default();
@@ -711,16 +739,16 @@ impl OpenChannel {
             };
             let row = match kept.remove(order) {
                 Some(row) if row.id == id => row,
-                _ => self.render(discord, &snapshot, server, message, id, &mut wanted),
+                _ => Arc::new(self.render(discord, &snapshot, server, message, id, &mut wanted)),
             };
-            self.rendered.insert(*order, row.clone());
+            self.rendered.insert(*order, Arc::clone(&row));
             rows.push(row);
         }
         let me_name = name(&me, "You");
         let me_avatar = discord.avatar(Some(&self.guild), &me);
         let me_color = server.and_then(|server| discord.color(server, &me));
         for pending in &self.pending {
-            rows.push(ChatMessage {
+            rows.push(Arc::new(ChatMessage {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
                 author: me_name.clone(),
@@ -765,7 +793,7 @@ impl OpenChannel {
                     })
                     .collect(),
                 ..Default::default()
-            });
+            }));
         }
         for url in wanted {
             self.fetch_picture(discord, done, url);

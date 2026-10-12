@@ -122,7 +122,10 @@ async fn messages(channel_id: &str) -> Result<()> {
         .iter()
         .find(|server| server.text_channels.iter().any(|c| c.id == channel_id))
         .context("no text channel with that id; run servers to list them")?;
-    let messages = discord.history(&server.id, channel_id, None).await?;
+    let messages = discord
+        .history(&server.id, channel_id, None)
+        .await?
+        .messages;
     // Give the member request a moment, so nicknames show.
     tokio::time::sleep(Duration::from_secs(2)).await;
     for message in &messages {

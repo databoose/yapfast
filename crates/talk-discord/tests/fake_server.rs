@@ -229,18 +229,24 @@ async fn talks_to_the_fake_server() {
         guild.voice_channels[0].id.clone(),
     );
 
-    // Two pages of history: 50, then the rest, oldest first.
+    // Two pages of history: 50, then the rest, oldest first. The latest
+    // starts with a boost, which counts but doesn't show.
     let latest = discord.history(&guild, &general, None).await.unwrap();
-    assert_eq!(latest.len(), 50);
+    assert!(latest.full);
+    let (oldest, latest) = (latest.oldest.unwrap(), latest.messages);
+    assert_eq!(latest.len(), 49);
+    assert!(oldest < latest[0].order());
     assert_eq!(
         last_read.to_string(),
         latest[latest.len() - 6].id,
         "read up to the fixture's last five messages"
     );
     let older = discord
-        .history(&guild, &general, Some(&latest[0].id))
+        .history(&guild, &general, Some(&oldest.to_string()))
         .await
         .unwrap();
+    assert!(!older.full);
+    let older = older.messages;
     assert_eq!(older.len(), 10);
     assert!(older[0].content.starts_with("Welcome to **Talk**"));
     assert_eq!(
@@ -434,7 +440,11 @@ async fn talks_to_the_fake_server() {
             .as_deref()
             .is_some_and(|avatar| avatar.contains("/avatars/1400000000000000002/bob1.png"))
     );
-    let history = discord.history(PRIVATE, &dm_bob, None).await.unwrap();
+    let history = discord
+        .history(PRIVATE, &dm_bob, None)
+        .await
+        .unwrap()
+        .messages;
     let said: Vec<_> = history
         .iter()
         .map(|message| message.content.as_str())
@@ -648,7 +658,11 @@ async fn talks_to_the_fake_server() {
 
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
-    let asked = discord.history(PRIVATE, &erin, None).await.unwrap();
+    let asked = discord
+        .history(PRIVATE, &erin, None)
+        .await
+        .unwrap()
+        .messages;
     assert!(
         asked[0]
             .content
@@ -701,7 +715,11 @@ async fn talks_to_the_fake_server() {
     .await;
     assert_eq!(article.embeds[0].provider.as_deref(), Some("Example News"));
     assert_eq!(article.attachments[0].shown, Shown::Embed(0));
-    let latest = discord.history(&guild, &general, None).await.unwrap();
+    let latest = discord
+        .history(&guild, &general, None)
+        .await
+        .unwrap()
+        .messages;
     let [.., video, gif, card] = latest.as_slice() else {
         panic!("the embeds were posted");
     };
@@ -1304,7 +1322,11 @@ async fn talks_to_the_fake_server() {
             .my_roles
             .contains(&"1400000000000000112".to_owned())
     );
-    let latest = discord.history(&guild, &general, None).await.unwrap();
+    let latest = discord
+        .history(&guild, &general, None)
+        .await
+        .unwrap()
+        .messages;
     let highlighted: Vec<bool> = latest[latest.len() - 7..]
         .iter()
         .map(|message| message.mentions_me(&me, Some(&snapshot.servers[0])))

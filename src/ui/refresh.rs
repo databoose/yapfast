@@ -1134,7 +1134,7 @@ impl Adapter {
             }
             // Rows are built again only for messages that changed since the
             // timeline shown.
-            let shown: HashMap<&str, &ChatMessage> = self
+            let shown: HashMap<&str, &Arc<ChatMessage>> = self
                 .messages
                 .iter()
                 .map(|message| (message.id.as_str(), message))
@@ -1145,7 +1145,11 @@ impl Adapter {
                 .messages
                 .iter()
                 .map(|message| {
-                    let unchanged = !restyle && shown.get(message.id.as_str()) == Some(&message);
+                    // A row the backend sent again is the same one.
+                    let unchanged = !restyle
+                        && shown
+                            .get(message.id.as_str())
+                            .is_some_and(|shown| Arc::ptr_eq(shown, message) || shown == &message);
                     let mut row = match previous.remove(&message.id) {
                         Some(row) if unchanged => row,
                         _ => self
@@ -1892,7 +1896,7 @@ fn arrived<'a>(
 /// What the bar that jumps to the "New" divider says: how many messages
 /// others sent from `unread` on, and since when, with the date unless it
 /// was today.
-pub(super) fn unread_label(unread: &[ChatMessage]) -> String {
+pub(super) fn unread_label(unread: &[Arc<ChatMessage>]) -> String {
     let count = unread.iter().filter(|message| !message.own).count();
     let messages = if count == 1 { "message" } else { "messages" };
     let Some(first) = unread.first().filter(|first| first.time.contains(':')) else {
