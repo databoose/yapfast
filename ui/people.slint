@@ -25,6 +25,8 @@ export component MemberPanel inherits Rectangle {
     in property <string> selected;
     /// A member was clicked: their id, and where their row is in the window.
     callback open-profile(string, length);
+    /// A member was right-clicked: their id, and where in the window.
+    callback open-member-menu(string, length, length);
     background: Theme.sidebar;
     accessible-role: list;
     accessible-label: "Members";
@@ -51,6 +53,11 @@ export component MemberPanel inherits Rectangle {
                   member-pointer := TouchArea {
                     mouse-cursor: MouseCursor.pointer;
                     clicked => { root.open-profile(member.id, self.absolute-position.y); }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                            root.open-member-menu(member.id, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                   }
                   HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 12px;

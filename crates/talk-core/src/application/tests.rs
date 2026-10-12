@@ -986,6 +986,30 @@ fn menus_offer_what_fits_their_conversation_or_server() {
 }
 
 #[test]
+fn matrix_peoples_menus_offer_a_dm_but_not_to_this_account() {
+    use MenuChoice::*;
+    let mut app = connected();
+    // In an open room, a Matrix ID is enough for a profile card.
+    assert_eq!(app.state.person_choices("@alice:test"), [Profile, CopyId]);
+    assert_eq!(
+        app.state.person_choices("@dm:preview.local"),
+        [Profile, Message, CopyId]
+    );
+    assert_eq!(
+        app.state.person_choices("@bob:test"),
+        [Profile, Message, CopyId]
+    );
+    // An existing DM opens; a new one starts.
+    app.dispatch(Action::SelectRoom("general".into()));
+    app.dispatch(Action::MessagePerson("@dm:preview.local".into()));
+    assert_eq!(app.state.selected.as_deref(), Some("dm"));
+    assert!(matches!(
+        app.dispatch(Action::MessagePerson("@bob:test".into())).as_slice(),
+        [Effect::Backend(Command::StartDm { id, discord: false })] if id == "@bob:test"
+    ));
+}
+
+#[test]
 fn rooms_and_servers_link_and_name_themselves_as_their_networks_do() {
     assert_eq!(
         network_link("discord:10:21"),
@@ -2172,27 +2196,37 @@ fn discord_friends_are_listed_and_messaged() {
         [Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls)))] if urls == &["3.png"]
     ));
 
+    // With no conversation open, only a friend's DM has their profile.
+    assert_eq!(
+        app.state.person_choices("2"),
+        [MenuChoice::Profile, MenuChoice::Message, MenuChoice::CopyId]
+    );
+    assert_eq!(
+        app.state.person_choices("3"),
+        [MenuChoice::Message, MenuChoice::CopyId]
+    );
+
     // A friend with a DM opens it; one without has it started.
-    app.dispatch(Action::MessageFriend("2".into()));
+    app.dispatch(Action::MessagePerson("2".into()));
     assert_eq!(app.state.selected.as_deref(), Some("discord:@me:30"));
     assert_eq!(app.state.dm_screen, None);
     app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
     assert!(matches!(
-        app.dispatch(Action::MessageFriend("3".into())).as_slice(),
+        app.dispatch(Action::MessagePerson("3".into())).as_slice(),
         [Effect::Backend(Command::StartDm { id, discord: true })] if id == "3"
     ));
     app.apply(Event::DmStarted(Ok("discord:@me:31".into())));
     app.apply(discord_event(snapshot(&[("30", "2"), ("31", "3")])));
     assert_eq!(app.state.selected.as_deref(), Some("discord:@me:31"));
     assert!(
-        app.dispatch(Action::MessageFriend("9".into())).is_empty(),
+        app.dispatch(Action::MessagePerson("9".into())).is_empty(),
         "only friends"
     );
 
     // A DM that couldn't start says why.
     app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
     app.apply(discord_event(snapshot(&[])));
-    app.dispatch(Action::MessageFriend("2".into()));
+    app.dispatch(Action::MessagePerson("2".into()));
     app.apply(Event::DmStarted(Err("Could not start the DM".into())));
     assert_eq!(app.state.notice.as_deref(), Some("Could not start the DM"));
 }
@@ -2777,6 +2811,22 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
             Relation::Incoming,
             Relation::Outgoing,
             Relation::Stranger
+        ]
+    );
+    // Someone's menu offers what fits how they stand with this account.
+    use MenuChoice::*;
+    let choices: Vec<_> = ["1", "2", "3", "4", "5"]
+        .into_iter()
+        .map(|user| app.state.person_choices(user))
+        .collect();
+    assert_eq!(
+        choices,
+        [
+            vec![CopyId],
+            vec![Message, CopyId],
+            vec![AcceptFriend, CopyId],
+            vec![CancelFriendRequest, CopyId],
+            vec![AddFriend, CopyId],
         ]
     );
     let sent = |effects: Vec<Effect>| -> Option<(String, bool)> {

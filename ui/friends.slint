@@ -76,6 +76,8 @@ export struct FriendRow {
 export component FriendItem inherits Rectangle {
     in property <FriendRow> friend;
     callback message;
+    /// A right click: where to open their menu in the window.
+    callback context-menu(length, length);
     property <string> status: root.friend.presence == "dnd" ? "Do Not Disturb" : root.friend.presence == "idle" ? "Idle" : root.friend.presence == "online" || root.friend.presence == "mobile" ? "Online" : "Offline";
     property <brush> surface: pointer.has-hover ? Theme.hover : Theme.chat;
     height: 62px; border-radius: 8px;
@@ -85,7 +87,15 @@ export component FriendItem inherits Rectangle {
     accessible-action-default => { root.message(); }
     // Rows are ruled apart, as in Discord's list; hovering a row hides its rule.
     if !pointer.has-hover: Rectangle { x: 10px; y: 0px; width: parent.width - 20px; height: 1px; background: Theme.line; }
-    pointer := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.message(); } }
+    pointer := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.message(); }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
     HorizontalLayout {
         padding-left: 10px; padding-right: 10px; spacing: 12px;
         Middle {
@@ -120,6 +130,8 @@ export component FriendsScreen inherits Rectangle {
     callback filter-edited;
     callback message(string);
     callback add-friend;
+    /// A friend's menu was asked for: their id, and where in the window.
+    callback open-friend-menu(string, length, length);
     if root.total == 0: VerticalLayout {
         padding: 32px; spacing: 10px; alignment: center;
         HorizontalLayout {
@@ -157,6 +169,7 @@ export component FriendsScreen inherits Rectangle {
                 FriendItem {
                     friend: friend;
                     message => { root.message(friend.id); }
+                    context-menu(x, y) => { root.open-friend-menu(friend.id, x, y); }
                 }
             }
         }

@@ -744,6 +744,8 @@ struct Icons {
     call: slint::Image,
     profile: slint::Image,
     copy: slint::Image,
+    befriend: slint::Image,
+    cancel: slint::Image,
 }
 
 struct Adapter {
@@ -850,6 +852,10 @@ impl Adapter {
             call: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/phone.svg"))?,
             profile: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user.svg"))?,
             copy: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/copy.svg"))?,
+            befriend: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/user-plus.svg"
+            ))?,
+            cancel: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/x.svg"))?,
         };
         let models = Models::default();
         models.attach(window);

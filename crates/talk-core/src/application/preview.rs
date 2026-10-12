@@ -179,7 +179,7 @@ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> 
         read_only: false,
         category: String::new(),
         request: false,
-        person: (direct && members <= 2).then(|| format!("@{id}:preview")),
+        person: (direct && members <= 2).then(|| format!("@{id}:preview.local")),
         people: vec![],
         ringing: vec![],
         incoming: false,

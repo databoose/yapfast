@@ -9,6 +9,13 @@ pub enum MenuChoice {
     JoinVoice,
     /// The other person's profile, in a one-to-one DM.
     Profile,
+    /// Open the DM with someone, starting it if need be.
+    Message,
+    /// Send someone a Discord friend request, accept theirs, or cancel
+    /// this account's.
+    AddFriend,
+    AcceptFriend,
+    CancelFriendRequest,
     /// Copy a link to it that its network's apps open.
     CopyLink,
     /// Copy its id as its network knows it.
@@ -24,6 +31,53 @@ impl AppState {
         } else {
             self.room_choices(id)
         }
+    }
+
+    /// What someone's menu offers, by Discord user id or Matrix ID: their
+    /// profile when Talk knows them, a DM, and Discord friendship.
+    pub fn person_choices(&self, user: &str) -> Vec<MenuChoice> {
+        let me =
+            self.discord_user.as_deref() == Some(user) || self.account.as_deref() == Some(user);
+        let mut choices = vec![];
+        // A profile comes from a conversation: the open one, or a friend's DM.
+        let listed = self.selected_room().is_some() && self.person(user).is_some();
+        let friend = self.friends.iter().any(|friend| friend.id == user)
+            && (self.selected.is_some() || self.dm_with(user).is_some());
+        if listed || friend {
+            choices.push(MenuChoice::Profile);
+        }
+        if !me && self.can_message(user) {
+            choices.push(MenuChoice::Message);
+        }
+        // Matrix IDs start with `@`; Discord user ids are numbers.
+        if !me && !self.preview && !user.starts_with('@') && self.discord_user.is_some() {
+            match self.relation(user) {
+                Relation::Stranger => choices.push(MenuChoice::AddFriend),
+                Relation::Incoming => choices.push(MenuChoice::AcceptFriend),
+                Relation::Outgoing => choices.push(MenuChoice::CancelFriendRequest),
+                Relation::Friend | Relation::Me => {}
+            }
+        }
+        if !self.preview {
+            choices.push(MenuChoice::CopyId);
+        }
+        choices
+    }
+
+    /// Whether Talk can open a DM with someone: one that's listed, or a new
+    /// one with a Discord friend or a Matrix user.
+    fn can_message(&self, user: &str) -> bool {
+        self.dm_with(user).is_some()
+            || (!self.preview
+                && (user.starts_with('@')
+                    || self.discord_friends.iter().any(|friend| friend == user)))
+    }
+
+    /// The listed one-to-one DM with someone.
+    fn dm_with(&self, user: &str) -> Option<&ChatRoom> {
+        self.rooms
+            .iter()
+            .find(|room| room.direct && room.person.as_deref() == Some(user))
     }
 
     /// What a listed conversation's menu offers. The preview's rooms have no
@@ -153,6 +207,19 @@ impl Application {
             effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
         }
         effects
+    }
+
+    pub(super) fn message_person(&mut self, user: String) -> Vec<Effect> {
+        if let Some(room) = self.state.dm_with(&user) {
+            let room = room.id.clone();
+            return self.dispatch(Action::Open(room));
+        }
+        if !self.state.can_message(&user) {
+            return vec![];
+        }
+        self.starting_dm = true;
+        let discord = !user.starts_with('@');
+        vec![Effect::Backend(Command::StartDm { id: user, discord })]
     }
 
     /// Marks a conversation read, or every conversation of a server.

@@ -195,6 +195,11 @@ The window follows Discord's arrangement:
   sidebar's tone. The member count in the header shows or hides it, and Talk
   remembers a closed list. While it shows, dragging the left sidebar still
   leaves the conversation 420px.
+- A right click on someone, in the member list, on a message author's avatar
+  or in the friends list, opens their menu: Profile, Message to open or start
+  the DM with them, and on Discord Add friend, Accept friend request or Cancel
+  friend request, then Copy ID. Clicking an author's avatar shows their card
+  beside it.
 - A voice stage with participant tiles, a green border while someone speaks,
   and round mute, deafen and leave controls.
 
