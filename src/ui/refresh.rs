@@ -83,13 +83,11 @@ impl Reach {
 /// How long a picture that arrived waits for others to show with it.
 const PICTURE_BATCH: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// What the sidebar was built from, kept to tell whether it changed.
+/// What the sidebar was built from, kept to tell whether it changed. The
+/// lists are kept as a hash: copies of them took megabytes on a large account.
 #[derive(PartialEq)]
 pub(super) struct SidebarShown {
-    rooms: Vec<talk_core::chat::ChatRoom>,
-    servers: Vec<talk_core::chat::ChatServer>,
-    friends: Vec<talk_core::chat::Friend>,
-    friend_requests: Vec<talk_core::chat::FriendRequest>,
+    lists: u64,
     navigation: Navigation,
     selected: Option<String>,
     dm_screen: Option<DmScreen>,
@@ -101,10 +99,7 @@ pub(super) struct SidebarShown {
 impl SidebarShown {
     fn of(state: &AppState, window: &TalkWindow) -> Self {
         Self {
-            rooms: state.rooms.clone(),
-            servers: state.servers.clone(),
-            friends: state.friends.clone(),
-            friend_requests: state.friend_requests.clone(),
+            lists: Self::lists(state),
             navigation: state.navigation.clone(),
             selected: state.selected.clone(),
             dm_screen: state.dm_screen,
@@ -114,18 +109,28 @@ impl SidebarShown {
         }
     }
 
-    /// Whether the sidebar would show the same, without copying the lists.
+    fn lists(state: &AppState) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        (
+            &state.rooms,
+            &state.servers,
+            &state.friends,
+            &state.friend_requests,
+        )
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Whether the sidebar would show the same.
     fn shows(&self, state: &AppState, window: &TalkWindow) -> bool {
-        self.rooms == state.rooms
-            && self.servers == state.servers
-            && self.friends == state.friends
-            && self.friend_requests == state.friend_requests
-            && self.navigation == state.navigation
+        self.navigation == state.navigation
             && self.selected == state.selected
             && self.dm_screen == state.dm_screen
             && self.filter == window.get_filter()
             && self.friend_filter == window.get_friend_filter()
             && self.picture_changes == state.picture_changes
+            && self.lists == Self::lists(state)
     }
 }
 

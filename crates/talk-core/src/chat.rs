@@ -22,7 +22,7 @@ pub const PREVIEW_HEIGHT: u32 = 270;
 pub const VIEW_WIDTH: u32 = 1920;
 pub const VIEW_HEIGHT: u32 = 1200;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ChatRoom {
     pub id: String,
     /// The network it's on, which its id names too.
@@ -87,7 +87,7 @@ pub struct CustomStatus {
 }
 
 /// A Discord friend request waiting for an answer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FriendRequest {
     /// Their Discord user id.
     pub id: String,
@@ -101,7 +101,7 @@ pub struct FriendRequest {
 }
 
 /// A Discord friend, as the friends list shows them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Friend {
     /// Their Discord user id.
     pub id: String,
@@ -210,9 +210,14 @@ pub fn sync_list<'a, T: Clone + PartialEq + 'a>(
         count += 1;
     }
     list.truncate(count);
+    // Growing a room at a time can leave room for twice as many; a large
+    // account's room list takes megabytes.
+    if list.capacity() > count + count / 4 {
+        list.shrink_to_fit();
+    }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct VoicePerson {
     pub id: String,
     pub name: String,
@@ -224,7 +229,7 @@ pub struct VoicePerson {
     pub streaming: bool,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ChatServer {
     pub id: String,
     pub name: String,
@@ -243,7 +248,7 @@ pub struct ChatServer {
 }
 
 /// A folder of servers on the rail, as Discord's server list keeps them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServerFolder {
     /// Unique across networks, such as `discord-folder:7`.
     pub id: String,
@@ -370,7 +375,7 @@ pub struct MentionGroup {
 }
 
 /// Whether a Discord member is around, as their status dot shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Presence {
     Online,
     /// Online, and only on a phone.
