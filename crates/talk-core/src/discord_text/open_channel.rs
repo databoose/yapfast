@@ -194,17 +194,20 @@ impl OpenChannel {
     /// Keeps recent message metadata when closing. Decoded previews are
     /// owned by the shared byte-bounded cache.
     pub(super) fn shelve(&mut self) {
-        if self.messages.len() > KEPT_MESSAGES
-            && let Some(&oldest) = self.messages.keys().nth_back(KEPT_MESSAGES - 1)
-        {
-            self.messages = self.messages.split_off(&oldest);
-            self.complete = false;
-        }
+        self.trim();
         self.pictures.clear();
         self.requested.clear();
         self.visible.clear();
         // Rendered messages hold their previews; they render again on opening.
         self.rendered = HashMap::new();
+    }
+
+    /// Keeps only the newest [`KEPT_MESSAGES`]; the older ones load again.
+    pub(super) fn trim(&mut self) {
+        while self.messages.len() > KEPT_MESSAGES {
+            self.messages.pop_first();
+            self.complete = false;
+        }
     }
 
     /// Its newest messages to keep on disk, once they've changed.

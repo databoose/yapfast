@@ -413,9 +413,7 @@ pub fn live(
         }
     }
     if let Ok(event) = &event {
-        for kept in &mut channels.recent {
-            kept.live(event);
-        }
+        channels.follow(event);
     }
     let Some(channel) = channels.open.as_mut() else {
         return;
