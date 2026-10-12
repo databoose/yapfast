@@ -886,6 +886,79 @@ fn scrolling_up_leaves_the_latest_message() {
 }
 
 #[test]
+fn a_wheel_spun_fast_scrolls_farther_for_each_notch() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_history_start(true);
+    let rows: Vec<MessageRow> = (0..300)
+        .map(|index| {
+            let mut row = message_row_plain(&ChatMessage {
+                id: format!("m{index}"),
+                item: format!("i{index}"),
+                author: "Bob".into(),
+                body: format!("Message {index}"),
+                formatted: true,
+                ..Default::default()
+            });
+            row.first = true;
+            row
+        })
+        .collect();
+    window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let wait = |time: Duration| {
+        i_slint_backend_testing::mock_elapsed_time(time);
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(1100., 740.),
+            });
+    };
+    // Scrolls up by ten notches, `apart` from each other, and tells how many
+    // rows that went.
+    let spin = |apart: Duration| {
+        window.invoke_scroll_to_latest();
+        for _ in 0..20 {
+            wait(Duration::from_millis(50));
+        }
+        let start = window.get_top_index();
+        for _ in 0..10 {
+            // As the winit backend sends a notch: `PointerScrolled` would
+            // jump without the wheel's animation.
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::internal(
+                    i_slint_core::input::BackendMouseEvent::Wheel {
+                        position: i_slint_core::lengths::LogicalPoint::new(700., 380.),
+                        delta_x: 0.,
+                        delta_y: 60.,
+                        phase: i_slint_core::input::TouchPhase::Moved,
+                    },
+                ));
+            wait(apart);
+        }
+        for _ in 0..20 {
+            wait(Duration::from_millis(50));
+        }
+        start - window.get_top_index()
+    };
+    let slow = spin(Duration::from_millis(300));
+    let fast = spin(Duration::from_millis(20));
+    assert!(slow > 0);
+    assert!(
+        fast as f32 > slow as f32 * 1.5,
+        "fast notches went {fast} rows, slow ones {slow}"
+    );
+    window.hide().unwrap();
+}
+
+#[test]
 fn older_messages_go_in_above_without_moving_those_shown() {
     i_slint_backend_testing::init_no_event_loop();
     let window = TalkWindow::new().unwrap();
