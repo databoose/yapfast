@@ -135,6 +135,8 @@ dependency in Cargo.toml:
 - `songbird`: songbird 0.6.0, fixed to receive audio in DAVE calls.
 - `davey`: davey 0.1.4, keeping its key packages when a Go Live stream's group
   id changes.
+- `tungstenite`: tungstenite 0.26.2, giving back the read buffer a large frame
+  such as Discord's READY grew.
 - `gpui-pre-windows`: a Windows build fix for the archived GPUI client. Nothing
   uses it now.
 
