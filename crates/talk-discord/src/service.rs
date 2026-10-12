@@ -13,10 +13,10 @@ use anyhow::{Result, anyhow};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
-    api::Api,
+    api::{Api, PAGE},
     cache,
     member_list::{ListedMember, Presence},
-    message::{self, Message, Names},
+    message::{self, Message, Names, Page},
     profile::{self, Profile},
     ready::{PRIVATE, Server},
     settings::{self, CustomStatus},
@@ -425,13 +425,8 @@ impl Discord {
         });
     }
 
-    /// A page of messages before `before`, or the latest page, oldest first.
-    pub async fn history(
-        &self,
-        guild: &str,
-        channel: &str,
-        before: Option<&str>,
-    ) -> Result<Vec<Message>> {
+    /// A page of messages before `before`, or the latest page.
+    pub async fn history(&self, guild: &str, channel: &str, before: Option<&str>) -> Result<Page> {
         let values = self.api.messages(channel, before).await?;
         let server = server(guild);
         let mut unknown = HashSet::new();
@@ -455,7 +450,14 @@ impl Discord {
         }
         let mut messages: Vec<Message> = values.iter().filter_map(message::parse).collect();
         messages.reverse();
-        Ok(messages)
+        Ok(Page {
+            messages,
+            oldest: values
+                .iter()
+                .filter_map(|value| value["id"].as_str()?.parse().ok())
+                .min(),
+            full: values.len() >= PAGE,
+        })
     }
 
     /// Sends a message, or a reply to `reply` in the same channel, with a
