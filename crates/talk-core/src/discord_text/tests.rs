@@ -628,7 +628,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let picture = Arc::new(Picture {
         width: 1,
         height: 1,
-        rgba: vec![0; 4],
+        rgba: crate::chat::Pixels::new(1, 1, vec![0; 4]),
         ..Default::default()
     });
     let weak = Arc::downgrade(&picture);

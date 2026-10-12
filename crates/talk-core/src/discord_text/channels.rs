@@ -142,7 +142,7 @@ mod tests {
 
     fn picture(bytes: usize) -> Arc<Picture> {
         Arc::new(Picture {
-            rgba: vec![0; bytes],
+            rgba: crate::chat::Pixels::new(0, 0, vec![0; bytes]),
             ..Default::default()
         })
     }

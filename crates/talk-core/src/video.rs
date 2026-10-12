@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Result, bail};
 
 pub use crate::chat::fit;
-use crate::chat::{Animation, AnimationReader, Picture};
+use crate::chat::{Animation, AnimationReader, Picture, Pixels};
 
 #[repr(C)]
 struct Raw {
@@ -302,7 +302,7 @@ pub fn decode_animation(data: &[u8], width: u32, height: u32) -> Option<Picture>
     Some(Picture {
         width,
         height,
-        rgba,
+        rgba: Pixels::new(width, height, rgba),
         animation,
     })
 }
@@ -380,7 +380,7 @@ mod tests {
             );
             let frames: Vec<_> = picture.frames().collect();
             assert_eq!(frames.len(), 10, "{name}");
-            assert_eq!(frames[0], picture.rgba, "{name}");
+            assert_eq!(frames[0], *picture.rgba, "{name}");
             // The test pattern moves, so the pictures differ.
             assert_ne!(frames[0], frames[5], "{name}");
             assert!(picture.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));

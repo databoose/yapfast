@@ -42,6 +42,7 @@ mod refresh;
 
 use callbacks::bind_callbacks;
 use messages::*;
+pub(crate) use pictures::picture as slint_image;
 use pictures::*;
 use profile::*;
 use refresh::{Reach, SidebarShown};
@@ -66,6 +67,7 @@ pub fn run(
     preview: bool,
     plan: graphics::Plan,
 ) -> Result<Exit> {
+    decode_into_slint_buffers();
     // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
     // surface; Talk owns the fallback and tells the user about it.
     let renderer = match plan.renderer {

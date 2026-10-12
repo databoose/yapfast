@@ -532,7 +532,7 @@ fn a_selection_copies_the_pictures_it_runs_through() {
     let picture = Arc::new(Picture {
         width: 40,
         height: 30,
-        rgba: vec![128; 40 * 30 * 4],
+        rgba: talk_core::chat::Pixels::new(40, 30, vec![128; 40 * 30 * 4]),
         ..Default::default()
     });
     let window = showing(vec![

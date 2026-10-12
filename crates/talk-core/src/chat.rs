@@ -477,10 +477,78 @@ pub struct Picture {
     pub width: u32,
     pub height: u32,
     /// The picture, or an animation's first frame.
-    pub rgba: Vec<u8>,
+    pub rgba: Pixels,
     /// What moves; none for a still.
     pub animation: Option<Animation>,
 }
+
+/// A picture's RGBA pixels. Once the UI has said how to make its own buffers
+/// ([`set_pixel_buffers`]), they're made in one, which it shows without a
+/// copy; until then, and without a UI, they're a plain vector.
+pub struct Pixels(Box<dyn PixelBuffer>);
+
+/// Memory a picture's RGBA pixels live in.
+pub trait PixelBuffer: std::any::Any + Send + Sync {
+    fn bytes(&self) -> &[u8];
+}
+
+impl PixelBuffer for Vec<u8> {
+    fn bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+/// Makes a buffer for a `width` by `height` picture holding `rgba`.
+pub type MakePixels = fn(u32, u32, &[u8]) -> Box<dyn PixelBuffer>;
+
+static MAKE_PIXELS: std::sync::OnceLock<MakePixels> = std::sync::OnceLock::new();
+
+/// Makes every picture's pixels with `make` from now on.
+pub fn set_pixel_buffers(make: MakePixels) {
+    let _ = MAKE_PIXELS.set(make);
+}
+
+impl Pixels {
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        match MAKE_PIXELS.get() {
+            Some(make) => Self(make(width, height, &rgba)),
+            None => Self(Box::new(rgba)),
+        }
+    }
+
+    /// The buffer the pixels are in, when it's a `T`.
+    pub fn buffer<T: PixelBuffer>(&self) -> Option<&T> {
+        (self.0.as_ref() as &dyn std::any::Any).downcast_ref()
+    }
+}
+
+impl Default for Pixels {
+    fn default() -> Self {
+        Self(Box::new(Vec::new()))
+    }
+}
+
+impl std::ops::Deref for Pixels {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.0.bytes()
+    }
+}
+
+impl std::fmt::Debug for Pixels {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Pixels({} bytes)", self.len())
+    }
+}
+
+impl PartialEq for Pixels {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Pixels {}
 
 /// An animation, kept as its file and decoded a frame at a time as it shows:
 /// decoded whole, a few seconds of a GIF take tens of megabytes.
@@ -1167,7 +1235,7 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
     Some(Picture {
         width: picture.width(),
         height: picture.height(),
-        rgba: picture.into_raw(),
+        rgba: Pixels::new(picture.width(), picture.height(), picture.into_raw()),
         animation: None,
     })
 }
@@ -1205,7 +1273,7 @@ fn decode_animation(
     Some(Picture {
         width,
         height,
-        rgba: first?,
+        rgba: Pixels::new(width, height, first?),
         animation: Some(Animation {
             delays,
             file: AnimationFile::Memory(Arc::from(data)),
@@ -1709,7 +1777,7 @@ mod tests {
         assert_eq!(picture.animation.as_ref().unwrap().delays, [50; 3]);
         let frames: Vec<_> = picture.frames().collect();
         assert_eq!(frames.len(), 3);
-        assert_eq!(picture.rgba, frames[0]);
+        assert_eq!(*picture.rgba, frames[0]);
         assert_eq!(frames[2][0], 40);
         // Shrunk to fit, keeping their shape; again from the start.
         let wide = decode_picture(&gif_sized(600, 300, 30), 360, 270).unwrap();

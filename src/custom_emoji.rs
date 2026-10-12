@@ -52,14 +52,9 @@ pub fn add_images<'a>(arrived: impl IntoIterator<Item = (&'a str, &'a Picture)>)
             if registry.images.contains_key(id) {
                 continue;
             }
-            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                &picture.rgba,
-                picture.width,
-                picture.height,
-            );
             registry
                 .images
-                .insert(id.to_owned(), slint::Image::from_rgba8(buffer));
+                .insert(id.to_owned(), crate::ui::slint_image(picture));
             added = true;
         }
         added
@@ -167,7 +162,7 @@ pub fn only_emoji(text: &str) -> bool {
 fn square_png(picture: &Picture) -> Option<Vec<u8>> {
     use image::{ImageEncoder, RgbaImage, imageops};
     let side = emoji_font::SIDE;
-    let source = RgbaImage::from_raw(picture.width, picture.height, picture.rgba.clone())?;
+    let source = RgbaImage::from_raw(picture.width, picture.height, picture.rgba.to_vec())?;
     let scale = side as f32 / picture.width.max(picture.height).max(1) as f32;
     let (width, height) = (
         ((picture.width as f32 * scale).round() as u32).clamp(1, side),
@@ -197,7 +192,7 @@ mod tests {
         let picture = Picture {
             width: 4,
             height: 2,
-            rgba: [255, 0, 0, 255].repeat(8),
+            rgba: talk_core::chat::Pixels::new(4, 2, [255, 0, 0, 255].repeat(8)),
             ..Default::default()
         };
         let png = square_png(&picture).expect("encodes");
@@ -221,7 +216,7 @@ mod tests {
         let red = Picture {
             width: 4,
             height: 4,
-            rgba: [255, 0, 0, 255].repeat(16),
+            rgba: talk_core::chat::Pixels::new(4, 4, [255, 0, 0, 255].repeat(16)),
             ..Default::default()
         };
         let font = emoji_font::build("Probe Emoji", &[('\u{100000}', square_png(&red).unwrap())]);

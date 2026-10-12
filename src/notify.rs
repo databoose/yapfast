@@ -197,7 +197,7 @@ mod linux {
             .add_field(true)
             .add_field(8i32)
             .add_field(4i32)
-            .add_field(picture.rgba.clone())
+            .add_field(picture.rgba.to_vec())
             .build()
             .ok()?;
         Some(Value::from(structure))

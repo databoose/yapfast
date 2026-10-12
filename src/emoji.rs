@@ -391,7 +391,7 @@ mod tests {
         let picture = talk_core::chat::Picture {
             width: 2,
             height: 2,
-            rgba: [255, 0, 0, 255].repeat(4),
+            rgba: talk_core::chat::Pixels::new(2, 2, [255, 0, 0, 255].repeat(4)),
             ..Default::default()
         };
         assert!(custom_emoji::add_images([("77", &picture)]));

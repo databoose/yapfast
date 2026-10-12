@@ -4,7 +4,10 @@ use super::{preview::preview_room, *};
 fn discord_event(snapshot: talk_discord::service::Snapshot) -> Event {
     Event::Discord(Arc::new(snapshot))
 }
-use crate::{chat::RoomIndex, sounds::Sound};
+use crate::{
+    chat::{Pixels, RoomIndex},
+    sounds::Sound,
+};
 
 /// The sounds among effects, in order.
 fn sounds(effects: &[Effect]) -> Vec<Sound> {
@@ -1551,7 +1554,7 @@ fn asks_once_for_the_pictures_on_screen() {
         picture: Arc::new(Picture {
             width: 1,
             height: 1,
-            rgba: vec![0; 4],
+            rgba: Pixels::new(1, 1, vec![0; 4]),
             ..Default::default()
         }),
     });

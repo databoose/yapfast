@@ -59,11 +59,7 @@ pub(super) fn load_thumbnail(
             return;
         };
         *slot = picture.map(|picture| Thumbnail {
-            picture: slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-                &picture.rgba,
-                picture.width,
-                picture.height,
-            )),
+            picture: self::picture(&picture),
             covered: blurred(&picture),
         });
         if let Some(window) = window {
@@ -133,12 +129,33 @@ pub(super) fn fit(width: u32, height: u32) -> (u32, u32) {
     (side(width), side(height))
 }
 
-pub(super) fn picture(picture: &Picture) -> slint::Image {
-    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-        &picture.rgba,
-        picture.width,
-        picture.height,
-    );
+/// A picture's pixels in Slint's own buffer, so showing it shares them.
+struct SlintPixels(slint::SharedPixelBuffer<slint::Rgba8Pixel>);
+
+impl talk_core::chat::PixelBuffer for SlintPixels {
+    fn bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+/// Has pictures decoded into Slint's buffers from now on, so showing one
+/// shares its pixels rather than copying them; otherwise each picture on
+/// screen would be in memory twice.
+pub(super) fn decode_into_slint_buffers() {
+    talk_core::chat::set_pixel_buffers(|width, height, rgba| {
+        Box::new(SlintPixels(slint::SharedPixelBuffer::clone_from_slice(
+            rgba, width, height,
+        )))
+    });
+}
+
+pub(crate) fn picture(picture: &Picture) -> slint::Image {
+    let buffer = match picture.rgba.buffer::<SlintPixels>() {
+        Some(pixels) => pixels.0.clone(),
+        None => {
+            slint::SharedPixelBuffer::clone_from_slice(&picture.rgba, picture.width, picture.height)
+        }
+    };
     slint::Image::from_rgba8(buffer)
 }
 
@@ -540,7 +557,7 @@ mod tests {
                 preview: Some(Arc::new(Picture {
                     width: 360,
                     height: 240,
-                    rgba: vec![index; 360 * 240 * 4],
+                    rgba: talk_core::chat::Pixels::new(360, 240, vec![index; 360 * 240 * 4]),
                     ..Default::default()
                 })),
                 preview_failed: false,
@@ -592,7 +609,7 @@ mod tests {
         let source = Arc::new(Picture {
             width: 1,
             height: 1,
-            rgba: vec![255; 4],
+            rgba: talk_core::chat::Pixels::new(1, 1, vec![255; 4]),
             ..Default::default()
         });
         let weak = Arc::downgrade(&source);
@@ -615,6 +632,23 @@ mod tests {
         );
         AVATAR_SOURCES.with_borrow_mut(HashMap::clear);
         PREVIEWS.set(Previews::default());
+    }
+
+    #[test]
+    fn showing_a_decoded_picture_shares_its_pixels() {
+        decode_into_slint_buffers();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let decoded = talk_core::chat::decode_picture(&png, 240, 240).unwrap();
+        let shown = picture(&decoded).to_rgba8().unwrap();
+        assert_eq!(shown.as_bytes(), &*decoded.rgba);
+        assert_eq!(
+            shown.as_bytes().as_ptr(),
+            decoded.rgba.as_ptr(),
+            "not a copy"
+        );
     }
 
     #[test]
