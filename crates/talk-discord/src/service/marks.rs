@@ -111,3 +111,44 @@ impl Marks {
         marked
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ready::{Channel, Emoji, Overwrite};
+
+    #[test]
+    fn a_marked_server_shares_its_roles_emoji_and_overwrites() {
+        let server = Server {
+            id: "10".into(),
+            roles: Arc::new([("10".into(), 0)].into()),
+            role_names: Arc::new([("20".into(), "Mods".into())].into()),
+            emojis: Arc::new(vec![Emoji {
+                id: "5".into(),
+                name: "wave".into(),
+                animated: false,
+                available: true,
+            }]),
+            text_channels: vec![Channel {
+                id: "11".into(),
+                overwrites: Arc::new(vec![Overwrite {
+                    id: "10".into(),
+                    member: false,
+                    allow: 0,
+                    deny: 0,
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let marks = Marks::new(&server, "1", &[], &Unreads::default());
+        let marked = marks.apply(&server);
+        assert!(Arc::ptr_eq(&marked.roles, &server.roles));
+        assert!(Arc::ptr_eq(&marked.role_names, &server.role_names));
+        assert!(Arc::ptr_eq(&marked.emojis, &server.emojis));
+        assert!(Arc::ptr_eq(
+            &marked.text_channels[0].overwrites,
+            &server.text_channels[0].overwrites
+        ));
+    }
+}

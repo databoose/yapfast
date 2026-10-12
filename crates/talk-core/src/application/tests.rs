@@ -1772,7 +1772,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
                 name: "general".into(),
                 ..Default::default()
             }],
-            emojis: vec![emoji("5", "talk", false), emoji("6", "party", true)],
+            emojis: vec![emoji("5", "talk", false), emoji("6", "party", true)].into(),
             ..Default::default()
         })],
         ..Default::default()

@@ -255,7 +255,7 @@ impl Application {
             return snapshot
                 .servers
                 .iter()
-                .flat_map(|server| &server.emojis)
+                .flat_map(|server| server.emojis.iter())
                 .find(|emoji| {
                     emoji.available
                         && (format!(":{}:", emoji.name) == name

@@ -463,8 +463,8 @@ mod tests {
         let mut list = MemberList::new("10".into(), "11".into(), "everyone".into());
         let server = Server {
             id: "10".into(),
-            role_names: HashMap::from([("20".into(), "Mods".into())]),
-            role_colors: HashMap::from([("20".into(), (1, 0x3498db))]),
+            role_names: HashMap::from([("20".into(), "Mods".into())]).into(),
+            role_colors: HashMap::from([("20".into(), (1, 0x3498db))]).into(),
             ..Default::default()
         };
         assert!(

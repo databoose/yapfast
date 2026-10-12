@@ -637,6 +637,8 @@ mod tests {
                     };
                     (id.to_owned(), category)
                 })
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>()
                 .into(),
             ..Default::default()
         };
