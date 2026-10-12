@@ -40,6 +40,7 @@ KEYS = {
     'esc': 1, 'backspace': 14, 'tab': 15, 'enter': 28, 'ctrl': 29, 'shift': 42,
     'alt': 56, 'space': 57, 'home': 102, 'up': 103, 'pageup': 104, 'left': 105,
     'right': 106, 'end': 107, 'down': 108, 'pagedown': 109, 'delete': 111,
+    'f10': 68, 'menu': 127,
 }
 KEYS.update(zip('abcdefghijklmnopqrstuvwxyz',
                 [30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44]))
@@ -176,6 +177,11 @@ def perform(command):
         raise RuntimeError(f'Talk exited with {talk.returncode}; see {state / "talk.log"}, or relaunch')
     if verb == 'click':
         INPUT['click'](*map(float, values))
+        time.sleep(.3)
+    elif verb == 'rightclick':
+        INPUT['send'](f'move {values[0]} {values[1]}')
+        INPUT['send']('button 273 1')
+        INPUT['send']('button 273 0')
         time.sleep(.3)
     elif verb == 'move':
         INPUT['send'](f'move {values[0]} {values[1]}')
