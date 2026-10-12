@@ -19,6 +19,12 @@
   `scripts/test-stack up`.
 - How a UI change flows from `ui/*.slint` to `application/`:
   `docs/architecture.md`. Shells, logging (`TALK_LOG`, not `RUST_LOG`) and
-  dependency sources: `docs/building.md`. Memory measurements and how to
-  reproduce them: `docs/measurements/README.md`.
+  dependency sources: `docs/building.md`.
+- Memory is a product goal. Keep every change lean without being asked, and
+  check the code it runs through as well: share data held in two places
+  (`Arc`, a borrow), make work that runs on every event or frame touch only
+  what changed, and stream data to a file or socket as it's made. Fix a
+  needless copy you find on that path, or report it. Targets, and how to
+  measure: `docs/measurements/README.md`. A commit that saves memory gives
+  the numbers it measured.
 - Start new branches from `origin/main` after `git fetch`.
