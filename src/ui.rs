@@ -34,6 +34,7 @@ use talk_core::{
 use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod callbacks;
+mod menus;
 mod messages;
 mod pictures;
 mod profile;
@@ -739,6 +740,10 @@ struct Icons {
     text: slint::Image,
     voice: slint::Image,
     lock: slint::Image,
+    read: slint::Image,
+    call: slint::Image,
+    profile: slint::Image,
+    copy: slint::Image,
 }
 
 struct Adapter {
@@ -841,6 +846,10 @@ impl Adapter {
             text: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/hash.svg"))?,
             voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
             lock: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/lock.svg"))?,
+            read: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/check.svg"))?,
+            call: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/phone.svg"))?,
+            profile: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user.svg"))?,
+            copy: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/copy.svg"))?,
         };
         let models = Models::default();
         models.attach(window);

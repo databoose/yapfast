@@ -215,7 +215,25 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     }
     bind_item!(on_reply, Action::Reply);
     bind_item!(on_jump_to, Action::Jump);
-    bind_item!(on_show_dm_profile, Action::ShowDmProfile);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_prepare_menu(move |id| {
+            if let Some(window) = weak.upgrade() {
+                let rows = menus::menu(&adapter.borrow(), &id);
+                window.set_menu_rows(ModelRc::new(VecModel::from(rows)));
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_choose_menu(move |target, id| {
+            if let Some(window) = weak.upgrade() {
+                menus::choose(&mut adapter.borrow_mut(), &window, target.into(), &id);
+            }
+        });
+    }
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();

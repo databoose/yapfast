@@ -922,6 +922,94 @@ fn clicking_a_voice_channel_joins_it_and_asks_before_leaving_another() {
 }
 
 #[test]
+fn menus_offer_what_fits_their_conversation_or_server() {
+    use MenuChoice::*;
+    let mut app = connected();
+    let mut rooms = app.state.rooms.clone();
+    rooms
+        .iter_mut()
+        .find(|room| room.id == "general")
+        .unwrap()
+        .unread = 4;
+    rooms
+        .iter_mut()
+        .find(|room| room.id == "games")
+        .unwrap()
+        .mentions = 1;
+    let servers = app.state.servers.clone();
+    app.apply(Event::Rooms(RoomIndex { rooms, servers }));
+    assert_eq!(app.state.menu_choices("dm"), [Profile, CopyLink, CopyId]);
+    assert_eq!(
+        app.state.menu_choices("general"),
+        [MarkRead, CopyLink, CopyId]
+    );
+    assert_eq!(
+        app.state.menu_choices("lounge"),
+        [JoinVoice, CopyLink, CopyId]
+    );
+    assert_eq!(
+        app.state.menu_choices("friends"),
+        [MarkRead, CopyLink, CopyId]
+    );
+    assert!(app.state.menu_choices("gone").is_empty());
+
+    let marked = |effects: Vec<Effect>| -> Vec<String> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Backend(Command::MarkRead { room, .. }) => Some(room),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        marked(app.dispatch(Action::MarkRead("general".into()))),
+        ["general"]
+    );
+    assert!(
+        marked(app.dispatch(Action::MarkRead("lounge".into()))).is_empty(),
+        "nothing unread"
+    );
+    // A server marks each of its unread channels read.
+    assert_eq!(
+        marked(app.dispatch(Action::MarkRead("friends".into()))),
+        ["general", "games"]
+    );
+
+    // The preview's rooms are on no network, and its calls join at once.
+    let mut app = Application::default();
+    app.dispatch(Action::Preview);
+    assert_eq!(app.state.menu_choices("lounge"), [JoinVoice]);
+    assert!(app.state.menu_choices("friends").is_empty());
+    app.dispatch(Action::RequestJoinVoice("lounge".into()));
+    assert!(app.state.menu_choices("lounge").is_empty(), "already in it");
+}
+
+#[test]
+fn rooms_and_servers_link_and_name_themselves_as_their_networks_do() {
+    assert_eq!(
+        network_link("discord:10:21"),
+        "https://discord.com/channels/10/21"
+    );
+    assert_eq!(
+        network_link("discord:@me:30"),
+        "https://discord.com/channels/@me/30"
+    );
+    assert_eq!(
+        network_link("discord:10"),
+        "https://discord.com/channels/10"
+    );
+    assert_eq!(
+        network_link("!abc:example.org"),
+        "https://matrix.to/#/!abc:example.org?via=example.org"
+    );
+    assert_eq!(network_link("!abc"), "https://matrix.to/#/!abc");
+    assert_eq!(network_id("discord:10:21"), "21");
+    assert_eq!(network_id("discord:10"), "10");
+    assert_eq!(network_id("!abc:example.org"), "!abc:example.org");
+}
+
+#[test]
 fn the_preview_lists_and_chooses_real_devices_across_calls() {
     let mut app = Application::default();
     app.dispatch(Action::Preview);

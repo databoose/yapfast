@@ -163,12 +163,19 @@ The window follows Discord's arrangement:
 
 - A 72px server rail. Each server is a circle that becomes a rounded square,
   with a white pill at the rail edge for hover, selection or unread activity.
-  Hovering shows the server's name.
+  Hovering shows the server's name. A right click on a server, or the Menu
+  key or Shift+F10 on a focused one, opens its menu: Mark as read when any of
+  its channels is unread, then Copy link and Copy ID.
 - A sidebar, 240px by default and resizable by dragging its edge, with the
   server name, a filter, and uppercase TEXT CHANNELS and VOICE CHANNELS groups.
   DMs show the person's avatar. Participants of the call you are in appear under
   its voice channel, with a green ring while they speak and a muted icon. Talk
-  knows only its own call's participants.
+  knows only its own call's participants. A right click on a conversation, or
+  the Menu key or Shift+F10 on a focused one, opens its menu: Mark as read when
+  it's unread, Join voice for a voice channel you aren't in, Profile for a
+  one-to-one DM, then Copy link and Copy ID. Matrix links go through
+  matrix.to. Arrow keys, Home and End move through the menu, Enter chooses, and
+  Escape closes it.
 - A dock across the rail and sidebar: the voice panel, then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
   audio devices, message text size, clock and link previews, notifications,

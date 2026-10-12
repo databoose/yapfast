@@ -717,6 +717,61 @@ fn pointer_input_reaches_navigation_buttons() {
 }
 
 #[test]
+fn menus_list_their_choices_and_carry_them_out() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    let texts = |window: &TalkWindow| -> Vec<String> {
+        window
+            .get_menu_rows()
+            .iter()
+            .map(|row| row.text.to_string())
+            .collect()
+    };
+    window.invoke_prepare_menu("sam".into());
+    assert_eq!(texts(&window), ["Profile"]);
+    window.invoke_prepare_menu("lounge".into());
+    assert_eq!(texts(&window), ["Join voice"]);
+    window.invoke_prepare_menu("gone".into());
+    assert!(texts(&window).is_empty());
+
+    window.invoke_choose_menu("sam".into(), "profile".into());
+    assert!(adapter.borrow().app.state.profile.is_some());
+    window.invoke_choose_menu("lounge".into(), "join-voice".into());
+    assert_eq!(
+        adapter.borrow().app.state.voice.room.as_deref(),
+        Some("lounge")
+    );
+
+    let clipboard = || {
+        i_slint_core::window::WindowInner::from_pub(window.window())
+            .context()
+            .platform()
+            .clipboard_text(i_slint_core::platform::Clipboard::DefaultClipboard)
+    };
+    window.invoke_choose_menu("discord:10:21".into(), "copy-link".into());
+    assert_eq!(
+        clipboard().as_deref(),
+        Some("https://discord.com/channels/10/21")
+    );
+    window.invoke_choose_menu("discord:10:21".into(), "copy-id".into());
+    assert_eq!(clipboard().as_deref(), Some("21"));
+    window.invoke_choose_menu("discord:10".into(), "copy-link".into());
+    assert_eq!(
+        clipboard().as_deref(),
+        Some("https://discord.com/channels/10")
+    );
+}
+
+#[test]
 fn the_input_caret_opens_its_menu_and_measures_only_while_open() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

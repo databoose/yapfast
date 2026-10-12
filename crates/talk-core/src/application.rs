@@ -25,6 +25,8 @@ mod profiles;
 mod rooms;
 mod session;
 
+pub use rooms::{MenuChoice, network_id, network_link};
+
 use calls::call_sounds;
 use compose::has_markdown;
 use preview::{preview_members, sample_actions};
@@ -638,6 +640,9 @@ pub enum Relation {
 pub enum Action {
     Navigate(Navigation),
     SelectRoom(String),
+    /// Mark a listed conversation read, or every conversation of a listed
+    /// server, as their menus do.
+    MarkRead(String),
     /// Go to wherever a conversation is listed and open it, as a notification does.
     Open(String),
     SetDraft(String),
@@ -1134,6 +1139,7 @@ impl Application {
             }
             Action::Open(id) => self.open(id),
             Action::SelectRoom(id) => self.select_room(id),
+            Action::MarkRead(id) => self.mark_read(id),
             Action::EditLast => self.edit_last(),
             Action::OpenNewDm => self.open_new_dm(),
             Action::NewDmQuery(query) => {

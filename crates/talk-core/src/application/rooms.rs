@@ -2,6 +2,108 @@
 
 use super::*;
 
+/// What a conversation's or server's menu offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuChoice {
+    MarkRead,
+    JoinVoice,
+    /// The other person's profile, in a one-to-one DM.
+    Profile,
+    /// Copy a link to it that its network's apps open.
+    CopyLink,
+    /// Copy its id as its network knows it.
+    CopyId,
+}
+
+impl AppState {
+    /// What the menu of a listed server or conversation offers, in order;
+    /// nothing for one that isn't listed.
+    pub fn menu_choices(&self, id: &str) -> Vec<MenuChoice> {
+        if self.servers.iter().any(|server| server.id == id) {
+            self.server_choices(id)
+        } else {
+            self.room_choices(id)
+        }
+    }
+
+    /// What a listed conversation's menu offers. The preview's rooms have no
+    /// network to read them on or link to.
+    fn room_choices(&self, id: &str) -> Vec<MenuChoice> {
+        let Some(room) = self.rooms.iter().find(|room| room.id == id) else {
+            return vec![];
+        };
+        let mut choices = vec![];
+        if !self.preview && unread(room) {
+            choices.push(MenuChoice::MarkRead);
+        }
+        let connected = self.voice.active() && self.voice.room.as_deref() == Some(id);
+        if room.voice && !connected && self.can_join_voice(id) {
+            choices.push(MenuChoice::JoinVoice);
+        }
+        if room.person.is_some() {
+            choices.push(MenuChoice::Profile);
+        }
+        if !self.preview {
+            choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
+        }
+        choices
+    }
+
+    /// What a listed server's menu offers.
+    fn server_choices(&self, id: &str) -> Vec<MenuChoice> {
+        let mut choices = vec![];
+        if self.preview {
+            return choices;
+        }
+        if self.unread_channels(id).next().is_some() {
+            choices.push(MenuChoice::MarkRead);
+        }
+        choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
+        choices
+    }
+
+    /// The server's channels with messages to read.
+    fn unread_channels(&self, id: &str) -> impl Iterator<Item = &ChatRoom> {
+        let channels = self
+            .servers
+            .iter()
+            .find(|server| server.id == id)
+            .map(|server| server.channels.as_slice())
+            .unwrap_or_default();
+        self.rooms
+            .iter()
+            .filter(move |room| channels.contains(&room.id) && unread(room))
+    }
+}
+
+fn unread(room: &ChatRoom) -> bool {
+    room.unread > 0 || room.mentions > 0
+}
+
+/// A link to a room or server that its network's apps open: Discord's own,
+/// or matrix.to's, through the server a Matrix id names when it names one.
+pub fn network_link(id: &str) -> String {
+    match id.strip_prefix(discord::PREFIX) {
+        Some(discord) => format!(
+            "https://discord.com/channels/{}",
+            discord.replacen(':', "/", 1)
+        ),
+        None => match id.split_once(':') {
+            Some((_, server)) => format!("https://matrix.to/#/{id}?via={server}"),
+            None => format!("https://matrix.to/#/{id}"),
+        },
+    }
+}
+
+/// A room's or server's id as its network knows it: a Discord channel's or
+/// server's, or a Matrix room's or Space's.
+pub fn network_id(id: &str) -> &str {
+    match id.strip_prefix(discord::PREFIX) {
+        Some(discord) => discord.rsplit(':').next().unwrap_or(discord),
+        None => id,
+    }
+}
+
 impl Application {
     pub(super) fn navigate(&mut self, navigation: Navigation) -> Vec<Effect> {
         if self.state.navigation == navigation {
@@ -51,6 +153,26 @@ impl Application {
             effects.extend(self.dispatch(Action::RequestJoinVoice(id)));
         }
         effects
+    }
+
+    /// Marks a conversation read, or every conversation of a server.
+    pub(super) fn mark_read(&mut self, id: String) -> Vec<Effect> {
+        if !self.state.menu_choices(&id).contains(&MenuChoice::MarkRead) {
+            return vec![];
+        }
+        let sync = self.state.sync_discord_reads;
+        let rooms: Vec<String> = if self.state.servers.iter().any(|server| server.id == id) {
+            self.state
+                .unread_channels(&id)
+                .map(|room| room.id.clone())
+                .collect()
+        } else {
+            vec![id]
+        };
+        rooms
+            .into_iter()
+            .map(|room| Effect::Backend(Command::MarkRead { room, sync }))
+            .collect()
     }
 
     pub(super) fn open_new_dm(&mut self) -> Vec<Effect> {

@@ -75,6 +75,9 @@ export component RailItem inherits Rectangle {
     /// Marks a Discord server.
     in property <bool> discord;
     callback clicked;
+    /// A right click, or the Menu key or Shift+F10 when focused: where to open
+    /// a menu in the window.
+    callback context-menu(length, length);
     width: 72px; height: 48px;
     accessible-role: button;
     accessible-label: root.label;
@@ -135,11 +138,20 @@ export component RailItem inherits Rectangle {
             if event.text == "\n" || event.text == " " {
                 root.clicked(); return accept;
             }
+            if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                root.context-menu(self.absolute-position.x + 60px, self.absolute-position.y + 24px);
+                return accept;
+            }
             return reject;
         }
         pointer := TouchArea {
             mouse-cursor: MouseCursor.pointer;
             clicked => { root.clicked(); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
             changed has-hover => {
                 if self.has-hover {
                     Tip.text = root.tip;
@@ -302,7 +314,8 @@ export component ChannelRow inherits Rectangle {
     in property <string> presence;
     in property <string> detail;
     callback clicked;
-    /// A right click, where it happened in the window.
+    /// A right click, or the Menu key or Shift+F10 when focused: where to open
+    /// a menu in the window.
     callback context-menu(length, length);
     height: root.person ? 42px : 34px;
     border-radius: 6px;
@@ -361,6 +374,10 @@ export component ChannelRow inherits Rectangle {
         key-pressed(event) => {
             if event.text == "\n" || event.text == " " {
                 root.clicked(); return accept;
+            }
+            if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                root.context-menu(self.absolute-position.x + 16px, self.absolute-position.y + self.height);
+                return accept;
             }
             return reject;
         }
@@ -422,6 +439,8 @@ export component ServerRail inherits Rectangle {
     callback navigate-dms;
     callback navigate-server(string);
     callback toggle-folder(string);
+    /// A server's menu was asked for: its id, and where in the window.
+    callback open-server-menu(string, length, length);
     width: 72px; background: Theme.rail;
     VerticalLayout {
         padding-top: 12px; padding-bottom: 12px; spacing: 8px;
@@ -470,6 +489,7 @@ export component ServerRail inherits Rectangle {
                     selected: server.selected; unread: server.unread; badge: server.badge; discord: server.discord;
                     opacity: server.unavailable ? 0.5 : 1;
                     clicked => { root.navigate-server(server.id); }
+                    context-menu(x, y) => { root.open-server-menu(server.id, x, y); }
                 }
             }
         }
@@ -520,7 +540,7 @@ export component RoomList inherits VerticalLayout {
     callback select-room(string);
     callback open-friends;
     callback open-requests;
-    /// A right click on a one-to-one DM: its id, and where in the window.
+    /// A conversation's menu was asked for: its id, and where in the window.
     callback open-room-menu(string, length, length);
     /// A right click on a participant, with where it was in the window.
     callback open-volume(PersonRow, length, length);
@@ -566,10 +586,7 @@ export component RoomList inherits VerticalLayout {
                 selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                 call: room.call; presence: room.presence; detail: room.detail;
                 clicked => { root.select-room(room.id); }
-                // A DM's menu offers its other person's profile.
-                context-menu(x, y) => {
-                    if room.person { root.open-room-menu(room.id, x, y); }
-                }
+                context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
             }
             // Discord reports who is in every voice channel; Matrix
             // only shows the call Talk is in, below.
