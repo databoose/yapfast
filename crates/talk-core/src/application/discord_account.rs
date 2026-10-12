@@ -146,12 +146,10 @@ impl Application {
                     && room.network == Network::Discord
                     && (room.unread > 0 || room.mentions > 0) =>
             {
-                vec![Effect::Backend(Command::Discord(
-                    DiscordCommand::MarkRead {
-                        room: room.id.clone(),
-                        sync: self.state.sync_discord_reads,
-                    },
-                ))]
+                vec![Effect::Backend(Command::MarkRead {
+                    room: room.id.clone(),
+                    sync: self.state.sync_discord_reads,
+                })]
             }
             _ => vec![],
         }

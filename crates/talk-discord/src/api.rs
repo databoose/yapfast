@@ -31,6 +31,9 @@ pub struct Upload {
 /// The most files one message can carry.
 pub const MAX_FILES: usize = 10;
 
+/// The most channels one bulk read acknowledgement carries.
+pub const ACK_BULK_LIMIT: usize = 100;
+
 const MIB: u64 = 1024 * 1024;
 
 /// The largest file this account may send, in bytes: by its Nitro, as
@@ -318,6 +321,21 @@ impl Api {
         self.json(with_json(self.request(Method::POST, &path), &body))
             .await
             .map(drop)
+    }
+
+    /// Marks channels read, each up to its message, in one request, as the
+    /// official client does for a whole server; at most [`ACK_BULK_LIMIT`].
+    pub async fn ack_bulk(&self, reads: &[(String, String)]) -> Result<()> {
+        let read_states: Vec<Value> = reads
+            .iter()
+            .map(|(channel, message)| json!({"channel_id": channel, "message_id": message}))
+            .collect();
+        let body = json!({"read_states": read_states});
+        self.empty(with_json(
+            self.request(Method::POST, "/read-states/ack-bulk"),
+            &body,
+        ))
+        .await
     }
 
     /// Adds or removes this account's reaction; `emoji` is the emoji itself

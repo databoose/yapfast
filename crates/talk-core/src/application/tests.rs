@@ -1786,7 +1786,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     });
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::MarkRead { room, sync: true }))] if room == "discord:10:21"
+        [Effect::Backend(Command::MarkRead { room, sync: true })] if room == "discord:10:21"
     ));
     assert!(app.state.can_write(), "Discord doesn't need Matrix trust");
     assert!(app.state.can_attach());
@@ -1892,7 +1892,7 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
     });
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::MarkRead { room, .. }))] if room == "discord:@me:30"
+        [Effect::Backend(Command::MarkRead { room, .. })] if room == "discord:@me:30"
     ));
     assert!(app.state.can_write(), "Discord DMs don't need Matrix trust");
     assert!(!app.state.lists_members(), "a DM lists no members");
@@ -2896,9 +2896,7 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     assert!(
         matches!(
             effects.as_slice(),
-            [Effect::Backend(Command::Discord(
-                DiscordCommand::MarkRead { .. }
-            ))]
+            [Effect::Backend(Command::MarkRead { .. })]
         ),
         "the last read message is loaded, so no earlier history is"
     );

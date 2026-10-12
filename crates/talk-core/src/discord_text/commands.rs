@@ -22,7 +22,7 @@ pub fn command(
     if matches!(command, Command::Open(_) | Command::CloseRoom) {
         channels.close();
     }
-    if let Command::Discord(DiscordCommand::MarkRead { room, sync }) = &command {
+    if let Command::MarkRead { room, sync } = &command {
         if let (Ok(discord), Some((guild, channel))) = (discord, discord::parse_room(room)) {
             discord.mark_read(guild, channel, *sync);
         }

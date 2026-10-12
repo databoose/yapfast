@@ -542,6 +542,34 @@ async fn talks_to_the_fake_server() {
         notified.1
     );
 
+    // Reading #general and Dave's DM together, as marking a server read
+    // does, acknowledges both in one request.
+    let dm_dave = discord.snapshots().borrow().conversations[0].id.clone();
+    let before = serde_json::from_str::<Vec<Vec<String>>>(&self::control(
+        server,
+        "GET",
+        "/_control/acks",
+        "",
+    ))
+    .unwrap()
+    .len();
+    discord.mark_read(&guild, &general, true);
+    discord.mark_read(PRIVATE, &dm_dave, true);
+    // Reads from just before, such as Bob's DM, may go in the same request.
+    let both = |request: &Vec<String>| request.contains(&general) && request.contains(&dm_dave);
+    timeout(WAIT, async {
+        loop {
+            let acks: Vec<Vec<String>> =
+                serde_json::from_str(&self::control(server, "GET", "/_control/acks", "")).unwrap();
+            if acks[before..].iter().any(both) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("both reads are acknowledged in one request");
+
     // Bob starts typing, and Talk says Alice is typing.
     control
         .post(format!("{server}/_control/typing"))

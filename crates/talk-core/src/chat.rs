@@ -874,6 +874,12 @@ pub enum Command {
         room: String,
         typing: bool,
     },
+    /// Mark a room read up to its newest message. Matrix sends a read
+    /// receipt; Discord marks it read in Talk, and on Discord with `sync`.
+    MarkRead {
+        room: String,
+        sync: bool,
+    },
     /// Store a room's composer text in the encrypted session store; empty text clears it.
     SaveDraft {
         room: String,
@@ -904,8 +910,6 @@ pub enum DiscordCommand {
     /// Look for the room's members whose names start with `query`, beyond those
     /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
     SearchMembers { room: String, query: String },
-    /// Mark a Discord channel read in Talk, and on Discord with `sync`.
-    MarkRead { room: String, sync: bool },
     /// Accept a Discord message request, or ignore it.
     AnswerRequest { room: String, accept: bool },
     /// Decline a Discord DM call ringing this account.
@@ -968,6 +972,7 @@ impl Command {
             | Command::ViewImage { room, .. }
             | Command::PlayVideo { room, .. }
             | Command::Typing { room, .. }
+            | Command::MarkRead { room, .. }
             | Command::SaveDraft { room, .. }
             | Command::VisibleMessages { room, .. }
             | Command::Earlier(room) => network(room),
@@ -1678,11 +1683,18 @@ mod tests {
             (forward(&matrix, &discord), Route::Discord),
             (forward(&discord, &matrix), Route::Discord),
             (
-                Command::Discord(DiscordCommand::MarkRead {
+                Command::MarkRead {
                     room: discord.clone(),
                     sync: true,
-                }),
+                },
                 Route::Discord,
+            ),
+            (
+                Command::MarkRead {
+                    room: matrix.clone(),
+                    sync: true,
+                },
+                Route::Matrix,
             ),
             (Command::Voice(voice::Command::Leave), Route::Voice),
             (Command::Logout, Route::Matrix),
