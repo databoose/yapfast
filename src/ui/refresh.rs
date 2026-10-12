@@ -1120,7 +1120,7 @@ impl Adapter {
                     self.show_emoji_suggestions(window);
                 }
                 if !window.get_react_item().is_empty() {
-                    emoji::fill_pictures(&self.models.emoji_rows);
+                    emoji::fill_pictures(&self.models.emoji_rows, &self.models.emoji_sections);
                 }
             }
         }

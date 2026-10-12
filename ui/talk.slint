@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
+import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -37,7 +37,7 @@ export { PersonRow } from "voice.slint";
 export { ServerRow, RoomRow, FolderServer } from "rail.slint";
 export { PictureStore } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
-export { EmojiCell, EmojiRow, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
+export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData } from "people.slint";
 export { FriendRequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow } from "dialogs.slint";
@@ -247,6 +247,8 @@ export component TalkWindow inherits Window {
     in property <[EmojiCell]> menu-reactions;
     /// The emoji picker's grid for `emoji-query`, refreshed through emoji-search.
     in property <[EmojiRow]> emoji-rows;
+    /// The picker's sidebar: the grid's headings with no query.
+    in property <[EmojiSection]> emoji-sections;
     in-out property <string> emoji-query;
     /// The forward dialog, open while Talk forwards a message of the open room.
     in property <bool> forward-open;
@@ -832,13 +834,13 @@ export component TalkWindow inherits Window {
         emoji-picker.close();
     }
     emoji-picker := PopupWindow {
-        width: 360px; height: 432px;
+        width: 408px; height: 432px;
         x: max(8px, min(root.width - self.width - 8px, root.anchor-pointer ? root.anchor-x : root.anchor-x + root.anchor-width - self.width));
         y: root.anchor-y + root.anchor-height + 4px + self.height <= root.height - 8px
             ? root.anchor-y + root.anchor-height + 4px : max(8px, root.anchor-y - self.height - 4px);
         close-policy: PopupClosePolicy.close-on-click-outside;
         EmojiPicker {
-            emoji-rows: root.emoji-rows; emoji-query <=> root.emoji-query; emoji-hover <=> root.emoji-hover;
+            emoji-rows: root.emoji-rows; emoji-sections: root.emoji-sections; emoji-query <=> root.emoji-query; emoji-hover <=> root.emoji-hover;
             emoji-font: root.emoji-font; react-item: root.react-item;
             emoji-search(text) => { root.emoji-search(text); }
             pick(cell) => { root.pick(cell); }
