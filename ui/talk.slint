@@ -425,6 +425,16 @@ export component TalkWindow inherits Window {
     in-out property <bool> link-previews: true;
     in-out property <bool> unmute-on-join;
     in-out property <bool> level-voice: true;
+    in-out property <int> noise-suppression;
+    in-out property <int> noise-strength;
+    in-out property <bool> dereverb;
+    in-out property <int> sensitivity: -60;
+    /// The Discord microphone as its voice gate hears it, in dBFS, and whether
+    /// the gate is open, refreshed by gate-meter-tick while voice settings
+    /// show with Discord linked.
+    in-out property <float> gate-level: -100;
+    in-out property <bool> gate-sending;
+    in-out property <string> gate-meter-note;
     in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
     in-out property <bool> notification-sound: true;
@@ -502,6 +512,8 @@ export component TalkWindow inherits Window {
     /// Whether the input menu wants the microphone level measured.
     callback metering(bool);
     callback meter-tick;
+    callback gate-metering(bool);
+    callback gate-meter-tick;
     callback reply(string);
     callback edit(string);
     callback react(string, string);
@@ -660,6 +672,10 @@ export component TalkWindow inherits Window {
     property <bool> output-open: output-menu.is-open;
     changed input-open => { root.input-level = 0; root.meter-note = ""; root.metering(root.input-open); }
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
+    // The Discord gate's meter runs while voice settings show it.
+    property <bool> gate-metered: root.settings-open && root.settings-section == 1 && root.discord-linked;
+    changed gate-metered => { root.gate-level = -100; root.gate-sending = false; root.gate-meter-note = ""; root.gate-metering(self.gate-metered); }
+    Timer { interval: 50ms; running: root.gate-metered; triggered => { root.gate-meter-tick(); } }
     Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active; triggered => { root.stream-tick(); } }
     input-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
@@ -1768,6 +1784,8 @@ export component TalkWindow inherits Window {
             microphones: root.microphones; microphone-index: root.microphone-index;
             speakers: root.speakers; speaker-index: root.speaker-index;
             unmute-on-join <=> root.unmute-on-join; level-voice <=> root.level-voice;
+            noise-suppression <=> root.noise-suppression; noise-strength <=> root.noise-strength; dereverb <=> root.dereverb; discord: root.discord-linked;
+            sensitivity <=> root.sensitivity; gate-level: root.gate-level; gate-sending: root.gate-sending; gate-meter-note: root.gate-meter-note;
             select-microphone(index) => { root.select-microphone(index); }
             select-speaker(index) => { root.select-speaker(index); }
             refresh-devices => { root.refresh-devices(); }

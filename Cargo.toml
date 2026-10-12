@@ -99,6 +99,23 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# DeepFilterNet, the Discord microphone's noise suppression, runs on tract.
+# Unoptimized it can't keep up with the microphone, and tract-core's debug
+# assertions reject the model's graph ("duplicate name /convt3/Conv.bias").
+[profile.dev.package.tract-core]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-linalg]
+opt-level = 3
+[profile.dev.package.tract-data]
+opt-level = 3
+[profile.dev.package.deep_filter]
+opt-level = 3
+[profile.dev.package.ndarray]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 strip = true

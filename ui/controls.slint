@@ -598,3 +598,94 @@ export component Banner inherits Rectangle {
         Middle { ActionButton { text: "Dismiss"; ghost: true; small: true; clicked => { root.dismissed(); } } }
     }
 }
+
+// The Discord voice gate's sensitivity, in dBFS from -80 to 0, over the
+// microphone's level as the gate hears it: green up to -18 dBFS, orange to -6,
+// red above. A handle marks the sensitivity. Dragging reports each step through
+// `changed` and the last through `committed`; the arrow keys move 1 dB.
+export component SensitivitySlider inherits Rectangle {
+    in property <string> label;
+    in-out property <int> value: -60;
+    /// dBFS; below -80 shows nothing.
+    in property <float> level: -100;
+    /// The gate is open: the microphone would be sent.
+    in property <bool> sending;
+    callback changed(int);
+    callback committed(int);
+    // Where a level in dBFS falls along the track, from 0 to 1.
+    function at(decibels: float) -> float { return max(0, min(1, (decibels + 80) / 80)); }
+    height: column.preferred-height;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.value + " dB";
+    accessible-value-minimum: -80;
+    accessible-value-maximum: 0;
+    accessible-value-step: 1;
+    accessible-action-increment => { root.step(1); }
+    accessible-action-decrement => { root.step(-1); }
+    forward-focus: focus;
+    function set(value: int) {
+        let clamped = max(-80, min(0, value));
+        if clamped != root.value {
+            root.value = clamped;
+            root.changed(clamped);
+        }
+    }
+    function step(by: int) {
+        root.set(root.value + by);
+        root.committed(root.value);
+    }
+    function point(x: length) {
+        root.set(round(max(0, min(1, x / track.width)) * 80) - 80);
+    }
+    column := VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: root.label; color: Theme.secondary; font-size: 13px; font-weight: 600; horizontal-stretch: 1; }
+            Text { text: root.sending ? "Sending" : "Not sending"; color: root.sending ? Theme.live : Theme.muted; font-size: 13px; font-weight: 600; }
+            Text { text: root.value + " dB"; color: Theme.text; font-size: 13px; font-weight: 600; }
+        }
+        track := Rectangle {
+            height: 18px;
+            property <float> level: root.at(root.level);
+            property <float> orange: root.at(-18);
+            property <float> red: root.at(-6);
+            Rectangle {
+                y: (parent.height - self.height) / 2; height: 8px; border-radius: 4px; background: Theme.field; clip: true;
+                Rectangle { x: 0; width: parent.width * min(track.level, track.orange); background: Theme.live; }
+                Rectangle {
+                    x: parent.width * track.orange; width: parent.width * max(0, min(track.level, track.red) - track.orange);
+                    background: Theme.loud;
+                }
+                Rectangle { x: parent.width * track.red; width: parent.width * max(0, track.level - track.red); background: Theme.danger; }
+            }
+            Rectangle {
+                x: parent.width * root.at(root.value) - self.width / 2; y: (parent.height - self.height) / 2;
+                width: 14px; height: 14px; border-radius: 7px; background: Theme.text;
+                border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
+            }
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        focus.focus();
+                        root.point(self.mouse-x);
+                    }
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.committed(root.value);
+                    }
+                }
+                moved => { if self.pressed { root.point(self.mouse-x); } }
+            }
+        }
+    }
+    focus := FocusScope {
+        width: 0; height: 0;
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow || event.text == Key.DownArrow { root.step(-1); return accept; }
+            if event.text == Key.RightArrow || event.text == Key.UpArrow { root.step(1); return accept; }
+            return reject;
+        }
+    }
+}

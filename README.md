@@ -41,9 +41,9 @@ Once linked, Talk shows your servers, channels, DMs and group DMs live. You can
 send messages, reply, edit, react and attach files. Embeds, custom emoji,
 stickers, spoilers, unread markers, notifications and member lists work. You can
 join server voice channels and make or answer DM calls, with mute, deafen,
-per-person volume and RNNoise. Go Live screen sharing and stream watching work
-too. The friends page handles friend requests and adding by username, and Talk
-sets your status and custom status.
+per-person volume and DeepFilterNet noise suppression. Go Live screen sharing
+and stream watching work too. The friends page handles friend requests and
+adding by username, and Talk sets your status and custom status.
 
 Not there yet:
 

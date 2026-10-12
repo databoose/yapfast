@@ -165,6 +165,10 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     };
     // Missing preferences take their defaults: 24 hours, default text, previews.
     let defaults: Layout = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        defaults.noise_suppression,
+        talk_core::noise::Suppressor::DeepFilterNet
+    );
     let row = defaults.restyle(&message, message_row(&message, &HashSet::new()));
     assert_eq!(
         row.time,
@@ -176,6 +180,10 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
         text_size: Some(2),
         link_previews: Some(false),
         unmute_on_join: true,
+        noise_suppression: talk_core::noise::Suppressor::RNNoise,
+        noise_strength: talk_core::noise::Strength::Light,
+        input_sensitivity: Some(-45),
+        reduce_room_echo: true,
         ..Default::default()
     };
     let row = layout.restyle(&message, message_row(&message, &HashSet::new()));
@@ -217,6 +225,27 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     let window = TalkWindow::new().unwrap();
     layout.apply(&window);
     assert!(window.get_twelve_hour_clock() && !window.get_link_previews());
+    // Discord calls suppress noise with the chosen network, as far as chosen.
+    assert_eq!(window.get_noise_suppression(), 1);
+    assert_eq!(window.get_noise_strength(), 2);
+    assert_eq!(
+        talk_core::noise::chosen(),
+        talk_core::noise::Suppressor::RNNoise
+    );
+    let saved = serde_json::to_value(&layout).unwrap();
+    assert_eq!(saved["noise_suppression"], "rnnoise");
+    assert_eq!(saved["noise_strength"], "light");
+    assert_eq!(window.get_sensitivity(), -45);
+    assert!(window.get_dereverb() && !defaults.reduce_room_echo);
+    assert_eq!(defaults.sensitivity(), -60);
+    let out_of_range = Layout {
+        input_sensitivity: Some(12),
+        ..Default::default()
+    };
+    assert_eq!(out_of_range.sensitivity(), 0);
+    // The third choice is Off; an index out of range is the default.
+    assert_eq!(chosen(&SUPPRESSORS, 2), talk_core::noise::Suppressor::Off);
+    assert_eq!(chosen(&STRENGTHS, -1), talk_core::noise::Strength::Full);
     assert_eq!(window.get_message_font_size(), 18.);
     // Joining a call turns the microphone on once it connects.
     let unmuted = Rc::new(Cell::new(false));

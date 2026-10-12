@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Compares the Discord microphone with and without taking the room's echo
+# out: the noise comparison's speech through synthetic rooms, scored against
+# the dry speech, and its noise mixes, to see what it costs speech there; and
+# the time a 10 ms block takes.
+# Usage: scripts/compare-room-echo, after scripts/compare-noise-suppression
+# has made its mixes in .local/noise-suppression; docs/discord.md records the
+# results.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop path:./nix --command "$0" "$@"
+fi
+
+noise=.local/noise-suppression/mixes
+work=.local/room-echo
+if [[ ! -s "$noise/speech.f32" ]]; then
+  echo "Run scripts/compare-noise-suppression first, for its mixes." >&2
+  exit 1
+fi
+mkdir -p "$work/chain"
+
+python() {
+  nix shell --impure --expr "(builtins.getFlake \"path:$PWD/nix\").inputs.nixpkgs.legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ps.numpy ps.scipy ps.pesq])" \
+    -c python3 -I scripts/room_echo.py "$@"
+}
+python make "$noise/speech.f32" "$work"
+
+tests=$(cargo test --profile fast --locked -p talk-core --no-run --message-format json 2>/dev/null |
+  jq -r 'select(.profile.test == true and .target.name == "talk_core" and .executable != null) | .executable')
+for dereverb in off on; do
+  for input in "$work"/{dry,rt40,rt60,rt80}.s16 "$noise"/{typing,fan,hiss,typing_fan}.s16; do
+    name=$(basename "$input" .s16)
+    TALK_DEREVERB=$dereverb TALK_AUDIO_IN="$input" TALK_AUDIO_OUT="$work/chain/${name}_$dereverb.s16" \
+      "$tests" --exact discord_audio::linux::processes_a_recording --ignored --nocapture \
+      >"$work/chain/${name}_$dereverb.log"
+  done
+  echo "room echo $dereverb: $(cat "$work"/chain/*_"$dereverb".log | grep -o '[0-9.]*µs a block' | tr '\n' ' ')"
+done
+echo
+python score "$work" "$noise"

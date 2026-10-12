@@ -16,6 +16,8 @@ pub mod cli;
 pub mod clock;
 #[cfg(feature = "discord")]
 pub mod decode;
+#[cfg(feature = "discord")]
+mod dereverb;
 pub mod discord;
 #[cfg(feature = "discord")]
 pub mod discord_audio;
@@ -40,6 +42,7 @@ mod matrix_voice;
 pub mod mention;
 pub mod meter;
 pub mod network;
+pub mod noise;
 #[cfg(feature = "discord")]
 pub mod playback;
 #[cfg(feature = "discord")]

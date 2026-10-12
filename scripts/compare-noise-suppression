@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Compares the Discord microphone's noise suppressors, DeepFilterNet and
+# RNNoise, on speech mixed with keyboard typing, a fan and hiss: their cost
+# per 10 ms block, how far behind their input they are, how much noise is left
+# and how speech fares, and what the voice gate sends.
+# Usage: scripts/compare-noise-suppression [LIMIT], LIMIT limiting how far
+# the suppressors turn noise down, in dB, as the setting does. It downloads
+# its recordings from Wikimedia Commons once, into .local/noise-suppression,
+# and prints tables; docs/discord.md records the results.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop path:./nix --command "$0" "$@"
+fi
+
+work=.local/noise-suppression
+limit=${1:-100}
+out="$work/out/limit-$limit"
+mkdir -p "$work/download" "$work/raw" "$out/alone" "$out/chain"
+export TALK_NOISE_LIMIT=$limit
+
+# Name, then the file on Wikimedia Commons, with its licence.
+sources=(
+  "speech-1 f/f2/Spoken_Wikipedia_en_Catholic_Worker.ogg" # CC BY-SA 4.0
+  "speech-2 e/ea/Spoken_Wikipedia_en_Brad_Imes.ogg"      # CC BY-SA 4.0
+  "typing-1 a/a4/Computer_keyboard.ogg"                  # public domain
+  "typing-2 6/67/Laptop_keyboard.ogg"                    # public domain
+  "typing-3 4/4f/Typing_fast.ogg"                        # public domain
+  "typing-4 2/27/Typing_on_Keychron_V1_Ultra_%28Red_Linear_Switch%29.wav" # CC BY 4.0
+  "fan a/a2/Sounds_made_by_a_fan.wav"                    # CC BY-SA 3.0
+)
+for source in "${sources[@]}"; do
+  read -r name path <<<"$source"
+  download="$work/download/$name.${path##*.}"
+  if [[ ! -s "$download" ]]; then
+    curl -sSfL -A 'talk-noise-suppression/1.0' -o "$download" \
+      "https://upload.wikimedia.org/wikipedia/commons/$path"
+  fi
+  if [[ ! -s "$work/raw/$name.f32" ]]; then
+    nix shell nixpkgs#ffmpeg -c ffmpeg -v error -y -i "$download" \
+      -ac 1 -ar 48000 -f f32le "$work/raw/$name.f32"
+  fi
+done
+
+python() {
+  nix shell --impure --expr "(builtins.getFlake \"path:$PWD/nix\").inputs.nixpkgs.legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ps.numpy ps.scipy ps.pesq])" \
+    -c python3 -I scripts/noise_suppression.py "$@"
+}
+python mix "$work/raw" "$work/mixes"
+
+tests=$(cargo test --profile fast --locked -p talk-core --no-run --message-format json 2>/dev/null |
+  jq -r 'select(.profile.test == true and .target.name == "talk_core" and .executable != null) | .executable')
+for mix in clean typing fan hiss typing_fan typing_hiss quiet_typing_fan quiet_typing_hiss; do
+  echo "== $mix"
+  TALK_NOISE_IN="$work/mixes/$mix.f32" TALK_NOISE_OUT="$out/alone/${mix}_" \
+    "$tests" --exact noise::tests::compares_suppressors --ignored --nocapture |
+    grep -E 'loaded|blocks'
+  for suppressor in deepfilternet rnnoise off; do
+    TALK_SUPPRESSOR=$suppressor TALK_AUDIO_IN="$work/mixes/$mix.s16" \
+      TALK_AUDIO_OUT="$out/chain/${mix}_$suppressor.s16" \
+      "$tests" --exact discord_audio::linux::processes_a_recording --ignored --nocapture \
+      >"$out/chain/${mix}_$suppressor.log"
+    echo "whole microphone, $suppressor: $(grep -o '[0-9.]*µs a block' "$out/chain/${mix}_$suppressor.log")"
+  done
+done
+echo
+python score "$work/mixes" "$out"

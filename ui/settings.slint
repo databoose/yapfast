@@ -1,6 +1,6 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar } from "controls.slint";
+import { ActionButton, IconButton, Avatar, SensitivitySlider } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
 
@@ -244,6 +244,21 @@ export component VoiceSettings inherits VerticalLayout {
     in property <int> speaker-index;
     in-out property <bool> unmute-on-join;
     in-out property <bool> level-voice;
+    /// What suppresses noise in Discord calls: 0 DeepFilterNet, 1 RNNoise, 2
+    /// nothing; and how far: 0 full, 1 medium, 2 light.
+    in-out property <int> noise-suppression;
+    in-out property <int> noise-strength;
+    /// Discord calls take the room's reverb out of the microphone.
+    in-out property <bool> dereverb;
+    /// The quietest speech Discord calls send, in dBFS; and the microphone as
+    /// the voice gate hears it, refreshed while this shows.
+    in-out property <int> sensitivity: -60;
+    in property <float> gate-level: -100;
+    in property <bool> gate-sending;
+    /// Why the gate's level can't be shown, if it can't.
+    in property <string> gate-meter-note;
+    /// Discord is linked, so its calls' noise suppression shows.
+    in property <bool> discord;
     callback select-microphone(int);
     callback select-speaker(int);
     callback refresh-devices;
@@ -280,6 +295,45 @@ export component VoiceSettings inherits VerticalLayout {
         description: "Keeps your voice steady as you lean towards the microphone or away from it. Whispers and shouts still come through as they are.";
         checked <=> root.level-voice;
         toggled => { root.preferences-changed(); }
+    }
+    if root.discord: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "NOISE SUPPRESSION IN DISCORD CALLS"; }
+        Choices {
+            label: "Noise suppression in Discord calls"; options: ["DeepFilterNet", "RNNoise", "Off"];
+            current <=> root.noise-suppression;
+            chosen => { root.preferences-changed(); }
+        }
+        Label { text: "DeepFilterNet also takes out typing and other sudden noise. RNNoise uses less processing. Off sends your microphone as it is, for a quiet room. A call going on switches straight away."; }
+    }
+    if root.discord && root.noise-suppression != 2: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "NOISE SUPPRESSION STRENGTH"; }
+        Choices {
+            label: "Noise suppression strength"; options: ["Full", "Medium", "Light"];
+            current <=> root.noise-strength;
+            chosen => { root.preferences-changed(); }
+        }
+        Label { text: "Medium and Light leave a little of the room's sound in, which can sound more natural, and let a little more noise through."; }
+    }
+    if root.discord: SettingsSwitch {
+        text: "Take out your room's echo in Discord calls";
+        description: "For a bare or echoey room that makes your voice sound far away. Uses a little more processing, and your voice goes out 10 ms later.";
+        checked <=> root.dereverb;
+        toggled => { root.preferences-changed(); }
+    }
+    if root.discord: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "INPUT SENSITIVITY IN DISCORD CALLS"; }
+        SensitivitySlider {
+            label: "Input sensitivity"; value <=> root.sensitivity;
+            level: root.gate-level; sending: root.gate-sending;
+            committed => { root.preferences-changed(); }
+        }
+        Label {
+            text: root.gate-meter-note != "" ? root.gate-meter-note
+                : "Talk sends your voice when it's louder than the handle, and other sounds when they're 18 dB louder still. The bar is your microphone after noise suppression, as Talk hears it to decide.";
+        }
     }
 }
 

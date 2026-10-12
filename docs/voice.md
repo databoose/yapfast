@@ -49,6 +49,11 @@ to `webrtc-sys`. Discord voice levels in its own microphone thread; its voice
 activation gate still opens on the level before leveling, so held gain can't
 lift noise past it.
 
+Talk calls suppress noise with WebRTC's own suppressor, inside LiveKit's
+WebRTC. Discord calls use DeepFilterNet, which also takes out typing; see the
+Microphone section of [Discord](discord.md#microphone). Talk calls could share
+it through the capture hook, which now only returns a gain for each block.
+
 The input menu's level meter reads the chosen microphone locally through
 PulseAudio, raw and before any processing, only while the menu is open. It
 works while muted, outside calls and in the preview, and it never touches the

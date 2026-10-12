@@ -1,5 +1,6 @@
 // Layered graphite: the rail is darkest, the conversation lightest. Marigold marks
-// selection and primary actions, red mentions and destructive actions, green live voice.
+// selection and primary actions, red mentions and destructive actions, green live voice;
+// a microphone's level goes from green through orange to red as it nears clipping.
 export global Theme {
     out property <color> rail: #111215;
     out property <color> sidebar: #17181c;
@@ -25,6 +26,7 @@ export global Theme {
     out property <color> danger: #f0545e;
     out property <color> danger-hover: #f46f77;
     out property <color> live: #3ecf7e;
+    out property <color> loud: #ff8c42;
     out property <color> link: #7cc4ff;
     out property <duration> quick: 120ms;
 }
