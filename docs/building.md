@@ -77,6 +77,11 @@ have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
 The Matrix SDK revision follows the pinned MatrixRTC revision. Keep those two
 sources together when upgrading.
 
+libDF, DeepFilterNet's Rust implementation, comes from DeepFilterNet's
+repository at `d375b2d`, since crates.io has only its 0.2.5. It asks for
+tract `^0.21.4`, but tract 0.21.10 changed an API it uses, so Cargo.lock keeps
+tract at 0.21.4, the version DeepFilterNet's own lockfile has.
+
 LiveKit's Rust crates must stay on the mutually compatible versions in Cargo.lock.
 Do not run an unrestricted `cargo update`. Upgrade against the MatrixRTC lockfile
 and rebuild the native media stack. On Linux, the Nix shell supplies libwebrtc
@@ -96,7 +101,8 @@ core. On a machine with 8 GB of memory, set `CARGO_BUILD_JOBS=2` so the Matrix
 SDK and the C++ media bindings do not exhaust it.
 
 Development builds omit debug symbols for dependencies; the app keeps line
-tables. Release builds use thin LTO and strip symbols. Use them for builds
+tables. They optimize DeepFilterNet's crates and turn off tract-core's debug
+assertions, which reject its model; see Cargo.toml. Release builds use thin LTO and strip symbols. Use them for builds
 people run. The `fast` profile optimizes like release without LTO and builds
 incrementally. Use it for tests, local runs and
 [measurements](measurements/README.md): `cargo build --profile fast` or
@@ -128,7 +134,8 @@ root, with no `src/`, both in `vendor/` and in Cargo's registry.
 Crates that aren't vendored are in
 `~/.cargo/registry/src/index.crates.io-*/NAME-VERSION/`. The Matrix SDK is a git
 dependency; its checkout is `~/.cargo/git/checkouts/matrix-rust-sdk-*/c6ad52e/`,
-the short form of the revision pinned in Cargo.toml. libwebrtc's headers are in
+the short form of the revision pinned in Cargo.toml. libDF's is
+`~/.cargo/git/checkouts/deepfilternet-*/d375b2d/libDF/`. libwebrtc's headers are in
 `$LK_CUSTOM_WEBRTC/include` inside the development shell.
 
 ## Checks

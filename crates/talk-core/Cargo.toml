@@ -10,20 +10,27 @@ default = ["matrix", "discord"]
 # Matrix: sign-in, encrypted rooms and MatrixRTC voice.
 matrix = ["dep:keyring", "dep:matrix-sdk", "dep:matrix-sdk-ui", "dep:matrix-sdk-crypto", "dep:matrix-rtc-livekit", "dep:matrix-rtc-core", "dep:matrix-rtc-media", "dep:mime", "dep:url"]
 # Discord through the account linked on this device; see docs/discord.md.
-discord = ["dep:talk-discord", "dep:opus2", "dep:rand", "dep:base64", "dep:nnnoiseless"]
+discord = ["dep:talk-discord", "dep:opus2", "dep:rand", "dep:base64", "dep:nnnoiseless", "dep:deep_filter", "dep:ndarray"]
 
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
 # A Go Live stream's preview goes to Discord as a data URI.
 base64 = { version = "0.22", optional = true }
+# DeepFilterNet 3, through its Rust implementation libDF on tract: Discord
+# voice's noise suppression. crates.io only has 0.2.5, from before DeepFilterNet
+# 3, so this is the repository's last commit. `default-model` builds the model's
+# weights (MIT/Apache-2.0, 8 MB) into Talk.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "d375b2d8309e0935d165700c91da9de862a99c31", default-features = false, features = ["tract", "default-model"], optional = true }
 directories.workspace = true
 futures-util.workspace = true
 # Decode received images with bounded dimensions before the UI sees them.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 keyring = { workspace = true, optional = true }
 livekit.workspace = true
-# RNNoise, a Rust port: Discord voice's noise suppression and speech detection.
+# libDF's frames, at the version it uses.
+ndarray = { version = "0.15", optional = true }
+# RNNoise, a Rust port: Discord voice's other noise suppressor, to compare.
 nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
 # A Go Live stream's sound, at the version songbird uses.
 opus2 = { version = "0.4.0", optional = true }

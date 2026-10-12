@@ -1,8 +1,8 @@
 //! Discord voice's audio on this machine. LiveKit's device module only serves
 //! its own calls, so Discord voice opens the chosen microphone and speakers
 //! itself, through PulseAudio on Linux. The microphone goes through WebRTC's
-//! echo cancellation, RNNoise's noise suppression, WebRTC's gain control and
-//! Talk's leveling, and a gate that RNNoise's speech detection opens.
+//! echo cancellation, DeepFilterNet's noise suppression (or RNNoise's), WebRTC's
+//! gain control and Talk's leveling, and a gate that speech opens.
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -127,9 +127,7 @@ fn decibels(samples: &[i16]) -> f32 {
 
 /// The gate opens on a block louder than this, in RMS dBFS, after processing,
 const GATE_OPEN: f32 = -42.0;
-/// or on one RNNoise takes for speech, at least this likely, that's louder
-/// than `SPEECH_FLOOR`.
-const SPEECH: f32 = 0.6;
+/// or on one the suppressor takes for speech that's louder than this.
 const SPEECH_FLOOR: f32 = -60.0;
 /// It stays open this many 10 ms blocks after the last that would open it.
 const GATE_HOLD: u32 = 40;
@@ -137,8 +135,8 @@ const GATE_HOLD: u32 = 40;
 /// quiet start, such as an "h", comes before it's loud or clear enough to open
 /// it. Speech goes out this much later while the gate stays open.
 const BEFORE_OPENING: usize = 10;
-/// RNNoise takes a few blocks to learn the noise, which passes meanwhile, so
-/// the gate stays shut for this many after the microphone opens.
+/// The suppressor takes a few blocks to learn the noise, which passes
+/// meanwhile, so the gate stays shut for this many after the microphone opens.
 const WARM_UP: u32 = 20;
 
 /// Sends the microphone only while someone talks, starting a little before.
@@ -154,14 +152,14 @@ impl Gate {
         self.hold > 0
     }
 
-    /// Takes the next 10 ms block, with its level and RNNoise's speech
-    /// probability, and returns the blocks to send: none while closed, and on
-    /// opening, those kept from before too.
-    fn block(&mut self, samples: Vec<f32>, level: f32, speech: f32) -> Vec<Vec<f32>> {
+    /// Takes the next 10 ms block, with its level and whether the suppressor
+    /// takes it for speech, and returns the blocks to send: none while closed,
+    /// and on opening, those kept from before too.
+    fn block(&mut self, samples: Vec<f32>, level: f32, speech: bool) -> Vec<Vec<f32>> {
         let was_open = self.is_open();
         self.heard = self.heard.saturating_add(1);
         let warm = self.heard > WARM_UP;
-        if warm && (level > GATE_OPEN || (speech >= SPEECH && level > SPEECH_FLOOR)) {
+        if warm && (level > GATE_OPEN || (speech && level > SPEECH_FLOOR)) {
             self.hold = GATE_HOLD;
         } else {
             self.hold = self.hold.saturating_sub(1);
@@ -262,15 +260,16 @@ mod linux {
     use talk_discord::voice::{CHANNELS, FRAME, Microphone, SAMPLE_RATE, Track};
 
     use super::{Capture, Gate, Reverse, Speakers, decibels};
-    use crate::meter::pulse;
+    use crate::{meter::pulse, noise::Denoiser};
 
     /// Frames waiting for the speakers; more than this and new ones are dropped.
     const QUEUE: usize = 4;
     /// Roughly how late the microphone hears what the speakers played.
     const ECHO_DELAY_MS: i32 = 60;
-    /// Capture works in WebRTC's 10 ms blocks, which are RNNoise's frames too.
+    /// Capture works in WebRTC's 10 ms blocks, which are the suppressors'
+    /// frames too.
     const BLOCK: usize = SAMPLE_RATE as usize / 100;
-    const _: () = assert!(BLOCK == nnnoiseless::DenoiseState::FRAME_SIZE);
+    const _: () = assert!(BLOCK == crate::noise::BLOCK);
 
     /// Opens the speakers and returns them with the queue that feeds them.
     /// Every played frame also goes to `reverse` for echo cancellation.
@@ -329,17 +328,16 @@ mod linux {
     }
 
     /// The microphone's processing, block by block: WebRTC cancels echo and
-    /// filters out rumble, RNNoise takes out noise and hears speech, WebRTC
-    /// controls the gain of what's left, and Talk levels it. The gate decides
-    /// what's sent.
+    /// filters out rumble, the chosen suppressor takes out noise and hears
+    /// speech, WebRTC controls the gain of what's left, and Talk levels it. The
+    /// gate decides what's sent.
     pub(super) struct Processing {
         echo: AudioProcessingModule,
-        denoise: Box<nnnoiseless::DenoiseState<'static>>,
+        denoiser: Denoiser,
         gain: AudioProcessingModule,
         leveler: crate::leveling::Leveler,
         pub(super) gate: Gate,
-        noisy: Vec<f32>,
-        clean: Vec<f32>,
+        samples: Vec<f32>,
     }
 
     impl Processing {
@@ -348,12 +346,11 @@ mod linux {
             let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
             Self {
                 echo,
-                denoise: nnnoiseless::DenoiseState::new(),
+                denoiser: Denoiser::new(crate::noise::chosen()),
                 gain: AudioProcessingModule::new(false, true, false, false),
                 leveler: crate::leveling::Leveler::default(),
                 gate: Gate::default(),
-                noisy: vec![0.0; BLOCK],
-                clean: vec![0.0; BLOCK],
+                samples: vec![0.0; BLOCK],
             }
         }
 
@@ -368,11 +365,16 @@ mod linux {
         /// to send, as f32 in full scale.
         pub(super) fn block(&mut self, block: &mut [i16]) -> Vec<Vec<f32>> {
             let _ = self.echo.process_stream(block, SAMPLE_RATE as i32, 1);
-            for (value, sample) in self.noisy.iter_mut().zip(block.iter()) {
+            let chosen = crate::noise::chosen();
+            if self.denoiser.suppressor() != chosen {
+                tracing::info!(?chosen, "Discord microphone switches noise suppression");
+                self.denoiser = Denoiser::new(chosen);
+            }
+            for (value, sample) in self.samples.iter_mut().zip(block.iter()) {
                 *value = f32::from(*sample);
             }
-            let speech = self.denoise.process_frame(&mut self.clean, &self.noisy);
-            for (sample, value) in block.iter_mut().zip(&self.clean) {
+            let speech = self.denoiser.block(&mut self.samples);
+            for (sample, value) in block.iter_mut().zip(&self.samples) {
                 *sample = value.clamp(-32768.0, 32767.0) as i16;
             }
             let _ = self.gain.process_stream(block, SAMPLE_RATE as i32, 1);
@@ -474,21 +476,27 @@ mod linux {
     /// Runs a recording through the microphone's processing: raw mono 16-bit
     /// 48 kHz from `TALK_AUDIO_IN`, written processed to `TALK_AUDIO_OUT`, and
     /// what was sent to `TALK_AUDIO_SENT`, with silence where the gate was
-    /// closed.
+    /// closed. `TALK_SUPPRESSOR=rnnoise` suppresses noise with RNNoise.
     #[test]
     #[ignore = "needs TALK_AUDIO_IN and TALK_AUDIO_OUT"]
     fn processes_a_recording() {
+        if std::env::var("TALK_SUPPRESSOR").is_ok_and(|name| name == "rnnoise") {
+            crate::noise::set(crate::noise::Suppressor::RNNoise);
+        }
         let input = std::fs::read(std::env::var("TALK_AUDIO_IN").unwrap()).unwrap();
         let mut processing = Processing::new();
         let (mut processed, mut sent) = (Vec::new(), Vec::new());
         let (mut opened, mut blocks) = (0, 0);
+        let mut took = std::time::Duration::ZERO;
         for bytes in input.chunks_exact(BLOCK * 2) {
             let mut block: Vec<i16> = bytes
                 .chunks_exact(2)
                 .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
                 .collect();
             let was_open = processing.gate.is_open();
+            let started = std::time::Instant::now();
             let out = processing.block(&mut block);
+            took += started.elapsed();
             if processing.gate.is_open() && !was_open {
                 opened += 1;
                 println!(
@@ -511,7 +519,10 @@ mod linux {
                 }));
             }
         }
-        println!("{blocks} blocks, the gate opened {opened} times");
+        println!(
+            "{blocks} blocks, the gate opened {opened} times, {:?} a block",
+            took / blocks
+        );
         std::fs::write(std::env::var("TALK_AUDIO_OUT").unwrap(), processed).unwrap();
         if let Ok(path) = std::env::var("TALK_AUDIO_SENT") {
             std::fs::write(path, sent).unwrap();
@@ -588,17 +599,18 @@ mod tests {
         let mut gate = Gate::default();
         let block = |value: f32| vec![value; 480];
         for _ in 0..WARM_UP {
-            assert!(gate.block(block(0.0), -20.0, 1.0).is_empty(), "warming up");
+            assert!(gate.block(block(0.0), -20.0, true).is_empty(), "warming up");
         }
         for index in 0..15 {
-            let quiet = gate.block(block(index as f32), -70.0, 0.9);
+            let quiet = gate.block(block(index as f32), -70.0, true);
             assert!(
                 quiet.is_empty() && !gate.is_open(),
                 "too quiet to be speech"
             );
         }
-        // A soft start RNNoise hears as speech opens it, with the 100 ms before.
-        let opened = gate.block(block(15.0), -50.0, 0.9);
+        // A soft start the suppressor hears as speech opens it, with the 100 ms
+        // before.
+        let opened = gate.block(block(15.0), -50.0, true);
         assert!(gate.is_open());
         let firsts: Vec<f32> = opened.iter().map(|samples| samples[0]).collect();
         assert_eq!(
@@ -607,13 +619,13 @@ mod tests {
         );
         // Then one block at a time, through a pause shorter than the hold.
         for index in 0..GATE_HOLD - 1 {
-            assert_eq!(gate.block(block(0.0), -70.0, 0.0).len(), 1, "{index}");
+            assert_eq!(gate.block(block(0.0), -70.0, false).len(), 1, "{index}");
         }
-        assert!(gate.block(block(0.0), -70.0, 0.0).is_empty());
+        assert!(gate.block(block(0.0), -70.0, false).is_empty());
         assert!(!gate.is_open());
-        // Loud noise opens it whatever RNNoise says; quiet noise doesn't.
-        assert!(gate.block(block(0.0), -55.0, 0.1).is_empty());
-        assert_eq!(gate.block(block(1.0), -30.0, 0.1).len(), 3);
+        // Loud noise opens it whatever the suppressor says; quiet noise doesn't.
+        assert!(gate.block(block(0.0), -55.0, false).is_empty());
+        assert_eq!(gate.block(block(1.0), -30.0, false).len(), 3);
     }
 
     #[test]

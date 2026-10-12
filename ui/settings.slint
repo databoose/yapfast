@@ -244,6 +244,10 @@ export component VoiceSettings inherits VerticalLayout {
     in property <int> speaker-index;
     in-out property <bool> unmute-on-join;
     in-out property <bool> level-voice;
+    /// Discord calls suppress noise with RNNoise rather than DeepFilterNet.
+    in-out property <bool> rnnoise;
+    /// Discord is linked, so its calls' noise suppression shows.
+    in property <bool> discord;
     callback select-microphone(int);
     callback select-speaker(int);
     callback refresh-devices;
@@ -280,6 +284,16 @@ export component VoiceSettings inherits VerticalLayout {
         description: "Keeps your voice steady as you lean towards the microphone or away from it. Whispers and shouts still come through as they are.";
         checked <=> root.level-voice;
         toggled => { root.preferences-changed(); }
+    }
+    if root.discord: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "NOISE SUPPRESSION IN DISCORD CALLS"; }
+        Choices {
+            label: "Noise suppression in Discord calls"; options: ["DeepFilterNet", "RNNoise"];
+            current: root.rnnoise ? 1 : 0;
+            chosen(index) => { root.rnnoise = index == 1; root.preferences-changed(); }
+        }
+        Label { text: "DeepFilterNet also takes out typing and other sudden noise. RNNoise uses less processing. A call going on switches straight away."; }
     }
 }
 

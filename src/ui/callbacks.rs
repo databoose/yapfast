@@ -465,6 +465,12 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.unmute_on_join = window.get_unmute_on_join();
         layout.level_voice = Some(window.get_level_voice());
         talk_core::leveling::set_enabled(window.get_level_voice());
+        layout.noise_suppression = if window.get_rnnoise() {
+            talk_core::noise::Suppressor::RNNoise
+        } else {
+            talk_core::noise::Suppressor::DeepFilterNet
+        };
+        talk_core::noise::set(layout.noise_suppression);
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_sound = Some(window.get_notification_sound());

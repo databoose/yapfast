@@ -40,6 +40,7 @@ mod matrix_voice;
 pub mod mention;
 pub mod meter;
 pub mod network;
+pub mod noise;
 #[cfg(feature = "discord")]
 pub mod playback;
 #[cfg(feature = "discord")]

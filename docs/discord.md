@@ -7,7 +7,7 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate, [RNNoise](#microphone) | Audio on Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate, [DeepFilterNet noise suppression](#microphone) | Audio on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications, member lists | Threads, forums, search, pins, forwarding |
@@ -172,8 +172,8 @@ Scope for the beta:
 - One connection at a time across Talk and Discord. Joining Discord voice asks
   to leave a Talk call, and the other way round, as in PRODUCT.md.
 - The same devices, push-to-talk, voice activation, echo cancellation and
-  voice leveling as Talk calls. Noise suppression is RNNoise rather than
-  WebRTC's, as described under Microphone below.
+  voice leveling as Talk calls. Noise suppression is DeepFilterNet, or
+  RNNoise, rather than WebRTC's, as described under Microphone below.
 
 Clicking a voice channel joins through the same voice dock and one-call rule
 as Matrix voice. Calls start muted, mute and deafen show in Discord, and a
@@ -208,7 +208,7 @@ straight to WebRTC and only plays remote WebRTC streams. Its audio processing
 module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
 Discord voice gets a small path of its own: PulseAudio for the microphone and
 speakers at 48 kHz, the processing module for echo cancellation and gain
-(noise suppression became RNNoise; see [Microphone](#microphone)), then
+(noise suppression became DeepFilterNet; see [Microphone](#microphone)), then
 songbird for Opus and DAVE. Feed the speaker mix to
 the processing module's reverse stream so echo cancellation has its reference.
 
@@ -268,22 +268,75 @@ one, haven't been checked by hand yet.
 
 Discord's own client suppresses noise with Krisp, a neural network, and
 WebRTC's suppressor sounded different from it. So Talk's Discord microphone
-runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter;
-RNNoise, through `nnnoiseless` (BSD-3-Clause), which takes out the noise and
-gives each block a speech probability; WebRTC's gain control on what's left;
-then Talk's leveling. On a synthesized test with fan-like noise at -48 dBFS,
-pauses came out near -87 dBFS.
+runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter; a
+noise suppressor, which also tells the gate which blocks are speech; WebRTC's
+gain control on what's left; then Talk's leveling.
 
-The voice gate opens on a block louder than -42 dBFS, or one RNNoise takes
-for speech (at least 0.6) above -60 dBFS, and holds 400 ms. It keeps the last
-100 ms while shut and sends them when it opens, so a soft start such as an "h"
-isn't cut off; speech goes out that much later until the gate closes. It stays
-shut for the first 200 ms after the microphone opens, while RNNoise learns the
-noise. Opus stays at songbird's 128 kbps in its music mode.
+The suppressor is DeepFilterNet 3, through libDF, its Rust implementation on
+tract (crate `deep_filter`; the code and the model's weights are MIT or
+Apache-2.0). crates.io has only libDF 0.2.5, from before DeepFilterNet 3, so
+Talk takes the repository's last commit, `d375b2d`, and its `default-model`
+feature builds the 8 MB model into Talk. It runs both of its stages on every
+block, as libDF's command line does. The library's defaults skip deep
+filtering above 20 dB SNR, which dulled clean speech (wideband PESQ 4.53 fell
+to 3.91) and took up to 5 dB off speech over a fan.
+
+RNNoise, through `nnnoiseless` (BSD-3-Clause), was the suppressor until
+2026-10-12. On real calls it let keyboard clicks through, and they held the
+gate open. Settings → Voice & audio → "Noise suppression in Discord calls"
+still chooses it, to compare the two; Talk keeps the choice in `layout.json`
+as `noise_suppression`. A call going on switches at its next block, after
+DeepFilterNet's 0.2 s load if switching to it.
+
+The voice gate opens on a block louder than -42 dBFS, or one the suppressor
+takes for speech above -60 dBFS, and holds 400 ms. DeepFilterNet takes a block
+for speech when its own estimate of the block's SNR is at least 5 dB, RNNoise
+when its speech probability is at least 0.6. In a simulation of the gate on
+the mixes below, a 0 dB threshold let typing open it in pauses, and 10 dB
+missed quiet speech. RNNoise's probability beside DeepFilterNet's output did
+as well as 5 dB (99.4% of speech sent rather than 99.5%, no opening in pauses
+rather than one), so Talk doesn't run both. The
+gate keeps the last 100 ms while shut and sends them when it opens, so a soft
+start such as an "h" isn't cut off; speech goes out that much later until the
+gate closes. It stays shut for the first 200 ms after the microphone opens,
+while the suppressor learns the noise. Opus stays at songbird's 128 kbps in
+its music mode.
+
+`scripts/compare-noise-suppression` compares the two on 90 s of speech, two
+Spoken Wikipedia readings at -26 dBFS with 1.5-4 s pauses, mixed with four
+keyboard recordings (95% of blocks below -32 dBFS), a recorded fan high-passed
+as WebRTC does (-42 dBFS), pink hiss (-45 dBFS), and pairs of them; for the
+gate, the pairs again 14 dB quieter. PESQ is wideband, against the clean
+speech. Results on 2026-10-12, with the `fast` profile on a 12-core desktop CPU:
+
+| | RNNoise | DeepFilterNet |
+| --- | --- | --- |
+| Time per 10 ms block, suppressor alone, mean (p99) | 0.043 ms (0.05) | 0.34 ms (0.46) |
+| Time per block, the whole microphone | 0.06 ms | 0.35 ms |
+| Microphone thread in a call, fake Discord | 1.4% of a core | 5.9% of a core |
+| Output behind input | 10 ms | 30 ms |
+| Memory | | 39 MiB more, loaded in 0.2 s |
+| PESQ, clean speech | 4.53 | 4.53 |
+| PESQ, typing (unprocessed 1.61) | 1.99 | 3.05 |
+| PESQ, fan (2.23) | 2.60 | 3.37 |
+| PESQ, hiss (1.72) | 2.88 | 3.49 |
+| PESQ, typing and fan (1.52) | 1.93 | 2.78 |
+| Typing left in pauses, mean and loudest block | -47, -29 dBFS | -79, -53 dBFS |
+| Pauses sent with typing, the gate's 400 ms hold included | 70-83% | 6.3-6.4% |
+| Times typing opened the gate in pauses, five typing mixes | 3-11 each | 0 |
+| Speech sent, all mixes | 99.8-100% | 99.1-100% |
+
+DeepFilterNet is 20 ms later than RNNoise. Both lag by half their 20 ms
+window, 10 ms, and DeepFilterNet also looks two blocks ahead. With the gate's
+100 ms, speech goes out 130 ms late. The speech it doesn't send is mostly the first second after
+the microphone opens, while its normalization and WebRTC's gain control
+settle, and 10-50 ms at the quiet ends of words. These are mixes, not a
+microphone in a room, and nothing compared Krisp.
 
 To hear the processing, run a recording through it: raw mono 16-bit 48 kHz in
 `TALK_AUDIO_IN`, with `TALK_AUDIO_OUT` and optionally `TALK_AUDIO_SENT`, then
 `cargo test -p talk-core processes_a_recording -- --ignored --nocapture`.
+`TALK_SUPPRESSOR=rnnoise` runs it with RNNoise.
 
 ### Screen sharing
 

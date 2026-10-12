@@ -486,6 +486,8 @@ struct Layout {
     unmute_on_join: bool,
     /// Your voice is evened out in calls; on unless turned off.
     level_voice: Option<bool>,
+    /// What takes out noise in Discord calls; DeepFilterNet unless changed.
+    noise_suppression: talk_core::noise::Suppressor,
     /// How loud people sound in calls, and their streams, by Discord or
     /// Matrix user id; see [`talk_core::volume`]. Unlisted people are as they
     /// come.
@@ -520,6 +522,8 @@ impl Layout {
         window.set_unmute_on_join(self.unmute_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
         talk_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
+        window.set_rnnoise(self.noise_suppression == talk_core::noise::Suppressor::RNNoise);
+        talk_core::noise::set(self.noise_suppression);
         for (person, volume) in &self.volumes {
             talk_core::volume::set(talk_core::volume::Kind::Voice, person, *volume);
         }
