@@ -583,6 +583,56 @@ pub struct SavedNames {
     usernames: Vec<(String, String)>,
 }
 
+/// [`Names`] serialized as [`SavedNames`]; see [`Names::saving`].
+pub struct SavingNames<'a>(&'a Names);
+
+impl serde::Serialize for SavingNames<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        /// A list serialized from the iterator its function makes.
+        struct List<F>(F);
+        impl<F: Fn() -> I, I: Iterator<Item: serde::Serialize>> serde::Serialize for List<F> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_seq((self.0)())
+            }
+        }
+        let names = self.0;
+        let mut saved = serializer.serialize_struct("SavedNames", 7)?;
+        saved.serialize_field("users", &List(|| names.users.iter()))?;
+        saved.serialize_field(
+            "nicknames",
+            &List(|| {
+                names
+                    .nicknames
+                    .iter()
+                    .map(|((guild, user), nick)| (guild, user, nick))
+            }),
+        )?;
+        saved.serialize_field("members", &List(|| names.members.iter()))?;
+        saved.serialize_field("avatars", &List(|| names.avatars.iter()))?;
+        saved.serialize_field(
+            "member_avatars",
+            &List(|| {
+                names
+                    .member_avatars
+                    .iter()
+                    .map(|((guild, user), avatar)| (guild, user, avatar))
+            }),
+        )?;
+        saved.serialize_field(
+            "roles",
+            &List(|| {
+                names
+                    .roles
+                    .iter()
+                    .map(|((guild, user), roles)| (guild, user, roles))
+            }),
+        )?;
+        saved.serialize_field("usernames", &List(|| names.usernames.iter()))?;
+        saved.end()
+    }
+}
+
 /// Who is who, learned from the gateway and from messages.
 #[derive(Default)]
 pub struct Names {
@@ -614,7 +664,7 @@ pub struct Names {
 /// People whose names are kept, at most. Talk shows the authors of the
 /// channels it keeps, 41 of up to 200 messages each, and 40 member lists of
 /// 100 rows; every message Discord sends from any server teaches it one
-/// more. One person takes about 500 bytes.
+/// more. One person takes about 900 bytes.
 const KEPT_PEOPLE: usize = 20_000;
 
 /// Sets `key` to `value`, or removes it for none; whether that changed it.
@@ -634,30 +684,10 @@ fn changed<K: std::hash::Hash + Eq, V: PartialEq>(
 }
 
 impl Names {
-    pub fn save(&self) -> SavedNames {
-        let pair = |map: &HashMap<String, String>| {
-            map.iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect()
-        };
-        let triple = |map: &HashMap<(String, String), String>| {
-            map.iter()
-                .map(|((guild, user), value)| (guild.clone(), user.clone(), value.clone()))
-                .collect()
-        };
-        SavedNames {
-            users: pair(&self.users),
-            nicknames: triple(&self.nicknames),
-            members: self.members.iter().cloned().collect(),
-            avatars: pair(&self.avatars),
-            member_avatars: triple(&self.member_avatars),
-            roles: self
-                .roles
-                .iter()
-                .map(|((guild, user), roles)| (guild.clone(), user.clone(), roles.clone()))
-                .collect(),
-            usernames: pair(&self.usernames),
-        }
+    /// These names as [`SavedNames`], serialized straight from the maps
+    /// rather than from a copy of them: 20,000 people take 17 MiB.
+    pub fn saving(&self) -> SavingNames<'_> {
+        SavingNames(self)
     }
 
     pub fn restore(saved: SavedNames) -> Self {
@@ -1312,7 +1342,8 @@ mod tests {
         assert_eq!(names.name("10", "0"), Some("Zero"));
         assert!(names.knows_member("10", "0"));
         assert!(names.user_name(&KEPT_PEOPLE.to_string()).is_some());
-        let restored = Names::restore(names.save());
+        let saved = serde_json::to_vec(&names.saving()).unwrap();
+        let restored = Names::restore(serde_json::from_slice(&saved).unwrap());
         assert_eq!(restored.users.len(), names.users.len());
     }
 
