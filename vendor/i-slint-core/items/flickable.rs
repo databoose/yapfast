@@ -49,6 +49,16 @@ const DECELERATION: f32 = 2000.;
 /// information to derive a fling velocity.
 /// The unit is: millisecond
 const WHEEL_SCROLL_DURATION: Duration = Duration::from_millis(180);
+/// Talk: how far the winit backend scrolls for one notch of a wheel, in logical pixels.
+const WHEEL_NOTCH: f32 = 60.;
+/// Talk: a wheel spun faster than this, in notches a second, scrolls farther for each notch,
+/// in proportion, so a hard spin crosses a long history quickly and a slow one keeps its
+/// precision.
+const WHEEL_ACCELERATION_START: f32 = 12.;
+/// Talk: the most a notch scales.
+const WHEEL_MOST_ACCELERATION: f32 = 6.;
+/// Talk: how long a notch counts towards the wheel's speed: its weight falls by e in this time.
+const WHEEL_SPEED_MEMORY: Duration = Duration::from_millis(200);
 /// The maximum duration between a move and a release event to start an animation
 /// If the duration is larger than this value, no animation will be executed because
 /// it is not desired
@@ -470,6 +480,10 @@ struct FlickableDataInner {
     /// This allows us to add the missing delta of the animation to the next scroll event if the user scrolls again
     /// before the animation is finished.
     running_animation: Option<(Instant, [Option<ConstantDecelerationParameters>; 2])>,
+
+    /// Talk: when the wheel's last notch came, the recent notches, each weighing less with
+    /// time, and the way they turned, to tell how fast the wheel spins.
+    wheel_notches: Option<(Instant, f32, euclid::Vector2D<f32, crate::lengths::LogicalPx>)>,
 }
 
 impl FlickableDataInner {
@@ -527,6 +541,10 @@ impl FlickableDataInner {
         let content_x = (Flickable::FIELD_OFFSETS.content_x()).apply_pin(flick);
         let content_y = (Flickable::FIELD_OFFSETS.content_y()).apply_pin(flick);
         let current_pos = LogicalPoint::from_lengths(content_x.get(), content_y.get());
+
+        if self.capture_events.is_none() && matches!(phase, TouchPhase::Moved) {
+            delta = self.accelerate_wheel(delta);
+        }
 
         if self.capture_events.is_none()
             && matches!(phase, TouchPhase::Moved)
@@ -631,6 +649,30 @@ impl FlickableDataInner {
             self.last_scroll_event = None;
             InputEventResult::EventIgnored
         }
+    }
+
+    /// Talk: scales a wheel's `delta` by how fast the wheel spins. Only whole notches count:
+    /// touchpads that send no phases scroll by less at a time, and keep their own pace.
+    fn accelerate_wheel(&mut self, delta: LogicalVector) -> LogicalVector {
+        let delta = delta.cast::<f32>();
+        let notches = delta.length() / WHEEL_NOTCH;
+        if notches < 1. {
+            self.wheel_notches = None;
+            return delta.cast();
+        }
+        let now = crate::animations::current_tick();
+        let earlier = match self.wheel_notches {
+            // A turn the other way starts afresh.
+            Some((time, count, direction)) if direction.dot(delta) > 0. => {
+                let age = now.duration_since(time).as_secs_f32();
+                count * (-age / WHEEL_SPEED_MEMORY.as_secs_f32()).exp()
+            }
+            _ => 0.,
+        };
+        let count = earlier + notches;
+        self.wheel_notches = Some((now, count, delta));
+        let speed = count / WHEEL_SPEED_MEMORY.as_secs_f32();
+        (delta * (speed / WHEEL_ACCELERATION_START).clamp(1., WHEEL_MOST_ACCELERATION)).cast()
     }
 
     fn flick_limits(

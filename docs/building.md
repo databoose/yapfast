@@ -71,6 +71,14 @@ row is no longer shown or goes. A wheel scroll animates
 animation when rows go in above inside `hold`. This is `talk_anchor.rs` and the
 changes marked `Talk:` in `model/repeater.rs`.
 
+A mouse wheel spun fast scrolls farther for each notch. Upstream, each notch
+scrolls 60 pixels however fast the notches come, so a hard spin through a long
+history crawls. Talk weighs the recent notches, each counting less with time,
+and above 12 notches a second scales each notch by the speed over 12, at most
+six times. Deltas smaller than a notch, as from touchpads that send no phases,
+keep their pace. These are the changes marked `Talk:` around
+`accelerate_wheel` in `items/flickable.rs`.
+
 Reapply them to the matching release when upgrading Slint. Styled paragraphs now
 have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
 
@@ -113,8 +121,9 @@ incrementally. Use it for tests, local runs and
 Talk patches these crates in `vendor/`, through `[patch.crates-io]` or a path
 dependency in Cargo.toml:
 
-- `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText` and
-  timelines that keep their place as older messages load, above.
+- `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText`,
+  timelines that keep their place as older messages load, and a wheel that
+  speeds up when spun fast, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting
   and mipmapped pictures, above.
 - `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native
