@@ -419,6 +419,8 @@ mod linux {
     /// gate decides what's sent.
     pub(super) struct Processing {
         echo: AudioProcessingModule,
+        /// Takes out the room's reverb while asked to.
+        dereverb: Option<crate::dereverb::Dereverb>,
         denoiser: Denoiser,
         gain: AudioProcessingModule,
         leveler: crate::leveling::Leveler,
@@ -434,6 +436,7 @@ mod linux {
             let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
             Self {
                 echo,
+                dereverb: None,
                 denoiser: Denoiser::new(crate::noise::chosen(), crate::noise::limit()),
                 gain: AudioProcessingModule::new(false, true, false, false),
                 leveler: crate::leveling::Leveler::default(),
@@ -462,6 +465,13 @@ mod linux {
             self.denoiser.limit(crate::noise::limit());
             for (value, sample) in self.samples.iter_mut().zip(block.iter()) {
                 *value = f32::from(*sample);
+            }
+            if crate::noise::dereverb() {
+                self.dereverb
+                    .get_or_insert_with(crate::dereverb::Dereverb::new)
+                    .block(&mut self.samples);
+            } else {
+                self.dereverb = None;
             }
             let speech = self.denoiser.block(&mut self.samples);
             for (sample, value) in block.iter_mut().zip(&self.samples) {
@@ -597,7 +607,11 @@ mod linux {
     /// 48 kHz from `TALK_AUDIO_IN`, written processed to `TALK_AUDIO_OUT`, and
     /// what was sent to `TALK_AUDIO_SENT`, with silence where the gate was
     /// closed. `TALK_SUPPRESSOR` chooses the suppressor (`rnnoise`, `off`), and
-    /// `TALK_NOISE_LIMIT` limits its attenuation, in dB.
+    /// `TALK_NOISE_LIMIT` limits its attenuation, in dB. `TALK_AUDIO_FAR`, raw
+    /// mono 16-bit 48 kHz as long as the input, is what the speakers played,
+    /// for echo cancellation, given a 20 ms stereo frame at a time as a call
+    /// gives it; then `TALK_AUDIO_ECHOED` gets the microphone with only echo
+    /// cancelled. `TALK_LEVELING=off` turns off evening out the voice.
     #[test]
     #[ignore = "needs TALK_AUDIO_IN and TALK_AUDIO_OUT"]
     fn processes_a_recording() {
@@ -607,7 +621,26 @@ mod linux {
         if let Ok(limit) = std::env::var("TALK_NOISE_LIMIT") {
             crate::noise::set_limit(limit.parse().unwrap());
         }
+        if std::env::var("TALK_DEREVERB").is_ok_and(|value| value == "on") {
+            crate::noise::set_dereverb(true);
+        }
+        if std::env::var("TALK_LEVELING").is_ok_and(|value| value == "off") {
+            crate::leveling::set_enabled(false);
+        }
         let input = std::fs::read(std::env::var("TALK_AUDIO_IN").unwrap()).unwrap();
+        let read = |name| -> Vec<i16> {
+            std::fs::read(std::env::var(name).unwrap())
+                .unwrap()
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .collect()
+        };
+        let far = std::env::var("TALK_AUDIO_FAR")
+            .is_ok()
+            .then(|| read("TALK_AUDIO_FAR"));
+        // The same echo cancellation alone, to hear what it leaves.
+        let mut echo = AudioProcessingModule::new(true, false, true, false);
+        let mut echoed = Vec::new();
         let mut processing = Processing::new();
         let (mut processed, mut sent) = (Vec::new(), Vec::new());
         let (mut opened, mut blocks) = (0, 0);
@@ -617,6 +650,25 @@ mod linux {
                 .chunks_exact(2)
                 .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
                 .collect();
+            if let Some(far) = &far
+                && blocks % 2 == 0
+            {
+                let start = blocks as usize * BLOCK;
+                let mut frame: Vec<i16> = far[start.min(far.len())..(start + FRAME).min(far.len())]
+                    .iter()
+                    .flat_map(|sample| [*sample, *sample])
+                    .collect();
+                frame.resize(FRAME * 2, 0);
+                processing.played(&mut frame.clone());
+                let _ = echo.process_reverse_stream(&mut frame, SAMPLE_RATE as i32, 2);
+                let mut alone = block.clone();
+                let _ = echo.process_stream(&mut alone, SAMPLE_RATE as i32, 1);
+                echoed.extend(alone);
+            } else if far.is_some() {
+                let mut alone = block.clone();
+                let _ = echo.process_stream(&mut alone, SAMPLE_RATE as i32, 1);
+                echoed.extend(alone);
+            }
             let was_open = processing.gate.is_open();
             let started = std::time::Instant::now();
             let out = processing.block(&mut block);
@@ -650,6 +702,13 @@ mod linux {
         std::fs::write(std::env::var("TALK_AUDIO_OUT").unwrap(), processed).unwrap();
         if let Ok(path) = std::env::var("TALK_AUDIO_SENT") {
             std::fs::write(path, sent).unwrap();
+        }
+        if let Ok(path) = std::env::var("TALK_AUDIO_ECHOED") {
+            let bytes: Vec<u8> = echoed
+                .iter()
+                .flat_map(|sample| sample.to_le_bytes())
+                .collect();
+            std::fs::write(path, bytes).unwrap();
         }
     }
 

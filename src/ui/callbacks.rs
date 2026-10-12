@@ -469,6 +469,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.noise_strength = chosen(&STRENGTHS, window.get_noise_strength());
         talk_core::noise::set(layout.noise_suppression);
         talk_core::noise::set_strength(layout.noise_strength);
+        layout.reduce_room_echo = window.get_dereverb();
+        talk_core::noise::set_dereverb(layout.reduce_room_echo);
         layout.input_sensitivity = Some(window.get_sensitivity());
         talk_core::noise::set_sensitivity(layout.sensitivity() as f32);
         layout.share_typing = Some(window.get_share_typing());

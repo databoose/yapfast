@@ -427,6 +427,7 @@ export component TalkWindow inherits Window {
     in-out property <bool> level-voice: true;
     in-out property <int> noise-suppression;
     in-out property <int> noise-strength;
+    in-out property <bool> dereverb;
     in-out property <int> sensitivity: -60;
     /// The Discord microphone as its voice gate hears it, in dBFS, and whether
     /// the gate is open, refreshed by gate-meter-tick while voice settings
@@ -1783,7 +1784,7 @@ export component TalkWindow inherits Window {
             microphones: root.microphones; microphone-index: root.microphone-index;
             speakers: root.speakers; speaker-index: root.speaker-index;
             unmute-on-join <=> root.unmute-on-join; level-voice <=> root.level-voice;
-            noise-suppression <=> root.noise-suppression; noise-strength <=> root.noise-strength; discord: root.discord-linked;
+            noise-suppression <=> root.noise-suppression; noise-strength <=> root.noise-strength; dereverb <=> root.dereverb; discord: root.discord-linked;
             sensitivity <=> root.sensitivity; gate-level: root.gate-level; gate-sending: root.gate-sending; gate-meter-note: root.gate-meter-note;
             select-microphone(index) => { root.select-microphone(index); }
             select-speaker(index) => { root.select-speaker(index); }

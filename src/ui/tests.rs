@@ -183,6 +183,7 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
         noise_suppression: talk_core::noise::Suppressor::RNNoise,
         noise_strength: talk_core::noise::Strength::Light,
         input_sensitivity: Some(-45),
+        reduce_room_echo: true,
         ..Default::default()
     };
     let row = layout.restyle(&message, message_row(&message, &HashSet::new()));
@@ -235,6 +236,7 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     assert_eq!(saved["noise_suppression"], "rnnoise");
     assert_eq!(saved["noise_strength"], "light");
     assert_eq!(window.get_sensitivity(), -45);
+    assert!(window.get_dereverb() && !defaults.reduce_room_echo);
     assert_eq!(defaults.sensitivity(), -60);
     let out_of_range = Layout {
         input_sensitivity: Some(12),

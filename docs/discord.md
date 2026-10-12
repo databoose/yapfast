@@ -7,7 +7,7 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength | Audio on Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | Audio on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications, member lists | Threads, forums, search, pins, forwarding |
@@ -268,9 +268,10 @@ one, haven't been checked by hand yet.
 
 Discord's own client suppresses noise with Krisp, a neural network, and
 WebRTC's suppressor sounded different from it. So Talk's Discord microphone
-runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter; a
-noise suppressor, which also tells the gate which blocks are speech; WebRTC's
-gain control on what's left; then Talk's leveling.
+runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter; if
+asked, taking the room's echo out; a noise suppressor, which also tells the
+gate which blocks are speech; WebRTC's gain control on what's left; then
+Talk's leveling.
 
 The suppressor is DeepFilterNet 3, through libDF, its Rust implementation on
 tract (crate `deep_filter`; the code and the model's weights are MIT or
@@ -327,6 +328,47 @@ gate closes. It stays shut for the first 200 ms after the microphone opens,
 while the suppressor learns the noise. Opus stays at songbird's 128 kbps in
 its music mode.
 
+"Take out your room's echo in Discord calls" (`reduce_room_echo`, off unless
+turned on) is for a voice that sounds far away in a bare room: the reverb the
+room puts on it, which echo cancellation doesn't touch, since that only takes
+out what the speakers play. It's online weighted prediction error (WPE;
+Yoshioka and Nakatani 2012, in Caroselli et al.'s 2017 recursive least
+squares form), in `crates/talk-core/src/dereverb.rs`: in each band up to
+5 kHz, the reverb in a 20 ms frame is predicted from the 200 ms of frames
+starting 20 ms before it, and subtracted. The first 20 ms of the room, which
+the voice needs to sound whole, stay. DeepFilterNet takes some of a room out
+on its own, more than RNNoise, but its short view of the past limits it on
+late reverb. Its post-filter, tried at
+0.05-0.2, cut tails by up to 3 dB more without bringing PESQ closer to the dry
+speech, and cost 0.1-0.6 PESQ on the noise mixes, so Talk leaves it off. A
+search in October 2026 found no open model that takes a room out at 48 kHz in
+real time on a processor; LocalVQE does at 16 kHz.
+
+`scripts/compare-room-echo` runs the noise comparison's speech through
+synthetic rooms (a direct sound, then a decaying diffuse tail) and the whole
+microphone. Results on 2026-10-12, as above:
+
+| Room's reverberation time, reverb against direct sound | 0.4 s, -6 dB | 0.6 s, -3 dB | 0.8 s, 0 dB |
+| --- | --- | --- | --- |
+| PESQ against dry speech: unprocessed | 2.94 | 2.31 | 1.89 |
+| Room echo left (DeepFilterNet alone takes some out) | 3.15 | 2.66 | 2.24 |
+| Room echo taken out | 3.44 | 2.86 | 2.40 |
+| Reverb 50-150 ms after phrases, unprocessed, left, out, dB | -21, -29, -32 | -14, -24, -26 | -10, -18, -19 |
+
+On the noise mixes, PESQ fell 0.01-0.08 with it on (hiss 3.51 to 3.43), and
+on dry speech 0.05. It takes 0.04-0.08 ms more a block, about a fifth more,
+and puts the voice 10 ms later. Working up to 24 kHz rather than 5 kHz took
+no more out at 1.7 times the cost; 100 ms of history rather than 200 took a
+third less out.
+
+Echo cancellation is WebRTC's AEC3 with its defaults, fed the speakers' mix
+as it's written to PulseAudio. Fed a recording of a friend's voice through a
+simulated room into the microphone (`TALK_AUDIO_FAR` below), it took 42-48 dB
+of echo out with the speakers 60-400 ms behind, 37 dB at 500 ms, and none at
+600 ms, past what its delay search covers. A room reverberating for 0.65 s or
+more left enough of the echo (21 dB taken out) for the gate to send some of
+it, which longer filters in AEC3's configuration could help.
+
 `scripts/compare-noise-suppression [LIMIT]` compares the two, and Off through
 the whole microphone, at a strength's limit in dB, on 90 s of speech, two
 Spoken Wikipedia readings at -26 dBFS with 1.5-4 s pauses, mixed with four
@@ -362,8 +404,11 @@ microphone in a room, and nothing compared Krisp.
 To hear the processing, run a recording through it: raw mono 16-bit 48 kHz in
 `TALK_AUDIO_IN`, with `TALK_AUDIO_OUT` and optionally `TALK_AUDIO_SENT`, then
 `cargo test -p talk-core processes_a_recording -- --ignored --nocapture`.
-`TALK_SUPPRESSOR=rnnoise` or `off` chooses the suppressor, and
-`TALK_NOISE_LIMIT` limits it in dB.
+`TALK_SUPPRESSOR=rnnoise` or `off` chooses the suppressor,
+`TALK_NOISE_LIMIT` limits it in dB, `TALK_DEREVERB=on` takes the room's echo
+out and `TALK_LEVELING=off` turns leveling off. `TALK_AUDIO_FAR`, in the same
+format and as long, is what the speakers played, for echo cancellation;
+`TALK_AUDIO_ECHOED` then gets the microphone with only echo cancelled.
 
 ### Screen sharing
 

@@ -2,7 +2,7 @@
 //! sensitivity. DeepFilterNet 3 takes out noise by default, keyboard clicks
 //! included; RNNoise stays available to compare. Both work on 10 ms blocks at
 //! 48 kHz, as the microphone does.
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +54,7 @@ pub const DEFAULT_SENSITIVITY: f32 = -60.0;
 static SUPPRESSOR: AtomicU8 = AtomicU8::new(0);
 static LIMIT: AtomicU32 = AtomicU32::new(FULL.to_bits());
 static SENSITIVITY: AtomicU32 = AtomicU32::new(DEFAULT_SENSITIVITY.to_bits());
+static DEREVERB: AtomicBool = AtomicBool::new(false);
 
 /// Chooses the suppressor for every call; a call going on switches at its
 /// next block.
@@ -96,6 +97,17 @@ pub fn set_sensitivity(decibels: f32) {
 #[cfg(feature = "discord")]
 pub(crate) fn sensitivity() -> f32 {
     f32::from_bits(SENSITIVITY.load(Ordering::Relaxed))
+}
+
+/// Takes a room's late reverb out of every call's microphone, before the
+/// noise; a call going on takes it at its next block.
+pub fn set_dereverb(on: bool) {
+    DEREVERB.store(on, Ordering::Relaxed);
+}
+
+#[cfg(feature = "discord")]
+pub(crate) fn dereverb() -> bool {
+    DEREVERB.load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "discord")]

@@ -16,6 +16,8 @@ pub mod cli;
 pub mod clock;
 #[cfg(feature = "discord")]
 pub mod decode;
+#[cfg(feature = "discord")]
+mod dereverb;
 pub mod discord;
 #[cfg(feature = "discord")]
 pub mod discord_audio;

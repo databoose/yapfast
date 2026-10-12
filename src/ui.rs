@@ -490,6 +490,8 @@ struct Layout {
     /// fully, unless changed.
     noise_suppression: talk_core::noise::Suppressor,
     noise_strength: talk_core::noise::Strength,
+    /// Discord calls take the room's reverb out of the microphone.
+    reduce_room_echo: bool,
     /// The quietest speech Discord calls send, in dBFS; -60 unless changed.
     input_sensitivity: Option<i32>,
     /// How loud people sound in calls, and their streams, by Discord or
@@ -565,6 +567,8 @@ impl Layout {
         window.set_noise_strength(choice(&STRENGTHS, self.noise_strength));
         talk_core::noise::set(self.noise_suppression);
         talk_core::noise::set_strength(self.noise_strength);
+        window.set_dereverb(self.reduce_room_echo);
+        talk_core::noise::set_dereverb(self.reduce_room_echo);
         let sensitivity = self.sensitivity();
         window.set_sensitivity(sensitivity);
         talk_core::noise::set_sensitivity(sensitivity as f32);

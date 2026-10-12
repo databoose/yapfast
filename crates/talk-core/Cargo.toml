@@ -10,7 +10,7 @@ default = ["matrix", "discord"]
 # Matrix: sign-in, encrypted rooms and MatrixRTC voice.
 matrix = ["dep:keyring", "dep:matrix-sdk", "dep:matrix-sdk-ui", "dep:matrix-sdk-crypto", "dep:matrix-rtc-livekit", "dep:matrix-rtc-core", "dep:matrix-rtc-media", "dep:mime", "dep:url"]
 # Discord through the account linked on this device; see docs/discord.md.
-discord = ["dep:talk-discord", "dep:opus2", "dep:rand", "dep:base64", "dep:nnnoiseless", "dep:deep_filter", "dep:ndarray"]
+discord = ["dep:talk-discord", "dep:opus2", "dep:rand", "dep:base64", "dep:nnnoiseless", "dep:deep_filter", "dep:realfft", "dep:ndarray"]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,6 +30,8 @@ keyring = { workspace = true, optional = true }
 livekit.workspace = true
 # libDF's frames, at the version it uses.
 ndarray = { version = "0.15", optional = true }
+# The FFT for taking room reverb out of the Discord microphone; libDF uses it too.
+realfft = { version = "3.5", optional = true }
 # RNNoise, a Rust port: Discord voice's other noise suppressor, to compare.
 nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
 # A Go Live stream's sound, at the version songbird uses.
