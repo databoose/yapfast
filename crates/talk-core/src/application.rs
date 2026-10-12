@@ -25,6 +25,7 @@ mod profiles;
 mod rooms;
 mod session;
 
+use calls::call_sounds;
 use compose::has_markdown;
 use preview::{preview_members, sample_actions};
 use profiles::dm_profile;
@@ -769,6 +770,9 @@ pub enum Action {
     CancelVoiceSwitch,
     DismissVoiceError,
     Voice(voice::Command),
+    /// Turn the microphone on as a call connects, as a preference asks; quietly,
+    /// since joining already made a sound.
+    UnmuteOnJoin,
     /// List Discord channels this account can't see, locked.
     ShowHiddenChannels(bool),
     /// Mark Discord channels read on Discord when reading them in Talk.
@@ -803,6 +807,8 @@ pub enum Effect {
     Backend(Command),
     /// Notify the person of a new message, if they aren't looking at Talk.
     Notify(chat::Alert),
+    /// Play one of Talk's sounds, as the person set them.
+    Sound(crate::sounds::Sound),
     /// List the system's audio devices for the preview, then report them
     /// through [`Application::preview_devices`].
     ListDevices,
@@ -1372,6 +1378,7 @@ impl Application {
             Action::AnswerRequest(accept) => self.answer_request(accept),
             Action::Voice(voice::Command::Join(id)) => self.dispatch(Action::RequestJoinVoice(id)),
             Action::Voice(command) => self.voice_command(command),
+            Action::UnmuteOnJoin => self.voice_command_quietly(voice::Command::Mute(false)),
         }
     }
 
@@ -1383,6 +1390,7 @@ impl Application {
             author,
             body,
             avatar,
+            mention,
         } = notification;
         let place = self.state.rooms.iter().find(|known| known.id == room);
         let server = self
@@ -1405,12 +1413,17 @@ impl Application {
             body,
             picture,
             call: false,
+            mention,
         }
     }
 
     fn apply_event(&mut self, event: Event) -> Vec<Effect> {
         match event {
-            Event::Voice(state) => self.state.voice = state,
+            Event::Voice(state) => {
+                let sounds = call_sounds(&self.state.voice, &state);
+                self.state.voice = state;
+                return sounds;
+            }
             Event::Connected {
                 user,
                 trusted,

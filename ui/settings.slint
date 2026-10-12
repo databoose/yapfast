@@ -1,6 +1,6 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar, SensitivitySlider } from "controls.slint";
+import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
 
@@ -111,7 +111,7 @@ export component Choices inherits Rectangle {
 // children, on the right. Escape or the close button returns to the conversation.
 export component SettingsScreen inherits Rectangle {
     /// The section showing: 0 account, 1 voice and audio, 2 messages,
-    /// 3 notifications, 4 Discord.
+    /// 3 notifications, 4 Discord, 5 sounds.
     in-out property <int> settings-section;
     in property <bool> discord-build;
     in property <bool> preview;
@@ -150,6 +150,10 @@ export component SettingsScreen inherits Rectangle {
                         ChannelRow {
                             text: "Notifications"; icon: @image-url("icons/bell.svg");
                             selected: root.settings-section == 3; clicked => { root.settings-section = 3; }
+                        }
+                        ChannelRow {
+                            text: "Sounds"; icon: @image-url("icons/volume-2.svg");
+                            selected: root.settings-section == 5; clicked => { root.settings-section = 5; }
                         }
                         if root.discord-build && !root.preview: ChannelRow {
                             text: "Discord"; icon: @image-url("icons/discord.svg");
@@ -407,7 +411,6 @@ export component MessageSettings inherits VerticalLayout {
 // Settings: desktop notifications.
 export component NotificationSettings inherits VerticalLayout {
     in-out property <bool> notifications;
-    in-out property <bool> notification-sound;
     in-out property <bool> notification-text;
     /// The networks in use, whose rules decide what notifies.
     in property <bool> matrix;
@@ -425,18 +428,63 @@ export component NotificationSettings inherits VerticalLayout {
         toggled => { root.preferences-changed(); }
     }
     SettingsSwitch {
-        text: "Play a sound";
-        description: "Your desktop's message sound, with each notification.";
-        checked <=> root.notification-sound;
-        enabled: root.notifications;
-        toggled => { root.preferences-changed(); }
-    }
-    SettingsSwitch {
         text: "Show what messages say";
         description: "Off shows only who wrote and where, for a screen others can see.";
         checked <=> root.notification-text;
         enabled: root.notifications;
         toggled => { root.preferences-changed(); }
+    }
+}
+
+// Settings: Talk's own sounds for calls and messages, which instrument plays
+// them, and how loud they are, all together or each on its own.
+export component SoundSettings inherits VerticalLayout {
+    /// The set, in the order the choices show.
+    in-out property <int> sound-set;
+    /// Percentages: all the sounds, and each against that, in the order of
+    /// `names`.
+    in-out property <int> volume;
+    in-out property <bool> adjust-each;
+    in property <[int]> each;
+    callback preferences-changed;
+    callback each-changed(int, int);
+    /// Plays a sound by its index in `names`, as it's set.
+    callback play(int);
+    property <[string]> names: ["Someone joins the call", "Someone leaves the call", "Muting", "Unmuting", "Deafening", "Undeafening", "A message", "A mention"];
+    spacing: 16px;
+    SettingsTitle { text: "Sounds"; }
+    Label { text: "Talk plays these as you and others join and leave a call, as you mute and deafen, and for messages that notify, except in the conversation in front of you. They play on the speakers chosen for calls."; }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "SOUND SET"; }
+        Choices {
+            label: "Sound set"; options: ["Felt piano", "Soft marimba", "Mellow Rhodes", "Glow"];
+            max-width: 520px;
+            current <=> root.sound-set;
+            chosen => { root.preferences-changed(); root.play(0); }
+        }
+    }
+    VolumeSlider {
+        label: "Volume"; maximum: 200;
+        value <=> root.volume;
+        committed => { root.preferences-changed(); root.play(6); }
+    }
+    SettingsSwitch {
+        text: "Adjust each sound";
+        description: "Set how loud each one is, as a share of the volume above. 0% turns a sound off.";
+        checked <=> root.adjust-each;
+        toggled => { root.preferences-changed(); }
+    }
+    if root.adjust-each: VerticalLayout {
+        spacing: 12px;
+        for name[index] in root.names: HorizontalLayout {
+            spacing: 12px;
+            VolumeSlider {
+                label: name; maximum: 100; value: root.each[index]; horizontal-stretch: 1;
+                committed(value) => { root.each-changed(index, value); root.play(index); }
+            }
+            Middle { IconButton { icon: @image-url("icons/play.svg"); label: "Play " + name; clicked => { root.play(index); } } }
+        }
     }
 }
 

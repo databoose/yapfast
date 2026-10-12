@@ -475,11 +475,44 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         talk_core::noise::set_sensitivity(layout.sensitivity() as f32);
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
-        layout.notification_sound = Some(window.get_notification_sound());
         layout.notification_text = Some(window.get_notification_text());
+        layout.sound_set = chosen(&SoundSet::ALL, window.get_sound_set());
+        layout.sound_volume = Some(window.get_sound_volume().clamp(0, 200) as u8);
+        layout.adjust_each_sound = window.get_adjust_each_sound();
         adapter.layout.write(&adapter.root);
         adapter.restyle = true;
         adapter.refresh(&window);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_each_sound_changed(move |index, percent| {
+        let Some((row, &sound)) = usize::try_from(index)
+            .ok()
+            .and_then(|row| Some((row, Sound::ALL.get(row)?)))
+        else {
+            return;
+        };
+        // The sliders show the list again when they next appear.
+        if let Some(window) = weak.upgrade() {
+            window.get_each_sound().set_row_data(row, percent);
+        }
+        let mut adapter = state.borrow_mut();
+        let percent = percent.clamp(0, 100) as u8;
+        if percent == 100 {
+            adapter.layout.each_sound.remove(&sound);
+        } else {
+            adapter.layout.each_sound.insert(sound, percent);
+        }
+        adapter.layout.write(&adapter.root);
+    });
+    let state = adapter.clone();
+    window.on_play_sound(move |index| {
+        if let Some(&sound) = usize::try_from(index)
+            .ok()
+            .and_then(|index| Sound::ALL.get(index))
+        {
+            state.borrow().play(sound);
+        }
     });
     window.on_volume_of(|person, stream| {
         let kind = if stream {
@@ -1098,6 +1131,13 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             state
                 .borrow_mut()
                 .action(&window, Action::Video(VideoCommand::Volume(volume)));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_join_unmuted(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(&window, Action::UnmuteOnJoin);
         }
     });
     let state = adapter.clone();

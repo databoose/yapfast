@@ -9,7 +9,6 @@ use talk_core::chat::Alert;
 pub struct Style {
     /// Say what the message says, rather than only who wrote.
     pub text: bool,
-    pub sound: bool,
 }
 
 /// Shows notifications from a thread of its own, so a slow notification service never
@@ -111,12 +110,8 @@ mod linux {
             }
             let mut hints = HashMap::<&str, Value>::new();
             hints.insert("category", Value::from("im.received"));
-            // Talk rings for a call itself.
-            if style.sound && !alert.call {
-                hints.insert("sound-name", Value::from("message-new-instant"));
-            } else {
-                hints.insert("suppress-sound", Value::from(true));
-            }
+            // Talk plays its own sounds, and rings for a call itself.
+            hints.insert("suppress-sound", Value::from(true));
             if let Some(picture) = &alert.picture
                 && let Some(image) = image_data(picture)
             {

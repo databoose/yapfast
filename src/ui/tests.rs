@@ -250,11 +250,90 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     // Joining a call turns the microphone on once it connects.
     let unmuted = Rc::new(Cell::new(false));
     let record = unmuted.clone();
-    window.on_toggle_mute(move || record.set(true));
+    window.on_join_unmuted(move || record.set(true));
     window.set_muted(true);
     window.set_voice_ready(true);
     slint::platform::update_timers_and_animations();
     assert!(unmuted.get());
+}
+
+#[test]
+fn each_sounds_own_volume_counts_only_while_adjusting_each() {
+    i_slint_backend_testing::init_no_event_loop();
+    let defaults: Layout = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults.sound_set, SoundSet::Felt);
+    assert_eq!(defaults.sound_gain(Sound::Join), 1.0);
+    let mut layout = Layout {
+        sound_set: SoundSet::Rhodes,
+        sound_volume: Some(50),
+        each_sound: [(Sound::Mute, 50)].into(),
+        ..Default::default()
+    };
+    assert!((layout.sound_gain(Sound::Mute) - 0.25).abs() < 1e-6);
+    layout.adjust_each_sound = true;
+    assert!((layout.sound_gain(Sound::Mute) - 0.0625).abs() < 1e-6);
+    assert!((layout.sound_gain(Sound::Join) - 0.25).abs() < 1e-6);
+
+    let window = TalkWindow::new().unwrap();
+    layout.apply(&window);
+    assert_eq!(window.get_sound_set(), 2);
+    assert_eq!(window.get_sound_volume(), 50);
+    assert!(window.get_adjust_each_sound());
+    let each: Vec<i32> = window.get_each_sound().iter().collect();
+    assert_eq!(each, [100, 100, 50, 100, 100, 100, 100, 100]);
+    let saved = serde_json::to_value(&layout).unwrap();
+    assert_eq!(saved["sound_set"], "rhodes");
+    assert_eq!(saved["each_sound"]["mute"], 50);
+
+    // Someone who turned off the desktop's sound for notifications keeps
+    // messages quiet.
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join(LAYOUT),
+        r#"{"notification_sound":false}"#,
+    )
+    .unwrap();
+    let read = Layout::read(directory.path());
+    assert_eq!(read.sound_gain(Sound::Message), 0.0);
+    assert_eq!(read.sound_gain(Sound::Mention), 0.0);
+    assert!(read.sound_gain(Sound::Join) > 0.0);
+    let saved = serde_json::to_value(&read).unwrap();
+    assert!(saved.get("notification_sound").is_none());
+}
+
+#[test]
+fn sound_settings_are_remembered() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.set_sound_set(3);
+    window.set_sound_volume(40);
+    window.set_adjust_each_sound(true);
+    window.invoke_preferences_changed();
+    window.invoke_each_sound_changed(2, 30);
+    window.invoke_each_sound_changed(6, 0);
+    let read = Layout::read(directory.path());
+    assert_eq!(read.sound_set, SoundSet::Glow);
+    assert_eq!(read.sound_volume, Some(40));
+    assert!(read.adjust_each_sound);
+    assert_eq!(read.each_sound(Sound::Mute), 30);
+    assert_eq!(read.sound_gain(Sound::Message), 0.0);
+    let each: Vec<i32> = window.get_each_sound().iter().collect();
+    assert_eq!(each[2], 30);
+    // Back at 100%, a sound's own volume is forgotten.
+    window.invoke_each_sound_changed(2, 100);
+    assert!(
+        !Layout::read(directory.path())
+            .each_sound
+            .contains_key(&Sound::Mute)
+    );
 }
 
 #[test]

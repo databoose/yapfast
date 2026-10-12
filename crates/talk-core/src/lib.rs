@@ -50,6 +50,7 @@ pub mod ring;
 pub mod runtime;
 #[cfg(feature = "matrix")]
 pub mod session;
+pub mod sounds;
 pub mod spoiler;
 #[cfg(feature = "discord")]
 pub mod stream_audio;

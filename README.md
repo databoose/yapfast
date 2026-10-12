@@ -16,7 +16,8 @@ web/Android portability.
 The desktop now has password sign-in, session restoration, a conversation list,
 message history, device recovery and encrypted text sending. Voice channels have
 join, leave, mute, deafen, participants and native audio device controls. Voice
-stays connected while you browse messages. A local preview lets you try the
+stays connected while you browse messages. Joining, leaving, muting and messages
+make soft sounds, in a choice of four sets, each sound at a volume you can set. A local preview lets you try the
 controls without an account or audio access.
 
 Talk renders with Skia Software, which uses about half the memory of Skia GPU.

@@ -25,7 +25,7 @@ import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGri
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
-import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu } from "dialogs.slint";
@@ -413,7 +413,7 @@ export component TalkWindow inherits Window {
     in property <color> incoming-tint;
     in property <image> incoming-picture;
     /// The settings screen covers the window, showing one section: 0 account, 1 voice and
-    /// audio, 2 messages, 3 notifications, 4 Discord.
+    /// audio, 2 messages, 3 notifications, 4 Discord, 5 sounds.
     in-out property <bool> settings-open;
     // Closing settings stops linking Discord there.
     changed settings-open => { if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); } }
@@ -437,8 +437,15 @@ export component TalkWindow inherits Window {
     in-out property <string> gate-meter-note;
     in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
-    in-out property <bool> notification-sound: true;
     in-out property <bool> notification-text: true;
+    /// Talk's sounds: their set, their volume as a percentage, and each one's
+    /// own, which each-sound-changed reports. play-sound plays one to try it.
+    in-out property <int> sound-set;
+    in-out property <int> sound-volume: 100;
+    in-out property <bool> adjust-each-sound;
+    in property <[int]> each-sound;
+    callback each-sound-changed(int, int);
+    callback play-sound(int);
     callback preferences-changed();
     out property <length> message-font-size: root.text-size == 0 ? 14px : root.text-size == 2 ? 18px : 16px;
     // The sidebar keeps 180 to 380px. Dragging also leaves the conversation 420px;
@@ -472,6 +479,8 @@ export component TalkWindow inherits Window {
     callback jump-to-unread;
     callback join-voice;
     callback toggle-mute;
+    /// Turns the microphone on as a call connects, for unmute-on-join.
+    callback join-unmuted;
     callback toggle-deafen;
     callback toggle-share;
     /// Share the screen at this resolution, as in share-resolution, and frame rate.
@@ -661,7 +670,7 @@ export component TalkWindow inherits Window {
 
     // Talk joins calls muted; this preference turns the microphone on once connected.
     changed voice-ready => {
-        if root.voice-ready && root.unmute-on-join && root.muted { root.toggle-mute(); }
+        if root.voice-ready && root.unmute-on-join && root.muted { root.join-unmuted(); }
     }
 
     // The device menus open above the toggle whose caret was clicked.
@@ -1799,10 +1808,16 @@ export component TalkWindow inherits Window {
             preferences-changed => { root.preferences-changed(); }
         }
         if root.settings-section == 3: NotificationSettings {
-            notifications <=> root.notifications; notification-sound <=> root.notification-sound;
-            notification-text <=> root.notification-text;
+            notifications <=> root.notifications; notification-text <=> root.notification-text;
             matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
+        }
+        if root.settings-section == 5: SoundSettings {
+            sound-set <=> root.sound-set; volume <=> root.sound-volume;
+            adjust-each <=> root.adjust-each-sound; each: root.each-sound;
+            preferences-changed => { root.preferences-changed(); }
+            each-changed(index, percent) => { root.each-sound-changed(index, percent); }
+            play(index) => { root.play-sound(index); }
         }
         if root.settings-section == 4 && !root.discord-linked: DiscordLinkSettings {
             link-phase: root.link-phase; link-code: root.link-code; link-name: root.link-name; link-note: root.link-note;

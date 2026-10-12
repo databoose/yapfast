@@ -52,6 +52,7 @@ pub(super) fn notification(
         author,
         body,
         avatar: Some(discord.avatar(guild, &message.author_id)),
+        mention: message.mentions_me(snapshot.user_id.as_deref().unwrap_or_default(), server),
     }
 }
 
