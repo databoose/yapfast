@@ -279,9 +279,10 @@ pub struct Overwrite {
 }
 
 impl Server {
-    /// Who can read `channel`, as the overwrites that allow or deny seeing it.
-    /// Discord gives channels with the same readers one member list, whose
-    /// id hashes this same set; `everyone` when no overwrite touches it.
+    /// Who can read `channel`, as Discord's id for its member list, which
+    /// channels with the same readers share: `everyone` when @everyone sees
+    /// it and no overwrite hides it, else a hash of the overwrites that allow
+    /// or deny seeing it. Discord's client works it out the same way.
     pub fn readers(&self, channel: &str) -> String {
         let Some(channel) = self
             .text_channels
@@ -291,6 +292,19 @@ impl Server {
         else {
             return format!("channel:{channel}");
         };
+        // Without the server's roles, @everyone is taken to see channels,
+        // as it does on most servers.
+        let everyone_sees = self
+            .roles
+            .get(&self.id)
+            .is_none_or(|permissions| permissions & VIEW_CHANNEL != 0);
+        let hidden = channel
+            .overwrites
+            .iter()
+            .any(|overwrite| overwrite.deny & VIEW_CHANNEL != 0);
+        if everyone_sees && !hidden {
+            return "everyone".into();
+        }
         let mut readers: Vec<String> = channel
             .overwrites
             .iter()
@@ -304,11 +318,8 @@ impl Server {
                 }
             })
             .collect();
-        if readers.is_empty() {
-            return "everyone".into();
-        }
         readers.sort();
-        readers.join(",")
+        murmur3(readers.join(",").as_bytes()).to_string()
     }
 
     /// Whether `user`, holding `roles`, can see `channel` and connect to it,
@@ -823,6 +834,37 @@ pub fn member_avatar(guild: &str, user: &str, hash: &str) -> String {
     )
 }
 
+/// MurmurHash3's 32-bit hash with seed 0, which Discord's client hashes
+/// member list ids with.
+fn murmur3(data: &[u8]) -> u32 {
+    const C1: u32 = 0xcc9e_2d51;
+    const C2: u32 = 0x1b87_3593;
+    let scramble = |k: u32| k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
+    let mut hash = 0u32;
+    let mut blocks = data.chunks_exact(4);
+    for block in &mut blocks {
+        let k = u32::from_le_bytes([block[0], block[1], block[2], block[3]]);
+        hash = (hash ^ scramble(k))
+            .rotate_left(13)
+            .wrapping_mul(5)
+            .wrapping_add(0xe654_6b64);
+    }
+    let tail = blocks.remainder();
+    if !tail.is_empty() {
+        let k = tail
+            .iter()
+            .rev()
+            .fold(0, |k, &byte| k << 8 | u32::from(byte));
+        hash ^= scramble(k);
+    }
+    hash ^= data.len() as u32;
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x85eb_ca6b);
+    hash ^= hash >> 13;
+    hash = hash.wrapping_mul(0xc2b2_ae35);
+    hash ^ hash >> 16
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -871,12 +913,17 @@ mod tests {
             overwrites: overwrites.into(),
             ..Default::default()
         };
-        let server = Server {
+        let mut server = Server {
             id: "10".into(),
+            roles: HashMap::from([("10".into(), VIEW_CHANNEL)]).into(),
             text_channels: vec![
                 channel("1", vec![]),
                 // Only sending is changed: the readers stay everyone.
                 channel("2", vec![overwrite("10", 0, SEND_MESSAGES)]),
+                // Letting a role see what everyone sees changes nothing.
+                channel("5", vec![overwrite("30", VIEW_CHANNEL, 0)]),
+                // Hiding it from a role does.
+                channel("6", vec![overwrite("10", 0, VIEW_CHANNEL)]),
                 channel(
                     "3",
                     vec![
@@ -896,13 +943,32 @@ mod tests {
         };
         assert_eq!(server.readers("1"), "everyone");
         assert_eq!(server.readers("2"), "everyone");
-        assert_eq!(server.readers("3"), "allow:30,deny:10");
+        assert_eq!(server.readers("5"), "everyone");
+        // Discord's ids: the hashes of "allow:30,deny:10" and "deny:10".
+        assert_eq!(server.readers("3"), "3643570923");
         assert_eq!(server.readers("3"), server.readers("4"));
+        assert_eq!(server.readers("6"), "3007946959");
         assert_ne!(
             server.readers("9"),
             server.readers("1"),
             "unknown channels share nothing"
         );
+        // Where @everyone sees nothing, a role's overwrite is the list.
+        server.roles = HashMap::from([("10".into(), 0)]).into();
+        assert_eq!(server.readers("5"), murmur3(b"allow:30").to_string());
+    }
+
+    #[test]
+    fn hashes_as_discords_client_does() {
+        for (text, hash) in [
+            ("", 0),
+            ("a", 1_009_084_850),
+            ("ab", 2_613_040_991),
+            ("abc", 3_017_643_002),
+            ("hello", 613_153_351),
+        ] {
+            assert_eq!(murmur3(text.as_bytes()), hash, "{text:?}");
+        }
     }
 
     #[test]

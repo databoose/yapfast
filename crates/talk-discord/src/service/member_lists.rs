@@ -87,8 +87,7 @@ impl MemberLists {
         self.subscribed.clear();
         for guild in &self.viewing {
             let mut channel = None;
-            if let Some(list) = self.shown.as_mut().filter(|list| list.guild() == guild) {
-                list.revisit();
+            if let Some(list) = self.shown.as_ref().filter(|list| list.guild() == guild) {
                 self.subscribed
                     .insert(guild.clone(), list.readers().to_owned());
                 channel = Some(list.channel().to_owned());
@@ -214,9 +213,6 @@ impl MemberLists {
             self.stale.as_mut().reset(at.into());
             return Ok(());
         }
-        // Discord's sync replaces what was kept, even under another id, as when
-        // the readers changed meanwhile.
-        list.revisit();
         self.subscribed
             .insert(list.guild().to_owned(), list.readers().to_owned());
         gateway.subscribe(list.guild(), Some(list.channel())).await
@@ -229,16 +225,15 @@ impl MemberLists {
             .names
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (mut changed, mut counted, mut synced) = (false, false, false);
+        let (mut changed, mut counted) = (false, false);
         if let Some(list) = self.shown.as_mut() {
-            let (count, settled) = (list.count(), list.settled());
+            let count = list.count();
             changed = list.apply(data, &mut names);
             counted = list.count() != count;
-            synced = !settled && list.settled();
         }
         // Or a list kept from before, which Discord still sends.
         if !changed {
-            for kept in self.kept.iter_mut().filter(|kept| kept.settled()) {
+            for kept in &mut self.kept {
                 if kept.apply(data, &mut names) {
                     break;
                 }
@@ -246,7 +241,10 @@ impl MemberLists {
         }
         drop(names);
         // A list Discord just sent is saved for the next start.
-        if synced {
+        let sent = data["ops"]
+            .as_array()
+            .is_some_and(|ops| ops.iter().any(|op| op["op"] == "SYNC"));
+        if changed && sent {
             cache::keep_lists(
                 self.kept
                     .iter()
@@ -403,22 +401,24 @@ mod tests {
 
     use super::*;
 
+    /// Discord's sync of list `id` in server 10, listing Bob.
+    fn sync(id: &str) -> Value {
+        json!({
+            "guild_id": "10", "id": id, "member_count": 1,
+            "groups": [{"id": "online", "count": 1}],
+            "ops": [{"op": "SYNC", "range": [0, 99], "items": [
+                {"group": {"id": "online", "count": 1}},
+                {"member": {"user": {"id": "2", "username": "bob"}, "roles": [], "nick": null}},
+            ]}],
+        })
+    }
+
     #[tokio::test]
     async fn the_list_on_screen_is_kept_through_a_disconnect() {
         let (live, _) = broadcast::channel(8);
         let mut lists = MemberLists::new(Vec::new(), live, Arc::default());
         let mut list = MemberList::new("10".into(), "11".into(), "everyone".into());
-        list.apply(
-            &json!({
-                "guild_id": "10", "id": "everyone", "member_count": 1,
-                "groups": [{"id": "online", "count": 1}],
-                "ops": [{"op": "SYNC", "range": [0, 99], "items": [
-                    {"group": {"id": "online", "count": 1}},
-                    {"member": {"user": {"id": "2", "username": "bob"}, "roles": [], "nick": null}},
-                ]}],
-            }),
-            &mut Names::default(),
-        );
+        list.apply(&sync("everyone"), &mut Names::default());
         assert!(list.synced());
         lists.listing = Some(("10".into(), "11".into()));
         lists.shown = Some(list);
@@ -428,5 +428,34 @@ mod tests {
         let taken = lists.take("10", "11", "everyone");
         assert!(taken.synced());
         assert_eq!(taken.count(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_channel_shown_before_keeps_its_list() {
+        let (live, _) = broadcast::channel(8);
+        let names = Arc::<RwLock<Names>>::default();
+        let tracker = Tracker::from_ready("1".into(), &json!({}), names.clone());
+        let mut lists = MemberLists::new(Vec::new(), live, names);
+        lists.shown = Some(MemberList::new("10".into(), "11".into(), "everyone".into()));
+        lists.update(&tracker, &sync("everyone"));
+        // Another channel, with other readers, is shown: Discord stops sending
+        // the first list, and its sync comes once more, late.
+        let second = MemberList::new("10".into(), "12".into(), "3007946959".into());
+        let first = lists.shown.replace(second).unwrap();
+        lists.keep(first);
+        lists.update(
+            &tracker,
+            &json!({"guild_id": "10", "id": "everyone", "ops": [{"op": "INVALIDATE", "range": [0, 99]}]}),
+        );
+        lists.update(&tracker, &sync("everyone"));
+        assert!(
+            !lists.shown.as_ref().unwrap().synced(),
+            "the first channel's list isn't the second's"
+        );
+        // Shown again, the first channel lists Bob still.
+        let names = lists.names.clone();
+        let taken = lists.take("10", "11", "everyone");
+        let members = taken.members(None, &names.read().unwrap());
+        assert_eq!(members.len(), 1);
     }
 }

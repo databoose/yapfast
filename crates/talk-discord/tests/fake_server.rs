@@ -547,6 +547,39 @@ async fn talks_to_the_fake_server() {
         self::control(server, "GET", "/_control/list-requests", ""),
         "1"
     );
+
+    // Hidden from Bots, Lounge has a list of its own. Asking for it stops
+    // #general's, whose rows show again at once, without asking again.
+    post_control(server, "/_control/hide-from-bots", &lounge);
+    snapshot_where(&discord, |snapshot| {
+        snapshot.servers.iter().any(|server| {
+            server
+                .voice_channels
+                .iter()
+                .any(|channel| channel.id == lounge && !channel.overwrites.is_empty())
+        })
+    })
+    .await;
+    discord.view(&guild, Some(&lounge));
+    let own = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == lounge => Some(members),
+        _ => None,
+    })
+    .await;
+    assert_eq!(own, members);
+    discord.view(&guild, Some(&general));
+    let again = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == general => Some(members),
+        _ => None,
+    })
+    .await;
+    assert_eq!(again, members, "#general's list as it was");
+    assert_eq!(
+        self::control(server, "GET", "/_control/list-requests", ""),
+        "2"
+    );
+    post_control(server, "/_control/hide-from-bots", "");
+
     let account = snapshot.account.as_ref().expect("the account");
     assert_eq!(account.name, "Alice");
     assert!(

@@ -82,7 +82,7 @@ struct Person {
 enum Row {
     Group(String),
     Member(String),
-    /// Discord invalidated it and hasn't sent it again.
+    /// A row Discord hasn't sent.
     Unknown,
 }
 
@@ -91,15 +91,16 @@ pub struct MemberList {
     guild: String,
     /// The channel it shows for, of those sharing it.
     channel: String,
-    /// Who can read its channels; see [`Server::readers`].
+    /// Who can read its channels, as Discord's id for the list; see
+    /// [`Server::readers`]. Channels with the same readers share a list.
     readers: String,
     /// When Discord last sent anything for it; not saved, so a saved list
     /// is asked for again.
     #[serde(skip)]
     heard: Option<Instant>,
-    /// Discord's id for the list, learned from the first full sync after
-    /// subscribing. Channels with the same readers share a list.
-    id: Option<String>,
+    /// Whether Discord has sent the list yet.
+    #[serde(default)]
+    synced: bool,
     rows: Vec<Row>,
     /// Each group's size, which may exceed the rows Talk asked for.
     counts: HashMap<String, u64>,
@@ -107,9 +108,6 @@ pub struct MemberList {
     count: Option<u64>,
     /// The listed members' roles and presence, by user id.
     people: HashMap<String, Person>,
-    /// Shown again from the cache: the next full sync replaces it, even
-    /// under another id, as when the channel's readers changed meanwhile.
-    resync: bool,
 }
 
 impl MemberList {
@@ -119,19 +117,12 @@ impl MemberList {
             channel,
             readers,
             heard: None,
-            id: None,
+            synced: false,
             rows: Vec::new(),
             counts: HashMap::new(),
             count: None,
             people: HashMap::new(),
-            resync: false,
         }
-    }
-
-    /// Takes the next full sync, whatever list it's for: this list is shown
-    /// again, and Discord sends its channel's list afresh.
-    pub fn revisit(&mut self) {
-        self.resync = true;
     }
 
     pub fn guild(&self) -> &str {
@@ -173,46 +164,33 @@ impl MemberList {
 
     /// Whether Discord has sent the list yet.
     pub fn synced(&self) -> bool {
-        self.id.is_some()
-    }
-
-    /// Synced, and not waiting for a sync that may come under another id, so
-    /// only updates to its own list apply to it.
-    pub fn settled(&self) -> bool {
-        self.id.is_some() && !self.resync
+        self.synced
     }
 
     /// Applies one GUILD_MEMBER_LIST_UPDATE, learning the members it carries.
     /// Returns whether this list changed. Updates to other lists, such as the
     /// one of a channel shown before, are left out.
     pub fn apply(&mut self, data: &Value, names: &mut Names) -> bool {
-        if data["guild_id"] != self.guild.as_str() {
+        if data["guild_id"] != self.guild.as_str() || data["id"] != self.readers.as_str() {
             return false;
         }
-        let Some(id) = data["id"].as_str() else {
-            return false;
-        };
         let ops = data["ops"].as_array().map_or(&[][..], Vec::as_slice);
-        let sync = ops.iter().any(|op| op["op"] == "SYNC");
-        match &self.id {
-            _ if self.resync && sync => {
-                self.id = Some(id.to_owned());
-                self.resync = false;
-            }
-            Some(known) if known != id => return false,
-            Some(_) => {}
-            None if sync => self.id = Some(id.to_owned()),
-            None => return false,
+        // Operations on rows Talk doesn't have yet mean nothing.
+        self.synced |= ops.iter().any(|op| op["op"] == "SYNC");
+        if !self.synced {
+            return false;
         }
         if let Some(count) = data["member_count"].as_u64() {
             self.count = Some(count);
         }
-        self.counts = data["groups"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|group| Some((group["id"].as_str()?.to_owned(), group["count"].as_u64()?)))
-            .collect();
+        if let Some(groups) = data["groups"].as_array() {
+            self.counts = groups
+                .iter()
+                .filter_map(|group| {
+                    Some((group["id"].as_str()?.to_owned(), group["count"].as_u64()?))
+                })
+                .collect();
+        }
         for op in ops {
             let index = op["index"].as_u64().map(|index| index as usize);
             let range = op["range"].as_array().and_then(|range| {
@@ -254,16 +232,12 @@ impl MemberList {
                         *slot = row;
                     }
                 }
-                (Some("DELETE"), Some(index), _) => {
-                    if index < self.rows.len() {
-                        self.rows.remove(index);
-                    }
+                (Some("DELETE"), Some(index), _) if index < self.rows.len() => {
+                    self.rows.remove(index);
                 }
-                (Some("INVALIDATE"), _, Some((start, end))) => {
-                    for row in self.rows.iter_mut().take(end + 1).skip(start) {
-                        *row = Row::Unknown;
-                    }
-                }
+                // INVALIDATE: Discord stops sending these rows, as when Talk
+                // subscribes to another channel's list. They stay as last
+                // sent, shown when the channel is again, until a sync.
                 _ => {}
             }
         }
@@ -482,11 +456,19 @@ mod tests {
         };
         assert!(
             !list.apply(
-                &json!({"guild_id": "10", "id": "other", "ops": [{"op": "UPDATE", "index": 0, "item": member("9", "x")}]}),
+                &json!({"guild_id": "10", "id": "123", "ops": [{"op": "SYNC", "range": [0, 99], "items": [member("9", "x")]}]}),
                 &mut names,
             ),
-            "an update before the sync belongs to another list"
+            "another channel's list, as one shown before, is left out"
         );
+        assert!(
+            !list.apply(
+                &json!({"guild_id": "10", "id": "everyone", "ops": [{"op": "UPDATE", "index": 0, "item": member("9", "x")}]}),
+                &mut names,
+            ),
+            "an update before the sync means nothing"
+        );
+        assert!(!list.synced());
         assert!(list.apply(
             &json!({
                 "guild_id": "10", "id": "everyone", "member_count": 3,
@@ -554,34 +536,14 @@ mod tests {
                 ("bob".to_owned(), "Online — 2".to_owned())
             ]
         );
-        assert!(
-            !list.apply(
-                &json!({"guild_id": "10", "id": "123", "ops": [{"op": "SYNC", "range": [0, 99], "items": []}]}),
-                &mut names,
-            ),
-            "another channel's list is left out"
-        );
-        assert_eq!(list.members(None, &names).len(), 3);
-
-        // Shown again later: the cached rows stay until Discord's sync,
-        // which replaces them even under another id.
-        list.revisit();
-        assert!(list.synced());
+        // Talk subscribes to another channel's list: Discord stops sending
+        // this one, whose rows stay to show it again.
         assert!(list.apply(
-            &json!({"guild_id": "10", "id": "readers-changed", "member_count": 1,
-            "groups": [{"id": "online", "count": 1}],
-            "ops": [{"op": "SYNC", "range": [0, 99], "items": [
-                {"group": {"id": "online", "count": 1}}, member("2", "bob"),
-            ]}]}),
+            &json!({"guild_id": "10", "id": "everyone", "ops": [{"op": "INVALIDATE", "range": [0, 99]}]}),
             &mut names,
         ));
-        assert_eq!(list.members(None, &names).len(), 1);
-        assert!(
-            !list.apply(
-                &json!({"guild_id": "10", "id": "everyone", "ops": [{"op": "SYNC", "range": [0, 99], "items": []}]}),
-                &mut names,
-            ),
-            "only the first sync after showing it again"
-        );
+        let kept = list.members(Some(&server), &names);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept[1].group, "Online — 2", "the groups' sizes stay");
     }
 }

@@ -972,6 +972,8 @@ type SocketData = {
   callKey?: Buffer;
   /** The cameras on in this call, by who films, as op 12 announced them. */
   cameras?: Set<string>;
+  /** The member list this session subscribed to last, by its id. */
+  listing?: string;
   /** A remote login: the client's key, the nonce it must prove, and the code. */
   remoteAuth?: { key?: CryptoKey; nonce?: Uint8Array; fingerprint?: string; scanned?: boolean; timer?: Timer };
 };
@@ -1364,7 +1366,21 @@ const presences: Record<string, { status: string; activities: unknown[]; client_
 
 // The member list of a channel everyone reads, as Discord groups it: Bob under
 // the hoisted Mods role, then who is online, then Dave, who isn't.
-function memberList() {
+/** A channel's member list id, as Discord's client works it out: everyone
+ *  when @everyone sees it and no overwrite hides it, else a hash of the
+ *  overwrites that allow or deny seeing it. */
+function listId(channelId: string): string {
+  const view = BigInt(bit(10));
+  const overwrites = (guildChannels().find((channel) => channel.id === channelId)?.permission_overwrites ??
+    []) as { id: string; allow: string; deny: string }[];
+  if (BigInt(EVERYONE) & view && !overwrites.some((overwrite) => BigInt(overwrite.deny) & view)) return "everyone";
+  const readers = overwrites.flatMap((overwrite) =>
+    BigInt(overwrite.allow) & view ? [`allow:${overwrite.id}`] : BigInt(overwrite.deny) & view ? [`deny:${overwrite.id}`] : [],
+  );
+  return String(Bun.hash.murmur32v3(readers.sort().join(","), 0));
+}
+
+function memberList(id = "everyone") {
   const offline = (user: User) => presences[user.id]!.status === "offline";
   const present = Object.values(users).filter((user) => !removed.has(user.id));
   const mods = present.filter((user) => memberRoles.get(user.id)?.includes(MODS));
@@ -1390,7 +1406,7 @@ function memberList() {
   ];
   return {
     guild_id: GUILD,
-    id: "everyone",
+    id,
     member_count: present.length,
     online_count: groups[0]!.count + groups[1]!.count,
     groups,
@@ -1668,12 +1684,19 @@ function gatewayMessage(ws: Socket, text: string) {
     }
     case 37: {
       // Guild subscriptions: messages are sent anyway; a channel's member
-      // list is sent when asked for.
+      // list is sent when asked for. The list subscribed to before stops,
+      // which Discord says with INVALIDATE.
       for (const [guildId, subscription] of Object.entries<any>(d.subscriptions ?? {})) {
-        if (guildId === GUILD && Object.keys(subscription.channels ?? {}).length > 0) {
-          listRequests++;
-          send(ws, 0, memberList(), "GUILD_MEMBER_LIST_UPDATE");
+        const channel = Object.keys(subscription.channels ?? {})[0];
+        if (guildId !== GUILD || channel === undefined) continue;
+        listRequests++;
+        const id = listId(channel);
+        if (ws.data.listing !== undefined && ws.data.listing !== id) {
+          const invalidate = { op: "INVALIDATE", range: [0, 99] };
+          send(ws, 0, { guild_id: GUILD, id: ws.data.listing, ops: [invalidate] }, "GUILD_MEMBER_LIST_UPDATE");
         }
+        ws.data.listing = id;
+        send(ws, 0, memberList(id), "GUILD_MEMBER_LIST_UPDATE");
       }
       break;
     }
@@ -3854,6 +3877,19 @@ const server = Bun.serve<SocketData>({
         moved(user, state, origin);
       }
       return new Response("everyone hung up\n");
+    }
+    if (req.method === "POST" && path === "/_control/hide-from-bots") {
+      // The channel in the body is hidden from the Bots role, which gives it
+      // a member list of its own; an empty body shows it again.
+      const id = await req.text();
+      const hidden = { id: BOTS, type: 0, allow: "0", deny: String(bit(10)) };
+      for (const channel of guildChannels()) {
+        const overwrites = channel.id === id ? [hidden] : [];
+        if (JSON.stringify(channel.permission_overwrites) === JSON.stringify(overwrites)) continue;
+        channelEdits.set(channel.id, { ...channelEdits.get(channel.id), permission_overwrites: overwrites });
+        dispatch("CHANNEL_UPDATE", { ...channel, permission_overwrites: overwrites });
+      }
+      return new Response("hidden from Bots\n");
     }
     if (req.method === "POST" && path === "/_control/topic") {
       generalTopic = (await req.text()) || null;

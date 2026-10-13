@@ -767,12 +767,16 @@ does: under hoisted roles, then online, then offline, with offline members
 faded. Each shows a status dot for online, idle or do not disturb, their name
 in their highest coloured role's colour, and their custom status or what
 they're playing below it. Talk shows the list's first 100 rows, headings
-included. Discord keeps one list for all channels with the same readers: the
-overwrites that allow or deny seeing them, `everyone` when none do. Talk keys
-its lists the same way, so moving between such channels shows the same list
-and asks Discord for nothing. Talk keeps the last 40 lists. One Discord still
-sends, or sent within 10 minutes, shows without asking again. An older one
-shows at once while Talk subscribes, and Discord's sync replaces it. A list
+included. Discord keeps one list for all channels with the same readers, and
+its id says who they are: `everyone` when @everyone sees the channel and no
+overwrite hides it, else a MurmurHash3 of the overwrites that allow or deny
+seeing it, as Discord's client computes it. Talk keys its lists by that id, so
+moving between such channels shows the same list and asks Discord for
+nothing, and an update applies only to the list it names. Talk keeps the last
+40 lists. An INVALIDATE, by which Discord stops sending rows, leaves them as
+they were, to show when their channel is again. One Discord still sends, or
+sent within 10 minutes, shows without asking again. An older one shows at
+once while Talk subscribes, and Discord's sync replaces it. A list
 on screen that Discord doesn't send is asked for again once it's 10 minutes
 old. When no list comes within 8 seconds of opening a channel, the panel
 says Discord didn't send one instead of loading on, and the header says
