@@ -666,6 +666,9 @@ pub struct Names {
     /// Members' roles by server and user id, for the colour of their name.
     /// Member lists and the core share each, rather than copying it.
     roles: HashMap<(String, String), Arc<[String]>>,
+    /// When members' timeouts end, in Unix milliseconds, by server and user
+    /// id: only those timed out, while Talk runs.
+    timeouts: HashMap<(String, String), u64>,
     /// Changes whenever a name, avatar or role of someone known changes, so
     /// what was shown with them can tell it's out of date. Someone new
     /// changes nothing shown, which was rendered after learning them.
@@ -788,6 +791,7 @@ impl Names {
         self.member_avatars
             .retain(|(_, user), _| seen.contains_key(user));
         self.roles.retain(|(_, user), _| seen.contains_key(user));
+        self.timeouts.retain(|(_, user), _| seen.contains_key(user));
     }
 
     /// Changes whenever what [`Names::name`], [`Names::avatar`],
@@ -843,8 +847,34 @@ impl Names {
                 .collect();
             learned |= changed(&mut self.roles, key.clone(), Some(roles));
         }
+        // Present when known, null when they aren't timed out; a time past
+        // is a timeout that ended.
+        if let Some(until) = member.get("communication_disabled_until") {
+            let until = until.as_str().and_then(iso_ms);
+            changed(&mut self.timeouts, key.clone(), until);
+        }
         self.members.insert(key);
         self.version += u64::from(known && learned);
+    }
+
+    /// Forgets what's known of someone as a member of a server they left,
+    /// were kicked from or banned from.
+    pub fn forget_member(&mut self, guild: &str, user: &str) {
+        let key = (guild.to_owned(), user.to_owned());
+        let learned = self.nicknames.remove(&key).is_some()
+            | self.member_avatars.remove(&key).is_some()
+            | self.roles.remove(&key).is_some();
+        self.timeouts.remove(&key);
+        self.members.remove(&key);
+        self.version += u64::from(learned);
+    }
+
+    /// When a member's timeout ends, in Unix milliseconds, if they're timed
+    /// out as far as Talk knows; it may have ended already.
+    pub fn timed_out_until(&self, guild: &str, user: &str) -> Option<u64> {
+        self.timeouts
+            .get(&(guild.to_owned(), user.to_owned()))
+            .copied()
     }
 
     /// The members known to hold `role` in a server, by user id.
@@ -959,6 +989,13 @@ impl Names {
     /// A user's username, such as `ann`.
     pub fn username(&self, user: &str) -> Option<&str> {
         self.usernames.get(user).map(String::as_str)
+    }
+
+    /// A member's nickname in a server, when they set one.
+    pub fn nickname(&self, guild: &str, user: &str) -> Option<&str> {
+        self.nicknames
+            .get(&(guild.to_owned(), user.to_owned()))
+            .map(String::as_str)
     }
 
     pub fn name(&self, guild: &str, user: &str) -> Option<&str> {

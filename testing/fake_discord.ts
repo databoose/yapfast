@@ -143,6 +143,9 @@ const MODS = "1400000000000000110";
 const BOTS = "1400000000000000111";
 // Alice's own role.
 const CREW = "1400000000000000112";
+// Carol's Leads rank above Alice's Staff, which moderates those below it.
+const LEADS = "1400000000000000113";
+const STAFF = "1400000000000000114";
 const DM_BOB = "1400000000000000120";
 const WEEKEND = "1400000000000000121";
 const DM_DAVE = "1400000000000000122";
@@ -257,8 +260,11 @@ let alicePresence: unknown = null;
 const HISTORY_START = Date.UTC(2026, 9, 1, 9, 0, 0);
 const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
 const bit = (n: number) => 2 ** n;
-// View, send, embed, attach, read history, react, connect, speak, voice activity.
-const EVERYONE = [10, 11, 14, 15, 16, 6, 20, 21, 25].reduce((sum, n) => sum + bit(n), 0);
+// View, send, embed, attach, read history, react, connect, speak, voice
+// activity, change one's own nickname.
+const EVERYONE = [10, 11, 14, 15, 16, 6, 20, 21, 25, 26].reduce((sum, n) => sum + bit(n), 0);
+// Kick, ban, manage nicknames, manage roles, moderate members.
+const MODERATION = [1, 2, 27, 28, 40].reduce((sum, n) => sum + bit(n), 0);
 
 function snowflake(ms: number, increment = 0): string {
   return (((BigInt(ms) - DISCORD_EPOCH) << 22n) | BigInt(increment)).toString();
@@ -281,13 +287,42 @@ function wireUser(user: User) {
   };
 }
 
-// Bob is a Mod everywhere his member object goes, so his name takes its colour.
-function member(user: User, roles: string[] = user.id === users.bob.id ? [MODS] : user.id === ALICE ? [CREW] : []) {
+// --- Server members ---------------------------------------------------------
+// "Server"'s members as its member menu changes them: roles, nicknames and
+// timeouts, and who was kicked or banned. Bob owns it and is a Mod
+// everywhere his member object goes, so his name takes its colour. Alice is
+// Staff and Crew; Carol, a Lead, ranks above her, and Dave, with no role,
+// below. PATCH /guilds/{id}/members/@me renames Alice, and PATCH
+// /guilds/{id}/members/{user} renames others or times them out; PUT and
+// DELETE .../members/{user}/roles/{role} give and take roles, DELETE
+// .../members/{user} kicks, and PUT /guilds/{id}/bans/{user} bans, each as
+// far as Alice's roles allow, as Discord checks them. Each answers with
+// GUILD_MEMBER_UPDATE, or GUILD_MEMBER_REMOVE and GUILD_BAN_ADD, and the
+// member list's operations. GET /_control/audit-log lists the reasons given,
+// and POST /_control/members-reset puts everyone back but keeps the log.
+const memberRoles = new Map<string, string[]>();
+const memberNicks = new Map<string, string>();
+const timeouts = new Map<string, string>();
+const removed = new Set<string>();
+const auditLog: { action: string; user: string; reason: string | null }[] = [];
+function resetMembers() {
+  memberRoles.clear();
+  memberRoles.set(ALICE, [CREW, STAFF]);
+  memberRoles.set(users.bob.id, [MODS]);
+  memberRoles.set(users.carol.id, [LEADS]);
+  memberNicks.clear();
+  timeouts.clear();
+  removed.clear();
+}
+resetMembers();
+
+function member(user: User, roles: string[] = memberRoles.get(user.id) ?? []) {
   return {
     user: wireUser(user),
     user_id: user.id,
     roles,
-    nick: null,
+    nick: memberNicks.get(user.id) ?? null,
+    communication_disabled_until: timeouts.get(user.id) ?? null,
     avatar: user.id === users.carol.id ? "carol-server" : null,
     joined_at: JOINED_AT,
     premium_since: null,
@@ -896,6 +931,37 @@ function dispatch(name: string, data: unknown) {
   for (const session of parked.values()) session.missed.push({ name, data });
 }
 
+const serverRoles = [
+  { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
+  { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  { id: CREW, name: "Crew", permissions: "0", position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  { id: STAFF, name: "Staff", permissions: String(MODERATION), position: 4, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  { id: LEADS, name: "Leads", permissions: "0", position: 5, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+];
+
+/** The highest position of a member's roles; the owner is above all. */
+function rank(user: string): number {
+  if (user === users.bob.id) return Infinity;
+  const positions = (memberRoles.get(user) ?? []).map((id) => serverRoles.find((role) => role.id === id)?.position ?? 0);
+  return Math.max(0, ...positions);
+}
+
+/** A member's permissions in "Server", as a BigInt: everything for the owner and administrators. */
+function serverPermissions(user: string): bigint {
+  const all = (1n << 53n) - 1n;
+  if (user === users.bob.id) return all;
+  let held = BigInt(EVERYONE);
+  for (const id of memberRoles.get(user) ?? []) held |= BigInt(serverRoles.find((role) => role.id === id)?.permissions ?? "0");
+  return held & (1n << 3n) ? all : held;
+}
+
+/** Whether Alice may do what `permission`, a bit number, allows to `user`: she holds it and outranks them. */
+function aliceMay(permission: number, user?: string): boolean {
+  const holds = (serverPermissions(ALICE) & (1n << BigInt(permission))) !== 0n;
+  return holds && (user === undefined || (user !== ALICE && rank(ALICE) > rank(user)));
+}
+
 function guild() {
   const channel = (id: string, name: string, type: number, position: number, parent: string | null) => ({
     id,
@@ -942,12 +1008,7 @@ function guild() {
       ...(roomMade ? [channel(ALICES_ROOM, "Alice's room", 2, 3, CATEGORY)] : []),
       ...rooms.map((id, n) => channel(id, `room-${n + 1}`, 0, 2 + n, CATEGORY)),
     ],
-    roles: [
-      { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-      { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
-      { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-      { id: CREW, name: "Crew", permissions: "0", position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-    ],
+    roles: serverRoles,
     emojis: [
       { id: EMOJI_TALK, name: "talk", animated: false, available: true, managed: false, require_colons: true, roles: [] },
       { id: EMOJI_PARTY, name: "party", animated: true, available: true, managed: false, require_colons: true, roles: [] },
@@ -1197,8 +1258,9 @@ const presences: Record<string, { status: string; activities: unknown[]; client_
 // the hoisted Mods role, then who is online, then Dave, who isn't.
 function memberList() {
   const offline = (user: User) => presences[user.id]!.status === "offline";
-  const mods = [users.bob];
-  const others = Object.values(users).filter((user) => !mods.includes(user));
+  const present = Object.values(users).filter((user) => !removed.has(user.id));
+  const mods = present.filter((user) => memberRoles.get(user.id)?.includes(MODS));
+  const others = present.filter((user) => !mods.includes(user));
   const groups = [
     { id: MODS, count: mods.length },
     { id: "online", count: others.filter((user) => !offline(user)).length },
@@ -1211,7 +1273,7 @@ function memberList() {
     },
   });
   const items = [
-    { group: groups[0] },
+    ...(mods.length > 0 ? [{ group: groups[0] }] : []),
     ...mods.map(row),
     { group: groups[1] },
     ...others.filter((user) => !offline(user)).map(row),
@@ -1221,11 +1283,54 @@ function memberList() {
   return {
     guild_id: GUILD,
     id: "everyone",
-    member_count: Object.keys(users).length,
+    member_count: present.length,
     online_count: groups[0]!.count + groups[1]!.count,
     groups,
     ops: [{ op: "SYNC", range: [0, 99], items }],
   };
+}
+
+/** Makes a change to the members, which dispatches its own events, then
+ *  tells subscribers how the member list's rows changed, as Discord does:
+ *  the rows that went, the rows that came, and those that changed in place. */
+function changeMembers(change: () => void) {
+  const rows = (list: ReturnType<typeof memberList>) => list.ops[0]!.items as any[];
+  const before = rows(memberList());
+  change();
+  const list = memberList();
+  const ops = listOps(before, rows(list));
+  if (ops.length > 0) dispatch("GUILD_MEMBER_LIST_UPDATE", { ...list, ops });
+}
+
+/** DELETE, INSERT and UPDATE operations that turn the rows `before` into
+ *  `after`: those outside their longest common run of rows go and come. */
+function listOps(before: any[], after: any[]) {
+  const key = (item: any) => (item.group ? `group:${item.group.id}` : `member:${item.member.user.id}`);
+  const [a, b] = [before.map(key), after.map(key)];
+  const common = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      common[i]![j] = a[i] === b[j] ? common[i + 1]![j + 1]! + 1 : Math.max(common[i + 1]![j]!, common[i]![j + 1]!);
+    }
+  }
+  const kept: [number, number][] = [];
+  for (let i = 0, j = 0; i < a.length && j < b.length; ) {
+    if (a[i] === b[j]) kept.push([i++, j++]);
+    else if (common[i + 1]![j]! >= common[i]![j + 1]!) i++;
+    else j++;
+  }
+  const ops: any[] = [];
+  for (let i = a.length - 1; i >= 0; i--) if (!kept.some(([k]) => k === i)) ops.push({ op: "DELETE", index: i });
+  for (let j = 0; j < b.length; j++) if (!kept.some(([, k]) => k === j)) ops.push({ op: "INSERT", index: j, item: after[j] });
+  for (const [i, j] of kept) {
+    if (JSON.stringify(before[i]) !== JSON.stringify(after[j])) ops.push({ op: "UPDATE", index: j, item: after[j] });
+  }
+  return ops;
+}
+
+/** Tells everyone a member of "Server" changed. */
+function memberUpdated(user: User) {
+  dispatch("GUILD_MEMBER_UPDATE", { guild_id: GUILD, ...member(user), user_id: undefined });
 }
 
 // --- Remote login ---------------------------------------------------------
@@ -2597,6 +2702,71 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(wire);
   }
 
+  // A member's menu in "Server": nicknames, roles, timeouts, kicks and
+  // bans, as far as Alice's roles allow; see "Server members" above.
+  if ((m = path.match(/^\/guilds\/(\d+)\/(members|bans)\/(\d+|@me)(?:\/roles\/(\d+))?$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    const [kind, who, role] = [m[2]!, m[3]!, m[4]];
+    const user = userById.get(who === "@me" ? ALICE : who);
+    if (!user || (removed.has(user.id) && kind === "members")) return notFound("Unknown Member", 10007);
+    const refused = () => json({ message: "Missing Permissions", code: 50013 }, 403);
+    const header = req.headers.get("x-audit-log-reason");
+    const audit = (action: string) =>
+      auditLog.push({ action, user: user.id, reason: header === null ? null : decodeURIComponent(header) });
+    if (kind === "members" && role !== undefined && (method === "PUT" || method === "DELETE")) {
+      const known = serverRoles.find((found) => found.id === role);
+      if (!known) return notFound("Unknown Role", 10011);
+      // Below her highest role, and not @everyone or a managed one.
+      if (!aliceMay(28) || known.id === GUILD || known.managed || known.position >= rank(ALICE)) return refused();
+      changeMembers(() => {
+        const roles = (memberRoles.get(user.id) ?? []).filter((held) => held !== role);
+        memberRoles.set(user.id, method === "PUT" ? [...roles, role] : roles);
+        memberUpdated(user);
+      });
+      return empty();
+    }
+    if (kind === "members" && role === undefined && method === "PATCH") {
+      const body: any = await req.json().catch(() => ({}));
+      if ("nick" in body && !(who === "@me" ? aliceMay(26) : aliceMay(27, user.id))) return refused();
+      if ("communication_disabled_until" in body) {
+        const until = body.communication_disabled_until;
+        const admin = (serverPermissions(user.id) & (1n << 3n)) !== 0n;
+        if (!aliceMay(40, user.id) || admin) return refused();
+        if (until !== null && Date.parse(until) > Date.now() + 28 * 86_400_000) {
+          return json({ message: "Invalid Form Body", code: 50035 }, 400);
+        }
+      }
+      changeMembers(() => {
+        if ("nick" in body) {
+          if (body.nick) memberNicks.set(user.id, body.nick);
+          else memberNicks.delete(user.id);
+        }
+        if ("communication_disabled_until" in body) {
+          const until = body.communication_disabled_until;
+          if (until === null) timeouts.delete(user.id);
+          else timeouts.set(user.id, until);
+          audit(until === null ? "timeout-removed" : "timeout");
+        }
+        memberUpdated(user);
+      });
+      return json({ ...member(user), guild_id: undefined });
+    }
+    const removing = (kind === "members" && role === undefined && method === "DELETE") || (kind === "bans" && method === "PUT");
+    if (removing) {
+      if (!aliceMay(kind === "bans" ? 2 : 1, user.id)) return refused();
+      const body: any = kind === "bans" ? await req.json().catch(() => ({})) : {};
+      audit(kind === "bans" ? "ban" : "kick");
+      changeMembers(() => {
+        removed.add(user.id);
+        if (kind === "bans") {
+          dispatch("GUILD_BAN_ADD", { guild_id: GUILD, user: wireUser(user), delete_message_secs: Number(body.delete_message_seconds ?? 0) });
+        }
+        dispatch("GUILD_MEMBER_REMOVE", { guild_id: GUILD, user: wireUser(user) });
+      });
+      return empty();
+    }
+  }
+
   // Alice may ring her friends in a DM, and anyone in a group.
   if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/call$/))) {
     const dm = privates.get(m[1]!);
@@ -3024,6 +3194,15 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/sessions") return Response.json(sessionCounts);
     if (path === "/_control/cookies") return Response.json(cookieCounts);
     if (path === "/_control/list-requests") return Response.json(listRequests);
+    if (path === "/_control/audit-log") return Response.json(auditLog);
+    if (req.method === "POST" && path === "/_control/members-reset") {
+      changeMembers(() => {
+        const changed = [...memberRoles.keys(), ...memberNicks.keys(), ...timeouts.keys()];
+        resetMembers();
+        for (const id of new Set(changed)) memberUpdated(userById.get(id)!);
+      });
+      return new Response("members as they were\n");
+    }
     if (req.method === "POST" && path === "/_control/slow") {
       slowMs = Number(await req.text()) || 0;
       return new Response(`history and media take ${slowMs} ms\n`);

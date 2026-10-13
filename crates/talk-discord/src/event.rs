@@ -52,6 +52,8 @@ events! {
     GuildUpdate = "GUILD_UPDATE",
     GuildDelete = "GUILD_DELETE",
     GuildMemberUpdate = "GUILD_MEMBER_UPDATE",
+    /// Someone left a server, or was kicked or banned from it.
+    GuildMemberRemove = "GUILD_MEMBER_REMOVE",
     /// Members Talk asked for, by id or by a search.
     GuildMembersChunk = "GUILD_MEMBERS_CHUNK",
     /// The member list of a channel Talk subscribed to.
@@ -130,6 +132,7 @@ mod tests {
             ("GUILD_UPDATE", Event::GuildUpdate),
             ("GUILD_DELETE", Event::GuildDelete),
             ("GUILD_MEMBER_UPDATE", Event::GuildMemberUpdate),
+            ("GUILD_MEMBER_REMOVE", Event::GuildMemberRemove),
             ("GUILD_MEMBERS_CHUNK", Event::GuildMembersChunk),
             ("GUILD_MEMBER_LIST_UPDATE", Event::GuildMemberListUpdate),
             ("GUILD_ROLE_CREATE", Event::GuildRoleCreate),

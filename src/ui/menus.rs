@@ -2,7 +2,7 @@
 
 use talk_core::{
     application::{MUTE_TIMES, MenuChoice, network_id, network_link},
-    chat::{Muting, RelationshipChange},
+    chat::{MemberChange, Muting, RelationshipChange},
 };
 
 use super::*;
@@ -18,9 +18,20 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     let icons = &adapter.icons;
     let state = &adapter.app.state;
     let choices = if person {
-        state.person_choices(id)
+        adapter.app.person_choices(id)
     } else {
         state.menu_choices(id)
+    };
+    // Moderation names whom it's about, as Discord's does.
+    let named = std::cell::OnceCell::new();
+    let name = || {
+        named
+            .get_or_init(|| {
+                state
+                    .person(id)
+                    .map_or_else(|| "them".into(), |person| person.name)
+            })
+            .as_str()
     };
     let (room, _) = subjects(state, id, person);
     let in_call = state
@@ -32,35 +43,20 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
         .into_iter()
         .map(|choice| {
             let (text, icon) = match choice {
-                MenuChoice::MarkRead => ("Mark as read", &icons.read),
-                MenuChoice::JoinVoice => ("Join voice", &icons.call),
-                MenuChoice::Profile => ("Profile", &icons.profile),
-                MenuChoice::Message => ("Message", &icons.dm),
-                MenuChoice::AddFriend => ("Add friend", &icons.befriend),
-                MenuChoice::AcceptFriend => ("Accept friend request", &icons.befriend),
-                MenuChoice::CancelFriendRequest => ("Cancel friend request", &icons.cancel),
-                MenuChoice::Pin => ("Pin", &icons.pin),
-                MenuChoice::Unpin => ("Unpin", &icons.unpin),
-                MenuChoice::Call if in_call => ("Join call", &icons.call),
-                MenuChoice::Call => ("Start call", &icons.call),
-                MenuChoice::AddNote => ("Add note", &icons.note),
-                MenuChoice::AddNickname => ("Add friend nickname", &icons.nickname),
-                MenuChoice::EditNickname => ("Change friend nickname", &icons.nickname),
-                MenuChoice::CloseDm => ("Close DM", &icons.cancel),
-                MenuChoice::Unfriend => ("Remove friend", &icons.unfriend),
-                MenuChoice::Ignore => ("Ignore", &icons.ignore),
-                MenuChoice::Unignore => ("Stop ignoring", &icons.ignore),
-                MenuChoice::Block => ("Block", &icons.block),
-                MenuChoice::Unblock => ("Unblock", &icons.block),
-                MenuChoice::Mute => ("Mute", &icons.mute),
-                MenuChoice::Unmute => ("Unmute", &icons.unmute),
-                MenuChoice::CopyLink => ("Copy link", &icons.copy),
-                MenuChoice::CopyId => ("Copy ID", &icons.text),
+                MenuChoice::Timeout => (format!("Time out {}", name()), &icons.timeout),
+                MenuChoice::Kick => (format!("Kick {}", name()), &icons.kick),
+                MenuChoice::Ban => (format!("Ban {}", name()), &icons.ban),
+                choice => {
+                    let (text, icon) = label(icons, choice, in_call);
+                    (text.to_owned(), icon)
+                }
             };
             // A line goes between groups: what it does, then how this
-            // account stands with someone, then notifications, then copying.
+            // account stands with someone, then notifications, roles,
+            // copying, and moderation.
             let starts = match choice {
-                MenuChoice::AddFriend
+                MenuChoice::ServerNickname
+                | MenuChoice::AddFriend
                 | MenuChoice::AcceptFriend
                 | MenuChoice::CancelFriendRequest
                 | MenuChoice::Unfriend
@@ -70,6 +66,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::Unblock => 1,
                 MenuChoice::Mute | MenuChoice::Unmute => 2,
                 MenuChoice::CopyLink | MenuChoice::CopyId => 3,
+                MenuChoice::Roles => 4,
+                MenuChoice::Timeout
+                | MenuChoice::RemoveTimeout
+                | MenuChoice::Kick
+                | MenuChoice::Ban => 5,
                 _ => 0,
             };
             let separated = group.replace(starts).is_some_and(|last| last != starts);
@@ -77,7 +78,14 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 id: choice_id(choice).into(),
                 text: text.into(),
                 icon: icon.clone(),
-                danger: matches!(choice, MenuChoice::Unfriend | MenuChoice::Block),
+                danger: matches!(
+                    choice,
+                    MenuChoice::Unfriend
+                        | MenuChoice::Block
+                        | MenuChoice::Timeout
+                        | MenuChoice::Kick
+                        | MenuChoice::Ban
+                ),
                 separated,
                 ..Default::default()
             }
@@ -88,6 +96,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
         .map(|row| {
             if row.id == choice_id(MenuChoice::Mute) {
                 mute_times()
+            } else if row.id == choice_id(MenuChoice::Roles) {
+                role_rows(adapter, id)
             } else {
                 vec![]
             }
@@ -95,6 +105,68 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
         .collect();
     (rows, submenus)
 }
+
+/// What a menu row says for a choice, and its icon.
+fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &slint::Image) {
+    match choice {
+        MenuChoice::MarkRead => ("Mark as read", &icons.read),
+        MenuChoice::JoinVoice => ("Join voice", &icons.call),
+        MenuChoice::Profile => ("Profile", &icons.profile),
+        MenuChoice::Message => ("Message", &icons.dm),
+        MenuChoice::AddFriend => ("Add friend", &icons.befriend),
+        MenuChoice::AcceptFriend => ("Accept friend request", &icons.befriend),
+        MenuChoice::CancelFriendRequest => ("Cancel friend request", &icons.cancel),
+        MenuChoice::Pin => ("Pin", &icons.pin),
+        MenuChoice::Unpin => ("Unpin", &icons.unpin),
+        MenuChoice::Call if in_call => ("Join call", &icons.call),
+        MenuChoice::Call => ("Start call", &icons.call),
+        MenuChoice::AddNote => ("Add note", &icons.note),
+        MenuChoice::AddNickname => ("Add friend nickname", &icons.nickname),
+        MenuChoice::EditNickname => ("Change friend nickname", &icons.nickname),
+        MenuChoice::CloseDm => ("Close DM", &icons.cancel),
+        MenuChoice::Unfriend => ("Remove friend", &icons.unfriend),
+        MenuChoice::Ignore => ("Ignore", &icons.ignore),
+        MenuChoice::Unignore => ("Stop ignoring", &icons.ignore),
+        MenuChoice::Block => ("Block", &icons.block),
+        MenuChoice::Unblock => ("Unblock", &icons.block),
+        MenuChoice::Mute => ("Mute", &icons.mute),
+        MenuChoice::Unmute => ("Unmute", &icons.unmute),
+        MenuChoice::CopyLink => ("Copy link", &icons.copy),
+        MenuChoice::CopyId => ("Copy ID", &icons.text),
+        MenuChoice::Mention => ("Mention", &icons.mention),
+        MenuChoice::ServerNickname => ("Change nickname", &icons.rename),
+        MenuChoice::Roles => ("Roles", &icons.roles),
+        MenuChoice::RemoveTimeout => ("Remove timeout", &icons.timeout),
+        MenuChoice::Timeout => ("Time out", &icons.timeout),
+        MenuChoice::Kick => ("Kick", &icons.kick),
+        MenuChoice::Ban => ("Ban", &icons.ban),
+    }
+}
+
+/// A server member's roles submenu, built as it opens: every role of the
+/// server, highest first, ticked for those they hold, and greyed for those
+/// this account may not give or take, as Discord shows them.
+fn role_rows(adapter: &Adapter, user: &str) -> Vec<MenuRow> {
+    let Some(place) = adapter.app.state.selected.as_deref() else {
+        return vec![];
+    };
+    adapter
+        .app
+        .role_choices(place, user)
+        .into_iter()
+        .map(|choice| MenuRow {
+            id: format!("{ROLE}{}", choice.role.id).into(),
+            text: choice.role.name.into(),
+            checkbox: true,
+            checked: choice.held,
+            disabled: !choice.grantable,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// What a role's row in the roles submenu reports, before the role's id.
+const ROLE: &str = "role:";
 
 /// How long [`MenuChoice::Mute`] mutes for, as its submenu offers.
 fn mute_times() -> Vec<MenuRow> {
@@ -137,18 +209,20 @@ pub(super) fn show(window: &TalkWindow, (rows, submenus): Menu) {
 }
 
 /// Ticks or unticks the checkbox row `id` in the menu showing, as choosing
-/// it does while the menu stays open; whether there was one.
-pub(super) fn toggle(window: &TalkWindow, id: &str) -> bool {
-    let flip = |rows: &ModelRc<MenuRow>| {
+/// it does while the menu stays open; whether it's ticked now, when there
+/// was one.
+pub(super) fn toggle(window: &TalkWindow, id: &str) -> Option<bool> {
+    let flip = |rows: ModelRc<MenuRow>| {
         let index = rows.iter().position(|row| row.checkbox && row.id == id)?;
         let mut row = rows.row_data(index)?;
         row.checked = !row.checked;
+        let checked = row.checked;
         rows.set_row_data(index, row);
-        Some(())
+        Some(checked)
     };
     std::iter::once(window.get_menu_rows())
         .chain(window.get_menu_submenus().iter())
-        .any(|rows| flip(&rows).is_some())
+        .find_map(flip)
 }
 
 /// Carries out the choice a menu reports by its row's id.
@@ -160,8 +234,25 @@ pub(super) fn choose(
     id: &str,
 ) {
     // A checkbox shows its new state at once, as the menu stays open.
-    toggle(window, id);
+    let ticked = toggle(window, id);
     let (room, user) = subjects(&adapter.app.state, &target, person);
+    // A member's choices act in the server of the channel they're in.
+    let place = adapter.app.state.selected.clone();
+    if let (Some(role), Some(add), Some(place)) = (id.strip_prefix(ROLE), ticked, place.clone()) {
+        let change = MemberChange::Role {
+            role: role.to_owned(),
+            add,
+        };
+        adapter.action(
+            window,
+            Action::ChangeMember {
+                place,
+                user: target,
+                change,
+            },
+        );
+        return;
+    }
     if let Some(muting) = MUTE_TIMES.into_iter().find(|&muting| mute_id(muting) == id) {
         if let Some(room) = room {
             adapter.action(window, Action::MuteDm { room, muting });
@@ -176,9 +267,17 @@ pub(super) fn choose(
         user.clone()
             .map(|user| Action::ChangeRelationship { user, change })
     };
+    let ask_member = |ask| {
+        place.clone().map(|place| Action::AskMember {
+            place,
+            user: target.clone(),
+            ask,
+        })
+    };
     let action = match choice {
         MenuChoice::MarkRead => Some(Action::MarkRead(target)),
         MenuChoice::JoinVoice => Some(Action::RequestJoinVoice(target)),
+        MenuChoice::Call if person => Some(Action::CallPerson(target.clone())),
         MenuChoice::Call => room.map(Action::RequestJoinVoice),
         MenuChoice::Profile if person => Some(Action::ShowProfile {
             user: target,
@@ -214,6 +313,27 @@ pub(super) fn choose(
             window.invoke_copy_text(network_id(&target).into());
             None
         }
+        MenuChoice::Mention => {
+            adapter.action(window, Action::MentionPerson(target));
+            let end = adapter.app.state.draft().len();
+            window.invoke_place_composer_caret(i32::try_from(end).unwrap_or(i32::MAX));
+            window.invoke_focus_composer();
+            None
+        }
+        MenuChoice::ServerNickname => ask_member(PersonAsk::ServerNickname),
+        MenuChoice::Timeout => ask_member(PersonAsk::Timeout),
+        MenuChoice::Kick => ask_member(PersonAsk::Kick),
+        MenuChoice::Ban => ask_member(PersonAsk::Ban),
+        MenuChoice::RemoveTimeout => place.clone().map(|place| Action::ChangeMember {
+            place,
+            user: target.clone(),
+            change: MemberChange::Timeout {
+                until_ms: None,
+                reason: String::new(),
+            },
+        }),
+        // Its roles are its submenu's.
+        MenuChoice::Roles => None,
     };
     let Some(action) = action else {
         return;
@@ -226,7 +346,7 @@ pub(super) fn choose(
     }
 }
 
-const CHOICES: [MenuChoice; 23] = [
+const CHOICES: [MenuChoice; 30] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -250,6 +370,13 @@ const CHOICES: [MenuChoice; 23] = [
     MenuChoice::Unmute,
     MenuChoice::CopyLink,
     MenuChoice::CopyId,
+    MenuChoice::Mention,
+    MenuChoice::ServerNickname,
+    MenuChoice::Roles,
+    MenuChoice::Timeout,
+    MenuChoice::RemoveTimeout,
+    MenuChoice::Kick,
+    MenuChoice::Ban,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -277,6 +404,13 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::Unmute => "unmute",
         MenuChoice::CopyLink => "copy-link",
         MenuChoice::CopyId => "copy-id",
+        MenuChoice::Mention => "mention",
+        MenuChoice::ServerNickname => "server-nickname",
+        MenuChoice::Roles => "roles",
+        MenuChoice::Timeout => "timeout",
+        MenuChoice::RemoveTimeout => "remove-timeout",
+        MenuChoice::Kick => "kick",
+        MenuChoice::Ban => "ban",
     }
 }
 

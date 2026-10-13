@@ -54,7 +54,10 @@ impl Application {
     /// The Discord server a place names, its channel or category if it
     /// names one, and this account's id.
     #[cfg(feature = "discord")]
-    fn discord_place<'a>(&'a self, at: &'a str) -> Option<(&'a Server, Option<&'a str>, &'a str)> {
+    pub(super) fn discord_place<'a>(
+        &'a self,
+        at: &'a str,
+    ) -> Option<(&'a Server, Option<&'a str>, &'a str)> {
         let snapshot = self.discord.as_ref()?;
         let (guild, channel) = place(at)?;
         let server = snapshot.servers.iter().find(|server| server.id == guild)?;

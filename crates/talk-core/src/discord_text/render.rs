@@ -338,6 +338,7 @@ pub(super) fn chat_member(member: ListedMember) -> ChatMember {
         color: member.color,
         activity: member.activity,
         roles: member.roles,
+        timed_out_until: member.timed_out_until,
     }
 }
 

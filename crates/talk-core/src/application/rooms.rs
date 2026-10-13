@@ -41,6 +41,17 @@ pub enum MenuChoice {
     CopyLink,
     /// Copy its id as its network knows it.
     CopyId,
+    // A Discord server member's; see `members.rs`.
+    /// Mention them in the open channel's composer.
+    Mention,
+    /// Change their nickname in the server, or this account's own.
+    ServerNickname,
+    /// Give them roles or take them away, in a submenu of the server's.
+    Roles,
+    Timeout,
+    RemoveTimeout,
+    Kick,
+    Ban,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.
@@ -107,16 +118,28 @@ impl AppState {
     }
 
     /// Whether Talk can open a DM with someone: one that's listed, or a new
-    /// one with a Discord friend or a Matrix user.
-    fn can_message(&self, user: &str) -> bool {
+    /// one with a Discord friend, a member of the open Discord server's
+    /// channel, or a Matrix user.
+    pub(super) fn can_message(&self, user: &str) -> bool {
         self.dm_with(user).is_some()
             || (!self.preview
                 && (user.starts_with('@')
-                    || self.discord_friends.iter().any(|friend| friend == user)))
+                    || self.discord_friends.iter().any(|friend| friend == user)
+                    || (self.discord_user.is_some()
+                        && self.discord_server_open()
+                        && self.person(user).is_some())))
+    }
+
+    /// Whether the open conversation is a Discord server's channel.
+    pub(super) fn discord_server_open(&self) -> bool {
+        self.selected
+            .as_deref()
+            .and_then(discord::parse_room)
+            .is_some_and(|(guild, _)| guild != discord::DM_GUILD)
     }
 
     /// The listed one-to-one DM with someone.
-    fn dm_with(&self, user: &str) -> Option<&ChatRoom> {
+    pub(super) fn dm_with(&self, user: &str) -> Option<&ChatRoom> {
         self.rooms
             .iter()
             .find(|room| room.direct && room.person.as_deref() == Some(user))
@@ -164,27 +187,7 @@ impl AppState {
             if !room.request {
                 choices.push(MenuChoice::CloseDm);
             }
-            let has = |list: &[String]| list.contains(person);
-            match self.relation(person) {
-                Relation::Friend => choices.push(MenuChoice::Unfriend),
-                // Discord takes no request to someone blocked.
-                Relation::Stranger if !has(&self.discord_blocked) => {
-                    choices.push(MenuChoice::AddFriend)
-                }
-                Relation::Incoming => choices.push(MenuChoice::AcceptFriend),
-                Relation::Outgoing => choices.push(MenuChoice::CancelFriendRequest),
-                Relation::Stranger | Relation::Me => {}
-            }
-            choices.push(if has(&self.discord_ignored) {
-                MenuChoice::Unignore
-            } else {
-                MenuChoice::Ignore
-            });
-            choices.push(if has(&self.discord_blocked) {
-                MenuChoice::Unblock
-            } else {
-                MenuChoice::Block
-            });
+            choices.extend(self.relationship_choices(person));
         }
         if discord && !room.request {
             choices.push(if room.muted {
@@ -197,6 +200,31 @@ impl AppState {
             choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
         }
         choices
+    }
+
+    /// How a DM's or a server member's menu changes how this Discord
+    /// account stands with someone: friendship, ignoring and blocking.
+    pub(super) fn relationship_choices(&self, person: &str) -> Vec<MenuChoice> {
+        let has = |list: &[String]| list.iter().any(|listed| listed == person);
+        let friendship = match self.relation(person) {
+            Relation::Friend => Some(MenuChoice::Unfriend),
+            // Discord takes no request to someone blocked.
+            Relation::Stranger if !has(&self.discord_blocked) => Some(MenuChoice::AddFriend),
+            Relation::Incoming => Some(MenuChoice::AcceptFriend),
+            Relation::Outgoing => Some(MenuChoice::CancelFriendRequest),
+            Relation::Stranger | Relation::Me => None,
+        };
+        let ignore = if has(&self.discord_ignored) {
+            MenuChoice::Unignore
+        } else {
+            MenuChoice::Ignore
+        };
+        let block = if has(&self.discord_blocked) {
+            MenuChoice::Unblock
+        } else {
+            MenuChoice::Block
+        };
+        friendship.into_iter().chain([ignore, block]).collect()
     }
 
     /// What a listed server's menu offers.

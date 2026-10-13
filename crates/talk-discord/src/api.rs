@@ -551,6 +551,64 @@ impl Api {
             .map(drop)
     }
 
+    // A server member's menu: nicknames, roles and moderation. Each fires
+    // GUILD_MEMBER_UPDATE, or for a kick GUILD_MEMBER_REMOVE and a ban
+    // GUILD_BAN_ADD; see <https://docs.discord.food/resources/guild>.
+
+    /// Sets the nickname of `user` in a server, or with none this account's
+    /// own, which takes Change Nickname rather than Manage Nicknames; empty
+    /// resets it.
+    pub async fn set_member_nick(&self, guild: &str, user: Option<&str>, nick: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{}", user.unwrap_or("@me"));
+        let body = json!({"nick": (!nick.is_empty()).then_some(nick)});
+        self.empty(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
+    /// Gives a member a role, or with `add` false takes it away.
+    pub async fn member_role(&self, guild: &str, user: &str, role: &str, add: bool) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{user}/roles/{role}");
+        let method = if add { Method::PUT } else { Method::DELETE };
+        self.empty(self.request(method, &path)).await
+    }
+
+    /// Times a member out until `until`, an ISO 8601 time at most 28 days
+    /// away, or with none ends their timeout.
+    pub async fn time_out(
+        &self,
+        guild: &str,
+        user: &str,
+        until: Option<&str>,
+        reason: &str,
+    ) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{user}");
+        let body = json!({"communication_disabled_until": until});
+        let request = with_json(self.request(Method::PATCH, &path), &body);
+        self.empty(audit_reason(request, reason)).await
+    }
+
+    /// Removes a member from a server; they may join again with an invite.
+    pub async fn kick(&self, guild: &str, user: &str, reason: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{user}");
+        self.empty(audit_reason(self.request(Method::DELETE, &path), reason))
+            .await
+    }
+
+    /// Bans a member, deleting what they wrote in the last `delete_seconds`,
+    /// up to a week.
+    pub async fn ban(
+        &self,
+        guild: &str,
+        user: &str,
+        delete_seconds: u32,
+        reason: &str,
+    ) -> Result<()> {
+        let path = format!("/guilds/{guild}/bans/{user}");
+        let body = json!({"delete_message_seconds": delete_seconds.min(MAX_BAN_DELETE)});
+        let request = with_json(self.request(Method::PUT, &path), &body);
+        self.empty(audit_reason(request, reason)).await
+    }
+
     /// Whether this account may ring the others in a DM, beyond calling them.
     pub async fn ringable(&self, channel: &str) -> Result<bool> {
         let path = format!("/channels/{channel}/call");
@@ -777,6 +835,26 @@ fn with_json(request: RequestBuilder, body: &Value) -> RequestBuilder {
 }
 
 /// Percent-encodes a path segment.
+/// The most of a banned member's messages a ban deletes: a week.
+pub const MAX_BAN_DELETE: u32 = 7 * 24 * 3600;
+
+/// Discord keeps up to 512 characters of an audit log's reason.
+const MAX_REASON: usize = 512;
+
+/// Gives a moderation request the reason the audit log shows, URL-encoded as
+/// Discord reads it; none when it's empty.
+fn audit_reason(request: RequestBuilder, reason: &str) -> RequestBuilder {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return request;
+    }
+    let end = reason
+        .char_indices()
+        .nth(MAX_REASON)
+        .map_or(reason.len(), |(end, _)| end);
+    request.header("X-Audit-Log-Reason", encode(&reason[..end]))
+}
+
 fn encode(segment: &str) -> String {
     let mut encoded = String::with_capacity(segment.len() * 3);
     for byte in segment.bytes() {

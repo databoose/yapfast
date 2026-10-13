@@ -207,6 +207,32 @@ pub struct Snapshot {
     /// read it.
     #[serde(skip)]
     pub listed: Option<(String, u64)>,
+    /// Who is who, as the service knows them; see [`SharedNames`].
+    #[serde(skip)]
+    pub names: SharedNames,
+}
+
+/// The service's [`Names`], shared with each snapshot rather than copied
+/// into it, so a menu can read a member's roles and timeout when it opens.
+#[derive(Clone, Default)]
+pub struct SharedNames(Arc<RwLock<Names>>);
+
+impl SharedNames {
+    pub fn new(names: Arc<RwLock<Names>>) -> Self {
+        Self(names)
+    }
+
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Names> {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl std::fmt::Debug for SharedNames {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SharedNames")
+    }
 }
 
 /// A message event from the gateway, for any channel.
@@ -405,9 +431,11 @@ impl Discord {
             cached.custom_status.as_ref(),
             now_ms(),
         );
+        let names = Arc::new(RwLock::new(names));
+        let mut cached = cached;
+        cached.names = SharedNames::new(names.clone());
         let (snapshots, watcher) = watch::channel(Arc::new(cached));
         let (live, _) = broadcast::channel(LIVE_BACKLOG);
-        let names = Arc::new(RwLock::new(names));
         tokio::spawn(cache::keep(watcher.clone(), names.clone()));
         tokio::spawn(session::run(
             token,
@@ -785,6 +813,53 @@ impl Discord {
     /// Sets this account's note on someone; empty removes it.
     pub async fn set_note(&self, user: &str, note: &str) -> Result<()> {
         self.api.set_note(user, note).await
+    }
+
+    /// Sets the nickname of `user` in a server, this account's own included;
+    /// empty resets it. Names change when Discord confirms it.
+    pub async fn set_member_nick(&self, guild: &str, user: &str, nick: &str) -> Result<()> {
+        let me = self.snapshots.borrow().user_id.as_deref() == Some(user);
+        self.api
+            .set_member_nick(guild, (!me).then_some(user), nick)
+            .await
+    }
+
+    /// Gives a member a role, or takes it away.
+    pub async fn member_role(&self, guild: &str, user: &str, role: &str, add: bool) -> Result<()> {
+        self.api.member_role(guild, user, role, add).await
+    }
+
+    /// Times a member out until `until_ms`, in Unix milliseconds, or with
+    /// none ends their timeout; `reason` goes to the audit log.
+    pub async fn time_out(
+        &self,
+        guild: &str,
+        user: &str,
+        until_ms: Option<u64>,
+        reason: &str,
+    ) -> Result<()> {
+        let until = until_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(i64::try_from(ms).ok()?))
+            .map(|until| until.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        self.api
+            .time_out(guild, user, until.as_deref(), reason)
+            .await
+    }
+
+    /// Removes a member from a server.
+    pub async fn kick(&self, guild: &str, user: &str, reason: &str) -> Result<()> {
+        self.api.kick(guild, user, reason).await
+    }
+
+    /// Bans a member, deleting what they wrote in the last `delete_seconds`.
+    pub async fn ban(
+        &self,
+        guild: &str,
+        user: &str,
+        delete_seconds: u32,
+        reason: &str,
+    ) -> Result<()> {
+        self.api.ban(guild, user, delete_seconds, reason).await
     }
 
     /// Closes a DM; the DM list changes when Discord confirms it.

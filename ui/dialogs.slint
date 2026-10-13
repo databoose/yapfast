@@ -379,11 +379,16 @@ export component StatusMenu inherits Rectangle {
     }
 }
 
-/// A dialog from a DM's menu about its other person.
+/// A dialog from a DM's or a server member's menu about its person.
 export struct PersonPrompt {
     title: string,
     /// What it explains, under the title.
     text: string,
+    /// Choices to pick one of, such as a timeout's length, under a heading;
+    /// and which is picked.
+    options-heading: string,
+    options: [string],
+    chosen: int,
     /// What its field is for, as its label; empty for a dialog that only asks.
     field: string,
     /// What its button says, and whether it does something hard to undo.
@@ -395,12 +400,14 @@ export struct PersonPrompt {
     error: string,
 }
 
-// Writing a note on someone or the nickname you give them, or making sure
-// before unfriending or blocking them.
+// Writing a note on someone or the nickname you give them, making sure
+// before unfriending or blocking them, or in a server, their nickname, or a
+// timeout, kick or ban with how long or how much and a reason.
 export component PersonDialog inherits Rectangle {
     in property <PersonPrompt> prompt;
     in-out property <string> text;
     callback answer(string);
+    callback choose(int);
     callback close;
     background: #00000099;
     TouchArea { clicked => { root.close(); } }
@@ -425,6 +432,17 @@ export component PersonDialog inherits Rectangle {
                     IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
                 }
                 if root.prompt.text != "": Label { text: root.prompt.text; }
+                if root.prompt.options.length > 0: VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: root.prompt.options-heading; color: Theme.muted;
+                        font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+                    }
+                    for option[index] in root.prompt.options: MenuItem {
+                        text: option; checked: index == root.prompt.chosen;
+                        clicked => { root.choose(index); }
+                    }
+                }
                 if root.prompt.field != "": TextField {
                     // A note takes the keys once it's here.
                     init => { if self.enabled { self.focus-input(); } }

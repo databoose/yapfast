@@ -266,6 +266,16 @@ impl Tracker {
                 self.learn_member(guild, data);
                 true
             }
+            // A server this account left goes with its GUILD_DELETE.
+            Event::GuildMemberRemove => {
+                let (Some(guild), Some(user)) =
+                    (data["guild_id"].as_str(), data["user"]["id"].as_str())
+                else {
+                    return false;
+                };
+                self.write_names().forget_member(guild, user);
+                false
+            }
             Event::GuildRoleCreate | Event::GuildRoleUpdate | Event::GuildRoleDelete => {
                 let Some(server) = data["guild_id"]
                     .as_str()
@@ -607,6 +617,7 @@ impl Tracker {
                     color: None,
                     activity,
                     roles: Arc::default(),
+                    timed_out_until: None,
                 }
             })
             .collect();
@@ -996,6 +1007,7 @@ impl Tracker {
             friend_requests: self.friend_requests(&names),
             voice,
             listed: None,
+            names: super::SharedNames::new(self.names.clone()),
         }
     }
 }

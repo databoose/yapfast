@@ -295,6 +295,17 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_close_add_friend, Action::CloseAddFriend);
     bind!(on_close_person, Action::ClosePersonDialog);
     bind_item!(on_answer_person, Action::AnswerPerson);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_choose_person_option(move |index| {
+            if let (Some(window), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::ChoosePersonOption(index));
+            }
+        });
+    }
     bind_item!(on_add_friend, Action::AddFriend);
     bind!(on_open_status, Action::OpenStatusEditor);
     bind_item!(on_set_status, Action::SetStatus);

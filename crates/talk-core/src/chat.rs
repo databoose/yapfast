@@ -442,6 +442,9 @@ pub struct ChatMember {
     /// Their Discord roles' ids, as far as they're known, shared with what
     /// learned them; empty for Matrix. See [`crate::application::Application::server_roles`].
     pub roles: Arc<[String]>,
+    /// When their Discord timeout ends, in Unix milliseconds, while they're
+    /// timed out as far as Talk knows.
+    pub timed_out_until: Option<u64>,
 }
 
 /// Someone to start a DM with.
@@ -1170,6 +1173,14 @@ pub enum DiscordCommand {
     /// Forget the linked Discord account on this device, ending its session
     /// on Discord; [`Event::DiscordUnlinked`] follows.
     Unlink,
+    /// Change a member of a Discord server, by its server id; a nickname,
+    /// a timeout, a kick or a ban answers with [`Event::PersonSaved`], and
+    /// a role with [`Event::Error`] when it fails.
+    Member {
+        server: String,
+        user: String,
+        change: MemberChange,
+    },
     /// Fetch a Discord user's profile, as a member of a room's server or as
     /// the other person in a DM. It comes back as [`Event::Profile`].
     Profile {
@@ -1191,6 +1202,34 @@ pub enum RelationshipChange {
     /// doesn't tell them.
     Ignore,
     Unignore,
+}
+
+/// A change to a member of a Discord server, which their server's
+/// permissions and role hierarchy allow; see
+/// [`crate::application::Application::member_choices`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemberChange {
+    /// Their nickname in the server; empty resets it.
+    Nickname(String),
+    /// Give them a role, or take it away.
+    Role {
+        role: String,
+        add: bool,
+    },
+    /// Time them out until then, in Unix milliseconds, or with none end
+    /// their timeout. The reason goes to the server's audit log.
+    Timeout {
+        until_ms: Option<u64>,
+        reason: String,
+    },
+    Kick {
+        reason: String,
+    },
+    /// Ban them, deleting what they wrote in the last `delete_seconds`.
+    Ban {
+        delete_seconds: u32,
+        reason: String,
+    },
 }
 
 /// How long a Discord DM, server, channel or category stays muted.

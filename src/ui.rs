@@ -14,8 +14,8 @@ use slint::{
 };
 use talk_core::{
     application::{
-        Action, AddFriend, AppState, Application, ClearAfter, Compose, DmScreen, Effect,
-        Navigation, NewDm, PersonAsk, ProfileView, Relation, Search,
+        Action, AddFriend, AppState, Application, BAN_HISTORY, ClearAfter, Compose, DmScreen,
+        Effect, Navigation, NewDm, PersonAsk, ProfileView, Relation, Search, TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{
@@ -773,6 +773,13 @@ struct Icons {
     block: slint::Image,
     mute: slint::Image,
     unmute: slint::Image,
+    // A server member's menu.
+    mention: slint::Image,
+    rename: slint::Image,
+    roles: slint::Image,
+    timeout: slint::Image,
+    kick: slint::Image,
+    ban: slint::Image,
 }
 
 struct Adapter {
@@ -897,6 +904,12 @@ impl Adapter {
             block: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/ban.svg"))?,
             mute: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/bell-off.svg"))?,
             unmute: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/bell.svg"))?,
+            mention: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/at-sign.svg"))?,
+            rename: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/pencil.svg"))?,
+            roles: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/shield.svg"))?,
+            timeout: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/clock.svg"))?,
+            kick: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user-x.svg"))?,
+            ban: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/gavel.svg"))?,
         };
         let models = Models::default();
         models.attach(window);

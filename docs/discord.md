@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | Audio on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search | Threads, forums, pinning, forwarding, the menus of servers, channels and members |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search | Threads, forums, pinning, forwarding, the menus of servers and channels |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -918,6 +918,65 @@ highest first, with their colours, from the server the latest snapshot
 shares. Members' roles are learned with their names; member list rows and
 `ChatMember::roles` share each member's list with them rather than copying
 it.
+
+### A server member's menu
+
+Right-clicking someone in a server channel's member list, or a message's
+author there, opens their menu in the order of Discord's: Profile, Mention,
+Message, Call, Add note and the friend nickname; Change nickname, friendship,
+Ignore and Block; Roles; Copy ID; then, in red, Time out, Kick and Ban, each
+naming them. What shows depends on this account's permissions and on its
+highest role against theirs, checked when the menu opens
+(`application/members.rs`). The member's roles and timeout come from the
+service's names, which each snapshot shares as `SharedNames` rather than
+copying them.
+
+- Mention puts `@Name ` in the composer, which sending turns into `<@id>`,
+  when the channel can be written in.
+- Message opens the DM with them, or starts one with any member through `POST
+  /users/@me/channels`. Call opens the DM and starts its call; with a friend
+  Talk has no DM with, it starts the DM first and calls once it opens.
+- Add note works for any member, and the friend nickname for friends, without
+  a DM.
+- Change nickname: one's own needs Change Nickname and is `PATCH
+  /guilds/{id}/members/@me` with `{"nick": ...}`; another's needs Manage
+  Nicknames and outranking them, and is `PATCH /guilds/{id}/members/{user}`.
+  Empty resets it. `Action::AskMember` with `PersonAsk::ServerNickname` and
+  this account's own id opens the same dialog from anywhere, by the server's
+  id, as a server menu's "Edit server profile" can.
+- Roles needs Manage Roles. Its submenu lists every role but @everyone,
+  highest first, ticked where they hold it. Roles at or above this account's
+  highest, and those an integration manages, show greyed, as Discord shows
+  them. Ticking one is `PUT` or `DELETE
+  /guilds/{id}/members/{user}/roles/{role}`; the box changes at once and the
+  menu stays open.
+- Time out needs Moderate Members and outranking them, and isn't offered for
+  administrators, whom Discord doesn't let anyone time out. Its dialog offers
+  Discord's lengths, 60 seconds to a week, and a reason, then `PATCH
+  /guilds/{id}/members/{user}` with `communication_disabled_until`. Someone
+  timed out is offered Remove timeout instead, which sends null, and the
+  member list marks them with a red clock beside their name.
+- Kick needs Kick Members and outranking them: a confirmation with a reason,
+  then `DELETE /guilds/{id}/members/{user}`.
+- Ban needs Ban Members and outranking them: how far back their messages go
+  (none, the last hour, 6, 12 or 24 hours, 3 or 7 days) and a reason, then
+  `PUT /guilds/{id}/bans/{user}` with `delete_message_seconds`.
+- Reasons go to the server's audit log in the `X-Audit-Log-Reason` header,
+  URL-encoded and cut to the 512 characters Discord keeps.
+- One's own entry has Profile, Change nickname, Roles and Copy ID. Nobody
+  outranks the owner, so nobody kicks, bans or times out the owner.
+
+Discord answers each change with GUILD_MEMBER_UPDATE, or for a kick with
+GUILD_MEMBER_REMOVE, and for a ban with GUILD_BAN_ADD as well, and sends the
+member list's subscribers its operations. Talk learns the member's
+nickname, roles and `communication_disabled_until`, shows the open member
+list again when it lists them, and renders the open channel again, so names,
+colours and the list follow. A member who leaves is forgotten. A nickname,
+timeout, kick or ban that fails says why in its dialog; a role says so in a
+notice.
+
+Discord's menu also has Invite to listen (Spotify), Apps, an Invite to server
+submenu and Open in moderator view, which Talk leaves out for now.
 
 ### DMs
 

@@ -792,6 +792,155 @@ fn menus_list_their_choices_and_carry_them_out() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn a_server_members_menu_follows_permissions_and_ticks_roles() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    // Alice is Staff, below Leads; Dave, her friend, is below her.
+    adapter.borrow_mut().app = talk_core::application::member_server(&["30"]);
+    window.invoke_prepare_menu("4".into(), true);
+    let rows: Vec<MenuRow> = window.get_menu_rows().iter().collect();
+    let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "Profile",
+            "Mention",
+            "Message",
+            "Start call",
+            "Add note",
+            "Add friend nickname",
+            "Change nickname",
+            "Remove friend",
+            "Ignore",
+            "Block",
+            "Roles",
+            "Copy ID",
+            "Time out Dave",
+            "Kick Dave",
+            "Ban Dave",
+        ]
+    );
+    let marked = |pick: fn(&MenuRow) -> bool| -> Vec<&str> {
+        rows.iter()
+            .filter(|row| pick(row))
+            .map(|row| row.text.as_str())
+            .collect()
+    };
+    assert_eq!(
+        marked(|row| row.separated),
+        ["Change nickname", "Roles", "Copy ID", "Time out Dave"]
+    );
+    assert_eq!(
+        marked(|row| row.danger),
+        [
+            "Remove friend",
+            "Block",
+            "Time out Dave",
+            "Kick Dave",
+            "Ban Dave"
+        ]
+    );
+
+    // Roles: every one, ticked where held, greyed where out of reach.
+    let roles = window.get_menu_submenus().row_data(10).unwrap();
+    let shown: Vec<(String, bool, bool)> = roles
+        .iter()
+        .map(|row| (row.text.to_string(), row.checked, row.disabled))
+        .collect();
+    let row = |name: &str, checked, disabled| (name.to_owned(), checked, disabled);
+    assert_eq!(
+        shown,
+        [
+            row("Leads", false, true),
+            row("Staff", false, true),
+            row("Crew", true, false),
+            row("Bot", false, true),
+            row("Wardens", false, false),
+        ]
+    );
+    assert!(roles.iter().all(|row| row.checkbox));
+    window.invoke_choose_menu("4".into(), true, "role:20".into());
+    assert!(
+        !window
+            .get_menu_submenus()
+            .row_data(10)
+            .unwrap()
+            .row_data(2)
+            .unwrap()
+            .checked,
+        "Crew unticks at once, and the menu stays open"
+    );
+
+    // Leads and the owner get no moderation.
+    window.invoke_prepare_menu("3".into(), true);
+    assert!(
+        !window
+            .get_menu_rows()
+            .iter()
+            .any(|row| row.danger && row.text.starts_with("Kick"))
+    );
+
+    // A ban asks how much to delete, and why.
+    window.invoke_choose_menu("4".into(), true, "ban".into());
+    assert!(window.get_person_open());
+    let prompt = window.get_person_prompt();
+    assert_eq!(prompt.title, "Ban Dave?");
+    assert_eq!(prompt.field, "Reason (optional)");
+    let options: Vec<String> = prompt
+        .options
+        .iter()
+        .map(|option| option.to_string())
+        .collect();
+    assert_eq!(
+        options,
+        [
+            "Don't delete any",
+            "The last hour",
+            "The last 6 hours",
+            "The last 12 hours",
+            "The last 24 hours",
+            "The last 3 days",
+            "The last 7 days",
+        ]
+    );
+    window.invoke_choose_person_option(2);
+    assert_eq!(window.get_person_prompt().chosen, 2);
+    window.invoke_close_person();
+    window.invoke_choose_menu("4".into(), true, "timeout".into());
+    let options: Vec<String> = window
+        .get_person_prompt()
+        .options
+        .iter()
+        .map(|option| option.to_string())
+        .collect();
+    assert_eq!(
+        options,
+        [
+            "60 seconds",
+            "5 minutes",
+            "10 minutes",
+            "1 hour",
+            "1 day",
+            "1 week"
+        ]
+    );
+    window.invoke_close_person();
+
+    // Mention puts their name in the composer.
+    window.invoke_choose_menu("3".into(), true, "mention".into());
+    assert_eq!(adapter.borrow().app.state.draft(), "@Cara ");
+}
+
+#[test]
 fn menus_give_each_row_its_own_submenu_and_tick_checkboxes() {
     i_slint_backend_testing::init_no_event_loop();
     let window = TalkWindow::new().unwrap();
@@ -825,9 +974,9 @@ fn menus_give_each_row_its_own_submenu_and_tick_checkboxes() {
     assert_eq!(submenus.row_data(2).unwrap().row_count(), 2);
 
     // Choosing a checkbox ticks it where it is, in the menu or a submenu.
-    assert!(menus::toggle(&window, "hide-muted"));
+    assert_eq!(menus::toggle(&window, "hide-muted"), Some(true));
     assert!(window.get_menu_rows().row_data(3).unwrap().checked);
-    assert!(menus::toggle(&window, "suppress-roles"));
+    assert_eq!(menus::toggle(&window, "suppress-roles"), Some(true));
     let ticked = |window: &TalkWindow| {
         window
             .get_menu_submenus()
@@ -838,9 +987,9 @@ fn menus_give_each_row_its_own_submenu_and_tick_checkboxes() {
             .checked
     };
     assert!(ticked(&window));
-    assert!(menus::toggle(&window, "suppress-roles"));
+    assert_eq!(menus::toggle(&window, "suppress-roles"), Some(false));
     assert!(!ticked(&window));
-    assert!(!menus::toggle(&window, "profile"), "not a checkbox");
+    assert_eq!(menus::toggle(&window, "profile"), None, "not a checkbox");
 
     // Without submenus, the menu reserves no room for one.
     menus::show(&window, (vec![row("profile", false)], vec![vec![]]));

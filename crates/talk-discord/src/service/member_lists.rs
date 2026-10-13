@@ -268,6 +268,19 @@ impl MemberLists {
         }
     }
 
+    /// Shows the list on screen again after a change to someone it lists
+    /// that came without a list operation, as GUILD_MEMBER_UPDATE's roles,
+    /// nickname or timeout may.
+    pub(super) fn member_changed(&self, tracker: &Tracker, data: &Value) {
+        let user = data["user"]["id"].as_str();
+        let listed = self.shown.as_ref().is_some_and(|list| {
+            data["guild_id"] == list.guild() && user.is_some_and(|user| list.lists(user))
+        });
+        if listed {
+            self.publish(tracker);
+        }
+    }
+
     /// Shows the group DM's members again after an event that may change
     /// them. Server events, such as presences in a server, don't.
     pub(super) fn group_event(&self, tracker: &Tracker, event: &Dispatch) {
