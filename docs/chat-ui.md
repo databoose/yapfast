@@ -181,7 +181,8 @@ The window follows Discord's arrangement:
   Hovering shows the server's name. A right click on a server, or the Menu
   key or Shift+F10 on a focused one, opens its menu: Mark as read when any of
   its channels is unread, then Copy link and Copy ID. A Discord server's
-  menu also has, while Discord is connected, Mute server, whose submenu
+  menu also has, while Discord is connected, Invite to server where the
+  account may invite; Mute server, whose submenu
   mutes for the DM menu's times, or Unmute server with when the mute ends;
   Notification settings, whose submenu picks All messages, Only @mentions
   or Nothing, with the level that applies under it, and ticks Suppress
@@ -191,7 +192,8 @@ The window follows Discord's arrangement:
   server name, a filter, and uppercase TEXT CHANNELS and VOICE CHANNELS groups.
   A Discord server's name, with a chevron beside it, opens a dropdown below
   it, as in Discord, and the chevron turns over while it's open; Enter, Space,
-  the Menu key or Shift+F10 open it too. The dropdown lists the choices of the
+  the Menu key or Shift+F10 open it too. A person with a plus, on the
+  header's right, invites to the server. The dropdown lists the choices of the
   server's menu that Discord's dropdown has, in its order, from the same list
   (`Application::header_choices`), so the two can't disagree. A Discord
   channel list heads each category's channels with its name; a category
@@ -207,7 +209,8 @@ The window follows Discord's arrangement:
   the Menu key or Shift+F10 on a focused one, opens its menu: Mark as read when
   it's unread, Join voice for a voice channel you aren't in, Profile for a
   one-to-one DM, Pin or Unpin and Start call for a DM, then Copy link and Copy
-  ID. A pinned DM stays at the top of the list, with a pin, on this device. A
+  ID; a Discord channel's adds Invite to channel before Copy link. A pinned
+  DM stays at the top of the list, with a pin, on this device. A
   Discord DM's menu also has Add note, Add or Change friend nickname, Close DM,
   Remove friend, Ignore and Block, each undone by its opposite, and Mute, whose
   submenu mutes for 15 minutes, 1, 3, 8 or 24 hours, or until unmuted. A
@@ -220,6 +223,12 @@ The window follows Discord's arrangement:
   Removing a friend and blocking ask first. Matrix links go through
   matrix.to. Arrow keys, Home and End move through the menu, Right opens a
   submenu and Left leaves it, Enter chooses, and Escape closes it.
+- Inviting opens a dialog with a link Discord made at once, lasting 7 days
+  and working any number of times, a button that copies it, and a line on
+  how long it lasts. Choices for how long a link lasts (30 minutes to 7
+  days, or for good) and how many may use it (any number, or 1 to 100), as
+  Discord's dialog offers them, make another with Generate a new link.
+  Its dialogs are in `ui/server.slint`.
 - Menus (`ContextMenu` in `ui/controls.slint`) are as wide as their rows'
   text, from 188 to 320px, and each row may open a submenu of its own,
   beside the menu, or on its left near the window's right edge. A row can

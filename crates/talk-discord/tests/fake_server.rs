@@ -1907,6 +1907,24 @@ async fn talks_to_the_fake_server() {
     assert!(cookies["returned"].as_u64().unwrap() > 10, "{cookies}");
     assert!(cookies["set"].as_u64().unwrap() <= 2, "{cookies}");
 
+    // An invite to #general, as Discord's invite dialog asks for one.
+    let code = discord.create_invite(&general, 3600, 5).await.unwrap();
+    assert_eq!(code.len(), 8);
+    let invites: serde_json::Value =
+        serde_json::from_str(&self::control(server, "GET", "/_control/invites", "")).unwrap();
+    let made = invites
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|invite| invite["code"] == code.as_str())
+        .unwrap();
+    assert_eq!(
+        (made["max_age"].as_u64(), made["max_uses"].as_u64()),
+        (Some(3600), Some(5))
+    );
+    assert_eq!(made["channel"]["id"], general.as_str());
+    assert!(discord.create_invite(&general, 3600, 101).await.is_err());
+
     // Bob calls on Alice every way Discord highlights for her, through her
     // Crew role among them, and two ways it doesn't.
     post_control(server, "/_control/mentions", "");

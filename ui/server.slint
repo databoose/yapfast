@@ -1,0 +1,99 @@
+// Dialogs a Discord server's, category's or channel's menu opens.
+import { Theme, Label } from "theme.slint";
+import { ActionButton, IconButton } from "controls.slint";
+import { Choices } from "settings.slint";
+
+// What an invite dialog shows: whom it invites where, and the link once
+// Discord made it.
+export struct InvitePrompt {
+    title: string,
+    /// Where the link lands those who follow it, such as "#general".
+    detail: string,
+    /// The link; empty while Discord makes it.
+    link: string,
+    /// How long the link lasts and how often it works, as said under it.
+    note: string,
+    making: bool,
+    error: string,
+}
+
+// An invite link to a server or a channel, with a button to copy it, and how
+// long a new one lasts and how many may use it, as Discord's invite dialog
+// offers them.
+export component InviteDialog inherits Rectangle {
+    in property <InvitePrompt> prompt;
+    /// The choices for the next link: an index into each list of options.
+    in-out property <int> age;
+    in-out property <int> uses;
+    callback copy(string);
+    callback remake(int, int);
+    callback close;
+    // The link last copied; a new one shows Copy again.
+    property <string> copied-link;
+    property <bool> copied: root.prompt.link != "" && root.copied-link == root.prompt.link;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(460px, root.width - 48px); height: invite-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: root.prompt.title;
+        TouchArea { }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                return reject;
+            }
+            invite-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: root.prompt.title; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
+                }
+                if root.prompt.detail != "": Label { text: root.prompt.detail; }
+                Text { text: "INVITE LINK"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                Rectangle {
+                    height: 44px; border-radius: 8px; background: Theme.sunken;
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 4px; spacing: 8px;
+                        Text {
+                            text: root.prompt.making ? "Making a link..." : root.prompt.link;
+                            color: root.prompt.making ? Theme.muted : Theme.text; font-size: 15px;
+                            vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            ActionButton {
+                                text: root.copied ? "Copied" : "Copy"; primary: !root.copied;
+                                enabled: root.prompt.link != "";
+                                clicked => { root.copy(root.prompt.link); root.copied-link = root.prompt.link; }
+                            }
+                        }
+                    }
+                }
+                if root.prompt.note != "": Label { text: root.prompt.note; }
+                if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                Text { text: "EXPIRE AFTER"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                Choices {
+                    label: "Expire after"; options: ["30 min", "1 hr", "6 hr", "12 hr", "1 day", "7 days", "Never"];
+                    current <=> root.age;
+                }
+                Text { text: "MAX NUMBER OF USES"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                Choices {
+                    label: "Max number of uses"; options: ["No limit", "1", "5", "10", "25", "50", "100"];
+                    current <=> root.uses;
+                }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px; padding-top: 4px;
+                    ActionButton { text: "Done"; ghost: true; clicked => { root.close(); } }
+                    ActionButton {
+                        text: "Generate a new link"; enabled: !root.prompt.making;
+                        clicked => { root.remake(root.age, root.uses); }
+                    }
+                }
+            }
+        }
+    }
+}

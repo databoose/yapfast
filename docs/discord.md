@@ -1135,6 +1135,25 @@ notice.
 Discord's menu also has Invite to listen (Spotify), Apps, an Invite to server
 submenu and Open in moderator view, which Talk leaves out for now.
 
+### Invites
+
+Invite to server, in a server's menu or its header, and Invite to channel,
+in a channel's, make an invite with `POST /channels/{id}/invites` and a
+body of `max_age`, in seconds or 0 for good, `max_uses`, 0 for any number,
+and `temporary` false; the answer's `code` makes `https://discord.gg/{code}`.
+The dialog asks for one at once with the defaults of Discord's dialog,
+7 days and any number of uses, and makes another when asked with its
+other choices. Discord answers 204, with no invite, when a server paused
+invites, which the dialog says. A channel's invite lands people in it. A
+server's lands them in the open channel when that's in the server, else
+in the first of its channels in Discord's order; each only where the
+account may see the channel and create invites (`CREATE_INSTANT_INVITE`),
+and the choice shows only then. docs.discord.food doesn't say which
+channel Discord's client picks for a server, so Talk takes the one it
+would open. The fake makes invites to "Server"'s channels, sends
+INVITE_CREATE, and lists them at `/_control/invites`; its @everyone may
+invite, as Discord's is by default.
+
 ### DMs
 
 DMs and group DMs are listed under the DM button after Matrix DMs, the latest

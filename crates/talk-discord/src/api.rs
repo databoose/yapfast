@@ -629,6 +629,37 @@ impl Api {
         self.empty(audit_reason(request, reason)).await
     }
 
+    /// Makes an invite to a server's channel that lasts `max_age` seconds,
+    /// 0 for good, and works `max_uses` times, 0 for any number, as
+    /// Discord's invite dialog asks; its code.
+    pub async fn create_invite(
+        &self,
+        channel: &str,
+        max_age: u32,
+        max_uses: u32,
+    ) -> Result<String> {
+        let path = format!("/channels/{channel}/invites");
+        let body = json!({"max_age": max_age, "max_uses": max_uses, "temporary": false});
+        let response = self
+            .execute(with_json(self.request(Method::POST, &path), &body))
+            .await?;
+        // Discord answers 204, with nothing, when the server paused invites.
+        if response.status() == StatusCode::NO_CONTENT {
+            bail!("This server has paused invites.");
+        }
+        let invite: Value = serde_json::from_slice(
+            &response
+                .bytes()
+                .await
+                .context("could not read Discord's answer")?,
+        )
+        .context("could not understand Discord's answer")?;
+        invite["code"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("Discord made no invite."))
+    }
+
     /// Whether this account may ring the others in a DM, beyond calling them.
     pub async fn ringable(&self, channel: &str) -> Result<bool> {
         let path = format!("/channels/{channel}/call");

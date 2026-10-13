@@ -32,7 +32,7 @@ mod session;
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::member_server;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
-pub use places::ListedCategory;
+pub use places::{INVITE_AGES, INVITE_USES, InviteDialog, ListedCategory};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 
 use calls::call_sounds;
@@ -293,6 +293,8 @@ pub struct AppState {
     /// first pinned first.
     pub pinned: Vec<String>,
     pub person_dialog: Option<PersonDialog>,
+    /// The invite dialog of a Discord server or channel, while it's open.
+    pub invite: Option<InviteDialog>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -1012,6 +1014,16 @@ pub enum Action {
         place: String,
         change: chat::NotificationChange,
     },
+    /// Open the invite dialog of a Discord server, by its server id, or of
+    /// a channel, by its room id, which makes a link at once; make another
+    /// that lasts `max_age` seconds, 0 for good, and works `max_uses`
+    /// times, 0 for any number; or close it.
+    OpenInvite(String),
+    MakeInvite {
+        max_age: u32,
+        max_uses: u32,
+    },
+    CloseInvite,
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
     ChangeRelationship {
@@ -1637,6 +1649,12 @@ impl Application {
             Action::ChangeNotifications { place, change } => {
                 self.change_notifications(place, change)
             }
+            Action::OpenInvite(place) => self.open_invite(place),
+            Action::MakeInvite { max_age, max_uses } => self.make_invite(max_age, max_uses),
+            Action::CloseInvite => {
+                self.state.invite = None;
+                vec![]
+            }
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),
@@ -1922,6 +1940,7 @@ impl Application {
                 }
             }
             Event::GroupChanged(result) => self.group_changed(result),
+            Event::InviteMade { room, result } => self.invite_made(room, result),
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;

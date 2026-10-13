@@ -961,6 +961,17 @@ impl Discord {
         self.api.guild_settings(guild, &body).await
     }
 
+    /// Makes an invite to a server's channel; its code. See
+    /// [`Api::create_invite`].
+    pub async fn create_invite(
+        &self,
+        channel: &str,
+        max_age: u32,
+        max_uses: u32,
+    ) -> Result<String> {
+        self.api.create_invite(channel, max_age, max_uses).await
+    }
+
     /// Declines a call ringing this account; the call goes on without it.
     pub async fn decline(&self, channel: &str) -> Result<()> {
         let me = self.snapshots.borrow().user_id.clone().unwrap_or_default();

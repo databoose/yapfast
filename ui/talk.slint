@@ -29,6 +29,7 @@ import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, Notifi
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
+import { InvitePrompt, InviteDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 
@@ -113,8 +114,19 @@ export component TalkWindow inherits Window {
     callback close-new-dm;
     in property <string> sidebar-title;
     /// The Discord server whose name heads the sidebar and opens its menu;
-    /// empty for DMs and Matrix servers.
+    /// empty for DMs and Matrix servers. Its invite button shows when this
+    /// account may invite to it.
     in property <string> header-server;
+    in property <bool> header-invite;
+    // A Discord server's or channel's invite dialog: the link, and the
+    // choices for another, as indices into each list it offers.
+    in property <bool> invite-open;
+    in property <InvitePrompt> invite-prompt;
+    in-out property <int> invite-age;
+    in-out property <int> invite-uses;
+    callback open-invite(string);
+    callback make-invite(int, int);
+    callback close-invite;
     in property <string> filter-placeholder;
     in property <string> sidebar-empty;
     in property <[ServerRow]> servers;
@@ -1096,9 +1108,14 @@ export component TalkWindow inherits Window {
                                 height: 48px;
                                 if root.header-server == "": Text { x: 16px; width: parent.width - (root.dms-selected && !root.preview ? (root.discord-linked ? 88px : 56px) : 32px); text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
                                 if root.header-server != "": server-header := ServerHeader {
-                                    x: 8px; y: 8px; width: parent.width - 16px; height: 32px;
+                                    x: 8px; y: 8px; width: parent.width - 16px - (root.header-invite ? 32px : 0px); height: 32px;
                                     name: root.sidebar-title; open: root.header-menu-open;
                                     clicked => { root.open-header-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+                                }
+                                if root.header-server != "" && root.header-invite: IconButton {
+                                    x: parent.width - self.width - 10px;
+                                    icon: @image-url("icons/user-plus.svg"); label: "Invite to server"; size: 28px; glyph: 18px; tip-side: 2;
+                                    clicked => { root.open-invite(root.header-server); }
                                 }
                                 if root.dms-selected && !root.preview && root.discord-linked: IconButton {
                                     x: parent.width - 2 * self.width - 14px;
@@ -2346,6 +2363,13 @@ export component TalkWindow inherits Window {
         close-add-friend => { root.close-add-friend(); }
     }
     // About a DM's other person; see PersonDialog.
+    // A Discord server's or channel's invite link; see InviteDialog.
+    if root.invite-open: InviteDialog {
+        prompt: root.invite-prompt; age <=> root.invite-age; uses <=> root.invite-uses;
+        copy(link) => { root.copy-text(link); }
+        remake(age, uses) => { root.make-invite(age, uses); }
+        close => { root.close-invite(); }
+    }
     if root.person-open: PersonDialog {
         prompt: root.person-prompt; text <=> root.person-text;
         answer(text) => { root.answer-person(text); }

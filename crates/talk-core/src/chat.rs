@@ -1207,6 +1207,14 @@ pub enum DiscordCommand {
         place: String,
         change: NotificationChange,
     },
+    /// Make an invite to a Discord server's channel, by its room id, that
+    /// lasts `max_age` seconds, 0 for good, and works `max_uses` times, 0
+    /// for any number; [`Event::InviteMade`] follows.
+    CreateInvite {
+        room: String,
+        max_age: u32,
+        max_uses: u32,
+    },
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
@@ -1417,6 +1425,12 @@ pub enum Event {
     /// The group [`DiscordCommand::AddToGroup`] made or added to, by room id,
     /// or why it couldn't.
     GroupChanged(Result<String, String>),
+    /// The code of the invite [`DiscordCommand::CreateInvite`] made to a
+    /// channel, by its room id, or why Discord made none.
+    InviteMade {
+        room: String,
+        result: Result<String, String>,
+    },
     /// The roles and groups a message in a room may mention.
     MentionGroups {
         room: String,

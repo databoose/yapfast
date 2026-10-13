@@ -95,6 +95,8 @@ pub(super) struct SidebarShown {
     friend_filter: SharedString,
     picture_changes: u64,
     category_changes: u64,
+    /// Whether Discord took changes, which the header's invite button needs.
+    discord_online: bool,
 }
 
 impl SidebarShown {
@@ -108,6 +110,7 @@ impl SidebarShown {
             friend_filter: window.get_friend_filter(),
             picture_changes: state.picture_changes,
             category_changes: state.category_changes,
+            discord_online: state.discord_online,
         }
     }
 
@@ -134,6 +137,7 @@ impl SidebarShown {
             && self.friend_filter == window.get_friend_filter()
             && self.picture_changes == state.picture_changes
             && self.category_changes == state.category_changes
+            && self.discord_online == state.discord_online
             && self.lists == Self::lists(state)
     }
 }
@@ -193,6 +197,7 @@ impl Adapter {
         self.show_header(window);
         self.show_dm_tools(window);
         self.show_members(window);
+        self.show_invite(window);
         self.show_dialogs(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
@@ -340,6 +345,10 @@ impl Adapter {
                 id.as_str().into()
             }
             _ => SharedString::default(),
+        });
+        window.set_header_invite(match &state.navigation {
+            Navigation::Server(id) => self.app.header_choices(id).contains(&MenuChoice::Invite),
+            Navigation::DirectMessages => false,
         });
         window.set_filter_placeholder(
             if state.navigation == Navigation::DirectMessages {
@@ -977,6 +986,57 @@ impl Adapter {
             })
             .collect();
         update_model(&self.models.role_members, role_members);
+    }
+
+    /// A Discord server's or channel's invite dialog.
+    fn show_invite(&self, window: &TalkWindow) {
+        let invite = self.app.state.invite.as_ref();
+        // A dialog opening starts from the link it makes first.
+        if let Some(invite) = invite
+            && !window.get_invite_open()
+        {
+            let index = |list: &[u32], value| {
+                list.iter()
+                    .position(|known| *known == value)
+                    .map_or(0, |index| index as i32)
+            };
+            window.set_invite_age(index(&INVITE_AGES, invite.max_age));
+            window.set_invite_uses(index(&INVITE_USES, invite.max_uses));
+        }
+        window.set_invite_open(invite.is_some());
+        let Some(invite) = invite else {
+            return;
+        };
+        let lasts = match invite.max_age {
+            0 => "never expires".to_owned(),
+            1800 => "expires in 30 minutes".to_owned(),
+            3600 => "expires in an hour".to_owned(),
+            86_400 => "expires in a day".to_owned(),
+            age if age % 86_400 == 0 => format!("expires in {} days", age / 86_400),
+            age => format!("expires in {} hours", age / 3600),
+        };
+        let works = match invite.max_uses {
+            0 => String::new(),
+            1 => " and works once".to_owned(),
+            uses => format!(" and works {uses} times"),
+        };
+        let place = if invite.voice {
+            invite.channel.clone()
+        } else {
+            format!("#{}", invite.channel)
+        };
+        window.set_invite_prompt(InvitePrompt {
+            title: format!("Invite friends to {}", invite.server).into(),
+            detail: format!("They'll land in {place}.").into(),
+            link: invite.link.as_deref().unwrap_or_default().into(),
+            note: if invite.link.is_some() {
+                format!("This link {lasts}{works}.").into()
+            } else {
+                SharedString::default()
+            },
+            making: invite.making,
+            error: invite.error.as_deref().unwrap_or_default().into(),
+        });
     }
 
     /// The dialog from a DM's menu about its other person.

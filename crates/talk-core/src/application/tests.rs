@@ -4357,3 +4357,126 @@ fn a_discord_category_has_a_menu_that_marks_its_channels_read() {
             .is_empty()
     );
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_invites_go_to_a_channel_this_account_may_invite_to() {
+    use MenuChoice::*;
+    use talk_discord::ready::permission;
+    let mut app = discord_server();
+    assert!(
+        !app.menu_choices("discord:10").contains(&Invite),
+        "nobody may"
+    );
+    assert!(
+        app.dispatch(Action::OpenInvite("discord:10".into()))
+            .is_empty()
+    );
+    change_server(&mut app, |server| {
+        let bits = permission::VIEW_CHANNEL
+            | permission::SEND_MESSAGES
+            | permission::CREATE_INSTANT_INVITE;
+        server.put_role(
+            &serde_json::json!({"id": "10", "name": "@everyone", "position": 0,
+                                            "permissions": bits.to_string()}),
+        );
+    });
+    assert_eq!(app.menu_choices("discord:10")[1], Invite);
+    assert_eq!(app.header_choices("discord:10")[0], Invite);
+    assert_eq!(
+        app.menu_choices("discord:10:11"),
+        [ChannelMute, ChannelNotifications, Invite, CopyLink, CopyId],
+        "inviting to a channel comes before its link"
+    );
+    assert!(
+        !app.menu_choices("discord:10:4").contains(&Invite),
+        "a category"
+    );
+
+    // The server's first channel, or the open one.
+    assert_eq!(
+        app.invite_channel("discord:10").as_deref(),
+        Some("discord:10:11")
+    );
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:12".into()));
+    assert_eq!(
+        app.invite_channel("discord:10").as_deref(),
+        Some("discord:10:12")
+    );
+
+    let effects = app.dispatch(Action::OpenInvite("discord:10".into()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::CreateInvite { room, max_age: 604_800, max_uses: 0 }))]
+            if room == "discord:10:12"
+    ));
+    let invite = app.state.invite.clone().unwrap();
+    assert_eq!(
+        (invite.server.as_str(), invite.channel.as_str()),
+        ("Test", "news")
+    );
+    assert!(invite.making && invite.link.is_none());
+    assert!(
+        app.dispatch(Action::MakeInvite {
+            max_age: 3600,
+            max_uses: 5
+        })
+        .is_empty(),
+        "one link at a time"
+    );
+    app.apply(Event::InviteMade {
+        room: "discord:10:11".into(),
+        result: Ok("elsewhere".into()),
+    });
+    assert!(
+        app.state.invite.as_ref().unwrap().link.is_none(),
+        "another channel's"
+    );
+    app.apply(Event::InviteMade {
+        room: "discord:10:12".into(),
+        result: Ok("abc123".into()),
+    });
+    let invite = app.state.invite.clone().unwrap();
+    assert_eq!(invite.link.as_deref(), Some("https://discord.gg/abc123"));
+    assert!(!invite.making);
+
+    assert!(
+        app.dispatch(Action::MakeInvite {
+            max_age: 99,
+            max_uses: 0
+        })
+        .is_empty(),
+        "only Discord's choices"
+    );
+    assert!(matches!(
+        app.dispatch(Action::MakeInvite {
+            max_age: 3600,
+            max_uses: 5
+        })
+        .as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::CreateInvite {
+                max_age: 3600,
+                max_uses: 5,
+                ..
+            }
+        ))]
+    ));
+    app.apply(Event::InviteMade {
+        room: "discord:10:12".into(),
+        result: Err("Could not make an invite: no".into()),
+    });
+    let invite = app.state.invite.clone().unwrap();
+    assert_eq!(
+        invite.error.as_deref(),
+        Some("Could not make an invite: no")
+    );
+    assert_eq!(
+        invite.link.as_deref(),
+        Some("https://discord.gg/abc123"),
+        "the last one stays"
+    );
+    app.dispatch(Action::CloseInvite);
+    assert!(app.state.invite.is_none());
+}
