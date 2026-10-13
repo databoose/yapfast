@@ -71,6 +71,8 @@ pub struct ChatRoom {
     /// Discord says, and their custom status or what they're doing.
     pub presence: Option<Presence>,
     pub activity: Option<String>,
+    /// A Discord thread's channel, by room id: the thread lists under it.
+    pub parent: Option<String>,
 }
 
 /// The most files one message carries, as Discord allows.
@@ -529,6 +531,18 @@ pub struct Reply {
     pub item: Option<String>,
 }
 
+/// A Discord thread a message leads to: the one started from it, or that
+/// its notice names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadLink {
+    /// The thread's room id, which [`crate::application::Action::Open`] opens.
+    pub room: String,
+    pub name: String,
+    /// Its messages after the first, when Talk knows.
+    pub messages: Option<u64>,
+    pub archived: bool,
+}
+
 /// A Discord custom emoji, which shows as `text` until its picture arrives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomEmoji {
@@ -966,6 +980,8 @@ pub struct ChatMessage {
     pub can_react: bool,
     /// A sent message whose content can be sent again to another conversation.
     pub can_forward: bool,
+    /// The Discord thread it started, or that it tells of.
+    pub thread: Option<ThreadLink>,
 }
 
 /// How loading history ended.
@@ -1190,6 +1206,12 @@ pub enum DiscordCommand {
     SetNickname {
         user: String,
         nickname: String,
+    },
+    /// Learn of a Discord thread, by room id, so it lists while it's open:
+    /// Discord tells a user account only of the threads it's in.
+    /// [`Event::ThreadOpened`] follows.
+    OpenThread {
+        room: String,
     },
     /// Close a Discord DM; the DM list changes when Discord confirms it.
     CloseDm {
@@ -1437,6 +1459,12 @@ pub enum Event {
     },
     /// The DM [`Command::StartDm`] asked for, by room id, or why it couldn't start.
     DmStarted(Result<String, String>),
+    /// Whether [`DiscordCommand::OpenThread`] learned of the thread, which
+    /// lists once the next snapshot comes, or why not.
+    ThreadOpened {
+        room: String,
+        result: Result<(), String>,
+    },
     /// Whether [`DiscordCommand::AddFriend`]'s request went: to whom, or why not.
     FriendAdded(Result<String, String>),
     /// [`DiscordCommand::Note`]'s note, empty for none, or why it didn't come.

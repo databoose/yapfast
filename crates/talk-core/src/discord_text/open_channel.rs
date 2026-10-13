@@ -965,7 +965,8 @@ impl OpenChannel {
                 _ => format!("d:{}", message.id),
             };
             let row = match kept.remove(order) {
-                Some(row) if row.id == id => row,
+                // A thread it leads to changes apart from the message.
+                Some(row) if row.id == id && row.thread == self.thread_link(server, message) => row,
                 _ => Arc::new(self.render(discord, &snapshot, server, message, id, &mut wanted)),
             };
             self.rendered.insert(*order, Arc::clone(&row));
@@ -1162,7 +1163,30 @@ impl OpenChannel {
             can_delete: own,
             can_react: ordinary,
             can_forward: false,
+            thread: self.thread_link(server, message),
         }
+    }
+
+    /// The thread a message leads to, as Talk knows it now if it does: its
+    /// name and count change after the message.
+    fn thread_link(
+        &self,
+        server: Option<&talk_discord::ready::Server>,
+        message: &Message,
+    ) -> Option<ThreadLink> {
+        let link = message.thread.as_ref()?;
+        let known =
+            server.and_then(|server| server.threads.iter().find(|known| known.id == link.id));
+        let details = known.and_then(|known| known.thread.as_deref());
+        Some(ThreadLink {
+            room: discord::room_id(&self.guild, &link.id),
+            name: known.map_or_else(|| link.name.clone(), |known| known.name.clone()),
+            // A notice of a thread doesn't carry its count.
+            messages: details
+                .map(|details| details.messages)
+                .or((message.system.is_none()).then_some(link.messages)),
+            archived: details.map_or(link.archived, |details| details.archived),
+        })
     }
 
     fn fetch_picture(&mut self, discord: &Discord, done: &UnboundedSender<Done>, url: String) {

@@ -285,8 +285,13 @@ impl Session<'_> {
                     .update_voice_state(server(&guild), Some(&channel), mute, deaf, video)
                     .await
             }
-            Request::PutThread { guild, thread } => {
+            // It opens once it lists, so it lists as on screen already.
+            Request::OpenThread { guild, thread } => {
                 self.tracker.put_thread(&guild, &thread);
+                if let Some(id) = thread["id"].as_str() {
+                    self.tracker.view(&guild, Some(id));
+                    self.shared.viewing = Some((guild, id.to_owned()));
+                }
                 self.publisher.changed();
                 Ok(())
             }

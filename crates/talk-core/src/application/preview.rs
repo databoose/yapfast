@@ -192,6 +192,7 @@ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> 
         upload_limit: 50 * 1024 * 1024,
         presence: None,
         activity: None,
+        parent: None,
     }
 }
 

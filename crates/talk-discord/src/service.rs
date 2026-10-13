@@ -336,8 +336,9 @@ impl std::fmt::Debug for VoiceServer {
 }
 
 enum Request {
-    /// A thread, from its channel object, for the tracker to know.
-    PutThread {
+    /// A thread about to open, from its channel object, for the tracker to
+    /// know and list.
+    OpenThread {
         guild: String,
         thread: Value,
     },
@@ -1081,15 +1082,15 @@ impl Discord {
         self.api.delete_channel(channel).await
     }
 
-    /// Learns of a thread of a server, by id, so snapshots list it while
-    /// it's on screen: Discord tells a user account only of the threads it
-    /// joined.
+    /// Learns of a thread of a server, by id, to open: snapshots list it
+    /// while it's on screen, as Discord tells a user account only of the
+    /// threads it joined.
     pub async fn open_thread(&self, guild: &str, thread: &str) -> Result<()> {
         let value = self.api.channel(thread).await?;
         if !ready::is_thread(&value) || value["guild_id"] != guild {
             bail!("That isn't a thread of this server.");
         }
-        let _ = self.requests.send(Request::PutThread {
+        let _ = self.requests.send(Request::OpenThread {
             guild: guild.into(),
             thread: value,
         });

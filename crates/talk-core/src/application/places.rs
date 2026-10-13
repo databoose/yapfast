@@ -276,6 +276,15 @@ impl Application {
     /// before its link.
     fn discord_channel_choices(&self, id: &str, listed: &[MenuChoice]) -> Vec<MenuChoice> {
         let mut choices = listed.to_vec();
+        // A thread is neither invited to nor managed as a channel is.
+        if self
+            .state
+            .rooms
+            .iter()
+            .any(|room| room.id == id && room.parent.is_some())
+        {
+            return choices;
+        }
         if self.state.discord_online
             && self.invite_channel(id).is_some()
             && let Some(at) = choices

@@ -248,7 +248,13 @@ impl AppState {
                 MenuChoice::Mute
             });
         }
-        if room.network == Network::Discord && !room.direct && !room.voice && !room.locked {
+        // A thread's notifications are its own, which Talk doesn't change yet.
+        if room.network == Network::Discord
+            && !room.direct
+            && !room.voice
+            && !room.locked
+            && room.parent.is_none()
+        {
             choices.extend(self.notification_choices());
         }
         if !self.preview {
@@ -354,7 +360,7 @@ impl Application {
 
     pub(super) fn open(&mut self, id: String) -> Vec<Effect> {
         let Some(room) = self.state.rooms.iter().find(|room| room.id == id) else {
-            return vec![];
+            return self.open_thread(id);
         };
         let navigation = if room.direct {
             Some(Navigation::DirectMessages)
@@ -370,6 +376,39 @@ impl Application {
             .unwrap_or_default();
         effects.extend(self.select(id));
         effects
+    }
+
+    /// Opens a Discord thread that isn't listed, as a message's link to it
+    /// or a notification from it does: Discord tells a user account only of
+    /// the threads it's in, so Talk asks for it, and opens it once it lists.
+    fn open_thread(&mut self, id: String) -> Vec<Effect> {
+        let in_server = discord::parse_room(&id).is_some_and(|(guild, _)| {
+            guild != discord::DM_GUILD
+                && self
+                    .state
+                    .servers
+                    .iter()
+                    .any(|server| server.id == discord::server_id(guild))
+        });
+        if !in_server || self.state.preview || !self.state.discord_online {
+            return vec![];
+        }
+        self.pending_open = Some(id.clone());
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::OpenThread { room: id },
+        ))]
+    }
+
+    /// The thread [`Self::open_thread`] asked for couldn't be had.
+    pub(super) fn thread_opened(&mut self, room: String, result: Result<(), String>) {
+        if let Err(error) = result
+            && self
+                .pending_open
+                .take_if(|pending| *pending == room)
+                .is_some()
+        {
+            self.state.notice = Some(error);
+        }
     }
 
     pub(super) fn select_room(&mut self, id: String) -> Vec<Effect> {

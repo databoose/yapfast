@@ -2237,6 +2237,87 @@ fn discord_mentions_search_the_server_and_name_roles() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn discord_threads_open_once_listed() {
+    use talk_discord::{
+        ready::{Channel, Server, Thread},
+        service::{Snapshot, Status},
+    };
+    let snapshot = |threads: &[&str], joined: &[&str], viewing: Option<&str>| Snapshot {
+        status: Status::Online,
+        servers: vec![Arc::new(Server {
+            id: "10".into(),
+            name: "Test".into(),
+            text_channels: vec![Channel {
+                id: "21".into(),
+                name: "general".into(),
+                ..Default::default()
+            }],
+            threads: threads
+                .iter()
+                .map(|id| Channel {
+                    id: (*id).into(),
+                    name: "Plans".into(),
+                    parent: Some("21".into()),
+                    thread: Some(Box::new(Thread {
+                        joined: joined.contains(id),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })],
+        viewing: viewing.map(Into::into),
+        ..Default::default()
+    };
+    let mut app = connected();
+    app.apply(discord_event(snapshot(&[], &[], None)));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:21".into()));
+    // A thread this account isn't in isn't listed: Talk asks for it.
+    let effects = app.dispatch(Action::Open("discord:10:30".into()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::OpenThread { room }))]
+            if room == "discord:10:30"
+    ));
+    app.apply(Event::ThreadOpened {
+        room: "discord:10:30".into(),
+        result: Ok(()),
+    });
+    let effects = app.apply(discord_event(snapshot(&["30"], &[], Some("30"))));
+    assert_eq!(app.state.selected.as_deref(), Some("discord:10:30"));
+    assert!(effects.iter().any(
+        |effect| matches!(effect, Effect::Backend(Command::Open(id)) if id == "discord:10:30")
+    ));
+    let thread = app.state.selected_room().unwrap();
+    assert_eq!(thread.parent.as_deref(), Some("discord:10:21"));
+    // Its menu has no channel's notifications, invites or managing.
+    let choices = app.menu_choices("discord:10:30");
+    assert_eq!(choices, [MenuChoice::CopyLink, MenuChoice::CopyId]);
+
+    // One Discord won't give says why, and doesn't open later.
+    app.dispatch(Action::Open("discord:10:31".into()));
+    app.apply(Event::ThreadOpened {
+        room: "discord:10:31".into(),
+        result: Err("Couldn't open the thread: Missing Access".into()),
+    });
+    assert_eq!(
+        app.state.notice.as_deref(),
+        Some("Couldn't open the thread: Missing Access")
+    );
+    app.apply(discord_event(snapshot(&["30", "31"], &["31"], Some("30"))));
+    assert!(
+        app.state
+            .rooms
+            .iter()
+            .any(|room| room.id == "discord:10:31")
+    );
+    assert_eq!(app.state.selected.as_deref(), Some("discord:10:30"));
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
     use talk_discord::{
         ready::{Access, Channel, Server},

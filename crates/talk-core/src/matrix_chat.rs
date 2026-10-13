@@ -1146,6 +1146,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             upload_limit: MAX_ATTACHMENT_BYTES,
             presence: None,
             activity: None,
+            parent: None,
         });
     }
     result.sort_by(|a, b| {

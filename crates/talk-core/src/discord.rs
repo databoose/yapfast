@@ -176,6 +176,8 @@ struct Indexed {
     voice: Vec<(String, Vec<talk_discord::service::VoiceMember>)>,
     /// The member count of its channel whose list was on screen.
     listed: Option<(String, u64)>,
+    /// Its thread on screen, which lists while it shows.
+    viewing: Option<String>,
     rooms: Vec<ChatRoom>,
     server: ChatServer,
 }
@@ -204,6 +206,16 @@ impl Indexed {
             .filter(|(channel, _)| server.text_channels.iter().any(|text| &text.id == channel))
     }
 
+    fn viewing<'a>(
+        snapshot: &'a Snapshot,
+        server: &talk_discord::ready::Server,
+    ) -> Option<&'a String> {
+        snapshot
+            .viewing
+            .as_ref()
+            .filter(|viewing| server.threads.iter().any(|thread| &thread.id == *viewing))
+    }
+
     /// Whether these rooms still show `server` in `snapshot`.
     fn current(
         &self,
@@ -216,6 +228,7 @@ impl Indexed {
             && self.show_hidden == show_hidden
             && self.premium == premium
             && self.listed.as_ref() == Self::listed(snapshot, server)
+            && self.viewing.as_ref() == Self::viewing(snapshot, server)
             && Self::voice(snapshot, server)
                 .map(Some)
                 .chain(std::iter::once(None))
@@ -267,6 +280,7 @@ impl Index {
                             .map(|(id, members)| (id.clone(), members.clone()))
                             .collect(),
                         listed: Indexed::listed(snapshot, server).cloned(),
+                        viewing: Indexed::viewing(snapshot, server).cloned(),
                         rooms: made,
                         server: listed,
                     }
@@ -345,6 +359,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             upload_limit: talk_discord::api::upload_limit(premium, None),
             presence: dm.presence.map(presence),
             activity: dm.activity.clone(),
+            parent: None,
         })
         .collect()
 }
@@ -372,6 +387,23 @@ fn server_rooms(
             channel.id.clone(),
         )
     });
+    // Threads list under their channels: those this account is in that are
+    // still active, and the one on screen.
+    let mut threads: std::collections::HashMap<&str, Vec<&talk_discord::ready::Channel>> =
+        std::collections::HashMap::new();
+    for thread in &server.threads {
+        let Some(details) = thread.thread.as_deref() else {
+            continue;
+        };
+        let shown =
+            details.joined && !details.archived || snapshot.viewing.as_ref() == Some(&thread.id);
+        if shown
+            && thread.access != Access::Hidden
+            && let Some(parent) = thread.parent.as_deref()
+        {
+            threads.entry(parent).or_default().push(thread);
+        }
+    }
     let mut channels = Vec::new();
     for (voice, channel) in listed {
         let id = room_id(&server.id, &channel.id);
@@ -409,6 +441,7 @@ fn server_rooms(
                 presence: None,
                 activity: None,
                 upload_limit: talk_discord::api::upload_limit(premium, Some(server.premium_tier)),
+                parent: None,
             }
         } else {
             ChatRoom {
@@ -443,9 +476,15 @@ fn server_rooms(
                 presence: None,
                 activity: None,
                 upload_limit: talk_discord::api::upload_limit(premium, Some(server.premium_tier)),
+                parent: None,
             }
         });
         channels.push(id);
+        for thread in threads.remove(channel.id.as_str()).into_iter().flatten() {
+            let room = thread_room(server, thread, rooms.last().expect("its channel"), premium);
+            channels.push(room.id.clone());
+            rooms.push(room);
+        }
     }
     let server = ChatServer {
         id: server_id(&server.id),
@@ -460,6 +499,45 @@ fn server_rooms(
         hide_muted: server.notifications.hide_muted_channels,
     };
     (rooms, server)
+}
+
+/// A thread as it lists under `parent`, its channel's room.
+#[cfg(feature = "discord")]
+fn thread_room(
+    server: &talk_discord::ready::Server,
+    thread: &talk_discord::ready::Channel,
+    parent: &ChatRoom,
+    premium: u8,
+) -> ChatRoom {
+    ChatRoom {
+        id: room_id(&server.id, &thread.id),
+        network: Network::Discord,
+        capabilities: Network::Discord.capabilities(),
+        name: thread.name.clone(),
+        direct: false,
+        voice: false,
+        encrypted: false,
+        // Its member list is its channel's.
+        members: 0,
+        unread: u64::from(thread.unread),
+        mentions: thread.mentions,
+        muted: thread.muted,
+        last_read: read_item(thread.last_read),
+        locked: false,
+        // Locked, or this account may not write in threads here.
+        read_only: thread.access == Access::Locked,
+        category: parent.category.clone(),
+        request: false,
+        person: None,
+        people: vec![],
+        ringing: vec![],
+        incoming: false,
+        avatar: None,
+        presence: None,
+        activity: None,
+        upload_limit: talk_discord::api::upload_limit(premium, Some(server.premium_tier)),
+        parent: Some(parent.id.clone()),
+    }
 }
 
 /// Downloads server icons and avatars, and reports each as [`Event::Picture`].
@@ -672,6 +750,87 @@ mod tests {
                 ("22", "Games")
             ]
         );
+    }
+
+    #[test]
+    fn lists_threads_under_their_channel() {
+        let thread = |id: &str, parent: &str, joined, archived, access| Channel {
+            id: id.into(),
+            name: format!("thread {id}"),
+            parent: Some(parent.into()),
+            access,
+            unread: true,
+            thread: Some(Box::new(talk_discord::ready::Thread {
+                joined,
+                archived,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let channel = |id: &str| Channel {
+            id: id.into(),
+            name: id.into(),
+            parent: Some("1".into()),
+            ..Default::default()
+        };
+        let server = Server {
+            id: "10".into(),
+            text_channels: vec![channel("21"), channel("22")],
+            threads: vec![
+                thread("44", "21", true, false, Access::Join),
+                // Archived, not joined, or hidden, it doesn't list.
+                thread("43", "21", true, true, Access::Join),
+                thread("42", "22", false, false, Access::Join),
+                thread("41", "22", true, false, Access::Hidden),
+                thread("40", "22", true, false, Access::Locked),
+            ],
+            categories: Arc::new(
+                [(
+                    "1".to_owned(),
+                    talk_discord::ready::Category {
+                        name: "Talk".into(),
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+            ),
+            ..Default::default()
+        };
+        let first = Snapshot {
+            servers: vec![Arc::new(server)],
+            ..Default::default()
+        };
+        let listed = |rooms: &[ChatRoom]| -> Vec<(String, Option<String>, bool)> {
+            rooms
+                .iter()
+                .map(|room| (room.name.clone(), room.parent.clone(), room.read_only))
+                .collect()
+        };
+        let parent = |id: &str| Some(room_id("10", id));
+        let (rooms, servers) = index(&first, false);
+        assert_eq!(
+            listed(&rooms),
+            [
+                ("21".into(), None, false),
+                ("thread 44".into(), parent("21"), false),
+                ("22".into(), None, false),
+                ("thread 40".into(), parent("22"), true),
+            ]
+        );
+        assert_eq!(rooms[1].category, "Talk");
+        assert!(rooms[1].unread > 0);
+        assert_eq!(servers[0].channels.len(), 4);
+        // The thread on screen lists while it shows, joined or not.
+        let viewing = Snapshot {
+            viewing: Some("42".into()),
+            ..first.clone()
+        };
+        let mut kept = Index::default();
+        let (mut rooms, mut servers) = (Vec::new(), Vec::new());
+        kept.update(&first, false, &mut rooms, &mut servers);
+        kept.update(&viewing, false, &mut rooms, &mut servers);
+        assert_eq!(rooms[3].name, "thread 42");
+        assert!((rooms, servers) == index(&viewing, false));
     }
 
     #[test]

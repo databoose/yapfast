@@ -452,6 +452,29 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::OpenThread { room }) = command {
+        let place =
+            discord::parse_room(&room).map(|(guild, thread)| (guild.to_owned(), thread.to_owned()));
+        match (discord, place) {
+            (Ok(discord), Some((guild, thread))) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord.open_thread(&guild, &thread).await.map_err(|error| {
+                        tracing::warn!(error = format!("{error:#}"), "could not open a thread");
+                        format!("Couldn't open the thread: {error}")
+                    });
+                    let _ = events.send(Event::ThreadOpened { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::ThreadOpened {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::LeaveServer { server }) = command {
         let guild = discord::parse_server(&server).map(str::to_owned);
         match (discord, guild) {

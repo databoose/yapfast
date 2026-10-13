@@ -1415,7 +1415,8 @@ impl Application {
 
     pub fn apply(&mut self, event: Event) -> Vec<Effect> {
         let mut effects = self.apply_event(event);
-        // A DM just started opens once the lists have it.
+        // A DM just started, or a thread asked for, opens once the lists
+        // have it.
         if let Some(room) = self
             .pending_open
             .take_if(|room| self.state.rooms.iter().any(|listed| &listed.id == room))
@@ -1980,6 +1981,7 @@ impl Application {
                     self.pending_open = Some(room);
                 }
             }
+            Event::ThreadOpened { room, result } => self.thread_opened(room, result),
             Event::Pins { room, result } => self.pins_came(room, result),
             Event::Found {
                 place,
