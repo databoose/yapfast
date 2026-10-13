@@ -125,6 +125,24 @@ pub(super) fn found_in(discord: &Discord, room: &str, messages: &[Message]) -> V
         .collect()
 }
 
+/// Messages a search found in a server, or with [`talk_discord::ready::PRIVATE`]
+/// in DMs, as [`found`] shows them, each with its room.
+pub(super) fn hits_in(discord: &Discord, guild: &str, messages: &[Message]) -> Vec<SearchHit> {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == guild)
+        .map(Arc::as_ref);
+    messages
+        .iter()
+        .map(|message| SearchHit {
+            room: discord::room_id(guild, &message.channel_id),
+            message: found(discord, server, message),
+        })
+        .collect()
+}
+
 /// The custom emoji in a message's text and reactions.
 pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
     let mut found = emoji_in(&message.content);

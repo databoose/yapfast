@@ -183,7 +183,8 @@ impl Adapter {
         self.show_workspace(window);
         self.show_sidebar(window);
         self.show_account(window);
-        if changes.selection {
+        // A server's search stays, with its words, in the server's channels.
+        if changes.selection && self.app.state.search_shown().is_none() {
             window.set_search_text(SharedString::default());
         }
         self.show_header(window);
@@ -740,10 +741,17 @@ impl Adapter {
         };
         show_found(&self.models.pins, pinned, twelve_hour);
 
-        let search = state
-            .search
-            .as_ref()
-            .filter(|search| Some(search.room.as_str()) == selected);
+        let search = state.search_shown();
+        let server = search.is_some_and(|search| discord::parse_server(&search.place).is_some());
+        // The box names where it looks: the DM, or the channel's server.
+        let place = state.search_place();
+        let looks_in = place
+            .as_deref()
+            .and_then(|place| state.servers.iter().find(|server| server.id == place))
+            .map(|server| server.name.as_str())
+            .or(state.selected_room().map(|room| room.name.as_str()))
+            .unwrap_or_default();
+        window.set_search_placeholder(format!("Search {looks_in}").into());
         window.set_search_open(search.is_some());
         window.set_search_loading(search.is_some_and(|search| search.loading));
         window.set_search_more(search.is_some_and(Search::more));
@@ -767,15 +775,21 @@ impl Adapter {
                     error: Some(error), ..
                 }) => error.as_str(),
                 Some(search) if !search.loading && search.results.is_empty() => {
-                    "Nothing in this conversation matches. Try other words."
+                    if server {
+                        "Nothing in this server matches. Try other words."
+                    } else {
+                        "Nothing in this conversation matches. Try other words."
+                    }
                 }
                 _ => "",
             }
             .into(),
         );
-        show_found(
+        show_hits(
             &self.models.search_results,
+            state,
             search.map_or(&[][..], |search| &search.results),
+            server,
             twelve_hour,
         );
 
@@ -2226,6 +2240,41 @@ pub(super) fn span(seconds: u32) -> String {
     };
     let plural = if count == 1 { "" } else { "s" };
     format!("{count} {unit}{plural}")
+}
+
+/// Search results, keeping the rows of those still first and building the
+/// rest. A server's name the channel each is in, above the first of a run
+/// in one channel.
+fn show_hits(
+    model: &VecModel<FoundRow>,
+    state: &AppState,
+    hits: &[talk_core::chat::SearchHit],
+    server: bool,
+    twelve_hour: bool,
+) {
+    let kept = model
+        .iter()
+        .zip(hits)
+        .take_while(|(row, hit)| row.item == hit.message.item.as_str())
+        .count();
+    while model.row_count() > kept {
+        model.remove(model.row_count() - 1);
+    }
+    for (index, hit) in hits.iter().enumerate().skip(kept) {
+        let starts = index == 0 || hits[index - 1].room != hit.room;
+        let heading = state
+            .rooms
+            .iter()
+            .find(|room| room.id == hit.room)
+            .filter(|_| server && starts)
+            .map(|room| room.name.as_str())
+            .unwrap_or_default();
+        model.push(FoundRow {
+            room: hit.room.as_str().into(),
+            heading: heading.into(),
+            ..found_row(&hit.message, twelve_hour)
+        });
+    }
 }
 
 /// What the bar that jumps to the "New" divider says: how many messages

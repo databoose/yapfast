@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
     notifications::Change,
     profile::{self, Profile},
     ready::{PRIVATE, Server},
+    search,
     settings::{self, CustomStatus},
     stream::StreamServer,
 };
@@ -150,8 +151,8 @@ pub struct Person {
     pub friend: bool,
 }
 
-/// Messages a search of a channel found: one page, the newest first, and how many
-/// it found in all.
+/// Messages a search found: one page, the newest first, and how many it
+/// found in all.
 #[derive(Debug, Default)]
 pub struct Found {
     pub total: u32,
@@ -561,22 +562,46 @@ impl Discord {
         Ok(self.learn_authors(guild, &values).await)
     }
 
-    /// A page of a channel's messages that contain `query`, from the
-    /// `offset`th found: a server's channel, or with [`PRIVATE`] a DM.
-    /// Discord indexes a DM or a server the first time it's searched, and
-    /// asks to be asked again until it has.
+    /// A page of the messages a search finds, the newest first, from the
+    /// `offset`th: in the DM `channel` with [`PRIVATE`], or across a server.
+    /// `text` is what the search box took, filters and all; see
+    /// [`search::Query`]. Discord indexes a DM or a server the first time
+    /// it's searched, and asks to be asked again until it has.
     pub async fn search(
         &self,
         guild: &str,
-        channel: &str,
-        query: &str,
+        channel: Option<&str>,
+        text: &str,
         offset: u32,
     ) -> Result<Found> {
+        let query = search::Query::parse(text).map_err(|why| anyhow!(why))?;
+        if query.is_empty() {
+            bail!("Type something to search for.");
+        }
+        let in_server = server(guild);
+        let channel = match (in_server, channel) {
+            (Some(_), _) => "",
+            (None, Some(channel)) => channel,
+            (None, None) => bail!("Talk can't tell which DM to search."),
+        };
+        let mut params = query.params();
+        for name in &query.channels {
+            let Some(guild) = in_server else {
+                bail!("in: picks a server's channels, and a DM has none.");
+            };
+            let id = self
+                .channel_named(guild, name)
+                .ok_or_else(|| anyhow!("This server has no channel called #{name}."))?;
+            params.push(("channel_id", id));
+        }
+        for name in &query.from {
+            params.push(("author_id", self.person_named(guild, name).await?));
+        }
+        for name in &query.mentions {
+            params.push(("mentions", self.person_named(guild, name).await?));
+        }
         for _ in 0..SEARCH_TRIES {
-            let mut answer = self
-                .api
-                .search(server(guild), channel, query, offset)
-                .await?;
+            let mut answer = self.api.search(in_server, channel, &params, offset).await?;
             if let serde_json::Value::Array(pages) = answer["messages"].take() {
                 // Each result came with the messages around it, which Discord
                 // no longer sends; the first is the one found.
@@ -598,6 +623,45 @@ impl Discord {
         Err(anyhow!(
             "Discord is still getting these messages ready to search. Try again in a moment."
         ))
+    }
+
+    /// The id of a server's text channel by its name, the same letters
+    /// first, as `in:` names it.
+    fn channel_named(&self, guild: &str, name: &str) -> Option<String> {
+        let snapshot = self.snapshots.borrow().clone();
+        let server = snapshot.servers.iter().find(|server| server.id == guild)?;
+        let channels = &server.text_channels;
+        channels
+            .iter()
+            .find(|channel| channel.name == name)
+            .or_else(|| {
+                channels
+                    .iter()
+                    .find(|channel| channel.name.eq_ignore_ascii_case(name))
+            })
+            .map(|channel| channel.id.clone())
+    }
+
+    /// The id of someone a search's `from:` or `mentions:` names: in a
+    /// server, the member Discord finds by it, as its search box asks; in
+    /// DMs, someone Talk knows by it. One called exactly that comes first.
+    async fn person_named(&self, guild: &str, name: &str) -> Result<String> {
+        let found = match server(guild) {
+            Some(guild) => self.search_members(guild, name).await?,
+            None => self.read_names().find_users(name),
+        };
+        let called = |id: &String| {
+            [self.name(guild, id), self.username(id)]
+                .into_iter()
+                .flatten()
+                .any(|known| known.eq_ignore_ascii_case(name))
+        };
+        found
+            .iter()
+            .find(|id| called(id))
+            .or(found.first())
+            .cloned()
+            .ok_or_else(|| anyhow!("Talk can't find anyone called {name} here."))
     }
 
     /// Makes a group DM with `users`; returns its channel id. The DM list

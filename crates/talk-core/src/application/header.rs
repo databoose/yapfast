@@ -1,6 +1,6 @@
-//! What a conversation's header opens: its pinned messages and a search of
-//! its messages, in a DM or a server channel, and the picker that adds
-//! friends to a DM.
+//! What a conversation's header opens: its pinned messages, a search of a
+//! DM's messages or a whole server's, and the picker that adds friends to a
+//! DM.
 
 use super::*;
 
@@ -36,22 +36,18 @@ impl Application {
 
     pub(super) fn search(&mut self, query: String) -> Vec<Effect> {
         let query = query.trim().to_owned();
-        let room = self
-            .state
-            .conversation_that(|can| can.search)
-            .map(|room| room.id.clone());
-        let (Some(room), false) = (room, query.is_empty()) else {
+        let (Some(place), false) = (self.state.search_place(), query.is_empty()) else {
             self.state.search = None;
             return vec![];
         };
         self.state.search = Some(Search {
-            room: room.clone(),
+            place: place.clone(),
             query: query.clone(),
             loading: true,
             ..Search::default()
         });
         vec![Effect::Backend(Command::Discord(DiscordCommand::Search {
-            room,
+            place,
             query,
             offset: 0,
         }))]
@@ -69,7 +65,7 @@ impl Application {
         search.loading = true;
         search.error = None;
         vec![Effect::Backend(Command::Discord(DiscordCommand::Search {
-            room: search.room.clone(),
+            place: search.place.clone(),
             query: search.query.clone(),
             offset: search.next,
         }))]
@@ -79,13 +75,16 @@ impl Application {
     /// it asked for.
     pub(super) fn found(
         &mut self,
-        room: String,
+        place: String,
         query: String,
         offset: u32,
-        result: Result<(u32, Vec<ChatMessage>), String>,
+        result: Result<(u32, Vec<chat::SearchHit>), String>,
     ) {
         let Some(search) = self.state.search.as_mut().filter(|search| {
-            search.loading && search.room == room && search.query == query && search.next == offset
+            search.loading
+                && search.place == place
+                && search.query == query
+                && search.next == offset
         }) else {
             return;
         };
@@ -93,13 +92,13 @@ impl Application {
         match result {
             Ok((total, page)) => {
                 // Messages sent since the last page move the rest along.
-                for message in page {
+                for hit in page {
                     if !search
                         .results
                         .iter()
-                        .any(|known| known.item == message.item)
+                        .any(|known| known.message.item == hit.message.item)
                     {
-                        search.results.push(message);
+                        search.results.push(hit);
                     }
                 }
                 search.total = total;

@@ -17,6 +17,7 @@ pub mod profile;
 pub mod ready;
 pub mod remote_auth;
 pub mod rtp;
+pub mod search;
 pub mod service;
 pub mod settings;
 pub mod stream;

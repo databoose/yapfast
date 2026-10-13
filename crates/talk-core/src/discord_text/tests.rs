@@ -1067,59 +1067,64 @@ async fn a_server_channels_pins_and_search_show_its_members() {
     let mut channels = Channels::default();
     let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
     // These answer straight from the account, with no channel work.
-    let mut next = async |pick: &dyn Fn(Event) -> Option<Result<Vec<ChatMessage>, String>>| {
+    let mut run = async |command: Command| {
+        self::command(command, Ok(&discord), &mut channels, &done, &events);
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if let Some(result) = pick(received.recv().await.expect("events go on")) {
-                    return result.unwrap();
+                let event = received.recv().await.expect("events go on");
+                if matches!(event, Event::Pins { .. } | Event::Found { .. }) {
+                    return event;
                 }
             }
         })
         .await
         .expect("timed out waiting for Discord")
     };
-    command(
-        Command::Discord(DiscordCommand::Pins { room: room.clone() }),
-        Ok(&discord),
-        &mut channels,
-        &done,
-        &events,
-    );
-    let pins = next(&|event| match event {
-        Event::Pins { result, .. } => Some(result),
-        _ => None,
-    })
-    .await;
+    let Event::Pins {
+        result: Ok(pins), ..
+    } = run(Command::Discord(DiscordCommand::Pins {
+        room: room.clone(),
+    }))
+    .await
+    else {
+        panic!("the pins came")
+    };
     assert_eq!(pins.len(), 1);
     assert_eq!(pins[0].author, "Bob");
     assert_eq!(pins[0].color, Some(0x3498db), "Bob is a Mod");
 
-    command(
+    // A search of the whole server, each result with its channel.
+    let search = |query: &str| {
         Command::Discord(DiscordCommand::Search {
-            room: room.clone(),
-            query: "welcome".into(),
+            place: discord::server_id(FAKE_GUILD),
+            query: query.into(),
             offset: 0,
-        }),
-        Ok(&discord),
-        &mut channels,
-        &done,
-        &events,
-    );
-    let found = next(&|event| match event {
-        Event::Found { result, .. } => Some(result.map(|(total, found)| {
-            assert_eq!(total, 2);
-            found
-        })),
-        _ => None,
-    })
-    .await;
-    assert_eq!(found[0].body, "The welcome has the plan");
-    assert_eq!(found[0].author, "Bob");
-    assert_eq!(found[0].color, Some(0x3498db));
+        })
+    };
+    let found = |event| match event {
+        Event::Found { result, .. } => result,
+        _ => panic!("expected search results"),
+    };
+    let (total, hits) = found(run(search("welcome")).await).unwrap();
+    assert_eq!(total, 2);
+    assert_eq!(hits[0].room, room);
+    let first = &hits[0].message;
+    assert_eq!(first.body, "The welcome has the plan");
+    assert_eq!(first.author, "Bob");
+    assert_eq!(first.color, Some(0x3498db));
     assert!(
-        found[0]
+        first
             .avatar
             .as_deref()
             .is_some_and(|avatar| avatar.contains("/avatars/1400000000000000002/"))
     );
+
+    // Filters name people and channels, which Talk finds by id.
+    let (total, hits) = found(run(search("welcome from:bob in:#general has:link")).await).unwrap();
+    assert_eq!(total, 1, "Bob's welcome carries a link");
+    assert!(hits[0].message.body.starts_with("Welcome to **Talk**"));
+    let refused = found(run(search("from:nobody")).await).unwrap_err();
+    assert!(refused.contains("nobody"), "{refused}");
+    let refused = found(run(search("in:nowhere")).await).unwrap_err();
+    assert!(refused.contains("#nowhere"), "{refused}");
 }

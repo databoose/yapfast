@@ -6,7 +6,7 @@
 use super::{
     channels::SEARCH_PAUSE,
     commands::NOT_DISCORD,
-    render::{chat_profile, found_in},
+    render::{chat_profile, found_in, hits_in},
     *,
 };
 use crate::chat::{MemberChange, Muting, NotificationChange, NotifyLevel, RelationshipChange};
@@ -340,26 +340,31 @@ pub(super) fn command(
         return None;
     }
     if let Command::Discord(DiscordCommand::Search {
-        room,
+        place,
         query,
         offset,
     }) = command
     {
-        let place = discord::parse_room(&room)
-            .map(|(guild, channel)| (guild.to_owned(), channel.to_owned()));
-        match (discord, place) {
+        // A DM is searched on its own, and a server as a whole.
+        let scope = discord::parse_room(&place)
+            .map(|(guild, channel)| (guild.to_owned(), Some(channel.to_owned())))
+            .or_else(|| discord::parse_server(&place).map(|guild| (guild.to_owned(), None)));
+        match (discord, scope) {
             (Ok(discord), Some((guild, channel))) => {
                 let (discord, events) = (discord.clone(), events.clone());
                 tokio::spawn(async move {
-                    let result = match discord.search(&guild, &channel, &query, offset).await {
-                        Ok(page) => Ok((page.total, found_in(&discord, &room, &page.messages))),
+                    let result = match discord
+                        .search(&guild, channel.as_deref(), &query, offset)
+                        .await
+                    {
+                        Ok(page) => Ok((page.total, hits_in(&discord, &guild, &page.messages))),
                         Err(error) => {
                             tracing::warn!(error = format!("{error:#}"), "could not search");
                             Err(error.to_string())
                         }
                     };
                     let _ = events.send(Event::Found {
-                        room,
+                        place,
                         query,
                         offset,
                         result,
@@ -368,7 +373,7 @@ pub(super) fn command(
             }
             (discord, _) => {
                 let _ = events.send(Event::Found {
-                    room,
+                    place,
                     query,
                     offset,
                     result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),

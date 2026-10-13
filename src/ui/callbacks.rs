@@ -235,6 +235,18 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();
+        window.on_jump_in_room(move |room, item| {
+            if let Some(window) = weak.upgrade() {
+                let (room, item) = (room.into(), item.into());
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::JumpInRoom { room, item });
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
         window.on_prepare_menu(move |id, person| {
             if let Some(window) = weak.upgrade() {
                 let menu = menus::menu(&adapter.borrow(), &id, person);

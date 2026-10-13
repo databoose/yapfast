@@ -222,7 +222,10 @@ The window follows Discord's arrangement:
   click shows in full. Its buttons sit on the right, as in Discord: a DM's
   call, pins, adding friends, member list or profile, and search; a server
   channel's bell, pins, member list and search. The bell opens the channel's
-  mute and notification level, and shows slashed while it's muted. Messages from one person within seven
+  mute and notification level, and shows slashed while it's muted. A server
+  channel's search looks through the whole server, takes Discord's filters
+  such as `from:`, `in:` and `has:`, heads its results with their channels
+  and stays open in them. Messages from one person within seven
   minutes are grouped under one avatar and name. Hovering a grouped message
   shows its time in the gutter. Replies draw a spine to the quoted message, and
   a date divider starts each day. The top of the history shows what's

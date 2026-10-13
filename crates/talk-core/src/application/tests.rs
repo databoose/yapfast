@@ -3686,16 +3686,19 @@ fn a_dm_search_loads_its_results_a_page_at_a_time() {
     app.dispatch(Action::SelectRoom(dm.clone()));
     assert!(matches!(
         app.dispatch(Action::Search("  trip ".into())).as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::Search { room, query, offset: 0 }))]
-            if *room == dm && query == "trip"
+        [Effect::Backend(Command::Discord(DiscordCommand::Search { place, query, offset: 0 }))]
+            if *place == dm && query == "trip"
     ));
-    let page = |from: u32, count: u32| -> Vec<ChatMessage> {
+    let page = |from: u32, count: u32| -> Vec<chat::SearchHit> {
         (from..from + count)
-            .map(|n| message(&format!("d:{n}"), false))
+            .map(|n| chat::SearchHit {
+                room: dm.clone(),
+                message: message(&format!("d:{n}"), false),
+            })
             .collect()
     };
     let found = |query: &str, offset: u32, result| Event::Found {
-        room: dm.clone(),
+        place: dm.clone(),
         query: query.into(),
         offset,
         result,
@@ -3884,10 +3887,11 @@ fn discord_server() -> Application {
         ..Default::default()
     });
     // As the service marks them: #news is muted, #memes is muted and
-    // mentions her.
+    // mentions her since she read its message "d:3".
     server.text_channels[1].muted = true;
     server.text_channels[2].muted = true;
     server.text_channels[2].mentions = 1;
+    server.text_channels[2].last_read = 3;
     let mut app = Application::default();
     app.apply(discord_event(Snapshot {
         status: Status::Online,
@@ -4061,10 +4065,11 @@ fn server_channels_list_their_pins_and_search_them() {
         app.dispatch(Action::ShowPins(true)).as_slice(),
         [Effect::Backend(Command::Discord(DiscordCommand::Pins { room }))] if *room == general
     ));
+    // A search looks through the whole server, as Discord's does.
     assert!(matches!(
         app.dispatch(Action::Search("plan".into())).as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::Search { room, offset: 0, .. }))]
-            if *room == general
+        [Effect::Backend(Command::Discord(DiscordCommand::Search { place, offset: 0, .. }))]
+            if place == "discord:10"
     ));
     // A voice channel has neither.
     app.dispatch(Action::SelectRoom("discord:10:14".into()));
@@ -4142,4 +4147,111 @@ fn the_open_channel_keeps_its_topic_till_another_opens() {
     });
     app.dispatch(Action::SelectRoom("discord:10:13".into()));
     assert!(app.state.topic.is_none());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_server_search_stays_open_in_its_channels_and_jumps_into_them() {
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    app.dispatch(Action::Search("plan".into()));
+    let hit = |room: &str, item: &str| chat::SearchHit {
+        room: room.into(),
+        message: message(item, false),
+    };
+    app.apply(Event::Found {
+        place: "discord:10".into(),
+        query: "plan".into(),
+        offset: 0,
+        result: Ok((
+            2,
+            vec![hit("discord:10:13", "d:7"), hit("discord:10:11", "d:5")],
+        )),
+    });
+    assert_eq!(app.state.search_shown().unwrap().results.len(), 2);
+
+    // A result in #general, open, jumps there at once.
+    app.apply(Event::Timeline {
+        room: "discord:10:11".into(),
+        messages: vec![message("d:5", false).into()],
+    });
+    app.dispatch(Action::JumpInRoom {
+        room: "discord:10:11".into(),
+        item: "d:5".into(),
+    });
+    assert_eq!(app.state.selected.as_deref(), Some("discord:10:11"));
+    assert_eq!(
+        app.state.jump.as_ref().map(|(item, _)| item.as_str()),
+        Some("d:5")
+    );
+
+    // One in #memes, unread since "d:3", opens it on the messages around
+    // the result, the search staying.
+    let effects = app.dispatch(Action::JumpInRoom {
+        room: "discord:10:13".into(),
+        item: "d:8".into(),
+    });
+    assert!(matches!(
+        effects.as_slice(),
+        [.., Effect::Backend(Command::Around { room, item })]
+            if room == "discord:10:13" && item == "d:8"
+    ));
+    assert!(
+        app.state.search_shown().is_some(),
+        "the server's search stays"
+    );
+    let unread_jumps = app.state.unread_jump;
+    let around = |app: &mut Application, items: &[&str]| {
+        app.apply(window("discord:10:13", chat::Direction::Around, false));
+        let messages = items.iter().map(|item| message(item, false)).collect();
+        app.apply(Event::Timeline {
+            room: "discord:10:13".into(),
+            messages: timeline(messages),
+        })
+    };
+    // A window that doesn't reach the last read message stays: the result
+    // shows rather than the messages around "d:3".
+    let effects = around(&mut app, &["d:7", "d:8", "d:9"]);
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::Around { .. })))
+    );
+    assert_eq!(
+        app.state.jump.as_ref().map(|(item, _)| item.as_str()),
+        Some("d:8")
+    );
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:7"));
+    // One that reaches it shows the "New" divider without scrolling to it.
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    app.dispatch(Action::JumpInRoom {
+        room: "discord:10:13".into(),
+        item: "d:8".into(),
+    });
+    around(&mut app, &["d:3", "d:4", "d:8", "d:9"]);
+    assert_eq!(
+        app.state.jump.as_ref().map(|(item, _)| item.as_str()),
+        Some("d:8")
+    );
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:4"));
+    assert_eq!(
+        app.state.unread_jump, unread_jumps,
+        "the \"New\" divider doesn't take the view from it"
+    );
+
+    // A voice channel can't search, so it closes the search.
+    app.dispatch(Action::SelectRoom("discord:10:14".into()));
+    assert!(app.state.search.is_none());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_dm_search_closes_in_another_dm() {
+    let mut app = discord_dms(vec![]);
+    app.dispatch(Action::SelectRoom("discord:@me:30".into()));
+    app.dispatch(Action::Search("trip".into()));
+    assert_eq!(app.state.search_place().as_deref(), Some("discord:@me:30"));
+    app.dispatch(Action::SelectRoom("discord:@me:31".into()));
+    assert!(app.state.search.is_none());
 }

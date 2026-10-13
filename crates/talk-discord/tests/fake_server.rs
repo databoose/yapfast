@@ -690,7 +690,10 @@ async fn talks_to_the_fake_server() {
     let pinned: Vec<_> = discord.pins(PRIVATE, &dm_bob).await.unwrap();
     assert_eq!(pinned.len(), 1);
     assert_eq!(pinned[0].content, "Did you see the trip notes?");
-    let found = discord.search(PRIVATE, &dm_bob, "SEE", 0).await.unwrap();
+    let found = discord
+        .search(PRIVATE, Some(&dm_bob), "SEE", 0)
+        .await
+        .unwrap();
     let said: Vec<_> = found
         .messages
         .iter()
@@ -699,13 +702,13 @@ async fn talks_to_the_fake_server() {
     assert_eq!(said, ["See you at nine", "Did you see the trip notes?"]);
     assert_eq!(found.total, 2);
 
-    // A server channel's pins, and a search of it through its server,
-    // which Discord indexes the same way.
+    // A server channel's pins, and a search of its server, here narrowed to
+    // the channel with in:, which Discord indexes the same way.
     let pinned = discord.pins(&guild, &general).await.unwrap();
     assert_eq!(pinned.len(), 1);
     assert!(pinned[0].content.starts_with("Welcome to **Talk**"));
     let found = discord
-        .search(&guild, &general, "welcome", 0)
+        .search(&guild, None, "welcome in:general", 0)
         .await
         .unwrap();
     let said: Vec<_> = found

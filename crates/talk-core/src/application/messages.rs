@@ -486,6 +486,10 @@ impl Application {
             return vec![];
         }
         let unread = |message: &Arc<ChatMessage>| !message.own;
+        // A message asked for since the room opened, as a search result in
+        // another channel, keeps the view and the window around it.
+        let jumping = self.state.jump.is_some()
+            || self.seeking.as_ref().is_some_and(|seeking| !seeking.unread);
         let first = match discord::item_order(&marker) {
             Some(read) => {
                 let after = |message: &Arc<ChatMessage>| {
@@ -494,7 +498,7 @@ impl Application {
                 let reached = messages.iter().any(|message| {
                     discord::item_order(&message.item).is_some_and(|order| order <= read)
                 });
-                if !reached && !self.state.history_start && !asked {
+                if !reached && !self.state.history_start && !asked && !jumping {
                     self.read_marker = Some((marker.clone(), true));
                     return self.focus(marker);
                 }
@@ -514,7 +518,9 @@ impl Application {
         match first {
             Some(first) => {
                 self.state.first_unread = Some(messages[first].item.clone());
-                self.state.unread_jump += 1;
+                if !jumping {
+                    self.state.unread_jump += 1;
+                }
             }
             // Not loaded yet, or nothing is unread after all; newer messages
             // may still come with the rest of the timeline.

@@ -1173,13 +1173,35 @@ come.
 - Pinned messages open under the pin, the latest pinned first, from `GET
   /channels/{id}/messages/pins`, whose `items` carry each `message`. Talk asks
   each time they open, and for the first 50.
-- Search is `GET /channels/{id}/messages/search?content=...&offset=...` in a
-  DM, and `GET /guilds/{id}/messages/search?channel_id=...&content=...` in a
-  server's channel, 25 messages a page, newest first; each of `messages` is
-  a list whose first is the one found. The results take the member list's or
-  the profile's place, and Show more loads the next page. Discord indexes a
-  DM or a server the first time it's searched, answering 202 with code
-  110000 and a `retry_after`; Talk asks again up to five times.
+- Search, as in Discord, looks through the DM in a DM, with `GET
+  /channels/{id}/messages/search`, and through the whole server in a server
+  channel, with `GET /guilds/{id}/messages/search`; the box says "Search"
+  and the DM's or the server's name. Results come 25 a page, newest first,
+  each of `messages` a list whose first is the one found; they take the
+  member list's or the profile's place, and Show more loads the next page.
+  Discord indexes a DM or a server the first time it's searched, answering
+  202 with code 110000 and a `retry_after`; Talk asks again up to five
+  times.
+- The box takes Discord's filters with the words (`talk_discord::search`):
+  `from:` and `mentions:` someone, `in:` a channel of the server, `has:`
+  link, embed, poll, file, video, image, sound, sticker or forward,
+  `before:`, `after:` and `during:` a day such as 2026-10-13, and
+  `pinned:true`. A value with spaces goes in quotes. Talk sends them as
+  Discord's client does, each repeated for several: `author_id`, `mentions`,
+  `channel_id`, `has` (`snapshot` for forwards), `min_id` and `max_id`, the
+  snowflakes of the day's local midnights, and `pinned`. `in:` names a text
+  channel by its name; `from:` and `mentions:` find the member through the
+  gateway's member search in a server, as the box's suggestions do, and
+  among the people Talk knows in a DM, someone called exactly that first. A
+  name nobody has, or a filter Discord doesn't take, says so in place of
+  results.
+- A server's results are headed by the channel they're in, and the search
+  stays open in the server's channels. Clicking a result in another
+  channel opens it on the messages around the result
+  (`Action::JumpInRoom`). In an unread channel the "New" divider still goes
+  in, but neither takes the view from the result nor loads the messages
+  around the last read one in place of its window. Another server, a DM or
+  a voice channel closes the search.
 - In a server, pins and results carry no member profiles, so Talk asks the
   gateway for those of authors it doesn't know yet and waits up to five
   seconds for them; then they show with their server nickname, avatar and
