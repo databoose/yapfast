@@ -288,7 +288,7 @@ to 3.91) and took up to 5 dB off speech over a fan.
 
 RNNoise, through `nnnoiseless` (BSD-3-Clause), was the suppressor until
 2026-10-12. On real calls it let keyboard clicks through, and they held the
-gate open. Settings → Voice & audio → "Noise suppression in Discord calls"
+gate open. Settings → Voice & video → "Noise suppression in Discord calls"
 still chooses it, to compare the two, as does Off, for a quiet room: RNNoise
 then only tells the gate which blocks are speech. Talk keeps the choice in
 `layout.json` as `noise_suppression`. A call going on switches at its next

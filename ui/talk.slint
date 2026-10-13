@@ -498,7 +498,10 @@ export component TalkWindow inherits Window {
     /// audio, 2 messages, 3 notifications, 4 Discord, 5 sounds.
     in-out property <bool> settings-open;
     // Closing settings stops linking Discord there.
-    changed settings-open => { if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); } }
+    changed settings-open => {
+        if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); }
+        if !self.settings-open { self.camera-testing = false; }
+    }
     in-out property <int> settings-section;
     /// Preferences people set in the settings; preferences-changed reports any change.
     in-out property <bool> twelve-hour-clock;
@@ -536,6 +539,13 @@ export component TalkWindow inherits Window {
     out property <length> sidebar-shown: max(180px, min(380px, root.sidebar-width));
     in property <[string]> microphones;
     in property <[string]> speakers;
+    in property <[string]> cameras;
+    in property <int> camera-index;
+    /// Trying the camera in settings: what it films, refreshed by
+    /// stream-tick, or why it can't.
+    in-out property <bool> camera-testing;
+    in-out property <image> camera-preview;
+    in property <string> camera-note;
     in property <int> microphone-index;
     in property <int> speaker-index;
     /// The microphone level from 0 to 1, refreshed by meter-tick while the input menu is open.
@@ -618,6 +628,9 @@ export component TalkWindow inherits Window {
     callback metering(bool);
     callback meter-tick;
     callback gate-metering(bool);
+    callback select-camera(int);
+    /// Film to try the camera, or stop.
+    callback test-camera(bool);
     callback gate-meter-tick;
     callback reply(string);
     callback edit(string);
@@ -798,9 +811,12 @@ export component TalkWindow inherits Window {
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
     // The Discord gate's meter runs while voice settings show it.
     property <bool> gate-metered: root.settings-open && root.settings-section == 1 && root.discord-linked;
+    // The camera films for the preview only while the voice settings show it.
+    property <bool> camera-filming: root.settings-open && root.settings-section == 1 && root.camera-testing;
+    changed camera-filming => { root.camera-preview = @image-url(""); root.test-camera(self.camera-filming); }
     changed gate-metered => { root.gate-level = -100; root.gate-sending = false; root.gate-meter-note = ""; root.gate-metering(self.gate-metered); }
     Timer { interval: 50ms; running: root.gate-metered; triggered => { root.gate-meter-tick(); } }
-    Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active; triggered => { root.stream-tick(); } }
+    Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active || root.camera-filming; triggered => { root.stream-tick(); } }
     input-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);
@@ -2078,11 +2094,14 @@ export component TalkWindow inherits Window {
         if root.settings-section == 1: VoiceSettings {
             microphones: root.microphones; microphone-index: root.microphone-index;
             speakers: root.speakers; speaker-index: root.speaker-index;
+            cameras: root.cameras; camera-index: root.camera-index;
+            camera-testing <=> root.camera-testing; camera-preview: root.camera-preview; camera-note: root.camera-note;
             unmute-on-join <=> root.unmute-on-join; level-voice <=> root.level-voice;
             noise-suppression <=> root.noise-suppression; noise-strength <=> root.noise-strength; dereverb <=> root.dereverb; discord: root.discord-linked;
             sensitivity <=> root.sensitivity; gate-level: root.gate-level; gate-sending: root.gate-sending; gate-meter-note: root.gate-meter-note;
             select-microphone(index) => { root.select-microphone(index); }
             select-speaker(index) => { root.select-speaker(index); }
+            select-camera(index) => { root.select-camera(index); }
             refresh-devices => { root.refresh-devices(); }
             preferences-changed => { root.preferences-changed(); }
         }

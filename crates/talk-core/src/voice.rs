@@ -125,8 +125,11 @@ pub struct State {
     pub participants: Vec<Participant>,
     pub microphones: Vec<Device>,
     pub speakers: Vec<Device>,
+    pub cameras: Vec<Device>,
     pub microphone: Option<String>,
     pub speaker: Option<String>,
+    /// The chosen camera's id; none for the first one.
+    pub camera: Option<String>,
     pub error: Option<String>,
     /// A problem that leaves the call usable, such as a participant who has
     /// not received this device's audio key.
@@ -148,8 +151,10 @@ impl Default for State {
             participants: vec![],
             microphones: vec![],
             speakers: vec![],
+            cameras: vec![],
             microphone: None,
             speaker: None,
+            camera: None,
             error: None,
             warning: None,
             sharing: None,
@@ -184,6 +189,8 @@ pub enum Command {
     Devices,
     Microphone(String),
     Speaker(String),
+    /// Film with the camera with this id from now on.
+    Camera(String),
     /// Share a screen or window with Discord's Go Live, at this quality,
     /// which is remembered for next time.
     GoLive(StreamQuality),
@@ -242,6 +249,7 @@ impl Controller {
             let chosen = Chosen::read(path);
             initial.microphone = chosen.microphone;
             initial.speaker = chosen.speaker;
+            initial.camera = chosen.camera;
             initial.quality = chosen.quality;
         }
         let (states, snapshots) = watch::channel(initial.clone());
@@ -358,6 +366,10 @@ async fn worker(
                 state.speaker = Some(id);
                 Chosen::write(remembered.as_deref(), &state);
             }
+            Command::Camera(id) => {
+                state.camera = Some(id);
+                Chosen::write(remembered.as_deref(), &state);
+            }
             #[cfg(feature = "matrix")]
             Command::LeaveStale => crate::matrix_voice::leave_stale(&calls.session).await,
             _ => {}
@@ -423,6 +435,8 @@ pub(crate) struct Chosen {
     microphone: Option<String>,
     speaker: Option<String>,
     #[serde(default)]
+    camera: Option<String>,
+    #[serde(default)]
     quality: StreamQuality,
 }
 
@@ -439,6 +453,7 @@ impl Chosen {
         let chosen = Self {
             microphone: state.microphone.clone(),
             speaker: state.speaker.clone(),
+            camera: state.camera.clone(),
             quality: state.quality,
         };
         let result = serde_json::to_vec_pretty(&chosen)
@@ -450,14 +465,27 @@ impl Chosen {
     }
 }
 
-/// The system's microphones and speakers, listed without opening any of them.
-pub fn list_devices() -> Result<(Vec<Device>, Vec<Device>)> {
+/// The system's microphones, speakers and cameras.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Devices {
+    pub microphones: Vec<Device>,
+    pub speakers: Vec<Device>,
+    pub cameras: Vec<Device>,
+}
+
+/// The system's devices, listed without opening any of them.
+pub fn list_devices() -> Result<Devices> {
     let mut state = State::default();
     devices(&mut state)?;
-    Ok((state.microphones, state.speakers))
+    Ok(Devices {
+        microphones: state.microphones,
+        speakers: state.speakers,
+        cameras: state.cameras,
+    })
 }
 
 pub(crate) fn devices(state: &mut State) -> Result<()> {
+    state.cameras = crate::camera::list();
     let audio = audio()?;
     collect_devices(&audio, state);
     Ok(())
@@ -517,6 +545,7 @@ mod tests {
         let state = State {
             microphone: Some("name:USB Microphone".into()),
             speaker: Some("name:Null Output".into()),
+            camera: Some("usb-0000:00:14.0-1".into()),
             quality: StreamQuality {
                 resolution: Resolution::Source,
                 fps: 60,
@@ -527,6 +556,7 @@ mod tests {
         let chosen = Chosen::read(&path);
         assert_eq!(chosen.microphone.as_deref(), Some("name:USB Microphone"));
         assert_eq!(chosen.speaker.as_deref(), Some("name:Null Output"));
+        assert_eq!(chosen.camera.as_deref(), Some("usb-0000:00:14.0-1"));
         assert_eq!(chosen.quality, state.quality);
         // Choices saved before there was a quality to choose still load.
         std::fs::write(

@@ -12,6 +12,7 @@ mod audio_io;
 pub mod backend;
 #[cfg(feature = "matrix")]
 pub mod calls;
+pub mod camera;
 pub mod chat;
 pub mod cli;
 pub mod clock;
@@ -44,6 +45,7 @@ pub mod mention;
 pub mod meter;
 pub mod network;
 pub mod noise;
+pub mod picture;
 #[cfg(feature = "discord")]
 pub mod playback;
 #[cfg(feature = "discord")]

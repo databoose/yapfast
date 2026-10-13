@@ -8,7 +8,7 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
   smile-plus, square-pen, sticky-note, trash-2, triangle-alert, user, user-minus, user-pen, user-plus, users and x come unmodified from
   lucide-static 1.51.0.
 - at-sign, chevron-left, chevron-right, clock, ellipsis, forward, gavel, search,
-  shield, smile and user-x follow
+  shield, smile, user-x, video and video-off follow
   lucide-static 1.51.0's paths in the same wrapper.
 - maximize, minimize, pause, play and volume-x follow Lucide's paths in the same wrapper.
 

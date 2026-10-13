@@ -137,6 +137,7 @@ async fn joining(
                     // Saved once the call connects.
                     Some(Command::Microphone(id)) => state.microphone = Some(id),
                     Some(Command::Speaker(id)) => state.speaker = Some(id),
+                    Some(Command::Camera(id)) => state.camera = Some(id),
                     Some(Command::Devices) => { let _ = devices(state); }
                     _ => {}
                 }
@@ -298,6 +299,7 @@ async fn connected(
 ) -> Result<()> {
     let result = async {
         collect_devices(&audio, state);
+        state.cameras = crate::camera::list();
         ensure!(!state.speakers.is_empty(), "No speakers found. Connect an audio output and retry.");
         // A remembered device may be unplugged; the system default stands in
         // for it, and the choice is kept for when it returns.
@@ -404,7 +406,10 @@ async fn connected(
                         state.deafened = deafened;
                         set_hearing(&call, !deafened);
                     }
-                    Some(Command::Devices) => collect_devices(&audio, state),
+                    Some(Command::Devices) => {
+                        collect_devices(&audio, state);
+                        state.cameras = crate::camera::list();
+                    }
                     Some(Command::Microphone(id)) => {
                         match use_microphone(&audio, &id) {
                             Ok(()) => { state.microphone = Some(id); state.error = None; Chosen::write(remembered, state); },
@@ -420,6 +425,10 @@ async fn connected(
                             Ok(()) => { state.speaker = Some(id); state.error = None; Chosen::write(remembered, state); },
                             Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                         }
+                    }
+                    Some(Command::Camera(id)) => {
+                        state.camera = Some(id);
+                        Chosen::write(remembered, state);
                     }
                     Some(Command::GoLive(_)) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
                     Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale) => {}
