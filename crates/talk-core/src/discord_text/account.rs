@@ -453,6 +453,16 @@ pub(super) fn command(
         return None;
     }
     if let Command::Discord(
+        command @ (DiscordCommand::CreateChannel { .. }
+        | DiscordCommand::ChannelSettings { .. }
+        | DiscordCommand::EditChannel { .. }
+        | DiscordCommand::DeleteChannel { .. }),
+    ) = command
+    {
+        manage_channel(command, discord, events);
+        return None;
+    }
+    if let Command::Discord(
         command @ (DiscordCommand::Relationship { .. }
         | DiscordCommand::Note { .. }
         | DiscordCommand::SetNote { .. }
@@ -476,6 +486,114 @@ fn from_dialog(change: &MemberChange) -> bool {
         change,
         MemberChange::Role { .. } | MemberChange::Timeout { until_ms: None, .. }
     )
+}
+
+/// Carries out a choice from a Discord server's, category's or channel's
+/// menu that makes, reads, changes or deletes a channel, and says how it went.
+fn manage_channel(
+    command: DiscordCommand,
+    discord: Result<&Discord, &str>,
+    events: &UnboundedSender<Event>,
+) {
+    use crate::chat::{ChannelKind, ChannelSettings};
+    let discord = match discord {
+        Ok(discord) => discord.clone(),
+        Err(why) => {
+            let _ = events.send(match command {
+                DiscordCommand::ChannelSettings { room } => Event::ChannelLoaded {
+                    room,
+                    result: Err(why.into()),
+                },
+                _ => Event::ChannelSaved(Err(why.into())),
+            });
+            return;
+        }
+    };
+    let events = events.clone();
+    let channel = |room: &str| discord::parse_room(room).map(|(_, channel)| channel.to_owned());
+    let settings = |settings: &ChannelSettings| talk_discord::service::ChannelSettings {
+        name: settings.name.clone(),
+        topic: settings.topic.clone(),
+        slowmode: settings.slowmode,
+        nsfw: settings.nsfw,
+    };
+    tokio::spawn(async move {
+        let (result, what) = match command {
+            DiscordCommand::ChannelSettings { room } => {
+                let result = match channel(&room) {
+                    Some(id) => discord
+                        .channel_settings(&id)
+                        .await
+                        .map(|known| ChannelSettings {
+                            name: known.name,
+                            topic: known.topic,
+                            slowmode: known.slowmode,
+                            nsfw: known.nsfw,
+                        })
+                        .map_err(|error| format!("Couldn't load the channel: {error}")),
+                    None => Err(NOT_DISCORD.into()),
+                };
+                let _ = events.send(Event::ChannelLoaded { room, result });
+                return;
+            }
+            DiscordCommand::CreateChannel {
+                server,
+                kind,
+                parent,
+                copy_of,
+                settings: chosen,
+            } => {
+                let guild = discord::parse_server(&server)
+                    .unwrap_or_default()
+                    .to_owned();
+                let code = match kind {
+                    ChannelKind::Text => 0,
+                    ChannelKind::Voice => 2,
+                    ChannelKind::Category => 4,
+                };
+                let parent = parent.as_deref().and_then(channel);
+                let copy_of = copy_of.as_deref().and_then(channel);
+                let made = discord
+                    .create_channel(
+                        &guild,
+                        code,
+                        parent.as_deref(),
+                        copy_of.as_deref(),
+                        &settings(&chosen),
+                    )
+                    .await
+                    .map(|id| Some(discord::room_id(&guild, &id)));
+                (made, "make the channel")
+            }
+            DiscordCommand::EditChannel {
+                room,
+                kind,
+                settings: chosen,
+            } => {
+                let result = match channel(&room) {
+                    Some(id) => discord
+                        .edit_channel(&id, kind == ChannelKind::Text, &settings(&chosen))
+                        .await
+                        .map(|()| None),
+                    None => Err(anyhow::anyhow!(NOT_DISCORD)),
+                };
+                (result, "save the channel")
+            }
+            DiscordCommand::DeleteChannel { room } => {
+                let result = match channel(&room) {
+                    Some(id) => discord.delete_channel(&id).await.map(|()| None),
+                    None => Err(anyhow::anyhow!(NOT_DISCORD)),
+                };
+                (result, "delete the channel")
+            }
+            _ => return,
+        };
+        let result = result.map_err(|error| {
+            tracing::warn!(error = format!("{error:#}"), "could not {what}");
+            format!("Couldn't {what}: {error}")
+        });
+        let _ = events.send(Event::ChannelSaved(result));
+    });
 }
 
 /// Whether `muting` mutes, and for how many seconds; none for good.

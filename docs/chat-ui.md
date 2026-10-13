@@ -186,8 +186,9 @@ The window follows Discord's arrangement:
   mutes for the DM menu's times, or Unmute server with when the mute ends;
   Notification settings, whose submenu picks All messages, Only @mentions
   or Nothing, with the level that applies under it, and ticks Suppress
-  @everyone and @here and Suppress all role @mentions; and Hide muted
-  channels, a box to tick.
+  @everyone and @here and Suppress all role @mentions; Hide muted
+  channels, a box to tick; and, where the account may manage channels,
+  Create channel and Create category.
 - A sidebar, 240px by default and resizable by dragging its edge, with the
   server name, a filter, and uppercase TEXT CHANNELS and VOICE CHANNELS groups.
   A Discord server's name, with a chevron beside it, opens a dropdown below
@@ -200,7 +201,8 @@ The window follows Discord's arrangement:
   without channels shows its heading alone, unless its permissions hide it.
   A right click on a heading, or the Menu key or Shift+F10 on it, opens the
   category's menu: Mark as read when its channels have messages to read,
-  its mute and notification settings (below), and Copy ID. The heading
+  its mute and notification settings (below), Edit category and Delete
+  category where the account may manage it, and Copy ID. The heading
   names its first channel, or an empty category's own id, and Talk finds
   the category from that.
   DMs show the person's avatar. Participants of the call you are in appear under
@@ -209,7 +211,10 @@ The window follows Discord's arrangement:
   the Menu key or Shift+F10 on a focused one, opens its menu: Mark as read when
   it's unread, Join voice for a voice channel you aren't in, Profile for a
   one-to-one DM, Pin or Unpin and Start call for a DM, then Copy link and Copy
-  ID; a Discord channel's adds Invite to channel before Copy link. A pinned
+  ID; a Discord channel's adds Invite to channel before Copy link, and
+  where the account may manage it Edit channel, Duplicate channel, Create
+  text (or voice) channel, which goes in its category, and Delete channel
+  after it. A pinned
   DM stays at the top of the list, with a pin, on this device. A
   Discord DM's menu also has Add note, Add or Change friend nickname, Close DM,
   Remove friend, Ignore and Block, each undone by its opposite, and Mute, whose
@@ -228,7 +233,14 @@ The window follows Discord's arrangement:
   how long it lasts. Choices for how long a link lasts (30 minutes to 7
   days, or for good) and how many may use it (any number, or 1 to 100), as
   Discord's dialog offers them, make another with Generate a new link.
-  Its dialogs are in `ui/server.slint`.
+- Creating a channel asks for its name and, as Discord's dialog does,
+  whether it's for text or voice; a category asks only for a name. Editing
+  a text channel loads its name, topic, slowmode, stepped through Discord's
+  choices from off to 6 hours, and age restriction, and saves them with
+  Save changes; a voice channel or a category edits only its name.
+  Duplicating asks for the copy's name. Deleting asks first, in red. Text
+  channel names become lower case with dashes, as Discord makes them, and
+  a text channel made opens. The dialogs are in `ui/server.slint`.
 - Menus (`ContextMenu` in `ui/controls.slint`) are as wide as their rows'
   text, from 188 to 320px, and each row may open a submenu of its own,
   beside the menu, or on its left near the window's right edge. A row can

@@ -4,6 +4,7 @@
 //! choices as its menu in the rail, in the order Discord's dropdown has.
 
 use super::*;
+use crate::chat::{ChannelKind, ChannelSettings, Permission};
 
 /// A Discord category as the channel list heads its channels with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,11 +17,54 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 3] = [
+const HEADER: [MenuChoice; 5] = [
     MenuChoice::Invite,
+    MenuChoice::CreateChannel,
+    MenuChoice::CreateCategory,
     MenuChoice::ServerNotifications,
     MenuChoice::HideMuted,
 ];
+
+/// The slowmodes Discord's channel settings offer, in seconds: off, then
+/// 5 seconds to 6 hours.
+pub const SLOWMODES: [u32; 14] = [
+    0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21_600,
+];
+/// The longest name and topic Discord's channel settings take.
+const NAME_LIMIT: usize = 100;
+const TOPIC_LIMIT: usize = 1024;
+
+/// A dialog that makes, changes or deletes a Discord channel or category.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelDialog {
+    pub ask: ChannelAsk,
+    /// The server's id and name.
+    pub server: String,
+    pub server_name: String,
+    /// The name of what it's about: the channel or category, or for one to
+    /// make, the category it goes in; empty for none.
+    pub name: String,
+    /// What it makes, changes or deletes.
+    pub kind: ChannelKind,
+    /// Its settings as they stand; none while Discord sends them.
+    pub settings: Option<ChannelSettings>,
+    pub saving: bool,
+    pub error: Option<String>,
+}
+
+/// What a [`ChannelDialog`] does, with the room id of the channel or
+/// category it's about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChannelAsk {
+    /// Make one, inside this category, if any.
+    Create {
+        parent: Option<String>,
+    },
+    /// Make a copy of this channel.
+    Duplicate(String),
+    Edit(String),
+    Delete(String),
+}
 
 /// How long an invite lasts, in seconds, as Discord's invite dialog offers:
 /// 30 minutes, an hour, 6 and 12 hours, a day, 7 days, and for good.
@@ -124,8 +168,17 @@ impl Application {
             });
             choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
         }
+        if self.manages(id) {
+            choices.extend([MenuChoice::CreateChannel, MenuChoice::CreateCategory]);
+        }
         choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
         choices
+    }
+
+    /// Whether this account may make, change and delete channels in a
+    /// Discord server, category or channel, while Discord takes it.
+    fn manages(&self, place: &str) -> bool {
+        self.state.discord_online && self.may(place, Permission::ManageChannels)
     }
 
     /// A Discord channel's menu: a conversation's, with inviting to it
@@ -140,6 +193,25 @@ impl Application {
         {
             choices.insert(at, MenuChoice::Invite);
         }
+        // Managing it goes after its link, before its id.
+        let mut managing = vec![];
+        if self.manages(id) {
+            managing.extend([MenuChoice::EditChannel, MenuChoice::DuplicateChannel]);
+        }
+        let around = self
+            .category_of(id)
+            .or_else(|| discord::parse_room(id).map(|(guild, _)| discord::server_id(guild)));
+        if around.is_some_and(|place| self.manages(&place)) {
+            managing.push(MenuChoice::CreateChannel);
+        }
+        if self.manages(id) {
+            managing.push(MenuChoice::DeleteChannel);
+        }
+        let at = choices
+            .iter()
+            .position(|choice| *choice == MenuChoice::CopyId)
+            .unwrap_or(choices.len());
+        choices.splice(at..at, managing);
         choices
     }
 
@@ -246,6 +318,9 @@ impl Application {
             choices.push(MenuChoice::MarkRead);
         }
         choices.extend_from_slice(listed);
+        if self.manages(id) {
+            choices.extend([MenuChoice::EditChannel, MenuChoice::DeleteChannel]);
+        }
         choices.push(MenuChoice::CopyId);
         choices
     }
@@ -306,5 +381,255 @@ impl Application {
         }
         let _ = server;
         vec![]
+    }
+
+    /// Opens the dialog that makes a channel of `kind` from a Discord
+    /// server's menu, or from a channel's, one like it in its category.
+    pub(super) fn new_channel(&mut self, place: String, kind: ChannelKind) -> Vec<Effect> {
+        let choice = if kind == ChannelKind::Category {
+            MenuChoice::CreateCategory
+        } else {
+            MenuChoice::CreateChannel
+        };
+        if !self.menu_choices(&place).contains(&choice) {
+            return vec![];
+        }
+        let parent = self.category_of(&place);
+        let name = parent
+            .as_deref()
+            .and_then(|category| {
+                self.categories(&self.server_of(category)?)
+                    .into_iter()
+                    .find(|known| known.id == category)
+            })
+            .map(|category| category.name)
+            .unwrap_or_default();
+        let kind = match self.state.rooms.iter().find(|room| room.id == place) {
+            Some(room) if room.voice => ChannelKind::Voice,
+            Some(_) => ChannelKind::Text,
+            None => kind,
+        };
+        self.open_channel_dialog(
+            &place,
+            ChannelAsk::Create { parent },
+            name,
+            kind,
+            Some(ChannelSettings::default()),
+        );
+        vec![]
+    }
+
+    /// Opens a Discord channel's or category's dialog from its menu: to
+    /// change it, which loads a text channel's settings first, to copy it,
+    /// or to make sure before deleting it.
+    pub(super) fn ask_channel(&mut self, ask: ChannelAsk) -> Vec<Effect> {
+        let (room, choice) = match &ask {
+            ChannelAsk::Edit(room) => (room.clone(), MenuChoice::EditChannel),
+            ChannelAsk::Duplicate(room) => (room.clone(), MenuChoice::DuplicateChannel),
+            ChannelAsk::Delete(room) => (room.clone(), MenuChoice::DeleteChannel),
+            ChannelAsk::Create { .. } => return vec![],
+        };
+        if !self.menu_choices(&room).contains(&choice) {
+            return vec![];
+        }
+        let (name, kind) = if self.state.is_category(&room) {
+            let name = self
+                .server_of(&room)
+                .and_then(|server| {
+                    self.categories(&server)
+                        .into_iter()
+                        .find(|known| known.id == room)
+                })
+                .map(|category| category.name)
+                .unwrap_or_default();
+            (name, ChannelKind::Category)
+        } else {
+            let listed = self.state.rooms.iter().find(|known| known.id == room);
+            let name = listed.map(|known| known.name.clone()).unwrap_or_default();
+            let voice = listed.is_some_and(|known| known.voice);
+            (
+                name,
+                if voice {
+                    ChannelKind::Voice
+                } else {
+                    ChannelKind::Text
+                },
+            )
+        };
+        // Only a text channel has more than a name to load.
+        let load = matches!(ask, ChannelAsk::Edit(_)) && kind == ChannelKind::Text;
+        let settings = (!load).then(|| ChannelSettings {
+            name: if matches!(ask, ChannelAsk::Delete(_)) {
+                String::new()
+            } else {
+                name.clone()
+            },
+            ..Default::default()
+        });
+        self.open_channel_dialog(&room, ask, name, kind, settings);
+        if load {
+            vec![Effect::Backend(Command::Discord(
+                DiscordCommand::ChannelSettings { room },
+            ))]
+        } else {
+            vec![]
+        }
+    }
+
+    /// The server id of the Discord server a room id names.
+    fn server_of(&self, room: &str) -> Option<String> {
+        discord::parse_room(room).map(|(guild, _)| discord::server_id(guild))
+    }
+
+    fn open_channel_dialog(
+        &mut self,
+        place: &str,
+        ask: ChannelAsk,
+        name: String,
+        kind: ChannelKind,
+        settings: Option<ChannelSettings>,
+    ) {
+        let server = self.server_of(place).unwrap_or_else(|| place.to_owned());
+        let server_name = self
+            .state
+            .servers
+            .iter()
+            .find(|known| known.id == server)
+            .map(|known| known.name.clone())
+            .unwrap_or_default();
+        self.state.channel_dialog = Some(ChannelDialog {
+            ask,
+            server,
+            server_name,
+            name,
+            kind,
+            settings,
+            saving: false,
+            error: None,
+        });
+    }
+
+    pub(super) fn channel_loaded(&mut self, room: String, result: Result<ChannelSettings, String>) {
+        let Some(dialog) = self
+            .state
+            .channel_dialog
+            .as_mut()
+            .filter(|dialog| dialog.ask == ChannelAsk::Edit(room) && dialog.settings.is_none())
+        else {
+            return;
+        };
+        match result {
+            Ok(settings) => dialog.settings = Some(settings),
+            Err(error) => dialog.error = Some(error),
+        }
+    }
+
+    /// Carries out the channel dialog with what it was given: of `kind`, text
+    /// or voice, for a channel it makes.
+    pub(super) fn save_channel(
+        &mut self,
+        kind: ChannelKind,
+        settings: ChannelSettings,
+    ) -> Vec<Effect> {
+        let Some(dialog) = self
+            .state
+            .channel_dialog
+            .as_mut()
+            .filter(|dialog| !dialog.saving && dialog.settings.is_some())
+        else {
+            return vec![];
+        };
+        let kind = match dialog.ask {
+            // Making a channel chooses text or voice; a category stays one,
+            // and a channel stays what it was.
+            ChannelAsk::Create { .. } if dialog.kind != ChannelKind::Category => {
+                if kind == ChannelKind::Category {
+                    ChannelKind::Text
+                } else {
+                    kind
+                }
+            }
+            _ => dialog.kind,
+        };
+        let mut settings = settings;
+        settings.name = settings.name.trim().to_owned();
+        // Discord's text channel names are lower case, with dashes for spaces.
+        if kind == ChannelKind::Text {
+            settings.name = settings
+                .name
+                .to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-");
+        }
+        let deleting = matches!(dialog.ask, ChannelAsk::Delete(_));
+        let problem = if deleting {
+            None
+        } else if settings.name.is_empty() {
+            Some("Give it a name.".to_owned())
+        } else if settings.name.chars().count() > NAME_LIMIT {
+            Some(format!("Names can be up to {NAME_LIMIT} characters."))
+        } else if settings.topic.chars().count() > TOPIC_LIMIT {
+            Some(format!("Topics can be up to {TOPIC_LIMIT} characters."))
+        } else if !SLOWMODES.contains(&settings.slowmode) {
+            Some("Pick one of the slowmodes.".to_owned())
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            dialog.error = Some(problem);
+            return vec![];
+        }
+        dialog.saving = true;
+        dialog.error = None;
+        let command = match dialog.ask.clone() {
+            ChannelAsk::Create { parent } => DiscordCommand::CreateChannel {
+                server: dialog.server.clone(),
+                kind,
+                parent,
+                copy_of: None,
+                settings: Box::new(settings),
+            },
+            ChannelAsk::Duplicate(room) => DiscordCommand::CreateChannel {
+                server: dialog.server.clone(),
+                kind,
+                parent: None,
+                copy_of: Some(room),
+                settings: Box::new(settings),
+            },
+            ChannelAsk::Edit(room) => DiscordCommand::EditChannel {
+                room,
+                kind,
+                settings: Box::new(settings),
+            },
+            ChannelAsk::Delete(room) => DiscordCommand::DeleteChannel { room },
+        };
+        dialog.kind = kind;
+        vec![Effect::Backend(Command::Discord(command))]
+    }
+
+    /// Closes the channel dialog once Discord did what it asked, opening a
+    /// text channel it made, as Discord's client does; or says why not.
+    pub(super) fn channel_saved(&mut self, result: Result<Option<String>, String>) {
+        let Some(dialog) = self
+            .state
+            .channel_dialog
+            .as_mut()
+            .filter(|dialog| dialog.saving)
+        else {
+            return;
+        };
+        match result {
+            Ok(made) => {
+                if dialog.kind == ChannelKind::Text {
+                    self.pending_open = made;
+                }
+                self.state.channel_dialog = None;
+            }
+            Err(error) => {
+                dialog.saving = false;
+                dialog.error = Some(error);
+            }
+        }
     }
 }

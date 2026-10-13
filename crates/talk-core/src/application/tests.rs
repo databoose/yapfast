@@ -4480,3 +4480,269 @@ fn discord_invites_go_to_a_channel_this_account_may_invite_to() {
     app.dispatch(Action::CloseInvite);
     assert!(app.state.invite.is_none());
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus() {
+    use MenuChoice::*;
+    use chat::{ChannelKind, ChannelSettings};
+    use talk_discord::ready::permission;
+    let mut app = discord_server();
+    assert!(
+        !app.menu_choices("discord:10").contains(&CreateChannel),
+        "nobody may manage channels"
+    );
+    assert!(
+        app.dispatch(Action::NewChannel {
+            place: "discord:10".into(),
+            kind: ChannelKind::Text
+        })
+        .is_empty()
+    );
+    assert!(app.state.channel_dialog.is_none());
+    change_server(&mut app, |server| {
+        let bits =
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES | permission::MANAGE_CHANNELS;
+        server.put_role(
+            &serde_json::json!({"id": "10", "name": "@everyone", "position": 0,
+                                            "permissions": bits.to_string()}),
+        );
+    });
+    assert_eq!(
+        app.menu_choices("discord:10")[4..],
+        [CreateChannel, CreateCategory, CopyLink, CopyId]
+    );
+    assert_eq!(
+        app.header_choices("discord:10"),
+        [
+            CreateChannel,
+            CreateCategory,
+            ServerNotifications,
+            HideMuted
+        ]
+    );
+    assert_eq!(
+        app.menu_choices("discord:10:11"),
+        [
+            ChannelMute,
+            ChannelNotifications,
+            CopyLink,
+            EditChannel,
+            DuplicateChannel,
+            CreateChannel,
+            DeleteChannel,
+            CopyId
+        ]
+    );
+    assert_eq!(
+        app.menu_choices("discord:10:4"),
+        [
+            MarkRead,
+            ChannelMute,
+            ChannelNotifications,
+            EditChannel,
+            DeleteChannel,
+            CopyId
+        ]
+    );
+
+    // From the server: text or voice, outside any category.
+    app.dispatch(Action::NewChannel {
+        place: "discord:10".into(),
+        kind: ChannelKind::Text,
+    });
+    let dialog = app.state.channel_dialog.clone().unwrap();
+    assert_eq!(dialog.ask, ChannelAsk::Create { parent: None });
+    assert_eq!(
+        (dialog.server.as_str(), dialog.server_name.as_str()),
+        ("discord:10", "Test")
+    );
+    let named = |name: &str| ChannelSettings {
+        name: name.into(),
+        ..Default::default()
+    };
+    assert!(
+        app.dispatch(Action::SaveChannel {
+            kind: ChannelKind::Text,
+            settings: named("  ")
+        })
+        .is_empty()
+    );
+    assert_eq!(
+        app.state.channel_dialog.as_ref().unwrap().error.as_deref(),
+        Some("Give it a name.")
+    );
+    assert!(matches!(
+        app.dispatch(Action::SaveChannel { kind: ChannelKind::Text, settings: named(" Plans  For Later ") }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::CreateChannel {
+            server, kind: ChannelKind::Text, parent: None, copy_of: None, settings
+        }))] if server == "discord:10" && settings.name == "plans-for-later"
+    ));
+    assert!(
+        app.dispatch(Action::SaveChannel {
+            kind: ChannelKind::Text,
+            settings: named("again")
+        })
+        .is_empty(),
+        "one save at a time"
+    );
+    app.apply(Event::ChannelSaved(Err(
+        "Couldn't make the channel: no".into()
+    )));
+    let dialog = app.state.channel_dialog.clone().unwrap();
+    assert!(!dialog.saving);
+    assert_eq!(
+        dialog.error.as_deref(),
+        Some("Couldn't make the channel: no")
+    );
+    assert!(matches!(
+        app.dispatch(Action::SaveChannel { kind: ChannelKind::Voice, settings: named("Hang Out") }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::CreateChannel {
+            kind: ChannelKind::Voice, settings, ..
+        }))] if settings.name == "Hang Out"
+    ));
+    app.apply(Event::ChannelSaved(Ok(Some("discord:10:15".into()))));
+    assert!(app.state.channel_dialog.is_none());
+
+    // From a channel: one like it, in its category.
+    app.dispatch(Action::NewChannel {
+        place: "discord:10:14".into(),
+        kind: ChannelKind::Text,
+    });
+    let dialog = app.state.channel_dialog.clone().unwrap();
+    assert_eq!(
+        dialog.ask,
+        ChannelAsk::Create {
+            parent: Some("discord:10:4".into())
+        }
+    );
+    assert_eq!(
+        (dialog.name.as_str(), dialog.kind),
+        ("Talk", ChannelKind::Voice)
+    );
+    app.dispatch(Action::CloseChannelDialog);
+
+    app.dispatch(Action::NewChannel {
+        place: "discord:10".into(),
+        kind: ChannelKind::Category,
+    });
+    assert!(
+        matches!(
+            app.dispatch(Action::SaveChannel { kind: ChannelKind::Voice, settings: named("Games Night") }).as_slice(),
+            [Effect::Backend(Command::Discord(DiscordCommand::CreateChannel {
+                kind: ChannelKind::Category, settings, ..
+            }))] if settings.name == "Games Night"
+        ),
+        "a category stays one, and keeps its capitals"
+    );
+    app.dispatch(Action::CloseChannelDialog);
+
+    // A text channel's settings load first.
+    let general = "discord:10:11".to_owned();
+    assert!(matches!(
+        app.dispatch(Action::AskChannel(ChannelAsk::Edit(general.clone()))).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ChannelSettings { room }))] if *room == general
+    ));
+    assert!(
+        app.dispatch(Action::SaveChannel {
+            kind: ChannelKind::Text,
+            settings: named("early")
+        })
+        .is_empty(),
+        "not before they're here"
+    );
+    let loaded = ChannelSettings {
+        name: "general".into(),
+        topic: "Say hi".into(),
+        slowmode: 10,
+        nsfw: false,
+    };
+    app.apply(Event::ChannelLoaded {
+        room: "discord:10:12".into(),
+        result: Ok(ChannelSettings::default()),
+    });
+    assert!(
+        app.state
+            .channel_dialog
+            .as_ref()
+            .unwrap()
+            .settings
+            .is_none(),
+        "another channel's"
+    );
+    app.apply(Event::ChannelLoaded {
+        room: general.clone(),
+        result: Ok(loaded.clone()),
+    });
+    assert_eq!(
+        app.state.channel_dialog.as_ref().unwrap().settings,
+        Some(loaded.clone())
+    );
+    assert!(
+        app.dispatch(Action::SaveChannel {
+            kind: ChannelKind::Text,
+            settings: ChannelSettings {
+                slowmode: 7,
+                ..loaded.clone()
+            }
+        })
+        .is_empty(),
+        "only Discord's slowmodes"
+    );
+    assert!(matches!(
+        app.dispatch(Action::SaveChannel {
+            kind: ChannelKind::Voice,
+            settings: ChannelSettings { slowmode: 30, ..loaded.clone() }
+        }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::EditChannel {
+            room, kind: ChannelKind::Text, settings
+        }))] if *room == general && settings.slowmode == 30 && settings.topic == "Say hi"
+    ));
+    app.apply(Event::ChannelSaved(Ok(None)));
+    assert!(app.state.channel_dialog.is_none());
+
+    // A voice channel and a category have only their names.
+    assert!(
+        app.dispatch(Action::AskChannel(ChannelAsk::Edit("discord:10:4".into())))
+            .is_empty()
+    );
+    let dialog = app.state.channel_dialog.clone().unwrap();
+    assert_eq!(dialog.kind, ChannelKind::Category);
+    assert_eq!(dialog.settings.unwrap().name, "Talk");
+
+    app.dispatch(Action::AskChannel(ChannelAsk::Duplicate(general.clone())));
+    assert_eq!(
+        app.state
+            .channel_dialog
+            .as_ref()
+            .unwrap()
+            .settings
+            .as_ref()
+            .unwrap()
+            .name,
+        "general"
+    );
+    assert!(matches!(
+        app.dispatch(Action::SaveChannel { kind: ChannelKind::Text, settings: named("general") }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::CreateChannel {
+            copy_of: Some(copy), kind: ChannelKind::Text, ..
+        }))] if *copy == general
+    ));
+
+    app.dispatch(Action::AskChannel(ChannelAsk::Delete(
+        "discord:10:4".into(),
+    )));
+    assert!(matches!(
+        app.dispatch(Action::SaveChannel { kind: ChannelKind::Text, settings: ChannelSettings::default() }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::DeleteChannel { room }))] if room == "discord:10:4"
+    ));
+    app.apply(Event::ChannelSaved(Ok(None)));
+    assert!(app.state.channel_dialog.is_none());
+
+    // Discord takes no changes while it's away.
+    app.apply(discord_event(talk_discord::service::Snapshot {
+        status: talk_discord::service::Status::Connecting,
+        ..talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap())
+    }));
+    assert!(!app.menu_choices("discord:10:11").contains(&EditChannel));
+}

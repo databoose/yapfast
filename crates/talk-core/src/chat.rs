@@ -337,6 +337,26 @@ pub enum NotificationChange {
     SuppressRoles(bool),
 }
 
+/// What a Discord channel is: a text or voice channel, or a category.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChannelKind {
+    #[default]
+    Text,
+    Voice,
+    Category,
+}
+
+/// What a Discord channel's dialog sets: its name, and for a text channel
+/// its topic, how many seconds its slowmode makes each person wait between
+/// messages, and whether it's age-restricted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelSettings {
+    pub name: String,
+    pub topic: String,
+    pub slowmode: u32,
+    pub nsfw: bool,
+}
+
 /// A folder of servers on the rail, as Discord's server list keeps them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServerFolder {
@@ -1215,6 +1235,32 @@ pub enum DiscordCommand {
         max_age: u32,
         max_uses: u32,
     },
+    /// Make a channel or category in a Discord server, by its server id,
+    /// inside the category `parent` names by its room id, or a copy of
+    /// `copy_of`'s channel, by its room id, with these settings;
+    /// [`Event::ChannelSaved`] follows with the new one's room id.
+    CreateChannel {
+        server: String,
+        kind: ChannelKind,
+        parent: Option<String>,
+        copy_of: Option<String>,
+        settings: Box<ChannelSettings>,
+    },
+    /// A Discord channel's or category's settings, by its room id, for its
+    /// dialog; [`Event::ChannelLoaded`] follows.
+    ChannelSettings {
+        room: String,
+    },
+    /// Change a Discord channel's or category's settings, or delete it;
+    /// [`Event::ChannelSaved`] follows.
+    EditChannel {
+        room: String,
+        kind: ChannelKind,
+        settings: Box<ChannelSettings>,
+    },
+    DeleteChannel {
+        room: String,
+    },
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
@@ -1425,6 +1471,15 @@ pub enum Event {
     /// The group [`DiscordCommand::AddToGroup`] made or added to, by room id,
     /// or why it couldn't.
     GroupChanged(Result<String, String>),
+    /// A Discord channel's settings [`DiscordCommand::ChannelSettings`]
+    /// asked for, by its room id, or why they didn't come.
+    ChannelLoaded {
+        room: String,
+        result: Result<ChannelSettings, String>,
+    },
+    /// Whether Discord made, changed or deleted the channel a dialog asked
+    /// it to: the room id of one it made, or why it didn't.
+    ChannelSaved(Result<Option<String>, String>),
     /// The code of the invite [`DiscordCommand::CreateInvite`] made to a
     /// channel, by its room id, or why Discord made none.
     InviteMade {

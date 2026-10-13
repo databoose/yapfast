@@ -357,6 +357,33 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             }
         });
     }
+    bind!(on_close_channel, Action::CloseChannelDialog);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_save_channel(move || {
+            let Some(window) = weak.upgrade() else { return };
+            let kind = if window.get_channel_kind() == 1 {
+                ChannelKind::Voice
+            } else {
+                ChannelKind::Text
+            };
+            let slowmode = usize::try_from(window.get_channel_slowmode())
+                .ok()
+                .and_then(|index| SLOWMODES.get(index))
+                .copied()
+                .unwrap_or_default();
+            let settings = ChannelSettings {
+                name: window.get_channel_name().into(),
+                topic: window.get_channel_topic().into(),
+                slowmode,
+                nsfw: window.get_channel_nsfw(),
+            };
+            adapter
+                .borrow_mut()
+                .action(&window, Action::SaveChannel { kind, settings });
+        });
+    }
     bind_item!(on_answer_person, Action::AnswerPerson);
     {
         let adapter = adapter.clone();

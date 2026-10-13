@@ -2478,6 +2478,15 @@ fn a_server_search_names_the_server_and_heads_results_with_their_channels() {
 /// mentions; #general mentions her.
 #[cfg(feature = "discord")]
 fn discord_server_window() -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
+    discord_server_window_granting(0)
+}
+
+/// [`discord_server_window`], with everyone in the server allowed `extra`
+/// permissions too.
+#[cfg(feature = "discord")]
+fn discord_server_window_granting(
+    extra: u64,
+) -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
     use talk_core::talk_discord::{
         notifications::Notifications,
         ready::{self, permission},
@@ -2500,7 +2509,7 @@ fn discord_server_window() -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempD
         "id": "10", "owner_id": "99",
         "properties": {"name": "Test", "default_message_notifications": 1},
         "roles": [{"id": "10", "name": "@everyone", "position": 0,
-                   "permissions": bits(permission::VIEW_CHANNEL | permission::SEND_MESSAGES)}],
+                   "permissions": bits(permission::VIEW_CHANNEL | permission::SEND_MESSAGES | extra)}],
         "channels": [
             {"id": "4", "type": 4, "name": "Talk", "position": 0},
             {"id": "5", "type": 4, "name": "Later", "position": 1},
@@ -2746,4 +2755,122 @@ fn the_invite_dialog_shows_its_link_and_how_long_it_lasts() {
     assert_eq!(prompt.detail, "They'll land in #general.");
     window.invoke_close_invite();
     assert!(!window.get_invite_open());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
+    use talk_core::{
+        application::{ChannelAsk, ChannelDialog},
+        chat::{ChannelKind, ChannelSettings},
+        talk_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::MANAGE_CHANNELS);
+    let texts = |rows: ModelRc<MenuRow>| -> Vec<String> {
+        rows.iter().map(|row| row.text.to_string()).collect()
+    };
+    window.invoke_prepare_menu("discord:10:14".into(), false);
+    let rows = window.get_menu_rows();
+    assert_eq!(
+        texts(rows.clone()),
+        [
+            "Join voice",
+            "Copy link",
+            "Edit channel",
+            "Duplicate channel",
+            "Create voice channel",
+            "Delete channel",
+            "Copy ID"
+        ]
+    );
+    let delete = rows.row_data(5).unwrap();
+    assert!(delete.danger && delete.separated);
+    window.invoke_prepare_menu("discord:10:4".into(), false);
+    assert_eq!(
+        texts(window.get_menu_rows())[1..],
+        [
+            "Mute category",
+            "Notification settings",
+            "Edit category",
+            "Delete category",
+            "Copy ID"
+        ]
+    );
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    assert_eq!(
+        texts(window.get_menu_rows())[..2],
+        ["Create channel", "Create category"]
+    );
+
+    // Choosing one opens its dialog.
+    window.invoke_choose_menu("discord:10".into(), false, "create-channel".into());
+    assert!(window.get_channel_open());
+    let prompt = window.get_channel_prompt();
+    assert_eq!(prompt.title, "Create channel");
+    assert_eq!(prompt.detail, "In Test");
+    assert!(prompt.kinds && prompt.named && !prompt.settings && !prompt.danger);
+    window.set_channel_name("Plans".into());
+    window.set_channel_kind(1);
+    window.invoke_save_channel();
+    {
+        let adapter = adapter.borrow();
+        let dialog = adapter.app.state.channel_dialog.as_ref().unwrap();
+        assert!(dialog.saving, "{dialog:?}");
+        assert_eq!(dialog.kind, ChannelKind::Voice);
+    }
+    window.invoke_close_channel();
+    assert!(!window.get_channel_open());
+
+    let show = |dialog: ChannelDialog| {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.state.channel_dialog = Some(dialog);
+        adapter.refresh(&window);
+    };
+    let edit = ChannelDialog {
+        ask: ChannelAsk::Edit("discord:10:11".into()),
+        server: "discord:10".into(),
+        server_name: "Test".into(),
+        name: "general".into(),
+        kind: ChannelKind::Text,
+        settings: None,
+        saving: false,
+        error: None,
+    };
+    show(edit.clone());
+    let prompt = window.get_channel_prompt();
+    assert!(prompt.loading && prompt.settings);
+    assert_eq!(prompt.confirm, "Save changes");
+    // Its fields fill once Discord sent its settings.
+    show(ChannelDialog {
+        settings: Some(ChannelSettings {
+            name: "general".into(),
+            topic: "Say hi".into(),
+            slowmode: 300,
+            nsfw: true,
+        }),
+        ..edit.clone()
+    });
+    assert!(!window.get_channel_prompt().loading);
+    assert_eq!(window.get_channel_topic(), "Say hi");
+    assert_eq!(window.get_channel_slowmode(), 7);
+    assert!(window.get_channel_nsfw());
+    // What's written there stays while the dialog is open.
+    window.set_channel_topic("Say hello".into());
+    adapter.borrow_mut().refresh(&window);
+    assert_eq!(window.get_channel_topic(), "Say hello");
+
+    show(ChannelDialog {
+        ask: ChannelAsk::Delete("discord:10:4".into()),
+        name: "Talk".into(),
+        kind: ChannelKind::Category,
+        settings: Some(ChannelSettings::default()),
+        ..edit
+    });
+    let prompt = window.get_channel_prompt();
+    assert_eq!(prompt.title, "Delete category");
+    assert_eq!(
+        prompt.detail,
+        "Are you sure you want to delete Talk? This cannot be undone."
+    );
+    assert!(prompt.danger && !prompt.named);
 }

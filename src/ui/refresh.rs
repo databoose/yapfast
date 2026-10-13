@@ -198,6 +198,7 @@ impl Adapter {
         self.show_dm_tools(window);
         self.show_members(window);
         self.show_invite(window);
+        self.show_channel_dialog(window);
         self.show_dialogs(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
@@ -1036,6 +1037,99 @@ impl Adapter {
             },
             making: invite.making,
             error: invite.error.as_deref().unwrap_or_default().into(),
+        });
+    }
+
+    /// The dialog that makes, changes, copies or deletes a Discord channel
+    /// or category.
+    fn show_channel_dialog(&self, window: &TalkWindow) {
+        let dialog = self.app.state.channel_dialog.as_ref();
+        // Its fields start from what Discord has, once that's here.
+        if let Some(dialog) = dialog
+            && (!window.get_channel_open() || window.get_channel_prompt().loading)
+        {
+            let settings = dialog.settings.clone().unwrap_or_default();
+            window.set_channel_name(settings.name.into());
+            window.set_channel_topic(settings.topic.into());
+            window.set_channel_kind(i32::from(dialog.kind == ChannelKind::Voice));
+            window.set_channel_slowmode(
+                SLOWMODES
+                    .iter()
+                    .position(|known| *known == settings.slowmode)
+                    .map_or(0, |index| index as i32),
+            );
+            window.set_channel_nsfw(settings.nsfw);
+        }
+        window.set_channel_open(dialog.is_some());
+        let Some(dialog) = dialog else {
+            return;
+        };
+        let category = dialog.kind == ChannelKind::Category;
+        let thing = if category { "category" } else { "channel" };
+        let named = |name: &str| {
+            if dialog.kind == ChannelKind::Text {
+                format!("#{name}")
+            } else {
+                name.to_owned()
+            }
+        };
+        let (title, detail, confirm) = match &dialog.ask {
+            ChannelAsk::Create { .. } => (
+                format!("Create {thing}"),
+                if dialog.name.is_empty() {
+                    format!("In {}", dialog.server_name)
+                } else {
+                    format!("In {}", dialog.name)
+                },
+                format!("Create {thing}"),
+            ),
+            ChannelAsk::Duplicate(_) => (
+                "Duplicate channel".to_owned(),
+                format!(
+                    "A copy of {}, with its settings and permissions, in the same category.",
+                    named(&dialog.name)
+                ),
+                "Create channel".to_owned(),
+            ),
+            ChannelAsk::Edit(_) => (
+                format!("Edit {thing}"),
+                String::new(),
+                "Save changes".to_owned(),
+            ),
+            ChannelAsk::Delete(_) => (
+                format!("Delete {thing}"),
+                format!(
+                    "Are you sure you want to delete {}? This cannot be undone.",
+                    named(&dialog.name)
+                ),
+                format!("Delete {thing}"),
+            ),
+        };
+        let deleting = matches!(dialog.ask, ChannelAsk::Delete(_));
+        let editing = matches!(dialog.ask, ChannelAsk::Edit(_));
+        window.set_channel_prompt(ChannelPrompt {
+            title: title.into(),
+            detail: detail.into(),
+            confirm: confirm.into(),
+            danger: deleting,
+            kinds: matches!(dialog.ask, ChannelAsk::Create { .. }) && !category,
+            named: !deleting,
+            field: if category {
+                "CATEGORY NAME"
+            } else {
+                "CHANNEL NAME"
+            }
+            .into(),
+            placeholder: if category {
+                "New Category"
+            } else {
+                "new-channel"
+            }
+            .into(),
+            settings: editing && dialog.kind == ChannelKind::Text,
+            loading: dialog.settings.is_none() && dialog.error.is_none(),
+            saving: dialog.saving,
+            error: dialog.error.as_deref().unwrap_or_default().into(),
         });
     }
 

@@ -32,7 +32,9 @@ mod session;
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::member_server;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
-pub use places::{INVITE_AGES, INVITE_USES, InviteDialog, ListedCategory};
+pub use places::{
+    ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, ListedCategory, SLOWMODES,
+};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 
 use calls::call_sounds;
@@ -295,6 +297,9 @@ pub struct AppState {
     pub person_dialog: Option<PersonDialog>,
     /// The invite dialog of a Discord server or channel, while it's open.
     pub invite: Option<InviteDialog>,
+    /// The dialog that makes, changes or deletes a Discord channel or
+    /// category, while it's open.
+    pub channel_dialog: Option<ChannelDialog>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -1024,6 +1029,22 @@ pub enum Action {
         max_uses: u32,
     },
     CloseInvite,
+    /// Open the dialog that makes a channel of this kind, from a Discord
+    /// server's menu, by its server id, or one like a channel in its
+    /// category, from the channel's menu, by its room id.
+    NewChannel {
+        place: String,
+        kind: chat::ChannelKind,
+    },
+    /// Open a Discord channel's or category's dialog from its menu, which
+    /// changes, copies or deletes it; carry it out with what was written,
+    /// making one of `kind` where the dialog chooses; or close it.
+    AskChannel(ChannelAsk),
+    SaveChannel {
+        kind: chat::ChannelKind,
+        settings: chat::ChannelSettings,
+    },
+    CloseChannelDialog,
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
     ChangeRelationship {
@@ -1655,6 +1676,13 @@ impl Application {
                 self.state.invite = None;
                 vec![]
             }
+            Action::NewChannel { place, kind } => self.new_channel(place, kind),
+            Action::AskChannel(ask) => self.ask_channel(ask),
+            Action::SaveChannel { kind, settings } => self.save_channel(kind, settings),
+            Action::CloseChannelDialog => {
+                self.state.channel_dialog = None;
+                vec![]
+            }
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),
@@ -1941,6 +1969,8 @@ impl Application {
             }
             Event::GroupChanged(result) => self.group_changed(result),
             Event::InviteMade { room, result } => self.invite_made(room, result),
+            Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
+            Event::ChannelSaved(result) => self.channel_saved(result),
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;
