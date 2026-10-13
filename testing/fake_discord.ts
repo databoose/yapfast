@@ -1972,7 +1972,12 @@ function bobSpeaks(ws: Socket) {
     header.writeUInt16BE((sequence + index) & 0xffff, 2);
     header.writeUInt32BE(index * 960, 4);
     header.writeUInt32BE(BOB_AUDIO_SSRC, 8);
-    udp.send(sealRtp(Buffer.concat([header, frames[index]!]), key, counter++, 12), peer.port, peer.address);
+    // As Discord's SFU does, op 15 stops any stream it wants at 0, sound
+    // as well as video.
+    const wants: any = callWants.get(ws.data.ssrc!) ?? {};
+    if (Number(wants[String(BOB_AUDIO_SSRC)] ?? wants.any ?? 100) > 0) {
+      udp.send(sealRtp(Buffer.concat([header, frames[index]!]), key, counter++, 12), peer.port, peer.address);
+    }
     index++;
   }, 20);
   return true;

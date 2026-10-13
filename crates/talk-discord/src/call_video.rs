@@ -267,12 +267,14 @@ impl Receiving {
         self.wants = wants;
     }
 
-    /// Asks the server for the cameras wanted, at their quality, and no
-    /// others (op 15).
+    /// Asks the server for the cameras wanted, at their quality, and none
+    /// of the others (op 15). Everything else, everyone's sound above all,
+    /// is wanted in full: `any` covers every stream left unnamed, and 0
+    /// stops one.
     pub async fn ask(&mut self, connection: &mut Connection) -> Result<()> {
         let mut asked = Map::new();
         let mut pixels = Map::new();
-        asked.insert("any".into(), json!(0));
+        asked.insert("any".into(), json!(100));
         for (&ssrc, incoming) in &mut self.incoming {
             let (quality, shown) = self.wants.get(&incoming.user).copied().unwrap_or((0, 0));
             asked.insert(ssrc.to_string(), json!(quality));
