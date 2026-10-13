@@ -617,3 +617,27 @@ then `scripts/ui-session do 'sleep 8' 'click 36 102' 'sleep 8' 'move 550
 'click 774 24' 'sleep 2' 'move 700 125' 'sleep 1' 'click 735 128' 'sleep 20'
 'move 550 25' 'sleep 4'`, sample and print the statistics again, and read
 the requests with `scripts/ui-session do 'get history'`. Alternate the builds.
+
+## 2026-10-13: Discord server channel header
+
+The [record](2026-10-13-linux-server-channel-header.json) compares `96910e8`
+with the server channel's header: each channel's topic held once as an
+`Option<Arc<str>>` the server's snapshots share, rendered for the open
+channel only and sent again only when it changes; the notification bell; and
+the channel and category notification menus, whose rows are built when a
+menu opens. Discord-only `fast` builds ran on the busy fake account with
+#general, its topic and its member list open.
+
+| Build | RSS, mean of 3 (range) | RSS peak, mean of 3 | PSS, mean of 3 |
+| --- | --- | --- | --- |
+| `96910e8` | 106.2 MiB (100.6–111.6) | 109.4 MiB | 85.4 MiB |
+| This change | 105.1 MiB (101.4–107.8) | 107.1 MiB | 85.6 MiB |
+
+The difference is inside the spread between runs of one build. A topic costs
+each channel 16 bytes for its pointer, about 80 KiB across the fake's 5,000
+channels, which have none, and its text once where Discord sends one. In the
+second pair both builds released memory during the sample, so their peaks
+are higher than their means. A first set, run while a build compiled beside
+it, was discarded.
+
+Reproduce as for the server foundations above, with the two builds.

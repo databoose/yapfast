@@ -127,19 +127,7 @@ pub(super) fn found_in(discord: &Discord, room: &str, messages: &[Message]) -> V
 
 /// The custom emoji in a message's text and reactions.
 pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
-    let mut found: Vec<CustomEmoji> = talk_discord::message::custom_emoji(&message.content)
-        .into_iter()
-        .map(|emoji| CustomEmoji {
-            text: format!(":{}:", emoji.name),
-            picture: talk_discord::ready::custom_emoji(
-                &emoji.id,
-                false,
-                crate::chat::EMOJI_PICTURE_SIZE,
-            ),
-            id: emoji.id,
-            animated: emoji.animated,
-        })
-        .collect();
+    let mut found = emoji_in(&message.content);
     for reaction in &message.reactions {
         if let Some((_, id)) = reaction.emoji.split_once(':')
             && !found.iter().any(|known| known.id == id)
@@ -157,6 +145,71 @@ pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
         }
     }
     found
+}
+
+/// The custom emoji in Discord's markup.
+fn emoji_in(content: &str) -> Vec<CustomEmoji> {
+    talk_discord::message::custom_emoji(content)
+        .into_iter()
+        .map(|emoji| CustomEmoji {
+            text: format!(":{}:", emoji.name),
+            picture: talk_discord::ready::custom_emoji(
+                &emoji.id,
+                false,
+                crate::chat::EMOJI_PICTURE_SIZE,
+            ),
+            id: emoji.id,
+            animated: emoji.animated,
+        })
+        .collect()
+}
+
+/// Sends the open server channel's topic, as [`Event::Topic`], when it
+/// opens (`opened`), and after that when the topic changes, or the names
+/// of people it mentions do.
+pub(super) fn send_topic(
+    channel: &mut OpenChannel,
+    discord: &Discord,
+    events: &UnboundedSender<Event>,
+    opened: bool,
+) {
+    if channel.guild == talk_discord::ready::PRIVATE {
+        return;
+    }
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == channel.guild)
+        .map(Arc::as_ref);
+    let raw = server
+        .and_then(|server| {
+            server
+                .text_channels
+                .iter()
+                .find(|known| known.id == channel.channel)
+        })
+        .and_then(|known| known.topic.clone());
+    let names = raw
+        .as_deref()
+        .filter(|raw| raw.contains("<@"))
+        .map_or(0, |_| discord.names_version());
+    let sent = (raw, names);
+    if !opened && channel.topic_sent.as_ref() == Some(&sent) {
+        return;
+    }
+    let topic = sent.0.as_deref().map(|raw| {
+        Arc::new(Topic {
+            body: discord.render(server, raw),
+            mentions: mentions(discord, server, raw),
+            emoji: emoji_in(raw),
+        })
+    });
+    channel.topic_sent = Some(sent);
+    let _ = events.send(Event::Topic {
+        room: channel.room.clone(),
+        topic,
+    });
 }
 
 /// Who and what a message mentions, as its rendered body shows them.

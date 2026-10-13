@@ -160,6 +160,9 @@ pub struct OpenChannel {
     /// changes, and all leave when what they were rendered with changes.
     pub(super) rendered: HashMap<u64, Arc<ChatMessage>>,
     rendered_with: Rendering,
+    /// The topic last sent with [`Event::Topic`], and the version of the
+    /// names it was rendered with when it mentions someone.
+    pub(super) topic_sent: Option<(Option<Arc<str>>, u64)>,
     // Loading goes on after the channel closes, and dropping the set when
     // it leaves the recent channels cancels it. What the person did, such
     // as sending, finishes on its own.
@@ -209,6 +212,7 @@ impl OpenChannel {
             previews: SharedPreviews::default(),
             rendered: HashMap::new(),
             rendered_with: Rendering::default(),
+            topic_sent: None,
             tasks: JoinSet::new(),
         })
     }

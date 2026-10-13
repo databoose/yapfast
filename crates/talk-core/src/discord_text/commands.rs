@@ -2,7 +2,7 @@
 //! events, carried out on the channels.
 
 use super::{
-    render::{chat_member, mention_groups, notification, publish},
+    render::{chat_member, mention_groups, notification, publish, send_topic},
     *,
 };
 
@@ -120,6 +120,7 @@ pub fn command(
             if channel.loaded {
                 publish(&mut channel, discord, done, events);
             }
+            send_topic(&mut channel, discord, events, true);
             channels.open = Some(channel);
             return;
         }
@@ -130,6 +131,7 @@ pub fn command(
                 if channel.loaded {
                     publish(&mut channel, discord, done, events);
                 }
+                send_topic(&mut channel, discord, events, true);
                 channels.open = Some(channel);
             }
             None => {

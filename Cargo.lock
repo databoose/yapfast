@@ -9711,6 +9711,7 @@ dependencies = [
  "skia-safe",
  "slint",
  "talk-core",
+ "talk-discord",
  "talk-ui",
  "tempfile",
  "tracing",

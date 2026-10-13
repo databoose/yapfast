@@ -521,6 +521,15 @@ pub struct CustomEmoji {
     pub picture: String,
 }
 
+/// A Discord channel's topic, as its header shows it: Markdown with
+/// mentions by name, as a message's body is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Topic {
+    pub body: String,
+    pub mentions: Vec<crate::mention::Mentioned>,
+    pub emoji: Vec<CustomEmoji>,
+}
+
 /// The size custom emoji pictures are downloaded at: enough for text's emoji on
 /// a doubled display, and for a message of nothing but emoji.
 pub const EMOJI_PICTURE_SIZE: u32 = 64;
@@ -1390,6 +1399,12 @@ pub enum Event {
         query: String,
         offset: u32,
         result: Result<(u32, Vec<ChatMessage>), String>,
+    },
+    /// The open Discord channel's topic, when it opens and when it changes;
+    /// none when it has none.
+    Topic {
+        room: String,
+        topic: Option<Arc<Topic>>,
     },
     /// The group [`DiscordCommand::AddToGroup`] made or added to, by room id,
     /// or why it couldn't.

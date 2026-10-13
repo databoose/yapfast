@@ -1843,11 +1843,12 @@ fn collapsed_categories_keep_the_open_unread_and_occupied_channels() {
     assert_eq!(
         shown,
         [
-            // A category's first channel goes, and its heading stays alone.
-            ("", "TEXT", true, true),
+            // A category's first channel goes, and its heading stays alone,
+            // naming the channel for the heading's menu.
+            ("a", "TEXT", true, true),
             ("b", "", true, false),
             ("c", "", true, false),
-            ("", "VOICE", true, true),
+            ("e", "VOICE", true, true),
             // The voice channel Talk is in stays.
             ("f", "", true, false),
             ("g", "OTHER", false, false),
@@ -2259,4 +2260,159 @@ fn closing_the_viewer_lets_go_of_its_picture() {
     adapter.refresh(&window);
     assert!(!window.get_viewer_open());
     assert_eq!(window.get_viewer_image().size().width, 0);
+}
+
+/// A Discord server with a category holding #general, and #rules outside
+/// it, muted with its own level; Alice is "1".
+#[cfg(feature = "discord")]
+fn discord_server_adapter(
+    window: &TalkWindow,
+    directory: &std::path::Path,
+) -> Rc<RefCell<Adapter>> {
+    use talk_discord::{
+        notifications::{Level, Mute, Notifications as Settings, Override},
+        ready,
+        service::{Snapshot, Status},
+    };
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.into(),
+        window,
+    )
+    .unwrap();
+    bind_callbacks(window, &adapter);
+    let mut server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99",
+        "properties": {"name": "Test", "default_message_notifications": 1},
+        "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": "3072"}],
+        "channels": [
+            {"id": "4", "type": 4, "name": "Talk", "position": 0},
+            {"id": "11", "type": 0, "name": "general", "position": 0, "parent_id": "4"},
+            {"id": "12", "type": 0, "name": "rules", "position": 0},
+        ],
+    }))
+    .unwrap();
+    server.notifications = Arc::new(Settings {
+        overrides: [(
+            "12".to_owned(),
+            Override {
+                mute: Mute {
+                    muted: true,
+                    until: None,
+                },
+                level: Some(Level::Nothing),
+            },
+        )]
+        .into(),
+        ..Default::default()
+    });
+    server.text_channels[1].muted = true;
+    adapter
+        .borrow_mut()
+        .app
+        .apply(talk_core::chat::Event::Discord(Arc::new(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            servers: vec![Arc::new(server)],
+            ..Default::default()
+        })));
+    adapter
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_bell_and_channel_menus_offer_the_same_notification_choices() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = discord_server_adapter(&window, directory.path());
+    let rows = |window: &TalkWindow| -> Vec<(String, String, bool)> {
+        window
+            .get_menu_rows()
+            .iter()
+            .map(|row| (row.text.into(), row.subtitle.into(), row.checked))
+            .collect()
+    };
+    let row = |text: &str, subtitle: &str, checked| (text.into(), subtitle.into(), checked);
+
+    // The header's bell: muting, with its times, then the levels.
+    window.invoke_prepare_menu("notifications:discord:10:11".into(), false);
+    assert_eq!(
+        rows(&window),
+        [
+            row("Mute channel", "", false),
+            row("Use category default", "Only @mentions", true),
+            row("All messages", "", false),
+            row("Only @mentions", "", false),
+            row("Nothing", "", false),
+        ]
+    );
+    let submenus = window.get_menu_submenus();
+    assert_eq!(
+        submenus.row_data(0).unwrap().row_count(),
+        talk_core::application::MUTE_TIMES.len()
+    );
+    assert_eq!(submenus.row_data(1).unwrap().row_count(), 0);
+
+    // A muted channel outside a category unmutes, and follows the server.
+    window.invoke_prepare_menu("notifications:discord:10:12".into(), false);
+    let shown = rows(&window);
+    assert_eq!(shown[0], row("Unmute channel", "", false));
+    assert_eq!(shown[1], row("Use server default", "Only @mentions", false));
+    assert_eq!(shown[4], row("Nothing", "", true));
+    assert_eq!(window.get_menu_submenus().row_count(), 0, "no row has one");
+
+    // Its own menu has the same, the levels in a submenu.
+    window.invoke_prepare_menu("discord:10:12".into(), false);
+    let shown = rows(&window);
+    assert!(shown.contains(&row("Unmute channel", "", false)));
+    assert!(shown.contains(&row("Notification settings", "Nothing", false)));
+    let at = shown
+        .iter()
+        .position(|shown| shown.0 == "Notification settings")
+        .unwrap();
+    let levels = window.get_menu_submenus().row_data(at).unwrap();
+    assert_eq!(levels.row_count(), 4);
+    assert!(levels.row_data(3).unwrap().checked);
+
+    // A category's heading names its first channel; its menu is the same.
+    assert_eq!(
+        window.invoke_category_of("discord:10:11".into()),
+        "discord:10:4"
+    );
+    assert_eq!(window.invoke_category_of("discord:10:12".into()), "");
+    window.invoke_prepare_menu("discord:10:4".into(), false);
+    let shown = rows(&window);
+    assert_eq!(shown[0], row("Mute category", "", false));
+    assert_eq!(
+        shown[1],
+        row("Notification settings", "Only @mentions", false)
+    );
+
+    // What each choice changes.
+    use talk_core::chat::{Muting, NotificationChange, NotifyLevel};
+    let adapter = adapter.borrow();
+    let general = menus::Notify::of(&adapter, "discord:10:11").unwrap();
+    assert_eq!(
+        general.change("level-mentions"),
+        Some(NotificationChange::Level(Some(NotifyLevel::Mentions)))
+    );
+    assert_eq!(
+        general.change("level-default"),
+        Some(NotificationChange::Level(None))
+    );
+    assert_eq!(
+        general.change("mute-60"),
+        Some(NotificationChange::Mute(Muting::Minutes(60)))
+    );
+    assert_eq!(general.change("channel-mute"), None, "its times choose");
+    let rules = menus::Notify::of(&adapter, "discord:10:12").unwrap();
+    assert_eq!(
+        rules.change("channel-mute"),
+        Some(NotificationChange::Mute(Muting::Off))
+    );
+    assert!(
+        menus::Notify::of(&adapter, "discord:@me:30").is_none(),
+        "a DM"
+    );
 }

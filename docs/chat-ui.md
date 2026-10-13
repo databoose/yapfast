@@ -192,7 +192,11 @@ The window follows Discord's arrangement:
   ID. A pinned DM stays at the top of the list, with a pin, on this device. A
   Discord DM's menu also has Add note, Add or Change friend nickname, Close DM,
   Remove friend, Ignore and Block, each undone by its opposite, and Mute, whose
-  submenu mutes for 15 minutes, 1, 3, 8 or 24 hours, or until unmuted. A muted
+  submenu mutes for 15 minutes, 1, 3, 8 or 24 hours, or until unmuted. A
+  Discord server's text channel offers "Mute channel", with the same times,
+  or "Unmute channel", and "Notification settings", whose submenu picks which
+  messages notify; a right click on a category's heading offers the same for
+  the category. A muted
   DM or Discord channel shows faint, and a Discord server set to hide muted
   channels leaves them out, but for the open one and those that mention you.
   Removing a friend and blocking ask first. Matrix links go through
@@ -213,7 +217,12 @@ The window follows Discord's arrangement:
   audio devices, message text size, clock and link previews, notifications,
   sounds, reconnect, sign out). A caret beside mute and deafen opens a
   device menu; the input menu shows a local level meter.
-- A conversation with a 48px header. Messages from one person within seven
+- A conversation with a 48px header: the conversation's icon and name, and
+  for a Discord server channel its topic on one line after a rule, which a
+  click shows in full. Its buttons sit on the right, as in Discord: a DM's
+  call, pins, adding friends, member list or profile, and search; a server
+  channel's bell, pins, member list and search. The bell opens the channel's
+  mute and notification level, and shows slashed while it's muted. Messages from one person within seven
   minutes are grouped under one avatar and name. Hovering a grouped message
   shows its time in the gutter. Replies draw a spine to the quoted message, and
   a date divider starts each day. The top of the history shows what's
@@ -224,8 +233,9 @@ The window follows Discord's arrangement:
   conversation" and hides the composer. The local preview labels itself in a
   strip under the header.
 - A 240px member sidebar right of the conversation, under its header, on the
-  sidebar's tone. The member count in the header shows or hides it, and Talk
-  remembers a closed list. While it shows, dragging the left sidebar still
+  sidebar's tone. The member count in a group DM's header shows or hides it,
+  as the people icon does in a server channel's, bright while the list
+  shows, and Talk remembers a closed list. While it shows, dragging the left sidebar still
   leaves the conversation 420px.
 - A right click on someone, in the member list, on a message author's avatar
   or name, or in the friends list, opens their menu: Profile, Message to open

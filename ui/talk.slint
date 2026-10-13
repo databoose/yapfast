@@ -30,7 +30,7 @@ import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, Ser
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
-import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel } from "header.slint";
+import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 
 // Rust sees these, besides TalkWindow.
 export { Badges } from "theme.slint";
@@ -135,6 +135,19 @@ export component TalkWindow inherits Window {
     in property <string> room-initial;
     in property <color> room-tint;
     in property <image> room-picture;
+    /// The open room's id, which its header's menus name.
+    in property <string> room-id;
+    /// A Discord server channel's topic: on one line in the header, and in
+    /// full under it once clicked.
+    in property <bool> has-topic;
+    in property <styled-text> room-topic;
+    in property <styled-text> room-topic-full;
+    property <bool> topic-open;
+    changed room-id => { root.topic-open = false; }
+    /// The open Discord server channel's notifications, which the header's
+    /// bell offers, slashed while the channel is muted.
+    in property <bool> can-notify;
+    in property <bool> room-muted;
     in property <string> members;
     /// The open room lists its members: a text channel or a group DM.
     /// The zoom level, such as "110%", shown for a moment after it changes.
@@ -305,6 +318,9 @@ export component TalkWindow inherits Window {
     in property <[[MenuRow]]> menu-submenus;
     callback prepare-menu(string, bool);
     callback choose-menu(string, bool, string);
+    /// The room id of the category a channel, by its room id, is listed
+    /// under, whose heading's menu is asked for; empty for none.
+    pure callback category-of(string) -> string;
     /// Show a mutual friend's profile, by Discord user id: as a card, or large.
     callback show-friend-profile(string, bool);
     /// A mutual server's card, beside the profile that lists it.
@@ -1065,6 +1081,9 @@ export component TalkWindow inherits Window {
                                 open-volume(person, x, y) => { root.open-volume(person, x, y); }
                                 watch-stream(id) => { root.watch-stream(id); }
                                 toggle-category(heading) => { root.toggle-category(heading); }
+                                open-category-menu(id, x, y) => {
+                                    if root.category-of(id) != "" { root.open-context-menu(root.category-of(id), false, x, y); }
+                                }
                             }
                         }
                     }
@@ -1182,7 +1201,31 @@ export component TalkWindow inherits Window {
                             color: root.room-selected || root.requests-open || root.friends-open ? Theme.text : Theme.secondary;
                             font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center;
                             // The name gives way to what follows it, and fills the bar when nothing does.
-                            horizontal-stretch: (root.room-activity != "" && root.room-direct) || root.friends-open ? 0 : 1;
+                            horizontal-stretch: (root.room-activity != "" && root.room-direct) || root.friends-open || root.has-topic ? 0 : 1;
+                        }
+                        // A server channel's topic, after a rule, as Discord shows it:
+                        // one line, cut short, and in full once clicked.
+                        if root.has-topic: Middle { Rectangle { width: 1px; height: 24px; background: Theme.line; } }
+                        if root.has-topic: topic-area := Rectangle {
+                            horizontal-stretch: 1; min-width: 40px;
+                            accessible-role: button;
+                            accessible-label: "Channel topic";
+                            accessible-action-default => { root.topic-open = true; }
+                            StyledText {
+                                width: parent.width; height: parent.height;
+                                text: root.room-topic; default-color: topic-touch.has-hover ? Theme.secondary : Theme.muted;
+                                link-color: Theme.link; default-font-size: 14px; max-lines: 1; vertical-alignment: center;
+                            }
+                            // Over the line, whose text would take the press to select: its
+                            // links open from the full topic.
+                            topic-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => {
+                                    root.popover-x = topic-area.absolute-position.x;
+                                    root.popover-y = topic-area.absolute-position.y + topic-area.height;
+                                    root.topic-open = !root.topic-open;
+                                }
+                            }
                         }
                         // What they're up to, as a bubble beside their name.
                         if root.room-direct && root.room-activity != "": Middle {
@@ -1229,6 +1272,17 @@ export component TalkWindow inherits Window {
                                 clicked => { root.start-call(); }
                             }
                         }
+                        if root.can-notify: Middle {
+                            IconButton {
+                                icon: root.room-muted ? @image-url("icons/bell-off.svg") : @image-url("icons/bell.svg");
+                                label: root.room-muted ? "Notification settings, muted" : "Notification settings";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                clicked => {
+                                    root.open-context-menu("notifications:" + root.room-id, false,
+                                        self.absolute-position.x, self.absolute-position.y + self.height + 6px);
+                                }
+                            }
+                        }
                         if root.can-pin: Middle {
                             IconButton {
                                 icon: @image-url("icons/pin.svg"); label: "Pinned messages";
@@ -1254,10 +1308,21 @@ export component TalkWindow inherits Window {
                                 }
                             }
                         }
-                        if root.members-available: Middle {
+                        if root.members-available && root.room-direct: Middle {
                             HeaderToggle {
                                 icon: @image-url("icons/users.svg"); text: root.members; open: root.member-list;
                                 label: root.member-list ? "Hide member list" : "Show member list";
+                                clicked => { root.toggle-members(); }
+                            }
+                        }
+                        // A server channel's, as Discord's: the icon alone, bright while
+                        // the list shows.
+                        if root.members-available && !root.room-direct: Middle {
+                            IconButton {
+                                icon: @image-url("icons/users.svg");
+                                label: root.member-list ? "Hide member list" : "Show member list";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                tint: root.member-list ? Theme.text : Theme.secondary;
                                 clicked => { root.toggle-members(); }
                             }
                         }
@@ -2048,6 +2113,26 @@ export component TalkWindow inherits Window {
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
         }
     }
+    // A server channel's topic in full, under the header's line of it.
+    // Escape or a click outside closes it.
+    if root.topic-open && root.has-topic: Rectangle {
+        TouchArea { clicked => { root.topic-open = false; } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.topic-open = false; return accept; }
+                return reject;
+            }
+        }
+        TopicPopover {
+            x: max(8px, min(root.width - self.width - 8px, root.popover-x));
+            y: root.popover-y + 6px;
+            most: min(400px, root.height - self.y - 16px);
+            name: root.room-name; topic: root.room-topic-full;
+            open-link(link) => { root.open-link(link); }
+            close => { root.topic-open = false; }
+        }
+    }
     // The open DM's pinned messages, under the pin button. Jumping to one
     // closes them, as does Escape or a click outside.
     if root.pins-open: Rectangle {
@@ -2062,8 +2147,8 @@ export component TalkWindow inherits Window {
         PinsPopover {
             x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
             y: root.popover-y + 6px;
-            // A note alone needs little room; pins get the window's height.
-            height: min(root.pins-note != "" ? 220px : 560px, root.height - self.y - 16px);
+            // As tall as its pins, up to 560px, within the window.
+            height: min(self.fit, 560px, root.height - self.y - 16px);
             pins: root.pins; note: root.pins-note;
             jump(item) => { root.show-pins(false); root.jump-to(item); }
             open-link(link) => { root.open-link(link); }

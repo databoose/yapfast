@@ -808,6 +808,8 @@ struct Adapter {
     /// A hash of what the friends picker's rows were built from, so they're
     /// built again only once that changes.
     picker_shown: Option<u64>,
+    /// The topic the header shows, so it's styled again only once it changes.
+    topic_shown: Option<Arc<talk_core::chat::Topic>>,
     /// Shows pictures that arrived, together with those that follow them closely.
     pictures_due: slint::Timer,
     /// Stream ticks without a new picture of a video that isn't playing,
@@ -947,6 +949,7 @@ impl Adapter {
                 rows: HashMap::new(),
                 sidebar: None,
                 picker_shown: None,
+                topic_shown: None,
                 pictures_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),
                 video_cell: Cell::new((0, 0)),

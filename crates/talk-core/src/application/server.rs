@@ -174,6 +174,24 @@ impl Application {
         None
     }
 
+    /// The room id of the category a Discord channel, by its room id, is
+    /// listed under, for the menu of the category's heading.
+    pub fn category_of(&self, room: &str) -> Option<String> {
+        #[cfg(feature = "discord")]
+        if let Some((server, Some(channel), _)) = self.discord_place(room) {
+            return server
+                .text_channels
+                .iter()
+                .chain(&server.voice_channels)
+                .find(|known| known.id == channel)
+                .and_then(|known| known.parent.as_deref())
+                .filter(|parent| server.categories.contains_key(*parent))
+                .map(|parent| discord::room_id(&server.id, parent));
+        }
+        let _ = room;
+        None
+    }
+
     /// How a Discord server notifies this account, with its switches.
     pub fn server_notifications(&self, server: &str) -> Option<ServerNotifications> {
         let own = self.notifications(server)?;

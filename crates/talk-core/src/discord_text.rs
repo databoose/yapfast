@@ -28,8 +28,8 @@ use crate::{
         Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Direction,
         DiscordCommand, Embed, EmbedField, Event, History, MAX_PREVIEW_DOWNLOAD_BYTES,
         MentionGroup, Notification, OutgoingFile, Picture, Placement, Profile, ProfileFriend,
-        ProfileRole, ProfileServer, Reaction, Reply, Role, Video, VideoCommand, decode_preview,
-        decode_view, plain_snippet,
+        ProfileRole, ProfileServer, Reaction, Reply, Role, Topic, Video, VideoCommand,
+        decode_preview, decode_view, plain_snippet,
     },
     discord::{self, KEPT_CHANNELS, KEPT_MESSAGES},
     mention::{Mentioned, Target},
@@ -332,6 +332,9 @@ impl Chat {
                 }
                 self.online = online;
                 let _ = events.send(Event::Discord(snapshot));
+                if let Some(channel) = &mut self.channels.open {
+                    render::send_topic(channel, &self.discord, events, false);
+                }
             }
             Wake::Live(Some(event)) => {
                 live(event, &self.discord, &mut self.channels, &self.done, events);
