@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Check renderer selection and GPU-to-Skia-Software recovery on the private compositor.
 
-Talk starts with Skia Software unless --renderer gpu is given. A GPU start is
+Talk starts with Skia Software unless the GPU setting or --renderer gpu asks
+for Skia GPU. A GPU start is
 made to fail by hiding every EGL vendor from libglvnd, which is how a missing or
 broken OpenGL driver appears to the window. Each scenario uses its own data
 folder and captures the window for visual review.
@@ -90,9 +91,23 @@ _, running, log, picture = launch('gpu', data, renderer='gpu', wait=4.5)
 check('GPU start keeps Skia GPU', running and opened(log) == ['skia-opengl'],
       f'renderers={opened(log)} screenshot={picture}')
 
-# 4. Nothing about renderers is stored between starts.
-stored = sorted(str(path.relative_to(base)) for path in base.rglob('graphics.json'))
-check('no renderer record is stored', not stored, f'records={stored}')
+# 4. --renderer is for one start; it never changes the setting.
+stored = sorted(str(path.relative_to(base)) for path in base.rglob('layout.json')
+                if json.loads(path.read_text()).get('gpu_rendering'))
+check('--renderer leaves the setting alone', not stored, f'records={stored}')
+
+# 5. A GPU setting with a broken driver falls back once and turns itself off.
+data = base / 'setting-broken-driver'
+data.mkdir()
+(data / 'layout.json').write_text('{"gpu_rendering": true}')
+_, running, log, picture = launch('setting-broken-egl', data, environment=BROKEN_EGL, wait=5.5)
+saved = json.loads((data / 'layout.json').read_text()).get('gpu_rendering')
+check('a failed GPU setting restarts with Skia Software and turns off',
+      running and opened(log) == ['skia-opengl', 'skia-software'] and saved is False,
+      f'running={running} renderers={opened(log)} saved={saved} screenshot={picture}')
+_, running, log, _ = launch('setting-after-failure', data, environment=BROKEN_EGL)
+check('the next start goes straight to Skia Software', running and opened(log) == ['skia-software'],
+      f'renderers={opened(log)}')
 
 (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
 raise SystemExit(0 if all(result['passed'] for result in results) else 1)

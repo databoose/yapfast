@@ -2,8 +2,10 @@
 //!
 //! Talk renders with Skia Software. In a ten-person call it used about half the
 //! memory of Skia GPU at the same CPU, and scrolling a long history at 2× scale
-//! cost less CPU too. `--renderer gpu` opts into the GPU; if the GPU fails, Talk
-//! restarts itself with Skia Software and says why.
+//! cost less CPU too. The GPU is a setting, which `--renderer` overrides for one
+//! start; if the GPU fails, Talk restarts itself with Skia Software, says why and
+//! turns the setting off. Slint picks one renderer per process and never unloads
+//! the OpenGL driver, so a changed setting applies when Talk restarts.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Renderer {
@@ -15,15 +17,24 @@ pub enum Renderer {
 pub struct Plan {
     pub renderer: Renderer,
     pub notice: Option<String>,
+    /// The GPU setting failed, so it's turned off for later starts.
+    pub forget_gpu: bool,
 }
 
+/// `requested` comes from `--renderer`, `saved_gpu` from the settings, and
 /// `relaunch_reason` is set when this process replaced a failed GPU process.
-pub fn plan(renderer: Renderer, relaunch_reason: Option<String>) -> Plan {
-    let notice = match renderer {
-        Renderer::Software => relaunch_reason.map(|_| NOTICE.into()),
-        Renderer::Gpu => None,
-    };
-    Plan { renderer, notice }
+pub fn plan(requested: Option<Renderer>, saved_gpu: bool, relaunch_reason: Option<String>) -> Plan {
+    let renderer = requested.unwrap_or(if saved_gpu {
+        Renderer::Gpu
+    } else {
+        Renderer::Software
+    });
+    let failed = renderer == Renderer::Software && relaunch_reason.is_some();
+    Plan {
+        renderer,
+        notice: failed.then(|| NOTICE.into()),
+        forget_gpu: failed && saved_gpu,
+    }
 }
 
 /// The technical reason stays in the log; the notice is for people.
@@ -35,10 +46,42 @@ mod tests {
 
     #[test]
     fn only_a_restart_after_a_gpu_failure_shows_the_notice() {
-        assert!(plan(Renderer::Software, None).notice.is_none());
-        assert!(plan(Renderer::Gpu, None).notice.is_none());
-        let restarted = plan(Renderer::Software, Some("no EGL display".into()));
+        assert!(plan(Some(Renderer::Software), false, None).notice.is_none());
+        assert!(plan(Some(Renderer::Gpu), false, None).notice.is_none());
+        let restarted = plan(
+            Some(Renderer::Software),
+            false,
+            Some("no EGL display".into()),
+        );
         assert_eq!(restarted.renderer, Renderer::Software);
         assert_eq!(restarted.notice.as_deref(), Some(NOTICE));
+        assert!(!restarted.forget_gpu);
+    }
+
+    #[test]
+    fn the_setting_chooses_unless_the_flag_does() {
+        assert_eq!(plan(None, false, None).renderer, Renderer::Software);
+        assert_eq!(plan(None, true, None).renderer, Renderer::Gpu);
+        assert_eq!(
+            plan(Some(Renderer::Software), true, None).renderer,
+            Renderer::Software
+        );
+        assert_eq!(
+            plan(Some(Renderer::Gpu), false, None).renderer,
+            Renderer::Gpu
+        );
+        assert!(!plan(None, true, None).forget_gpu);
+    }
+
+    #[test]
+    fn a_failed_gpu_setting_is_turned_off() {
+        // The failed process restarts with `--renderer software`.
+        let restarted = plan(
+            Some(Renderer::Software),
+            true,
+            Some("no EGL display".into()),
+        );
+        assert_eq!(restarted.renderer, Renderer::Software);
+        assert!(restarted.forget_gpu && restarted.notice.is_some());
     }
 }

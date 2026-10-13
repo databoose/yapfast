@@ -648,6 +648,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.sound_set = chosen(&SoundSet::ALL, window.get_sound_set());
         layout.sound_volume = Some(window.get_sound_volume().clamp(0, 200) as u8);
         layout.adjust_each_sound = window.get_adjust_each_sound();
+        layout.gpu_rendering = window.get_gpu_rendering();
         adapter.layout.write(&adapter.root);
         adapter.restyle = true;
         adapter.refresh(&window);
