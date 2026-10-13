@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | Audio on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications, member lists | Threads, forums, search, pins, forwarding |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search | Threads, forums, pinning, forwarding, the menus of servers, channels and members |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -869,6 +869,56 @@ an error.
   connected, whenever the settings change, and clears it when it ends. A
   custom emoji in a status needs Nitro.
 
+### Notification settings
+
+Discord keeps the account's notification settings per server, and one set
+for DMs: READY lists them in `user_guild_settings`, and
+USER_GUILD_SETTINGS_UPDATE replaces a server's
+(`talk_discord::notifications`). Each holds the server's mute, with
+`mute_config`'s `end_time` when it ends, its level (every message, mentions
+only, nothing, or the server's own default, `default_message_notifications`),
+whether @everyone and @here, and role mentions, call on the account, whether
+muted channels hide, and `channel_overrides`: each channel's and
+category's own mute and level, where 3 means the category's or server's.
+Talk publishes each server's settings with the server, shared between
+snapshots until Discord changes them, and marks each channel muted when it
+or its category is. A muted channel shows faint, as a muted DM does, and a
+server set to hide muted channels leaves them out of the channel list, but
+for the open one and those that mention the account, whose count the rail
+shows. A mute with an end lifts by itself then: the session wakes at the
+soonest end and publishes again.
+
+`PATCH /users/@me/guilds/{guild}/settings` changes them, with `@me` for DMs.
+The body names only what changes, and Discord keeps the rest; a channel's or
+category's goes in `channel_overrides`, keyed by its id rather than listed:
+`{"channel_overrides": {"<id>": {"muted": true, "mute_config":
+{"selected_time_window": 900, "end_time": "..."}}}}`. A mute for good is
+`selected_time_window` -1 and no end, as Discord's client sends it, and a
+level is `message_notifications`. `Action::ChangeNotifications` asks for a
+change to a server, by its server id, or to a channel or category, by its
+room id: a mute for one of the DM menu's times, a level, or one of the
+server's switches. The menus that offer them are still to come. The fake
+keeps each server's settings and answers with USER_GUILD_SETTINGS_UPDATE.
+
+### Permissions and roles
+
+What the account may do in a server is its @everyone role's permissions
+and those of its roles, everything for the owner and administrators
+(`Server::server_permissions`); in a channel, the channel's overwrites for
+@everyone, the roles and the member then apply
+(`Server::channel_permissions`). Acting on another member, to kick, ban,
+time out, rename or change their roles, also needs to outrank them: nobody
+outranks the owner, the owner outranks everyone else, and otherwise the
+highest role must be higher (`Server::outranks`). A role can be given or
+taken by those who may manage roles and whose highest role is above it,
+or by the owner, but never @everyone or one an integration manages
+(`Server::may_grant`). The core asks through `Application::may`,
+`outranks` and `may_grant`, and `server_roles` lists a server's roles,
+highest first, with their colours, from the server the latest snapshot
+shares. Members' roles are learned with their names; member list rows and
+`ChatMember::roles` share each member's list with them rather than copying
+it.
+
 ### DMs
 
 DMs and group DMs are listed under the DM button after Matrix DMs, the latest
@@ -975,17 +1025,23 @@ neither pinning, closing nor muting, as it waits for an answer.
 
 A DM or group DM's header has, as Discord's does, its call, its pinned
 messages, adding friends, the profile or member list, and a search. Video
-calls aren't there yet.
+calls aren't there yet. A server's text channel has its pinned messages and
+a search too; the rest of its header is still to come.
 
 - Pinned messages open under the pin, the latest pinned first, from `GET
   /channels/{id}/messages/pins`, whose `items` carry each `message`. Talk asks
   each time they open, and for the first 50.
-- Search is `GET /channels/{id}/messages/search?content=...&offset=...`, 25
-  messages a page, newest first; each of `messages` is a list whose first is
-  the one found. The results take the member list's or the profile's place,
-  and Show more loads the next page. Discord indexes a DM the first time it's
-  searched, answering 202 with code 110000 and a `retry_after`; Talk asks
-  again up to five times.
+- Search is `GET /channels/{id}/messages/search?content=...&offset=...` in a
+  DM, and `GET /guilds/{id}/messages/search?channel_id=...&content=...` in a
+  server's channel, 25 messages a page, newest first; each of `messages` is
+  a list whose first is the one found. The results take the member list's or
+  the profile's place, and Show more loads the next page. Discord indexes a
+  DM or a server the first time it's searched, answering 202 with code
+  110000 and a `retry_after`; Talk asks again up to five times.
+- In a server, pins and results carry no member profiles, so Talk asks the
+  gateway for those of authors it doesn't know yet and waits up to five
+  seconds for them; then they show with their server nickname, avatar and
+  role colour.
 - Clicking a pin or a result jumps to it in the timeline, loading earlier
   history until it's there, up to 20 pages, as a reply's original does.
   Pins and results show their text and name their files, without
@@ -1025,7 +1081,7 @@ Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 In rough order. The browser covers these until then.
 
 - Threads and forum channels.
-- Search and pinned messages in servers; pinning and unpinning messages.
+- Pinning and unpinning messages.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.
 - Making and changing server folders.

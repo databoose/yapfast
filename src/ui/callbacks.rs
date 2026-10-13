@@ -220,9 +220,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         let weak = window.as_weak();
         window.on_prepare_menu(move |id, person| {
             if let Some(window) = weak.upgrade() {
-                let (rows, subrows) = menus::menu(&adapter.borrow(), &id, person);
-                window.set_menu_rows(ModelRc::new(VecModel::from(rows)));
-                window.set_menu_subrows(ModelRc::new(VecModel::from(subrows)));
+                let menu = menus::menu(&adapter.borrow(), &id, person);
+                menus::show(&window, menu);
             }
         });
     }

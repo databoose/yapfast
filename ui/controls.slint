@@ -382,38 +382,72 @@ export component SpoilerCover inherits Rectangle {
     }
 }
 
-// One choice in a menu, with a check beside the current one.
+// One choice in a menu, with a check beside the current one. It may have a
+// second line under its text, a box to tick, or an arrow to its submenu.
 export component MenuItem inherits Rectangle {
     in property <string> text;
+    /// A second line under the text, such as what a submenu has chosen.
+    in property <string> subtitle;
     in property <image> icon;
+    /// The current choice, marked with a check in place of its icon; or
+    /// with `checkbox`, ticked.
     in property <bool> checked;
+    /// It turns something on or off, with a box at its end ticked while on.
+    in property <bool> checkbox;
+    /// It opens a submenu, which an arrow at its end shows.
+    in property <bool> submenu;
     /// A destructive choice, such as deleting: drawn in red.
     in property <bool> danger;
     /// Drawn as the pointer's choice; a ContextMenu moves it with the keys too.
     in property <bool> highlighted: pointer.has-hover;
     callback clicked;
     callback hovered;
-    height: 32px;
+    property <bool> current: root.checked && !root.checkbox;
+    height: root.subtitle != "" ? 44px : 32px;
     border-radius: 4px;
     background: root.highlighted ? (root.danger ? Theme.danger.with-alpha(0.16) : Theme.active) : transparent;
     border-width: focus.has-focus ? 2px : 0px;
     border-color: Theme.accent;
     accessible-role: button;
     accessible-label: root.text;
+    accessible-description: root.subtitle;
+    accessible-checkable: root.checkbox;
     accessible-checked: root.checked;
     accessible-action-default => { root.clicked(); }
     forward-focus: focus;
     HorizontalLayout {
         padding-left: 8px; padding-right: 8px; spacing: 8px;
         Image {
-            source: root.checked ? @image-url("icons/check.svg") : root.icon;
+            source: root.current ? @image-url("icons/check.svg") : root.icon;
             width: 16px; image-fit: contain;
-            colorize: root.checked ? Theme.accent : root.danger ? Theme.danger : root.highlighted ? Theme.text : Theme.muted;
+            colorize: root.current ? Theme.accent : root.danger ? Theme.danger : root.highlighted ? Theme.text : Theme.muted;
         }
-        Text {
-            text: root.text; color: root.danger ? Theme.danger : root.checked || root.highlighted ? Theme.text : Theme.secondary;
-            font-size: 15px; font-weight: root.checked ? 700 : 400;
-            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 1;
+            Text {
+                text: root.text; color: root.danger ? Theme.danger : root.current || root.highlighted ? Theme.text : Theme.secondary;
+                font-size: 15px; font-weight: root.current ? 700 : 400;
+                overflow: elide;
+            }
+            if root.subtitle != "": Text {
+                text: root.subtitle; color: Theme.muted; font-size: 12px; overflow: elide;
+            }
+        }
+        if root.checkbox: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 18px; height: 18px; border-radius: 4px;
+                background: root.checked ? Theme.accent : transparent;
+                border-width: root.checked ? 0px : 1.5px; border-color: root.highlighted ? Theme.text : Theme.muted;
+                if root.checked: Image {
+                    width: 12px; height: 12px; image-fit: contain;
+                    source: @image-url("icons/check.svg"); colorize: #ffffff;
+                }
+            }
+        }
+        if root.submenu: Image {
+            width: 16px; image-fit: contain;
+            source: @image-url("icons/chevron-right.svg"); colorize: Theme.muted;
         }
     }
     focus := FocusScope {
@@ -436,18 +470,26 @@ export struct MenuRow {
     /// What the menu reports when it's chosen.
     id: string,
     text: string,
+    /// A second line under the text, such as what its submenu has chosen.
+    subtitle: string,
     icon: image,
     /// A destructive choice, drawn in red.
     danger: bool,
     /// It starts a group, under a line.
     separated: bool,
-    /// It opens the menu's submenu beside it rather than being chosen.
-    submenu: bool,
+    /// It turns something on or off, with a box ticked while it's on.
+    /// Choosing it leaves the menu open.
+    checkbox: bool,
+    /// Ticked, for a checkbox; otherwise the current choice, as a level in
+    /// a submenu is, marked with a check in place of its icon.
+    checked: bool,
 }
 
-// The rows of a ContextMenu or of its submenu.
+// The rows of a ContextMenu or of a submenu.
 component MenuRows inherits VerticalLayout {
     in property <[MenuRow]> rows;
+    /// Each row's submenu, by the row's index; a row without one has none.
+    in property <[[MenuRow]]> submenus;
     in property <int> current;
     /// The row whose submenu is open, drawn as chosen while the pointer is away.
     in property <int> holding: -1;
@@ -463,34 +505,46 @@ component MenuRows inherits VerticalLayout {
             Rectangle { height: 1px; background: Theme.line; }
         }
         MenuItem {
-            text: row.text; icon: row.icon; danger: row.danger;
+            text: row.text; subtitle: row.subtitle; icon: row.icon; danger: row.danger;
+            checkbox: row.checkbox; checked: row.checked;
+            submenu: root.submenus[index].length > 0;
             highlighted: root.current == index || root.holding == index;
             hovered => { root.hovered(index); }
             clicked => { root.clicked(index); }
             changed highlighted => { if self.highlighted { root.lit(index, self.absolute-position.y); } }
-            if row.submenu: Image {
-                x: parent.width - self.width - 8px; width: 16px; height: parent.height; image-fit: contain;
-                source: @image-url("icons/chevron-right.svg"); colorize: Theme.muted;
-            }
         }
     }
 }
 
-// A menu of choices, such as a right click opens, and the submenu one of its
-// rows may open beside it, to its right or with `flip` its left. It takes the
-// keyboard: Up and Down (or Tab) move through the choices, wrapping, Home and
-// End go to the ends, Enter or Space chooses, Right opens the submenu and
-// Left leaves it, and Escape closes the submenu, then the menu.
+// A menu of choices, such as a right click opens, and the submenus its rows
+// may open beside it, to its right or with `flip` its left. Each fits its
+// rows' text, within limits. It takes the keyboard: Up and Down (or Tab)
+// move through the choices, wrapping, Home and End go to the ends, Enter or
+// Space chooses, Right opens a row's submenu and Left leaves it, and Escape
+// closes the submenu, then the menu. A checkbox row reports `toggled`
+// rather than `chose`, and the menu stays open.
 export component ContextMenu inherits Rectangle {
     in property <[MenuRow]> rows;
-    in property <[MenuRow]> subrows;
-    in property <bool> flip;
-    /// The menu's and the submenu's widths; the component spans both.
-    in property <length> menu-width: 200px;
-    in property <length> submenu-width: 220px;
+    /// Each row's submenu, by the row's index: empty for a row without one,
+    /// and empty altogether when no row has one.
+    in property <[[MenuRow]]> submenus;
+    /// The room right of where the menu opens; submenus that wouldn't fit
+    /// there open on its left.
+    in property <length> room: 100000px;
+    // A menu and a submenu are as wide as their rows, within these.
+    property <length> narrowest: 188px;
+    property <length> widest: 320px;
+    out property <length> menu-width: max(root.narrowest, min(root.widest, main.preferred-width));
+    property <length> submenu-width: max(root.narrowest, min(root.widest, sub.preferred-width));
+    out property <bool> has-submenus: root.submenus.length > 0;
+    // The component spans the menu and, with submenus, room for the widest
+    // beside it, so a submenu opening moves nothing.
+    out property <length> content-width: root.menu-width + (root.has-submenus ? 4px + root.widest : 0px);
+    out property <bool> flip: root.has-submenus && root.content-width > root.room;
     // The submenu stays within the menu's height, so opening it moves nothing.
-    out property <length> content-height: max(main.preferred-height, root.subrows.length > 0 ? sub.preferred-height : 0px);
+    out property <length> content-height: max(main.preferred-height, root.sub-open ? sub.preferred-height : 0px);
     callback chose(string);
+    callback toggled(string);
     callback close;
     property <int> current: -1;
     // The submenu: whether it's open, how far down, and its current choice,
@@ -498,8 +552,9 @@ export component ContextMenu inherits Rectangle {
     property <bool> sub-open;
     property <length> sub-y;
     property <int> sub-current: -1;
-    // The row with the submenu, when there is one.
+    // The row whose submenu shows, and its rows.
     property <int> sub-row: -1;
+    property <[MenuRow]> subrows: root.sub-row >= 0 ? root.submenus[root.sub-row] : [];
     // The row last made current, and how far down the menu it is.
     property <int> lit-row: -1;
     property <length> lit-y;
@@ -512,19 +567,19 @@ export component ContextMenu inherits Rectangle {
             ? (by > 0 ? 0 : root.rows.length - 1)
             : Math.mod(root.current + by, root.rows.length);
     }
-    // The submenu lines up with its row; the row may report where it is
+    pure function has-submenu(index: int) -> bool {
+        return root.submenus[index].length > 0;
+    }
+    // A submenu lines up with its row; the row may report where it is
     // just before or just after it opens.
     function open-submenu(index: int) {
         root.sub-row = index;
+        root.sub-current = -1;
         if root.lit-row == index { root.sub-y = root.lit-y; }
         root.sub-open = true;
     }
-    function pick(index: int) {
-        if root.rows[index].submenu {
-            root.open-submenu(index);
-        } else {
-            root.chose(root.rows[index].id);
-        }
+    function pick(row: MenuRow) {
+        if row.checkbox { root.toggled(row.id); } else { root.chose(row.id); }
     }
     // Clicks between the menu and the submenu close it, as clicks outside do.
     TouchArea { clicked => { root.close(); } }
@@ -540,13 +595,13 @@ export component ContextMenu inherits Rectangle {
             } else if event.text == Key.End {
                 if root.sub-current >= 0 { root.sub-current = root.subrows.length - 1; } else { root.current = root.rows.length - 1; }
             } else if (event.text == Key.Return || event.text == " ") && root.sub-current >= 0 {
-                root.chose(root.subrows[root.sub-current].id);
+                root.pick(root.subrows[root.sub-current]);
             } else if (event.text == Key.Return || event.text == " " || (event.text == (root.flip ? Key.LeftArrow : Key.RightArrow))) && root.current >= 0 && root.sub-current < 0 {
-                if root.rows[root.current].submenu {
+                if root.has-submenu(root.current) {
                     root.open-submenu(root.current);
                     root.sub-current = 0;
                 } else if event.text == Key.Return || event.text == " " {
-                    root.chose(root.rows[root.current].id);
+                    root.pick(root.rows[root.current]);
                 } else {
                     return reject;
                 }
@@ -561,24 +616,31 @@ export component ContextMenu inherits Rectangle {
             return accept;
         }
         Rectangle {
-            x: root.flip ? root.submenu-width + 4px : 0px; y: 0px;
+            x: root.flip ? root.content-width - root.menu-width : 0px; y: 0px;
             width: root.menu-width; height: main.preferred-height;
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
             TouchArea { }
             main := MenuRows {
-                rows: root.rows; current: root.sub-current >= 0 ? -1 : root.current;
+                rows: root.rows; submenus: root.submenus;
+                current: root.sub-current >= 0 ? -1 : root.current;
                 holding: root.sub-open ? root.sub-row : -1;
                 hovered(index) => {
                     root.current = index;
                     root.sub-current = -1;
-                    if root.rows[index].submenu {
+                    if root.has-submenu(index) {
                         root.open-submenu(index);
                     } else {
                         root.sub-open = false;
                     }
                 }
-                clicked(index) => { root.pick(index); }
+                clicked(index) => {
+                    if root.has-submenu(index) {
+                        root.open-submenu(index);
+                    } else {
+                        root.pick(root.rows[index]);
+                    }
+                }
                 lit(index, y) => {
                     root.lit-row = index;
                     root.lit-y = max(0px, y - root.absolute-position.y - 6px);
@@ -588,7 +650,7 @@ export component ContextMenu inherits Rectangle {
         }
         Rectangle {
             visible: root.sub-open;
-            x: root.flip ? 0px : root.menu-width + 4px;
+            x: root.flip ? root.widest - root.submenu-width : root.menu-width + 4px;
             y: max(0px, min(root.sub-y, root.content-height - self.height));
             width: root.submenu-width; height: sub.preferred-height;
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
@@ -597,7 +659,7 @@ export component ContextMenu inherits Rectangle {
             sub := MenuRows {
                 rows: root.subrows; current: root.sub-current;
                 hovered(index) => { root.sub-current = index; }
-                clicked(index) => { root.chose(root.subrows[index].id); }
+                clicked(index) => { root.pick(root.subrows[index]); }
             }
         }
     }

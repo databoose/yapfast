@@ -178,9 +178,18 @@ The window follows Discord's arrangement:
   Discord DM's menu also has Add note, Add or Change friend nickname, Close DM,
   Remove friend, Ignore and Block, each undone by its opposite, and Mute, whose
   submenu mutes for 15 minutes, 1, 3, 8 or 24 hours, or until unmuted. A muted
-  DM shows faint. Removing a friend and blocking ask first. Matrix links go
-  through matrix.to. Arrow keys, Home and End move through the menu, Right
-  opens a submenu and Left leaves it, Enter chooses, and Escape closes it.
+  DM or Discord channel shows faint, and a Discord server set to hide muted
+  channels leaves them out, but for the open one and those that mention you.
+  Removing a friend and blocking ask first. Matrix links go through
+  matrix.to. Arrow keys, Home and End move through the menu, Right opens a
+  submenu and Left leaves it, Enter chooses, and Escape closes it.
+- Menus (`ContextMenu` in `ui/controls.slint`) are as wide as their rows'
+  text, from 188 to 320px, and each row may open a submenu of its own,
+  beside the menu, or on its left near the window's right edge. A row can
+  carry a second line under its text, such as the level a notification
+  submenu has chosen, a check in place of its icon for the current choice,
+  or a box to tick. Ticking leaves the menu open. `src/ui/menus.rs` builds
+  a menu's rows with each row's submenu, and ticks a box when it's chosen.
 - A dock across the rail and sidebar: the voice panel, then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
   audio devices, message text size, clock and link previews, notifications,
