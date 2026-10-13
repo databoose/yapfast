@@ -430,6 +430,40 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     row
 }
 
+/// A pinned message or a search result as its card shows it, sent at a
+/// time on the chosen clock, its spoilers hidden and its files named.
+pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
+    let styled = if message.formatted {
+        let body = spoiler::hide(&custom_emoji::text(&message.body, &message.emoji));
+        markdown(&mention::linked(&body, &message.mentions))
+    } else {
+        plain_with_links(&message.body)
+            .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
+    };
+    let time = talk_core::clock::time_on(message.timestamp, twelve_hour);
+    let files: Vec<&str> = message
+        .attachments
+        .iter()
+        .map(|attachment| attachment.name.as_str())
+        .collect();
+    FoundRow {
+        item: message.item.clone().into(),
+        author: message.author.clone().into(),
+        initial: initial(&message.author),
+        tint: tint(&message.author),
+        picture_url: message.avatar.clone().unwrap_or_default().into(),
+        color: role_color(message.color),
+        has_color: message.color.is_some(),
+        when: match day(message.timestamp) {
+            day if day.is_empty() => time.into(),
+            day => format!("{day} {time}").into(),
+        },
+        styled,
+        has_body: !message.body.trim().is_empty(),
+        files: files.join(", ").into(),
+    }
+}
+
 /// Whether a message shows collapsed, being from someone blocked.
 pub(super) fn collapsed(message: &ChatMessage, revealed: &HashSet<String>) -> bool {
     message.blocked && !revealed.contains(&format!("{}/blocked", message.item))

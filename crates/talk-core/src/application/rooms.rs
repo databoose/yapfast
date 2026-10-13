@@ -473,6 +473,9 @@ impl Application {
         self.state.mention_groups.clear();
         self.state.found_members.clear();
         self.state.role = None;
+        self.state.pins = None;
+        self.state.search = None;
+        self.state.add_people = None;
         self.searched.clear();
         if self.state.preview {
             if !voice_room {

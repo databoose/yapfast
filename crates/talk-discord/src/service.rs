@@ -149,6 +149,21 @@ pub struct Person {
     pub friend: bool,
 }
 
+/// Messages a search of a DM found: one page, the newest first, and how many
+/// it found in all.
+#[derive(Debug, Default)]
+pub struct Found {
+    pub total: u32,
+    pub messages: Vec<Message>,
+}
+
+/// How many times a search asks again while Discord indexes the DM, and the
+/// longest it waits between.
+const SEARCH_TRIES: u32 = 5;
+const SEARCH_WAIT: Duration = Duration::from_secs(5);
+/// Discord's answer to a search of a DM it hasn't indexed yet.
+const INDEX_NOT_READY: u64 = 110000;
+
 /// What the account looks like now. [`crate::cache`] keeps all but the live
 /// parts, the connection and voice, to show on the next start.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -474,6 +489,64 @@ impl Discord {
                 .min(),
             full: values.len() >= PAGE,
         })
+    }
+
+    /// Messages from DMs, whose authors' names they carry.
+    fn learn_private(&self, values: &[serde_json::Value]) -> Vec<Message> {
+        let mut names = self.write_names();
+        for value in values {
+            names.learn_message(None, value);
+        }
+        values.iter().filter_map(message::parse).collect()
+    }
+
+    /// A DM's pinned messages, the latest pinned first.
+    pub async fn pins(&self, channel: &str) -> Result<Vec<Message>> {
+        let values = self.api.pins(channel).await?;
+        Ok(self.learn_private(&values))
+    }
+
+    /// A page of a DM's messages that contain `query`, from the `offset`th
+    /// found. Discord indexes a DM the first time it's searched, and asks
+    /// to be asked again until it has.
+    pub async fn search(&self, channel: &str, query: &str, offset: u32) -> Result<Found> {
+        for _ in 0..SEARCH_TRIES {
+            let mut answer = self.api.search(channel, query, offset).await?;
+            if let serde_json::Value::Array(pages) = answer["messages"].take() {
+                // Each result came with the messages around it, which Discord
+                // no longer sends; the first is the one found.
+                let values: Vec<_> = pages
+                    .into_iter()
+                    .filter_map(|mut page| page.get_mut(0).map(serde_json::Value::take))
+                    .collect();
+                return Ok(Found {
+                    total: answer["total_results"].as_u64().unwrap_or_default() as u32,
+                    messages: self.learn_private(&values),
+                });
+            }
+            if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
+                break;
+            }
+            let wait = answer["retry_after"].as_f64().unwrap_or(1.0).max(0.5);
+            tokio::time::sleep(Duration::from_secs_f64(wait).min(SEARCH_WAIT)).await;
+        }
+        Err(anyhow!(
+            "Discord is still getting this conversation ready to search. Try again in a moment."
+        ))
+    }
+
+    /// Makes a group DM with `users`; returns its channel id. The DM list
+    /// has it once Discord's CHANNEL_CREATE arrives.
+    pub async fn create_group(&self, users: &[String]) -> Result<String> {
+        self.api.create_group(users).await
+    }
+
+    /// Adds `users` to a group DM, one at a time, as Discord's client does.
+    pub async fn add_to_group(&self, channel: &str, users: &[String]) -> Result<()> {
+        for user in users {
+            self.api.add_recipient(channel, user).await?;
+        }
+        Ok(())
     }
 
     /// Sends a message, or a reply to `reply` in the same channel, with a

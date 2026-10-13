@@ -30,6 +30,7 @@ import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, Ser
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
+import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel } from "header.slint";
 
 // Rust sees these, besides TalkWindow.
 export { Badges } from "theme.slint";
@@ -41,6 +42,7 @@ export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, E
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData } from "people.slint";
 export { FriendRequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow } from "dialogs.slint";
+export { FoundRow, PickRow } from "header.slint";
 
 export component TalkWindow inherits Window {
     title: "Talk";
@@ -408,6 +410,42 @@ export component TalkWindow inherits Window {
     /// Someone is in the open DM's call, so the header joins rather than starts it.
     in property <bool> call-going;
     callback start-call;
+    /// The open DM's header lists its pinned messages, searches it, and adds
+    /// friends to it.
+    in property <bool> can-pin;
+    in property <bool> can-search;
+    in property <bool> can-add-people;
+    /// Its pinned messages, under the pin button, or what to say instead.
+    in property <bool> pins-open;
+    in property <[FoundRow]> pins;
+    in property <string> pins-note;
+    callback show-pins(bool);
+    /// The header's search, and what it found, beside the conversation. An
+    /// empty search ends it.
+    in-out property <string> search-text;
+    in property <bool> search-open;
+    in property <[FoundRow]> search-results;
+    in property <string> search-heading;
+    in property <string> search-note;
+    in property <bool> search-more;
+    in property <bool> search-loading;
+    callback search(string);
+    callback more-results;
+    /// The friends picker under the add button: who it offers, how many
+    /// more the group can take, and how many are chosen.
+    in property <bool> add-people-open;
+    in-out property <string> add-people-query;
+    in property <[PickRow]> add-people;
+    in property <int> add-people-room;
+    in property <int> add-people-chosen;
+    in property <bool> add-people-one-to-one;
+    in property <bool> add-people-adding;
+    in property <string> add-people-note;
+    callback open-add-people;
+    callback add-people-search;
+    callback choose-person(string);
+    callback confirm-add-people;
+    callback close-add-people;
     /// The open DM's call shows above its messages: this account is in it, or
     /// others are, or it rings this account.
     in property <bool> call-shown;
@@ -672,10 +710,15 @@ export component TalkWindow inherits Window {
     changed active-item => { Tip.text = ""; }
 
     // The member list is a second sidebar, on the right of the conversation.
-    property <bool> members-docked: root.members-available && root.member-list;
+    property <bool> members-docked: root.members-available && root.member-list && !root.search-open;
     // Rows remade under the pointer show their tooltip again; it goes with the screen.
     changed friends-open => { Tip.text = ""; }
-    property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown;
+    property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown && !root.search-open;
+    // Search results take the place of the member list or the profile.
+    property <length> docked-width: root.search-open ? 420px : (root.members-docked ? 240px : 0px) + (root.profile-docked ? 300px : 0px);
+    // The pin and add buttons open their popovers under themselves.
+    property <length> popover-x;
+    property <length> popover-y;
     function toggle-profile-panel() {
         root.profile-panel = !root.profile-panel;
         root.profile-panel-toggled(root.profile-panel);
@@ -1152,6 +1195,31 @@ export component TalkWindow inherits Window {
                                 clicked => { root.start-call(); }
                             }
                         }
+                        if root.can-pin: Middle {
+                            IconButton {
+                                icon: @image-url("icons/pin.svg"); label: "Pinned messages";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                tint: root.pins-open ? Theme.text : Theme.secondary;
+                                clicked => {
+                                    root.popover-x = self.absolute-position.x + self.width;
+                                    root.popover-y = self.absolute-position.y + self.height;
+                                    root.show-pins(!root.pins-open);
+                                }
+                            }
+                        }
+                        if root.can-add-people: Middle {
+                            IconButton {
+                                icon: @image-url("icons/user-plus.svg");
+                                label: root.add-people-one-to-one ? "Add friends to DM" : "Add friends to the group";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                tint: root.add-people-open ? Theme.text : Theme.secondary;
+                                clicked => {
+                                    root.popover-x = self.absolute-position.x + self.width;
+                                    root.popover-y = self.absolute-position.y + self.height;
+                                    if root.add-people-open { root.close-add-people(); } else { root.open-add-people(); }
+                                }
+                            }
+                        }
                         if root.members-available: Middle {
                             HeaderToggle {
                                 icon: @image-url("icons/users.svg"); text: root.members; open: root.member-list;
@@ -1164,6 +1232,14 @@ export component TalkWindow inherits Window {
                                 icon: @image-url("icons/user.svg"); label: root.profile-panel ? "Hide profile" : "Show profile";
                                 size: 32px; glyph: 20px; tip-side: 2;
                                 clicked => { root.toggle-profile-panel(); }
+                            }
+                        }
+                        if root.can-search: Middle {
+                            HeaderSearch {
+                                text <=> root.search-text;
+                                placeholder: "Search " + root.room-name;
+                                search(text) => { root.search(text); }
+                                clear => { root.search-text = ""; root.search(""); }
                             }
                         }
                         if !root.members-available && !root.profile-available && root.members != "": HorizontalLayout {
@@ -1771,6 +1847,15 @@ export component TalkWindow inherits Window {
                             if root.composer-hint == "": Rectangle { height: 16px; }
                         }
                     }
+                    if root.search-open: SearchPanel {
+                        width: 420px;
+                        results: root.search-results; heading: root.search-heading; note: root.search-note;
+                        more: root.search-more; loading: root.search-loading;
+                        jump(item) => { root.jump-to(item); }
+                        open-link(link) => { root.open-link(link); }
+                        more-results => { root.more-results(); }
+                        close => { root.search-text = ""; root.search(""); }
+                    }
                     if root.members-docked: MemberPanel {
                         width: 240px; rows: root.roster; note: root.roster-note; selected: root.profile-member;
                         open-profile(id, y) => { root.profile-y = y; root.profile-at-pointer = false; root.show-profile(id); }
@@ -1808,7 +1893,7 @@ export component TalkWindow inherits Window {
         mouse-cursor: ew-resize;
         moved => {
             if self.pressed {
-                root.sidebar-width = max(180px, min(380px, root.width - 72px - 420px - (root.members-docked ? 240px : 0px) - (root.profile-docked ? 300px : 0px), root.sidebar-shown + self.mouse-x - self.pressed-x));
+                root.sidebar-width = max(180px, min(380px, root.width - 72px - 420px - root.docked-width, root.sidebar-shown + self.mouse-x - self.pressed-x));
             }
         }
         pointer-event(event) => {
@@ -1914,6 +1999,44 @@ export component TalkWindow inherits Window {
             unlink-discord => { root.unlink-discord(); }
             show-hidden-channels-toggled(shown) => { root.show-hidden-channels = shown; root.show-hidden-channels-toggled(shown); }
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
+        }
+    }
+    // The open DM's pinned messages, under the pin button. Jumping to one
+    // closes them, as does Escape or a click outside.
+    if root.pins-open: Rectangle {
+        TouchArea { clicked => { root.show-pins(false); } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.show-pins(false); return accept; }
+                return reject;
+            }
+        }
+        PinsPopover {
+            x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
+            y: root.popover-y + 6px;
+            // A note alone needs little room; pins get the window's height.
+            height: min(root.pins-note != "" ? 220px : 560px, root.height - self.y - 16px);
+            pins: root.pins; note: root.pins-note;
+            jump(item) => { root.show-pins(false); root.jump-to(item); }
+            open-link(link) => { root.open-link(link); }
+            close => { root.show-pins(false); }
+        }
+    }
+    // Friends to add to the open DM, under the add button.
+    if root.add-people-open: Rectangle {
+        TouchArea { clicked => { root.close-add-people(); } }
+        AddPeoplePopover {
+            x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
+            y: root.popover-y + 6px;
+            height: min(520px, root.height - self.y - 16px);
+            query <=> root.add-people-query; people: root.add-people;
+            room: root.add-people-room; chosen: root.add-people-chosen;
+            one-to-one: root.add-people-one-to-one; adding: root.add-people-adding; note: root.add-people-note;
+            query-edited => { root.add-people-search(); }
+            choose(id) => { root.choose-person(id); }
+            add => { root.confirm-add-people(); }
+            close => { root.close-add-people(); }
         }
     }
     // A role mentioned in a message: who Talk knows has it. Clicking someone opens

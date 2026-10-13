@@ -56,6 +56,54 @@ pub(super) fn notification(
     }
 }
 
+/// A DM's message as a pinned message or a search result shows it: who
+/// wrote it, when, and what it says. Its files are named but not
+/// downloaded; jumping to it shows them in the timeline.
+pub(super) fn found(discord: &Discord, message: &Message) -> ChatMessage {
+    let private = talk_discord::ready::PRIVATE;
+    let author = discord
+        .name(private, &message.author_id)
+        .unwrap_or_else(|| message.author.clone());
+    let ordinary = message.system.is_none();
+    let timestamp = message.timestamp();
+    ChatMessage {
+        id: format!("d:{}", message.id),
+        item: format!("d:{}", message.id),
+        sender: discord::sender_id(&message.author_id),
+        spoilers: true,
+        avatar: Some(discord.avatar(None, &message.author_id)),
+        bot: message.bot,
+        body: match &message.system {
+            Some(system) => format!("{author} {system}"),
+            None => discord.render(None, &message.content),
+        },
+        author,
+        formatted: ordinary,
+        time: crate::clock::time(timestamp),
+        timestamp,
+        edited: message.edited,
+        attachments: message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.shown == Shown::Message)
+            .map(|attachment| Attachment {
+                name: attachment.name.clone(),
+                size: attachment.size,
+                image: attachment.image,
+                dimensions: attachment.dimensions,
+                preview: None,
+                preview_failed: false,
+                placement: Placement::Message,
+                spoiler: attachment.spoiler,
+                video: attachment.video_url.is_some(),
+            })
+            .collect(),
+        mentions: mentions(discord, None, &message.content),
+        emoji: custom_emoji(message),
+        ..Default::default()
+    }
+}
+
 /// The custom emoji in a message's text and reactions.
 pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
     let mut found: Vec<CustomEmoji> = talk_discord::message::custom_emoji(&message.content)

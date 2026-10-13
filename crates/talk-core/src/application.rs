@@ -19,6 +19,7 @@ use crate::{
 mod calls;
 mod compose;
 mod discord_account;
+mod header;
 mod messages;
 mod preview;
 mod profiles;
@@ -150,6 +151,52 @@ impl NewDm {
         self.discord.iter().chain(&self.matrix)
     }
 }
+
+/// A DM's pinned messages, while their list is open.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pins {
+    pub room: String,
+    /// The latest pinned first; `None` while they're on their way.
+    pub messages: Option<Result<Vec<ChatMessage>, String>>,
+}
+
+/// A search of a DM's messages, while its results show.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Search {
+    pub room: String,
+    pub query: String,
+    /// How many messages it found in all, of which `results` are loaded,
+    /// the newest first.
+    pub total: u32,
+    pub results: Vec<ChatMessage>,
+    /// Where the next page of results starts among them all.
+    pub next: u32,
+    /// A page of results is on its way.
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+impl Search {
+    /// Found messages are still to load.
+    pub fn more(&self) -> bool {
+        self.next < self.total
+    }
+}
+
+/// Adding friends to a DM, while the picker is open: to a one-to-one DM
+/// it makes a new group, with the other person too.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddPeople {
+    pub room: String,
+    pub query: String,
+    /// The friends chosen, by user id, in the order chosen.
+    pub chosen: Vec<String>,
+    pub adding: bool,
+    pub error: Option<String>,
+}
+
+/// The most people in a Discord group DM, this account included.
+pub const GROUP_LIMIT: usize = 10;
 
 /// A message being forwarded, and the conversations it went to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -312,6 +359,11 @@ pub struct AppState {
     /// The selected room's message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
     pub new_dm: Option<NewDm>,
+    /// The selected DM's pinned messages, a search of it, and adding friends
+    /// to it, each while it's open.
+    pub pins: Option<Pins>,
+    pub search: Option<Search>,
+    pub add_people: Option<AddPeople>,
     /// The image viewer, open over the selected room.
     pub viewer: Option<Viewer>,
     /// The video playing in the selected room.
@@ -640,6 +692,58 @@ impl AppState {
         }
     }
 
+    /// The selected conversation, when it's a DM or group DM whose network
+    /// lets it do what `can` asks, and not a message request.
+    pub fn dm_that(
+        &self,
+        can: impl Fn(&crate::network::Capabilities) -> bool,
+    ) -> Option<&ChatRoom> {
+        self.selected_room()
+            .filter(|room| room.direct && !room.request && can(&room.capabilities))
+    }
+
+    /// Who is in the selected DM besides this account, as far as Talk knows:
+    /// the other person, or a group's members once they're listed.
+    fn dm_people(&self) -> HashSet<&str> {
+        let room = self.selected_room();
+        room.and_then(|room| room.person.as_deref())
+            .into_iter()
+            .chain(
+                self.members
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .map(|member| member.id.as_str()),
+            )
+            .collect()
+    }
+
+    /// How many more people the friends picker may choose: a group holds
+    /// [`GROUP_LIMIT`].
+    pub fn group_room(&self) -> usize {
+        let members = self.selected_room().map_or(0, |room| room.members.max(2));
+        GROUP_LIMIT.saturating_sub(members as usize)
+    }
+
+    /// The friends the picker offers: those not in the DM already, whose
+    /// names start with its query, or a word of them.
+    pub fn addable_friends(&self) -> Vec<&chat::Friend> {
+        let Some(picker) = &self.add_people else {
+            return vec![];
+        };
+        let query = picker.query.trim().to_lowercase();
+        let present = self.dm_people();
+        self.friends
+            .iter()
+            .filter(|friend| !present.contains(friend.id.as_str()))
+            .filter(|friend| {
+                let name = friend.name.to_lowercase();
+                name.starts_with(&query)
+                    || name.split_whitespace().any(|word| word.starts_with(&query))
+            })
+            .collect()
+    }
+
     pub fn can_join_voice(&self, id: &str) -> bool {
         !matches!(self.voice.phase, Phase::Joining | Phase::Leaving)
             && self.rooms.iter().any(|room| {
@@ -792,6 +896,19 @@ pub enum Action {
     SetPinned(Vec<String>),
     /// Close a Discord DM; it comes back when either side writes.
     CloseDm(String),
+    /// Show the selected DM's pinned messages, or stop.
+    ShowPins(bool),
+    /// Search the selected DM's messages; an empty query ends the search.
+    Search(String),
+    /// Load the next page of the search's results.
+    MoreResults,
+    /// Open the picker that adds friends to the selected DM, look among
+    /// them, choose a friend or unchoose them, add those chosen, or close it.
+    OpenAddPeople,
+    AddPeopleQuery(String),
+    ChoosePerson(String),
+    AddPeople,
+    CloseAddPeople,
     /// Mute a Discord DM, or unmute it.
     MuteDm {
         room: String,
@@ -1378,6 +1495,22 @@ impl Application {
                 vec![]
             }
             Action::CloseDm(room) => self.close_dm(room),
+            Action::ShowPins(shown) => self.show_pins(shown),
+            Action::Search(query) => self.search(query),
+            Action::MoreResults => self.more_results(),
+            Action::OpenAddPeople => self.open_add_people(),
+            Action::AddPeopleQuery(query) => {
+                if let Some(picker) = &mut self.state.add_people {
+                    picker.query = query;
+                }
+                vec![]
+            }
+            Action::ChoosePerson(user) => self.choose_person(user),
+            Action::AddPeople => self.add_people(),
+            Action::CloseAddPeople => {
+                self.state.add_people = None;
+                vec![]
+            }
             Action::MuteDm { room, muting } => self.mute_dm(room, muting),
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
@@ -1635,6 +1768,14 @@ impl Application {
                     self.pending_open = Some(room);
                 }
             }
+            Event::Pins { room, result } => self.pins_came(room, result),
+            Event::Found {
+                room,
+                query,
+                offset,
+                result,
+            } => self.found(room, query, offset, result),
+            Event::GroupChanged(result) => self.group_changed(result),
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;

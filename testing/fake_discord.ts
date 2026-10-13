@@ -39,7 +39,12 @@
 // Erin also sent her a friend request; see "relationships" below.
 // POST /_control/call makes Bob call her; see "DM calls" below.
 // Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
-// Carol, whom she has none with yet.
+// Carol, whom she has none with yet, or with several people makes a group DM,
+// and PUT /channels/{id}/recipients/{user} adds someone to a group.
+// GET /channels/{id}/messages/pins lists a DM's pins: Bob's question in his
+// DM and Carol's in the group. GET /channels/{id}/messages/search finds a
+// DM's messages by their text, 25 at a time; the first search of each DM
+// answers 202, as Discord's does while it indexes the DM.
 // POST /_control/typing makes Bob start typing in #general, or with ?dm in
 // his DM; GET /_control/typed lists the channels Alice said she was typing in.
 // GET /_control/acks lists Alice's read acknowledgements, oldest first: each
@@ -738,9 +743,16 @@ for (let n = 0; n < Number(args.dms); n++) {
 privates.set(DM_BOB, { type: 1, recipients: [users.bob] });
 privates.set(WEEKEND, { type: 3, recipients: [users.bob, users.carol], name: "Weekend plans" });
 const DM_START = HISTORY_START + 86_400_000;
-post(WEEKEND, users.carol, "Hike on Saturday?", DM_START);
+const hike = post(WEEKEND, users.carol, "Hike on Saturday?", DM_START);
 post(WEEKEND, users.bob, "I'm in", DM_START + 60_000);
-post(DM_BOB, users.bob, "Did you see the trip notes?", DM_START + 120_000);
+const tripNotes = post(DM_BOB, users.bob, "Did you see the trip notes?", DM_START + 120_000);
+// Pinned messages by channel, the latest pinned first.
+const pins = new Map<string, { message: Message; at: number }[]>([
+  [DM_BOB, [{ message: tripNotes, at: DM_START + 130_000 }]],
+  [WEEKEND, [{ message: hike, at: DM_START + 10_000 }]],
+]);
+// DMs searched once, which Discord has indexed.
+const indexed = new Set<string>();
 const readBob = post(DM_BOB, users.alice, "Yes, bringing snacks", DM_START + 180_000);
 post(DM_BOB, users.bob, "Great", DM_START + 240_000);
 post(DM_BOB, users.bob, "See you at nine", DM_START + 300_000);
@@ -2162,9 +2174,20 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(wireProfile(user, url.searchParams.get("guild_id")));
   }
 
-  // Opening a DM finds the one Alice has with them, or starts one.
+  // Opening a DM finds the one Alice has with them, or starts one; with
+  // several people, it makes a group.
   if (method === "POST" && path === "/users/@me/channels") {
     const body: any = await req.json();
+    if ((body.recipients?.length ?? 0) > 1) {
+      const people = (body.recipients as unknown[]).map((id) => userById.get(String(id)));
+      if (people.some((user) => !user) || people.length > 9) return json({ message: "Invalid Recipient(s)", code: 50033 }, 400);
+      const id = snowflake(Date.now(), 78);
+      const channel: Private = { type: 3, recipients: people as User[] };
+      privates.set(id, channel);
+      messages.set(id, []);
+      dispatch("CHANNEL_CREATE", wirePrivate(id, channel, "objects"));
+      return json(wirePrivate(id, channel, "objects"));
+    }
     const user = userById.get(String(body.recipients?.[0]));
     if (!user || (body.recipients?.length ?? 0) !== 1) return json({ message: "Invalid Recipient(s)", code: 50033 }, 400);
     const known = [...privates].find(([, channel]) => channel.type === 1 && channel.recipients[0] === user);
@@ -2300,6 +2323,44 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
     acks.push(reads.map((read) => read.channel_id));
     return empty();
+  }
+
+  // Adding someone to a group DM.
+  if (method === "PUT" && (m = path.match(/^\/channels\/(\d+)\/recipients\/(\d+)$/))) {
+    const channel = privates.get(m[1]!);
+    const user = userById.get(m[2]!);
+    if (channel?.type !== 3) return notFound("Unknown Channel", 10003);
+    if (!user) return notFound("Unknown User", 10013);
+    if (channel.recipients.length >= 9) return json({ message: "Maximum number of recipients reached (10)", code: 30014 }, 400);
+    if (!channel.recipients.includes(user)) {
+      channel.recipients.push(user);
+      dispatch("CHANNEL_RECIPIENT_ADD", { channel_id: m[1]!, user: wireUser(user) });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/messages\/pins$/))) {
+    if (!messages.has(m[1]!)) return notFound("Unknown Channel", 10003);
+    const items = (pins.get(m[1]!) ?? []).map((pin) => ({ pinned_at: iso(pin.at), message: wireMessage(pin.message, origin) }));
+    return json({ items, has_more: false });
+  }
+
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/messages\/search$/))) {
+    const list = messages.get(m[1]!);
+    if (!list || !privates.has(m[1]!)) return notFound("Unknown Channel", 10003);
+    if (!indexed.has(m[1]!)) {
+      indexed.add(m[1]!);
+      return json({ message: "Index not yet available. Try again later", code: 110000, documents_indexed: 0, retry_after: 0 }, 202);
+    }
+    const content = (url.searchParams.get("content") ?? "").toLowerCase();
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    const found = list.filter((message) => message.content.toLowerCase().includes(content)).reverse();
+    return json({
+      analytics_id: "fake",
+      doing_deep_historical_index: false,
+      total_results: found.length,
+      messages: found.slice(offset, offset + 25).map((message) => [wireMessage(message, origin)]),
+    });
   }
 
   // Accepting a message request makes it a DM; ignoring it closes the DM.

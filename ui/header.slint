@@ -1,0 +1,354 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Middle, Label } from "theme.slint";
+import { ActionButton, IconButton, Avatar } from "controls.slint";
+import { StatusDot } from "rail.slint";
+
+/// A pinned message or a search result: who wrote it, when, and what it says.
+export struct FoundRow {
+    item: string, author: string, initial: string, tint: color, picture-url: string,
+    /// The author's Discord role colour, when they have one.
+    color: color, has-color: bool,
+    /// The day and time it was sent.
+    when: string,
+    styled: styled-text, has-body: bool,
+    /// Its files, named, when it has any.
+    files: string,
+}
+
+/// A friend the picker can add to a DM.
+export struct PickRow {
+    id: string, name: string, initial: string, tint: color, picture-url: string,
+    /// As in MemberRow: "online", "mobile", "idle", "dnd" or "offline".
+    presence: string,
+    chosen: bool,
+}
+
+// The conversation's search, in its header: Enter searches, and the cross,
+// or Escape, ends the search.
+export component HeaderSearch inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    callback search(string);
+    callback clear;
+    width: input.has-focus || root.text != "" ? 240px : 180px;
+    animate width { duration: Theme.quick; }
+    height: 28px; border-radius: 6px;
+    background: Theme.sunken;
+    border-width: input.has-focus ? 1px : 0px;
+    border-color: Theme.accent.with-alpha(0.8);
+    Text {
+        x: 8px; width: root.width - 36px; height: root.height;
+        visible: root.text == "";
+        text: root.placeholder; color: Theme.muted; font-size: 14px;
+        vertical-alignment: center; overflow: elide;
+    }
+    Rectangle {
+        x: 8px; width: root.width - 36px; height: root.height; clip: true;
+        input := TextInput {
+            property <length> scroll: 0px;
+            x: min(0px, max(parent.width - self.width, self.scroll));
+            width: max(parent.width, self.preferred-width + self.text-cursor-width);
+            height: parent.height;
+            text <=> root.text;
+            single-line: true; vertical-alignment: center;
+            font-size: 14px; color: Theme.text;
+            selection-background-color: Theme.accent.with-alpha(0.35);
+            selection-foreground-color: Theme.text;
+            accessible-label: root.placeholder;
+            accepted => { root.search(self.text); }
+            key-pressed(event) => {
+                if event.text == Key.Escape && root.text != "" { root.clear(); return accept; }
+                return reject;
+            }
+            cursor-position-changed(position) => {
+                if position.x + self.scroll < 0px {
+                    self.scroll = -position.x;
+                } else if position.x + self.scroll > parent.width - self.text-cursor-width {
+                    self.scroll = parent.width - self.text-cursor-width - position.x;
+                }
+            }
+        }
+    }
+    if root.text == "": Image {
+        x: root.width - 24px; width: 16px; height: 16px;
+        source: @image-url("icons/search.svg"); colorize: Theme.muted;
+    }
+    if root.text != "": IconButton {
+        x: root.width - 26px; size: 24px; glyph: 14px; tip-side: 2;
+        icon: @image-url("icons/x.svg"); label: "Clear search";
+        clicked => { root.clear(); }
+    }
+}
+
+// A message found: its author, when, and what it says. Clicking it, or its
+// Jump button, shows it in the conversation.
+export component FoundCard inherits Rectangle {
+    in property <FoundRow> found;
+    callback jump;
+    callback open-link(string);
+    min-height: content.preferred-height;
+    border-radius: 8px;
+    background: pointer.has-hover ? Theme.hover : Theme.chat;
+    border-width: 1px; border-color: Theme.line;
+    accessible-role: button;
+    accessible-label: root.found.author + ", " + root.found.when + ", jump to the message";
+    accessible-action-default => { root.jump(); }
+    pointer := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.jump(); }
+        content := HorizontalLayout {
+            padding: 12px; spacing: 12px;
+            VerticalLayout {
+                alignment: start;
+                Avatar { size: 36px; initial: root.found.initial; tint: root.found.tint; picture-url: root.found.picture-url; }
+            }
+            VerticalLayout {
+                spacing: 2px; horizontal-stretch: 1;
+                HorizontalLayout {
+                    spacing: 8px; padding-right: 52px;
+                    Text {
+                        text: root.found.author; color: root.found.has-color ? root.found.color : Theme.text;
+                        font-size: 15px; font-weight: 600; overflow: elide; horizontal-stretch: 0;
+                    }
+                    Text { text: root.found.when; color: Theme.muted; font-size: 12px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                }
+                if root.found.has-body: StyledText {
+                    text: root.found.styled; default-color: Theme.text; link-color: Theme.link;
+                    default-font-size: 15px; max-lines: 8;
+                    link-clicked(link) => { root.open-link(link); }
+                }
+                if root.found.files != "": HorizontalLayout {
+                    spacing: 6px;
+                    Middle { Image { source: @image-url("icons/file.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
+                    Text { text: root.found.files; color: Theme.muted; font-size: 13px; overflow: elide; horizontal-stretch: 1; }
+                }
+            }
+        }
+        if pointer.has-hover: ActionButton {
+            x: parent.width - self.width - 8px; y: 8px;
+            width: self.min-width; height: self.min-height;
+            text: "Jump"; label: "Jump to the message"; small: true;
+            clicked => { root.jump(); }
+        }
+    }
+}
+
+// A popover's frame, under the header button that opened it: a heading,
+// then what it holds. Clicks inside stay inside.
+component Popover inherits Rectangle {
+    in property <image> icon;
+    in property <string> heading;
+    in property <string> detail;
+    callback close;
+    background: Theme.sidebar;
+    border-color: Theme.edge; border-width: 1px; border-radius: 10px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000066; drop-shadow-offset-y: 8px;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: root.heading;
+    TouchArea { }
+    VerticalLayout {
+        Rectangle {
+            height: root.detail != "" ? 64px : 48px; background: Theme.panel;
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 10px; spacing: 10px;
+                Middle { Image { source: root.icon; width: 20px; height: 20px; colorize: Theme.secondary; } }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 1; spacing: 2px;
+                    Text { text: root.heading; color: Theme.text; font-size: 16px; font-weight: 700; overflow: elide; }
+                    if root.detail != "": Text { text: root.detail; color: Theme.muted; font-size: 13px; overflow: elide; }
+                }
+                Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
+        }
+        @children
+    }
+}
+
+// The DM's pinned messages, the latest pinned first, under the pin button.
+export component PinsPopover inherits Rectangle {
+    in property <[FoundRow]> pins;
+    /// Said instead of the list: while it loads, when it fails, or when
+    /// there are no pins.
+    in property <string> note;
+    callback jump(string);
+    callback open-link(string);
+    callback close;
+    width: 420px;
+    Popover {
+        icon: @image-url("icons/pin.svg");
+        heading: "Pinned Messages";
+        close => { root.close(); }
+        if root.note != "": VerticalLayout {
+            padding: 24px; spacing: 12px; alignment: center;
+            Image { source: @image-url("icons/pin.svg"); height: 40px; image-fit: contain; colorize: Theme.faint; }
+            Text { text: root.note; color: Theme.muted; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; }
+        }
+        if root.note == "": ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 12px; spacing: 8px; alignment: start;
+                for pin in root.pins: FoundCard {
+                    found: pin;
+                    jump => { root.jump(pin.item); }
+                    open-link(link) => { root.open-link(link); }
+                }
+            }
+        }
+    }
+}
+
+// Friends to add to the DM, under the add button: each is chosen with a
+// click, up to the group's limit. Adding to a one-to-one DM makes a group.
+export component AddPeoplePopover inherits Rectangle {
+    in-out property <string> query;
+    in property <[PickRow]> people;
+    /// How many more the group can take.
+    in property <int> room;
+    in property <int> chosen;
+    /// The DM is one-to-one, so adding makes a new group.
+    in property <bool> one-to-one;
+    in property <bool> adding;
+    /// Why adding failed.
+    in property <string> note;
+    callback query-edited;
+    callback choose(string);
+    callback add;
+    callback close;
+    width: 440px;
+    Popover {
+        icon: @image-url("icons/user-plus.svg");
+        heading: "Select Friends";
+        detail: root.room - root.chosen > 0
+            ? "You can add " + (root.room - root.chosen) + " more " + (root.room - root.chosen == 1 ? "friend." : "friends.")
+            : "This group has no room for more.";
+        close => { root.close(); }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 12px; spacing: 8px;
+                Rectangle {
+                    height: 36px; border-radius: 6px; background: Theme.sunken;
+                    border-width: field.has-focus ? 1px : 0px; border-color: Theme.accent.with-alpha(0.8);
+                    Text {
+                        x: 10px; width: parent.width - 20px; visible: root.query == "";
+                        text: "Type the name of a friend"; color: Theme.muted; font-size: 15px; vertical-alignment: center; overflow: elide;
+                    }
+                    field := TextInput {
+                        x: 10px; width: parent.width - 20px;
+                        init => { self.focus(); }
+                        text <=> root.query; single-line: true; vertical-alignment: center;
+                        font-size: 15px; color: Theme.text;
+                        selection-background-color: Theme.accent.with-alpha(0.35);
+                        selection-foreground-color: Theme.text;
+                        accessible-label: "Find a friend";
+                        edited => { root.query-edited(); }
+                        accepted => { if root.chosen > 0 && !root.adding { root.add(); } }
+                    }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 2px; alignment: start;
+                        for person in root.people: Rectangle {
+                            property <bool> can-choose: !root.adding && (person.chosen || root.chosen < root.room);
+                            height: 44px; border-radius: 6px;
+                            background: pick-touch.has-hover && self.can-choose ? Theme.hover : transparent;
+                            opacity: self.can-choose || person.chosen ? 1 : 0.5;
+                            accessible-role: checkbox;
+                            accessible-checked: person.chosen;
+                            accessible-label: person.name;
+                            accessible-action-default => { if self.can-choose { root.choose(person.id); } }
+                            pick-touch := TouchArea {
+                                enabled: parent.can-choose; mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.choose(person.id); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 12px;
+                                Middle {
+                                    Rectangle {
+                                        width: 32px; height: 32px;
+                                        Avatar { size: 32px; initial: person.initial; tint: person.tint; picture-url: person.picture-url; }
+                                        if person.presence != "" && person.presence != "offline": StatusDot { x: 20px; y: 20px; presence: person.presence; ring: Theme.sidebar; }
+                                    }
+                                }
+                                Text { text: person.name; color: Theme.text; font-size: 16px; font-weight: 500; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                                Middle {
+                                    Rectangle {
+                                        width: 22px; height: 22px; border-radius: 6px;
+                                        background: person.chosen ? Theme.accent : transparent;
+                                        border-width: person.chosen ? 0px : 2px; border-color: Theme.faint;
+                                        if person.chosen: Image { source: @image-url("icons/check.svg"); width: 16px; height: 16px; colorize: Theme.on-accent; }
+                                    }
+                                }
+                            }
+                        }
+                        if root.people.length == 0: HorizontalLayout {
+                            padding: 8px;
+                            Label { text: root.query != "" ? "No friends match." : "All your friends are here already."; }
+                        }
+                    }
+                }
+                if root.note != "": Label { text: root.note; color: Theme.danger; }
+                ActionButton {
+                    text: root.adding ? "Adding..." : root.one-to-one ? "Create Group DM" : "Add to Group";
+                    primary: true; enabled: root.chosen > 0 && !root.adding;
+                    clicked => { root.add(); }
+                }
+            }
+        }
+    }
+}
+
+// What a search of the DM found, beside the conversation: the newest first,
+// a page at a time.
+export component SearchPanel inherits Rectangle {
+    in property <[FoundRow]> results;
+    /// How many it found, or that it's searching, or why it couldn't.
+    in property <string> heading;
+    in property <string> note;
+    in property <bool> more;
+    in property <bool> loading;
+    callback jump(string);
+    callback open-link(string);
+    callback more-results;
+    callback close;
+    background: Theme.sidebar;
+    accessible-role: list;
+    accessible-label: "Search results";
+    Rectangle { x: 0; width: 1px; background: Theme.edge; }
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 10px; spacing: 10px;
+                Text { text: root.heading; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close search"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+        }
+        if root.note != "": HorizontalLayout { padding: 16px; Label { text: root.note; } }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 12px; spacing: 8px; alignment: start;
+                for found in root.results: FoundCard {
+                    found: found;
+                    jump => { root.jump(found.item); }
+                    open-link(link) => { root.open-link(link); }
+                }
+                if root.more: HorizontalLayout {
+                    alignment: center; padding-top: 4px;
+                    ActionButton {
+                        text: root.loading ? "Loading..." : "Show more"; small: true; enabled: !root.loading;
+                        clicked => { root.more-results(); }
+                    }
+                }
+            }
+        }
+    }
+}

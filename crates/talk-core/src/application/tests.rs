@@ -3437,3 +3437,233 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
     assert_eq!(app.state.first_unread.as_deref(), Some("e:3"));
     assert_eq!(app.state.unread_jump, 1);
 }
+
+/// Alice's Discord DMs: one with Annie, and a group with Annie and Ben. Her
+/// friends are Annie, Ben and Cara.
+#[cfg(feature = "discord")]
+fn discord_dms(extra: Vec<talk_discord::service::Conversation>) -> Application {
+    use talk_discord::service::{Conversation, Friend, Snapshot, Status};
+    let friend = |id: &str, name: &str| Friend {
+        user_id: id.into(),
+        name: name.into(),
+        avatar: String::new(),
+        nickname: None,
+        presence: None,
+        activity: None,
+    };
+    let mut conversations = vec![
+        Conversation {
+            id: "30".into(),
+            name: "Annie".into(),
+            person: Some("2".into()),
+            people: 2,
+            ..Default::default()
+        },
+        Conversation {
+            id: "31".into(),
+            name: "Hikers".into(),
+            group: true,
+            people: 3,
+            ..Default::default()
+        },
+    ];
+    conversations.extend(extra);
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        friends: vec!["2".into(), "3".into(), "4".into()],
+        friend_list: vec![
+            friend("2", "Annie"),
+            friend("3", "Ben"),
+            friend("4", "Cara"),
+        ],
+        conversations,
+        ..Default::default()
+    }));
+    app
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_dms_pins_load_when_shown_and_close_with_the_conversation() {
+    let mut app = discord_dms(vec![]);
+    let dm = "discord:@me:30".to_owned();
+    app.dispatch(Action::SelectRoom(dm.clone()));
+    assert!(app.state.dm_that(|can| can.dm_pins).is_some());
+    assert!(matches!(
+        app.dispatch(Action::ShowPins(true)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Pins { room }))] if *room == dm
+    ));
+    assert_eq!(
+        app.state.pins.as_ref().unwrap().messages,
+        None,
+        "on their way"
+    );
+    app.apply(Event::Pins {
+        room: "discord:@me:31".into(),
+        result: Ok(vec![]),
+    });
+    assert_eq!(
+        app.state.pins.as_ref().unwrap().messages,
+        None,
+        "another DM's pins don't show"
+    );
+    app.apply(Event::Pins {
+        room: dm.clone(),
+        result: Ok(vec![message("d:9", false)]),
+    });
+    let pinned = app.state.pins.as_ref().unwrap().messages.clone();
+    assert_eq!(pinned.unwrap().unwrap()[0].item, "d:9");
+
+    app.dispatch(Action::ShowPins(false));
+    assert!(app.state.pins.is_none());
+    app.dispatch(Action::ShowPins(true));
+    app.dispatch(Action::SelectRoom("discord:@me:31".into()));
+    assert!(app.state.pins.is_none(), "another conversation closes them");
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_dm_search_loads_its_results_a_page_at_a_time() {
+    let mut app = discord_dms(vec![]);
+    let dm = "discord:@me:30".to_owned();
+    app.dispatch(Action::SelectRoom(dm.clone()));
+    assert!(matches!(
+        app.dispatch(Action::Search("  trip ".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Search { room, query, offset: 0 }))]
+            if *room == dm && query == "trip"
+    ));
+    let page = |from: u32, count: u32| -> Vec<ChatMessage> {
+        (from..from + count)
+            .map(|n| message(&format!("d:{n}"), false))
+            .collect()
+    };
+    let found = |query: &str, offset: u32, result| Event::Found {
+        room: dm.clone(),
+        query: query.into(),
+        offset,
+        result,
+    };
+    app.apply(found("old", 0, Ok((1, page(0, 1)))));
+    assert!(
+        app.state.search.as_ref().unwrap().results.is_empty(),
+        "an earlier search's results don't show"
+    );
+    app.apply(found("trip", 0, Ok((30, page(0, 25)))));
+    let search = app.state.search.as_ref().unwrap();
+    assert!(!search.loading && search.more());
+    assert_eq!((search.total, search.results.len()), (30, 25));
+
+    assert!(matches!(
+        app.dispatch(Action::MoreResults).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Search {
+            offset: 25,
+            ..
+        }))]
+    ));
+    assert!(
+        app.dispatch(Action::MoreResults).is_empty(),
+        "one page at a time"
+    );
+    // A message sent meanwhile moves one already shown onto the next page.
+    app.apply(found("trip", 25, Ok((51, page(24, 25)))));
+    let search = app.state.search.as_ref().unwrap();
+    assert_eq!(search.results.len(), 49, "each result shows once");
+    assert!(search.more());
+    app.dispatch(Action::MoreResults);
+    app.apply(found("trip", 50, Err("Discord is busy.".into())));
+    let search = app.state.search.as_ref().unwrap();
+    assert_eq!(search.error.as_deref(), Some("Discord is busy."));
+    assert_eq!(search.results.len(), 49, "a failed page keeps those found");
+    app.dispatch(Action::MoreResults);
+    app.apply(found("trip", 50, Ok((51, page(49, 2)))));
+    assert!(
+        !app.state.search.as_ref().unwrap().more(),
+        "all 51 are there"
+    );
+
+    app.dispatch(Action::Search(" ".into()));
+    assert!(app.state.search.is_none(), "an empty search ends it");
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn friends_added_to_a_dm_make_a_group_that_opens() {
+    use talk_discord::service::Conversation;
+    let mut app = discord_dms(vec![]);
+    let dm = "discord:@me:30".to_owned();
+    app.dispatch(Action::SelectRoom(dm.clone()));
+    app.dispatch(Action::OpenAddPeople);
+    let names = |app: &Application| -> Vec<String> {
+        app.state
+            .addable_friends()
+            .iter()
+            .map(|friend| friend.name.clone())
+            .collect()
+    };
+    assert_eq!(names(&app), ["Ben", "Cara"], "Annie is here already");
+    app.dispatch(Action::AddPeopleQuery("c".into()));
+    assert_eq!(names(&app), ["Cara"]);
+    assert!(
+        app.dispatch(Action::AddPeople).is_empty(),
+        "nobody is chosen"
+    );
+    app.dispatch(Action::ChoosePerson("4".into()));
+    app.dispatch(Action::ChoosePerson("3".into()));
+    app.dispatch(Action::ChoosePerson("3".into()));
+    assert_eq!(app.state.add_people.as_ref().unwrap().chosen, ["4"]);
+    assert!(matches!(
+        app.dispatch(Action::AddPeople).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::AddToGroup { room: None, users }))]
+            if users == &["2", "4"]
+    ));
+    app.dispatch(Action::ChoosePerson("3".into()));
+    assert_eq!(
+        app.state.add_people.as_ref().unwrap().chosen,
+        ["4"],
+        "the choice holds while adding"
+    );
+
+    // The group opens once Discord lists it.
+    app.apply(Event::GroupChanged(Ok("discord:@me:50".into())));
+    assert!(app.state.add_people.is_none());
+    let group = Conversation {
+        id: "50".into(),
+        name: "Annie, Cara".into(),
+        group: true,
+        people: 3,
+        ..Default::default()
+    };
+    let snapshot = discord_dms(vec![group]).discord.clone().unwrap();
+    app.apply(Event::Discord(snapshot));
+    assert_eq!(app.state.selected.as_deref(), Some("discord:@me:50"));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn friends_added_to_a_group_fill_it_to_ten() {
+    let mut app = discord_dms(vec![]);
+    let group = "discord:@me:31".to_owned();
+    app.dispatch(Action::SelectRoom(group.clone()));
+    assert_eq!(app.state.group_room(), 7, "three of ten are there");
+    app.dispatch(Action::OpenAddPeople);
+    app.dispatch(Action::ChoosePerson("4".into()));
+    assert!(matches!(
+        app.dispatch(Action::AddPeople).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::AddToGroup { room: Some(room), users }))]
+            if *room == group && users == &["4"]
+    ));
+    app.apply(Event::GroupChanged(Err("Could not add them: no.".into())));
+    let picker = app.state.add_people.as_ref().unwrap();
+    assert!(!picker.adding);
+    assert_eq!(picker.error.as_deref(), Some("Could not add them: no."));
+    app.dispatch(Action::AddPeople);
+    app.apply(Event::GroupChanged(Ok(group.clone())));
+    assert!(app.state.add_people.is_none());
+    assert_eq!(
+        app.state.selected.as_ref(),
+        Some(&group),
+        "the group stays open"
+    );
+}

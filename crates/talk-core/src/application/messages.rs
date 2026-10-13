@@ -335,7 +335,7 @@ impl Application {
                 if seeking.unread {
                     "Talk couldn't find the first unread message in this conversation's recent history."
                 } else {
-                    "Talk couldn't find the original message in this conversation's recent history."
+                    "Talk couldn't find that message in this conversation's recent history."
                 }
                 .into(),
             );
