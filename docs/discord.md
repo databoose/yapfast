@@ -1177,6 +1177,17 @@ Names are 1 to 100 characters and topics up to 1024, checked before
 asking. The fake lets Alice's Crew role manage "Server"'s channels and
 sends each event.
 
+### Editing one's server profile
+
+Edit server profile, in a server's menu and its header's dropdown, where
+the account may change its nickname (Change Nickname, or Manage
+Nicknames), opens the member menu's nickname dialog for the account's own
+id (`Action::AskMember` with `PersonAsk::ServerNickname`), which sends
+`PATCH /guilds/{id}/members/@me` with `{"nick": ...}` and learns the
+result from GUILD_MEMBER_UPDATE. Discord's per-server profile also has an
+avatar, a banner and a bio, mostly for Nitro; Talk changes only the
+nickname.
+
 ### Leaving a server
 
 Leave server, in a server's menu or at the end of its header's dropdown,

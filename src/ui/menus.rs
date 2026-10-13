@@ -106,7 +106,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::RemoveTimeout
                 | MenuChoice::Kick
                 | MenuChoice::Ban => 5,
-                MenuChoice::CreateChannel
+                MenuChoice::EditServerProfile
+                | MenuChoice::CreateChannel
                 | MenuChoice::CreateCategory
                 | MenuChoice::EditChannel
                 | MenuChoice::DuplicateChannel => 6,
@@ -228,6 +229,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::DuplicateChannel => ("Duplicate channel", &icons.duplicate),
         MenuChoice::DeleteChannel => ("Delete channel", &icons.delete),
         MenuChoice::LeaveServer => ("Leave server", &icons.leave),
+        MenuChoice::EditServerProfile => ("Edit server profile", &icons.rename),
     }
 }
 
@@ -671,6 +673,19 @@ pub(super) fn choose(
         MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
         MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
         MenuChoice::LeaveServer => Some(Action::AskLeaveServer(target)),
+        // One's own nickname, in the member menu's dialog.
+        MenuChoice::EditServerProfile => {
+            adapter
+                .app
+                .state
+                .discord_user
+                .clone()
+                .map(|user| Action::AskMember {
+                    place: target,
+                    user,
+                    ask: PersonAsk::ServerNickname,
+                })
+        }
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer
         | MenuChoice::UnmuteServer
@@ -718,7 +733,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 43] = [
+const CHOICES: [MenuChoice; 44] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -762,6 +777,7 @@ const CHOICES: [MenuChoice; 43] = [
     MenuChoice::DuplicateChannel,
     MenuChoice::DeleteChannel,
     MenuChoice::LeaveServer,
+    MenuChoice::EditServerProfile,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -809,6 +825,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::DuplicateChannel => "duplicate-channel",
         MenuChoice::DeleteChannel => "delete-channel",
         MenuChoice::LeaveServer => "leave-server",
+        MenuChoice::EditServerProfile => "edit-server-profile",
     }
 }
 

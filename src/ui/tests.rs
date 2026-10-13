@@ -2902,3 +2902,29 @@ fn leaving_a_server_asks_first_in_red() {
     window.invoke_close_leave();
     assert!(!window.get_leave_open());
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn edit_server_profile_opens_the_nickname_dialog() {
+    use talk_core::talk_discord::ready::permission;
+    let (window, adapter, _directory) = discord_server_window_granting(permission::CHANGE_NICKNAME);
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    let texts: Vec<String> = window
+        .get_menu_rows()
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert!(
+        texts.contains(&"Edit server profile".to_owned()),
+        "{texts:?}"
+    );
+    window.invoke_choose_menu(
+        "header:discord:10".into(),
+        false,
+        "edit-server-profile".into(),
+    );
+    let dialog = adapter.borrow().app.state.person_dialog.clone().unwrap();
+    assert_eq!(dialog.user, "1");
+    assert_eq!(dialog.ask, PersonAsk::ServerNickname);
+    assert!(window.get_person_open());
+}

@@ -17,11 +17,12 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 6] = [
+const HEADER: [MenuChoice; 7] = [
     MenuChoice::Invite,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::ServerNotifications,
+    MenuChoice::EditServerProfile,
     MenuChoice::HideMuted,
     MenuChoice::LeaveServer,
 ];
@@ -178,6 +179,14 @@ impl Application {
                 MenuChoice::MuteServer
             });
             choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
+        }
+        // One's own nickname, as the member menu changes it.
+        if self.state.discord_online
+            && self.state.discord_user.is_some()
+            && (self.may(id, Permission::ChangeNickname)
+                || self.may(id, Permission::ManageNicknames))
+        {
+            choices.push(MenuChoice::EditServerProfile);
         }
         if self.manages(id) {
             choices.extend([MenuChoice::CreateChannel, MenuChoice::CreateCategory]);
