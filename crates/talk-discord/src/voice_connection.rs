@@ -7,6 +7,7 @@ use std::{net::IpAddr, sync::Mutex, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use serenity_voice_model::{Event, serialize_binary_event};
 use tokio::{
@@ -117,10 +118,7 @@ pub(crate) async fn receive(ws: &mut Socket, seq: &mut Option<u64>) -> Result<In
                     *seq = Some(number);
                 }
                 let op = value["op"].as_u64().unwrap_or(u64::MAX);
-                // The voice model knows DAVE's JSON ops and who's connected.
-                if matches!(op, 11 | 13 | 21 | 22 | 24)
-                    && let Ok(event) = serde_json::from_value::<Event>(value.clone())
-                {
+                if let Some(event) = dave_json(op, &value["d"]) {
                     return Ok(Incoming::Dave(event));
                 }
                 return Ok(Incoming::Json(op, value["d"].clone()));
@@ -144,6 +142,27 @@ pub(crate) async fn receive(ws: &mut Socket, seq: &mut Option<u64>) -> Result<In
             _ => {}
         }
     }
+}
+
+/// DAVE's JSON ops, and who's connected, as the voice model knows them.
+/// Its parser for a whole message wants `op` first and nothing after `d`,
+/// which version 8's `seq` breaks, so only the data goes through it.
+fn dave_json(op: u64, data: &Value) -> Option<Event> {
+    use serenity_voice_model::payload::{
+        ClientDisconnect, ClientsConnect, DaveExecuteTransition, DavePrepareEpoch,
+        DavePrepareTransition,
+    };
+    let event = match op {
+        11 => ClientsConnect::deserialize(data).map(Event::from),
+        13 => ClientDisconnect::deserialize(data).map(Event::from),
+        21 => DavePrepareTransition::deserialize(data).map(Event::from),
+        22 => DaveExecuteTransition::deserialize(data).map(Event::from),
+        24 => DavePrepareEpoch::deserialize(data).map(Event::from),
+        _ => return None,
+    };
+    event
+        .inspect_err(|error| tracing::warn!(op, %error, "an unreadable voice gateway message"))
+        .ok()
 }
 
 /// A binary DAVE message and its sequence number. Version 8 puts the number
@@ -330,7 +349,7 @@ impl Connection {
             let mut text = data.to_string();
             text.truncate(400);
             tracing::debug!(op, data = %text, "the voice server said while connecting");
-            for user in announced(*op, data) {
+            if let Some(user) = announced(*op, data) {
                 dave.recognise(user);
             }
         }
@@ -425,7 +444,7 @@ impl Connection {
                 Ok(None)
             }
             Incoming::Json(op, data) => {
-                for user in announced(op, &data) {
+                if let Some(user) = announced(op, &data) {
                     self.dave.recognise(user);
                 }
                 Ok(Some((op, data)))
@@ -434,20 +453,13 @@ impl Connection {
     }
 }
 
-/// Who a voice gateway message says is in the call, for DAVE's check of the
-/// people proposed into its group: op 11 lists them, while speaking (5) and
-/// video attributes (12) carry one.
-fn announced(op: u64, data: &Value) -> Vec<u64> {
-    let id = |value: &Value| value.as_str().and_then(|id| id.parse().ok());
+/// Someone a voice gateway message says is in the call, for DAVE's check of
+/// the people proposed into its group: speaking (5) and video attributes
+/// (12) carry one; op 11, which lists them, goes to DAVE itself.
+fn announced(op: u64, data: &Value) -> Option<u64> {
     match op {
-        11 => data["user_ids"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(id)
-            .collect(),
-        5 | 12 => id(&data["user_id"]).into_iter().collect(),
-        _ => vec![],
+        5 | 12 => data["user_id"].as_str()?.parse().ok(),
+        _ => None,
     }
 }
 
@@ -466,6 +478,36 @@ mod tests {
             "ws://127.0.0.1:9/voice/?v=8"
         );
         assert!(gateway_url("ws://example.com/voice").is_err());
+    }
+
+    /// As version 8 sends them: `seq` after `d`.
+    #[test]
+    fn reads_daves_json_messages() {
+        let read = |text: &str| {
+            let value: Value = serde_json::from_str(text).unwrap();
+            dave_json(value["op"].as_u64().unwrap(), &value["d"])
+        };
+        assert!(matches!(
+            read(r#"{"op":22,"d":{"transition_id":7},"seq":12}"#),
+            Some(Event::DaveExecuteTransition(execute)) if execute.transition_id == 7
+        ));
+        assert!(matches!(
+            read(r#"{"op":21,"d":{"transition_id":7,"protocol_version":1},"seq":12}"#),
+            Some(Event::DavePrepareTransition(prepare)) if prepare.transition_id == 7
+        ));
+        assert!(matches!(
+            read(r#"{"op":24,"d":{"epoch":1,"protocol_version":1},"seq":3}"#),
+            Some(Event::DavePrepareEpoch(prepare)) if prepare.epoch == 1
+        ));
+        assert!(matches!(
+            read(r#"{"op":11,"d":{"user_ids":["1","2"]},"seq":3}"#),
+            Some(Event::ClientsConnect(connect)) if connect.user_ids.len() == 2
+        ));
+        assert!(matches!(
+            read(r#"{"op":13,"d":{"user_id":"1"},"seq":3}"#),
+            Some(Event::ClientDisconnect(disconnect)) if disconnect.user_id.0 == 1
+        ));
+        assert!(read(r#"{"op":5,"d":{"user_id":"1","ssrc":2},"seq":3}"#).is_none());
     }
 
     #[test]
