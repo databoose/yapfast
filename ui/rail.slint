@@ -68,6 +68,9 @@ export component RailItem inherits Rectangle {
     in property <string> tip: root.label;
     in property <string> initial;
     in property <image> icon;
+    /// The icon's colour and size while the item isn't lit.
+    in property <color> icon-color: Theme.text;
+    in property <length> icon-size: 24px;
     /// The server's own icon, filling the item instead of the initial.
     in property <image> picture;
     in property <string> picture-url;
@@ -114,8 +117,8 @@ export component RailItem inherits Rectangle {
             source: root.shown-picture; width: 48px; height: 48px; image-fit: cover;
         }
         if root.icon.width > 0: Image {
-            source: root.icon; width: 24px; height: 24px;
-            colorize: root.lit ? Theme.on-accent : Theme.text;
+            source: root.icon; width: root.icon-size; height: root.icon-size;
+            colorize: root.lit ? Theme.on-accent : root.icon-color;
         }
         if root.icon.width == 0 && root.shown-picture.width == 0: Text {
             text: root.initial; font-size: 17px; font-weight: 700;
@@ -528,7 +531,8 @@ export component ServerRail inherits Rectangle {
     VerticalLayout {
         padding-top: 12px; padding-bottom: 12px; spacing: 8px;
         RailItem {
-            icon: @image-url("icons/message-circle.svg");
+            // The app's logo, as Discord puts its own here.
+            icon: @image-url("icons/logo.svg"); icon-color: Theme.accent; icon-size: 32px;
             label: "Direct messages" + (root.dms-badge != "" ? ", " + root.dms-badge + " waiting" : root.dms-unread ? ", unread" : "");
             tip: "Direct messages";
             selected: root.dms-selected; unread: root.dms-unread; badge: root.dms-badge;
