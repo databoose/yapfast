@@ -1,9 +1,10 @@
 //! The menus a right click opens: what they offer, and the choices made.
 
 use talk_core::{
-    application::{MUTE_TIMES, MenuChoice, network_id, network_link},
+    application::{ChannelAsk, MUTE_TIMES, MenuChoice, network_id, network_link},
     chat::{
-        MemberChange, Muting, NotificationChange, Notifications, NotifyLevel, RelationshipChange,
+        ChannelKind, MemberChange, Muting, NotificationChange, Notifications, NotifyLevel,
+        RelationshipChange,
     },
 };
 
@@ -53,6 +54,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
         .iter()
         .any(|found| Some(&found.id) == room.as_ref() && !found.people.is_empty());
     let server = state.servers.iter().any(|server| server.id == id);
+    let category = !server && state.is_category(id);
+    let voice = state
+        .rooms
+        .iter()
+        .any(|found| found.id == id && found.voice);
     let mut group = None;
     let mut rows: Vec<MenuRow> = choices
         .into_iter()
@@ -62,6 +68,12 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 MenuChoice::Kick => (format!("Kick {}", name()), &icons.kick),
                 MenuChoice::Ban => (format!("Ban {}", name()), &icons.ban),
                 MenuChoice::Invite if server => ("Invite to server".into(), &icons.befriend),
+                MenuChoice::CreateChannel if server => ("Create channel".into(), &icons.create),
+                MenuChoice::CreateChannel if voice => {
+                    ("Create voice channel".into(), &icons.create)
+                }
+                MenuChoice::EditChannel if category => ("Edit category".into(), &icons.edit),
+                MenuChoice::DeleteChannel if category => ("Delete category".into(), &icons.delete),
                 choice => {
                     let (text, icon) = label(icons, choice, in_call);
                     (text.to_owned(), icon)
@@ -69,7 +81,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             };
             // A line goes between groups: what it does, then how this
             // account stands with someone, then notifications, roles,
-            // copying, and moderation.
+            // copying, and moderation; a channel's management, then deleting it.
             let starts = match choice {
                 MenuChoice::ServerNickname
                 | MenuChoice::AddFriend
@@ -94,6 +106,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::RemoveTimeout
                 | MenuChoice::Kick
                 | MenuChoice::Ban => 5,
+                MenuChoice::CreateChannel
+                | MenuChoice::CreateCategory
+                | MenuChoice::EditChannel
+                | MenuChoice::DuplicateChannel => 6,
+                MenuChoice::DeleteChannel => 7,
                 _ => 0,
             };
             let separated = group.replace(starts).is_some_and(|last| last != starts);
@@ -124,6 +141,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Timeout
                         | MenuChoice::Kick
                         | MenuChoice::Ban
+                        | MenuChoice::DeleteChannel
                 ),
                 separated,
                 checkbox,
@@ -201,6 +219,13 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::HideMuted => ("Hide muted channels", &icons.ignore),
         // A server's says so above.
         MenuChoice::Invite => ("Invite to channel", &icons.befriend),
+        // A server's and a voice channel's say so above.
+        MenuChoice::CreateChannel => ("Create text channel", &icons.create),
+        MenuChoice::CreateCategory => ("Create category", &icons.create_category),
+        // A category's say so above.
+        MenuChoice::EditChannel => ("Edit channel", &icons.edit),
+        MenuChoice::DuplicateChannel => ("Duplicate channel", &icons.duplicate),
+        MenuChoice::DeleteChannel => ("Delete channel", &icons.delete),
     }
 }
 
@@ -632,6 +657,17 @@ pub(super) fn choose(
         // Notify's choices, above.
         MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
         MenuChoice::Invite => Some(Action::OpenInvite(target)),
+        MenuChoice::CreateChannel => Some(Action::NewChannel {
+            place: target,
+            kind: ChannelKind::Text,
+        }),
+        MenuChoice::CreateCategory => Some(Action::NewChannel {
+            place: target,
+            kind: ChannelKind::Category,
+        }),
+        MenuChoice::EditChannel => Some(Action::AskChannel(ChannelAsk::Edit(target))),
+        MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
+        MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer
         | MenuChoice::UnmuteServer
@@ -679,7 +715,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 37] = [
+const CHOICES: [MenuChoice; 42] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -717,6 +753,11 @@ const CHOICES: [MenuChoice; 37] = [
     MenuChoice::ServerNotifications,
     MenuChoice::HideMuted,
     MenuChoice::Invite,
+    MenuChoice::CreateChannel,
+    MenuChoice::CreateCategory,
+    MenuChoice::EditChannel,
+    MenuChoice::DuplicateChannel,
+    MenuChoice::DeleteChannel,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -758,6 +799,11 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::ServerNotifications => "server-notifications",
         MenuChoice::HideMuted => "hide-muted",
         MenuChoice::Invite => "invite",
+        MenuChoice::CreateChannel => "create-channel",
+        MenuChoice::CreateCategory => "create-category",
+        MenuChoice::EditChannel => "edit-channel",
+        MenuChoice::DuplicateChannel => "duplicate-channel",
+        MenuChoice::DeleteChannel => "delete-channel",
     }
 }
 

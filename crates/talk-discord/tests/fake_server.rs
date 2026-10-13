@@ -1925,6 +1925,130 @@ async fn talks_to_the_fake_server() {
     assert_eq!(made["channel"]["id"], general.as_str());
     assert!(discord.create_invite(&general, 3600, 101).await.is_err());
 
+    // Channels and categories, which her Crew role may manage: one made
+    // shows once its CHANNEL_CREATE comes, with Discord's name for it.
+    use talk_discord::service::ChannelSettings;
+    let named = |name: &str| ChannelSettings {
+        name: name.into(),
+        ..Default::default()
+    };
+    let shelf = discord
+        .create_channel(&guild, 4, None, None, &named("Shelf"))
+        .await
+        .unwrap();
+    let plans = discord
+        .create_channel(
+            &guild,
+            0,
+            Some(&shelf),
+            None,
+            &ChannelSettings {
+                topic: "What's next".into(),
+                slowmode: 30,
+                ..named("Plans For Later")
+            },
+        )
+        .await
+        .unwrap();
+    let snapshot = snapshot_where(&discord, |snapshot| {
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .any(|channel| channel.id == plans)
+    })
+    .await;
+    let listed = &snapshot.servers[0];
+    assert_eq!(listed.categories[&shelf].name, "Shelf");
+    let made = listed
+        .text_channels
+        .iter()
+        .find(|channel| channel.id == plans)
+        .unwrap();
+    assert_eq!(made.name, "plans-for-later");
+    assert_eq!(made.parent.as_deref(), Some(shelf.as_str()));
+    let settings = discord.channel_settings(&plans).await.unwrap();
+    assert_eq!(
+        (settings.topic.as_str(), settings.slowmode, settings.nsfw),
+        ("What's next", 30, false)
+    );
+
+    // Changing it, as its settings do, and copying it, as Duplicate Channel
+    // does, with its category and settings.
+    discord
+        .edit_channel(
+            &plans,
+            true,
+            &ChannelSettings {
+                name: "plans".into(),
+                topic: "Soon".into(),
+                slowmode: 0,
+                nsfw: true,
+            },
+        )
+        .await
+        .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .any(|channel| channel.id == plans && channel.name == "plans")
+    })
+    .await;
+    let copy = discord
+        .create_channel(&guild, 0, None, Some(&plans), &named("plans-copy"))
+        .await
+        .unwrap();
+    let copied = discord.channel_settings(&copy).await.unwrap();
+    assert_eq!(
+        (copied.name.as_str(), copied.topic.as_str(), copied.nsfw),
+        ("plans-copy", "Soon", true)
+    );
+    let snapshot = snapshot_where(&discord, |snapshot| {
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .any(|channel| channel.id == copy)
+    })
+    .await;
+    assert_eq!(
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .find(|channel| channel.id == copy)
+            .unwrap()
+            .parent
+            .as_deref(),
+        Some(shelf.as_str())
+    );
+
+    // Deleting a category leaves its channels outside any; then they go too.
+    discord.delete_channel(&shelf).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        let listed = &snapshot.servers[0];
+        !listed.categories.contains_key(&shelf)
+            && listed
+                .text_channels
+                .iter()
+                .filter(|channel| channel.id == plans || channel.id == copy)
+                .all(|channel| channel.parent.is_none())
+    })
+    .await;
+    discord.delete_channel(&plans).await.unwrap();
+    discord.delete_channel(&copy).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        !snapshot.servers[0]
+            .text_channels
+            .iter()
+            .any(|channel| channel.id == plans || channel.id == copy)
+    })
+    .await;
+    assert!(
+        discord
+            .create_channel(&guild, 0, None, None, &named(""))
+            .await
+            .is_err()
+    );
+
     // Bob calls on Alice every way Discord highlights for her, through her
     // Crew role among them, and two ways it doesn't.
     post_control(server, "/_control/mentions", "");

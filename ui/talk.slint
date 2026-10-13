@@ -29,7 +29,7 @@ import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, Notifi
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
-import { InvitePrompt, InviteDialog } from "server.slint";
+import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 
@@ -127,6 +127,17 @@ export component TalkWindow inherits Window {
     callback open-invite(string);
     callback make-invite(int, int);
     callback close-invite;
+    // A dialog that makes, changes, copies or deletes a Discord channel or
+    // category, with what's written in it; see ChannelDialog.
+    in property <bool> channel-open;
+    in property <ChannelPrompt> channel-prompt;
+    in-out property <string> channel-name;
+    in-out property <string> channel-topic;
+    in-out property <int> channel-kind;
+    in-out property <int> channel-slowmode;
+    in-out property <bool> channel-nsfw;
+    callback save-channel;
+    callback close-channel;
     in property <string> filter-placeholder;
     in property <string> sidebar-empty;
     in property <[ServerRow]> servers;
@@ -2362,7 +2373,6 @@ export component TalkWindow inherits Window {
         add-friend(name) => { root.add-friend(name); }
         close-add-friend => { root.close-add-friend(); }
     }
-    // About a DM's other person; see PersonDialog.
     // A Discord server's or channel's invite link; see InviteDialog.
     if root.invite-open: InviteDialog {
         prompt: root.invite-prompt; age <=> root.invite-age; uses <=> root.invite-uses;
@@ -2370,6 +2380,13 @@ export component TalkWindow inherits Window {
         remake(age, uses) => { root.make-invite(age, uses); }
         close => { root.close-invite(); }
     }
+    if root.channel-open: ChannelDialog {
+        prompt: root.channel-prompt; name <=> root.channel-name; topic <=> root.channel-topic;
+        kind <=> root.channel-kind; slowmode <=> root.channel-slowmode; nsfw <=> root.channel-nsfw;
+        save => { root.save-channel(); }
+        close => { root.close-channel(); }
+    }
+    // About a DM's other person; see PersonDialog.
     if root.person-open: PersonDialog {
         prompt: root.person-prompt; text <=> root.person-text;
         answer(text) => { root.answer-person(text); }

@@ -14,14 +14,14 @@ use slint::{
 };
 use talk_core::{
     application::{
-        Action, AddFriend, AppState, Application, BAN_HISTORY, ClearAfter, Compose, DmScreen,
-        Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm, PersonAsk,
-        ProfileView, Relation, Search, TIMEOUT_TIMES,
+        Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ClearAfter, Compose,
+        DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm,
+        PersonAsk, ProfileView, Relation, SLOWMODES, Search, TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{
-        ChatMessage, Command, Delivery, EmbedField, Event, Picture, Placement, Presence,
-        ProfileRole, Role, VideoCommand,
+        ChannelKind, ChannelSettings, ChatMessage, Command, Delivery, EmbedField, Event, Picture,
+        Placement, Presence, ProfileRole, Role, VideoCommand,
     },
     discord, links, mention,
     meter::{self, InputMeter},
@@ -789,6 +789,12 @@ struct Icons {
     timeout: slint::Image,
     kick: slint::Image,
     ban: slint::Image,
+    // A Discord server's and channel's menus.
+    create: slint::Image,
+    create_category: slint::Image,
+    edit: slint::Image,
+    duplicate: slint::Image,
+    delete: slint::Image,
 }
 
 struct Adapter {
@@ -933,6 +939,17 @@ impl Adapter {
             timeout: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/clock.svg"))?,
             kick: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user-x.svg"))?,
             ban: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/gavel.svg"))?,
+            create: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/circle-plus.svg"
+            ))?,
+            create_category: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/folder-plus.svg"
+            ))?,
+            edit: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/pencil.svg"))?,
+            duplicate: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/copy-plus.svg"
+            ))?,
+            delete: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/trash-2.svg"))?,
         };
         let models = Models::default();
         models.attach(window);

@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
@@ -387,6 +388,29 @@ enum Request {
     CustomStatus(Option<CustomStatus>),
     /// The status changed in the settings; this session shows it.
     Status(String),
+}
+
+/// What a channel's dialog edits; see [`Discord::channel_settings`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelSettings {
+    pub name: String,
+    pub topic: String,
+    pub slowmode: u32,
+    pub nsfw: bool,
+}
+
+impl ChannelSettings {
+    fn of(channel: &Value) -> Self {
+        Self {
+            name: channel["name"].as_str().unwrap_or_default().to_owned(),
+            topic: channel["topic"].as_str().unwrap_or_default().to_owned(),
+            slowmode: channel["rate_limit_per_user"]
+                .as_u64()
+                .and_then(|seconds| u32::try_from(seconds).ok())
+                .unwrap_or_default(),
+            nsfw: channel["nsfw"].as_bool().unwrap_or(false),
+        }
+    }
 }
 
 /// A handle to the connection. It ends when every handle is dropped.
@@ -970,6 +994,81 @@ impl Discord {
         max_uses: u32,
     ) -> Result<String> {
         self.api.create_invite(channel, max_age, max_uses).await
+    }
+
+    /// A channel's name, topic, slowmode in seconds and whether it's
+    /// age-restricted, as its dialog edits them.
+    pub async fn channel_settings(&self, channel: &str) -> Result<ChannelSettings> {
+        let channel = self.api.channel(channel).await?;
+        Ok(ChannelSettings::of(&channel))
+    }
+
+    /// Makes a channel of `kind`, `0` for text, `2` for voice or `4` for a
+    /// category, in a server, in the category `parent`, or copying the
+    /// permissions, topic, slowmode, age restriction and voice settings of
+    /// `copy_of`, as Discord's Duplicate Channel does; its id. Snapshots
+    /// show it once its CHANNEL_CREATE comes.
+    pub async fn create_channel(
+        &self,
+        guild: &str,
+        kind: u8,
+        parent: Option<&str>,
+        copy_of: Option<&str>,
+        settings: &ChannelSettings,
+    ) -> Result<String> {
+        let mut body = json!({"name": settings.name, "type": kind, "permission_overwrites": []});
+        if let Some(source) = copy_of {
+            let source = self.api.channel(source).await?;
+            for key in [
+                "type",
+                "permission_overwrites",
+                "parent_id",
+                "topic",
+                "nsfw",
+                "rate_limit_per_user",
+                "bitrate",
+                "user_limit",
+                "rtc_region",
+            ] {
+                if !source[key].is_null() {
+                    body[key] = source[key].clone();
+                }
+            }
+        } else if kind == 0 {
+            body["topic"] = json!(Some(settings.topic.as_str()).filter(|topic| !topic.is_empty()));
+            body["rate_limit_per_user"] = json!(settings.slowmode);
+            body["nsfw"] = json!(settings.nsfw);
+        }
+        if let Some(parent) = parent.filter(|_| copy_of.is_none()) {
+            body["parent_id"] = json!(parent);
+        }
+        let made = self.api.create_channel(guild, &body).await?;
+        made["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("Discord made no channel."))
+    }
+
+    /// Renames a channel or category, and for a text channel sets its
+    /// topic, slowmode and age restriction too.
+    pub async fn edit_channel(
+        &self,
+        channel: &str,
+        text: bool,
+        settings: &ChannelSettings,
+    ) -> Result<()> {
+        let mut body = json!({"name": settings.name});
+        if text {
+            body["topic"] = json!(settings.topic);
+            body["rate_limit_per_user"] = json!(settings.slowmode);
+            body["nsfw"] = json!(settings.nsfw);
+        }
+        self.api.edit_channel(channel, &body).await
+    }
+
+    /// Deletes a server's channel or category for good.
+    pub async fn delete_channel(&self, channel: &str) -> Result<()> {
+        self.api.delete_channel(channel).await
     }
 
     /// Declines a call ringing this account; the call goes on without it.

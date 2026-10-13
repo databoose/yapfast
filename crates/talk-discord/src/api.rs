@@ -660,6 +660,38 @@ impl Api {
             .ok_or_else(|| anyhow!("Discord made no invite."))
     }
 
+    /// A channel object, as `GET /channels/{id}` gives it.
+    pub async fn channel(&self, channel: &str) -> Result<Value> {
+        let path = format!("/channels/{channel}");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Makes a channel or category in a server from `body`, a channel
+    /// object's fields; the new channel object. Discord sends CHANNEL_CREATE.
+    pub async fn create_channel(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/channels");
+        self.json(with_json(self.request(Method::POST, &path), body))
+            .await
+    }
+
+    /// Changes a channel's or category's fields that `body` names; Discord
+    /// sends CHANNEL_UPDATE.
+    pub async fn edit_channel(&self, channel: &str, body: &Value) -> Result<()> {
+        let path = format!("/channels/{channel}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+            .map(drop)
+    }
+
+    /// Deletes a server's channel or category for good; Discord sends
+    /// CHANNEL_DELETE, and moves a category's channels out of it.
+    pub async fn delete_channel(&self, channel: &str) -> Result<()> {
+        let path = format!("/channels/{channel}");
+        self.json(self.request(Method::DELETE, &path))
+            .await
+            .map(drop)
+    }
+
     /// Whether this account may ring the others in a DM, beyond calling them.
     pub async fn ringable(&self, channel: &str) -> Result<bool> {
         let path = format!("/channels/{channel}/call");

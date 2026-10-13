@@ -1154,6 +1154,29 @@ would open. The fake makes invites to "Server"'s channels, sends
 INVITE_CREATE, and lists them at `/_control/invites`; its @everyone may
 invite, as Discord's is by default.
 
+### Channels and categories
+
+Where the account may manage channels (`MANAGE_CHANNELS`, on the server
+for one made there, on the category for one made in it, on the channel
+for the rest), Create channel and Create category make one with
+`POST /guilds/{id}/channels` and a body of its `name`, `type` (0 text, 2
+voice, 4 category), `parent_id` for a category, and for text its `topic`,
+`rate_limit_per_user` and `nsfw`. Edit channel reads a text channel with
+`GET /channels/{id}` and saves with `PATCH /channels/{id}`: its name, and
+for text its topic, slowmode, one of Discord's from 0 to 21600 seconds,
+and age restriction; a voice channel or a category changes only its name.
+Duplicate channel reads the channel and makes another with its type,
+category, permission overwrites, topic, age restriction, slowmode and
+voice settings under the name given, as Discord's client does. Delete
+channel uses `DELETE /channels/{id}`; deleting a category leaves its
+channels outside any, each with a CHANNEL_UPDATE before the
+CHANNEL_DELETE. Talk changes its list only from CHANNEL_CREATE, UPDATE
+and DELETE, which the service already applies to the one server they
+name, so the sidebar rebuilds that server's rows and keeps the others.
+Names are 1 to 100 characters and topics up to 1024, checked before
+asking. The fake lets Alice's Crew role manage "Server"'s channels and
+sends each event.
+
 ### DMs
 
 DMs and group DMs are listed under the DM button after Matrix DMs, the latest

@@ -1,7 +1,7 @@
 // Dialogs a Discord server's, category's or channel's menu opens.
 import { Theme, Label } from "theme.slint";
-import { ActionButton, IconButton } from "controls.slint";
-import { Choices } from "settings.slint";
+import { ActionButton, IconButton, TextField } from "controls.slint";
+import { Choices, SettingsSwitch } from "settings.slint";
 
 // What an invite dialog shows: whom it invites where, and the link once
 // Discord made it.
@@ -91,6 +91,129 @@ export component InviteDialog inherits Rectangle {
                     ActionButton {
                         text: "Generate a new link"; enabled: !root.prompt.making;
                         clicked => { root.remake(root.age, root.uses); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// What a channel dialog asks: to make, change, copy or delete a channel or
+// category, and which of its fields it shows.
+export struct ChannelPrompt {
+    title: string,
+    /// Where it goes, or what deleting it does.
+    detail: string,
+    /// The button that carries it out, such as "Create channel".
+    confirm: string,
+    danger: bool,
+    /// Whether it offers text or voice, for a channel it makes.
+    kinds: bool,
+    /// Whether it asks for a name; the name's heading, and what it shows
+    /// without one.
+    named: bool,
+    field: string,
+    placeholder: string,
+    /// Whether it changes a text channel's topic, slowmode and NSFW switch.
+    settings: bool,
+    /// Discord sends the settings it changes.
+    loading: bool,
+    saving: bool,
+    error: string,
+}
+
+// Makes, changes, copies or deletes a Discord channel or category, as
+// Discord's create channel and channel settings dialogs do.
+export component ChannelDialog inherits Rectangle {
+    in property <ChannelPrompt> prompt;
+    in-out property <string> name;
+    in-out property <string> topic;
+    /// 0 for text, 1 for voice; and an index into the slowmodes offered.
+    in-out property <int> kind;
+    in-out property <int> slowmode;
+    in-out property <bool> nsfw;
+    callback save;
+    callback close;
+    property <[string]> slowmodes: ["Off", "5s", "10s", "15s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "6h"];
+    property <bool> ready: !root.prompt.loading && !root.prompt.saving;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(460px, root.width - 48px); height: channel-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: root.prompt.title;
+        TouchArea { }
+        FocusScope {
+            init => { if !root.prompt.named { self.focus(); } }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                if event.text == "\n" && root.ready { root.save(); return accept; }
+                return reject;
+            }
+            channel-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: root.prompt.title; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
+                }
+                if root.prompt.detail != "": Label { text: root.prompt.detail; }
+                if root.prompt.kinds: Text { text: "CHANNEL TYPE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                if root.prompt.kinds: Choices {
+                    label: "Channel type"; options: ["Text", "Voice"];
+                    current <=> root.kind;
+                }
+                if root.prompt.named: Text { text: root.prompt.field; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                if root.prompt.named: TextField {
+                    init => { if self.enabled { self.focus-input(); } }
+                    changed enabled => { if self.enabled { self.focus-input(); } }
+                    enabled: !root.prompt.loading;
+                    min-height: 36px; text-size: 15px; pad: 10px;
+                    placeholder: root.prompt.loading ? "Loading..." : root.prompt.placeholder; label: root.prompt.field;
+                    text <=> root.name;
+                    accepted => { if root.ready { root.save(); } }
+                }
+                if root.prompt.settings: Text { text: "CHANNEL TOPIC"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                if root.prompt.settings: TextField {
+                    enabled: !root.prompt.loading;
+                    min-height: 36px; text-size: 15px; pad: 10px;
+                    placeholder: "Let everyone know how to use this channel"; label: "Channel topic";
+                    text <=> root.topic;
+                    accepted => { if root.ready { root.save(); } }
+                }
+                if root.prompt.settings: Text { text: "SLOWMODE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                if root.prompt.settings: HorizontalLayout {
+                    spacing: 8px; alignment: start;
+                    IconButton {
+                        icon: @image-url("icons/chevron-left.svg"); label: "Shorter slowmode"; size: 32px; glyph: 18px;
+                        clicked => { root.slowmode = max(0, root.slowmode - 1); }
+                    }
+                    Text {
+                        min-width: 48px; text: root.slowmodes[root.slowmode]; color: Theme.text; font-size: 15px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        accessible-role: text; accessible-label: "Slowmode " + self.text;
+                    }
+                    IconButton {
+                        icon: @image-url("icons/chevron-right.svg"); label: "Longer slowmode"; size: 32px; glyph: 18px;
+                        clicked => { root.slowmode = min(root.slowmodes.length - 1, root.slowmode + 1); }
+                    }
+                }
+                if root.prompt.settings: Label { text: "Members may send one message per interval, unless they may manage the channel or its messages."; }
+                if root.prompt.settings: SettingsSwitch {
+                    text: "Age-restricted channel";
+                    description: "Members must confirm they're of age to see what's in it.";
+                    enabled: !root.prompt.loading;
+                    checked <=> root.nsfw;
+                }
+                if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px; padding-top: 4px;
+                    ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
+                    ActionButton {
+                        text: root.prompt.confirm; primary: !root.prompt.danger; danger: root.prompt.danger;
+                        enabled: root.ready;
+                        clicked => { root.save(); }
                     }
                 }
             }

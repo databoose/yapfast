@@ -94,6 +94,10 @@
 // server and its channels, and USER_GUILD_SETTINGS_UPDATE says so. POST
 // /channels/{id}/invites makes an invite to a channel of "Server", which
 // @everyone may, as on Discord, and GET /_control/invites lists them.
+// Alice's Crew role may manage channels: POST /guilds/{id}/channels makes a
+// channel or category in "Server", and GET, PATCH and DELETE /channels/{id}
+// read, change and delete one, each with its CHANNEL_ event. Deleting a
+// category leaves its channels outside any, as Discord does.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
 // remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
 // code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
@@ -997,7 +1001,8 @@ const serverRoles = [
   { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
   { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-  { id: CREW, name: "Crew", permissions: "0", position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  // Crew may manage channels.
+  { id: CREW, name: "Crew", permissions: String(bit(4)), position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: STAFF, name: "Staff", permissions: String(MODERATION), position: 4, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: LEADS, name: "Leads", permissions: "0", position: 5, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
 ];
@@ -1024,8 +1029,9 @@ function aliceMay(permission: number, user?: string): boolean {
   return holds && (user === undefined || (user !== ALICE && rank(ALICE) > rank(user)));
 }
 
-function guild() {
-  const channel = (id: string, name: string, type: number, position: number, parent: string | null) => ({
+/** A channel of "Server" as Discord sends it. */
+function guildChannel(id: string, name: string, type: number, position: number, parent: string | null) {
+  return {
     id,
     type,
     name,
@@ -1033,12 +1039,38 @@ function guild() {
     parent_id: parent,
     guild_id: GUILD,
     flags: 0,
-    permission_overwrites: [],
+    permission_overwrites: [] as unknown[],
     ...(type === 0
-      ? { topic: id === GENERAL ? generalTopic : null, nsfw: false, rate_limit_per_user: 0, last_message_id: messages.get(id)!.at(-1)?.id ?? null }
+      ? { topic: (id === GENERAL ? generalTopic : null) as string | null, nsfw: false, rate_limit_per_user: 0, last_message_id: messages.get(id)?.at(-1)?.id ?? null }
       : {}),
     ...(type === 2 ? { bitrate: 64000, user_limit: 0, rtc_region: null, last_message_id: null } : {}),
-  });
+  };
+}
+type GuildChannel = ReturnType<typeof guildChannel>;
+
+// Channels and categories of "Server" made, changed and deleted through the
+// API: POST /guilds/{id}/channels, PATCH and DELETE /channels/{id}.
+const madeChannels = new Map<string, GuildChannel>();
+const channelEdits = new Map<string, Partial<GuildChannel>>();
+const deletedChannels = new Set<string>();
+
+/** "Server"'s channels as they are now. */
+function guildChannels(): GuildChannel[] {
+  const channel = guildChannel;
+  return [
+    channel(CATEGORY, "Channels", 4, 0, null),
+    channel(GENERAL, "general", 0, 0, CATEGORY),
+    channel(LOUNGE, "Lounge", 2, 1, CATEGORY),
+    channel(CREATE_ROOM, "Create Room", 2, 2, CATEGORY),
+    ...(roomMade ? [channel(ALICES_ROOM, "Alice's room", 2, 3, CATEGORY)] : []),
+    ...rooms.map((id, n) => channel(id, `room-${n + 1}`, 0, 2 + n, CATEGORY)),
+    ...madeChannels.values(),
+  ]
+    .filter((channel) => !deletedChannels.has(channel.id))
+    .map((channel) => ({ ...channel, ...channelEdits.get(channel.id) }));
+}
+
+function guild() {
   const properties = {
     id: GUILD,
     name: "Server",
@@ -1062,14 +1094,7 @@ function guild() {
   return {
     id: GUILD,
     properties,
-    channels: [
-      channel(CATEGORY, "Channels", 4, 0, null),
-      channel(GENERAL, "general", 0, 0, CATEGORY),
-      channel(LOUNGE, "Lounge", 2, 1, CATEGORY),
-      channel(CREATE_ROOM, "Create Room", 2, 2, CATEGORY),
-      ...(roomMade ? [channel(ALICES_ROOM, "Alice's room", 2, 3, CATEGORY)] : []),
-      ...rooms.map((id, n) => channel(id, `room-${n + 1}`, 0, 2 + n, CATEGORY)),
-    ],
+    channels: guildChannels(),
     roles: serverRoles,
     emojis: [
       { id: EMOJI_TALK, name: "talk", animated: false, available: true, managed: false, require_colons: true, roles: [] },
@@ -2971,6 +2996,70 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       else notes.delete(id);
       dispatch("USER_NOTE_UPDATE", { id, note: body.note ?? "" });
       return empty();
+    }
+  }
+
+  // "Server"'s channels and categories, which Crew, and so Alice, may
+  // manage: making one, reading, changing and deleting it, as Discord does.
+  if (method === "POST" && path === `/guilds/${GUILD}/channels`) {
+    const body: any = await req.json().catch(() => ({}));
+    const type = body.type ?? 0;
+    const known = guildChannels();
+    const parent = body.parent_id ?? null;
+    const invalid =
+      typeof body.name !== "string" || body.name.length < 1 || body.name.length > 100 || ![0, 2, 4].includes(type) ||
+      (parent !== null && (type === 4 || !known.some((channel) => channel.id === parent && channel.type === 4))) ||
+      (body.topic != null && String(body.topic).length > 4096) ||
+      (body.rate_limit_per_user != null && !(body.rate_limit_per_user >= 0 && body.rate_limit_per_user <= 21600));
+    if (invalid) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    const id = nextId(Date.now());
+    // Discord makes text channel names lower case, with dashes for spaces.
+    const name = type === 0 ? body.name.trim().toLowerCase().replace(/\s+/g, "-") : body.name.trim();
+    const siblings = known.filter((channel) => channel.parent_id === parent && (channel.type === 4) === (type === 4));
+    const channel = guildChannel(id, name, type, body.position ?? siblings.length, parent);
+    channel.permission_overwrites = body.permission_overwrites ?? [];
+    if (type === 0) {
+      messages.set(id, []);
+      Object.assign(channel, { topic: body.topic ?? null, nsfw: body.nsfw === true, rate_limit_per_user: body.rate_limit_per_user ?? 0 });
+    }
+    madeChannels.set(id, channel);
+    dispatch("CHANNEL_CREATE", channel);
+    return json(channel, 201);
+  }
+  if ((m = path.match(/^\/channels\/(\d+)$/)) && guildChannels().some((channel) => channel.id === m![1])) {
+    const id = m[1]!;
+    const channel = () => guildChannels().find((known) => known.id === id)!;
+    if (method === "GET") return json(channel());
+    if (method === "PATCH") {
+      const body: any = await req.json().catch(() => ({}));
+      const before = channel();
+      if (("name" in body && (typeof body.name !== "string" || body.name.length < 1 || body.name.length > 100)) ||
+        (body.topic != null && String(body.topic).length > 4096) ||
+        (body.rate_limit_per_user != null && !(body.rate_limit_per_user >= 0 && body.rate_limit_per_user <= 21600))) {
+        return json({ message: "Invalid Form Body", code: 50035 }, 400);
+      }
+      const edit: Partial<GuildChannel> = { ...channelEdits.get(id) };
+      if ("name" in body) edit.name = before.type === 0 ? body.name.trim().toLowerCase().replace(/\s+/g, "-") : body.name.trim();
+      for (const key of ["position", "parent_id"] as const) if (key in body) (edit as any)[key] = body[key];
+      if (before.type === 0) {
+        for (const key of ["topic", "nsfw", "rate_limit_per_user"] as const) if (key in body) (edit as any)[key] = body[key];
+      }
+      channelEdits.set(id, edit);
+      dispatch("CHANNEL_UPDATE", channel());
+      return json(channel());
+    }
+    if (method === "DELETE") {
+      const gone = channel();
+      deletedChannels.add(id);
+      // A category's channels stay, outside any category.
+      if (gone.type === 4) {
+        for (const child of guildChannels().filter((known) => known.parent_id === id)) {
+          channelEdits.set(child.id, { ...channelEdits.get(child.id), parent_id: null });
+          dispatch("CHANNEL_UPDATE", { ...child, parent_id: null });
+        }
+      }
+      dispatch("CHANNEL_DELETE", gone);
+      return json(gone);
     }
   }
 
