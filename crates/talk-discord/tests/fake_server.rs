@@ -656,6 +656,38 @@ async fn talks_to_the_fake_server() {
     .await;
     assert_eq!(discord.open_dm(&carol_id).await.unwrap(), carol_dm);
 
+    // A DM's pins, and a search of it, which waits while Discord indexes
+    // the DM, newest first.
+    let pinned: Vec<_> = discord.pins(&dm_bob).await.unwrap();
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned[0].content, "Did you see the trip notes?");
+    let found = discord.search(&dm_bob, "SEE", 0).await.unwrap();
+    let said: Vec<_> = found
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(said, ["See you at nine", "Did you see the trip notes?"]);
+    assert_eq!(found.total, 2);
+
+    // Friends added to a DM make a group of them; more join it later.
+    let dave = discord.find_people("da")[0].id.clone();
+    let group = discord
+        .create_group(&[carol_id.clone(), dave.clone()])
+        .await
+        .unwrap();
+    let people_in = |snapshot: &Snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == group && conversation.group)
+            .map(|conversation| conversation.people)
+    };
+    snapshot_where(&discord, |snapshot| people_in(snapshot) == Some(3)).await;
+    let bob_id = discord.find_people("bob")[0].id.clone();
+    discord.add_to_group(&group, &[bob_id]).await.unwrap();
+    snapshot_where(&discord, |snapshot| people_in(snapshot) == Some(4)).await;
+
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
     let asked = discord

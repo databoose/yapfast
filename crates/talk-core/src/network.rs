@@ -30,6 +30,9 @@ impl Network {
                 spoilers: false,
                 categories: false,
                 dm_calls: false,
+                dm_pins: false,
+                dm_search: false,
+                group_dms: false,
             },
             Self::Discord => Capabilities {
                 // Discord turns down forwarding from or to its channels.
@@ -37,6 +40,9 @@ impl Network {
                 spoilers: true,
                 categories: true,
                 dm_calls: true,
+                dm_pins: true,
+                dm_search: true,
+                group_dms: true,
             },
         }
     }
@@ -54,6 +60,13 @@ pub struct Capabilities {
     pub categories: bool,
     /// A DM or group DM has a call of its own.
     pub dm_calls: bool,
+    /// A DM or group DM lists its pinned messages.
+    pub dm_pins: bool,
+    /// A DM or group DM's messages can be searched.
+    pub dm_search: bool,
+    /// Friends can be added to a DM, which makes a group of it, or to a
+    /// group DM.
+    pub group_dms: bool,
 }
 
 #[cfg(test)]

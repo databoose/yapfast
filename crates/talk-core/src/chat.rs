@@ -1039,6 +1039,23 @@ pub enum DiscordCommand {
     CloseDm {
         room: String,
     },
+    /// A Discord DM's pinned messages; [`Event::Pins`] follows.
+    Pins {
+        room: String,
+    },
+    /// Look for a Discord DM's messages that contain `query`, a page from
+    /// the `offset`th found; [`Event::Found`] follows.
+    Search {
+        room: String,
+        query: String,
+        offset: u32,
+    },
+    /// Make a Discord group DM with these users, or with `room`, add them to
+    /// that group; [`Event::GroupChanged`] follows.
+    AddToGroup {
+        room: Option<String>,
+        users: Vec<String>,
+    },
     /// Mute a Discord DM or group DM, or unmute it.
     Mute {
         room: String,
@@ -1192,6 +1209,23 @@ pub enum Event {
     StatusSet(Result<(), String>),
     /// [`DiscordCommand::Unlink`] forgot the account.
     DiscordUnlinked,
+    /// [`DiscordCommand::Pins`]'s messages, the latest pinned first, or why
+    /// they didn't come.
+    Pins {
+        room: String,
+        result: Result<Vec<ChatMessage>, String>,
+    },
+    /// What [`DiscordCommand::Search`] found: a page of messages, the newest
+    /// first, and how many in all; or why it couldn't search.
+    Found {
+        room: String,
+        query: String,
+        offset: u32,
+        result: Result<(u32, Vec<ChatMessage>), String>,
+    },
+    /// The group [`DiscordCommand::AddToGroup`] made or added to, by room id,
+    /// or why it couldn't.
+    GroupChanged(Result<String, String>),
     /// The roles and groups a message in a room may mention.
     MentionGroups {
         room: String,

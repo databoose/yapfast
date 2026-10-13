@@ -321,6 +321,35 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     bind!(on_close_role, Action::CloseRole);
     bind!(on_close_new_dm, Action::CloseNewDm);
+    bind!(on_more_results, Action::MoreResults);
+    bind!(on_open_add_people, Action::OpenAddPeople);
+    bind!(on_confirm_add_people, Action::AddPeople);
+    bind!(on_close_add_people, Action::CloseAddPeople);
+    bind_item!(on_choose_person, Action::ChoosePerson);
+    bind_item!(on_search, Action::Search);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_show_pins(move |shown| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::ShowPins(shown));
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_add_people_search(move || {
+            if let Some(window) = weak.upgrade() {
+                let query = window.get_add_people_query().to_string();
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::AddPeopleQuery(query));
+            }
+        });
+    }
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_new_dm_search(move || {

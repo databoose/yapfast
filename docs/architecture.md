@@ -34,7 +34,9 @@ or sending a backend command. `AppState` supplies ordinary Rust data for renderi
 including shared timeline storage through `Arc<Vec<ChatMessage>>`. `dispatch`
 routes each action to a method in the module for its area, under
 [`application/`](../crates/talk-core/src/application): `compose`, `messages`,
-`rooms`, `profiles`, `calls`, `session`, `preview` and `discord_account`.
+`rooms`, `profiles`, `calls`, `session`, `preview`, `discord_account` and
+`header`, which holds what a DM's header opens: its pins, a search of it and
+adding friends to it.
 
 The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`src/ui/`](../src/ui), with
 the interface in [`ui/*.slint`](../ui), owns input widgets, password masking,
@@ -44,7 +46,7 @@ state, theme and icons. `Adapter::refresh`, in
 area at a time: the image viewer, profile, workspace, sidebar, account, header,
 member lists, dialogs, composer, messages and call. `ui/talk.slint` holds the
 window and imports its parts from the files beside it: the theme, controls, rail,
-composer, messages, people, friends, voice, dialogs, settings, sign-in and
+composer, messages, people, friends, header, voice, dialogs, settings, sign-in and
 Discord pieces. The adapter updates widgets after model changes. A programmatic
 composer update uses the new room's draft, so it cannot overwrite that draft with
 the previous room's text.
@@ -79,11 +81,12 @@ A visible change usually touches each of these steps:
    Rust sees only `TalkWindow` in `ui/talk.slint` and the structs it exports, so
    `TalkWindow` declares a matching property or callback and binds it to the
    component. The areas are `theme`, `controls`, `rail`, `composer`, `messages`,
-   `people`, `friends`, `voice`, `dialogs`, `settings`, `sign-in` and `discord`.
+   `people`, `friends`, `header`, `voice`, `dialogs`, `settings`, `sign-in` and
+   `discord`.
 2. **State to window.** `Adapter::refresh` calls one `show_<area>` method in
    `src/ui/refresh.rs` per area (`show_viewer`, `show_profile`,
    `show_workspace`, `show_sidebar`, `show_account`, `show_header`,
-   `show_members`, `show_dialogs`, `show_composer`, `show_messages`,
+   `show_dm_tools`, `show_members`, `show_dialogs`, `show_composer`, `show_messages`,
    `show_voice`), which sets the window's properties from `AppState`. Message
    rows are built in `src/ui/messages.rs`, profile rows in `src/ui/profile.rs`
    and pictures in `src/ui/pictures.rs`.
@@ -100,7 +103,7 @@ A visible change usually touches each of these steps:
    `dispatch` are in `crates/talk-core/src/application.rs`, which routes each
    action to the module for its area in `crates/talk-core/src/application/`:
    `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `calls.rs`,
-   `session.rs`, `preview.rs` or `discord_account.rs`.
+   `session.rs`, `preview.rs`, `discord_account.rs` or `header.rs`.
 5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to
    the chat actor in `crates/talk-core/src/chat.rs`, which routes it to the
    network its room id names, or to voice. Matrix lives

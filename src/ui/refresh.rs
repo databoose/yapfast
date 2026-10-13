@@ -183,7 +183,11 @@ impl Adapter {
         self.show_workspace(window);
         self.show_sidebar(window);
         self.show_account(window);
+        if changes.selection {
+            window.set_search_text(SharedString::default());
+        }
         self.show_header(window);
+        self.show_dm_tools(window);
         self.show_members(window);
         self.show_dialogs(window);
         self.show_composer(window);
@@ -673,6 +677,127 @@ impl Adapter {
             }),
         );
         window.set_members_available(state.lists_members());
+    }
+
+    /// What the open DM's header opens: its pinned messages, what its
+    /// search found, and the friends picker.
+    fn show_dm_tools(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        let twelve_hour = self.layout.twelve_hour_clock;
+        window.set_can_pin(state.dm_that(|can| can.dm_pins).is_some());
+        window.set_can_search(state.dm_that(|can| can.dm_search).is_some());
+        window.set_can_add_people(
+            state.discord_online && state.dm_that(|can| can.group_dms).is_some(),
+        );
+        let selected = state.selected.as_deref();
+        let pins = state
+            .pins
+            .as_ref()
+            .filter(|pins| Some(pins.room.as_str()) == selected);
+        window.set_pins_open(pins.is_some());
+        window.set_pins_note(
+            match pins.map(|pins| &pins.messages) {
+                Some(None) => "Loading pinned messages...",
+                Some(Some(Err(error))) => error.as_str(),
+                Some(Some(Ok(pinned))) if pinned.is_empty() => {
+                    "This conversation doesn't have any pinned messages yet."
+                }
+                _ => "",
+            }
+            .into(),
+        );
+        let pinned = match pins.and_then(|pins| pins.messages.as_ref()) {
+            Some(Ok(pinned)) => pinned.as_slice(),
+            _ => &[],
+        };
+        show_found(&self.models.pins, pinned, twelve_hour);
+
+        let search = state
+            .search
+            .as_ref()
+            .filter(|search| Some(search.room.as_str()) == selected);
+        window.set_search_open(search.is_some());
+        window.set_search_loading(search.is_some_and(|search| search.loading));
+        window.set_search_more(search.is_some_and(Search::more));
+        window.set_search_heading(
+            match search {
+                Some(search) if search.results.is_empty() && search.loading => {
+                    "Searching...".into()
+                }
+                Some(search) if search.results.is_empty() && search.error.is_some() => {
+                    "Search".into()
+                }
+                Some(Search { total: 1, .. }) => "1 Result".into(),
+                Some(search) => format!("{} Results", search.total),
+                None => String::new(),
+            }
+            .into(),
+        );
+        window.set_search_note(
+            match search {
+                Some(Search {
+                    error: Some(error), ..
+                }) => error.as_str(),
+                Some(search) if !search.loading && search.results.is_empty() => {
+                    "Nothing in this conversation matches. Try other words."
+                }
+                _ => "",
+            }
+            .into(),
+        );
+        show_found(
+            &self.models.search_results,
+            search.map_or(&[][..], |search| &search.results),
+            twelve_hour,
+        );
+
+        let picker = state
+            .add_people
+            .as_ref()
+            .filter(|picker| Some(picker.room.as_str()) == selected);
+        if picker.is_some() && !window.get_add_people_open() {
+            window.set_add_people_query(SharedString::default());
+        }
+        window.set_add_people_open(picker.is_some());
+        window.set_add_people_one_to_one(state.one_to_one().is_some());
+        window.set_add_people_room(state.group_room() as i32);
+        window.set_add_people_chosen(picker.map_or(0, |picker| picker.chosen.len() as i32));
+        window.set_add_people_adding(picker.is_some_and(|picker| picker.adding));
+        window.set_add_people_note(
+            picker
+                .and_then(|picker| picker.error.as_deref())
+                .unwrap_or_default()
+                .into(),
+        );
+        // Friends' presence changes often, and a refresh comes with each
+        // change; the rows are built again only when what they show changed.
+        let friends = picker.map(|_| state.addable_friends());
+        let shown = friends.as_ref().zip(picker).map(|(friends, picker)| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            (friends, &picker.chosen).hash(&mut hasher);
+            hasher.finish()
+        });
+        if shown == self.picker_shown {
+            return;
+        }
+        self.picker_shown = shown;
+        let people = match friends.zip(picker) {
+            Some((friends, picker)) => friends
+                .into_iter()
+                .map(|friend| PickRow {
+                    id: friend.id.clone().into(),
+                    name: friend.name.clone().into(),
+                    initial: initial(&friend.name),
+                    tint: tint(&friend.name),
+                    picture_url: friend.avatar.clone().unwrap_or_default().into(),
+                    presence: presence_name(friend.presence).into(),
+                    chosen: picker.chosen.contains(&friend.id),
+                })
+                .collect(),
+            None => vec![],
+        };
+        update_model(&self.models.add_people, people);
     }
 
     /// The member list, the reactions offered on messages, and a role's card.
@@ -1966,6 +2091,22 @@ fn arrived<'a>(
 /// What the bar that jumps to the "New" divider says: how many messages
 /// others sent from `unread` on, and since when, with the date unless it
 /// was today.
+/// Shows found messages, building rows only for those not shown already:
+/// a search's next page adds to the end of the results.
+fn show_found(model: &VecModel<FoundRow>, messages: &[ChatMessage], twelve_hour: bool) {
+    let kept = model
+        .iter()
+        .zip(messages)
+        .take_while(|(row, message)| row.item == message.item.as_str())
+        .count();
+    while model.row_count() > kept {
+        model.remove(model.row_count() - 1);
+    }
+    for message in &messages[kept..] {
+        model.push(found_row(message, twelve_hour));
+    }
+}
+
 pub(super) fn unread_label(unread: &[Arc<ChatMessage>]) -> String {
     let count = unread.iter().filter(|message| !message.own).count();
     let messages = if count == 1 { "message" } else { "messages" };

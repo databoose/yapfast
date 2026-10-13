@@ -15,7 +15,7 @@ use slint::{
 use talk_core::{
     application::{
         Action, AddFriend, AppState, Application, ClearAfter, Compose, DmScreen, Effect,
-        Navigation, NewDm, PersonAsk, ProfileView, Relation,
+        Navigation, NewDm, PersonAsk, ProfileView, Relation, Search,
     },
     backend::Backend,
     chat::{
@@ -697,6 +697,11 @@ struct Models {
     roster: Rc<VecModel<MemberRow>>,
     mentions: Rc<VecModel<MentionRow>>,
     new_dm_people: Rc<VecModel<ContactRow>>,
+    /// The open DM's pinned messages, what its search found, and the
+    /// friends its picker offers.
+    pins: Rc<VecModel<FoundRow>>,
+    search_results: Rc<VecModel<FoundRow>>,
+    add_people: Rc<VecModel<PickRow>>,
     role_members: Rc<VecModel<MemberRow>>,
     bar_reactions: Rc<VecModel<EmojiCell>>,
     menu_reactions: Rc<VecModel<EmojiCell>>,
@@ -727,6 +732,9 @@ impl Models {
         window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_mentions(ModelRc::from(self.mentions.clone()));
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
+        window.set_pins(ModelRc::from(self.pins.clone()));
+        window.set_search_results(ModelRc::from(self.search_results.clone()));
+        window.set_add_people(ModelRc::from(self.add_people.clone()));
         window.set_role_members(ModelRc::from(self.role_members.clone()));
         window.set_bar_reactions(ModelRc::from(self.bar_reactions.clone()));
         window.set_menu_reactions(ModelRc::from(self.menu_reactions.clone()));
@@ -790,6 +798,9 @@ struct Adapter {
     rows: HashMap<String, MessageRow>,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
+    /// A hash of what the friends picker's rows were built from, so they're
+    /// built again only once that changes.
+    picker_shown: Option<u64>,
     /// Shows pictures that arrived, together with those that follow them closely.
     pictures_due: slint::Timer,
     /// Stream ticks without a new picture of a video that isn't playing,
@@ -918,6 +929,7 @@ impl Adapter {
                 messages: Arc::new(Vec::new()),
                 rows: HashMap::new(),
                 sidebar: None,
+                picker_shown: None,
                 pictures_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),
                 video_cell: Cell::new((0, 0)),

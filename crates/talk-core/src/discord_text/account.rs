@@ -1,8 +1,13 @@
 //! Commands about the account rather than a channel: finding people,
 //! profiles, role members, member search, friends, the status, calls
-//! ringing and message requests.
+//! ringing, message requests, a DM's pins and search, and group DMs.
 
-use super::{channels::SEARCH_PAUSE, commands::NOT_DISCORD, render::chat_profile, *};
+use super::{
+    channels::SEARCH_PAUSE,
+    commands::NOT_DISCORD,
+    render::{chat_profile, found},
+    *,
+};
 use crate::chat::{Muting, RelationshipChange};
 
 /// Carries out a command about the account, or gives back any other.
@@ -301,6 +306,111 @@ pub(super) fn command(
                 });
             }
         }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::Pins { room }) = command {
+        let channel = discord::parse_room(&room).map(|(_, channel)| channel.to_owned());
+        match (discord, channel) {
+            (Ok(discord), Some(channel)) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = match discord.pins(&channel).await {
+                        Ok(pins) => Ok(pins.iter().map(|pin| found(&discord, pin)).collect()),
+                        Err(error) => {
+                            tracing::warn!(error = format!("{error:#}"), "could not list pins");
+                            Err(error.to_string())
+                        }
+                    };
+                    let _ = events.send(Event::Pins { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::Pins {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::Search {
+        room,
+        query,
+        offset,
+    }) = command
+    {
+        let channel = discord::parse_room(&room).map(|(_, channel)| channel.to_owned());
+        match (discord, channel) {
+            (Ok(discord), Some(channel)) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = match discord.search(&channel, &query, offset).await {
+                        Ok(page) => Ok((
+                            page.total,
+                            page.messages
+                                .iter()
+                                .map(|hit| found(&discord, hit))
+                                .collect(),
+                        )),
+                        Err(error) => {
+                            tracing::warn!(error = format!("{error:#}"), "could not search a DM");
+                            Err(error.to_string())
+                        }
+                    };
+                    let _ = events.send(Event::Found {
+                        room,
+                        query,
+                        offset,
+                        result,
+                    });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::Found {
+                    room,
+                    query,
+                    offset,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::AddToGroup { room, users }) = command {
+        let discord = match discord {
+            Ok(discord) => discord.clone(),
+            Err(why) => {
+                let _ = events.send(Event::GroupChanged(Err(why.into())));
+                return None;
+            }
+        };
+        let events = events.clone();
+        tokio::spawn(async move {
+            let channel = room
+                .as_deref()
+                .and_then(discord::parse_room)
+                .map(|(_, channel)| channel.to_owned());
+            let result = match (&room, channel) {
+                (Some(room), Some(channel)) => discord
+                    .add_to_group(&channel, &users)
+                    .await
+                    .map(|()| room.clone()),
+                (Some(_), None) => Err(anyhow::anyhow!(NOT_DISCORD)),
+                (None, _) => discord
+                    .create_group(&users)
+                    .await
+                    .map(|channel| discord::room_id(talk_discord::ready::PRIVATE, &channel)),
+            };
+            let result = result.map_err(|error| {
+                tracing::warn!(error = format!("{error:#}"), "could not add to a group DM");
+                if room.is_some() {
+                    format!("Could not add them: {error}")
+                } else {
+                    format!("Could not make the group: {error}")
+                }
+            });
+            let _ = events.send(Event::GroupChanged(result));
+        });
         return None;
     }
     if let Command::Discord(

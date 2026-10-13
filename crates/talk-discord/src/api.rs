@@ -364,6 +364,52 @@ impl Api {
             .context("Discord didn't open the DM.")
     }
 
+    /// Makes a group DM with `recipients`, as adding friends to a one-to-one
+    /// DM does, which stays as it was; returns its channel id.
+    pub async fn create_group(&self, recipients: &[String]) -> Result<String> {
+        let body = json!({"recipients": recipients});
+        let channel = self
+            .json(with_json(
+                self.request(Method::POST, "/users/@me/channels"),
+                &body,
+            ))
+            .await?;
+        channel["id"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord didn't make the group.")
+    }
+
+    /// Adds `user` to a group DM.
+    pub async fn add_recipient(&self, channel: &str, user: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/recipients/{user}");
+        self.empty(with_json(self.request(Method::PUT, &path), &json!({})))
+            .await
+    }
+
+    /// A channel's pinned messages, the latest pinned first: up to [`PAGE`].
+    pub async fn pins(&self, channel: &str) -> Result<Vec<Value>> {
+        let path = format!("/channels/{channel}/messages/pins?limit={PAGE}");
+        let mut answer = self.json(self.request(Method::GET, &path)).await?;
+        match answer["items"].take() {
+            Value::Array(items) => Ok(items
+                .into_iter()
+                .map(|mut item| item["message"].take())
+                .collect()),
+            _ => bail!("could not understand Discord's answer"),
+        }
+    }
+
+    /// Discord's answer to a search of a DM's messages for `content`, the
+    /// newest first, from the `offset`th; see [`crate::service::Found`].
+    pub async fn search(&self, channel: &str, content: &str, offset: u32) -> Result<Value> {
+        let path = format!(
+            "/channels/{channel}/messages/search?content={}&offset={offset}",
+            encode(content)
+        );
+        self.json(self.request(Method::GET, &path)).await
+    }
+
     /// Shows others that this account is typing in `channel`.
     pub async fn typing(&self, channel: &str) -> Result<()> {
         let path = format!("/channels/{channel}/typing");

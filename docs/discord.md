@@ -971,6 +971,32 @@ Right-clicking the other person's avatar or name in the DM's messages opens
 the same menu. The person's choices show only in a one-to-one DM. A message request offers
 neither pinning, closing nor muting, as it waits for an answer.
 
+### A DM's header
+
+A DM or group DM's header has, as Discord's does, its call, its pinned
+messages, adding friends, the profile or member list, and a search. Video
+calls aren't there yet.
+
+- Pinned messages open under the pin, the latest pinned first, from `GET
+  /channels/{id}/messages/pins`, whose `items` carry each `message`. Talk asks
+  each time they open, and for the first 50.
+- Search is `GET /channels/{id}/messages/search?content=...&offset=...`, 25
+  messages a page, newest first; each of `messages` is a list whose first is
+  the one found. The results take the member list's or the profile's place,
+  and Show more loads the next page. Discord indexes a DM the first time it's
+  searched, answering 202 with code 110000 and a `retry_after`; Talk asks
+  again up to five times.
+- Clicking a pin or a result jumps to it in the timeline, loading earlier
+  history until it's there, up to 20 pages, as a reply's original does.
+  Pins and results show their text and name their files, without
+  downloading them.
+- Adding friends to a one-to-one DM makes a new group of them and the other
+  person with `POST /users/@me/channels` and their ids in `recipients`, as
+  Discord's client does, and opens it; the DM stays as it was. In a group,
+  each is `PUT /channels/{id}/recipients/{user}`, which CHANNEL_RECIPIENT_ADD
+  confirms. A group holds ten people, this account included, so the picker
+  stops there, and it offers only friends who aren't there already.
+
 ### Profiles
 
 Clicking someone in a channel's member list shows their profile in a small
@@ -999,7 +1025,7 @@ Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 In rough order. The browser covers these until then.
 
 - Threads and forum channels.
-- Search and pinned messages.
+- Search and pinned messages in servers; pinning and unpinning messages.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.
 - Making and changing server folders.

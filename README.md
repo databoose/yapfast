@@ -52,7 +52,7 @@ Not there yet:
   voice stops with that message. Discord on Windows is otherwise untested.
 - Linking stops with an error if Discord asks for a captcha.
 - Threads and forum channels.
-- Search and pinned messages.
+- Search and pinned messages in servers, and pinning messages.
 - Forwarding messages as forwards.
 - Blocking and unblocking, and a list of blocked people. Messages from people
   you blocked elsewhere already show collapsed.
@@ -65,6 +65,10 @@ Not there yet:
 
 Use Discord in a browser for these until then. The
 [Discord plan](docs/discord.md) has the details and the order of work.
+
+Talk speaks to Discord the way its own apps do, as documented by
+[Discord Userdoccers](https://docs.discord.food), a community effort to
+document the user side of Discord's API. Thanks to everyone who writes it.
 
 ## Linux development
 
