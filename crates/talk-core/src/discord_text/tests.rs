@@ -784,3 +784,69 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
             .is_none()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn a_server_channels_pins_and_search_show_its_members() {
+    let discord = fake_discord().await;
+    let (done, _finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    // These answer straight from the account, with no channel work.
+    let mut next = async |pick: &dyn Fn(Event) -> Option<Result<Vec<ChatMessage>, String>>| {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(result) = pick(received.recv().await.expect("events go on")) {
+                    return result.unwrap();
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for Discord")
+    };
+    command(
+        Command::Discord(DiscordCommand::Pins { room: room.clone() }),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    let pins = next(&|event| match event {
+        Event::Pins { result, .. } => Some(result),
+        _ => None,
+    })
+    .await;
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0].author, "Bob");
+    assert_eq!(pins[0].color, Some(0x3498db), "Bob is a Mod");
+
+    command(
+        Command::Discord(DiscordCommand::Search {
+            room: room.clone(),
+            query: "welcome".into(),
+            offset: 0,
+        }),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    let found = next(&|event| match event {
+        Event::Found { result, .. } => Some(result.map(|(total, found)| {
+            assert_eq!(total, 2);
+            found
+        })),
+        _ => None,
+    })
+    .await;
+    assert_eq!(found[0].body, "The welcome has the plan");
+    assert_eq!(found[0].author, "Bob");
+    assert_eq!(found[0].color, Some(0x3498db));
+    assert!(
+        found[0]
+            .avatar
+            .as_deref()
+            .is_some_and(|avatar| avatar.contains("/avatars/1400000000000000002/"))
+    );
+}

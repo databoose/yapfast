@@ -792,6 +792,62 @@ fn menus_list_their_choices_and_carry_them_out() {
 }
 
 #[test]
+fn menus_give_each_row_its_own_submenu_and_tick_checkboxes() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    let row = |id: &str, checkbox: bool| MenuRow {
+        id: id.into(),
+        text: id.into(),
+        checkbox,
+        ..Default::default()
+    };
+    menus::show(
+        &window,
+        (
+            vec![
+                row("profile", false),
+                row("mute", false),
+                row("notifications", false),
+                row("hide-muted", true),
+            ],
+            vec![
+                vec![],
+                vec![row("mute-15", false)],
+                vec![row("all", false), row("suppress-roles", true)],
+                vec![],
+            ],
+        ),
+    );
+    let submenus = window.get_menu_submenus();
+    assert_eq!(submenus.row_count(), 4);
+    assert_eq!(submenus.row_data(0).unwrap().row_count(), 0);
+    assert_eq!(submenus.row_data(1).unwrap().row_count(), 1);
+    assert_eq!(submenus.row_data(2).unwrap().row_count(), 2);
+
+    // Choosing a checkbox ticks it where it is, in the menu or a submenu.
+    assert!(menus::toggle(&window, "hide-muted"));
+    assert!(window.get_menu_rows().row_data(3).unwrap().checked);
+    assert!(menus::toggle(&window, "suppress-roles"));
+    let ticked = |window: &TalkWindow| {
+        window
+            .get_menu_submenus()
+            .row_data(2)
+            .unwrap()
+            .row_data(1)
+            .unwrap()
+            .checked
+    };
+    assert!(ticked(&window));
+    assert!(menus::toggle(&window, "suppress-roles"));
+    assert!(!ticked(&window));
+    assert!(!menus::toggle(&window, "profile"), "not a checkbox");
+
+    // Without submenus, the menu reserves no room for one.
+    menus::show(&window, (vec![row("profile", false)], vec![vec![]]));
+    assert_eq!(window.get_menu_submenus().row_count(), 0);
+}
+
+#[test]
 fn the_input_caret_opens_its_menu_and_measures_only_while_open() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();
@@ -1944,6 +2000,7 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
             unavailable: false,
             icon: Some(format!("{id}.png")),
             folder: folder.cloned(),
+            hide_muted: false,
         };
     let mut state = AppState::default();
     state.servers = vec![

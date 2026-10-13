@@ -1,5 +1,6 @@
-//! Member searches for mentions: each waits for the chunk of members
-//! Discord sends back with its nonce.
+//! Member searches for mentions, and requests for members' server
+//! profiles: each waits for the chunk of members Discord sends back with
+//! its nonce.
 
 use std::collections::HashMap;
 
@@ -28,12 +29,31 @@ impl MemberSearches {
         query: &str,
         reply: oneshot::Sender<Vec<String>>,
     ) -> Result<()> {
+        let nonce = self.wait(reply);
+        gateway.search_members(guild, query, FOUND, &nonce).await
+    }
+
+    /// Asks Discord for these members of `guild`, up to 100; `reply` hears
+    /// which it found once their profiles are learned.
+    pub(super) async fn members(
+        &mut self,
+        gateway: &mut Gateway,
+        guild: &str,
+        users: &[String],
+        reply: oneshot::Sender<Vec<String>>,
+    ) -> Result<()> {
+        let nonce = self.wait(reply);
+        gateway.request_members(guild, users, Some(&nonce)).await
+    }
+
+    /// A new nonce, whose chunk `reply` waits for.
+    fn wait(&mut self, reply: oneshot::Sender<Vec<String>>) -> String {
         self.nonce += 1;
         let nonce = format!("talk-search-{}", self.nonce);
         // Unanswered searches are dropped, so their callers stop waiting.
         self.waiting.retain(|_, reply| !reply.is_closed());
         self.waiting.insert(nonce.clone(), reply);
-        gateway.search_members(guild, query, FOUND, &nonce).await
+        nonce
     }
 
     /// Answers the search a chunk of members is for, if any. Its members are

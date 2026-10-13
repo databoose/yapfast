@@ -548,3 +548,31 @@ network combinations, workspace tests (49 application, 129 core and 105
 protocol tests), desktop and headless builds and smoke checks. The private
 UI session was stopped and the Discord-only `target/fast/talk` rebuilt for
 the owner's next launch.
+
+## 2026-10-13: Discord server foundations
+
+The [record](2026-10-13-linux-server-foundations.json) compares commit
+`28d89c9` with the server foundations: members' roles held once as shared
+`Arc<[String]>` that member list rows and `ChatMember` point at, rather than
+a second copy in each listed member; one shared notification settings
+object per server; server pins and search; and menus with a submenu per row.
+Discord-only `fast` builds ran on the busy fake account with the server's
+#general and its member list open.
+
+| Build | RSS, mean of 3 (range) | PSS, mean of 3 |
+| --- | --- | --- |
+| `28d89c9` | 108.2 MiB (106.6–110.6) | 88.9 MiB |
+| This change | 106.6 MiB (105.0–107.0) | 87.0 MiB |
+
+The difference is inside the spread between runs of one build, so the change
+costs nothing measurable here. The roles it stops copying are a few hundred
+bytes per listed member, at most 4,000 of them across the 40 kept lists.
+
+Reproduce: build each with `nix develop path:./nix --command cargo build
+--locked --profile fast --no-default-features --features desktop,discord`,
+saving the binary outside `target`. For each run, start a fresh session with
+`scripts/ui-session start --discord --bin PATH --fake-args '--servers 100
+--dms 300 --images 3 --channels 12 --authors 60'`, then `scripts/ui-session
+do 'sleep 8' 'click 36 36' 'sleep 4' 'click 36 102' 'sleep 8' 'move 550 25'
+'sleep 4'`, and sample `.local/ui-session/talk.pid` with
+`scripts/measure-process PID --seconds 10`. Alternate the builds.

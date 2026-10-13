@@ -3,13 +3,14 @@
 //! and clients compare it with each channel's last message themselves.
 //! See <https://docs.discord.food/topics/read-state>.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
 
 use crate::{
     event::Event,
     message::{iso_ms, snowflake_at},
+    notifications::{Level, Notifications},
     ready::{Access, Channel, PRIVATE, Private, Server},
 };
 
@@ -21,38 +22,6 @@ struct Read {
 }
 
 #[derive(Default)]
-struct Settings {
-    muted: bool,
-    suppress_everyone: bool,
-    suppress_roles: bool,
-    muted_channels: HashMap<String, bool>,
-    /// Which messages notify in the server, unless the server's default applies.
-    level: Option<Level>,
-    /// Channels' and categories' own levels.
-    channel_levels: HashMap<String, Level>,
-}
-
-/// Which messages notify: Discord's `message_notifications`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Level {
-    All,
-    Mentions,
-    Nothing,
-}
-
-impl Level {
-    /// A level, or none where Discord's 3 means the server's default or the parent's.
-    fn from(value: &Value) -> Option<Self> {
-        match value.as_u64()? {
-            0 => Some(Self::All),
-            1 => Some(Self::Mentions),
-            2 => Some(Self::Nothing),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Default)]
 pub struct Unreads {
     /// Each channel's newest message.
     last_messages: HashMap<String, u64>,
@@ -60,8 +29,9 @@ pub struct Unreads {
     /// When this account joined each server, as a snowflake. Channels it never
     /// read count as read up to then, as in Discord's clients.
     joined: HashMap<String, u64>,
-    /// Notification settings by server.
-    settings: HashMap<String, Settings>,
+    /// Notification settings by server, [`PRIVATE`] for DMs; each shared
+    /// with the snapshots that publish it until Discord changes it.
+    settings: HashMap<String, Arc<Notifications>>,
     /// Each server's default notification level, for accounts that kept it.
     default_levels: HashMap<String, Level>,
 }
@@ -79,21 +49,12 @@ fn snowflake(value: &Value) -> Option<u64> {
     value.as_str()?.parse().ok()
 }
 
-/// Whether a muted flag with its mute config is still in force.
-fn muted(value: &Value) -> bool {
-    if !value["muted"].as_bool().unwrap_or(false) {
-        return false;
-    }
-    match value["mute_config"]["end_time"].as_str().and_then(iso_ms) {
-        Some(end) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            end > now
-        }
-        None => true,
-    }
+/// Now, in Unix milliseconds, for whether a mute is still in force.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 impl Unreads {
@@ -158,34 +119,32 @@ impl Unreads {
     /// A server's settings, or with no server, those of DMs.
     fn learn_settings(&mut self, value: &Value) {
         let guild = value["guild_id"].as_str().unwrap_or(PRIVATE);
-        let muted_channels = value["channel_overrides"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|channel| {
-                Some((channel["channel_id"].as_str()?.to_owned(), muted(channel)))
-            })
-            .collect();
-        let channel_levels = value["channel_overrides"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|channel| {
-                let level = Level::from(&channel["message_notifications"])?;
-                Some((channel["channel_id"].as_str()?.to_owned(), level))
-            })
-            .collect();
-        self.settings.insert(
-            guild.to_owned(),
-            Settings {
-                muted: muted(value),
-                suppress_everyone: value["suppress_everyone"].as_bool().unwrap_or(false),
-                suppress_roles: value["suppress_roles"].as_bool().unwrap_or(false),
-                muted_channels,
-                level: Level::from(&value["message_notifications"]),
-                channel_levels,
-            },
-        );
+        let settings = Notifications::read(value);
+        // Discord sends the settings again with the read state; what didn't
+        // change stays shared.
+        if self
+            .settings
+            .get(guild)
+            .is_none_or(|known| **known != settings)
+        {
+            self.settings.insert(guild.to_owned(), Arc::new(settings));
+        }
+    }
+
+    /// This account's notification settings for a server, or with
+    /// [`PRIVATE`] its DMs; none until Discord sends them.
+    pub fn settings(&self, guild: &str) -> Option<&Arc<Notifications>> {
+        self.settings.get(guild)
+    }
+
+    /// The soonest end of a mute in force, in Unix milliseconds, when what
+    /// shows muted changes by itself.
+    pub fn next_mute_end(&self) -> Option<u64> {
+        let now = now();
+        self.settings
+            .values()
+            .filter_map(|settings| settings.next_end(now))
+            .min()
     }
 
     fn newer(&mut self, channel: &str, message: u64) {
@@ -289,31 +248,24 @@ impl Unreads {
         let Some(channel) = message["channel_id"].as_str() else {
             return false;
         };
+        let now = now();
         let Some(guild) = message["guild_id"].as_str() else {
             return !self
                 .settings
                 .get(PRIVATE)
-                .is_some_and(|settings| settings.muted_channels.get(channel) == Some(&true));
+                .is_some_and(|settings| settings.channel_muted(channel, now));
         };
         let settings = self.settings.get(guild);
-        let places = [Some(channel), category];
-        let level = settings
-            .and_then(|settings| {
-                places
-                    .iter()
-                    .flatten()
-                    .find_map(|place| settings.channel_levels.get(*place).copied())
-                    .or(settings.level)
-            })
-            .or_else(|| self.default_levels.get(guild).copied())
-            // Large servers default to mentions; a server not yet known is treated so.
-            .unwrap_or(Level::Mentions);
+        let default = self.default_levels.get(guild).copied().unwrap_or_default();
+        let level = settings.map_or(default, |settings| {
+            settings.level(channel, category, default)
+        });
         let muted = settings.is_some_and(|settings| {
-            settings.muted
-                || places
-                    .iter()
+            settings.mute.active(now)
+                || [Some(channel), category]
+                    .into_iter()
                     .flatten()
-                    .any(|place| settings.muted_channels.get(*place) == Some(&true))
+                    .any(|place| settings.channel_muted(place, now))
         });
         match level {
             Level::Nothing => false,
@@ -419,16 +371,16 @@ impl Unreads {
     pub fn server_muted(&self, guild: &str) -> bool {
         self.settings
             .get(guild)
-            .is_some_and(|settings| settings.muted)
+            .is_some_and(|settings| settings.mute.active(now()))
     }
 
     /// A server's text channel's muted, unread and mention state, as
     /// [`Self::mark`] sets it, for an account with `access` to it.
     pub fn channel(&self, guild: &str, channel: &Channel, access: Access) -> (bool, bool, u64) {
         let settings = self.settings.get(guild);
-        let channel_muted = |id: &str| {
-            settings.is_some_and(|settings| settings.muted_channels.get(id) == Some(&true))
-        };
+        let now = now();
+        let channel_muted =
+            |id: &str| settings.is_some_and(|settings| settings.channel_muted(id, now));
         let muted =
             channel_muted(&channel.id) || channel.parent.as_deref().is_some_and(channel_muted);
         let (unread, mentions) = self.state(guild, &channel.id);
@@ -446,7 +398,7 @@ impl Unreads {
         private.muted = self
             .settings
             .get(PRIVATE)
-            .is_some_and(|settings| settings.muted_channels.get(&private.id) == Some(&true));
+            .is_some_and(|settings| settings.channel_muted(&private.id, now()));
         let (unread, mentions) = self.state(PRIVATE, &private.id);
         private.unread = unread && !private.muted;
         private.mentions = if private.muted { 0 } else { mentions };

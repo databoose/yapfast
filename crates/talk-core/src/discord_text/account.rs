@@ -1,14 +1,15 @@
 //! Commands about the account rather than a channel: finding people,
 //! profiles, role members, member search, friends, the status, calls
-//! ringing, message requests, a DM's pins and search, and group DMs.
+//! ringing, message requests, a channel's pins and search, group DMs, and
+//! notification settings.
 
 use super::{
     channels::SEARCH_PAUSE,
     commands::NOT_DISCORD,
-    render::{chat_profile, found},
+    render::{chat_profile, found_in},
     *,
 };
-use crate::chat::{Muting, RelationshipChange};
+use crate::chat::{Muting, NotificationChange, NotifyLevel, RelationshipChange};
 
 /// Carries out a command about the account, or gives back any other.
 pub(super) fn command(
@@ -78,6 +79,7 @@ pub(super) fn command(
                     group: None,
                     presence: None,
                     activity: None,
+                    roles: discord.roles(guild, &user),
                     id: user,
                 })
                 .collect();
@@ -130,6 +132,7 @@ pub(super) fn command(
                         group: None,
                         presence: None,
                         activity: None,
+                        roles: discord.roles(&guild, &user),
                         id: user,
                     })
                     .collect();
@@ -309,13 +312,14 @@ pub(super) fn command(
         return None;
     }
     if let Command::Discord(DiscordCommand::Pins { room }) = command {
-        let channel = discord::parse_room(&room).map(|(_, channel)| channel.to_owned());
-        match (discord, channel) {
-            (Ok(discord), Some(channel)) => {
+        let place = discord::parse_room(&room)
+            .map(|(guild, channel)| (guild.to_owned(), channel.to_owned()));
+        match (discord, place) {
+            (Ok(discord), Some((guild, channel))) => {
                 let (discord, events) = (discord.clone(), events.clone());
                 tokio::spawn(async move {
-                    let result = match discord.pins(&channel).await {
-                        Ok(pins) => Ok(pins.iter().map(|pin| found(&discord, pin)).collect()),
+                    let result = match discord.pins(&guild, &channel).await {
+                        Ok(pins) => Ok(found_in(&discord, &room, &pins)),
                         Err(error) => {
                             tracing::warn!(error = format!("{error:#}"), "could not list pins");
                             Err(error.to_string())
@@ -339,21 +343,16 @@ pub(super) fn command(
         offset,
     }) = command
     {
-        let channel = discord::parse_room(&room).map(|(_, channel)| channel.to_owned());
-        match (discord, channel) {
-            (Ok(discord), Some(channel)) => {
+        let place = discord::parse_room(&room)
+            .map(|(guild, channel)| (guild.to_owned(), channel.to_owned()));
+        match (discord, place) {
+            (Ok(discord), Some((guild, channel))) => {
                 let (discord, events) = (discord.clone(), events.clone());
                 tokio::spawn(async move {
-                    let result = match discord.search(&channel, &query, offset).await {
-                        Ok(page) => Ok((
-                            page.total,
-                            page.messages
-                                .iter()
-                                .map(|hit| found(&discord, hit))
-                                .collect(),
-                        )),
+                    let result = match discord.search(&guild, &channel, &query, offset).await {
+                        Ok(page) => Ok((page.total, found_in(&discord, &room, &page.messages))),
                         Err(error) => {
-                            tracing::warn!(error = format!("{error:#}"), "could not search a DM");
+                            tracing::warn!(error = format!("{error:#}"), "could not search");
                             Err(error.to_string())
                         }
                     };
@@ -419,13 +418,42 @@ pub(super) fn command(
         | DiscordCommand::SetNote { .. }
         | DiscordCommand::SetNickname { .. }
         | DiscordCommand::CloseDm { .. }
-        | DiscordCommand::Mute { .. }),
+        | DiscordCommand::Mute { .. }
+        | DiscordCommand::Notifications { .. }),
     ) = command
     {
         change_person(command, discord, events);
         return None;
     }
     Some(command)
+}
+
+/// Whether `muting` mutes, and for how many seconds; none for good.
+fn mute(muting: Muting) -> (bool, Option<u64>) {
+    match muting {
+        Muting::Off => (false, None),
+        Muting::Minutes(minutes) => (true, Some(u64::from(minutes) * 60)),
+        Muting::Always => (true, None),
+    }
+}
+
+/// A change to notification settings as the Discord service takes it.
+fn notification_change(change: NotificationChange) -> talk_discord::notifications::Change {
+    use talk_discord::notifications::{Change, Level};
+    match change {
+        NotificationChange::Mute(muting) => {
+            let (muted, seconds) = mute(muting);
+            Change::Mute { muted, seconds }
+        }
+        NotificationChange::Level(level) => Change::Level(level.map(|level| match level {
+            NotifyLevel::All => Level::All,
+            NotifyLevel::Mentions => Level::Mentions,
+            NotifyLevel::Nothing => Level::Nothing,
+        })),
+        NotificationChange::HideMuted(on) => Change::HideMutedChannels(on),
+        NotificationChange::SuppressEveryone(on) => Change::SuppressEveryone(on),
+        NotificationChange::SuppressRoles(on) => Change::SuppressRoles(on),
+    }
 }
 
 /// Carries out a choice from a DM's menu: a change to a relationship, a note
@@ -492,12 +520,18 @@ fn change_person(
             DiscordCommand::CloseDm { room } => {
                 (discord.close_dm(&channel(&room)).await, "close the DM")
             }
-            DiscordCommand::Mute { room, muting } => {
-                let (muted, seconds) = match muting {
-                    Muting::Off => (false, None),
-                    Muting::Minutes(minutes) => (true, Some(u64::from(minutes) * 60)),
-                    Muting::Always => (true, None),
+            DiscordCommand::Notifications { place, change } => {
+                let (guild, channel) = match discord::parse_room(&place) {
+                    Some((guild, channel)) => (guild, Some(channel)),
+                    None => (discord::parse_server(&place).unwrap_or_default(), None),
                 };
+                let result = discord
+                    .change_notifications(guild, channel, notification_change(change))
+                    .await;
+                (result, "change the notification settings")
+            }
+            DiscordCommand::Mute { room, muting } => {
+                let (muted, seconds) = mute(muting);
                 let result = discord.mute_private(&channel(&room), muted, seconds).await;
                 (
                     result,

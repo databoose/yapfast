@@ -53,6 +53,7 @@ fn connected() -> Application {
             unavailable: false,
             icon: None,
             folder: None,
+            hide_muted: false,
         }],
     }));
     app.apply(Event::Timeline {
@@ -123,6 +124,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
             unavailable: false,
             icon: None,
             folder: None,
+            hide_muted: false,
         }],
     }));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
@@ -265,6 +267,7 @@ fn members_belong_to_the_selected_text_room() {
         presence: None,
         color: None,
         activity: None,
+        roles: Default::default(),
     };
     app.apply(Event::Members {
         room: "games".into(),
@@ -1799,6 +1802,7 @@ fn member(id: &str, name: &str) -> ChatMember {
         presence: None,
         color: None,
         activity: None,
+        roles: Default::default(),
     }
 }
 
@@ -2254,6 +2258,7 @@ fn matrix_profiles_show_what_the_member_list_knows() {
             presence: None,
             color: None,
             activity: None,
+            roles: Default::default(),
         }]),
     });
     let effects = app.dispatch(Action::ShowProfile {
@@ -3417,6 +3422,7 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
             unavailable: false,
             icon: None,
             folder: None,
+            hide_muted: false,
         }],
     }));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
@@ -3490,7 +3496,7 @@ fn a_dms_pins_load_when_shown_and_close_with_the_conversation() {
     let mut app = discord_dms(vec![]);
     let dm = "discord:@me:30".to_owned();
     app.dispatch(Action::SelectRoom(dm.clone()));
-    assert!(app.state.dm_that(|can| can.dm_pins).is_some());
+    assert!(app.state.conversation_that(|can| can.pins).is_some());
     assert!(matches!(
         app.dispatch(Action::ShowPins(true)).as_slice(),
         [Effect::Backend(Command::Discord(DiscordCommand::Pins { room }))] if *room == dm
@@ -3666,4 +3672,253 @@ fn friends_added_to_a_group_fill_it_to_ten() {
         Some(&group),
         "the group stays open"
     );
+}
+
+/// A Discord server where Alice, "1", is a Mod: a category holding
+/// #general and #news, where @everyone may not send, roles below and above
+/// hers, and her notification settings, which hide muted channels.
+#[cfg(feature = "discord")]
+fn discord_server() -> Application {
+    use talk_discord::{
+        notifications::{Level, Mute, Notifications as Settings, Override},
+        ready::{self, permission},
+        service::{Snapshot, Status},
+    };
+    let bits = |bits: u64| bits.to_string();
+    let mut server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99",
+        "properties": {"name": "Test", "default_message_notifications": 1},
+        "roles": [
+            {"id": "10", "name": "@everyone", "position": 0,
+             "permissions": bits(permission::VIEW_CHANNEL | permission::SEND_MESSAGES)},
+            {"id": "20", "name": "Mods", "position": 2, "color": 0x3498db,
+             "permissions": bits(permission::KICK_MEMBERS | permission::MANAGE_ROLES)},
+            {"id": "30", "name": "Helpers", "permissions": "0", "position": 1},
+            {"id": "40", "name": "Bot", "permissions": "0", "position": 3, "managed": true},
+        ],
+        "channels": [
+            {"id": "4", "type": 4, "name": "Talk", "position": 0},
+            {"id": "11", "type": 0, "name": "general", "position": 0, "parent_id": "4"},
+            {"id": "12", "type": 0, "name": "news", "position": 1, "parent_id": "4",
+             "permission_overwrites": [{"id": "10", "type": 0, "allow": "0",
+                                        "deny": bits(permission::SEND_MESSAGES)}]},
+            {"id": "13", "type": 0, "name": "memes", "position": 2, "parent_id": "4"},
+            {"id": "14", "type": 2, "name": "Lounge", "position": 3, "parent_id": "4"},
+        ],
+    }))
+    .unwrap();
+    server.my_roles = vec!["20".into()];
+    let soon = crate::clock::now_ms() + 3_600_000;
+    server.notifications = Arc::new(Settings {
+        hide_muted_channels: true,
+        suppress_roles: true,
+        overrides: [
+            (
+                "4".to_owned(),
+                Override {
+                    mute: Mute::default(),
+                    level: Some(Level::All),
+                },
+            ),
+            (
+                "12".to_owned(),
+                Override {
+                    mute: Mute {
+                        muted: true,
+                        until: Some(soon),
+                    },
+                    level: Some(Level::Nothing),
+                },
+            ),
+        ]
+        .into(),
+        ..Default::default()
+    });
+    // As the service marks them: #news is muted, #memes is muted and
+    // mentions her.
+    server.text_channels[1].muted = true;
+    server.text_channels[2].muted = true;
+    server.text_channels[2].mentions = 1;
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        servers: vec![Arc::new(server)],
+        ..Default::default()
+    }));
+    app
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_servers_say_what_this_account_may_do() {
+    use chat::Permission;
+    let app = discord_server();
+    let roles = app.server_roles("discord:10");
+    let listed: Vec<_> = roles
+        .iter()
+        .map(|role| (role.name.as_str(), role.managed))
+        .collect();
+    assert_eq!(listed, [("Bot", true), ("Mods", false), ("Helpers", false)]);
+    assert_eq!(roles[1].color, Some(0x3498db));
+    assert_eq!(
+        app.server_roles("discord:10:11"),
+        roles,
+        "a channel's server"
+    );
+
+    assert!(app.may("discord:10", Permission::Kick));
+    assert!(app.may("discord:10", Permission::ManageRoles));
+    assert!(!app.may("discord:10", Permission::Ban));
+    assert!(app.may("discord:10:11", Permission::SendMessages));
+    assert!(
+        !app.may("discord:10:12", Permission::SendMessages),
+        "#news's overwrite"
+    );
+    assert!(!app.may("discord:@me:30", Permission::Kick));
+    assert!(!app.may("discord:20", Permission::ViewChannel), "unknown");
+
+    assert!(app.outranks("discord:10", "2", &["30".into()]));
+    assert!(!app.outranks("discord:10", "3", &["40".into()]));
+    assert!(!app.outranks("discord:10", "99", &[]), "the owner");
+    assert!(!app.outranks("discord:10", "1", &[]), "herself");
+    assert!(app.may_grant("discord:10", "30"));
+    assert!(!app.may_grant("discord:10", "20"), "her own level");
+    assert!(!app.may_grant("discord:10", "40"), "managed");
+    assert!(!app.may_grant("discord:10", "10"), "@everyone");
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_servers_and_channels_say_how_they_notify() {
+    let app = discord_server();
+    let server = app.server_notifications("discord:10").unwrap();
+    assert_eq!(
+        server.own,
+        chat::Notifications {
+            muted: false,
+            muted_until: None,
+            level: None,
+            inherited: chat::NotifyLevel::Mentions,
+        },
+        "the server's default"
+    );
+    assert!(server.hide_muted && server.suppress_roles && !server.suppress_everyone);
+    let news = app.notifications("discord:10:12").unwrap();
+    assert!(news.muted && news.muted_until.is_some());
+    assert_eq!(news.level, Some(chat::NotifyLevel::Nothing));
+    assert_eq!(news.inherited, chat::NotifyLevel::All, "its category's");
+    let general = app.notifications("discord:10:11").unwrap();
+    assert_eq!(
+        (general.muted, general.level, general.inherited),
+        (false, None, chat::NotifyLevel::All)
+    );
+    let category = app.notifications("discord:10:4").unwrap();
+    assert_eq!(
+        (category.level, category.inherited),
+        (Some(chat::NotifyLevel::All), chat::NotifyLevel::Mentions)
+    );
+    assert!(app.server_notifications("discord:10:11").is_none());
+    assert!(app.notifications("discord:20").is_none());
+
+    // A muted channel shows faint.
+    let muted = |id: &str| {
+        app.state
+            .rooms
+            .iter()
+            .find(|room| room.id == id)
+            .unwrap()
+            .muted
+    };
+    assert!(muted("discord:10:12"));
+    assert!(!muted("discord:10:11"));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_notification_changes_go_to_servers_and_channels() {
+    use chat::{Muting, NotificationChange};
+    let mut app = discord_server();
+    let mut change = |place: &str, change| {
+        app.dispatch(Action::ChangeNotifications {
+            place: place.into(),
+            change,
+        })
+    };
+    let mute = NotificationChange::Mute(Muting::Minutes(15));
+    assert!(matches!(
+        change("discord:10", mute).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Notifications { place, change }))]
+            if place == "discord:10" && *change == mute
+    ));
+    assert_eq!(
+        change("discord:10:11", NotificationChange::Level(None)).len(),
+        1
+    );
+    assert_eq!(
+        change("discord:10", NotificationChange::HideMuted(false)).len(),
+        1
+    );
+    assert!(
+        change("discord:10:11", NotificationChange::SuppressRoles(true)).is_empty(),
+        "the server's own"
+    );
+    assert!(
+        change("discord:@me:30", mute).is_empty(),
+        "a DM mutes from its menu"
+    );
+    assert!(change("!room:example.org", mute).is_empty());
+    app.apply(discord_event(talk_discord::service::Snapshot {
+        status: talk_discord::service::Status::Connecting,
+        ..Default::default()
+    }));
+    assert!(
+        app.dispatch(Action::ChangeNotifications {
+            place: "discord:10".into(),
+            change: mute,
+        })
+        .is_empty(),
+        "while Discord is away"
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_server_set_to_hide_muted_channels_lists_only_those_it_needs() {
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let listed = |app: &Application| {
+        app.state
+            .scoped_rooms()
+            .map(|room| room.name.clone())
+            .collect::<Vec<_>>()
+    };
+    // #news is muted; #memes is too, but mentions her.
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    assert_eq!(listed(&app), ["general", "memes", "Lounge"]);
+    // The open one stays.
+    app.dispatch(Action::SelectRoom("discord:10:12".into()));
+    assert_eq!(listed(&app), ["general", "news", "memes", "Lounge"]);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn server_channels_list_their_pins_and_search_them() {
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let general = "discord:10:11".to_owned();
+    app.dispatch(Action::SelectRoom(general.clone()));
+    assert!(matches!(
+        app.dispatch(Action::ShowPins(true)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Pins { room }))] if *room == general
+    ));
+    assert!(matches!(
+        app.dispatch(Action::Search("plan".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Search { room, offset: 0, .. }))]
+            if *room == general
+    ));
+    // A voice channel has neither.
+    app.dispatch(Action::SelectRoom("discord:10:14".into()));
+    assert!(app.state.conversation_that(|can| can.pins).is_none());
+    assert!(app.dispatch(Action::ShowPins(true)).is_empty());
 }

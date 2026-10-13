@@ -34,9 +34,10 @@ or sending a backend command. `AppState` supplies ordinary Rust data for renderi
 including shared timeline storage through `Arc<Vec<ChatMessage>>`. `dispatch`
 routes each action to a method in the module for its area, under
 [`application/`](../crates/talk-core/src/application): `compose`, `messages`,
-`rooms`, `profiles`, `calls`, `session`, `preview`, `discord_account` and
-`header`, which holds what a DM's header opens: its pins, a search of it and
-adding friends to it.
+`rooms`, `profiles`, `calls`, `session`, `preview`, `discord_account`,
+`header`, which holds what a conversation's header opens: its pins, a search
+of it and adding friends to a DM, and `server`, which answers what the
+account may do in a Discord server and how the server notifies it.
 
 The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`src/ui/`](../src/ui), with
 the interface in [`ui/*.slint`](../ui), owns input widgets, password masking,
@@ -103,7 +104,8 @@ A visible change usually touches each of these steps:
    `dispatch` are in `crates/talk-core/src/application.rs`, which routes each
    action to the module for its area in `crates/talk-core/src/application/`:
    `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `calls.rs`,
-   `session.rs`, `preview.rs`, `discord_account.rs` or `header.rs`.
+   `session.rs`, `preview.rs`, `discord_account.rs`, `header.rs` or
+   `server.rs`.
 5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to
    the chat actor in `crates/talk-core/src/chat.rs`, which routes it to the
    network its room id names, or to voice. Matrix lives

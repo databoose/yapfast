@@ -7,10 +7,14 @@ use talk_core::{
 
 use super::*;
 
-/// What a server's, conversation's or person's menu offers, as its rows,
-/// and the rows of the submenu one of them opens; none for one Talk doesn't
-/// know.
-pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> (Vec<MenuRow>, Vec<MenuRow>) {
+/// A menu's rows, and the submenu each opens by the row's index: empty for a
+/// row without one, and none at all when no row has one, as the window's
+/// ContextMenu takes them.
+pub(super) type Menu = (Vec<MenuRow>, Vec<Vec<MenuRow>>);
+
+/// What a server's, conversation's or person's menu offers; nothing for one
+/// Talk doesn't know.
+pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     let icons = &adapter.icons;
     let state = &adapter.app.state;
     let choices = if person {
@@ -75,15 +79,26 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> (Vec<MenuRow>, 
                 icon: icon.clone(),
                 danger: matches!(choice, MenuChoice::Unfriend | MenuChoice::Block),
                 separated,
-                submenu: choice == MenuChoice::Mute,
+                ..Default::default()
             }
         })
         .collect();
-    // Only a menu with Mute has a submenu to fill.
-    if !rows.iter().any(|row| row.submenu) {
-        return (rows, vec![]);
-    }
-    let mute_times = MUTE_TIMES
+    let submenus = rows
+        .iter()
+        .map(|row| {
+            if row.id == choice_id(MenuChoice::Mute) {
+                mute_times()
+            } else {
+                vec![]
+            }
+        })
+        .collect();
+    (rows, submenus)
+}
+
+/// How long [`MenuChoice::Mute`] mutes for, as its submenu offers.
+fn mute_times() -> Vec<MenuRow> {
+    MUTE_TIMES
         .into_iter()
         .map(|muting| MenuRow {
             id: mute_id(muting).into(),
@@ -98,8 +113,42 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> (Vec<MenuRow>, 
             },
             ..Default::default()
         })
-        .collect();
-    (rows, mute_times)
+        .collect()
+}
+
+/// Shows a menu in the window, its submenus only when a row has one.
+pub(super) fn show(window: &TalkWindow, (rows, submenus): Menu) {
+    let submenus: Vec<ModelRc<MenuRow>> = if submenus.iter().all(Vec::is_empty) {
+        vec![]
+    } else {
+        submenus
+            .into_iter()
+            .map(|rows| {
+                if rows.is_empty() {
+                    ModelRc::default()
+                } else {
+                    ModelRc::new(VecModel::from(rows))
+                }
+            })
+            .collect()
+    };
+    window.set_menu_rows(ModelRc::new(VecModel::from(rows)));
+    window.set_menu_submenus(ModelRc::new(VecModel::from(submenus)));
+}
+
+/// Ticks or unticks the checkbox row `id` in the menu showing, as choosing
+/// it does while the menu stays open; whether there was one.
+pub(super) fn toggle(window: &TalkWindow, id: &str) -> bool {
+    let flip = |rows: &ModelRc<MenuRow>| {
+        let index = rows.iter().position(|row| row.checkbox && row.id == id)?;
+        let mut row = rows.row_data(index)?;
+        row.checked = !row.checked;
+        rows.set_row_data(index, row);
+        Some(())
+    };
+    std::iter::once(window.get_menu_rows())
+        .chain(window.get_menu_submenus().iter())
+        .any(|rows| flip(&rows).is_some())
 }
 
 /// Carries out the choice a menu reports by its row's id.
@@ -110,6 +159,8 @@ pub(super) fn choose(
     person: bool,
     id: &str,
 ) {
+    // A checkbox shows its new state at once, as the menu stays open.
+    toggle(window, id);
     let (room, user) = subjects(&adapter.app.state, &target, person);
     if let Some(muting) = MUTE_TIMES.into_iter().find(|&muting| mute_id(muting) == id) {
         if let Some(room) = room {

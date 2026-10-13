@@ -400,13 +400,26 @@ impl Api {
         }
     }
 
-    /// Discord's answer to a search of a DM's messages for `content`, the
-    /// newest first, from the `offset`th; see [`crate::service::Found`].
-    pub async fn search(&self, channel: &str, content: &str, offset: u32) -> Result<Value> {
-        let path = format!(
-            "/channels/{channel}/messages/search?content={}&offset={offset}",
-            encode(content)
-        );
+    /// Discord's answer to a search of a channel's messages for `content`,
+    /// the newest first, from the `offset`th; see [`crate::service::Found`].
+    /// A DM's is searched on its own, and a server channel through its
+    /// server, as Discord's client does.
+    pub async fn search(
+        &self,
+        guild: Option<&str>,
+        channel: &str,
+        content: &str,
+        offset: u32,
+    ) -> Result<Value> {
+        let content = encode(content);
+        let path = match guild {
+            Some(guild) => format!(
+                "/guilds/{guild}/messages/search?channel_id={channel}&content={content}&offset={offset}"
+            ),
+            None => {
+                format!("/channels/{channel}/messages/search?content={content}&offset={offset}")
+            }
+        };
         self.json(self.request(Method::GET, &path)).await
     }
 
@@ -527,35 +540,15 @@ impl Api {
             .map(drop)
     }
 
-    /// Mutes a DM or group DM for `seconds`, or for good with none; with
-    /// `muted` false, unmutes it.
-    pub async fn mute_private(
-        &self,
-        channel: &str,
-        muted: bool,
-        seconds: Option<u64>,
-    ) -> Result<()> {
-        let config = muted.then(|| match seconds {
-            Some(seconds) => {
-                let end = chrono::Utc::now() + chrono::Duration::seconds(seconds as i64);
-                json!({
-                    "selected_time_window": seconds,
-                    "end_time": end.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                })
-            }
-            // Discord's client gives -1 for a mute without an end.
-            None => json!({"selected_time_window": -1, "end_time": null}),
-        });
-        let body = json!({"channel_overrides": {channel: {
-            "muted": muted,
-            "mute_config": config,
-        }}});
-        self.json(with_json(
-            self.request(Method::PATCH, "/users/@me/guilds/@me/settings"),
-            &body,
-        ))
-        .await
-        .map(drop)
+    /// Changes this account's notification settings for a server, or with
+    /// [`crate::ready::PRIVATE`] its DMs, by `body`, a partial settings
+    /// object; see [`crate::notifications::Change::body`]. Discord answers
+    /// with USER_GUILD_SETTINGS_UPDATE too.
+    pub async fn guild_settings(&self, guild: &str, body: &Value) -> Result<()> {
+        let path = format!("/users/@me/guilds/{guild}/settings");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+            .map(drop)
     }
 
     /// Whether this account may ring the others in a DM, beyond calling them.

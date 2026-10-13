@@ -56,13 +56,21 @@ pub(super) fn notification(
     }
 }
 
-/// A DM's message as a pinned message or a search result shows it: who
-/// wrote it, when, and what it says. Its files are named but not
+/// A message as a pinned message or a search result shows it: who wrote
+/// it, by their name, avatar and role colour in `server`, or for a DM with
+/// none, their own; when; and what it says. Its files are named but not
 /// downloaded; jumping to it shows them in the timeline.
-pub(super) fn found(discord: &Discord, message: &Message) -> ChatMessage {
-    let private = talk_discord::ready::PRIVATE;
+pub(super) fn found(
+    discord: &Discord,
+    server: Option<&talk_discord::ready::Server>,
+    message: &Message,
+) -> ChatMessage {
+    let guild = server.map(|server| server.id.as_str());
     let author = discord
-        .name(private, &message.author_id)
+        .name(
+            guild.unwrap_or(talk_discord::ready::PRIVATE),
+            &message.author_id,
+        )
         .unwrap_or_else(|| message.author.clone());
     let ordinary = message.system.is_none();
     let timestamp = message.timestamp();
@@ -71,11 +79,12 @@ pub(super) fn found(discord: &Discord, message: &Message) -> ChatMessage {
         item: format!("d:{}", message.id),
         sender: discord::sender_id(&message.author_id),
         spoilers: true,
-        avatar: Some(discord.avatar(None, &message.author_id)),
+        avatar: Some(discord.avatar(guild, &message.author_id)),
+        color: server.and_then(|server| discord.color(server, &message.author_id)),
         bot: message.bot,
         body: match &message.system {
             Some(system) => format!("{author} {system}"),
-            None => discord.render(None, &message.content),
+            None => discord.render(server, &message.content),
         },
         author,
         formatted: ordinary,
@@ -98,10 +107,22 @@ pub(super) fn found(discord: &Discord, message: &Message) -> ChatMessage {
                 video: attachment.video_url.is_some(),
             })
             .collect(),
-        mentions: mentions(discord, None, &message.content),
+        mentions: mentions(discord, server, &message.content),
         emoji: custom_emoji(message),
         ..Default::default()
     }
+}
+
+/// Messages found in a room, as [`found`] shows them, with the room's server.
+pub(super) fn found_in(discord: &Discord, room: &str, messages: &[Message]) -> Vec<ChatMessage> {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = discord::parse_room(room)
+        .and_then(|(guild, _)| snapshot.servers.iter().find(|server| server.id == guild))
+        .map(Arc::as_ref);
+    messages
+        .iter()
+        .map(|message| found(discord, server, message))
+        .collect()
 }
 
 /// The custom emoji in a message's text and reactions.
@@ -316,6 +337,7 @@ pub(super) fn chat_member(member: ListedMember) -> ChatMember {
         presence: Some(discord::presence(member.presence)),
         color: member.color,
         activity: member.activity,
+        roles: member.roles,
     }
 }
 

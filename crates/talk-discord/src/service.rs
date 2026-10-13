@@ -17,6 +17,7 @@ use crate::{
     cache,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
+    notifications::Change,
     profile::{self, Profile},
     ready::{PRIVATE, Server},
     settings::{self, CustomStatus},
@@ -149,7 +150,7 @@ pub struct Person {
     pub friend: bool,
 }
 
-/// Messages a search of a DM found: one page, the newest first, and how many
+/// Messages a search of a channel found: one page, the newest first, and how many
 /// it found in all.
 #[derive(Debug, Default)]
 pub struct Found {
@@ -319,9 +320,12 @@ enum Request {
         guild: String,
         channel: Option<String>,
     },
+    /// Asks for these members' server profiles; with `reply`, says when
+    /// they arrived.
     Members {
         guild: String,
         users: Vec<String>,
+        reply: Option<oneshot::Sender<Vec<String>>>,
     },
     Search {
         guild: String,
@@ -459,27 +463,8 @@ impl Discord {
     /// A page of messages before `before`, or the latest page.
     pub async fn history(&self, guild: &str, channel: &str, before: Option<&str>) -> Result<Page> {
         let values = self.api.messages(channel, before).await?;
-        let server = server(guild);
-        let mut unknown = HashSet::new();
-        {
-            let mut names = self.write_names();
-            for value in &values {
-                names.learn_message(server, value);
-                if let (Some(guild), Some(author)) = (server, value["author"]["id"].as_str())
-                    && !names.knows_member(guild, author)
-                {
-                    unknown.insert(author.to_owned());
-                }
-            }
-        }
-        // History carries no server profiles, so nicknames come separately.
-        if !unknown.is_empty() {
-            let _ = self.requests.send(Request::Members {
-                guild: guild.into(),
-                users: unknown.into_iter().collect(),
-            });
-        }
-        let mut messages: Vec<Message> = values.iter().filter_map(message::parse).collect();
+        // The open channel shows them again once their authors arrive.
+        let (mut messages, _) = self.learn(guild, &values, false);
         messages.reverse();
         Ok(Page {
             messages,
@@ -491,27 +476,79 @@ impl Discord {
         })
     }
 
-    /// Messages from DMs, whose authors' names they carry.
-    fn learn_private(&self, values: &[serde_json::Value]) -> Vec<Message> {
-        let mut names = self.write_names();
-        for value in values {
-            names.learn_message(None, value);
+    /// Messages from a server's channel, or with [`PRIVATE`] a DM, learning
+    /// their authors. Messages fetched over HTTP carry no server profiles,
+    /// so the nicknames, server avatars and roles of authors not known yet
+    /// are asked for; they arrive as [`Live::Names`], and with `wait` the
+    /// receiver returned, if any, hears when.
+    fn learn(
+        &self,
+        guild: &str,
+        values: &[serde_json::Value],
+        wait: bool,
+    ) -> (Vec<Message>, Option<oneshot::Receiver<Vec<String>>>) {
+        let server = server(guild);
+        let mut unknown = HashSet::new();
+        {
+            let mut names = self.write_names();
+            for value in values {
+                names.learn_message(server, value);
+                if let (Some(guild), Some(author)) = (server, value["author"]["id"].as_str())
+                    && !names.knows_member(guild, author)
+                {
+                    unknown.insert(author.to_owned());
+                }
+            }
         }
-        values.iter().filter_map(message::parse).collect()
+        let mut arrived = None;
+        if !unknown.is_empty() {
+            let reply = wait.then(|| {
+                let (reply, receiver) = oneshot::channel();
+                arrived = Some(receiver);
+                reply
+            });
+            let _ = self.requests.send(Request::Members {
+                guild: guild.into(),
+                users: unknown.into_iter().collect(),
+                reply,
+            });
+        }
+        (values.iter().filter_map(message::parse).collect(), arrived)
     }
 
-    /// A DM's pinned messages, the latest pinned first.
-    pub async fn pins(&self, channel: &str) -> Result<Vec<Message>> {
+    /// [`Self::learn`], waiting a while for the authors' server profiles,
+    /// for messages shown once rather than kept up to date.
+    async fn learn_authors(&self, guild: &str, values: &[serde_json::Value]) -> Vec<Message> {
+        let (messages, arrived) = self.learn(guild, values, true);
+        if let Some(arrived) = arrived {
+            let _ = tokio::time::timeout(SEARCH_TIMEOUT, arrived).await;
+        }
+        messages
+    }
+
+    /// A channel's pinned messages, the latest pinned first: a server's
+    /// channel, or with [`PRIVATE`] a DM.
+    pub async fn pins(&self, guild: &str, channel: &str) -> Result<Vec<Message>> {
         let values = self.api.pins(channel).await?;
-        Ok(self.learn_private(&values))
+        Ok(self.learn_authors(guild, &values).await)
     }
 
-    /// A page of a DM's messages that contain `query`, from the `offset`th
-    /// found. Discord indexes a DM the first time it's searched, and asks
-    /// to be asked again until it has.
-    pub async fn search(&self, channel: &str, query: &str, offset: u32) -> Result<Found> {
+    /// A page of a channel's messages that contain `query`, from the
+    /// `offset`th found: a server's channel, or with [`PRIVATE`] a DM.
+    /// Discord indexes a DM or a server the first time it's searched, and
+    /// asks to be asked again until it has.
+    pub async fn search(
+        &self,
+        guild: &str,
+        channel: &str,
+        query: &str,
+        offset: u32,
+    ) -> Result<Found> {
         for _ in 0..SEARCH_TRIES {
-            let mut answer = self.api.search(channel, query, offset).await?;
+            let mut answer = self
+                .api
+                .search(server(guild), channel, query, offset)
+                .await?;
             if let serde_json::Value::Array(pages) = answer["messages"].take() {
                 // Each result came with the messages around it, which Discord
                 // no longer sends; the first is the one found.
@@ -521,7 +558,7 @@ impl Discord {
                     .collect();
                 return Ok(Found {
                     total: answer["total_results"].as_u64().unwrap_or_default() as u32,
-                    messages: self.learn_private(&values),
+                    messages: self.learn_authors(guild, &values).await,
                 });
             }
             if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
@@ -531,7 +568,7 @@ impl Discord {
             tokio::time::sleep(Duration::from_secs_f64(wait).min(SEARCH_WAIT)).await;
         }
         Err(anyhow!(
-            "Discord is still getting this conversation ready to search. Try again in a moment."
+            "Discord is still getting these messages ready to search. Try again in a moment."
         ))
     }
 
@@ -763,7 +800,23 @@ impl Discord {
         muted: bool,
         seconds: Option<u64>,
     ) -> Result<()> {
-        self.api.mute_private(channel, muted, seconds).await
+        self.change_notifications(PRIVATE, Some(channel), Change::Mute { muted, seconds })
+            .await
+    }
+
+    /// Changes this account's notification settings for a server, or with
+    /// `channel` for a channel or category in it, or with [`PRIVATE`] for a
+    /// DM. Snapshots show it when Discord confirms it.
+    pub async fn change_notifications(
+        &self,
+        guild: &str,
+        channel: Option<&str>,
+        change: Change,
+    ) -> Result<()> {
+        let body = change
+            .body(channel)
+            .ok_or_else(|| anyhow!("Only a server has that setting."))?;
+        self.api.guild_settings(guild, &body).await
     }
 
     /// Declines a call ringing this account; the call goes on without it.
@@ -817,6 +870,14 @@ impl Discord {
     /// The address of a user's avatar, in a server or in DMs.
     pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
         self.read_names().avatar(guild.and_then(server), user)
+    }
+
+    /// A member's roles in a server by id, as far as they're known, shared
+    /// with what learned them.
+    pub fn roles(&self, guild: &str, user: &str) -> Arc<[String]> {
+        self.read_names()
+            .shared_roles(guild, user)
+            .unwrap_or_default()
     }
 
     /// The ids of up to ten server members whose names start with `query`, whose

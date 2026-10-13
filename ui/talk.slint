@@ -293,8 +293,9 @@ export component TalkWindow inherits Window {
     /// when it's asked for, and the choice made. Each names its server,
     /// conversation or person by id, and whether it's a person.
     in property <[MenuRow]> menu-rows;
-    /// The submenu one of its rows opens.
-    in property <[MenuRow]> menu-subrows;
+    /// The submenu each of its rows opens, by the row's index; see
+    /// ContextMenu.
+    in property <[[MenuRow]]> menu-submenus;
     callback prepare-menu(string, bool);
     callback choose-menu(string, bool, string);
     /// Show a mutual friend's profile, by Discord user id: as a card, or large.
@@ -852,23 +853,23 @@ export component TalkWindow inherits Window {
         root.prepare-menu(id, person);
         if root.menu-rows.length > 0 { context-menu.show(); }
     }
-    // The popup spans the menu and room for its submenu, which opens to the
+    // The popup spans the menu and room for its submenus, which open to the
     // menu's right, or its left near the window's right edge.
-    // A menu without a submenu needs only its own width.
-    property <bool> menu-submenu: root.menu-subrows.length > 0;
-    property <bool> menu-flip: root.menu-submenu && root.anchor-x + 200px + 224px > root.width - 8px;
     context-menu := PopupWindow {
-        width: root.menu-submenu ? 424px : 200px; height: context-menu-content.content-height;
-        x: max(8px, min(root.width - 200px - 8px, root.anchor-x)) - (root.menu-flip ? 224px : 0px);
+        width: context-menu-content.content-width; height: context-menu-content.content-height;
+        x: max(8px, min(root.width - context-menu-content.menu-width - 8px, root.anchor-x))
+            - (context-menu-content.flip ? context-menu-content.content-width - context-menu-content.menu-width : 0px);
         y: root.anchor-y + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height);
         close-policy: PopupClosePolicy.close-on-click-outside;
         context-menu-content := ContextMenu {
-            rows: root.menu-rows; subrows: root.menu-subrows; flip: root.menu-flip;
+            rows: root.menu-rows; submenus: root.menu-submenus;
+            room: root.width - 8px - root.anchor-x;
             chose(id) => {
                 if root.menu-person { root.profile-at-pointer = true; }
                 root.choose-menu(root.menu-target, root.menu-person, id);
                 context-menu.close();
             }
+            toggled(id) => { root.choose-menu(root.menu-target, root.menu-person, id); }
             close => { context-menu.close(); }
         }
     }
