@@ -677,6 +677,30 @@ impl Adapter {
             }),
         );
         window.set_members_available(state.lists_members());
+        window.set_room_id(state.selected.as_deref().unwrap_or_default().into());
+        window.set_room_muted(room.is_some_and(|room| room.muted));
+        window.set_can_notify(state.selected.as_deref().is_some_and(|id| {
+            state
+                .menu_choices(id)
+                .contains(&talk_core::application::MenuChoice::ChannelNotifications)
+        }));
+        let topic = state.topic.as_ref();
+        window.set_has_topic(topic.is_some());
+        let same = match (topic, &self.topic_shown) {
+            (Some(topic), Some(shown)) => Arc::ptr_eq(topic, shown),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.topic_shown = topic.cloned();
+            let styled = |one_line| {
+                topic.map_or_else(slint::StyledText::default, |topic| {
+                    topic_text(topic, one_line)
+                })
+            };
+            window.set_room_topic(styled(true));
+            window.set_room_topic_full(styled(false));
+        }
     }
 
     /// What the open DM's header opens: its pinned messages, what its
@@ -700,7 +724,11 @@ impl Adapter {
                 Some(None) => "Loading pinned messages...",
                 Some(Some(Err(error))) => error.as_str(),
                 Some(Some(Ok(pinned))) if pinned.is_empty() => {
-                    "This conversation doesn't have any pinned messages yet."
+                    if state.selected_room().is_some_and(|room| room.direct) {
+                        "This conversation doesn't have any pinned messages yet."
+                    } else {
+                        "This channel doesn't have any pinned messages yet."
+                    }
                 }
                 _ => "",
             }
@@ -2145,7 +2173,10 @@ pub(super) fn fold_collapsed(
         {
             folded.push(row);
         } else if !row.heading.is_empty() {
+            // Its id still names the category's first channel, for the
+            // heading's menu.
             folded.push(RoomRow {
+                id: row.id,
                 heading: row.heading,
                 collapsed: true,
                 hidden: true,

@@ -1517,6 +1517,56 @@ async fn talks_to_the_fake_server() {
             && server.notifications.of(&general).level.is_none()
     })
     .await;
+
+    // A category mutes as a channel does, and its channels show muted.
+    let category = ours(&discord.snapshots().borrow())
+        .text_channels
+        .iter()
+        .find(|channel| channel.id == general)
+        .and_then(|channel| channel.parent.clone())
+        .unwrap();
+    let mute_category = |muted: bool| {
+        let (discord, guild, category) = (discord.clone(), guild.clone(), category.clone());
+        async move {
+            let seconds = muted.then_some(900);
+            discord
+                .change_notifications(&guild, Some(&category), Change::Mute { muted, seconds })
+                .await
+                .unwrap();
+        }
+    };
+    let general_muted = |snapshot: &Snapshot| {
+        ours(snapshot)
+            .text_channels
+            .iter()
+            .any(|channel| channel.id == general && channel.muted)
+    };
+    mute_category(true).await;
+    snapshot_where(&discord, |snapshot| {
+        general_muted(snapshot) && ours(snapshot).notifications.of(&category).mute.muted
+    })
+    .await;
+    mute_category(false).await;
+    snapshot_where(&discord, |snapshot| !general_muted(snapshot)).await;
+
+    // #general's topic comes with the server, and CHANNEL_UPDATE changes it.
+    let topic = |snapshot: &Snapshot| {
+        ours(snapshot)
+            .text_channels
+            .iter()
+            .find(|channel| channel.id == general)
+            .and_then(|channel| channel.topic.clone())
+    };
+    let first = topic(&discord.snapshots().borrow()).unwrap();
+    assert!(first.contains(&format!("<@{bob}>")), "{first}");
+    post_control(server, "/_control/topic", "New **plans**");
+    snapshot_where(&discord, |snapshot| {
+        topic(snapshot).as_deref() == Some("New **plans**")
+    })
+    .await;
+    post_control(server, "/_control/topic", "");
+    snapshot_where(&discord, |snapshot| topic(snapshot).is_none()).await;
+    post_control(server, "/_control/topic", &first);
     discord.unfriend(&dave_user).await.unwrap();
     snapshot_where(&discord, |snapshot| {
         !snapshot.friends.contains(&dave_user)

@@ -464,6 +464,18 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
     }
 }
 
+/// A Discord channel's topic, as its header shows it: on one line, or in
+/// full.
+pub(super) fn topic_text(topic: &talk_core::chat::Topic, one_line: bool) -> slint::StyledText {
+    let body = custom_emoji::text(&topic.body, &topic.emoji);
+    let body = if one_line {
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        body
+    };
+    markdown(&mention::linked(&body, &topic.mentions))
+}
+
 /// Whether a message shows collapsed, being from someone blocked.
 pub(super) fn collapsed(message: &ChatMessage, revealed: &HashSet<String>) -> bool {
     message.blocked && !revealed.contains(&format!("{}/blocked", message.item))

@@ -244,6 +244,17 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     }
     {
         let adapter = adapter.clone();
+        window.on_category_of(move |room| {
+            adapter
+                .borrow()
+                .app
+                .category_of(&room)
+                .unwrap_or_default()
+                .into()
+        });
+    }
+    {
+        let adapter = adapter.clone();
         let weak = window.as_weak();
         window.on_choose_menu(move |target, person, id| {
             if let Some(window) = weak.upgrade() {

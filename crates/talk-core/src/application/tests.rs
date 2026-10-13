@@ -4071,3 +4071,75 @@ fn server_channels_list_their_pins_and_search_them() {
     assert!(app.state.conversation_that(|can| can.pins).is_none());
     assert!(app.dispatch(Action::ShowPins(true)).is_empty());
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn server_channels_and_categories_offer_their_notifications() {
+    let app = discord_server();
+    let notifying = [MenuChoice::ChannelMute, MenuChoice::ChannelNotifications];
+    let offers = |id: &str| {
+        let choices = app.state.menu_choices(id);
+        notifying.iter().all(|choice| choices.contains(choice))
+    };
+    assert!(offers("discord:10:11"));
+    assert!(
+        offers("discord:10:12"),
+        "a channel muted with its own level"
+    );
+    assert!(!offers("discord:10:14"), "a voice channel");
+    assert_eq!(
+        app.state.menu_choices("discord:10:4"),
+        notifying,
+        "a category, by the room id its heading's menu names"
+    );
+    assert!(!offers("discord:10"), "the server");
+    assert!(app.state.menu_choices("discord:20:4").is_empty(), "unknown");
+    assert_eq!(
+        app.category_of("discord:10:11").as_deref(),
+        Some("discord:10:4")
+    );
+    assert_eq!(
+        app.category_of("discord:10:4"),
+        None,
+        "a category is in none"
+    );
+    assert_eq!(app.category_of("discord:@me:30"), None);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_open_channel_keeps_its_topic_till_another_opens() {
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    let topic = Arc::new(chat::Topic {
+        body: "Plans, and **rules**".into(),
+        ..Default::default()
+    });
+    app.apply(Event::Topic {
+        room: "discord:10:13".into(),
+        topic: Some(topic.clone()),
+    });
+    assert!(app.state.topic.is_none(), "another channel's");
+    app.apply(Event::Topic {
+        room: "discord:10:11".into(),
+        topic: Some(topic.clone()),
+    });
+    assert!(
+        app.state
+            .topic
+            .as_ref()
+            .is_some_and(|shown| Arc::ptr_eq(shown, &topic))
+    );
+    app.apply(Event::Topic {
+        room: "discord:10:11".into(),
+        topic: None,
+    });
+    assert!(app.state.topic.is_none(), "taken away");
+    app.apply(Event::Topic {
+        room: "discord:10:11".into(),
+        topic: Some(topic),
+    });
+    app.dispatch(Action::SelectRoom("discord:10:13".into()));
+    assert!(app.state.topic.is_none());
+}

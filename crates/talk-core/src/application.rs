@@ -386,6 +386,8 @@ pub struct AppState {
     pub pins: Option<Pins>,
     pub search: Option<Search>,
     pub add_people: Option<AddPeople>,
+    /// The selected Discord channel's topic, once the backend has said it.
+    pub topic: Option<Arc<chat::Topic>>,
     /// The image viewer, open over the selected room.
     pub viewer: Option<Viewer>,
     /// The video playing in the selected room.
@@ -1886,6 +1888,11 @@ impl Application {
                 offset,
                 result,
             } => self.found(room, query, offset, result),
+            Event::Topic { room, topic } => {
+                if self.state.selected.as_ref() == Some(&room) {
+                    self.state.topic = topic;
+                }
+            }
             Event::GroupChanged(result) => self.group_changed(result),
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {

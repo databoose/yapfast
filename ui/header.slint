@@ -175,6 +175,8 @@ export component PinsPopover inherits Rectangle {
     callback jump(string);
     callback open-link(string);
     callback close;
+    /// How tall it would be to show every pin.
+    out property <length> fit: 49px + (root.note != "" ? 172px : list.preferred-height);
     width: 420px;
     Popover {
         icon: @image-url("icons/pin.svg");
@@ -185,14 +187,44 @@ export component PinsPopover inherits Rectangle {
             Image { source: @image-url("icons/pin.svg"); height: 40px; image-fit: contain; colorize: Theme.faint; }
             Text { text: root.note; color: Theme.muted; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; }
         }
-        if root.note == "": ScrollView {
-            vertical-stretch: 1;
-            VerticalLayout {
+        // Always there, so its height can be read; empty while a note shows.
+        ScrollView {
+            vertical-stretch: root.note == "" ? 1 : 0;
+            max-height: root.note == "" ? 100000px : 0px;
+            visible: root.note == "";
+            list := VerticalLayout {
                 padding: 12px; spacing: 8px; alignment: start;
                 for pin in root.pins: FoundCard {
                     found: pin;
                     jump => { root.jump(pin.item); }
                     open-link(link) => { root.open-link(link); }
+                }
+            }
+        }
+    }
+}
+
+// A server channel's topic in full, under the header's line of it.
+export component TopicPopover inherits Rectangle {
+    in property <string> name;
+    in property <styled-text> topic;
+    callback open-link(string);
+    callback close;
+    /// How tall it may grow before its text scrolls.
+    in property <length> most: 400px;
+    width: 440px;
+    height: min(49px + body.preferred-height, root.most);
+    Popover {
+        icon: @image-url("icons/hash.svg");
+        heading: root.name;
+        close => { root.close(); }
+        ScrollView {
+            vertical-stretch: 1;
+            body := VerticalLayout {
+                padding: 16px;
+                StyledText {
+                    text: root.topic; default-color: Theme.text; link-color: Theme.link; default-font-size: 15px;
+                    link-clicked(link) => { root.open-link(link); }
                 }
             }
         }

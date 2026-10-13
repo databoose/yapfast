@@ -156,6 +156,10 @@ pub struct Channel {
     pub position: i64,
     /// The category the channel sits in.
     pub parent: Option<String>,
+    /// What the channel is for, in Discord's markup, as its header shows
+    /// it; shared by the server's copies.
+    #[serde(default)]
+    pub topic: Option<Arc<str>>,
     pub overwrites: Arc<Vec<Overwrite>>,
     /// What this account may do here, and the rest below, are set when the
     /// service publishes it.
@@ -714,6 +718,10 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
         name: channel["name"].as_str().unwrap_or_default().to_owned(),
         position: channel["position"].as_i64().unwrap_or_default(),
         parent: channel["parent_id"].as_str().map(str::to_owned),
+        topic: channel["topic"]
+            .as_str()
+            .filter(|topic| !topic.trim().is_empty())
+            .map(Arc::from),
         overwrites: Arc::new(overwrites),
         ..Default::default()
     })

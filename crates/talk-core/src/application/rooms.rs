@@ -52,6 +52,10 @@ pub enum MenuChoice {
     RemoveTimeout,
     Kick,
     Ban,
+    // A Discord server channel's or category's notifications: muting it for
+    // one of [`MUTE_TIMES`], or unmuting it, and which of its messages notify.
+    ChannelMute,
+    ChannelNotifications,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.
@@ -70,9 +74,33 @@ impl AppState {
     pub fn menu_choices(&self, id: &str) -> Vec<MenuChoice> {
         if self.servers.iter().any(|server| server.id == id) {
             self.server_choices(id)
+        } else if self.is_category(id) {
+            self.notification_choices()
         } else {
             self.room_choices(id)
         }
+    }
+
+    /// Whether an id names a category of a listed Discord server: a room id
+    /// in the server that names none of its rooms. Only a category's heading
+    /// asks for a menu by one.
+    fn is_category(&self, id: &str) -> bool {
+        discord::parse_room(id).is_some_and(|(guild, _)| {
+            guild != discord::DM_GUILD
+                && self
+                    .servers
+                    .iter()
+                    .any(|server| discord::parse_server(&server.id) == Some(guild))
+                && !self.rooms.iter().any(|room| room.id == id)
+        })
+    }
+
+    /// A Discord server channel's or category's notification choices.
+    fn notification_choices(&self) -> Vec<MenuChoice> {
+        if self.preview || self.discord_user.is_none() {
+            return vec![];
+        }
+        vec![MenuChoice::ChannelMute, MenuChoice::ChannelNotifications]
     }
 
     /// What someone's menu offers, by Discord user id or Matrix ID: their
@@ -195,6 +223,9 @@ impl AppState {
             } else {
                 MenuChoice::Mute
             });
+        }
+        if room.network == Network::Discord && !room.direct && !room.voice && !room.locked {
+            choices.extend(self.notification_choices());
         }
         if !self.preview {
             choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
@@ -508,6 +539,7 @@ impl Application {
         self.state.pins = None;
         self.state.search = None;
         self.state.add_people = None;
+        self.state.topic = None;
         self.searched.clear();
         if self.state.preview {
             if !voice_room {
@@ -569,6 +601,7 @@ impl Application {
         self.state.messages = Arc::new(vec![]);
         self.visible_messages.clear();
         self.state.members = None;
+        self.state.topic = None;
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
         if self.state.preview {
             vec![]

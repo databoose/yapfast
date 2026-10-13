@@ -2,7 +2,9 @@
 
 use talk_core::{
     application::{MUTE_TIMES, MenuChoice, network_id, network_link},
-    chat::{MemberChange, Muting, RelationshipChange},
+    chat::{
+        MemberChange, Muting, NotificationChange, Notifications, NotifyLevel, RelationshipChange,
+    },
 };
 
 use super::*;
@@ -15,6 +17,10 @@ pub(super) type Menu = (Vec<MenuRow>, Vec<Vec<MenuRow>>);
 /// What a server's, conversation's or person's menu offers; nothing for one
 /// Talk doesn't know.
 pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
+    if let Some(place) = id.strip_prefix(BELL) {
+        return Notify::of(adapter, place)
+            .map_or_else(Menu::default, |notify| notify.bell(adapter));
+    }
     let icons = &adapter.icons;
     let state = &adapter.app.state;
     let choices = if person {
@@ -39,7 +45,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
         .iter()
         .any(|found| Some(&found.id) == room.as_ref() && !found.people.is_empty());
     let mut group = None;
-    let rows: Vec<MenuRow> = choices
+    let mut rows: Vec<MenuRow> = choices
         .into_iter()
         .map(|choice| {
             let (text, icon) = match choice {
@@ -64,7 +70,10 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::Unignore
                 | MenuChoice::Block
                 | MenuChoice::Unblock => 1,
-                MenuChoice::Mute | MenuChoice::Unmute => 2,
+                MenuChoice::Mute
+                | MenuChoice::Unmute
+                | MenuChoice::ChannelMute
+                | MenuChoice::ChannelNotifications => 2,
                 MenuChoice::CopyLink | MenuChoice::CopyId => 3,
                 MenuChoice::Roles => 4,
                 MenuChoice::Timeout
@@ -91,6 +100,12 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             }
         })
         .collect();
+    let notify = Notify::of(adapter, id);
+    if let Some(notify) = &notify {
+        for row in &mut rows {
+            notify.dress(adapter, row);
+        }
+    }
     let submenus = rows
         .iter()
         .map(|row| {
@@ -98,6 +113,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 mute_times()
             } else if row.id == choice_id(MenuChoice::Roles) {
                 role_rows(adapter, id)
+            } else if let Some(notify) = &notify {
+                notify.submenu(&row.id)
             } else {
                 vec![]
             }
@@ -140,6 +157,9 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::Timeout => ("Time out", &icons.timeout),
         MenuChoice::Kick => ("Kick", &icons.kick),
         MenuChoice::Ban => ("Ban", &icons.ban),
+        // Notify::dress names these.
+        MenuChoice::ChannelMute => ("Mute", &icons.mute),
+        MenuChoice::ChannelNotifications => ("Notification settings", &icons.unmute),
     }
 }
 
@@ -167,6 +187,160 @@ fn role_rows(adapter: &Adapter, user: &str) -> Vec<MenuRow> {
 
 /// What a role's row in the roles submenu reports, before the role's id.
 const ROLE: &str = "role:";
+/// The header's bell names its menu by the open channel's room id after this.
+const BELL: &str = "notifications:";
+
+/// The ids of the notification levels a channel's or category's choices offer.
+const LEVELS: [(&str, Option<NotifyLevel>); 4] = [
+    ("level-default", None),
+    ("level-all", Some(NotifyLevel::All)),
+    ("level-mentions", Some(NotifyLevel::Mentions)),
+    ("level-nothing", Some(NotifyLevel::Nothing)),
+];
+
+/// A Discord server channel's or category's notification choices, which its
+/// menu and the header's bell build alike: muting it for a time, or
+/// unmuting it, and which of its messages notify.
+pub(super) struct Notify {
+    category: bool,
+    /// A channel listed under a category, whose default is the category's.
+    in_category: bool,
+    settings: Notifications,
+}
+
+impl Notify {
+    /// Nothing for a place that isn't a Discord server channel or category.
+    pub(super) fn of(adapter: &Adapter, place: &str) -> Option<Self> {
+        let app = &adapter.app;
+        let settings = app.notifications(place)?;
+        discord::parse_room(place)?;
+        Some(Self {
+            category: !app.state.rooms.iter().any(|room| room.id == place),
+            in_category: app.category_of(place).is_some(),
+            settings,
+        })
+    }
+
+    fn kind(&self) -> &'static str {
+        if self.category { "category" } else { "channel" }
+    }
+
+    /// The bell's menu: muting, then the levels.
+    fn bell(&self, adapter: &Adapter) -> Menu {
+        let mut rows = vec![self.mute_row(adapter)];
+        let mut levels = self.levels();
+        if let Some(first) = levels.first_mut() {
+            first.separated = true;
+        }
+        rows.extend(levels);
+        let submenus = rows.iter().map(|row| self.submenu(&row.id)).collect();
+        (rows, submenus)
+    }
+
+    /// Mute for a time, in a submenu, or while muted, unmute, saying till when.
+    fn mute_row(&self, adapter: &Adapter) -> MenuRow {
+        let icons = &adapter.icons;
+        let muted = self.settings.muted;
+        MenuRow {
+            id: choice_id(MenuChoice::ChannelMute).into(),
+            text: format!("{} {}", if muted { "Unmute" } else { "Mute" }, self.kind()).into(),
+            subtitle: self
+                .settings
+                .muted_until
+                .map(|until| muted_until(until / 1000, adapter.layout.twelve_hour_clock))
+                .unwrap_or_default()
+                .into(),
+            icon: if muted {
+                icons.unmute.clone()
+            } else {
+                icons.mute.clone()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// The levels, the one chosen checked; following the category's or the
+    /// server's says which that is.
+    fn levels(&self) -> Vec<MenuRow> {
+        LEVELS
+            .into_iter()
+            .map(|(id, level)| MenuRow {
+                id: id.into(),
+                text: match level {
+                    None if self.in_category => "Use category default",
+                    None => "Use server default",
+                    Some(level) => level_name(level),
+                }
+                .into(),
+                subtitle: match level {
+                    None => level_name(self.settings.inherited).into(),
+                    Some(_) => SharedString::default(),
+                },
+                checked: self.settings.level == level,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// Names a channel's or category's own rows in its menu.
+    fn dress(&self, adapter: &Adapter, row: &mut MenuRow) {
+        if row.id == choice_id(MenuChoice::ChannelMute) {
+            let separated = row.separated;
+            *row = MenuRow {
+                separated,
+                ..self.mute_row(adapter)
+            };
+        } else if row.id == choice_id(MenuChoice::ChannelNotifications) {
+            row.subtitle =
+                level_name(self.settings.level.unwrap_or(self.settings.inherited)).into();
+        }
+    }
+
+    /// What choosing a row of its choices, by its id, changes.
+    pub(super) fn change(&self, id: &str) -> Option<NotificationChange> {
+        if let Some((_, level)) = LEVELS.into_iter().find(|(level, _)| *level == id) {
+            Some(NotificationChange::Level(level))
+        } else if let Some(muting) = MUTE_TIMES.into_iter().find(|&muting| mute_id(muting) == id) {
+            Some(NotificationChange::Mute(muting))
+        } else if id == choice_id(MenuChoice::ChannelMute) && self.settings.muted {
+            Some(NotificationChange::Mute(Muting::Off))
+        } else {
+            None
+        }
+    }
+
+    /// The submenu of a row of its choices: how long to mute for, unless
+    /// muted, or the levels.
+    fn submenu(&self, id: &str) -> Vec<MenuRow> {
+        if id == choice_id(MenuChoice::ChannelMute) && !self.settings.muted {
+            mute_times()
+        } else if id == choice_id(MenuChoice::ChannelNotifications) {
+            self.levels()
+        } else {
+            vec![]
+        }
+    }
+}
+
+fn level_name(level: NotifyLevel) -> &'static str {
+    match level {
+        NotifyLevel::All => "All messages",
+        NotifyLevel::Mentions => "Only @mentions",
+        NotifyLevel::Nothing => "Nothing",
+    }
+}
+
+/// When a mute ends, as its Unmute row says it: the time today, or the day too.
+fn muted_until(seconds: u64, twelve_hour: bool) -> String {
+    let now = talk_core::clock::now_ms() / 1000;
+    let time = talk_core::clock::time_on(seconds, twelve_hour);
+    let on = talk_core::clock::day(seconds);
+    if on == talk_core::clock::day(now) {
+        format!("Muted until {time}")
+    } else {
+        format!("Muted until {on}, {time}")
+    }
+}
 
 /// How long [`MenuChoice::Mute`] mutes for, as its submenu offers.
 fn mute_times() -> Vec<MenuRow> {
@@ -235,6 +409,19 @@ pub(super) fn choose(
 ) {
     // A checkbox shows its new state at once, as the menu stays open.
     let ticked = toggle(window, id);
+    let target = match target.strip_prefix(BELL) {
+        Some(place) => place.to_owned(),
+        None => target,
+    };
+    let notify = Notify::of(adapter, &target);
+    let change = |change| Action::ChangeNotifications {
+        place: target.clone(),
+        change,
+    };
+    if let Some(chosen) = notify.and_then(|notify| notify.change(id)) {
+        adapter.action(window, change(chosen));
+        return;
+    }
     let (room, user) = subjects(&adapter.app.state, &target, person);
     // A member's choices act in the server of the channel they're in.
     let place = adapter.app.state.selected.clone();
@@ -334,6 +521,8 @@ pub(super) fn choose(
         }),
         // Its roles are its submenu's.
         MenuChoice::Roles => None,
+        // Notify's choices, above.
+        MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
     };
     let Some(action) = action else {
         return;
@@ -346,7 +535,7 @@ pub(super) fn choose(
     }
 }
 
-const CHOICES: [MenuChoice; 30] = [
+const CHOICES: [MenuChoice; 32] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -377,6 +566,8 @@ const CHOICES: [MenuChoice; 30] = [
     MenuChoice::RemoveTimeout,
     MenuChoice::Kick,
     MenuChoice::Ban,
+    MenuChoice::ChannelMute,
+    MenuChoice::ChannelNotifications,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -411,6 +602,8 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::RemoveTimeout => "remove-timeout",
         MenuChoice::Kick => "kick",
         MenuChoice::Ban => "ban",
+        MenuChoice::ChannelMute => "channel-mute",
+        MenuChoice::ChannelNotifications => "channel-notifications",
     }
 }
 

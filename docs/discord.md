@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | A check of Windows audio on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows; camera video, after the beta |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search | Threads, forums, pinning, forwarding, the menus of servers and channels |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header | Threads, forums, pinning, forwarding, the rest of the menus of servers and channels |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -946,8 +946,27 @@ category's goes in `channel_overrides`, keyed by its id rather than listed:
 level is `message_notifications`. `Action::ChangeNotifications` asks for a
 change to a server, by its server id, or to a channel or category, by its
 room id: a mute for one of the DM menu's times, a level, or one of the
-server's switches. The menus that offer them are still to come. The fake
-keeps each server's settings and answers with USER_GUILD_SETTINGS_UPDATE.
+server's switches. The fake keeps each server's settings and answers with
+USER_GUILD_SETTINGS_UPDATE.
+
+A server text channel and a category offer their own mute and level, as
+Discord's do, built alike in `src/ui/menus.rs` (`Notify`):
+
+- The bell in the channel's header opens a menu of "Mute channel", whose
+  submenu mutes for 15 minutes, 1, 3, 8 or 24 hours, or until unmuted, or
+  "Unmute channel" with when the mute ends, then the levels: "Use category
+  default", or "Use server default" outside a category, under which the
+  level it follows shows, then All messages, Only @mentions and Nothing,
+  the chosen one checked. The bell is slashed while the channel is muted,
+  itself or through its category.
+- Right-clicking the channel offers the same: "Mute channel" with its times,
+  or "Unmute channel", and "Notification settings", whose second line is the
+  level that applies and whose submenu lists the levels.
+- Right-clicking a category's heading, or the Menu key on it, offers "Mute
+  category" or "Unmute category" and "Notification settings", for the
+  category's own override; a muted category's channels show muted. The
+  heading names its first channel, and Talk finds the channel's category
+  (`Application::category_of`).
 
 ### Permissions and roles
 
@@ -1133,8 +1152,23 @@ neither pinning, closing nor muting, as it waits for an answer.
 
 A DM or group DM's header has, as Discord's does, its call, its pinned
 messages, adding friends, the profile or member list, and a search. Video
-calls aren't there yet. A server's text channel has its pinned messages and
-a search too; the rest of its header is still to come.
+calls aren't there yet. A server's text channel has, after its icon and name,
+its topic, then on the right Discord's buttons in Discord's order: the bell
+of its [notification settings](#notification-settings), its pinned
+messages, the member list's toggle, bright while the list shows, and the
+search. Threads, which Discord's header has before the bell, are still to
+come.
+
+- The topic is the channel's `topic`, from READY and GUILD_CREATE, which
+  CHANNEL_UPDATE changes. Talk keeps it with the channel, shared between the
+  server's snapshots (`Option<Arc<str>>`), and when a channel opens, renders
+  its Discord markup as a message's: mentions by name, custom emoji,
+  Markdown and links. It sends the result (`Event::Topic`) again only when
+  the topic changes, or when it mentions someone and the names Talk knows
+  change. The header shows it on one line, after a rule, cut at the last
+  word that fits; clicking it shows it in full under the header, with its
+  links. A channel without one shows none. The fake's #general has one, and
+  `POST /_control/topic` changes it.
 
 - Pinned messages open under the pin, the latest pinned first, from `GET
   /channels/{id}/messages/pins`, whose `items` carry each `message`. Talk asks

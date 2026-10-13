@@ -36,7 +36,9 @@
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
 // group DM, "Weekend plans", with Bob and Carol. POST /_control/dm makes Dave
 // write to her, opening a DM with her the first time, and POST
-// /_control/mention makes Bob mention her in #general. Erin, who shares no
+// /_control/mention makes Bob mention her in #general. #general has a topic
+// that mentions Bob, links #general and a page; POST /_control/topic sets
+// it to the body, or with none takes it away, and CHANNEL_UPDATE says so. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
 // spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
 // Erin also sent her a friend request; see "relationships" below.
@@ -922,6 +924,10 @@ let sessions = 0;
 const parked = new Map<string, { sequence: number; missed: { name: string; data: unknown }[] }>();
 /** How long history and media take to answer, set by POST /_control/slow. */
 let slowMs = 0;
+/** #general's topic, which POST /_control/topic changes; an empty body
+ *  takes it away. */
+let generalTopic: string | null =
+  `Co-op nights, plans and links. Ask <@${users.bob.id}> to join, keep <#${GENERAL}> on topic, and read the **house rules** at https://example.com/rules first.`;
 /** How often clients asked for a member list, for GET /_control/list-requests. */
 let listRequests = 0;
 /** How often clients identified and resumed, for GET /_control/sessions. */
@@ -979,7 +985,7 @@ function guild() {
     flags: 0,
     permission_overwrites: [],
     ...(type === 0
-      ? { topic: null, nsfw: false, rate_limit_per_user: 0, last_message_id: messages.get(id)!.at(-1)?.id ?? null }
+      ? { topic: id === GENERAL ? generalTopic : null, nsfw: false, rate_limit_per_user: 0, last_message_id: messages.get(id)!.at(-1)?.id ?? null }
       : {}),
     ...(type === 2 ? { bitrate: 64000, user_limit: 0, rtc_region: null, last_message_id: null } : {}),
   });
@@ -3376,6 +3382,11 @@ const server = Bun.serve<SocketData>({
         moved(user, state, origin);
       }
       return new Response("everyone hung up\n");
+    }
+    if (req.method === "POST" && path === "/_control/topic") {
+      generalTopic = (await req.text()) || null;
+      dispatch("CHANNEL_UPDATE", guild().channels.find((channel) => channel.id === GENERAL));
+      return new Response("#general's topic changed\n");
     }
     if (req.method === "POST" && path === "/_control/mention") {
       const message = post(GENERAL, users.bob, `<@${users.alice.id}> are you in for co-op tonight?`, Date.now());
