@@ -58,6 +58,8 @@ pub struct VoiceMember {
     pub deafened: bool,
     /// Sharing their screen with Go Live.
     pub streaming: bool,
+    /// Their camera is on.
+    pub video: bool,
 }
 
 /// The linked account, as Discord shows it outside any server.
@@ -342,6 +344,7 @@ enum Request {
         channel: String,
         mute: bool,
         deaf: bool,
+        video: bool,
     },
     View {
         guild: String,
@@ -1130,13 +1133,15 @@ impl Discord {
         });
     }
 
-    /// Shows others whether this account is muted or deafened.
-    pub fn set_self(&self, guild: &str, channel: &str, mute: bool, deaf: bool) {
+    /// Shows others whether this account is muted or deafened, and whether
+    /// its camera is on.
+    pub fn set_self(&self, guild: &str, channel: &str, mute: bool, deaf: bool, video: bool) {
         let _ = self.requests.send(Request::SelfState {
             guild: guild.into(),
             channel: channel.into(),
             mute,
             deaf,
+            video,
         });
     }
 

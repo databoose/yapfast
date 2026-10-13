@@ -1,12 +1,14 @@
 //! Discord voice: a call over Talk's own voice connection
 //! (`call_connection.rs`), with DAVE, using the voice server the gateway
-//! assigned.
+//! assigned. Cameras go both ways in the same connection
+//! (`call_video.rs`).
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc as channel,
     },
 };
 
@@ -16,6 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     call_connection::{self, Order, Sending},
+    call_video::{self, CameraSender, VideoFrame},
     ready::PRIVATE,
     rtp,
     service::VoiceServer,
@@ -43,7 +46,13 @@ pub struct Call {
     sending: Arc<Mutex<Option<Sending>>>,
     /// The server, or the DM, the connection identifies with.
     server_id: String,
+    /// Everyone else's camera frames, until taken.
+    video: Option<channel::Receiver<VideoFrame>>,
 }
+
+/// Cameras' frames waiting to be decoded; beyond this many, decoding is
+/// behind and the call waits for a keyframe.
+const VIDEO_BACKLOG: usize = 8;
 
 impl Call {
     /// Connects to the voice server for a channel in `guild_id`, or with
@@ -62,7 +71,9 @@ impl Call {
         };
         let sending = Arc::new(Mutex::new(None));
         let identity = identity(server, server_id, channel_id)?;
-        let (orders, connected) = call_connection::start(identity, listener, sending.clone())?;
+        let (frames, video) = channel::sync_channel(VIDEO_BACKLOG);
+        let (orders, connected) =
+            call_connection::start(identity, listener, sending.clone(), frames)?;
         connected
             .await
             .context("the call stopped while connecting")?
@@ -71,6 +82,7 @@ impl Call {
             orders,
             sending,
             server_id: server_id.to_owned(),
+            video: Some(video),
         })
     }
 
@@ -97,6 +109,31 @@ impl Call {
             playing: playing.clone(),
         });
         Track(playing)
+    }
+
+    /// Films from now on: the camera's frames, `width` by `height` at
+    /// `fps`, go to the call through the sender, encoded in
+    /// [`crate::stream_connection::SEND_CODEC`]. The camera stops when the
+    /// sender drops, or with [`Self::stop_filming`].
+    pub fn film(&mut self, width: u32, height: u32, fps: u32) -> CameraSender {
+        let (sender, camera) = call_video::camera(width, height, fps);
+        let _ = self.orders.send(Order::Film(Some(camera)));
+        sender
+    }
+
+    pub fn stop_filming(&mut self) {
+        let _ = self.orders.send(Order::Film(None));
+    }
+
+    /// Asks for these people's cameras, by Discord user id: each at a
+    /// quality from 0 to 100, for a tile `pixels` in size. No others come.
+    pub fn want_video(&mut self, wants: HashMap<u64, (u8, u32)>) {
+        let _ = self.orders.send(Order::Want(wants));
+    }
+
+    /// Everyone else's camera frames, as they come, for one taker.
+    pub fn video_frames(&mut self) -> Option<channel::Receiver<VideoFrame>> {
+        self.video.take()
     }
 
     pub fn leave(&mut self) {

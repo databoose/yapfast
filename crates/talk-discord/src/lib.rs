@@ -4,6 +4,7 @@
 pub mod api;
 pub mod cache;
 mod call_connection;
+pub mod call_video;
 pub mod client;
 pub mod cookies;
 mod dave;

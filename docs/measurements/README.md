@@ -680,3 +680,32 @@ the camera source's pool emptied and the heap trimmed on camera-off returned
 3 MiB of it (53.4 to 50.4 MiB, Software).
 
 Reproduce, with the test stack up: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_cameras.py --load-executable TEST_BIN --output .local/measure-cameras'`.
+
+## 2026-10-13: Discord call cameras
+
+[The record](2026-10-13-linux-discord-cameras.json)
+measures the Discord-only `fast` build in a four-person call in Lounge on
+`testing/fake_discord.ts`, through `scripts/ui-session`. Bob, Carol and Dave
+film a 720p H264 recording at 30 frames a second and 1.5 Mbit/s, made with
+ffmpeg's `testsrc2` (the command is in the script), and Alice the 640×360
+test pattern. Their tiles are about 372×209 in a 2×2 grid at 1120×760.
+Memory is anonymous memory plus swap; CPU is a percentage of one core.
+
+| Profile | Software memory | Software CPU | GPU memory | GPU CPU | Threads |
+| --- | --- | --- | --- | --- | --- |
+| No cameras | 14.0 MiB | 0.3% | 88.0 MiB | 0.3% | 15 |
+| One remote camera | 19.4 MiB | 5.0% | 92.0 MiB | 5.0% | 15 |
+| Two remote cameras | 25.1 MiB | 9.4% | 96.6 MiB | 7.3% | 15 |
+| Three remote cameras and Alice's own | 41.4 MiB | 19.0% | 113.1 MiB | 15.4% | 21 |
+| Every camera off again | 15.3 MiB | 0.4% | 85.4 MiB | 0.5% | 15 |
+| On and off a second time | 15.3 MiB | 0.4% | 85.5 MiB | 0.5% | 15 |
+
+Threads are the Software run's. A remote camera costs about 5.5 MiB, nearly
+all of it its decoder's 720p frames, and no thread: one thread decodes every
+camera. Alice's own camera costs about 11 MiB and six threads, OpenH264's
+encoder threads and the test pattern's. Everything goes when the cameras do:
+1.3 MiB stays after the first round and nothing more after the second.
+Another worktree's UI session shared the host, so CPU is a little noisy.
+
+Reproduce: `python3 testing/measure_discord_cameras.py --camera CAMERA.h264
+--output .local/measure-discord-cameras`.

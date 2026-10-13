@@ -54,13 +54,15 @@ In a call that carries video, the camera button in the call's controls turns
 the camera on and off. Each participant whose camera is on has a feed of
 their own, and their tile in the grid shows it in place of their avatar; the
 people list beside the channel marks them with a camera. Your own camera shows
-mirrored, as a mirror would. The grid tells Rust its columns, tile size and
+mirrored, as a mirror would. Up to four people take the columns that make
+their tiles largest within both the grid's width and height, so a call
+above a DM's messages shows both people side by side without scrolling;
+more take tiles at least 240px wide, and scroll. The grid tells Rust its columns, tile size and
 scroll whenever they change (`call-tiles`), so each feed is made at its tile's
 size in physical pixels, and only while the tile is in view. A tile scrolled
 away, or a grid hidden behind settings or a watched stream, makes no pictures
 and keeps no buffers. Skia draws each frame from Slint's buffer in place
-(`docs/building.md`). Preview and Matrix calls carry video; Discord calls
-follow.
+(`docs/building.md`). Preview, Matrix and Discord calls carry video.
 
 In a Matrix call, Talk publishes the camera to LiveKit as a simulcast VP8
 track, asking for 1280×720, so each receiver can take the layer its tile
@@ -78,6 +80,11 @@ sends the smallest layer that fills it, and a camera whose tile is out of
 sight, or muted, is paused at the server: nothing arrives to decode, and its
 buffers go. `testing/measure_cameras.py` measures a five-person call as the
 others' cameras and then Alice's turn on; see `docs/measurements/README.md`.
+
+In a Discord call, Talk encodes the camera in H264 itself and sends it over
+the call's own voice connection, and decodes each remote camera on one
+thread, into its tile's feed; [Camera video](discord.md#camera-video) in
+docs/discord.md has the details.
 
 The other ways to film, compared before choosing:
 

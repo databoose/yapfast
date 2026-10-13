@@ -232,6 +232,31 @@ impl Encoder {
         self.frame(encoded?)
     }
 
+    /// Encodes a camera's picture, at least the encoder's size: its top left
+    /// corner, when it's larger, as a picture an odd size loses a row or a
+    /// column.
+    pub fn encode_picture(
+        &mut self,
+        picture: &crate::picture::I420<'_>,
+        pts: u64,
+        keyframe: bool,
+    ) -> Result<Option<Frame<'_>>> {
+        if picture.width < self.width || picture.height < self.height {
+            bail!("a picture smaller than the encoder's");
+        }
+        let [y_stride, u_stride, v_stride] = picture.strides;
+        let encoded = self.encode_planes(
+            [
+                (picture.y, y_stride),
+                (picture.u, u_stride),
+                (picture.v, v_stride),
+            ],
+            pts,
+            keyframe,
+        );
+        self.frame(encoded?)
+    }
+
     /// Encodes three planes, each with its stride, into `out`: the encoded
     /// size and whether it's a keyframe, or None when the frame was skipped.
     fn encode_planes(

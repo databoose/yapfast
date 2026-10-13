@@ -7,9 +7,9 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | A check of Windows audio on real Windows; Discord's push-to-talk; soundboard |
-| [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
-| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows; camera video, after the beta |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio on real Windows; cameras on Windows; Discord's push-to-talk; soundboard |
+| [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
+| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header | Threads, forums, pinning, forwarding, the rest of the menus of servers and channels |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
@@ -194,7 +194,8 @@ five seconds for it when the old connection ends, and watching connects again.
 
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
-Camera video comes after the beta, together with video in Talk.
+Camera video works in server voice channels and DM calls; see
+[Camera video](#camera-video).
 
 Since March 2026, Discord voice requires its end-to-end encryption, DAVE, and
 [rejects clients without it](https://support.discord.com/hc/en-us/articles/38749827197591-A-V-E2EE-Enforcement-for-Non-Stage-Voice-Calls).
@@ -260,6 +261,49 @@ build, Skia Software, averaged over 10 s: muted, songbird took 18 threads
 and 14 MiB of anonymous memory, Talk's connection 17 and 13 to 15 MiB, both
 at 0.4% of a core. Unmuted, with the microphone's processing running, both
 took 34 MiB; songbird 7.2% of a core and Talk's connection 6.2%.
+
+### Camera video
+
+Turning the camera on in a call does what Discord's clients do: the main
+gateway's voice state says `self_video`, and the call's connection announces
+the camera with op 12, its video and RTX SSRCs (those op 2 assigned) and one
+stream at rid "100", at most 1280×720 and 30 frames a second. Discord's
+clients offer a second layer at quality 50; Talk sends one, as its Go Live
+does. Turning it off sends op 12 again with a video SSRC of 0 and no
+streams. Talk offers H264 to encode, as for Go Live, and both H264 and VP8 to
+decode. The camera's pictures go to OpenH264 on the camera's own thread, at
+1.5 Mbit/s, and each frame to the call's thread, which encrypts it with DAVE
+and sends it as Go Live's packetizer does: sender reports, a resend from RTX
+for each NACK, and a keyframe when someone asks with a PLI. A frame the
+call's thread can't take in time is dropped, and the next one is a keyframe.
+
+The others' cameras arrive the same way round. Op 12 says who films on which
+SSRC, and Discord forwards a camera only to those who ask for it with op 15
+("media sink wants"): `{"any": 0, "<video SSRC>": quality, "pixelCounts":
+{...}}`, quality from 0 to 100. Talk asks for each camera whose tile is in
+sight, at 100 for a tile at least 360 pixels tall and 50 for a smaller one,
+with the tile's pixels; for any other, 0. Frames come together as Go Live's
+do (reordering, NACK, a PLI after a loss) and are decrypted with the
+sender's DAVE key. Whole frames go to one thread, `talk-discord-video`,
+which keeps an FFmpeg H264 or libvpx VP8 decoder on one thread for each
+camera in sight, and writes each picture straight into the tile's feed at the
+tile's size. A tile that leaves the screen loses its decoder within a second,
+and its buffers at once; a new decoder starts from a keyframe. The others'
+voice states say `self_video`, which marks them with a camera in the channel
+list and gives their tile a feed.
+
+The fake voice server announces Bob's, Carol's and Dave's cameras with op 12
+(`POST /_control/camera?who=bob`, `&off` to stop), sends the recording in
+testing/fixtures to a call that asks for it with op 15, losing a packet and
+reordering another as it does for Go Live, and counts the frames of Alice's
+camera (`GET /_control/call-video`). `talks_to_the_fake_server` checks
+cameras both ways in a server's voice channel and in a DM call.
+
+Measured on 2026-10-13 in a four-person call on the fake server, with 720p
+cameras at 30 frames a second (`testing/measure_discord_cameras.py`): each
+remote camera took about 5.5 MiB and 5% of a core, Talk's own camera about
+11 MiB and six threads, and all of it went when the cameras went off. See
+[measurements](measurements/README.md).
 
 ### DM calls
 
@@ -1292,7 +1336,8 @@ In rough order. The browser covers these until then.
 - Making and changing server folders.
 - Joining servers by invite, and leaving them.
 - Discord's push-to-talk, and its voice settings.
-- Camera video and the soundboard.
+- Cameras on Windows.
+- The soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
 - A captcha fallback for linking, through a small embedded web view.
@@ -1478,5 +1523,5 @@ material only, under the borrowing rules in the
 
 Steps 1 to 4 work on Linux; step 5 hasn't started.
 
-Screen sharing and watching streams in Discord calls (Go Live) came early.
-Camera video follows after the beta.
+Screen sharing and watching streams in Discord calls (Go Live) came early,
+and camera video in calls in October 2026.

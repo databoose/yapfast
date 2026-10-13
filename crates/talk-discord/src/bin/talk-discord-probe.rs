@@ -198,7 +198,7 @@ async fn join(channel_id: &str, seconds: u64) -> Result<()> {
     let recorder = Arc::new(Recorder::default());
     let mut call = Call::connect(&voice_server, &server.id, channel_id, recorder.clone()).await?;
     // The probe talks: show it unmuted.
-    discord.set_self(&server.id, channel_id, false, false);
+    discord.set_self(&server.id, channel_id, false, false, false);
     println!("Voice connected.");
     let (microphone, input) = live_microphone();
     call.play(input);

@@ -28,6 +28,8 @@ pub mod discord_link;
 #[cfg(feature = "discord")]
 pub mod discord_text;
 #[cfg(feature = "discord")]
+mod discord_video;
+#[cfg(feature = "discord")]
 mod discord_voice;
 #[cfg(feature = "discord")]
 pub mod encode;

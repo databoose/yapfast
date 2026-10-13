@@ -280,7 +280,7 @@ impl StreamReceiver {
     }
 }
 
-fn video_attributes(
+pub(crate) fn video_attributes(
     ssrc: u32,
     video: u32,
     rtx: u32,

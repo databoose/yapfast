@@ -1897,6 +1897,7 @@ fn asks_once_for_the_pictures_on_screen() {
                 muted: false,
                 deafened: false,
                 streaming: false,
+                video: false,
             }],
         )]
         .into(),
@@ -2767,6 +2768,7 @@ fn discord_dm_calls_start_ring_and_are_answered() {
         muted: false,
         deafened: false,
         streaming: false,
+        video: false,
     };
     let snapshot = |ringing: Vec<VoiceMember>, in_call: Vec<VoiceMember>| Snapshot {
         status: Status::Online,
@@ -2852,6 +2854,7 @@ fn do_not_disturb_shows_a_call_without_notifying() {
         muted: false,
         deafened: false,
         streaming: false,
+        video: false,
     };
     let mut app = Application::default();
     let effects = app.apply(discord_event(Snapshot {
