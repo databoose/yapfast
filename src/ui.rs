@@ -56,6 +56,8 @@ pub enum Exit {
     Closed,
     /// GPU rendering failed; restart with Skia Software for this reason.
     UseSoftware(String),
+    /// The renderer setting changed; restart to use it.
+    Restart,
 }
 
 /// Slint releases the first window after at most 500 ms of desktop appearance
@@ -68,8 +70,18 @@ pub fn run(
     runtime: BackgroundRuntime,
     root: PathBuf,
     preview: bool,
-    plan: graphics::Plan,
+    renderer: Option<graphics::Renderer>,
+    gpu_failure: Option<String>,
 ) -> Result<Exit> {
+    let plan = {
+        let mut layout = Layout::read(&root);
+        let plan = graphics::plan(renderer, layout.gpu_rendering, gpu_failure);
+        if plan.forget_gpu {
+            layout.gpu_rendering = false;
+            layout.write(&root);
+        }
+        plan
+    };
     decode_into_slint_buffers();
     pictures::make_frames_in_slint_buffers();
     // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
@@ -114,6 +126,15 @@ pub fn run(
     }
     let notice = SharedString::from(plan.notice.unwrap_or_default());
     window.set_graphics_notice(notice.clone());
+    window.set_gpu_running(gpu);
+    let restart = Rc::new(Cell::new(false));
+    window.on_restart({
+        let restart = restart.clone();
+        move || {
+            restart.set(true);
+            let _ = slint::quit_event_loop();
+        }
+    });
     // Slint 1.18 keeps its event loop running when it creates a window late and
     // the GPU surface fails, leaving no window. Check for the native window.
     let missing_window = Rc::new(Cell::new(false));
@@ -145,6 +166,7 @@ pub fn run(
             "the window did not appear".into(),
             "Talk's window did not appear",
         ),
+        Ok(()) if restart.get() => Ok(Exit::Restart),
         Ok(()) => Ok(Exit::Closed),
     }
 }
@@ -530,6 +552,8 @@ struct Layout {
     adjust_each_sound: bool,
     /// Each sound's own volume as a percentage up to 100%, if it isn't 100%.
     each_sound: std::collections::BTreeMap<Sound, u8>,
+    /// Talk draws with Skia GPU from its next start; see [`graphics`].
+    gpu_rendering: bool,
 }
 
 /// Talk's sounds start as they're made: 12 dB under full scale at the loudest.
@@ -633,6 +657,7 @@ impl Layout {
         window.set_sound_set(choice(&SoundSet::ALL, self.sound_set));
         window.set_sound_volume(self.sound_volume.unwrap_or(DEFAULT_SOUND_VOLUME).into());
         window.set_adjust_each_sound(self.adjust_each_sound);
+        window.set_gpu_rendering(self.gpu_rendering);
         let each: Vec<i32> = Sound::ALL
             .iter()
             .map(|sound| self.each_sound.get(sound).copied().unwrap_or(100).into())

@@ -314,6 +314,25 @@ fn each_sounds_own_volume_counts_only_while_adjusting_each() {
 }
 
 #[test]
+fn the_renderer_setting_is_remembered() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    // Software unless chosen.
+    assert!(!window.get_gpu_rendering());
+    window.set_gpu_rendering(true);
+    window.invoke_preferences_changed();
+    assert!(Layout::read(directory.path()).gpu_rendering);
+}
+
+#[test]
 fn sound_settings_are_remembered() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

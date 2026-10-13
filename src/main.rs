@@ -111,7 +111,7 @@ fn main() -> Result<()> {
         }
         [argument] if argument == "--help" || argument == "-h" => {
             println!(
-                "Usage: talk [--preview] [--data-dir PATH] [--renderer gpu|software]\n       talk [--smoke-test | --help]\n       talk --call-experiment [--resume PATH]\n       talk [--voice-demo | --audio-devices]\n       talk session login --homeserver URL --user USER --password-stdin [--data-dir PATH]\n       talk session status [--data-dir PATH]\n       talk session recover --key-stdin [--data-dir PATH]\n       talk session logout [--data-dir PATH]\n\nWithout arguments, opens native Slint chat and restores a saved session.\n--renderer selects Skia Software, the default, or Skia GPU. If Skia GPU fails to\nstart, Talk restarts with Skia Software.\n--preview opens local sample conversations without connecting to Matrix.\n--smoke-test checks the linked stack without signing in or opening audio devices.\n--call-experiment creates disposable local accounts and checks encrypted synthetic audio. Start scripts/test-stack up first.\n--voice-demo creates two local accounts and a server with encrypted text and voice channels.\n--audio-devices lists native audio devices and cameras without recording.\nSession commands support password sign-in. Secrets are read from stdin."
+                "Usage: talk [--preview] [--data-dir PATH] [--renderer gpu|software]\n       talk [--smoke-test | --help]\n       talk --call-experiment [--resume PATH]\n       talk [--voice-demo | --audio-devices]\n       talk session login --homeserver URL --user USER --password-stdin [--data-dir PATH]\n       talk session status [--data-dir PATH]\n       talk session recover --key-stdin [--data-dir PATH]\n       talk session logout [--data-dir PATH]\n\nWithout arguments, opens native Slint chat and restores a saved session.\n--renderer selects Skia Software or Skia GPU for this start, over the setting.\nIf Skia GPU fails to start, Talk restarts with Skia Software.\n--preview opens local sample conversations without connecting to Matrix.\n--smoke-test checks the linked stack without signing in or opening audio devices.\n--call-experiment creates disposable local accounts and checks encrypted synthetic audio. Start scripts/test-stack up first.\n--voice-demo creates two local accounts and a server with encrypted text and voice channels.\n--audio-devices lists native audio devices and cameras without recording.\nSession commands support password sign-in. Secrets are read from stdin."
             );
             Ok(())
         }
@@ -128,43 +128,47 @@ fn launch(
     runtime: BackgroundRuntime,
     root: std::path::PathBuf,
     preview: bool,
-    renderer: &str,
+    renderer: Option<&str>,
     arguments: &[String],
 ) -> Result<()> {
-    let renderer = match renderer {
+    let renderer = renderer.map(|renderer| match renderer {
         "gpu" => graphics::Renderer::Gpu,
         _ => graphics::Renderer::Software,
-    };
-    let plan = graphics::plan(renderer, std::env::var(GPU_FALLBACK_REASON).ok());
+    });
+    let fallback = std::env::var(GPU_FALLBACK_REASON).ok();
     #[cfg(feature = "discord")]
     talk_core::keep_discord_files(&root);
-    match ui::run(runtime, root, preview, plan)? {
+    match ui::run(runtime, root, preview, renderer, fallback)? {
         ui::Exit::Closed => Ok(()),
-        ui::Exit::UseSoftware(reason) => relaunch_with_software(arguments, &reason),
+        ui::Exit::UseSoftware(reason) => relaunch(arguments, Some(&reason)),
+        ui::Exit::Restart => relaunch(arguments, None),
     }
 }
 
-/// The window system allows one renderer per process, so a failed GPU start
-/// continues in a new process after this one released its session and runtime.
+/// The window system allows one renderer per process, so a failed GPU start,
+/// or a changed renderer setting, continues in a new process after this one
+/// released its session and runtime. `arguments` no longer hold `--renderer`,
+/// so a restart follows the setting.
 #[cfg(feature = "desktop")]
-fn relaunch_with_software(arguments: &[String], reason: &str) -> Result<()> {
+fn relaunch(arguments: &[String], gpu_failure: Option<&str>) -> Result<()> {
     let mut command = std::process::Command::new(
         std::env::current_exe().context("could not find Talk to restart it")?,
     );
-    command
-        .args(arguments)
-        .args(["--renderer", "software"])
-        .env(GPU_FALLBACK_REASON, reason);
+    command.args(arguments);
+    match gpu_failure {
+        Some(reason) => command
+            .args(["--renderer", "software"])
+            .env(GPU_FALLBACK_REASON, reason),
+        None => command.env_remove(GPU_FALLBACK_REASON),
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        Err(command.exec()).context("could not restart Talk with software rendering")
+        Err(command.exec()).context("could not restart Talk")
     }
     #[cfg(not(unix))]
     {
-        let status = command
-            .status()
-            .context("could not restart Talk with software rendering")?;
+        let status = command.status().context("could not restart Talk")?;
         std::process::exit(status.code().unwrap_or(1));
     }
 }
@@ -174,7 +178,7 @@ fn launch(
     _: BackgroundRuntime,
     _: std::path::PathBuf,
     _: bool,
-    _: &str,
+    _: Option<&str>,
     _: &[String],
 ) -> Result<()> {
     bail!(
@@ -182,12 +186,13 @@ fn launch(
     )
 }
 
-fn renderer_argument(arguments: &mut Vec<String>) -> Result<&'static str> {
+/// The renderer `--renderer` asks for; without it, the setting decides.
+fn renderer_argument(arguments: &mut Vec<String>) -> Result<Option<&'static str>> {
     let Some(index) = arguments
         .iter()
         .position(|argument| argument == "--renderer")
     else {
-        return Ok("software");
+        return Ok(None);
     };
     let renderer = match arguments.get(index + 1).map(String::as_str) {
         Some("gpu") => "gpu",
@@ -198,5 +203,5 @@ fn renderer_argument(arguments: &mut Vec<String>) -> Result<&'static str> {
     if arguments.iter().any(|argument| argument == "--renderer") {
         bail!("specify --renderer once");
     }
-    Ok(renderer)
+    Ok(Some(renderer))
 }

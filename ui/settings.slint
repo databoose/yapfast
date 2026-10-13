@@ -111,7 +111,7 @@ export component Choices inherits Rectangle {
 // children, on the right. Escape or the close button returns to the conversation.
 export component SettingsScreen inherits Rectangle {
     /// The section showing: 0 account, 1 voice and video, 2 messages,
-    /// 3 notifications, 4 Discord, 5 sounds.
+    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced.
     in-out property <int> settings-section;
     in property <bool> discord-build;
     in property <bool> preview;
@@ -158,6 +158,10 @@ export component SettingsScreen inherits Rectangle {
                         if root.discord-build && !root.preview: ChannelRow {
                             text: "Discord"; icon: @image-url("icons/discord.svg");
                             selected: root.settings-section == 4; clicked => { root.settings-section = 4; }
+                        }
+                        ChannelRow {
+                            text: "Advanced"; icon: @image-url("icons/settings.svg");
+                            selected: root.settings-section == 6; clicked => { root.settings-section = 6; }
                         }
                     }
                 }
@@ -525,6 +529,34 @@ export component SoundSettings inherits VerticalLayout {
                 committed(value) => { root.each-changed(index, value); root.play(index); }
             }
             Middle { IconButton { icon: @image-url("icons/play.svg"); label: "Play " + name; clicked => { root.play(index); } } }
+        }
+    }
+}
+
+// Settings: how Talk draws its window. Slint picks a renderer once per
+// process, so a change waits for a restart, which this offers.
+export component AdvancedSettings inherits VerticalLayout {
+    in-out property <bool> gpu-rendering;
+    in property <bool> gpu-running;
+    callback preferences-changed;
+    callback restart;
+    spacing: 16px;
+    SettingsTitle { text: "Advanced"; }
+    SettingsSwitch {
+        text: "Render with the GPU";
+        description: "Hardware acceleration. Off, Talk draws on the processor, which uses about half the memory.";
+        checked <=> root.gpu-rendering;
+        toggled => { root.preferences-changed(); }
+    }
+    if root.gpu-rendering != root.gpu-running: HorizontalLayout {
+        spacing: 12px;
+        Label {
+            text: "Talk switches to " + (root.gpu-rendering ? "the GPU" : "the processor") + " when it restarts. Restarting leaves any call.";
+            vertical-alignment: center; horizontal-stretch: 1;
+        }
+        ActionButton {
+            text: "Restart Talk"; icon: @image-url("icons/refresh-cw.svg");
+            clicked => { root.restart(); }
         }
     }
 }

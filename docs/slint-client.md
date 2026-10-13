@@ -40,7 +40,14 @@ rows, and shutdown cancels event reception before releasing the backend actor.
 
 ## Renderers and native builds
 
-Skia Software is the default. Start the local preview from the repository folder:
+Skia Software is the default. Settings → Advanced → Render with the GPU switches
+to Skia GPU, saved as `gpu_rendering` in `layout.json`. Slint selects its
+platform and renderer once per process, and glutin keeps the EGL library loaded
+until the process ends, so the setting applies on the next start; the section
+offers a restart, which replaces the process as the GPU recovery below does.
+Software mode never loads EGL or the GPU driver. `--renderer gpu|software`
+overrides the setting for one start. Start the local preview from the repository
+folder:
 
 ```sh
 nix develop path:./nix --command cargo run --locked -- --preview
@@ -63,7 +70,8 @@ window at 2× scale.
 
 ### GPU recovery
 
-`--renderer gpu` requests Skia GPU through an explicit `skia-opengl` renderer.
+The GPU setting and `--renderer gpu` request Skia GPU through an explicit
+`skia-opengl` renderer.
 The generic `skia` renderer would silently substitute a software surface when
 OpenGL fails, so Talk owns the fallback instead:
 
@@ -78,8 +86,9 @@ OpenGL fails, so Talk owns the fallback instead:
   The check uses Slint's version-pinned `unstable-winit-030` accessor rather than
   a rendering notifier, because Skia disables partial repainting while one is
   installed.
-- Nothing is remembered between starts. Without the flag, Talk does not try the
-  GPU at all.
+- A GPU start that came from the setting turns the setting off, so later starts
+  don't fail and restart again; the person can turn it back on. Without the
+  setting or the flag, Talk does not try the GPU at all.
 
 `testing/probe_renderer_fallback.py` checks this policy on the private compositor.
 It hides every EGL vendor from libglvnd to simulate a missing OpenGL driver:
@@ -88,10 +97,11 @@ It hides every EGL vendor from libglvnd to simulate a missing OpenGL driver:
 nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --no-services --compositor-log .local/fallback.weston.log -- python3 testing/probe_renderer_fallback.py --output .impeccable/review/renderer-fallback'
 ```
 
-On 2026-10-05 all four checks passed on the NVIDIA host: the default start used
+On 2026-10-13 all six checks passed on the NVIDIA host: the default start used
 Skia Software; `--renderer gpu` with broken EGL restarted into Skia Software with
-the notice; a working `--renderer gpu` start kept Skia GPU; and no renderer record
-was stored.
+the notice; a working `--renderer gpu` start kept Skia GPU; `--renderer` left the
+setting alone; the GPU setting with broken EGL restarted into Skia Software and
+turned itself off; and the next start went straight to Skia Software.
 
 The Nix shells supply checksum-pinned native inputs. Linux uses the upstream
 Skia 0.153.3 archive. Windows builds the same pinned Skia source and dependencies

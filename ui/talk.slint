@@ -25,7 +25,7 @@ import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGri
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
-import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
@@ -572,6 +572,11 @@ export component TalkWindow inherits Window {
     in property <[int]> each-sound;
     callback each-sound-changed(int, int);
     callback play-sound(int);
+    /// Rendering with the GPU, as set and as this process does; a change
+    /// applies when Talk restarts, which restart does.
+    in-out property <bool> gpu-rendering;
+    in property <bool> gpu-running;
+    callback restart();
     callback preferences-changed();
     out property <length> message-font-size: root.text-size == 0 ? 14px : root.text-size == 2 ? 18px : 16px;
     // The sidebar keeps 180 to 380px. Dragging also leaves the conversation 420px;
@@ -2190,6 +2195,11 @@ export component TalkWindow inherits Window {
             preferences-changed => { root.preferences-changed(); }
             each-changed(index, percent) => { root.each-sound-changed(index, percent); }
             play(index) => { root.play-sound(index); }
+        }
+        if root.settings-section == 6: AdvancedSettings {
+            gpu-rendering <=> root.gpu-rendering; gpu-running: root.gpu-running;
+            preferences-changed => { root.preferences-changed(); }
+            restart => { root.restart(); }
         }
         if root.settings-section == 4 && !root.discord-linked: DiscordLinkSettings {
             link-phase: root.link-phase; link-code: root.link-code; link-name: root.link-name; link-note: root.link-note;
