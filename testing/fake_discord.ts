@@ -49,6 +49,9 @@
 // Discord's does while it indexes it.
 // POST /_control/typing makes Bob start typing in #general, or with ?dm in
 // his DM; GET /_control/typed lists the channels Alice said she was typing in.
+// GET /channels/{id}/messages takes `before`, `after` or `around` a snowflake,
+// with `limit`; GET /_control/history lists each such request's query, oldest
+// first, and POST clears the list.
 // GET /_control/acks lists Alice's read acknowledgements, oldest first: each
 // request's channels, several for POST /read-states/ack-bulk.
 // POST /_control/react makes Carol add or take back a reaction on the newest
@@ -2343,10 +2346,19 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50)));
       const before = url.searchParams.get("before");
       const after = url.searchParams.get("after");
+      const around = url.searchParams.get("around");
       let page = list;
+      if (around) {
+        // Half before the snowflake and half from it on, whether or not a
+        // message has it.
+        const older = list.filter((message) => BigInt(message.id) < BigInt(around));
+        const newer = list.filter((message) => BigInt(message.id) >= BigInt(around));
+        page = [...older.slice(-Math.floor(limit / 2)), ...newer.slice(0, Math.ceil(limit / 2))];
+      }
       if (before) page = page.filter((message) => BigInt(message.id) < BigInt(before));
       if (after) page = page.filter((message) => BigInt(message.id) > BigInt(after)).slice(0, limit);
       page = page.slice(-limit).reverse();
+      historyRequests.push(url.search);
       return json(page.map((message) => wireMessage(message, origin)));
     }
     if (method === "POST") {
@@ -3080,6 +3092,8 @@ function withDeviceCookie(req: Request, response: Response) {
 
 // Private test diagnostics: how much media the UI actually asks for.
 const mediaRequests = { avatars: 0, previews: 0 };
+// The query of each request for a channel's messages, oldest first.
+const historyRequests: string[] = [];
 const server = Bun.serve<SocketData>({
   hostname: args.host,
   port: Number(args.port),
@@ -3090,6 +3104,10 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/media-requests") {
       if (req.method === "POST") Object.assign(mediaRequests, { avatars: 0, previews: 0 });
       return Response.json(mediaRequests);
+    }
+    if (path === "/_control/history") {
+      if (req.method === "POST") historyRequests.length = 0;
+      return Response.json(historyRequests);
     }
     if (req.method === "GET") {
       if (/^\/(icons|avatars|banners|embed\/avatars|guilds)\//.test(path)) mediaRequests.avatars++;

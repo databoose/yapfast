@@ -722,7 +722,7 @@ fn stopped_transport_unblocks_retry_and_failed_logout_keeps_session() {
 }
 
 #[test]
-fn jumping_to_a_reply_loads_history_until_the_original_is_there() {
+fn jumping_shows_a_loaded_message_or_a_window_of_the_messages_around_it() {
     let mut app = connected();
     let message = |item: &str| ChatMessage {
         id: item.into(),
@@ -730,35 +730,158 @@ fn jumping_to_a_reply_loads_history_until_the_original_is_there() {
         body: item.into(),
         ..Default::default()
     };
-    app.apply(Event::Timeline {
+    let show = |app: &mut Application, items: &[&str]| {
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: timeline(items.iter().map(|item| message(item)).collect()),
+        })
+    };
+    show(&mut app, &["e:20", "e:30"]);
+    assert!(app.dispatch(Action::Jump("e:30".into())).is_empty());
+    assert_eq!(app.state.jump, Some(("e:30".into(), 0)));
+
+    // One the timeline doesn't have loads the messages around it, which
+    // show in its place, rather than every page between.
+    let effects = app.dispatch(Action::Jump("e:10".into()));
+    assert!(matches!(
+        &effects[..],
+        [Effect::Backend(Command::Around { room, item })] if room == "dm" && item == "e:10"
+    ));
+    assert!(
+        app.dispatch(Action::Earlier).is_empty(),
+        "the window has its own start"
+    );
+    let before = app.state.messages.clone();
+    show(&mut app, &["e:20", "e:30", "e:40"]);
+    assert!(
+        Arc::ptr_eq(&before, &app.state.messages),
+        "the window replaces what showed before"
+    );
+    app.apply(window("dm", chat::Direction::Around, false));
+    assert!(app.state.detached);
+    assert_eq!(app.state.jump, Some(("e:30".into(), 0)), "not yet");
+    show(&mut app, &["e:9", "e:10", "e:11"]);
+    assert_eq!(app.state.jump, Some(("e:10".into(), 1)));
+    assert!(app.state.notice.is_none());
+
+    // Scrolling down its end loads newer pages, one at a time, until they
+    // reach the newest message.
+    let later = |app: &mut Application| {
+        matches!(
+            app.dispatch(Action::Later).as_slice(),
+            [Effect::Backend(Command::Later(room))] if room == "dm"
+        )
+    };
+    assert!(later(&mut app));
+    assert!(!later(&mut app), "one page at a time");
+    app.apply(Event::HistoryLoaded {
         room: "dm".into(),
-        messages: timeline(vec![message("e:2"), message("e:3")]),
+        direction: chat::Direction::Later,
+        history: chat::History::Failed,
     });
+    assert!(app.state.later_failed);
+    assert!(later(&mut app), "asking again retries");
+    app.apply(window("dm", chat::Direction::Later, false));
+    assert!(app.state.detached && !app.state.loading_later);
+    assert!(later(&mut app));
+    app.apply(window("dm", chat::Direction::Later, true));
+    assert!(!app.state.detached, "the window reached the present");
+    assert!(!later(&mut app), "nothing is after the newest message");
+
+    // Jump to present shows the newest messages again.
+    app.dispatch(Action::Jump("e:1".into()));
+    app.apply(window("dm", chat::Direction::Around, false));
+    show(&mut app, &["e:1", "e:2"]);
+    assert!(matches!(
+        app.dispatch(Action::JumpToPresent).as_slice(),
+        [Effect::Backend(Command::Present(room))] if room == "dm"
+    ));
+    assert!(!app.state.detached);
+    assert!(app.dispatch(Action::JumpToPresent).is_empty());
+
+    // So does sending a message.
     app.dispatch(Action::Jump("e:3".into()));
-    assert_eq!(app.state.jump, Some(("e:3".into(), 0)));
-    // An earlier message is loaded first.
-    let effects = app.dispatch(Action::Jump("e:1".into()));
-    assert!(matches!(&effects[..], [Effect::Backend(Command::Earlier(room))] if room == "dm"));
-    assert_eq!(app.state.jump, Some(("e:3".into(), 0)));
-    app.apply(Event::Timeline {
-        room: "dm".into(),
-        messages: timeline(vec![message("e:1"), message("e:2"), message("e:3")]),
-    });
-    assert!(app.apply(more("dm")).is_empty());
-    assert_eq!(app.state.jump, Some(("e:1".into(), 1)));
-    // One that never turns up stops the search with a note.
-    app.dispatch(Action::Jump("e:0".into()));
-    for _ in 0..MAX_SEEK_PAGES {
-        assert!(app.state.loading_history);
-        app.apply(more("dm"));
-    }
-    assert!(!app.state.loading_history);
+    app.apply(window("dm", chat::Direction::Around, false));
+    show(&mut app, &["e:3"]);
+    app.dispatch(Action::SetDraft("Back to now".into()));
+    let effects = app.dispatch(Action::Send);
+    assert!(matches!(
+        &effects[..],
+        [
+            Effect::Backend(Command::Present(room)),
+            Effect::Backend(Command::Send { .. })
+        ] if room == "dm"
+    ));
+    assert!(!app.state.detached);
+
+    // A message that isn't there once its window came was deleted.
+    app.dispatch(Action::Jump("e:5".into()));
+    app.apply(window("dm", chat::Direction::Around, false));
+    show(&mut app, &["e:4", "e:6"]);
     assert!(
         app.state
             .notice
             .as_deref()
             .is_some_and(|notice| notice.contains("couldn't find"))
     );
+    // A window that failed to load leaves what showed.
+    let jumped = app.state.jump.clone();
+    app.dispatch(Action::Jump("e:7".into()));
+    app.apply(Event::HistoryLoaded {
+        room: "dm".into(),
+        direction: chat::Direction::Around,
+        history: chat::History::Failed,
+    });
+    show(&mut app, &["e:4", "e:6"]);
+    assert_eq!(app.state.jump, jumped);
+    assert_eq!(app.state.messages.len(), 2);
+
+    // Leaving the room lets the window go.
+    assert!(app.state.detached);
+    app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
+    assert!(!app.state.detached);
+}
+
+#[test]
+fn jumping_into_another_room_opens_it_on_the_message() {
+    let mut app = connected();
+    let effects = app.dispatch(Action::JumpInRoom {
+        room: "games".into(),
+        item: "e:1".into(),
+    });
+    assert_eq!(app.state.selected.as_deref(), Some("games"));
+    assert_eq!(
+        app.state.navigation,
+        Navigation::Server("friends".into()),
+        "its server shows"
+    );
+    let around = effects.iter().position(|effect| {
+        matches!(effect, Effect::Backend(Command::Around { room, item }) if room == "games" && item == "e:1")
+    });
+    let open = effects.iter().rposition(
+        |effect| matches!(effect, Effect::Backend(Command::Open(room)) if room == "games"),
+    );
+    assert!(open < around && around.is_some(), "opened, then focused");
+    // What the room shows at first isn't the window, which it waits for.
+    app.apply(Event::Timeline {
+        room: "games".into(),
+        messages: timeline(vec![message("e:50", false)]),
+    });
+    assert!(!app.state.room_ready);
+    app.apply(window("games", chat::Direction::Around, false));
+    app.apply(Event::Timeline {
+        room: "games".into(),
+        messages: timeline(vec![message("e:1", false), message("e:2", false)]),
+    });
+    assert!(app.state.room_ready && app.state.detached);
+    assert_eq!(app.state.jump, Some(("e:1".into(), 0)));
+    // In the open room it's an ordinary jump.
+    let effects = app.dispatch(Action::JumpInRoom {
+        room: "games".into(),
+        item: "e:2".into(),
+    });
+    assert!(effects.is_empty());
+    assert_eq!(app.state.jump, Some(("e:2".into(), 1)));
 }
 
 #[test]
@@ -791,11 +914,39 @@ fn stale_timeline_and_history_events_do_not_replace_the_selected_room() {
     assert!(!app.state.loading_history);
 }
 
-/// A page of history arrived, with more before it.
+/// A page of earlier history arrived, with more before it.
 fn more(room: &str) -> Event {
     Event::HistoryLoaded {
         room: room.into(),
-        history: chat::History::More,
+        direction: chat::Direction::Earlier,
+        history: chat::History::Loaded {
+            start: false,
+            present: true,
+        },
+    }
+}
+
+/// Messages in `direction` arrived; with `present` they reach the newest.
+fn window(room: &str, direction: chat::Direction, present: bool) -> Event {
+    Event::HistoryLoaded {
+        room: room.into(),
+        direction,
+        history: chat::History::Loaded {
+            start: false,
+            present,
+        },
+    }
+}
+
+/// The first page of history arrived.
+fn start(room: &str) -> Event {
+    Event::HistoryLoaded {
+        room: room.into(),
+        direction: chat::Direction::Earlier,
+        history: chat::History::Loaded {
+            start: true,
+            present: true,
+        },
     }
 }
 
@@ -815,15 +966,13 @@ fn history_loads_a_page_at_a_time_until_the_first_message() {
     // A page that fails stops loading until asked again.
     app.apply(Event::HistoryLoaded {
         room: "dm".into(),
+        direction: chat::Direction::Earlier,
         history: chat::History::Failed,
     });
     assert!(app.state.history_failed);
     assert!(earlier(&mut app), "asking again retries");
     assert!(!app.state.history_failed);
-    app.apply(Event::HistoryLoaded {
-        room: "dm".into(),
-        history: chat::History::Start,
-    });
+    app.apply(start("dm"));
     assert!(app.state.history_start);
     assert!(!earlier(&mut app), "nothing is before the first message");
     // Another room starts over.
@@ -852,10 +1001,7 @@ fn a_timeline_that_drops_its_oldest_messages_has_history_to_load_again() {
         messages: timeline(vec![message("d:1"), message("d:2")]),
     });
     app.dispatch(Action::Earlier);
-    app.apply(Event::HistoryLoaded {
-        room: "dm".into(),
-        history: chat::History::Start,
-    });
+    app.apply(start("dm"));
     // A new message keeps the first one loaded.
     app.apply(Event::Timeline {
         room: "dm".into(),
@@ -3335,73 +3481,73 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
 
 #[test]
 #[cfg(feature = "discord")]
-fn opening_a_channel_loads_history_back_to_its_first_unread_message() {
+fn opening_a_channel_shows_the_messages_around_its_last_read_one() {
     let general = "discord:10:21";
-    let earlier = |effects: &[Effect]| {
-        effects.iter().any(
-            |effect| matches!(effect, Effect::Backend(Command::Earlier(room)) if room == general),
-        )
+    let around = |effects: &[Effect]| {
+        effects.iter().find_map(|effect| match effect {
+            Effect::Backend(Command::Around { room, item }) if room == general => {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+    };
+    let show = |app: &mut Application, ids: Vec<u64>| {
+        app.apply(Event::Timeline {
+            room: general.into(),
+            messages: timeline(discord_messages(ids, &[])),
+        })
     };
     let mut app = connected();
     app.apply(unread_channel(true, 50));
     app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
     app.dispatch(Action::SelectRoom(general.into()));
-    let effects = app.apply(Event::Timeline {
-        room: general.into(),
-        messages: timeline(discord_messages(100..110, &[])),
-    });
-    assert!(earlier(&effects), "every loaded message is unread");
+    let effects = show(&mut app, (100..110).collect());
+    assert_eq!(
+        around(&effects).as_deref(),
+        Some("d:50"),
+        "every loaded message is unread, so one page around the last read one loads"
+    );
     assert_eq!(app.state.first_unread, None);
-    // The page comes as a timeline, then its outcome.
-    let effects = app.apply(Event::Timeline {
-        room: general.into(),
-        messages: timeline(discord_messages((40..48).chain(100..110), &[])),
-    });
-    assert!(!earlier(&effects), "one page at a time");
-    let effects = app.apply(more(general));
-    assert!(!earlier(&effects));
+    // Until the window comes, timelines are of what showed before.
+    assert!(around(&show(&mut app, (100..111).collect())).is_none());
+    assert_eq!(app.state.first_unread, None);
+    app.apply(window(general, chat::Direction::Around, false));
     // Messages 49 and 50 were deleted: the divider goes above the next one.
+    let effects = show(&mut app, (40..48).chain(100..110).collect());
+    assert!(around(&effects).is_none());
     assert_eq!(app.state.first_unread.as_deref(), Some("d:100"));
     assert_eq!(app.state.unread_jump, 1);
+    assert!(app.state.detached);
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::MarkRead { .. }))),
+        "a window of older messages doesn't read the channel"
+    );
 
-    // Scrolled far down, the first unread message was let go; the jump
-    // loads it again.
-    app.apply(Event::Timeline {
-        room: general.into(),
-        messages: timeline(discord_messages(105..110, &[])),
-    });
+    // Scrolled on to the present, the first unread message was let go;
+    // the jump loads the messages around it again.
+    app.apply(window(general, chat::Direction::Later, true));
+    show(&mut app, (105..120).collect());
     assert_eq!(app.state.first_unread.as_deref(), Some("d:100"), "it stays");
-    assert!(earlier(&app.dispatch(Action::JumpToUnread)));
-    app.apply(Event::Timeline {
-        room: general.into(),
-        messages: timeline(discord_messages(95..110, &[])),
-    });
-    app.apply(more(general));
+    assert_eq!(
+        around(&app.dispatch(Action::JumpToUnread)).as_deref(),
+        Some("d:100")
+    );
+    app.apply(window(general, chat::Direction::Around, false));
+    show(&mut app, (95..110).collect());
     assert_eq!(app.state.unread_jump, 2);
-    assert_eq!(app.state.jump, None);
+    assert_eq!(app.state.jump, None, "the jump doesn't highlight");
 
-    // A channel unread further back than a few pages gets its divider
-    // above the oldest message loaded.
+    // When even the messages around the last read one are all newer, the
+    // divider goes above the oldest loaded.
     app.dispatch(Action::SelectRoom("discord:10:22".into()));
     app.apply(unread_channel(true, 1));
     app.dispatch(Action::SelectRoom(general.into()));
-    let mut oldest = 1000;
-    let mut pages = 0;
-    let mut effects = app.apply(Event::Timeline {
-        room: general.into(),
-        messages: timeline(discord_messages(oldest..1010, &[])),
-    });
-    while earlier(&effects) {
-        pages += 1;
-        oldest -= 10;
-        app.apply(Event::Timeline {
-            room: general.into(),
-            messages: timeline(discord_messages(oldest..1010, &[])),
-        });
-        effects = app.apply(more(general));
-    }
-    assert_eq!(pages, MAX_UNREAD_PAGES);
-    assert_eq!(app.state.first_unread, Some(format!("d:{oldest}")));
+    assert!(around(&show(&mut app, (1000..1010).collect())).is_some());
+    app.apply(window(general, chat::Direction::Around, false));
+    assert!(around(&show(&mut app, (1000..1010).collect())).is_none());
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:1000"));
 }
 
 #[test]

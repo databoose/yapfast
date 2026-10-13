@@ -110,13 +110,30 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         window.on_send(move || {
             let Some(window) = weak.upgrade() else { return };
             // Sending goes to the newest message, as Discord does, so the sent one shows.
+            // From a window of older messages, that's once the newest replace it:
+            // following its end before then would load earlier pages as they go in.
             if window.get_can_send() {
-                window.invoke_scroll_to_latest();
+                if window.get_detached() {
+                    adapter.borrow_mut().latest_due = true;
+                } else {
+                    window.invoke_scroll_to_latest();
+                }
             }
             adapter.borrow_mut().action(&window, Action::Send);
         });
     }
     bind!(on_earlier, Action::Earlier);
+    bind!(on_later, Action::Later);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_jump_to_present(move || {
+            let Some(window) = weak.upgrade() else { return };
+            // The newest messages show at the end once they replace the window.
+            adapter.borrow_mut().latest_due = true;
+            adapter.borrow_mut().action(&window, Action::JumpToPresent);
+        });
+    }
     bind!(on_jump_to_unread, Action::JumpToUnread);
     bind!(on_accept_request, Action::AnswerRequest(true));
     bind!(on_enlarge_profile, Action::EnlargeProfile);

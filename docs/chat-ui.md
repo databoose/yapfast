@@ -56,6 +56,19 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   stay where they are on screen as older ones go in above them, even when
   the top of the history is on screen; see
   [building](building.md#dependencies).
+- Jump to a message from a reply's quote, a pin or a search result. One
+  that's loaded scrolls a third of the way down and is highlighted for a
+  moment. Otherwise the messages around it load in place of the timeline,
+  as a window of older messages: Discord's 50 around it, Matrix's 30 around
+  it through the SDK's event-focused timeline (`/context`). A bar over its
+  end says "You're viewing older messages" with "Jump to present", and
+  scrolling near its end loads newer pages, with "Loading newer messages..."
+  under the last one, as scrolling up loads earlier ones. New messages don't
+  go in the window, and the conversation stays unread. Jump to present,
+  sending a message, or a newer page that reaches the newest shows the
+  newest again, as Talk kept them, and leaving the conversation lets the
+  window go. A jump to a conversation that isn't open opens it at the
+  message.
 - Recover encryption keys or recheck verification performed in another client.
 - Send only from a cross-signed device into a joined encrypted room. Existing
   plaintext rooms are read-only.
@@ -136,9 +149,11 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   read. While the divider is out of view, a marigold bar at the top says how
   many messages are new and since when ("80 new messages since 14:44"), with
   an arrow toward it, and clicking it scrolls back to the divider. A Discord
-  channel places it by message order, loading earlier history to reach it; a
-  Matrix room places it after the event its read receipt is on, once that
-  event is in the loaded timeline.
+  channel places it by message order; when every loaded message is unread,
+  it opens on a window of the messages around the last read one, where the
+  bar counts those loaded with a plus ("50+ new messages"). A Matrix room
+  places it after the event its read receipt is on, once that event is in
+  the loaded timeline.
 - Highlight messages that call on the user with a faint red tint and a red
   edge on the left, as Discord does: a mention of them, of a Discord role
   they have, or @everyone or @here where those reach them, and a reply to

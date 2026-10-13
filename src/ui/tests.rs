@@ -1992,20 +1992,26 @@ fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
     ]
     .map(Arc::new);
     assert_eq!(
-        refresh::unread_label(&unread),
+        refresh::unread_label(&unread, false),
         "2 new messages since 14:05",
         "Alice's own reply isn't new to her"
     );
     assert_eq!(
-        refresh::unread_label(&unread[..1]),
+        refresh::unread_label(&unread[..1], false),
         "1 new message since 14:05"
+    );
+    assert_eq!(
+        refresh::unread_label(&unread[..1], true),
+        "1+ new messages since 14:05",
+        "more came after a window of older messages"
     );
     let older = ChatMessage {
         timestamp: 1_791_329_400,
         ..message(false, false)
     };
     assert!(
-        refresh::unread_label(&[Arc::new(older)]).starts_with("1 new message since 14:05 on "),
+        refresh::unread_label(&[Arc::new(older)], false)
+            .starts_with("1 new message since 14:05 on "),
         "with the date when it wasn't today"
     );
 }

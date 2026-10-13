@@ -198,9 +198,11 @@ impl Application {
     }
 
     pub(super) fn earlier(&mut self) -> Vec<Effect> {
+        // A window on its way has its own start.
         if self.state.preview
             || self.state.busy
             || !self.state.room_ready
+            || self.focusing
             || self.state.loading_history
             || self.state.history_start
             || self.state.selected_room().is_none_or(|room| room.voice)
@@ -310,9 +312,140 @@ impl Application {
         })]
     }
 
-    /// Brings the message being sought into view once the timeline has it,
-    /// else loads another page of history, up to [`MAX_SEEK_PAGES`].
+    /// Brings a message of the selected room into view: at once when the
+    /// timeline has it, else once the messages around it, which the backend
+    /// loads in place of the timeline, come.
+    pub(super) fn jump(&mut self, item: String, unread: bool) -> Vec<Effect> {
+        self.seeking = Some(Seeking {
+            item: item.clone(),
+            unread,
+        });
+        if self.state.preview
+            || self
+                .state
+                .messages
+                .iter()
+                .any(|message| message.item == item)
+        {
+            return self.seek();
+        }
+        self.focus(item)
+    }
+
+    /// Opens a room, unless it's open, and brings its message into view.
+    pub(super) fn jump_in_room(&mut self, room: String, item: String) -> Vec<Effect> {
+        let mut effects = vec![];
+        if self.state.selected.as_ref() != Some(&room) {
+            effects = self.open(room.clone());
+        }
+        if self.state.selected.as_ref() == Some(&room) {
+            effects.extend(self.jump(item, false));
+        }
+        effects
+    }
+
+    /// Asks for the messages around an item of the selected room, which show
+    /// in place of its timeline. Pages on their way are for what shows now,
+    /// which the backend drops.
+    fn focus(&mut self, item: String) -> Vec<Effect> {
+        let Some(room) = self
+            .state
+            .selected_room()
+            .filter(|room| !room.voice && !room.locked)
+            .map(|room| room.id.clone())
+        else {
+            self.seeking = None;
+            return vec![];
+        };
+        self.focusing = true;
+        self.state.loading_history = false;
+        self.state.history_failed = false;
+        self.state.loading_later = false;
+        self.state.later_failed = false;
+        vec![Effect::Backend(Command::Around { room, item })]
+    }
+
+    /// Loads the page after a window's newest message, as the timeline does
+    /// when scrolled near its end.
+    pub(super) fn later(&mut self) -> Vec<Effect> {
+        if self.state.preview
+            || self.state.busy
+            || !self.state.room_ready
+            || !self.state.detached
+            || self.state.loading_later
+            || self.focusing
+        {
+            return vec![];
+        }
+        let Some(room) = self.state.selected.clone() else {
+            return vec![];
+        };
+        self.state.loading_later = true;
+        self.state.later_failed = false;
+        vec![Effect::Backend(Command::Later(room))]
+    }
+
+    /// Shows the newest messages again in place of a window of older ones,
+    /// or of the one on its way.
+    pub(super) fn jump_to_present(&mut self) -> Vec<Effect> {
+        if !self.state.detached && !self.focusing {
+            return vec![];
+        }
+        let Some(room) = self.state.selected.clone() else {
+            return vec![];
+        };
+        self.state.detached = false;
+        self.focusing = false;
+        self.seeking = None;
+        self.state.loading_later = false;
+        self.state.later_failed = false;
+        self.state.loading_history = false;
+        self.state.history_failed = false;
+        // Where the newest messages start is known once they show: until
+        // then the window does, and its start isn't theirs to load before.
+        vec![Effect::Backend(Command::Present(room))]
+    }
+
+    /// Takes in how loading history for the selected room ended.
+    pub(super) fn history_loaded(
+        &mut self,
+        direction: chat::Direction,
+        history: chat::History,
+    ) -> Vec<Effect> {
+        match direction {
+            chat::Direction::Earlier => self.state.loading_history = false,
+            chat::Direction::Later => self.state.loading_later = false,
+            // The window comes next, as a timeline.
+            chat::Direction::Around if !self.focusing => return vec![],
+            chat::Direction::Around => self.focusing = false,
+        }
+        match history {
+            chat::History::Loaded { start, present } => {
+                self.state.history_start = start;
+                self.state.detached = !present;
+            }
+            chat::History::Failed => match direction {
+                chat::Direction::Earlier => self.state.history_failed = true,
+                chat::Direction::Later => self.state.later_failed = true,
+                chat::Direction::Around => self.seeking = None,
+            },
+        }
+        // What the window shows is said when it comes.
+        if direction == chat::Direction::Around {
+            return vec![];
+        }
+        let mut effects = self.place_unread();
+        effects.extend(self.seek());
+        effects
+    }
+
+    /// Brings the message being sought into view once the timeline has it.
+    /// One that isn't there once the messages around it came, as when it
+    /// was deleted, is noted.
     pub(super) fn seek(&mut self) -> Vec<Effect> {
+        if self.focusing {
+            return vec![];
+        }
         let Some(seeking) = self.seeking.take() else {
             return vec![];
         };
@@ -328,43 +461,28 @@ impl Application {
                 let count = self.state.jump.as_ref().map_or(0, |(_, count)| count + 1);
                 self.state.jump = Some((seeking.item, count));
             }
-            return vec![];
+        } else if !seeking.unread {
+            self.state.notice =
+                Some("Talk couldn't find that message. It may have been deleted.".into());
         }
-        if seeking.pages >= MAX_SEEK_PAGES || self.state.history_start {
-            self.state.notice = Some(
-                if seeking.unread {
-                    "Talk couldn't find the first unread message in this conversation's recent history."
-                } else {
-                    "Talk couldn't find that message in this conversation's recent history."
-                }
-                .into(),
-            );
-            return vec![];
-        }
-        let effects = self.dispatch_action(Action::Earlier);
-        if self.state.loading_history {
-            self.seeking = Some(Seeking {
-                pages: seeking.pages + 1,
-                ..seeking
-            });
-        }
-        effects
+        vec![]
     }
 
     /// Puts the "New" divider above the first message after the one last
     /// read when the room was opened, once the timeline has it. Discord's
     /// messages are ordered by their snowflakes, so the divider goes in even
-    /// when the last read message is gone; earlier history loads until a read
-    /// message is there too, up to [`MAX_UNREAD_PAGES`]. A Matrix room's
-    /// divider waits for the message its read receipt is on. The timeline
-    /// then shows the divider at its top, once.
+    /// when the last read message is gone; when the timeline has no message
+    /// that old, the messages around the last read one load in its place,
+    /// as a window, unless they did already. A Matrix room's divider waits
+    /// for the message its read receipt is on. The timeline then shows the
+    /// divider at its top, once.
     pub(super) fn place_unread(&mut self) -> Vec<Effect> {
-        let Some((marker, pages)) = self.read_marker.take() else {
+        let Some((marker, asked)) = self.read_marker.take() else {
             return vec![];
         };
         let messages = Arc::clone(&self.state.messages);
-        if !self.state.room_ready || messages.is_empty() {
-            self.read_marker = Some((marker, pages));
+        if !self.state.room_ready || messages.is_empty() || self.focusing {
+            self.read_marker = Some((marker, asked));
             return vec![];
         }
         let unread = |message: &Arc<ChatMessage>| !message.own;
@@ -376,13 +494,11 @@ impl Application {
                 let reached = messages.iter().any(|message| {
                     discord::item_order(&message.item).is_some_and(|order| order <= read)
                 });
-                if !reached && !self.state.history_start && pages < MAX_UNREAD_PAGES {
-                    // A page already on its way, such as one scrolling asked
-                    // for, isn't counted.
-                    let effects = self.earlier();
-                    self.read_marker = Some((marker, pages + u32::from(!effects.is_empty())));
-                    return effects;
+                if !reached && !self.state.history_start && !asked {
+                    self.read_marker = Some((marker.clone(), true));
+                    return self.focus(marker);
                 }
+                // Past that, the divider goes above the oldest message loaded.
                 messages
                     .iter()
                     .position(|message| after(message) && unread(message))
@@ -402,7 +518,7 @@ impl Application {
             }
             // Not loaded yet, or nothing is unread after all; newer messages
             // may still come with the rest of the timeline.
-            None => self.read_marker = Some((marker, pages)),
+            None => self.read_marker = Some((marker, asked)),
         }
         vec![]
     }

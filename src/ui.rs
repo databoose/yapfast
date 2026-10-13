@@ -825,6 +825,10 @@ struct Adapter {
     /// `AppState::unread_jump` when the timeline last brought the first
     /// unread message to its top.
     unread_jumped: u64,
+    /// The newest messages are on their way in place of a window of older
+    /// ones, and show at the end the moment they come. Following the
+    /// window's end until then would load earlier pages as they go in.
+    latest_due: bool,
     /// Spoilers clicked; see `message_row`.
     revealed: HashSet<String>,
     /// The preferences that shape message rows changed, so they're built again.
@@ -950,6 +954,7 @@ impl Adapter {
                 pictures_seen: 0,
                 jumped: None,
                 unread_jumped: 0,
+                latest_due: false,
                 revealed: HashSet::new(),
                 restyle: false,
                 mention_at: None,

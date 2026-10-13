@@ -43,13 +43,6 @@ use profiles::dm_profile;
 const MENTION_SUGGESTIONS: usize = 8;
 const MENTION_GROUPS: usize = 4;
 
-/// How many pages of history a jump to a message loads looking for it.
-const MAX_SEEK_PAGES: u32 = 20;
-/// How many pages of Discord history opening a channel loads looking for
-/// its first unread message, before putting the "New" divider above the
-/// oldest loaded one.
-const MAX_UNREAD_PAGES: u32 = 5;
-
 const STOPPED: &str = "The connection has stopped. Restart Talk to restore your session.";
 
 /// Reactions offered before someone has used any, in order.
@@ -362,6 +355,16 @@ pub struct AppState {
     /// Loading earlier history failed. It loads again only when asked
     /// with [`Action::Earlier`], rather than as the timeline scrolls.
     pub history_failed: bool,
+    /// The timeline is a window of older messages, such as those around one
+    /// jumped to, that doesn't reach the newest: live messages don't go in
+    /// it, and the room counts them as unread. Newer pages load as it
+    /// scrolls to its end, and [`Action::JumpToPresent`] leaves it.
+    pub detached: bool,
+    /// A page of newer messages, after the window, is on its way.
+    pub loading_later: bool,
+    /// Loading newer messages failed. They load again only when asked with
+    /// [`Action::Later`], rather than as the timeline scrolls.
+    pub later_failed: bool,
     /// The message the timeline should bring into view and highlight, and a
     /// count that changes with each jump, even to the same message.
     pub jump: Option<(String, u64)>,
@@ -899,12 +902,26 @@ pub enum Action {
         room: String,
         items: Vec<String>,
     },
-    /// Show the selected room's message with this item, loading earlier
-    /// history until it's there; see [`AppState::jump`].
+    /// Show the selected room's message with this item; see
+    /// [`AppState::jump`]. When the timeline doesn't have it, the messages
+    /// around it load in its place; see [`AppState::detached`].
     Jump(String),
+    /// Open a room, unless it's open, and show its message with this item,
+    /// as [`Action::Jump`] does.
+    JumpInRoom {
+        room: String,
+        item: String,
+    },
     /// Show the selected room's first unread message; see
     /// [`AppState::first_unread`].
     JumpToUnread,
+    /// Load the page after the newest message of a window of older ones,
+    /// as the timeline does when scrolled near its end, unless one is on
+    /// its way.
+    Later,
+    /// Show the selected room's newest messages again in place of a window
+    /// of older ones.
+    JumpToPresent,
     /// Download pictures that show outside the state, such as the emoji
     /// picker's; see [`DiscordCommand::Pictures`].
     LoadPictures(Vec<String>),
@@ -1126,13 +1143,16 @@ pub struct Application {
     sent_draft: Option<String>,
     /// The files sent with it, which leave the composer once sent.
     sent_files: Vec<PathBuf>,
-    /// The message [`Action::Jump`] or [`Action::JumpToUnread`] is loading
-    /// history to find.
+    /// The message [`Action::Jump`] or [`Action::JumpToUnread`] brings into
+    /// view once the timeline has it.
     seeking: Option<Seeking>,
+    /// The messages around one were asked for. Until they come, the
+    /// selected room's timelines are of what showed before, and are left.
+    focusing: bool,
     /// The last message read in the selected room when it was opened, while
-    /// the first message after it is still to be found, and how many pages
-    /// of history were loaded looking for it.
-    read_marker: Option<(String, u32)>,
+    /// the first message after it is still to be found, and whether the
+    /// messages around it were asked for.
+    read_marker: Option<(String, bool)>,
     /// Discord channels shown lately, newest last: their timeline and
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.
@@ -1141,8 +1161,6 @@ pub struct Application {
 
 struct Seeking {
     item: String,
-    /// Pages of history loaded so far.
-    pages: u32,
     /// Bring it in view as the first unread message, without highlighting it.
     unread: bool,
 }
@@ -1501,25 +1519,14 @@ impl Application {
                 self.state.notice = None;
                 vec![]
             }
-            Action::Jump(item) => {
-                self.seeking = Some(Seeking {
-                    item,
-                    pages: 0,
-                    unread: false,
-                });
-                self.seek()
-            }
+            Action::Jump(item) => self.jump(item, false),
+            Action::JumpInRoom { room, item } => self.jump_in_room(room, item),
             Action::JumpToUnread => match self.state.first_unread.clone() {
-                Some(item) => {
-                    self.seeking = Some(Seeking {
-                        item,
-                        pages: 0,
-                        unread: true,
-                    });
-                    self.seek()
-                }
+                Some(item) => self.jump(item, true),
                 None => vec![],
             },
+            Action::Later => self.later(),
+            Action::JumpToPresent => self.jump_to_present(),
             Action::LoadPictures(urls) => self.load_pictures(urls),
             Action::Earlier => self.earlier(),
             Action::Login {
@@ -1821,7 +1828,8 @@ impl Application {
             #[cfg(feature = "discord")]
             Event::Discord(snapshot) => return self.show_snapshot(snapshot),
             Event::Timeline { room, messages } => {
-                if self.state.selected.as_ref() == Some(&room) {
+                // A window on its way replaces what showed before.
+                if self.state.selected.as_ref() == Some(&room) && !self.focusing {
                     // A backend can drop its oldest messages, as Discord does
                     // after missing many; what came before them loads again.
                     if let Some(first) = self.state.messages.first()
@@ -1832,6 +1840,7 @@ impl Application {
                     self.state.room_ready = true;
                     self.state.messages = Arc::new(messages);
                     let mut effects = self.place_unread();
+                    effects.extend(self.seek());
                     effects.extend(self.mark_discord_read());
                     return effects;
                 }
@@ -1969,17 +1978,13 @@ impl Application {
                     }
                 }
             }
-            Event::HistoryLoaded { room, history } => {
+            Event::HistoryLoaded {
+                room,
+                direction,
+                history,
+            } => {
                 if self.state.selected.as_ref() == Some(&room) {
-                    self.state.loading_history = false;
-                    match history {
-                        chat::History::More => {}
-                        chat::History::Start => self.state.history_start = true,
-                        chat::History::Failed => self.state.history_failed = true,
-                    }
-                    let mut effects = self.place_unread();
-                    effects.extend(self.seek());
-                    return effects;
+                    return self.history_loaded(direction, history);
                 }
             }
             Event::SendResult { room, body, result } => {
@@ -2166,6 +2171,10 @@ impl Application {
             return;
         }
         self.shown.retain(|shown| shown.room != room);
+        // A window of older messages goes; the room shows its newest again.
+        if self.state.detached || self.focusing {
+            return;
+        }
         self.shown.push(Shown {
             room,
             messages: Arc::new(shelved(&self.state.messages)),

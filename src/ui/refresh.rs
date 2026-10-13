@@ -1284,6 +1284,9 @@ impl Adapter {
         window.set_loading_history(state.loading_history);
         window.set_history_start(state.history_start);
         window.set_history_failed(state.history_failed);
+        window.set_detached(state.detached);
+        window.set_loading_later(state.loading_later);
+        window.set_later_failed(state.later_failed);
         // Without Matrix everything is Discord, so the encryption and key hints
         // say nothing new; what stops sending still shows.
         let discord_only = !cfg!(feature = "matrix");
@@ -1453,6 +1456,11 @@ impl Adapter {
                 })
                 .collect();
             show_rows(&self.models.messages, rows);
+            if selection_changed || reset {
+                self.latest_due = false;
+            } else if messages_changed && !state.detached && std::mem::take(&mut self.latest_due) {
+                window.invoke_scroll_to_latest();
+            }
             // A sent echo can get its event id without changing the row count
             // or scroll indexes. Report the new item ids after layout settles.
             if messages_changed || selection_changed || reset {
@@ -1486,7 +1494,7 @@ impl Adapter {
             );
             window.set_unread_label(
                 unread
-                    .map(|(index, _)| unread_label(&state.messages[index..]))
+                    .map(|(index, _)| unread_label(&state.messages[index..], state.detached))
                     .unwrap_or_default()
                     .into(),
             );
@@ -2159,9 +2167,6 @@ fn arrived<'a>(
     ))
 }
 
-/// What the bar that jumps to the "New" divider says: how many messages
-/// others sent from `unread` on, and since when, with the date unless it
-/// was today.
 /// Shows found messages, building rows only for those not shown already:
 /// a search's next page adds to the end of the results.
 fn show_found(model: &VecModel<FoundRow>, messages: &[ChatMessage], twelve_hour: bool) {
@@ -2192,9 +2197,21 @@ pub(super) fn span(seconds: u32) -> String {
     format!("{count} {unit}{plural}")
 }
 
-pub(super) fn unread_label(unread: &[Arc<ChatMessage>]) -> String {
+/// What the bar that jumps to the "New" divider says: how many messages
+/// others sent from `unread` on, and since when, with the date unless it
+/// was today. `more` came after them, past a window of older messages.
+pub(super) fn unread_label(unread: &[Arc<ChatMessage>], more: bool) -> String {
     let count = unread.iter().filter(|message| !message.own).count();
-    let messages = if count == 1 { "message" } else { "messages" };
+    let messages = if count == 1 && !more {
+        "message"
+    } else {
+        "messages"
+    };
+    let count = if more {
+        format!("{count}+")
+    } else {
+        count.to_string()
+    };
     let Some(first) = unread.first().filter(|first| first.time.contains(':')) else {
         return format!("{count} new {messages}");
     };

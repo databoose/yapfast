@@ -122,7 +122,9 @@ impl Application {
     pub(super) fn mark_discord_read(&self) -> Vec<Effect> {
         match self.state.selected_room() {
             Some(room)
+                // A window of older messages doesn't read the newest.
                 if self.state.room_ready
+                    && !self.state.detached
                     && room.network == Network::Discord
                     && (room.unread > 0 || room.mentions > 0) =>
             {

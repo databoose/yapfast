@@ -225,7 +225,9 @@ impl Application {
                     })
                     .collect();
                 self.sent_files = files.iter().map(|file| file.path.clone()).collect();
-                vec![Effect::Backend(Command::Send {
+                // A message goes after the newest, which show again for it.
+                let mut effects = self.jump_to_present();
+                effects.push(Effect::Backend(Command::Send {
                     room: id,
                     body,
                     reply: match compose {
@@ -233,7 +235,8 @@ impl Application {
                         _ => None,
                     },
                     files,
-                })]
+                }));
+                effects
             }
         }
     }

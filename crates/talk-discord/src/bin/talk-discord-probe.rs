@@ -123,7 +123,7 @@ async fn messages(channel_id: &str) -> Result<()> {
         .find(|server| server.text_channels.iter().any(|c| c.id == channel_id))
         .context("no text channel with that id; run servers to list them")?;
     let messages = discord
-        .history(&server.id, channel_id, None)
+        .history(&server.id, channel_id, talk_discord::api::Span::Latest)
         .await?
         .messages;
     // Give the member request a moment, so nicknames show.
