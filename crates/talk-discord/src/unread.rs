@@ -11,7 +11,7 @@ use crate::{
     event::Event,
     message::{iso_ms, snowflake_at},
     notifications::{Level, Notifications},
-    ready::{Access, Channel, PRIVATE, Private, Server},
+    ready::{Access, Channel, PRIVATE, Private, Server, Thread},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -97,10 +97,35 @@ impl Unreads {
         }
     }
 
-    /// A guild object's channels, and its default notification level.
+    /// A thread's newest message, and with this account's thread member,
+    /// that it read the thread up to when it joined, as a thread it never
+    /// opened has no read state.
+    pub fn learn_thread(&mut self, thread: &Value) {
+        self.learn_channel(thread);
+        if let Some(id) = thread["id"].as_str() {
+            self.joined_thread(id, &thread["member"]);
+        }
+    }
+
+    /// This account's thread member in `thread`: it read the thread up to
+    /// when it joined, unless it read further.
+    pub fn joined_thread(&mut self, thread: &str, member: &Value) {
+        if let Some(joined) = member["join_timestamp"].as_str().and_then(iso_ms) {
+            self.reads.entry(thread.to_owned()).or_insert(Read {
+                last: snowflake_at(joined),
+                mentions: 0,
+            });
+        }
+    }
+
+    /// A guild object's channels and threads, and its default
+    /// notification level.
     fn learn_server(&mut self, guild: &Value) {
         for channel in guild["channels"].as_array().into_iter().flatten() {
             self.learn_channel(channel);
+        }
+        for thread in guild["threads"].as_array().into_iter().flatten() {
+            self.learn_thread(thread);
         }
         let level = Level::from(&guild["properties"]["default_message_notifications"])
             .or_else(|| Level::from(&guild["default_message_notifications"]));
@@ -205,6 +230,27 @@ impl Unreads {
                 self.learn_channel(data);
                 true
             }
+            Event::ThreadCreate | Event::ThreadUpdate => {
+                self.learn_thread(data);
+                true
+            }
+            Event::ThreadListSync => {
+                for thread in data["threads"].as_array().into_iter().flatten() {
+                    self.learn_channel(thread);
+                }
+                for member in data["members"].as_array().into_iter().flatten() {
+                    if let Some(thread) = member["id"].as_str() {
+                        self.joined_thread(thread, member);
+                    }
+                }
+                true
+            }
+            Event::ThreadMemberUpdate => {
+                if let Some(thread) = data["id"].as_str() {
+                    self.joined_thread(thread, data);
+                }
+                true
+            }
             Event::GuildCreate => {
                 self.learn_server(data);
                 true
@@ -233,13 +279,18 @@ impl Unreads {
     /// then the server's default: every message, mentions only, or nothing. Muting a
     /// server, category or channel leaves only mentions. Only written messages notify:
     /// people's messages and replies, and apps' answers to their commands, but not joins,
-    /// pins and the like.
+    /// pins and the like. A thread's message follows `thread`'s own settings, else
+    /// those of `place`, its channel, and only mentions notify from one this account
+    /// isn't in; any other message's `place` is its channel. `category` is the
+    /// channel's.
     pub fn notifies(
         &self,
         message: &Value,
         me: &str,
         roles: &HashMap<String, Vec<String>>,
+        place: &str,
         category: Option<&str>,
+        thread: Option<&Thread>,
     ) -> bool {
         let kind = message["type"].as_u64().unwrap_or_default();
         if message["author"]["id"] == me || !crate::message::written(kind) {
@@ -255,18 +306,22 @@ impl Unreads {
                 .get(PRIVATE)
                 .is_some_and(|settings| settings.channel_muted(channel, now));
         };
+        if thread.is_some_and(|thread| !thread.joined) {
+            return self.mentions_me(guild, message, me, roles.get(guild));
+        }
         let settings = self.settings.get(guild);
         let default = self.default_levels.get(guild).copied().unwrap_or_default();
-        let level = settings.map_or(default, |settings| {
-            settings.level(channel, category, default)
+        let level = thread.and_then(|thread| thread.level).unwrap_or_else(|| {
+            settings.map_or(default, |settings| settings.level(place, category, default))
         });
-        let muted = settings.is_some_and(|settings| {
-            settings.mute.active(now)
-                || [Some(channel), category]
-                    .into_iter()
-                    .flatten()
-                    .any(|place| settings.channel_muted(place, now))
-        });
+        let muted = thread.is_some_and(|thread| thread.mute.active(now))
+            || settings.is_some_and(|settings| {
+                settings.mute.active(now)
+                    || [Some(place), category]
+                        .into_iter()
+                        .flatten()
+                        .any(|place| settings.channel_muted(place, now))
+            });
         match level {
             Level::Nothing => false,
             Level::All if !muted => true,
@@ -348,11 +403,12 @@ impl Unreads {
         Some(last.to_string())
     }
 
-    /// Sets the unread, mention and muted state of a server's channels.
+    /// Sets the unread, mention and muted state of a server's text
+    /// channels and threads.
     pub fn mark(&self, server: &mut Server) {
         server.muted = self.server_muted(&server.id);
         let id = server.id.clone();
-        for channel in &mut server.text_channels {
+        for channel in server.text_channels.iter_mut().chain(&mut server.threads) {
             (channel.muted, channel.unread, channel.mentions) =
                 self.channel(&id, channel, channel.access);
             channel.last_read = self.last_read(&id, &channel.id);
@@ -381,8 +437,13 @@ impl Unreads {
         let now = now();
         let channel_muted =
             |id: &str| settings.is_some_and(|settings| settings.channel_muted(id, now));
-        let muted =
-            channel_muted(&channel.id) || channel.parent.as_deref().is_some_and(channel_muted);
+        // A thread's parent is its channel, and it has a mute of its own.
+        let muted = channel_muted(&channel.id)
+            || channel.parent.as_deref().is_some_and(channel_muted)
+            || channel
+                .thread
+                .as_ref()
+                .is_some_and(|thread| thread.mute.active(now));
         let (unread, mentions) = self.state(guild, &channel.id);
         let readable = access != Access::Hidden;
         (
@@ -442,7 +503,8 @@ mod tests {
             message
         };
         let notifies = |message: &Value, category: Option<&str>| {
-            unreads.notifies(message, "1", &roles, category)
+            let place = message["channel_id"].as_str().unwrap();
+            unreads.notifies(message, "1", &roles, place, category, None)
         };
         let ping = json!({"mentions": [{"id": "1"}]});
         // The server's default: every message.

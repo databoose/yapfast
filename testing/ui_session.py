@@ -186,6 +186,18 @@ def perform(command):
     elif verb == 'move':
         INPUT['send'](f'move {values[0]} {values[1]}')
         time.sleep(.2)
+    elif verb == 'drag':
+        # Pressed at the first point and moved in steps, as a hand would,
+        # then released at the second.
+        x, y, to_x, to_y = map(float, values)
+        INPUT['send'](f'move {x} {y}')
+        INPUT['send']('button 272 1')
+        time.sleep(.1)
+        for step in range(1, 11):
+            INPUT['send'](f'move {x + (to_x - x) * step / 10} {y + (to_y - y) * step / 10}')
+            time.sleep(.02)
+        INPUT['send']('button 272 0')
+        time.sleep(.3)
     elif verb == 'scroll':
         INPUT['scroll'](float(rest))
         time.sleep(.1)

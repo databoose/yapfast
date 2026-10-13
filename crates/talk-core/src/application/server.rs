@@ -95,13 +95,7 @@ impl Application {
         #[cfg(feature = "discord")]
         if let Some((server, id, me)) = self.discord_place(place) {
             let roles = &server.my_roles;
-            let channel = id.and_then(|id| {
-                server
-                    .text_channels
-                    .iter()
-                    .chain(&server.voice_channels)
-                    .find(|known| known.id == id)
-            });
+            let channel = id.and_then(|id| server.channel(id));
             let held = match (channel, id) {
                 (Some(channel), _) => server.channel_permissions(channel, me, roles),
                 // A category, or a channel Talk doesn't know.

@@ -65,6 +65,16 @@ events! {
     ChannelCreate = "CHANNEL_CREATE",
     ChannelUpdate = "CHANNEL_UPDATE",
     ChannelDelete = "CHANNEL_DELETE",
+    /// Threads: one made, or that this account joined or was added to.
+    ThreadCreate = "THREAD_CREATE",
+    ThreadUpdate = "THREAD_UPDATE",
+    ThreadDelete = "THREAD_DELETE",
+    /// A channel's active threads, when this account comes to see it.
+    ThreadListSync = "THREAD_LIST_SYNC",
+    /// This account's membership of a thread changed: its settings there.
+    ThreadMemberUpdate = "THREAD_MEMBER_UPDATE",
+    /// Someone joined or left a thread, this account among them.
+    ThreadMembersUpdate = "THREAD_MEMBERS_UPDATE",
     ChannelRecipientAdd = "CHANNEL_RECIPIENT_ADD",
     ChannelRecipientRemove = "CHANNEL_RECIPIENT_REMOVE",
     VoiceStateUpdate = "VOICE_STATE_UPDATE",
@@ -142,6 +152,12 @@ mod tests {
             ("CHANNEL_CREATE", Event::ChannelCreate),
             ("CHANNEL_UPDATE", Event::ChannelUpdate),
             ("CHANNEL_DELETE", Event::ChannelDelete),
+            ("THREAD_CREATE", Event::ThreadCreate),
+            ("THREAD_UPDATE", Event::ThreadUpdate),
+            ("THREAD_DELETE", Event::ThreadDelete),
+            ("THREAD_LIST_SYNC", Event::ThreadListSync),
+            ("THREAD_MEMBER_UPDATE", Event::ThreadMemberUpdate),
+            ("THREAD_MEMBERS_UPDATE", Event::ThreadMembersUpdate),
             ("CHANNEL_RECIPIENT_ADD", Event::ChannelRecipientAdd),
             ("CHANNEL_RECIPIENT_REMOVE", Event::ChannelRecipientRemove),
             ("VOICE_STATE_UPDATE", Event::VoiceStateUpdate),

@@ -35,7 +35,8 @@ including shared timeline storage through `Arc<Vec<Arc<ChatMessage>>>`, whose
 rows a backend sends again unchanged when they didn't change. `dispatch`
 routes each action to a method in the module for its area, under
 [`application/`](../crates/talk-core/src/application): `compose`, `messages`,
-`rooms`, `profiles`, `calls`, `session`, `preview`, `discord_account`,
+`rooms`, `aside`, which shows a Discord thread beside the open channel,
+`profiles`, `calls`, `session`, `preview`, `discord_account`,
 `header`, which holds what a conversation's header opens: its pins, a search
 of a DM or a whole server, and adding friends to a DM, `server`, which
 answers what the account may do in a Discord server and how the server
@@ -49,9 +50,9 @@ focus, filtering, scroll position, list virtualization, device selectors, window
 state, theme and icons. `Adapter::refresh`, in
 [`src/ui/refresh.rs`](../src/ui/refresh.rs), shows the application's state one
 area at a time: the image viewer, profile, workspace, sidebar, account, header,
-member lists, dialogs, composer, messages and call. `ui/talk.slint` holds the
+member lists, dialogs, composer, messages, the thread beside them and call. `ui/talk.slint` holds the
 window and imports its parts from the files beside it: the theme, controls, rail,
-composer, messages, people, friends, header, voice, dialogs, settings, sign-in and
+composer, messages, thread, people, friends, header, voice, dialogs, settings, sign-in and
 Discord pieces. The adapter updates widgets after model changes. A programmatic
 composer update uses the new room's draft, so it cannot overwrite that draft with
 the previous room's text.

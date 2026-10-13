@@ -368,6 +368,9 @@ export struct MessageRow {
     hidden-card: string,
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
     can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
+    /// The Discord thread it started or tells of, by room id, empty for
+    /// none; its name, and how many messages it has.
+    thread-room: string, thread-name: string, thread-detail: string,
 }
 
 // The emoji picker: a search, the emoji in rows under their headings, a
@@ -633,6 +636,48 @@ export component FileCard inherits HorizontalLayout {
     Rectangle { horizontal-stretch: 1; }
 }
 
+// A Discord thread under the message it started, or its notice: its name
+// and how many messages it has. Clicking it opens the thread.
+export component ThreadChip inherits HorizontalLayout {
+    in property <string> name;
+    in property <string> detail;
+    callback clicked;
+    padding-top: 4px;
+    Rectangle {
+        max-width: 432px; horizontal-stretch: 100;
+        min-height: chip.preferred-height;
+        background: touch.has-hover ? Theme.hover : Theme.sidebar;
+        border-color: focus.has-focus ? Theme.accent : Theme.edge; border-width: focus.has-focus ? 2px : 1px;
+        border-radius: 8px;
+        accessible-role: button;
+        accessible-label: "Thread " + root.name + (root.detail != "" ? ", " + root.detail : "");
+        accessible-action-default => { root.clicked(); }
+        chip := HorizontalLayout {
+            padding: 8px; padding-left: 12px; padding-right: 12px; spacing: 10px;
+            Image { source: @image-url("icons/messages-square.svg"); width: 18px; image-fit: contain; colorize: Theme.muted; }
+            Text { text: root.name; color: Theme.text; font-weight: 700; overflow: elide; vertical-alignment: center; }
+            if root.detail != "": Text {
+                text: root.detail; color: Theme.link; font-size: 14px; vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Image { source: @image-url("icons/chevron-right.svg"); width: 16px; image-fit: contain; colorize: Theme.muted; }
+        }
+        focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == "\n" || event.text == " " {
+                    root.clicked(); return accept;
+                }
+                return reject;
+            }
+            touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.clicked(); }
+            }
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
 // Discord's tag after a bot's name: white on blurple.
 export component BotTag inherits Rectangle {
     width: tag-text.preferred-width + 8px; height: 16px; border-radius: 4px;
@@ -758,12 +803,15 @@ export component HistoryEdge inherits HorizontalLayout {
     in property <bool> newer;
     in property <bool> enabled;
     in property <bool> room-direct;
+    /// A Discord thread, named as one rather than as a channel.
+    in property <bool> room-thread;
     in property <string> room-name;
     callback earlier;
     property <string> which: root.newer ? "newer" : "earlier";
     alignment: center; height: 42px; padding-top: 4px; padding-bottom: 8px;
     if root.start: Text {
         text: root.room-direct ? "This is the beginning of your messages with " + root.room-name + "."
+            : root.room-thread ? "This is the start of the " + root.room-name + " thread."
             : "This is the start of #" + root.room-name + ".";
         color: Theme.muted; font-size: 14px; vertical-alignment: center; overflow: elide;
     }
@@ -852,6 +900,7 @@ export component ConversationStart inherits VerticalLayout {
     in property <bool> room-selected;
     in property <bool> room-ready;
     in property <bool> room-direct;
+    in property <bool> room-thread;
     in property <string> room-name;
     in property <image> room-icon;
     in property <string> room-initial;
@@ -864,11 +913,12 @@ export component ConversationStart inherits VerticalLayout {
         Image { source: root.room-icon; width: 36px; height: 36px; colorize: Theme.text; }
     }
     Text {
-        text: !root.room-ready ? "Loading conversation..." : root.room-direct ? root.room-name : "Welcome to #" + root.room-name;
+        text: !root.room-ready ? "Loading conversation..." : root.room-direct || root.room-thread ? root.room-name : "Welcome to #" + root.room-name;
         color: Theme.text; font-size: root.room-ready ? 28px : 18px; font-weight: 900; wrap: word-wrap;
     }
     if root.room-ready: Text {
         text: root.room-direct ? "This is the beginning of your messages with " + root.room-name + "."
+            : root.room-thread ? "This is the start of the " + root.room-name + " thread. No messages here yet."
             : "This is the start of #" + root.room-name + ". No messages here yet.";
         color: Theme.secondary; wrap: word-wrap;
     }
@@ -1028,6 +1078,172 @@ export component VideoViewer inherits Rectangle {
                 }
             }
             Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Exit full screen"; tint: #ffffff; clicked => { VideoPlayer.expand(false); } } }
+        }
+    }
+}
+
+// A message's avatar or time, its reply, author line, text, attachments,
+// thread and reactions: a timeline row without what scrolls and hovers it,
+// for the conversation's timeline and a thread's beside it.
+export component MessageContent inherits VerticalLayout {
+    in property <MessageRow> message;
+    /// The message the pointer or keyboard is on, whose time shows.
+    in property <string> active-item;
+    in property <bool> preview;
+    in property <bool> composer-enabled;
+    in property <string> emoji-font;
+    in property <length> message-font-size;
+    /// Space before the avatar, and after the text for the row's actions.
+    in property <length> start-padding: 16px;
+    in property <length> end-padding: 48px;
+    callback author-card(string, string, length, length, length, length);
+    callback author-menu(string, string, length, length);
+    callback jump-to(string);
+    /// A link in the text, which opens beside the pointer; and one in an embed.
+    callback link-clicked(string);
+    callback open-link(string);
+    callback open-thread(string);
+    callback react(string, string);
+    callback retry(string);
+    callback cancel-send(string);
+    callback reveal-attachment(string, int);
+    callback view-image(string, int);
+    callback save-attachment(string, int);
+    HorizontalLayout {
+        padding-left: root.start-padding; padding-right: root.end-padding; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
+        Rectangle {
+            width: 40px;
+            min-height: message.first ? (message.has-reply ? 64px : 40px) : 0px;
+            if message.has-reply: Rectangle {
+                x: 19px; y: 11px; width: 33px; height: 13px; clip: true;
+                Rectangle {
+                    x: 0px; y: 0px; width: parent.width + 12px; height: parent.height + 12px;
+                    border-width: 2px; border-color: #4a4c56; border-top-left-radius: 6px;
+                }
+            }
+            if message.first: Avatar {
+                x: 0px; y: message.has-reply ? 24px : 2px;
+                initial: message.initial; tint: message.tint; picture: message.picture; picture-url: message.picture-url;
+            }
+            // Clicking the author's avatar shows their card beside it;
+            // a right click opens their menu. Their name does the same.
+            if message.first && message.sender != "": TouchArea {
+                x: 0px; y: message.has-reply ? 24px : 2px; width: 40px; height: 40px;
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                        root.author-menu(message.item, message.sender, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
+            }
+            if !message.first && root.active-item == message.item: Text {
+                x: 0px; y: 4px; width: 40px;
+                text: message.short-time; color: Theme.muted; font-size: 12px; font-weight: 500;
+                horizontal-alignment: right; overflow: elide;
+            }
+        }
+        VerticalLayout {
+            spacing: 3px; horizontal-stretch: 1;
+            // Clicking the quote jumps to the message it quotes.
+            if message.has-reply: Rectangle {
+                height: 22px;
+                accessible-role: button;
+                accessible-enabled: message.reply-item != "";
+                accessible-label: "Jump to the original message: " + message.reply-body;
+                accessible-action-default => { if message.reply-item != "" { root.jump-to(message.reply-item); } }
+                HorizontalLayout {
+                    spacing: 6px;
+                    if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; picture: message.reply-picture; picture-url: message.reply-picture-url; } }
+                    if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    Text {
+                        text: message.reply-body; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                        color: reply-touch.has-hover ? Theme.text : Theme.muted;
+                    }
+                }
+                reply-touch := TouchArea {
+                    enabled: message.reply-item != "";
+                    mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                    clicked => { root.jump-to(message.reply-item); }
+                }
+            }
+            if message.first: HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    min-width: author-name.min-width; preferred-width: author-name.preferred-width;
+                    preferred-height: author-name.preferred-height; horizontal-stretch: 0;
+                    author-name := StyledText {
+                        width: parent.width; height: parent.height;
+                        text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center;
+                    }
+                    // Underlined while pointed at, as a link is.
+                    if author-touch.has-hover: Rectangle {
+                        y: (parent.height + root.message-font-size) / 2 + 1px; height: 1px;
+                        background: message.has-color ? message.color : Theme.text;
+                    }
+                    author-touch := TouchArea {
+                        enabled: message.sender != "";
+                        mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                        clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                        pointer-event(event) => {
+                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                root.author-menu(message.item, message.sender, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
+                }
+                if message.bot: Middle { BotTag { } }
+                StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if message.body != "": StyledText {
+                text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
+                // Discord's large emoji are 48 pixels where text's are 22.
+                default-font-size: message.jumbo ? root.message-font-size * 2.2 : root.message-font-size;
+                // A mention's card opens beside the pointer.
+                link-clicked(link) => { root.link-clicked(link); }
+                accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
+            }
+            if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
+            // Fixed-size children sit beside a spacer, so they do not cap the column's width.
+            if message.images.length > 0: MessageGallery {
+                message: message; active-item: root.active-item; preview: root.preview;
+                reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                view-image(id, index) => { root.view-image(id, index); }
+                save-attachment(id, index) => { root.save-attachment(id, index); }
+            }
+            if message.stickers.length > 0: MessageStickers { stickers: message.stickers; }
+            for file in message.files: FileCard {
+                file: file; preview: root.preview; delivery: message.delivery;
+                save => { root.save-attachment(message.item, file.index); }
+            }
+            if message.hidden-card != "": Text {
+                text: message.hidden-card; color: Theme.muted; font-size: root.message-font-size * 0.875; font-italic: true; wrap: word-wrap;
+            }
+            for embed in message.embeds: EmbedView {
+                embed: embed; item: message.item;
+                open-link(link) => { root.open-link(link); }
+                reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                view-image(id, index) => { root.view-image(id, index); }
+            }
+            if message.thread-room != "": ThreadChip {
+                name: message.thread-name; detail: message.thread-detail;
+                clicked => { root.open-thread(message.thread-room); }
+            }
+            if message.reactions.length > 0: HorizontalLayout {
+                spacing: 6px; alignment: start; padding-top: 4px;
+                for reaction in message.reactions: ReactionToggle {
+                    key: reaction.key; label: reaction.label; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
+                    enabled: message.can-react && root.composer-enabled;
+                    clicked => { root.react(message.item, reaction.key); }
+                }
+            }
+            if message.delivery != "": HorizontalLayout {
+                spacing: 4px; alignment: start;
+                Text { text: message.delivery; color: message.delivery-failed ? Theme.danger : Theme.muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; }
+                if message.can-retry: ActionButton { text: "Retry"; ghost: true; small: true; clicked => { root.retry(message.item); } }
+                if message.can-cancel: ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-send(message.item); } }
+            }
         }
     }
 }

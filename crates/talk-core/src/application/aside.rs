@@ -1,0 +1,194 @@
+//! A Discord thread shown beside the open channel, in place of its member
+//! list, as Discord opens a thread from a message: its timeline, history and
+//! composer, beside the selected room's. Expanding it shows it in place of
+//! the channel.
+
+use super::*;
+
+/// The thread beside the open channel.
+#[derive(Clone, Debug, Default)]
+pub struct Aside {
+    /// Its room id.
+    pub room: String,
+    /// Its timeline came.
+    pub ready: bool,
+    pub messages: Arc<Vec<Arc<ChatMessage>>>,
+    pub loading_history: bool,
+    /// Its first message is loaded.
+    pub history_start: bool,
+    pub history_failed: bool,
+}
+
+impl AppState {
+    /// The thread beside the open channel, as it lists.
+    pub fn aside_room(&self) -> Option<&ChatRoom> {
+        let aside = self.aside.as_ref()?;
+        self.rooms.iter().find(|room| room.id == aside.room)
+    }
+
+    /// What the composer of the thread beside holds.
+    pub fn aside_draft(&self) -> &str {
+        self.aside
+            .as_ref()
+            .and_then(|aside| self.drafts.get(&aside.room))
+            .map_or("", String::as_str)
+    }
+
+    /// The message the thread beside's composer replies to or edits.
+    pub fn aside_compose(&self) -> Option<&Compose> {
+        self.compose.get(&self.aside.as_ref()?.room)
+    }
+
+    /// The room whose timeline shows an item: the thread beside the open
+    /// channel, or the selected room.
+    pub fn room_of(&self, item: &str) -> Option<&String> {
+        match &self.aside {
+            Some(aside) if aside.messages.iter().any(|message| message.item == item) => {
+                Some(&aside.room)
+            }
+            _ => self.selected.as_ref(),
+        }
+    }
+
+    /// Whether this account can write in a room on screen: the selected one
+    /// or the thread beside it, once its timeline came.
+    pub fn can_write_in(&self, room: &str) -> bool {
+        let ready = match &self.aside {
+            Some(aside) if aside.room == room => aside.ready,
+            _ => self.selected.as_deref() == Some(room) && self.room_ready,
+        };
+        !self.busy
+            && ready
+            && self
+                .rooms
+                .iter()
+                .find(|listed| listed.id == room)
+                .is_some_and(|listed| self.writable(listed))
+    }
+
+    /// Whether the composer of a room on screen can send what it holds.
+    pub fn can_send_in(&self, room: &str) -> bool {
+        let draft = self.drafts.get(room).map_or("", String::as_str);
+        let editing = matches!(self.compose.get(room), Some(Compose::Edit { .. }));
+        let staged = self
+            .staged
+            .get(room)
+            .is_some_and(|staged| !staged.is_empty());
+        self.can_write_in(room)
+            && self.sending.is_none()
+            && (!draft.trim().is_empty() || (!editing && staged))
+    }
+}
+
+impl Application {
+    /// Shows a Discord thread beside the open channel, as clicking its link
+    /// in a message does: at once when it's listed, else once Discord gives
+    /// it. Anything but a thread opens as itself.
+    pub(super) fn open_aside(&mut self, room: String) -> Vec<Effect> {
+        if self.state.selected.as_ref() == Some(&room)
+            || self
+                .state
+                .aside
+                .as_ref()
+                .is_some_and(|aside| aside.room == room)
+        {
+            return vec![];
+        }
+        match self.state.rooms.iter().find(|listed| listed.id == room) {
+            Some(listed) if listed.parent.is_some() => self.show_aside(room),
+            Some(_) => self.open(room),
+            None => self.open_thread(room, true),
+        }
+    }
+
+    pub(super) fn show_aside(&mut self, room: String) -> Vec<Effect> {
+        self.state.aside = Some(Aside {
+            room: room.clone(),
+            ..Default::default()
+        });
+        self.aside_visible.clear();
+        vec![Effect::Backend(Command::Aside(Some(room)))]
+    }
+
+    pub(super) fn close_aside(&mut self) -> Vec<Effect> {
+        self.pending_aside = None;
+        if self.state.aside.take().is_none() {
+            return vec![];
+        }
+        self.aside_visible.clear();
+        vec![Effect::Backend(Command::Aside(None))]
+    }
+
+    /// Shows the thread beside the open channel in place of the channel.
+    pub(super) fn expand_aside(&mut self) -> Vec<Effect> {
+        let Some(room) = self.state.aside.as_ref().map(|aside| aside.room.clone()) else {
+            return vec![];
+        };
+        let mut effects = self.close_aside();
+        effects.extend(self.open(room));
+        effects
+    }
+
+    /// Loads the page before the oldest message the thread beside shows.
+    pub(super) fn aside_earlier(&mut self) -> Vec<Effect> {
+        let Some(aside) = self.state.aside.as_mut() else {
+            return vec![];
+        };
+        if !aside.ready || aside.loading_history || aside.history_start || self.state.busy {
+            return vec![];
+        }
+        aside.loading_history = true;
+        aside.history_failed = false;
+        vec![Effect::Backend(Command::Earlier(aside.room.clone()))]
+    }
+
+    /// The thread beside shows its newest messages, and reads them.
+    pub(super) fn aside_timeline(&mut self, messages: Vec<Arc<ChatMessage>>) -> Vec<Effect> {
+        let Some(aside) = self.state.aside.as_mut() else {
+            return vec![];
+        };
+        if let Some(first) = aside.messages.first()
+            && !messages.iter().any(|message| message.item == first.item)
+        {
+            aside.history_start = false;
+        }
+        aside.ready = true;
+        aside.messages = Arc::new(messages);
+        self.mark_aside_read()
+    }
+
+    pub(super) fn aside_history(&mut self, direction: chat::Direction, history: chat::History) {
+        let Some(aside) = self.state.aside.as_mut() else {
+            return;
+        };
+        if direction != chat::Direction::Earlier {
+            return;
+        }
+        aside.loading_history = false;
+        match history {
+            chat::History::Loaded { start, .. } => aside.history_start = start,
+            chat::History::Failed => aside.history_failed = true,
+        }
+    }
+
+    /// Reads the thread beside, as the open channel is read while it shows.
+    pub(super) fn mark_aside_read(&self) -> Vec<Effect> {
+        match (self.state.aside.as_ref(), self.state.aside_room()) {
+            (Some(aside), Some(room)) if aside.ready && (room.unread > 0 || room.mentions > 0) => {
+                vec![Effect::Backend(Command::MarkRead {
+                    room: room.id.clone(),
+                    sync: self.state.sync_discord_reads,
+                })]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Sends what the thread beside's composer holds.
+    pub(super) fn send_aside(&mut self) -> Vec<Effect> {
+        match self.state.aside.as_ref().map(|aside| aside.room.clone()) {
+            Some(room) => self.send_in(room),
+            None => vec![],
+        }
+    }
+}

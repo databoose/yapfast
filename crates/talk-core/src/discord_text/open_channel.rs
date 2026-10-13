@@ -124,6 +124,9 @@ pub struct OpenChannel {
     pub room: String,
     pub(super) guild: String,
     pub(super) channel: String,
+    /// The channel whose member list shows here: a thread's channel, else
+    /// this one.
+    pub(super) members_of: String,
     /// The loaded messages the timeline shows: the channel's newest, which
     /// live messages join, or while [`Self::latest`] keeps those, a window
     /// of older ones around a message jumped to.
@@ -170,22 +173,39 @@ pub struct OpenChannel {
 }
 
 impl OpenChannel {
-    /// Opens a channel and starts loading its latest messages. What was kept
-    /// on disk shows meanwhile, and the latest page fits in as it does for a
-    /// channel kept in memory.
+    /// Opens a channel, or a thread `beside` the open channel, and starts
+    /// loading its latest messages. What was kept on disk shows meanwhile,
+    /// and the latest page fits in as it does for a channel kept in memory.
     pub(super) fn open(
         discord: &Discord,
         room: &str,
+        beside: bool,
         done: &UnboundedSender<Done>,
         previews: SharedPreviews,
     ) -> Option<Self> {
         let mut open = Self::new(room)?;
         open.previews = previews;
+        if let Some(parent) = discord
+            .snapshots()
+            .borrow()
+            .servers
+            .iter()
+            .find(|server| server.id == open.guild)
+            .and_then(|server| server.channel(&open.channel))
+            .filter(|channel| channel.thread.is_some())
+            .and_then(|thread| thread.parent.clone())
+        {
+            open.members_of = parent;
+        }
         for message in talk_discord::cache::messages(&open.channel) {
             open.shown.messages.insert(message.order(), message);
             open.loaded = true;
         }
-        discord.view(&open.guild, Some(&open.channel));
+        if beside {
+            discord.beside(&open.guild, Some(&open.channel));
+        } else {
+            discord.view(&open.guild, Some(&open.channel));
+        }
         open.load(discord, done, Load::Latest);
         Some(open)
     }
@@ -196,6 +216,7 @@ impl OpenChannel {
             room: room.to_owned(),
             guild: guild.to_owned(),
             channel: channel.to_owned(),
+            members_of: channel.to_owned(),
             shown: Run::default(),
             latest: None,
             pending: Vec::new(),
@@ -965,7 +986,8 @@ impl OpenChannel {
                 _ => format!("d:{}", message.id),
             };
             let row = match kept.remove(order) {
-                Some(row) if row.id == id => row,
+                // A thread it leads to changes apart from the message.
+                Some(row) if row.id == id && row.thread == self.thread_link(server, message) => row,
                 _ => Arc::new(self.render(discord, &snapshot, server, message, id, &mut wanted)),
             };
             self.rendered.insert(*order, Arc::clone(&row));
@@ -1162,7 +1184,48 @@ impl OpenChannel {
             can_delete: own,
             can_react: ordinary,
             can_forward: false,
+            thread: self.thread_link(server, message),
         }
+    }
+
+    /// The thread a message leads to, as Talk knows it now if it does: its
+    /// name and count change after the message.
+    /// Whether a thread a shown message leads to changed apart from it: its
+    /// name, its count or whether it's archived, which its link shows.
+    pub(super) fn links_changed(&self, snapshot: &talk_discord::service::Snapshot) -> bool {
+        let server = snapshot
+            .servers
+            .iter()
+            .find(|server| server.id == self.guild)
+            .map(|server| &**server);
+        self.rendered.iter().any(|(order, row)| {
+            row.thread.is_some()
+                && self
+                    .shown
+                    .messages
+                    .get(order)
+                    .is_some_and(|message| row.thread != self.thread_link(server, message))
+        })
+    }
+
+    fn thread_link(
+        &self,
+        server: Option<&talk_discord::ready::Server>,
+        message: &Message,
+    ) -> Option<ThreadLink> {
+        let link = message.thread.as_ref()?;
+        let known =
+            server.and_then(|server| server.threads.iter().find(|known| known.id == link.id));
+        let details = known.and_then(|known| known.thread.as_deref());
+        Some(ThreadLink {
+            room: discord::room_id(&self.guild, &link.id),
+            name: known.map_or_else(|| link.name.clone(), |known| known.name.clone()),
+            // A notice of a thread doesn't carry its count.
+            messages: details
+                .map(|details| details.messages)
+                .or((message.system.is_none()).then_some(link.messages)),
+            archived: details.map_or(link.archived, |details| details.archived),
+        })
     }
 
     fn fetch_picture(&mut self, discord: &Discord, done: &UnboundedSender<Done>, url: String) {

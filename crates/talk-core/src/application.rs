@@ -16,6 +16,7 @@ use crate::{
     voice::{self, Phase},
 };
 
+mod aside;
 mod calls;
 mod compose;
 mod discord_account;
@@ -364,6 +365,8 @@ pub struct AppState {
     pub category_changes: u64,
     pub navigation: Navigation,
     pub selected: Option<String>,
+    /// A Discord thread shown beside the selected channel.
+    pub aside: Option<aside::Aside>,
     pub room_ready: bool,
     pub messages: Arc<Vec<Arc<ChatMessage>>>,
     /// The selected room's joined members, by role and then name; `None` while loading.
@@ -462,9 +465,11 @@ impl AppState {
         self.selected.as_ref().and_then(|id| self.compose.get(id))
     }
 
+    /// A message the selected room or the thread beside it shows.
     pub fn message(&self, item: &str) -> Option<&ChatMessage> {
         self.messages
             .iter()
+            .chain(self.aside.iter().flat_map(|aside| aside.messages.iter()))
             .find(|message| message.item == item)
             .map(Arc::as_ref)
     }
@@ -872,6 +877,18 @@ pub enum Action {
     MarkRead(String),
     /// Go to wherever a conversation is listed and open it, as a notification does.
     Open(String),
+    /// Show a Discord thread beside the open channel, as its link in a
+    /// message does; anything else opens as [`Action::Open`] does.
+    OpenAside(String),
+    CloseAside,
+    /// Show the thread beside the open channel in place of it.
+    ExpandAside,
+    /// Load the thread beside's earlier messages.
+    AsideEarlier,
+    SetAsideDraft(String),
+    SendAside,
+    /// Leave reply or edit mode in the thread beside.
+    CancelAsideCompose,
     SetDraft(String),
     /// The `@` word being typed in the composer changed, or there's none now.
     MentionQuery(Option<String>),
@@ -1212,6 +1229,12 @@ pub struct Application {
     searched: HashSet<String>,
     /// A conversation to open once it's listed, such as a DM just started.
     pending_open: Option<String>,
+    /// A thread to show beside the selected channel once it's listed.
+    pending_aside: Option<String>,
+    /// The items in or near the thread beside's view, as last reported.
+    aside_visible: Vec<String>,
+    /// The thread beside's timeline as its pictures were last asked for.
+    pictured_aside: Arc<Vec<Arc<ChatMessage>>>,
     /// A DM with a friend is starting, to open once it has.
     starting_dm: bool,
     /// Its call starts once it opens, as [`Action::CallPerson`] asks.
@@ -1415,7 +1438,8 @@ impl Application {
 
     pub fn apply(&mut self, event: Event) -> Vec<Effect> {
         let mut effects = self.apply_event(event);
-        // A DM just started opens once the lists have it.
+        // A DM just started, or a thread asked for, opens once the lists
+        // have it.
         if let Some(room) = self
             .pending_open
             .take_if(|room| self.state.rooms.iter().any(|listed| &listed.id == room))
@@ -1424,6 +1448,12 @@ impl Application {
             if std::mem::take(&mut self.pending_call) {
                 effects.extend(self.dispatch(Action::RequestJoinVoice(room)));
             }
+        }
+        if let Some(room) = self
+            .pending_aside
+            .take_if(|room| self.state.rooms.iter().any(|listed| &listed.id == room))
+        {
+            effects.extend(self.dispatch(Action::OpenAside(room)));
         }
         effects.extend(self.show_panel_profile());
         effects.extend(self.request_pictures());
@@ -1470,6 +1500,18 @@ impl Application {
             }
         }
         self.pictured_timeline = self.state.messages.clone();
+        // The thread beside is short, and shows its custom emoji whole.
+        if let Some(aside) = &self.state.aside
+            && !Arc::ptr_eq(&self.pictured_aside, &aside.messages)
+        {
+            for url in pictures_on_screen(state, &aside.messages, false) {
+                if !self.requested_pictures.contains(url) {
+                    self.requested_pictures.insert(url.to_owned());
+                    wanted.push(url.to_owned());
+                }
+            }
+            self.pictured_aside = aside.messages.clone();
+        }
         (!wanted.is_empty()).then_some(Effect::Backend(Command::Discord(DiscordCommand::Pictures(
             wanted,
         ))))
@@ -1492,7 +1534,17 @@ impl Application {
         if others <= KEPT_PICTURES.max(2 * self.pictures_kept) {
             return;
         }
+        let aside = self
+            .state
+            .aside
+            .as_ref()
+            .map(|aside| aside.messages.as_slice());
         let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages, true)
+            .chain(
+                aside
+                    .into_iter()
+                    .flat_map(|aside| pictures_on_screen(&self.state, aside, true)),
+            )
             .map(str::to_owned)
             .collect();
         let kept = |url: &String| shown.contains(url) || is_custom_emoji(url);
@@ -1505,6 +1557,19 @@ impl Application {
 
     fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
+            Action::VisibleMessages { room, items }
+                if self
+                    .state
+                    .aside
+                    .as_ref()
+                    .is_some_and(|aside| aside.room == room) =>
+            {
+                if self.aside_visible == items {
+                    return vec![];
+                }
+                self.aside_visible = items.clone();
+                vec![Effect::Backend(Command::VisibleMessages { room, items })]
+            }
             Action::VisibleMessages { room, items } => {
                 if self.state.selected.as_ref() != Some(&room) || self.visible_messages == items {
                     return vec![];
@@ -1521,6 +1586,21 @@ impl Application {
                 self.show_panel_profile()
             }
             Action::Open(id) => self.open(id),
+            Action::OpenAside(id) => self.open_aside(id),
+            Action::CloseAside => self.close_aside(),
+            Action::ExpandAside => self.expand_aside(),
+            Action::AsideEarlier => self.aside_earlier(),
+            Action::SetAsideDraft(body) => match self.state.aside.as_ref() {
+                Some(aside) => self.set_draft_in(aside.room.clone(), body),
+                None => vec![],
+            },
+            Action::SendAside => self.send_aside(),
+            Action::CancelAsideCompose => {
+                if let Some(aside) = self.state.aside.as_ref().map(|aside| aside.room.clone()) {
+                    self.finish_compose(&aside);
+                }
+                vec![]
+            }
             Action::SelectRoom(id) => self.select_room(id),
             Action::MarkRead(id) => self.mark_read(id),
             Action::EditLast => self.edit_last(),
@@ -1928,6 +2008,15 @@ impl Application {
             }
             #[cfg(feature = "discord")]
             Event::Discord(snapshot) => return self.show_snapshot(snapshot),
+            Event::Timeline { room, messages }
+                if self
+                    .state
+                    .aside
+                    .as_ref()
+                    .is_some_and(|aside| aside.room == room) =>
+            {
+                return self.aside_timeline(messages);
+            }
             Event::Timeline { room, messages } => {
                 // A window on its way replaces what showed before.
                 if self.state.selected.as_ref() == Some(&room) && !self.focusing {
@@ -1947,7 +2036,13 @@ impl Application {
                 }
             }
             Event::RoomError { room, message } => {
-                if self.state.selected.as_ref() == Some(&room) {
+                if self.state.selected.as_ref() == Some(&room)
+                    || self
+                        .state
+                        .aside
+                        .as_ref()
+                        .is_some_and(|aside| aside.room == room)
+                {
                     self.state.notice = Some(message);
                 }
             }
@@ -1980,6 +2075,7 @@ impl Application {
                     self.pending_open = Some(room);
                 }
             }
+            Event::ThreadOpened { room, result } => self.thread_opened(room, result),
             Event::Pins { room, result } => self.pins_came(room, result),
             Event::Found {
                 place,
@@ -2093,7 +2189,14 @@ impl Application {
                 direction,
                 history,
             } => {
-                if self.state.selected.as_ref() == Some(&room) {
+                if self
+                    .state
+                    .aside
+                    .as_ref()
+                    .is_some_and(|aside| aside.room == room)
+                {
+                    self.aside_history(direction, history);
+                } else if self.state.selected.as_ref() == Some(&room) {
                     return self.history_loaded(direction, history);
                 }
             }

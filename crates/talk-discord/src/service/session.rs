@@ -35,6 +35,10 @@ pub(super) struct Shared {
     pub(super) lists: MemberLists,
     /// The presence this session last sent, which it identifies with again.
     pub(super) presence: Value,
+    /// The server and channel or thread on screen, and a thread beside it,
+    /// kept through reconnecting.
+    pub(super) viewing: Option<(String, String)>,
+    pub(super) beside: Option<(String, String)>,
 }
 
 pub(super) async fn run(
@@ -112,7 +116,11 @@ fn refuse(request: Request, shared: &mut Shared) {
             )));
         }
         Request::View { guild, channel } => {
+            shared.viewing = channel.clone().map(|channel| (guild.clone(), channel));
             shared.lists.view_offline(&shared.snapshots, guild, channel);
+        }
+        Request::Beside { guild, thread } => {
+            shared.beside = thread.map(|thread| (guild, thread));
         }
         _ => {}
     }
@@ -139,6 +147,14 @@ async fn connected_session(
     drop(ready);
     trim_startup_heap();
     tracker.keep_unavailable(&shared.snapshots.borrow().servers);
+    let earlier = shared.snapshots.borrow().servers.clone();
+    for (guild, channel) in shared.viewing.iter().chain(&shared.beside) {
+        tracker.keep_thread(&earlier, guild, channel);
+    }
+    if let Some((guild, channel)) = &shared.viewing {
+        tracker.view(guild, Some(channel));
+    }
+    tracker.beside(shared.beside.as_ref().map(|(_, thread)| thread.as_str()));
     shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
     let mut session = Session {
         gateway,
@@ -279,13 +295,42 @@ impl Session<'_> {
                     .update_voice_state(server(&guild), Some(&channel), mute, deaf, video)
                     .await
             }
+            // It opens once it lists, so it lists as on screen already.
+            Request::OpenThread {
+                guild,
+                thread,
+                beside,
+            } => {
+                self.tracker.put_thread(&guild, &thread);
+                if let Some(id) = thread["id"].as_str() {
+                    if beside {
+                        self.tracker.beside(Some(id));
+                        self.shared.beside = Some((guild, id.to_owned()));
+                    } else {
+                        self.tracker.view(&guild, Some(id));
+                        self.shared.viewing = Some((guild, id.to_owned()));
+                    }
+                }
+                self.publisher.changed();
+                Ok(())
+            }
+            Request::Beside { guild, thread } => {
+                if self.tracker.beside(thread.as_deref()) {
+                    self.publisher.changed();
+                }
+                self.shared.beside = thread.map(|thread| (guild, thread));
+                Ok(())
+            }
             Request::View { guild, channel } => {
+                self.shared.viewing = channel.clone().map(|channel| (guild.clone(), channel));
+                let threads = self.tracker.view(&guild, channel.as_deref());
+                let channel = channel.map(|channel| self.tracker.listed_channel(&guild, channel));
                 let listed = self
                     .shared
                     .lists
                     .view(&self.tracker, gateway, guild, channel)
                     .await?;
-                if listed {
+                if listed || threads {
                     self.publisher.changed();
                 }
                 Ok(())

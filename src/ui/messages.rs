@@ -393,6 +393,18 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         can_delete: message.can_delete,
         can_react: message.can_react,
         can_forward: message.can_forward,
+        thread_room: message
+            .thread
+            .as_ref()
+            .map_or_else(SharedString::default, |thread| thread.room.as_str().into()),
+        thread_name: message
+            .thread
+            .as_ref()
+            .map_or_else(SharedString::default, |thread| thread.name.as_str().into()),
+        thread_detail: message
+            .thread
+            .as_ref()
+            .map_or_else(SharedString::default, |thread| thread_detail(thread).into()),
     };
     if collapsed(message, revealed) {
         // Discord shows nothing of a blocked message until asked.
@@ -428,6 +440,23 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         };
     }
     row
+}
+
+/// What a thread's link says after its name: how many messages it has,
+/// as Discord counts them, and whether it's archived.
+fn thread_detail(thread: &talk_core::chat::ThreadLink) -> String {
+    let count = match thread.messages {
+        None => None,
+        Some(0) => Some("No messages yet".to_owned()),
+        Some(1) => Some("1 message".to_owned()),
+        Some(count) => Some(format!("{count} messages")),
+    };
+    match (count, thread.archived) {
+        (Some(count), true) => format!("{count}, archived"),
+        (Some(count), false) => count,
+        (None, true) => "Archived".into(),
+        (None, false) => String::new(),
+    }
 }
 
 /// A pinned message or a search result as its card shows it, sent at a

@@ -478,6 +478,7 @@ impl Application {
         self.discord = Some(snapshot);
         let mut effects = self.list_discord();
         effects.extend(self.mark_discord_read());
+        effects.extend(self.mark_aside_read());
         effects
     }
 

@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio on real Windows; cameras on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and channel menus, invites, making and changing channels, leaving servers | Threads, forums, pinning, forwarding, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and channel menus, invites, making and changing channels, threads, leaving servers | Starting threads, forums, pinning, forwarding, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1196,6 +1196,45 @@ Names are 1 to 100 characters and topics up to 1024, checked before
 asking. The fake lets Alice's Crew role manage "Server"'s channels and
 sends each event.
 
+### Threads
+
+A text channel's threads (types 10, 11 and 12) are channels of their own,
+with a `parent_id` and `thread_metadata`. A user account's READY and
+GUILD_CREATE carry only the active threads it's in, each with its own
+`member`; THREAD_CREATE, UPDATE, DELETE and LIST_SYNC change them, and
+THREAD_MEMBER_UPDATE and THREAD_MEMBERS_UPDATE say when the account joins or
+leaves one. The service keeps them in the server's snapshot, newest first,
+with the thread's owner, privacy, archiving, locking, message count (which
+leaves out the message a thread was started from) and the account's
+membership: when it joined, its mute and its notification level (flags 2,
+4 and 8 for all messages, mentions only and nothing). A thread takes its
+permission overwrites from its parent: it shows with View Channel, a
+private one only to its members or with Manage Threads, and writing in it
+takes Send Messages in Threads, which a locked thread also asks Manage
+Threads for.
+
+The sidebar lists each active thread the account is in under its channel,
+joined to it by a line, with its own unread state and mentions, read at
+join time until Discord's read state says otherwise. A thread notifies
+as its own level says, else as its channel does; one the account isn't in
+notifies only of mentions, and a muted thread not at all. Opening one shows
+it in place of the channel, its header reading "general › Plans" with the
+channel's name a link back, and the channel's member list beside it.
+
+A message that started a thread carries it as `thread`, and shows a chip
+with its name and count under it; the THREAD_CREATED notice (type 18)
+links to the thread through its `message_reference`, and a thread's first
+message, THREAD_STARTER_MESSAGE (type 21), shows the message it was started
+from. Clicking a chip opens the thread beside the channel, as Discord
+does, in place of the member list: its messages, its history and a
+composer of its own, which replies, edits and reacts as the timeline does.
+Its button shows it in place of the channel, and closing it, or opening
+another channel, brings the member list back. A thread the account isn't
+in is read with `GET /channels/{id}` and listed while it shows, so it
+reads and marks read like any other; writing in it joins it, as Discord
+does. The fake has "Plans", from Bob's welcome, and its controls write in
+it, start "Movie night" and archive "Plans".
+
 ### Editing one's server profile
 
 Edit server profile, in a server's menu and its header's dropdown, where
@@ -1333,8 +1372,8 @@ calls aren't there yet. A server's text channel has, after its icon and name,
 its topic, then on the right Discord's buttons in Discord's order: the bell
 of its [notification settings](#notification-settings), its pinned
 messages, the member list's toggle, bright while the list shows, and the
-search. Threads, which Discord's header has before the bell, are still to
-come.
+search. The list of a channel's threads, which Discord's header has before
+the bell, is still to come.
 
 - The topic is the channel's `topic`, from READY and GUILD_CREATE, which
   CHANNEL_UPDATE changes. Talk keeps it with the channel, shared between the
@@ -1421,7 +1460,8 @@ Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 
 In rough order. The browser covers these until then.
 
-- Threads and forum channels.
+- Starting, joining and leaving threads, a channel's list of its threads,
+  and forum channels.
 - Pinning and unpinning messages.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.

@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     client,
-    notifications::{Level, Notifications},
+    notifications::{Level, Mute, Notifications},
 };
 
 /// Discord serves pictures in powers of two; this covers the 80px avatar in a
@@ -24,6 +24,9 @@ const GUILD_VOICE: u64 = 2;
 const GROUP_DM: u64 = 3;
 const GUILD_CATEGORY: u64 = 4;
 const GUILD_ANNOUNCEMENT: u64 = 5;
+const ANNOUNCEMENT_THREAD: u64 = 10;
+const PUBLIC_THREAD: u64 = 11;
+const PRIVATE_THREAD: u64 = 12;
 const GUILD_STAGE_VOICE: u64 = 13;
 
 /// Discord's permission bits, as roles and channel overwrites carry them;
@@ -37,18 +40,25 @@ pub mod permission {
     pub const MANAGE_GUILD: u64 = 1 << 5;
     pub const VIEW_CHANNEL: u64 = 1 << 10;
     pub const SEND_MESSAGES: u64 = 1 << 11;
+    pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
     pub const MENTION_EVERYONE: u64 = 1 << 17;
     pub const CONNECT: u64 = 1 << 20;
     pub const CHANGE_NICKNAME: u64 = 1 << 26;
     pub const MANAGE_NICKNAMES: u64 = 1 << 27;
     pub const MANAGE_ROLES: u64 = 1 << 28;
+    /// Seeing every private thread, and sending in locked ones.
+    pub const MANAGE_THREADS: u64 = 1 << 34;
+    pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
     /// Timing members out.
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
     /// Every permission, as the owner and administrators hold.
     pub const ALL: u64 = u64::MAX;
 }
 
-use permission::{ADMINISTRATOR, CONNECT, MENTION_EVERYONE, SEND_MESSAGES, VIEW_CHANNEL};
+use permission::{
+    ADMINISTRATOR, CONNECT, MANAGE_THREADS, MENTION_EVERYONE, SEND_MESSAGES,
+    SEND_MESSAGES_IN_THREADS, VIEW_CHANNEL,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Server {
@@ -63,6 +73,12 @@ pub struct Server {
     /// Text and announcement channels, in Discord's order.
     pub text_channels: Vec<Channel>,
     pub voice_channels: Vec<Channel>,
+    /// The threads Talk knows of in its text and announcement channels,
+    /// the newest first: those this account joined that are still active,
+    /// which Discord sends, and others it opened. Each has
+    /// [`Channel::thread`], and its channel for [`Channel::parent`].
+    #[serde(default)]
+    pub threads: Vec<Channel>,
     // The categories, roles and emoji are shared, as the channels' overwrites
     // are: a snapshot copies each server to set what's this account's, and
     // they're most of a large server.
@@ -176,6 +192,64 @@ pub struct Channel {
     /// The snowflake of the last message this account read here, or 0.
     #[serde(default)]
     pub last_read: u64,
+    /// What a thread has besides; none for a channel.
+    #[serde(default)]
+    pub thread: Option<Box<Thread>>,
+}
+
+/// What a thread has that a channel doesn't; see
+/// <https://docs.discord.food/topics/threads>.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Thread {
+    /// Who started it.
+    pub owner: Option<String>,
+    /// Only those in it, and those who may manage threads, see it.
+    pub private: bool,
+    /// Closed for inactivity or by hand: Discord stops listing it until a
+    /// message opens it again.
+    pub archived: bool,
+    /// Only those who may manage threads write in it or open it again.
+    pub locked: bool,
+    /// This account is a member, so it lists under its channel.
+    pub joined: bool,
+    /// This account's mute in it, from its thread member.
+    pub mute: Mute,
+    /// Which of its messages notify this account, from its thread member's
+    /// flags; none for its channel's.
+    pub level: Option<Level>,
+    /// Its messages after the first, as Discord counts them.
+    pub messages: u64,
+}
+
+/// Thread member flags that choose its notifications.
+const THREAD_ALL_MESSAGES: u64 = 1 << 1;
+const THREAD_ONLY_MENTIONS: u64 = 1 << 2;
+const THREAD_NO_MESSAGES: u64 = 1 << 3;
+
+impl Thread {
+    /// Takes this account's thread member object: it's in the thread, and
+    /// these are its settings there.
+    pub fn join(&mut self, member: &Value) {
+        self.joined = true;
+        self.mute = Mute::read(member);
+        let flags = member["flags"].as_u64().unwrap_or_default();
+        self.level = if flags & THREAD_ALL_MESSAGES != 0 {
+            Some(Level::All)
+        } else if flags & THREAD_ONLY_MENTIONS != 0 {
+            Some(Level::Mentions)
+        } else if flags & THREAD_NO_MESSAGES != 0 {
+            Some(Level::Nothing)
+        } else {
+            None
+        };
+    }
+
+    /// This account left it, or was taken out.
+    pub fn leave(&mut self) {
+        self.joined = false;
+        self.mute = Mute::default();
+        self.level = None;
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -284,14 +358,13 @@ impl Server {
     /// it and no overwrite hides it, else a hash of the overwrites that allow
     /// or deny seeing it. Discord's client works it out the same way.
     pub fn readers(&self, channel: &str) -> String {
-        let Some(channel) = self
-            .text_channels
-            .iter()
-            .chain(&self.voice_channels)
-            .find(|known| known.id == channel)
-        else {
+        let Some(mut channel) = self.channel(channel) else {
             return format!("channel:{channel}");
         };
+        // A thread lists its channel's readers.
+        if let Some(parent) = channel.thread.as_ref().and_then(|_| self.parent(channel)) {
+            channel = parent;
+        }
         // Without the server's roles, @everyone is taken to see channels,
         // as it does on most servers.
         let everyone_sees = self
@@ -332,6 +405,18 @@ impl Server {
             return Access::Join;
         }
         let permissions = self.channel_permissions(channel, user, roles);
+        if let Some(thread) = &channel.thread {
+            let manages = permissions & MANAGE_THREADS != 0;
+            return if permissions & VIEW_CHANNEL == 0
+                || thread.private && !thread.joined && !manages
+            {
+                Access::Hidden
+            } else if permissions & SEND_MESSAGES_IN_THREADS == 0 || thread.locked && !manages {
+                Access::Locked
+            } else {
+                Access::Join
+            };
+        }
         let act = if self.text_channels.iter().any(|text| text.id == channel.id) {
             SEND_MESSAGES
         } else {
@@ -346,12 +431,16 @@ impl Server {
         }
     }
 
-    /// Adds or replaces a channel from a channel object.
+    /// Adds or replaces a channel or thread from a channel object.
     pub fn put_channel(&mut self, channel: &Value) {
         let Some(id) = channel["id"].as_str() else {
             return;
         };
-        self.remove_channel(id);
+        if is_thread(channel) {
+            self.put_thread(channel);
+            return;
+        }
+        self.forget(id);
         match channel["type"].as_u64() {
             Some(GUILD_TEXT | GUILD_ANNOUNCEMENT) => {
                 if let Some(channel) = parse_channel(channel) {
@@ -378,14 +467,92 @@ impl Server {
         self.sort_channels();
     }
 
+    /// Removes a deleted channel, category or thread, and a channel's
+    /// threads.
     pub fn remove_channel(&mut self, id: &str) {
+        self.forget(id);
+        self.threads
+            .retain(|thread| thread.id != id && thread.parent.as_deref() != Some(id));
+    }
+
+    /// Takes a channel or category out of the lists, leaving its threads.
+    fn forget(&mut self, id: &str) {
         self.text_channels.retain(|channel| channel.id != id);
         self.voice_channels.retain(|channel| channel.id != id);
         Arc::make_mut(&mut self.categories).remove(id);
     }
 
-    /// The channel's category, if it has one this server still lists.
+    /// Adds or replaces a thread from a channel object. One without
+    /// this account's thread member keeps whether it's in it, as
+    /// THREAD_UPDATE leaves the member out.
+    pub fn put_thread(&mut self, value: &Value) {
+        let Some(mut thread) = parse_channel(value) else {
+            return;
+        };
+        let metadata = &value["thread_metadata"];
+        let mut details = Thread {
+            owner: value["owner_id"].as_str().map(str::to_owned),
+            private: value["type"].as_u64() == Some(PRIVATE_THREAD),
+            archived: metadata["archived"].as_bool().unwrap_or(false),
+            locked: metadata["locked"].as_bool().unwrap_or(false),
+            messages: value["message_count"].as_u64().unwrap_or_default(),
+            ..Default::default()
+        };
+        let known = self.threads.iter().position(|known| known.id == thread.id);
+        if let Some(known) = known.map(|at| self.threads.remove(at))
+            && let Some(was) = known.thread
+        {
+            details.joined = was.joined;
+            details.mute = was.mute;
+            details.level = was.level;
+            // An update from an older payload doesn't count backwards.
+            details.messages = details.messages.max(was.messages);
+        }
+        if value["member"].is_object() {
+            details.join(&value["member"]);
+        }
+        thread.thread = Some(Box::new(details));
+        // The newest first: a later thread has a larger snowflake.
+        let order = |channel: &Channel| std::cmp::Reverse(channel.id.parse::<u64>().unwrap_or(0));
+        let at = self
+            .threads
+            .partition_point(|known| order(known) < order(&thread));
+        self.threads.insert(at, thread);
+    }
+
+    /// A known thread, to change.
+    pub fn thread_mut(&mut self, id: &str) -> Option<&mut Thread> {
+        self.threads
+            .iter_mut()
+            .find(|thread| thread.id == id)?
+            .thread
+            .as_deref_mut()
+    }
+
+    /// A text or voice channel, or a thread, by id.
+    pub fn channel(&self, id: &str) -> Option<&Channel> {
+        self.text_channels
+            .iter()
+            .chain(&self.voice_channels)
+            .chain(&self.threads)
+            .find(|channel| channel.id == id)
+    }
+
+    /// The channel a thread is in.
+    pub fn parent(&self, thread: &Channel) -> Option<&Channel> {
+        let parent = thread.parent.as_deref()?;
+        self.text_channels
+            .iter()
+            .find(|channel| channel.id == parent)
+    }
+
+    /// The channel's category, if it has one this server still lists; a
+    /// thread's is its channel's.
     pub fn category(&self, channel: &Channel) -> Option<&Category> {
+        let channel = match &channel.thread {
+            Some(_) => self.parent(channel)?,
+            None => channel,
+        };
         self.categories.get(channel.parent.as_ref()?)
     }
 
@@ -419,13 +586,9 @@ impl Server {
         self.voice_channels = voice;
     }
 
-    /// A text or voice channel's name.
+    /// A text or voice channel's name, or a thread's.
     pub fn channel_name(&self, id: &str) -> Option<&str> {
-        self.text_channels
-            .iter()
-            .chain(&self.voice_channels)
-            .find(|channel| channel.id == id)
-            .map(|channel| channel.name.as_str())
+        self.channel(id).map(|channel| channel.name.as_str())
     }
 
     /// What `user`, holding `roles`, may do in the server as a whole: the
@@ -448,8 +611,15 @@ impl Server {
     /// What `user`, holding `roles`, may do in `channel`, computed as Discord
     /// does: [`Self::server_permissions`], then the channel's overwrites for
     /// @everyone, for the roles, and for the member.
+    /// A thread takes its channel's overwrites.
     pub fn channel_permissions(&self, channel: &Channel, user: &str, roles: &[String]) -> u64 {
-        self.overwritten(&channel.overwrites, user, roles)
+        let overwrites = match &channel.thread {
+            Some(_) => self
+                .parent(channel)
+                .map_or(&channel.overwrites, |parent| &parent.overwrites),
+            None => &channel.overwrites,
+        };
+        self.overwritten(overwrites, user, roles)
     }
 
     /// What `user`, holding `roles`, may do in a category, as
@@ -726,7 +896,24 @@ pub fn server(guild: &Value) -> Option<Server> {
     for channel in categories.into_iter().chain(channels) {
         server.put_channel(channel);
     }
+    // A user account hears only of the active threads it joined.
+    for thread in guild["threads"].as_array().into_iter().flatten() {
+        server.put_thread(thread);
+        if let Some(id) = thread["id"].as_str()
+            && let Some(thread) = server.thread_mut(id)
+        {
+            thread.joined = true;
+        }
+    }
     Some(server)
+}
+
+/// Whether a channel object is a thread.
+pub fn is_thread(channel: &Value) -> bool {
+    matches!(
+        channel["type"].as_u64(),
+        Some(ANNOUNCEMENT_THREAD | PUBLIC_THREAD | PRIVATE_THREAD)
+    )
 }
 
 /// A channel object's permission overwrites.

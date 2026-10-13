@@ -836,6 +836,7 @@ impl Matrix {
             // Matrix videos are files to save for now.
             Command::Voice(_)
             | Command::Discord(_)
+            | Command::Aside(_)
             | Command::PlayVideo { .. }
             | Command::Video(_) => {}
         }
@@ -1146,6 +1147,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             upload_limit: MAX_ATTACHMENT_BYTES,
             presence: None,
             activity: None,
+            parent: None,
         });
     }
     result.sort_by(|a, b| {

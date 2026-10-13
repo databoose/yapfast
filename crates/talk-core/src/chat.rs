@@ -71,6 +71,8 @@ pub struct ChatRoom {
     /// Discord says, and their custom status or what they're doing.
     pub presence: Option<Presence>,
     pub activity: Option<String>,
+    /// A Discord thread's channel, by room id: the thread lists under it.
+    pub parent: Option<String>,
 }
 
 /// The most files one message carries, as Discord allows.
@@ -529,6 +531,18 @@ pub struct Reply {
     pub item: Option<String>,
 }
 
+/// A Discord thread a message leads to: the one started from it, or that
+/// its notice names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadLink {
+    /// The thread's room id, which [`crate::application::Action::Open`] opens.
+    pub room: String,
+    pub name: String,
+    /// Its messages after the first, when Talk knows.
+    pub messages: Option<u64>,
+    pub archived: bool,
+}
+
 /// A Discord custom emoji, which shows as `text` until its picture arrives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomEmoji {
@@ -966,6 +980,8 @@ pub struct ChatMessage {
     pub can_react: bool,
     /// A sent message whose content can be sent again to another conversation.
     pub can_forward: bool,
+    /// The Discord thread it started, or that it tells of.
+    pub thread: Option<ThreadLink>,
 }
 
 /// How loading history ended.
@@ -1010,6 +1026,10 @@ pub enum Command {
     /// Show a room. Every network hears it, so each closes its own open room
     /// when another network's room opens.
     Open(String),
+    /// Show a Discord thread, by room id, beside the open room, as Discord
+    /// opens a thread from its channel; or with none, stop. Its timeline
+    /// comes as the open room's does.
+    Aside(Option<String>),
     /// Close the open room, on every network.
     CloseRoom,
     /// Queue a Markdown message, optionally replying to an item, with the
@@ -1191,6 +1211,13 @@ pub enum DiscordCommand {
         user: String,
         nickname: String,
     },
+    /// Learn of a Discord thread, by room id, so it lists while it's open,
+    /// in place of the open room or `beside` it: Discord tells a user
+    /// account only of the threads it's in. [`Event::ThreadOpened`] follows.
+    OpenThread {
+        room: String,
+        beside: bool,
+    },
     /// Close a Discord DM; the DM list changes when Discord confirms it.
     CloseDm {
         room: String,
@@ -1366,7 +1393,7 @@ impl Command {
         match self {
             Command::Voice(_) => Route::Voice,
             // Only Discord's videos play for now.
-            Command::Discord(_) | Command::Video(_) => Route::Discord,
+            Command::Discord(_) | Command::Video(_) | Command::Aside(_) => Route::Discord,
             Command::Open(_) | Command::CloseRoom | Command::FindPeople { .. } => Route::Every,
             Command::Send { room, .. }
             | Command::Edit { room, .. }
@@ -1437,6 +1464,12 @@ pub enum Event {
     },
     /// The DM [`Command::StartDm`] asked for, by room id, or why it couldn't start.
     DmStarted(Result<String, String>),
+    /// Whether [`DiscordCommand::OpenThread`] learned of the thread, which
+    /// lists once the next snapshot comes, or why not.
+    ThreadOpened {
+        room: String,
+        result: Result<(), String>,
+    },
     /// Whether [`DiscordCommand::AddFriend`]'s request went: to whom, or why not.
     FriendAdded(Result<String, String>),
     /// [`DiscordCommand::Note`]'s note, empty for none, or why it didn't come.

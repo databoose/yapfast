@@ -50,6 +50,10 @@ export struct RoomRow {
     /// A DM pinned to the top of the list, and a DM or channel whose notifications are muted.
     pinned: bool,
     muted: bool,
+    /// A Discord thread, listed under its channel, and whether another of
+    /// that channel's threads follows it.
+    thread: bool,
+    thread-continues: bool,
 }
 
 // A server or the DM home: a circle that becomes a squircle, with a pill at the rail edge.
@@ -320,6 +324,8 @@ export component ChannelRow inherits Rectangle {
     /// A DM person's presence, as RoomRow has it, and a line under the name.
     in property <string> presence;
     in property <string> detail;
+    /// A Discord thread, which the line from its channel marks in place of an icon.
+    in property <bool> thread;
     callback clicked;
     /// A right click, or the Menu key or Shift+F10 when focused: where to open
     /// a menu in the window.
@@ -337,7 +343,8 @@ export component ChannelRow inherits Rectangle {
     property <color> ink: root.locked ? (root.selected ? Theme.muted : Theme.faint) : root.selected || root.unread ? Theme.text : pointer.has-hover ? Theme.secondary : Theme.muted;
     // Unread activity is marked at the sidebar's edge, as on the server rail.
     if root.unread && !root.selected: Rectangle {
-        x: -8px; y: (parent.height - self.height) / 2; width: 4px; height: 8px;
+        // A thread sits further in, past the line from its channel.
+        x: root.thread ? -36px : -8px; y: (parent.height - self.height) / 2; width: 4px; height: 8px;
         border-top-right-radius: 4px; border-bottom-right-radius: 4px; background: Theme.text;
     }
     HorizontalLayout {
@@ -356,7 +363,7 @@ export component ChannelRow inherits Rectangle {
                 }
             }
         }
-        if !root.person: Image { source: root.icon; width: 20px; image-fit: contain; colorize: root.selected || root.unread ? Theme.secondary : Theme.faint; }
+        if !root.person && !root.thread: Image { source: root.icon; width: 20px; image-fit: contain; colorize: root.selected || root.unread ? Theme.secondary : Theme.faint; }
         VerticalLayout {
             alignment: center; spacing: 0px; horizontal-stretch: 1;
             Text {
@@ -647,7 +654,29 @@ export component RoomList inherits VerticalLayout {
                 toggled => { root.toggle-category(room.heading); }
                 context-menu(x, y) => { root.open-category-menu(room.id, x, y); }
             }
-            if !room.hidden: ChannelRow {
+            // A thread hangs from its channel's icon on a line that runs on
+            // to the next of its threads.
+            if !room.hidden && room.thread: HorizontalLayout {
+                spacing: 0px;
+                Rectangle {
+                    width: 28px;
+                    Path {
+                        x: 0px; y: -2px; width: 28px; height: 38px;
+                        viewbox-width: 28; viewbox-height: 38;
+                        commands: room.thread-continues ? "M 18 0 L 18 38 M 18 13 Q 18 19 24 19 L 28 19" : "M 18 0 L 18 13 Q 18 19 24 19 L 28 19";
+                        stroke: Theme.faint; stroke-width: 1.5px;
+                    }
+                }
+                ChannelRow {
+                    text: room.name; thread: true;
+                    label: room.name + ", thread" + (room.muted ? ", muted" : "")
+                        + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                    selected: room.selected; unread: room.unread; badge: room.badge; muted: room.muted;
+                    clicked => { root.select-room(room.id); }
+                    context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
+                }
+            }
+            if !room.hidden && !room.thread: ChannelRow {
                 text: room.name;
                 label: room.name + (room.discord ? ", Discord" : "")
                     + (room.presence == "dnd" ? ", do not disturb" : room.presence == "mobile" ? ", online on mobile" : room.presence != "" ? ", " + room.presence : "")

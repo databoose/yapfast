@@ -486,6 +486,8 @@ const LAYOUT: &str = "layout.json";
 #[serde(default)]
 struct Layout {
     sidebar_width: Option<f32>,
+    /// The width of a Discord thread shown beside its channel.
+    aside_width: Option<f32>,
     /// The member list shows until someone closes it.
     members_hidden: bool,
     /// So does the profile beside a one-to-one DM.
@@ -627,6 +629,9 @@ impl Layout {
         if let Some(width) = self.sidebar_width {
             window.set_sidebar_width(width);
         }
+        if let Some(width) = self.aside_width {
+            window.set_aside_width(width);
+        }
         window.set_member_list(!self.members_hidden);
         window.set_profile_panel(!self.profile_panel_hidden);
         window.set_twelve_hour_clock(self.twelve_hour_clock);
@@ -723,6 +728,8 @@ struct Models {
     message_requests: Rc<VecModel<RoomRow>>,
     spam_rooms: Rc<VecModel<RoomRow>>,
     messages: Rc<VecModel<MessageRow>>,
+    /// The messages of the thread beside the open channel.
+    aside_messages: Rc<VecModel<MessageRow>>,
     roster: Rc<VecModel<MemberRow>>,
     mentions: Rc<VecModel<MentionRow>>,
     new_dm_people: Rc<VecModel<ContactRow>>,
@@ -761,6 +768,7 @@ impl Models {
         window.set_message_requests(ModelRc::from(self.message_requests.clone()));
         window.set_spam_rooms(ModelRc::from(self.spam_rooms.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
+        window.set_aside_messages(ModelRc::from(self.aside_messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_mentions(ModelRc::from(self.mentions.clone()));
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
@@ -790,6 +798,7 @@ impl Models {
 struct Icons {
     dm: slint::Image,
     text: slint::Image,
+    thread: slint::Image,
     voice: slint::Image,
     lock: slint::Image,
     read: slint::Image,
@@ -844,6 +853,9 @@ struct Adapter {
     messages: Arc<Vec<Arc<ChatMessage>>>,
     /// The rows built for those messages, by id, so the list keeps their state.
     rows: HashMap<String, MessageRow>,
+    /// The same for the thread beside the open channel.
+    aside_messages: Arc<Vec<Arc<ChatMessage>>>,
+    aside_rows: HashMap<String, MessageRow>,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
     /// A hash of what the friends picker's rows were built from, so they're
@@ -938,6 +950,9 @@ impl Adapter {
         let icons = Icons {
             dm: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/message-circle.svg"))?,
             text: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/hash.svg"))?,
+            thread: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/messages-square.svg"
+            ))?,
             voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
             lock: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/lock.svg"))?,
             read: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/check.svg"))?,
@@ -1021,6 +1036,8 @@ impl Adapter {
                 latest_due: false,
                 revealed: HashSet::new(),
                 restyle: false,
+                aside_messages: Arc::new(Vec::new()),
+                aside_rows: HashMap::new(),
                 mention_at: None,
                 mention_dismissed: None,
                 emoji_word: None,

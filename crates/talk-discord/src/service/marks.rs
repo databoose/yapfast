@@ -21,8 +21,8 @@ pub(super) struct Published {
 /// What [`super::tracker::Tracker::snapshot`] sets on a server for this account: whether
 /// it's muted, its roles there, its notification settings and which mentions
 /// they suppress, then
-/// for each text channel and each voice channel, in order, what
-/// [`ChannelMarks`] holds.
+/// for each text channel, each voice channel and each thread, in order,
+/// what [`ChannelMarks`] holds.
 #[derive(PartialEq, Eq)]
 pub(super) struct Marks {
     muted: bool,
@@ -45,8 +45,9 @@ struct ChannelMarks {
 
 impl Marks {
     pub(super) fn new(server: &Server, me: &str, roles: &[String], unreads: &Unreads) -> Self {
-        let mut channels =
-            Vec::with_capacity(server.text_channels.len() + server.voice_channels.len());
+        let mut channels = Vec::with_capacity(
+            server.text_channels.len() + server.voice_channels.len() + server.threads.len(),
+        );
         for channel in &server.text_channels {
             let access = server.access(channel, me, roles);
             let (muted, unread, mentions) = unreads.channel(&server.id, channel, access);
@@ -69,6 +70,18 @@ impl Marks {
                 last_read: channel.last_read,
             });
         }
+        for thread in &server.threads {
+            let access = server.access(thread, me, roles);
+            let (muted, unread, mentions) = unreads.channel(&server.id, thread, access);
+            channels.push(ChannelMarks {
+                access,
+                mention_everyone: server.may_mention_everyone(thread, me, roles),
+                muted,
+                unread,
+                mentions,
+                last_read: unreads.last_read(&server.id, &thread.id),
+            });
+        }
         Self {
             muted: unreads.server_muted(&server.id),
             roles: roles.to_vec(),
@@ -78,11 +91,19 @@ impl Marks {
         }
     }
 
-    /// These marks with the unread state of `server`'s text channels as
-    /// it is now.
+    /// These marks, made from `server`, with the unread state of its text
+    /// channels and threads as it is now.
     pub(super) fn unread(&self, server: &Server, unreads: &Unreads) -> Self {
         let mut channels = self.channels.clone();
-        for (channel, marks) in server.text_channels.iter().zip(&mut channels) {
+        // Text channels come first, and threads after the voice channels.
+        let (text, rest) = channels.split_at_mut(server.text_channels.len());
+        let threads = &mut rest[server.voice_channels.len()..];
+        let written = server
+            .text_channels
+            .iter()
+            .zip(text)
+            .chain(server.threads.iter().zip(threads));
+        for (channel, marks) in written {
             (marks.muted, marks.unread, marks.mentions) =
                 unreads.channel(&server.id, channel, marks.access);
             marks.last_read = unreads.last_read(&server.id, &channel.id);
@@ -106,7 +127,8 @@ impl Marks {
         let channels = marked
             .text_channels
             .iter_mut()
-            .chain(&mut marked.voice_channels);
+            .chain(&mut marked.voice_channels)
+            .chain(&mut marked.threads);
         for (channel, marks) in channels.zip(&self.channels) {
             channel.access = marks.access;
             channel.mention_everyone = marks.mention_everyone;

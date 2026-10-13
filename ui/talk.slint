@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
+import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -32,6 +32,7 @@ import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, Statu
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
+import { ThreadPanel } from "thread.slint";
 
 // Rust sees these, besides TalkWindow.
 export { Badges } from "theme.slint";
@@ -161,6 +162,9 @@ export component TalkWindow inherits Window {
     in property <string> notice;
     in-out property <string> graphics-notice;
     in property <string> room-name;
+    /// A Discord thread's channel: its name, and its room id to go back to.
+    in property <string> room-parent;
+    in property <string> room-parent-id;
     in property <image> room-icon;
     in property <bool> room-direct;
     in property <string> room-initial;
@@ -240,6 +244,27 @@ export component TalkWindow inherits Window {
     // for Retry.
     in property <bool> history-start;
     in property <bool> history-failed;
+    // A Discord thread beside the open channel, opened from a message's link,
+    // in place of the member list: its messages, history and composer.
+    in property <bool> aside-open;
+    in property <string> aside-name;
+    in property <[MessageRow]> aside-messages;
+    in property <bool> aside-ready;
+    in property <bool> aside-loading;
+    in property <bool> aside-start;
+    in property <bool> aside-failed;
+    in property <bool> aside-composer-enabled;
+    in property <bool> aside-can-send;
+    in property <string> aside-compose-label;
+    in-out property <string> aside-draft;
+    callback aside-close;
+    callback aside-expand;
+    callback aside-earlier;
+    callback aside-draft-edited(string);
+    callback aside-send;
+    callback aside-cancel-compose;
+    /// The thread's rows at the top and bottom of its view.
+    callback aside-viewport(int, int);
     // The timeline is a window of older messages that doesn't reach the
     // newest, and newer ones are loading, or failed to.
     in property <bool> detached;
@@ -611,6 +636,9 @@ export component TalkWindow inherits Window {
     /// A folder on the rail was clicked: open or close it.
     callback toggle-folder(string);
     callback select-room(string);
+    /// Show a Discord thread beside the conversation, as its link in a
+    /// message does, asking for one that isn't listed.
+    callback open-aside(string);
     callback draft-edited(string);
     callback filter-edited;
     callback send;
@@ -704,8 +732,21 @@ export component TalkWindow inherits Window {
     // The sidebar's width, chosen by dragging its edge; Talk stores it on release.
     in-out property <length> sidebar-width: 240px;
     callback sidebar-resized(length);
+    // The width of the thread beside the channel, chosen by dragging its
+    // edge, which Talk stores on release. It keeps 320 to 800px; dragging
+    // also leaves the conversation 420px.
+    in-out property <length> aside-width: 420px;
+    out property <length> aside-shown: max(320px, min(800px, root.aside-width));
+    callback aside-resized(length);
 
     public function focus-composer() { composer.focus-input(); }
+    // The menu is open on a message of the thread beside, whose composer
+    // its Reply and Edit focus.
+    property <bool> menu-aside;
+    property <int> aside-focus-tick;
+    function focus-composer-of-menu() {
+        if root.menu-aside { root.aside-focus-tick += 1; } else { root.focus-composer(); }
+    }
     public function place-composer-caret(offset: int) { composer.place-caret(offset); }
     // The Matrix sign-in, which only a build with Matrix has, focuses its first
     // field each time this counts up.
@@ -817,12 +858,15 @@ export component TalkWindow inherits Window {
     changed active-item => { Tip.text = ""; }
 
     // The member list is a second sidebar, on the right of the conversation.
-    property <bool> members-docked: root.members-available && root.member-list && !root.search-open;
+    property <bool> members-docked: root.members-available && root.member-list && !root.search-open && !root.aside-docked;
+    // A thread opened beside the channel takes the place of the member list
+    // and the profile, and search results take its place.
+    property <bool> aside-docked: root.aside-open && !root.search-open;
     // Rows remade under the pointer show their tooltip again; it goes with the screen.
     changed friends-open => { Tip.text = ""; }
-    property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown && !root.search-open;
+    property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown && !root.search-open && !root.aside-docked;
     // Search results take the place of the member list or the profile.
-    property <length> docked-width: root.search-open ? 420px : (root.members-docked ? 240px : 0px) + (root.profile-docked ? 300px : 0px);
+    property <length> docked-width: root.search-open ? 420px : root.aside-docked ? root.aside-shown : (root.members-docked ? 240px : 0px) + (root.profile-docked ? 300px : 0px);
     // The pin and add buttons open their popovers under themselves.
     property <length> popover-x;
     property <length> popover-y;
@@ -1019,6 +1063,7 @@ export component TalkWindow inherits Window {
     }
     function open-menu(message: MessageRow) {
         root.menu-message = message;
+        root.menu-aside = false;
         message-menu.show();
     }
     property <bool> picker-open: emoji-picker.is-open;
@@ -1078,8 +1123,8 @@ export component TalkWindow inherits Window {
             emoji-font: root.emoji-font; composer-enabled: root.composer-enabled; trusted: root.trusted; preview: root.preview;
             react(item, key) => { root.react(item, key); message-menu.close(); }
             open-picker(item) => { root.open-picker(item); message-menu.close(); }
-            edit(item) => { root.edit(item); root.focus-composer(); message-menu.close(); }
-            reply(item) => { root.reply(item); root.focus-composer(); message-menu.close(); }
+            edit(item) => { root.edit(item); root.focus-composer-of-menu(); message-menu.close(); }
+            reply(item) => { root.reply(item); root.focus-composer-of-menu(); message-menu.close(); }
             start-forward(item) => { root.start-forward(item); message-menu.close(); }
             copy-text(text) => { root.copy-text(text); message-menu.close(); }
             request-delete(item) => { root.request-delete(item); message-menu.close(); }
@@ -1283,6 +1328,19 @@ export component TalkWindow inherits Window {
                                 }
                             }
                         }
+                        // A thread follows its channel, which leads back to it.
+                        if root.room-parent != "" && root.room-selected: Image { source: @image-url("icons/hash.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
+                        if root.room-parent != "" && root.room-selected: parent-name := Text {
+                            text: root.room-parent; font-size: 16px; font-weight: 700; vertical-alignment: center;
+                            color: parent-touch.has-hover ? Theme.text : Theme.secondary;
+                            accessible-role: button; accessible-label: "Back to " + root.room-parent;
+                            accessible-action-default => { root.select-room(root.room-parent-id); }
+                            parent-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.select-room(root.room-parent-id); }
+                            }
+                        }
+                        if root.room-parent != "" && root.room-selected: Image { source: @image-url("icons/chevron-right.svg"); width: 16px; image-fit: contain; colorize: Theme.faint; }
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.requests-open: Image { source: @image-url("icons/inbox.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.friends-open: Image { source: @image-url("icons/users.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
@@ -1662,6 +1720,7 @@ export component TalkWindow inherits Window {
                                                 if index == 0 && root.room-ready: HistoryEdge {
                                                     loading: root.loading-history; failed: root.history-failed; start: root.history-start;
                                                     enabled: !root.busy && !root.preview; room-direct: root.room-direct; room-name: root.room-name;
+                                                    room-thread: root.room-parent != "";
                                                     earlier => { root.earlier(); }
                                                 }
                                                 // A new day's date, and the "New" divider in marigold above
@@ -1683,141 +1742,25 @@ export component TalkWindow inherits Window {
                                                         }
                                                     }
                                                 }
-                                                HorizontalLayout {
-                                                    padding-left: 16px; padding-right: 48px; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
-                                                    Rectangle {
-                                                        width: 40px;
-                                                        min-height: message.first ? (message.has-reply ? 64px : 40px) : 0px;
-                                                        if message.has-reply: Rectangle {
-                                                            x: 19px; y: 11px; width: 33px; height: 13px; clip: true;
-                                                            Rectangle {
-                                                                x: 0px; y: 0px; width: parent.width + 12px; height: parent.height + 12px;
-                                                                border-width: 2px; border-color: #4a4c56; border-top-left-radius: 6px;
-                                                            }
-                                                        }
-                                                        if message.first: Avatar {
-                                                            x: 0px; y: message.has-reply ? 24px : 2px;
-                                                            initial: message.initial; tint: message.tint; picture: message.picture; picture-url: message.picture-url;
-                                                        }
-                                                        // Clicking the author's avatar shows their card beside it;
-                                                        // a right click opens their menu. Their name does the same.
-                                                        if message.first && message.sender != "": TouchArea {
-                                                            x: 0px; y: message.has-reply ? 24px : 2px; width: 40px; height: 40px;
-                                                            mouse-cursor: MouseCursor.pointer;
-                                                            clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
-                                                            pointer-event(event) => {
-                                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                                                    root.author-menu(message.item, message.sender, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                                                                }
-                                                            }
-                                                        }
-                                                        if !message.first && root.active-item == message.item: Text {
-                                                            x: 0px; y: 4px; width: 40px;
-                                                            text: message.short-time; color: Theme.muted; font-size: 12px; font-weight: 500;
-                                                            horizontal-alignment: right; overflow: elide;
-                                                        }
+                                                MessageContent {
+                                                    message: message; active-item: root.active-item; preview: root.preview; composer-enabled: root.composer-enabled;
+                                                    emoji-font: root.emoji-font; message-font-size: root.message-font-size;
+                                                    author-card(item, sender, x, y, width, height) => { root.author-card(item, sender, x, y, width, height); }
+                                                    author-menu(item, sender, x, y) => { root.author-menu(item, sender, x, y); }
+                                                    jump-to(item) => { root.jump-to(item); }
+                                                    // A mention's card opens beside the pointer.
+                                                    link-clicked(link) => {
+                                                        root.anchor(row-pointer.absolute-position.x + row-pointer.mouse-x, row-pointer.absolute-position.y + row-pointer.mouse-y, 0px, 0px, true);
+                                                        root.open-link(link);
                                                     }
-                                                    VerticalLayout {
-                                                        spacing: 3px; horizontal-stretch: 1;
-                                                        // Clicking the quote jumps to the message it quotes.
-                                                        if message.has-reply: Rectangle {
-                                                            height: 22px;
-                                                            accessible-role: button;
-                                                            accessible-enabled: message.reply-item != "";
-                                                            accessible-label: "Jump to the original message: " + message.reply-body;
-                                                            accessible-action-default => { if message.reply-item != "" { root.jump-to(message.reply-item); } }
-                                                            HorizontalLayout {
-                                                                spacing: 6px;
-                                                                if message.reply-author != "": Middle { Avatar { size: 16px; initial: message.reply-initial; tint: message.reply-tint; picture: message.reply-picture; picture-url: message.reply-picture-url; } }
-                                                                if message.reply-author != "": Text { text: message.reply-author; color: Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                                Text {
-                                                                    text: message.reply-body; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
-                                                                    color: reply-touch.has-hover ? Theme.text : Theme.muted;
-                                                                }
-                                                            }
-                                                            reply-touch := TouchArea {
-                                                                enabled: message.reply-item != "";
-                                                                mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
-                                                                clicked => { root.jump-to(message.reply-item); }
-                                                            }
-                                                        }
-                                                        if message.first: HorizontalLayout {
-                                                            spacing: 8px;
-                                                            Rectangle {
-                                                                min-width: author-name.min-width; preferred-width: author-name.preferred-width;
-                                                                preferred-height: author-name.preferred-height; horizontal-stretch: 0;
-                                                                author-name := StyledText {
-                                                                    width: parent.width; height: parent.height;
-                                                                    text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center;
-                                                                }
-                                                                // Underlined while pointed at, as a link is.
-                                                                if author-touch.has-hover: Rectangle {
-                                                                    y: (parent.height + root.message-font-size) / 2 + 1px; height: 1px;
-                                                                    background: message.has-color ? message.color : Theme.text;
-                                                                }
-                                                                author-touch := TouchArea {
-                                                                    enabled: message.sender != "";
-                                                                    mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
-                                                                    clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
-                                                                    pointer-event(event) => {
-                                                                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                                                            root.author-menu(message.item, message.sender, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            if message.bot: Middle { BotTag { } }
-                                                            StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
-                                                            Rectangle { horizontal-stretch: 1; }
-                                                        }
-                                                        if message.body != "": StyledText {
-                                                            text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
-                                                            // Discord's large emoji are 48 pixels where text's are 22.
-                                                            default-font-size: message.jumbo ? root.message-font-size * 2.2 : root.message-font-size;
-                                                            // A mention's card opens beside the pointer.
-                                                            link-clicked(link) => {
-                                                                root.anchor(row-pointer.absolute-position.x + row-pointer.mouse-x, row-pointer.absolute-position.y + row-pointer.mouse-y, 0px, 0px, true);
-                                                                root.open-link(link);
-                                                            }
-                                                            accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
-                                                        }
-                                                        if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
-                                                        // Fixed-size children sit beside a spacer, so they do not cap the column's width.
-                                                        if message.images.length > 0: MessageGallery {
-                                                            message: message; active-item: root.active-item; preview: root.preview;
-                                                            reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
-                                                            view-image(id, index) => { root.view-image(id, index); }
-                                                            save-attachment(id, index) => { root.save-attachment(id, index); }
-                                                        }
-                                                        if message.stickers.length > 0: MessageStickers { stickers: message.stickers; }
-                                                        for file in message.files: FileCard {
-                                                            file: file; preview: root.preview; delivery: message.delivery;
-                                                            save => { root.save-attachment(message.item, file.index); }
-                                                        }
-                                                        if message.hidden-card != "": Text {
-                                                            text: message.hidden-card; color: Theme.muted; font-size: root.message-font-size * 0.875; font-italic: true; wrap: word-wrap;
-                                                        }
-                                                        for embed in message.embeds: EmbedView {
-                                                            embed: embed; item: message.item;
-                                                            open-link(link) => { root.open-link(link); }
-                                                            reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
-                                                            view-image(id, index) => { root.view-image(id, index); }
-                                                        }
-                                                        if message.reactions.length > 0: HorizontalLayout {
-                                                            spacing: 6px; alignment: start; padding-top: 4px;
-                                                            for reaction in message.reactions: ReactionToggle {
-                                                                key: reaction.key; label: reaction.label; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
-                                                                enabled: message.can-react && root.composer-enabled;
-                                                                clicked => { root.react(message.item, reaction.key); }
-                                                            }
-                                                        }
-                                                        if message.delivery != "": HorizontalLayout {
-                                                            spacing: 4px; alignment: start;
-                                                            Text { text: message.delivery; color: message.delivery-failed ? Theme.danger : Theme.muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; }
-                                                            if message.can-retry: ActionButton { text: "Retry"; ghost: true; small: true; clicked => { root.retry(message.item); } }
-                                                            if message.can-cancel: ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-send(message.item); } }
-                                                        }
-                                                    }
+                                                    open-link(link) => { root.open-link(link); }
+                                                    open-thread(room) => { root.open-aside(room); }
+                                                    react(item, key) => { root.react(item, key); }
+                                                    retry(item) => { root.retry(item); }
+                                                    cancel-send(item) => { root.cancel-send(item); }
+                                                    reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                                                    view-image(id, index) => { root.view-image(id, index); }
+                                                    save-attachment(id, index) => { root.save-attachment(id, index); }
                                                 }
                                                 // A window of older messages ends with what's after it: newer
                                                 // messages loading, or a way to load them.
@@ -1921,6 +1864,7 @@ export component TalkWindow inherits Window {
                             if root.room-selected && root.messages.length == 0 && root.room-ready: ConversationStart {
                                 width: parent.width; height: parent.height;
                                 room-selected: root.room-selected; room-ready: root.room-ready; room-direct: root.room-direct; room-name: root.room-name;
+                                room-thread: root.room-parent != "";
                                 room-icon: root.room-icon; room-initial: root.room-initial; room-tint: root.room-tint; room-picture: root.room-picture;
                             }
                             // Who else is typing, just above the composer in the room the
@@ -1996,7 +1940,7 @@ export component TalkWindow inherits Window {
                                         }
                                         composer := Composer {
                                             text <=> root.draft; enabled: root.composer-enabled; label: "Message";
-                                            placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
+                                            placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct && root.room-parent == "" ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
                                             edited(text) => { root.draft-edited(text); }
                                             accepted => { root.send(); }
                                             suggesting: root.mentions.length > 0 || root.emoji-suggestions.length > 0;
@@ -2062,6 +2006,41 @@ export component TalkWindow inherits Window {
                         more-results => { root.more-results(); }
                         close => { root.search-text = ""; root.search(""); }
                     }
+                    if root.aside-docked: ThreadPanel {
+                        width: root.aside-shown;
+                        name: root.aside-name; messages: root.aside-messages; ready: root.aside-ready;
+                        loading: root.aside-loading; start: root.aside-start; failed: root.aside-failed;
+                        focus-tick: root.aside-focus-tick;
+                        busy: root.busy; composer-enabled: root.aside-composer-enabled; can-send: root.aside-can-send;
+                        sending: root.sending; compose-label: root.aside-compose-label; draft <=> root.aside-draft;
+                        emoji-font: root.emoji-font; message-font-size: root.message-font-size; bar-reactions: root.bar-reactions;
+                        active-item <=> root.active-item; react-item: root.react-item; menu-item: root.menu-item; confirm-delete: root.confirm-delete;
+                        close => { root.aside-close(); }
+                        expand => { root.aside-expand(); }
+                        earlier => { root.aside-earlier(); }
+                        draft-edited(text) => { root.aside-draft-edited(text); }
+                        send => { root.aside-send(); }
+                        cancel-compose => { root.aside-cancel-compose(); }
+                        viewport(top, bottom) => { root.aside-viewport(top, bottom); }
+                        reply(item) => { root.reply(item); }
+                        edit(item) => { root.edit(item); }
+                        react(item, key) => { root.react(item, key); }
+                        open-picker(item, x, y, width, height) => { root.anchor(x, y, width, height, false); root.open-picker(item); }
+                        open-menu(message, x, y, width, height) => { root.anchor(x, y, width, height, width == 0px); root.open-menu(message); root.menu-aside = true; }
+                        confirm-delete-message => { root.confirm-delete-message(); }
+                        cancel-delete => { root.cancel-delete(); }
+                        author-card(item, sender, x, y, width, height) => { root.author-card(item, sender, x, y, width, height); }
+                        author-menu(item, sender, x, y) => { root.author-menu(item, sender, x, y); }
+                        jump-to(item) => { root.jump-to(item); }
+                        link-clicked(link, x, y) => { root.anchor(x, y, 0px, 0px, true); root.open-link(link); }
+                        open-link(link) => { root.open-link(link); }
+                        open-thread(room) => { root.open-aside(room); }
+                        retry(item) => { root.retry(item); }
+                        cancel-send(item) => { root.cancel-send(item); }
+                        reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                        view-image(id, index) => { root.view-image(id, index); }
+                        save-attachment(id, index) => { root.save-attachment(id, index); }
+                    }
                     if root.members-docked: MemberPanel {
                         width: 240px; rows: root.roster; note: root.roster-note; selected: root.profile-member;
                         open-profile(id, y) => { root.profile-y = y; root.profile-at-pointer = false; root.show-profile(id); }
@@ -2106,6 +2085,26 @@ export component TalkWindow inherits Window {
             if event.kind == PointerEventKind.up { root.sidebar-resized(root.sidebar-shown); }
         }
         double-clicked => { root.sidebar-width = 240px; root.sidebar-resized(240px); }
+        Rectangle {
+            x: 3px; width: 2px;
+            background: parent.pressed ? Theme.faint : Theme.line;
+            opacity: parent.has-hover || parent.pressed ? 1 : 0;
+            animate opacity { duration: 120ms; }
+        }
+    }
+    // So does the edge of the thread beside the conversation, below the header.
+    if root.workspace && root.aside-docked: TouchArea {
+        x: root.width - root.aside-shown - 4px; y: 48px; width: 8px; height: root.height - 48px;
+        mouse-cursor: ew-resize;
+        moved => {
+            if self.pressed {
+                root.aside-width = max(320px, min(800px, root.width - 72px - root.sidebar-shown - 420px, root.aside-shown - (self.mouse-x - self.pressed-x)));
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up { root.aside-resized(root.aside-shown); }
+        }
+        double-clicked => { root.aside-width = 420px; root.aside-resized(420px); }
         Rectangle {
             x: 3px; width: 2px;
             background: parent.pressed ? Theme.faint : Theme.line;

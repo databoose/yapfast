@@ -45,6 +45,8 @@ impl PreviewCache {
 #[derive(Default)]
 pub struct Channels {
     pub(super) open: Option<OpenChannel>,
+    /// A thread shown beside the open channel, kept as live as it.
+    pub(super) aside: Option<OpenChannel>,
     /// Newest last.
     pub(super) recent: Vec<OpenChannel>,
     pub(super) previews: SharedPreviews,
@@ -79,7 +81,19 @@ impl Channels {
     }
 
     pub(super) fn close(&mut self) {
-        if let Some(mut channel) = self.open.take() {
+        let channel = self.open.take();
+        self.keep(channel);
+    }
+
+    /// Stops showing the thread beside the open channel.
+    pub(super) fn close_aside(&mut self) {
+        let channel = self.aside.take();
+        self.keep(channel);
+    }
+
+    /// Keeps a channel that closed among the recent ones.
+    fn keep(&mut self, channel: Option<OpenChannel>) {
+        if let Some(mut channel) = channel {
             channel.shelve();
             self.recent.push(channel);
             if self.recent.len() > KEPT_CHANNELS {
@@ -102,7 +116,12 @@ impl Channels {
 
     /// Puts the newest messages of the channels that changed on disk.
     pub(super) fn save(&mut self) {
-        for channel in self.open.iter_mut().chain(&mut self.recent) {
+        for channel in self
+            .open
+            .iter_mut()
+            .chain(&mut self.aside)
+            .chain(&mut self.recent)
+        {
             save(channel.take_changes());
         }
     }
@@ -118,14 +137,25 @@ impl Channels {
     pub(super) fn get_mut(&mut self, room: &str) -> Option<&mut OpenChannel> {
         self.open
             .iter_mut()
+            .chain(&mut self.aside)
             .chain(&mut self.recent)
             .find(|channel| channel.room == room)
     }
 
+    /// The open channel, or the thread beside it, if it's `room`.
+    pub(super) fn shown_mut(&mut self, room: &str) -> Option<&mut OpenChannel> {
+        self.open
+            .iter_mut()
+            .chain(&mut self.aside)
+            .find(|channel| channel.room == room)
+    }
+
+    /// Whether `room` is on screen: the open channel or the thread beside it.
     pub(super) fn is_open(&self, room: &str) -> bool {
         self.open
-            .as_ref()
-            .is_some_and(|channel| channel.room == room)
+            .iter()
+            .chain(&self.aside)
+            .any(|channel| channel.room == room)
     }
 }
 

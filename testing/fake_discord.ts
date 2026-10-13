@@ -128,6 +128,12 @@
 // highlights for her, and two ways it doesn't: by name, through Crew, with
 // @everyone and @here, in a reply to her message, then through Mods, which
 // she lacks, and not at all.
+// #general has a thread, "Plans", started from Bob's welcome, which Alice is
+// in and has read. POST /_control/thread-reply makes Carol write in it; POST
+// /_control/thread-start makes Bob start "Movie night" without a message,
+// which Alice isn't in, with its notice in #general and his first message in
+// it; POST /_control/thread-archive archives "Plans", and with ?open opens it
+// again. Writing in a thread adds Alice to it, as Discord does.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -288,8 +294,9 @@ const HISTORY_START = Date.UTC(2026, 9, 1, 9, 0, 0);
 const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
 const bit = (n: number) => 2 ** n;
 // Invite, view, send, embed, attach, read history, react, connect, speak,
-// voice activity, change one's own nickname: Discord's defaults for @everyone.
-const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26].reduce((sum, n) => sum + bit(n), 0);
+// voice activity, change one's own nickname, make public and private threads
+// and write in them: Discord's defaults for @everyone.
+const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38].reduce((sum, n) => sum + bit(n), 0);
 // Kick, ban, manage nicknames, manage roles, moderate members.
 const MODERATION = [1, 2, 27, 28, 40].reduce((sum, n) => sum + bit(n), 0);
 
@@ -591,6 +598,10 @@ type Message = {
   /** A DM call's message: who took part, and when it ended. */
   call?: { participants: Set<string>; ended?: number };
   stickers?: { id: string; name: string; format_type: number }[];
+  /** A thread's first message: the message in its channel it was started from. */
+  starter?: string;
+  /** A notice that a thread was made: the thread. */
+  notice?: string;
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -682,6 +693,14 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
       burst_count: 0,
     }));
   }
+  const thread = threads.get(message.id);
+  if (thread && !nested) wire.thread = wireThread(thread);
+  if (message.starter && !nested) {
+    const original = byId.get(message.starter);
+    wire.message_reference = { type: 0, channel_id: original?.channel, message_id: message.starter, guild_id: GUILD };
+    wire.referenced_message = original ? wireMessage(original, origin, true) : null;
+  }
+  if (message.notice) wire.message_reference = { type: 0, channel_id: message.notice, guild_id: GUILD };
   if (message.reply && !nested) {
     const original = byId.get(message.reply);
     wire.message_reference = {
@@ -896,12 +915,80 @@ privates.set(SPAM_FRANK, { type: 1, recipients: [strangers.frank!], request: tru
 post(SPAM_FRANK, strangers.frank!, "Claim your free Nitro at nitro-gift.example", DM_START + 360_000);
 post(REQUEST_ERIN, strangers.erin!, "Hi Alice, Bob gave me your name. Can I ask about the trip?", DM_START + 420_000);
 
+// --- Threads ----------------------------------------------------------------
+
+// Threads of "Server" by id, each with its messages in `messages`. One
+// started from a message has that message's id.
+type Thread = {
+  id: string; parent: string; name: string; owner: User; type: 11 | 12;
+  archived: boolean; locked: boolean; created: number;
+  /** Who is in it, and since when, in Unix milliseconds. */
+  members: Map<string, number>;
+};
+const threads = new Map<string, Thread>();
+
+/** Alice's thread member, as a thread she's in carries it. */
+function wireThreadMember(thread: Thread) {
+  return {
+    id: thread.id, user_id: ALICE, join_timestamp: iso(thread.members.get(ALICE)!), flags: 1,
+    muted: false, mute_config: null,
+  };
+}
+
+/** A thread's channel object, with Alice's member when she's in it. */
+function wireThread(thread: Thread) {
+  const list = messages.get(thread.id)!;
+  // Discord doesn't count a thread's first message, the one it was started from.
+  const count = list.filter((message) => message.type !== 21).length;
+  return {
+    id: thread.id, type: thread.type, guild_id: GUILD, parent_id: thread.parent, owner_id: thread.owner.id,
+    name: thread.name, flags: 0, rate_limit_per_user: 0,
+    last_message_id: list.at(-1)?.id ?? null,
+    message_count: count, total_message_sent: count, member_count: thread.members.size,
+    thread_metadata: {
+      archived: thread.archived, auto_archive_duration: 4320, archive_timestamp: iso(thread.created),
+      locked: thread.locked, create_timestamp: iso(thread.created),
+    },
+    ...(thread.members.has(ALICE) ? { member: wireThreadMember(thread) } : {}),
+  };
+}
+
+/** Makes a thread, in #general unless it says otherwise. */
+function makeThread(id: string, name: string, owner: User, created: number, members: string[]): Thread {
+  const thread: Thread = {
+    id, parent: GENERAL, name, owner, type: 11, archived: false, locked: false, created,
+    members: new Map(members.map((user) => [user, created])),
+  };
+  threads.set(id, thread);
+  messages.set(id, []);
+  return thread;
+}
+
+/** Adds Alice to a thread she writes in, as Discord does, telling her. */
+function joinThread(thread: Thread) {
+  if (thread.members.has(ALICE)) return;
+  thread.members.set(ALICE, Date.now());
+  dispatch("THREAD_MEMBERS_UPDATE", {
+    id: thread.id, guild_id: GUILD, member_count: thread.members.size,
+    added_members: [{ ...wireThreadMember(thread), member: member(users.alice), presence: null }],
+    removed_member_ids: [],
+  });
+  dispatch("THREAD_CREATE", { ...wireThread(thread), newly_created: false });
+}
+
+// "Plans", from Bob's welcome: its first message points back at it.
+const plans = makeThread(welcome.id, "Plans", users.bob, HISTORY_START + 20_000, [users.bob.id, users.carol.id, ALICE]);
+post(plans.id, users.bob, "", HISTORY_START + 20_000, { type: 21, starter: welcome.id });
+post(plans.id, users.bob, "Saturday works for me", HISTORY_START + 40_000);
+const plansRead = post(plans.id, users.carol, "Count me in", HISTORY_START + 50_000);
+
 // Alice has read all but the last `--unread` messages of the fixture, and Bob's
 // last two in their DM, which count as mentions as in Discord.
 const general = messages.get(GENERAL)!;
 const readStates = new Map<string, { last: string; mentions: number }>([
   [GENERAL, { last: general[Math.max(0, general.length - 1 - Number(args.unread))]!.id, mentions: 0 }],
   [DM_BOB, { last: readBob.id, mentions: 2 }],
+  [plans.id, { last: plansRead.id, mentions: 0 }],
   [REQUEST_ERIN, { last: readBob.id, mentions: 1 }],
   [SPAM_FRANK, { last: readBob.id, mentions: 1 }],
 ]);
@@ -1111,7 +1198,8 @@ function guild() {
       { id: EMOJI_PARTY, name: "party", animated: true, available: true, managed: false, require_colons: true, roles: [] },
     ],
     stickers: [],
-    threads: [],
+    // A user account hears of the active threads it's in.
+    threads: [...threads.values()].filter((thread) => thread.members.has(ALICE) && !thread.archived).map(wireThread),
     stage_instances: [],
     guild_scheduled_events: [],
     activity_instances: [],
@@ -2752,6 +2840,16 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
     if (method === "POST") {
       const body: any = await req.json();
+      const thread = threads.get(m[1]!);
+      if (thread?.locked) return json({ message: "Thread is locked", code: 50083 }, 400);
+      if (thread) {
+        joinThread(thread);
+        // Writing opens an archived thread again.
+        if (thread.archived) {
+          thread.archived = false;
+          dispatch("THREAD_UPDATE", wireThread(thread));
+        }
+      }
       const reply = body.message_reference?.message_id;
       const attached: File[] = [];
       for (const attachment of body.attachments ?? []) {
@@ -3091,6 +3189,9 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     madeChannels.set(id, channel);
     dispatch("CHANNEL_CREATE", channel);
     return json(channel, 201);
+  }
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)$/)) && threads.has(m[1]!)) {
+    return json(wireThread(threads.get(m[1]!)!));
   }
   if ((m = path.match(/^\/channels\/(\d+)$/)) && guildChannels().some((channel) => channel.id === m![1])) {
     const id = m[1]!;
@@ -3895,6 +3996,26 @@ const server = Bun.serve<SocketData>({
       generalTopic = (await req.text()) || null;
       dispatch("CHANNEL_UPDATE", guild().channels.find((channel) => channel.id === GENERAL));
       return new Response("#general's topic changed\n");
+    }
+    if (req.method === "POST" && path === "/_control/thread-reply") {
+      const message = post(plans.id, users.carol, "Bringing the map", Date.now());
+      dispatch("MESSAGE_CREATE", dispatched(message, url.origin));
+      return Response.json(message.id);
+    }
+    if (req.method === "POST" && path === "/_control/thread-start") {
+      const now = Date.now();
+      const thread = makeThread(nextId(now), "Movie night", users.bob, now, [users.bob.id]);
+      dispatch("THREAD_CREATE", { ...wireThread(thread), newly_created: true });
+      const notice = post(GENERAL, users.bob, thread.name, now, { type: 18, notice: thread.id });
+      dispatch("MESSAGE_CREATE", dispatched(notice, url.origin));
+      const first = post(thread.id, users.bob, "Friday at 8?", now);
+      dispatch("MESSAGE_CREATE", dispatched(first, url.origin));
+      return Response.json(thread.id);
+    }
+    if (req.method === "POST" && path === "/_control/thread-archive") {
+      plans.archived = !url.searchParams.has("open");
+      dispatch("THREAD_UPDATE", wireThread(plans));
+      return new Response("ok\n");
     }
     if (req.method === "POST" && path === "/_control/mention") {
       const message = post(GENERAL, users.bob, `<@${users.alice.id}> are you in for co-op tonight?`, Date.now());
