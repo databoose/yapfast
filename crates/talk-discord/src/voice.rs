@@ -86,13 +86,20 @@ impl Call {
             guild_id,
             channel_id,
         };
-        call.move_to(server).await?;
+        call.connect_to(server).await?;
         Ok(call)
     }
 
-    /// Connects to `server`, as when Discord moves the call to another voice
-    /// server. What plays carries on there.
-    pub async fn move_to(&mut self, server: &VoiceServer) -> Result<()> {
+    /// Connects to `server` for `channel_id`, as when Discord moves the call
+    /// to another voice server, or someone moves this account to another
+    /// channel of the server. What plays carries on there.
+    pub async fn move_to(&mut self, server: &VoiceServer, channel_id: &str) -> Result<()> {
+        // DAVE keys the call's encryption by its channel.
+        self.channel_id = id(channel_id)?;
+        self.connect_to(server).await
+    }
+
+    async fn connect_to(&mut self, server: &VoiceServer) -> Result<()> {
         self.driver
             .connect(ConnectionInfo {
                 channel_id: self.channel_id.into(),

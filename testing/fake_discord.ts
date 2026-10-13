@@ -25,7 +25,8 @@
 // counted; GET /_control/video lists what each stream received. POST
 // /_control/voice-move moves Alice's call in the server to another voice
 // server, and GET /_control/voice-identifies lists the tokens voice
-// connections identified with; POST /_control/stream-move with a stream key
+// connections identified with. Joining "Create Room" has a bot move Alice to
+// "Alice's room", made the first time, on another voice server; POST /_control/stream-move with a stream key
 // moves that stream to another server. Watching
 // Bob's stream gets testing/fixtures' recording once the viewer asks for video
 // with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
@@ -125,6 +126,9 @@ const GUILD = "1400000000000000100";
 const CATEGORY = "1400000000000000101";
 const GENERAL = "1400000000000000102";
 const LOUNGE = "1400000000000000103";
+// A bot makes a room for whoever joins Create Room and moves them there.
+const CREATE_ROOM = "1400000000000000104";
+const ALICES_ROOM = "1400000000000000105";
 const MODS = "1400000000000000110";
 // Only those who may mention everyone can mention Bots.
 const BOTS = "1400000000000000111";
@@ -883,6 +887,8 @@ function guild() {
       channel(CATEGORY, "Channels", 4, 0, null),
       channel(GENERAL, "general", 0, 0, CATEGORY),
       channel(LOUNGE, "Lounge", 2, 1, CATEGORY),
+      channel(CREATE_ROOM, "Create Room", 2, 2, CATEGORY),
+      ...(roomMade ? [channel(ALICES_ROOM, "Alice's room", 2, 3, CATEGORY)] : []),
       ...rooms.map((id, n) => channel(id, `room-${n + 1}`, 0, 2 + n, CATEGORY)),
     ],
     roles: [
@@ -1311,7 +1317,9 @@ function gatewayMessage(ws: Socket, text: string) {
         const server = guild
           ? { guild_id: GUILD, token: VOICE_TOKEN }
           : { guild_id: null, channel_id: channel, token: callToken(channel) };
+        if (guild) voiceToken = VOICE_TOKEN;
         send(ws, 0, { ...server, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
+        if (channel === CREATE_ROOM) makeRoom(ws);
       }
       break;
     }
@@ -1423,6 +1431,22 @@ function endStream(key: string, reason: string) {
     announce(user);
   }
   dispatch("STREAM_DELETE", { stream_key: key, unavailable: false, reason });
+}
+
+/** Whether the bot made Alice's room. */
+let roomMade = false;
+
+/** The bot moves Alice from Create Room to her own room, making it the first
+ *  time, which puts her call on another voice server. */
+function makeRoom(ws: Socket) {
+  if (!roomMade) {
+    roomMade = true;
+    dispatch("CHANNEL_CREATE", guild().channels.find((made) => made.id === ALICES_ROOM));
+  }
+  voice.get(ALICE)!.channel = ALICES_ROOM;
+  announce(ALICE);
+  voiceToken = MOVED_VOICE_TOKEN;
+  send(ws, 0, { guild_id: GUILD, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
 }
 
 /** Tells everyone where `user` is in voice now. */
@@ -1552,6 +1576,9 @@ const MOVED_VOICE_TOKEN = "fake-voice-token-moved";
 const voiceIdentifies: string[] = [];
 /** Voice connections, open until they close. */
 const voiceSockets = new Set<Socket>();
+/** The token Alice's voice session holds now: a connection identifying
+ *  with the one before is no longer valid, as on Discord. */
+let voiceToken = VOICE_TOKEN;
 const voiceEndpoint = (ws: Socket) => `${ws.data.origin.replace(/^http/, "ws")}/voice`;
 let ssrcs = 100;
 
@@ -2005,6 +2032,10 @@ function voiceMessage(ws: Socket, text: string) {
       }
       // A DM call identifies with its channel for the server.
       if (String(d.token).startsWith("call-token-") && d.server_id !== String(d.token).slice("call-token-".length)) {
+        ws.close(4006, "Session is no longer valid.");
+        return;
+      }
+      if (d.token === VOICE_TOKEN && voiceToken !== VOICE_TOKEN) {
         ws.close(4006, "Session is no longer valid.");
         return;
       }
@@ -2842,6 +2873,7 @@ const server = Bun.serve<SocketData>({
       // names the new one, and the old one closes with 4014 once she's there.
       const state = voice.get(ALICE);
       if (!state?.guild) return new Response("Alice isn't in a server's voice channel\n", { status: 409 });
+      voiceToken = MOVED_VOICE_TOKEN;
       for (const ws of sockets) {
         if (ws.data.session !== state.session) continue;
         send(ws, 0, { guild_id: GUILD, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");

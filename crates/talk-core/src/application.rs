@@ -1524,6 +1524,15 @@ impl Application {
         match event {
             Event::Voice(state) => {
                 let sounds = call_sounds(&self.state.voice, &state);
+                // Someone moved the call to another channel, as a bot does
+                // from one that makes rooms: its view goes along.
+                if let (Some(from), Some(to)) = (&self.state.voice.room, &state.room)
+                    && from != to
+                    && self.state.voice.active()
+                    && self.state.selected.as_ref() == Some(from)
+                {
+                    self.pending_open = Some(to.clone());
+                }
                 self.state.voice = state;
                 return sounds;
             }

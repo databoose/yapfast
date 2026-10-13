@@ -101,6 +101,15 @@ pub(super) fn live_events(
                 name,
             }]
         }
+        Event::VoiceStateUpdate if data["user_id"] == me => {
+            match (data["guild_id"].as_str(), data["channel_id"].as_str()) {
+                (Some(guild), Some(channel)) => vec![Live::VoiceChannel {
+                    guild: guild.to_owned(),
+                    channel: channel.to_owned(),
+                }],
+                _ => vec![],
+            }
+        }
         // Answers to the member requests history makes.
         Event::GuildMembersChunk => vec![Live::Names],
         Event::StreamCreate | Event::StreamUpdate => data["stream_key"]
