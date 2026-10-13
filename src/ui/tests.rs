@@ -2416,3 +2416,57 @@ fn the_bell_and_channel_menus_offer_the_same_notification_choices() {
         "a DM"
     );
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_server_search_names_the_server_and_heads_results_with_their_channels() {
+    use talk_core::chat::{Event, SearchHit};
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = discord_server_adapter(&window, directory.path());
+    let hit = |room: &str, item: &str| SearchHit {
+        room: room.into(),
+        message: ChatMessage {
+            item: item.into(),
+            body: "plan".into(),
+            ..Default::default()
+        },
+    };
+    {
+        let mut adapter = adapter.borrow_mut();
+        let app = &mut adapter.app;
+        app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+        app.dispatch(Action::SelectRoom("discord:10:11".into()));
+        app.dispatch(Action::Search("plan".into()));
+        app.apply(Event::Found {
+            place: "discord:10".into(),
+            query: "plan".into(),
+            offset: 0,
+            result: Ok((
+                3,
+                vec![
+                    hit("discord:10:12", "d:9"),
+                    hit("discord:10:12", "d:8"),
+                    hit("discord:10:11", "d:7"),
+                ],
+            )),
+        });
+        adapter.refresh(&window);
+    }
+    assert_eq!(window.get_search_placeholder(), "Search Test");
+    assert!(window.get_search_open());
+    let rows: Vec<(String, String)> = window
+        .get_search_results()
+        .iter()
+        .map(|row| (row.room.into(), row.heading.into()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("discord:10:12".into(), "rules".into()),
+            ("discord:10:12".into(), String::new()),
+            ("discord:10:11".into(), "general".into()),
+        ]
+    );
+}

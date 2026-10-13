@@ -445,8 +445,12 @@ export component TalkWindow inherits Window {
     in property <string> pins-note;
     callback show-pins(bool);
     /// The header's search, and what it found, beside the conversation. An
-    /// empty search ends it.
+    /// empty search ends it. A server channel's searches its whole server,
+    /// and the box says so.
     in-out property <string> search-text;
+    in property <string> search-placeholder;
+    /// Show a search result in its room, by room id and item.
+    callback jump-in-room(string, string);
     in property <bool> search-open;
     in property <[FoundRow]> search-results;
     in property <string> search-heading;
@@ -1336,7 +1340,7 @@ export component TalkWindow inherits Window {
                         if root.can-search: Middle {
                             HeaderSearch {
                                 text <=> root.search-text;
-                                placeholder: "Search " + root.room-name;
+                                placeholder: root.search-placeholder;
                                 search(text) => { root.search(text); }
                                 clear => { root.search-text = ""; root.search(""); }
                             }
@@ -1963,7 +1967,7 @@ export component TalkWindow inherits Window {
                         width: 420px;
                         results: root.search-results; heading: root.search-heading; note: root.search-note;
                         more: root.search-more; loading: root.search-loading;
-                        jump(item) => { root.jump-to(item); }
+                        jump(room, item) => { root.jump-in-room(room, item); }
                         open-link(link) => { root.open-link(link); }
                         more-results => { root.more-results(); }
                         close => { root.search-text = ""; root.search(""); }

@@ -461,6 +461,7 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         styled,
         has_body: !message.body.trim().is_empty(),
         files: files.join(", ").into(),
+        ..Default::default()
     }
 }
 

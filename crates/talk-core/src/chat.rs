@@ -521,6 +521,13 @@ pub struct CustomEmoji {
     pub picture: String,
 }
 
+/// A message a search found, and the room it's in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchHit {
+    pub room: String,
+    pub message: ChatMessage,
+}
+
 /// A Discord channel's topic, as its header shows it: Markdown with
 /// mentions by name, as a message's body is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1173,10 +1180,11 @@ pub enum DiscordCommand {
     Pins {
         room: String,
     },
-    /// Look for a Discord DM's or server channel's messages that contain
-    /// `query`, a page from the `offset`th found; [`Event::Found`] follows.
+    /// Look for messages a search box's `query`, filters and all, finds: in
+    /// a Discord DM, by its room id, or a server, by its server id; a page
+    /// from the `offset`th found. [`Event::Found`] follows.
     Search {
-        room: String,
+        place: String,
         query: String,
         offset: u32,
     },
@@ -1395,10 +1403,10 @@ pub enum Event {
     /// What [`DiscordCommand::Search`] found: a page of messages, the newest
     /// first, and how many in all; or why it couldn't search.
     Found {
-        room: String,
+        place: String,
         query: String,
         offset: u32,
-        result: Result<(u32, Vec<ChatMessage>), String>,
+        result: Result<(u32, Vec<SearchHit>), String>,
     },
     /// The open Discord channel's topic, when it opens and when it changes;
     /// none when it has none.

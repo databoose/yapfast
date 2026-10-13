@@ -537,7 +537,10 @@ impl Application {
         self.state.found_members.clear();
         self.state.role = None;
         self.state.pins = None;
-        self.state.search = None;
+        // A server's search stays open in its channels.
+        if self.state.search.is_some() && self.state.search_shown().is_none() {
+            self.state.search = None;
+        }
         self.state.add_people = None;
         self.state.topic = None;
         self.searched.clear();

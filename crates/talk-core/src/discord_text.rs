@@ -28,7 +28,7 @@ use crate::{
         Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Direction,
         DiscordCommand, Embed, EmbedField, Event, History, MAX_PREVIEW_DOWNLOAD_BYTES,
         MentionGroup, Notification, OutgoingFile, Picture, Placement, Profile, ProfileFriend,
-        ProfileRole, ProfileServer, Reaction, Reply, Role, Topic, Video, VideoCommand,
+        ProfileRole, ProfileServer, Reaction, Reply, Role, SearchHit, Topic, Video, VideoCommand,
         decode_preview, decode_view, plain_snippet,
     },
     discord::{self, KEPT_CHANNELS, KEPT_MESSAGES},

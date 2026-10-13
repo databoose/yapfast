@@ -418,25 +418,27 @@ impl Api {
         }
     }
 
-    /// Discord's answer to a search of a channel's messages for `content`,
-    /// the newest first, from the `offset`th; see [`crate::service::Found`].
-    /// A DM's is searched on its own, and a server channel through its
-    /// server, as Discord's client does.
+    /// Discord's answer to a search of messages, the newest first, from the
+    /// `offset`th; see [`crate::service::Found`]. With a server, it searches
+    /// the server, in the channels `params` names with `channel_id`, or all
+    /// of them; without one, the DM `channel`. `params` are the rest of the
+    /// query string, such as `content`, `author_id` and `has`, each name
+    /// repeated for several values, as Discord's client sends them.
     pub async fn search(
         &self,
         guild: Option<&str>,
         channel: &str,
-        content: &str,
+        params: &[(&str, String)],
         offset: u32,
     ) -> Result<Value> {
-        let content = encode(content);
+        let mut query = String::new();
+        for (name, value) in params {
+            query.push_str(&format!("{name}={}&", encode(value)));
+        }
+        query.push_str(&format!("offset={offset}"));
         let path = match guild {
-            Some(guild) => format!(
-                "/guilds/{guild}/messages/search?channel_id={channel}&content={content}&offset={offset}"
-            ),
-            None => {
-                format!("/channels/{channel}/messages/search?content={content}&offset={offset}")
-            }
+            Some(guild) => format!("/guilds/{guild}/messages/search?{query}"),
+            None => format!("/channels/{channel}/messages/search?{query}"),
         };
         self.json(self.request(Method::GET, &path)).await
     }

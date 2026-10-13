@@ -172,15 +172,17 @@ pub struct Pins {
     pub messages: Option<Result<Vec<ChatMessage>, String>>,
 }
 
-/// A search of a DM's messages, while its results show.
+/// A search, while its results show: of a DM, or of a whole Discord server,
+/// which stays open while its channels do.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Search {
-    pub room: String,
+    /// Where it looks: a DM's room id, or a Discord server's id.
+    pub place: String,
     pub query: String,
     /// How many messages it found in all, of which `results` are loaded,
     /// the newest first.
     pub total: u32,
-    pub results: Vec<ChatMessage>,
+    pub results: Vec<chat::SearchHit>,
     /// Where the next page of results starts among them all.
     pub next: u32,
     /// A page of results is on its way.
@@ -744,6 +746,22 @@ impl AppState {
             .filter(|room| room.direct && !room.request && can(&room.capabilities))
     }
 
+    /// Where a search from the selected conversation looks: a DM itself,
+    /// and a Discord server channel's whole server, as Discord's does.
+    pub fn search_place(&self) -> Option<String> {
+        let room = self.conversation_that(|can| can.search)?;
+        Some(match discord::parse_room(&room.id) {
+            Some((guild, _)) if !room.direct => discord::server_id(guild),
+            _ => room.id.clone(),
+        })
+    }
+
+    /// The search showing beside the selected conversation.
+    pub fn search_shown(&self) -> Option<&Search> {
+        let place = self.search_place()?;
+        self.search.as_ref().filter(|search| search.place == place)
+    }
+
     /// The selected conversation, when it's a DM, group DM or text channel
     /// this account may read, whose network lets it do what `can` asks, and
     /// not a message request.
@@ -965,7 +983,8 @@ pub enum Action {
     CloseDm(String),
     /// Show the selected DM's pinned messages, or stop.
     ShowPins(bool),
-    /// Search the selected DM's messages; an empty query ends the search.
+    /// Search the selected DM's messages, or a server channel's server;
+    /// an empty query ends the search.
     Search(String),
     /// Load the next page of the search's results.
     MoreResults,
@@ -1883,11 +1902,11 @@ impl Application {
             }
             Event::Pins { room, result } => self.pins_came(room, result),
             Event::Found {
-                room,
+                place,
                 query,
                 offset,
                 result,
-            } => self.found(room, query, offset, result),
+            } => self.found(place, query, offset, result),
             Event::Topic { room, topic } => {
                 if self.state.selected.as_ref() == Some(&room) {
                     self.state.topic = topic;

@@ -13,6 +13,10 @@ export struct FoundRow {
     styled: styled-text, has-body: bool,
     /// Its files, named, when it has any.
     files: string,
+    /// A search result's room, and above the first of a run in one channel
+    /// of a server, the channel's name.
+    room: string,
+    heading: string,
 }
 
 /// A friend the picker can add to a DM.
@@ -345,7 +349,8 @@ export component SearchPanel inherits Rectangle {
     in property <string> note;
     in property <bool> more;
     in property <bool> loading;
-    callback jump(string);
+    /// Show a result: its room and its item.
+    callback jump(string, string);
     callback open-link(string);
     callback more-results;
     callback close;
@@ -368,10 +373,19 @@ export component SearchPanel inherits Rectangle {
             vertical-stretch: 1;
             VerticalLayout {
                 padding: 12px; spacing: 8px; alignment: start;
-                for found in root.results: FoundCard {
-                    found: found;
-                    jump => { root.jump(found.item); }
-                    open-link(link) => { root.open-link(link); }
+                for found in root.results: VerticalLayout {
+                    spacing: 6px;
+                    // The channel a run of results is in, as Discord heads them.
+                    if found.heading != "": HorizontalLayout {
+                        padding-top: 6px; spacing: 4px;
+                        Middle { Image { source: @image-url("icons/hash.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
+                        Text { text: found.heading; color: Theme.secondary; font-size: 13px; font-weight: 700; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    }
+                    FoundCard {
+                        found: found;
+                        jump => { root.jump(found.room, found.item); }
+                        open-link(link) => { root.open-link(link); }
+                    }
                 }
                 if root.more: HorizontalLayout {
                     alignment: center; padding-top: 4px;

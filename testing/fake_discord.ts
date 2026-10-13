@@ -49,9 +49,10 @@
 // GET /channels/{id}/messages/pins lists a channel's pins: Bob's welcome in
 // #general, his question in his DM and Carol's in the group. GET
 // /channels/{id}/messages/search finds a DM's messages by their text, 25 at
-// a time, and GET /guilds/{id}/messages/search?channel_id=... a server
-// channel's; the first search of each DM or server answers 202, as
-// Discord's does while it indexes it.
+// a time, and GET /guilds/{id}/messages/search a server's, in the channels
+// channel_id names or in all of them; both take author_id, mentions, has,
+// min_id, max_id and pinned too. The first search of each DM or server
+// answers 202, as Discord's does while it indexes it.
 // POST /_control/typing makes Bob start typing in #general, or with ?dm in
 // his DM; GET /_control/typed lists the channels Alice said she was typing in.
 // GET /channels/{id}/messages takes `before`, `after` or `around` a snowflake,
@@ -833,6 +834,40 @@ const pins = new Map<string, { message: Message; at: number }[]>([
   [DM_BOB, [{ message: tripNotes, at: DM_START + 130_000 }]],
   [WEEKEND, [{ message: hike, at: DM_START + 10_000 }]],
 ]);
+/** What a search's query string asks of a message, as Discord's search
+ *  takes it: `content`, and each of `author_id`, `mentions` and `has`
+ *  repeated for several, `min_id`, `max_id` and `pinned`. */
+function searchFilter(url: URL): (message: Message) => boolean {
+  const params = url.searchParams;
+  const content = (params.get("content") ?? "").toLowerCase();
+  const authors = params.getAll("author_id");
+  const mentioned = params.getAll("mentions");
+  const has = params.getAll("has");
+  const min = params.get("min_id");
+  const max = params.get("max_id");
+  const pinned = params.get("pinned");
+  const carries = (message: Message, what: string) => {
+    const types = message.files.map((file) => file.contentType);
+    switch (what) {
+      case "image": return types.some((type) => type.startsWith("image/"));
+      case "video": return types.some((type) => type.startsWith("video/"));
+      case "sound": return types.some((type) => type.startsWith("audio/"));
+      case "file": return message.files.length > 0;
+      case "embed": return (message.embeds?.("").length ?? 0) > 0;
+      case "link": return /https?:\/\//.test(message.content);
+      case "sticker": return (message.stickers?.length ?? 0) > 0;
+      default: return false;
+    }
+  };
+  return (message) =>
+    message.content.toLowerCase().includes(content) &&
+    (!authors.length || authors.includes(message.author.id)) &&
+    mentioned.every((id) => message.content.includes(`<@${id}>`)) &&
+    has.every((what) => carries(message, what)) &&
+    (!min || BigInt(message.id) > BigInt(min)) &&
+    (!max || BigInt(message.id) < BigInt(max)) &&
+    (pinned === null || (pins.get(message.channel)?.some((pin) => pin.message.id === message.id) ?? false) === (pinned === "true"));
+}
 // DMs searched once, which Discord has indexed.
 const indexed = new Set<string>();
 const readBob = post(DM_BOB, users.alice, "Yes, bringing snacks", DM_START + 180_000);
@@ -2534,9 +2569,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       indexed.add(m[1]!);
       return json({ message: "Index not yet available. Try again later", code: 110000, documents_indexed: 0, retry_after: 0 }, 202);
     }
-    const content = (url.searchParams.get("content") ?? "").toLowerCase();
     const offset = Number(url.searchParams.get("offset") ?? 0);
-    const found = list.filter((message) => message.content.toLowerCase().includes(content)).reverse();
+    const found = list.filter(searchFilter(url)).reverse();
     return json({
       analytics_id: "fake",
       doing_deep_historical_index: false,
@@ -2558,11 +2592,11 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       indexed.add(guild);
       return json({ message: "Index not yet available. Try again later", code: 110000, documents_indexed: 0, retry_after: 0 }, 202);
     }
-    const content = (url.searchParams.get("content") ?? "").toLowerCase();
     const offset = Number(url.searchParams.get("offset") ?? 0);
     const found = (asked.length ? asked : channels)
       .flatMap((id) => messages.get(id)!)
-      .filter((message) => (message.type === 0 || message.type === 19) && message.content.toLowerCase().includes(content))
+      .filter((message) => message.type === 0 || message.type === 19)
+      .filter(searchFilter(url))
       .sort((a, b) => (BigInt(b.id) > BigInt(a.id) ? 1 : -1));
     return json({
       analytics_id: "fake",
