@@ -41,6 +41,17 @@
         unzip -q ${windowsWebrtcArchive} -d unpacked
         mv unpacked/win-x64-release "$out"
       '';
+      # libwebrtc's archive already has libopus, under its own names. Songbird's
+      # opus2 would build a second copy, whose symbols clash with it under
+      # MSVC's linker, so opus2 links an empty opus.lib and uses libwebrtc's.
+      # Its build script runs on Linux and asks for libm too, which the CRT has.
+      windowsSharedOpus = pkgs.runCommand "talk-opus-from-libwebrtc" {
+        nativeBuildInputs = [ pkgs.llvmPackages_21.llvm ];
+      } ''
+        mkdir -p "$out/lib"
+        llvm-ar rc "$out/lib/opus.lib"
+        llvm-ar rc "$out/lib/m.lib"
+      '';
       windowsSkiaSourceArchive = pkgs.fetchurl {
         url = "https://codeload.github.com/rust-skia/skia/tar.gz/61e7ca4e99062cdd0ab69445d5963fb3365778f6";
         sha256 = "8401d0de878582a03abc1029bb62330aea58cda89904ae6ab187302e6d48ba5d";
@@ -108,6 +119,8 @@
           CXX = "clang++";
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           LK_CUSTOM_WEBRTC = "${windowsWebrtc}";
+          LIBOPUS_LIB_DIR = "${windowsSharedOpus}";
+          LIBOPUS_STATIC = "1";
           TALK_SKIA_WINDOWS_SOURCE = "${windowsSkiaSource}";
           TALK_SKIA_CLANG = "${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang-cl";
           TALK_SKIA_LLD = "${pkgs.llvmPackages_21.lld}/bin/lld-link";

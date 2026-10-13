@@ -95,9 +95,44 @@ pub async fn check_build() {
         calls::check_native_build();
         let _ = matrix_sdk::Client::builder();
     }
-    // Links songbird's libopus beside libwebrtc's; both must resolve.
     #[cfg(feature = "discord")]
-    let _ = talk_discord::voice::live_microphone();
+    {
+        let _ = talk_discord::voice::live_microphone();
+        check_opus();
+    }
+}
+
+/// Encodes a tone with Opus and decodes it again. On Windows songbird's opus2
+/// uses the libopus inside libwebrtc's archive, so this checks they agree.
+#[cfg(feature = "discord")]
+fn check_opus() {
+    const RATE: u32 = 48_000;
+    const FRAME: usize = RATE as usize / 50;
+    let tone: Vec<f32> = (0..FRAME)
+        .flat_map(|at| {
+            let sample = 0.5 * (at as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin();
+            [sample, sample]
+        })
+        .collect();
+    let mut encoder = opus2::Encoder::new(RATE, opus2::Channels::Stereo, opus2::Application::Audio)
+        .expect("an Opus encoder");
+    let mut decoder = opus2::Decoder::new(RATE, opus2::Channels::Stereo).expect("an Opus decoder");
+    let mut packet = [0u8; 4000];
+    let mut decoded = vec![0f32; FRAME * 2];
+    // The first frames are mostly the encoder's lookahead.
+    for _ in 0..5 {
+        let size = encoder
+            .encode_float(&tone, &mut packet)
+            .expect("Opus encodes");
+        let frames = decoder
+            .decode_float(&packet[..size], &mut decoded, false)
+            .expect("Opus decodes");
+        assert_eq!(frames, FRAME, "Opus decoded the wrong length");
+    }
+    let peak = decoded
+        .iter()
+        .fold(0f32, |peak, sample| peak.max(sample.abs()));
+    assert!(peak > 0.3, "Opus lost the tone: its peak is {peak}");
 }
 
 /// Cargo runs library tests from the crate directory; retain workspace-local fixtures.

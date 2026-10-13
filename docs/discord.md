@@ -212,9 +212,11 @@ speakers at 48 kHz, the processing module for echo cancellation and gain
 songbird for Opus and DAVE. Feed the speaker mix to
 the processing module's reverse stream so echo cancellation has its reference.
 
-Check one linking risk before building on this. songbird encodes with `opus2`,
-which builds its own libopus, while Talk's libwebrtc archive already contains
-libopus. Linking both into Talk may clash, particularly on Windows MSVC.
+songbird encodes with `opus2`, which builds its own libopus, while Talk's
+libwebrtc archive already contains libopus. On Linux both link, and the linker
+takes each symbol from the first. Under MSVC they'd clash, so the Windows build
+gives `opus2` an empty library and it uses libwebrtc's; see the
+[Windows guide](windows-beta.md#build-validation-on-2026-10-13).
 
 ### DM calls
 
