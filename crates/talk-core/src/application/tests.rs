@@ -1405,6 +1405,26 @@ fn notifications_say_whether_they_mention_this_account() {
 }
 
 #[test]
+fn a_call_moved_to_another_channel_takes_its_view_along() {
+    let mut app = connected();
+    let call = |room: &str| {
+        Event::Voice(voice::State {
+            phase: Phase::Connected,
+            room: Some(room.into()),
+            ..Default::default()
+        })
+    };
+    app.dispatch(Action::Open("lounge".into()));
+    app.apply(call("lounge"));
+    app.apply(call("party-voice"));
+    assert_eq!(app.state.selected.as_deref(), Some("party-voice"));
+    // Viewing another room, the view stays.
+    app.dispatch(Action::Open("games".into()));
+    app.apply(call("lounge"));
+    assert_eq!(app.state.selected.as_deref(), Some("games"));
+}
+
+#[test]
 fn native_voice_switch_is_explicit_and_rechecks_trust_before_leaving() {
     let mut app = connected();
     app.apply(Event::Voice(voice::State {

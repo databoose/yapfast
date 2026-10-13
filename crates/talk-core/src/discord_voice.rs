@@ -5,7 +5,7 @@ use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 use anyhow::{Result, bail, ensure};
 use talk_discord::{
     ready::PRIVATE,
-    service::{Discord, Live, Status},
+    service::{Discord, Live, Snapshot, Status, VoiceServer},
     stream::{self, StreamServer},
     voice::{Call as DiscordCall, live_microphone},
 };
@@ -117,6 +117,22 @@ async fn started(starting: &mut Starting) -> Result<StreamServer> {
         Some(starting) => starting.await,
         None => std::future::pending().await,
     }
+}
+
+/// Joining the call: Discord's voice server, then connecting to it.
+type Joining<'a> = Pin<Box<dyn Future<Output = Result<(VoiceServer, DiscordCall)>> + 'a>>;
+
+/// Connects to the voice server Discord assigned for `channel`.
+fn connect<'a>(
+    server: VoiceServer,
+    guild: &'a str,
+    channel: String,
+    hearing: Arc<Hearing>,
+) -> Joining<'a> {
+    Box::pin(async move {
+        let call = DiscordCall::connect(&server, guild, &channel, hearing).await?;
+        Ok((server, call))
+    })
 }
 
 /// Ringing the others for a DM call this account started: whether Discord
@@ -249,32 +265,25 @@ pub(crate) async fn call(
     );
     let mut discord_states = discord.snapshots();
     let me = discord_states.borrow().user_id.clone().unwrap_or_default();
-    state.name = if guild == PRIVATE {
-        discord_states
-            .borrow()
-            .conversations
-            .iter()
-            .find(|found| found.id == channel)
-            .map_or_else(|| "Discord call".into(), |found| found.name.clone())
-    } else {
-        discord_states
-            .borrow()
-            .servers
-            .iter()
-            .flat_map(|server| &server.voice_channels)
-            .find(|found| found.id == channel)
-            .map_or_else(|| "Discord voice".into(), |found| found.name.clone())
-    };
+    state.name = call_name(&discord_states.borrow(), guild, channel)
+        .unwrap_or(if guild == PRIVATE {
+            "Discord call"
+        } else {
+            "Discord voice"
+        })
+        .to_owned();
     snapshots.send_replace(state.clone());
 
     let (ended, mut endings) = mpsc::unbounded_channel();
-    let hearing = std::sync::Arc::new(Hearing::new(ended));
-    let joining = async {
+    let hearing = Arc::new(Hearing::new(ended));
+    // From before joining, so that a move while connecting is heard.
+    let mut live = discord.live();
+    let mut joining: Joining = Box::pin(async {
         let server = discord.join(guild, channel).await?;
-        let call = DiscordCall::connect(&server, guild, channel, hearing.clone()).await?;
-        anyhow::Ok((server, call))
-    };
-    tokio::pin!(joining);
+        connect(server, guild, channel.to_owned(), hearing.clone()).await
+    });
+    // Where this account is, which someone such as a bot may move it from.
+    let mut channel = channel.to_owned();
     let deadline = tokio::time::sleep(Duration::from_secs(35));
     tokio::pin!(deadline);
     let joined = loop {
@@ -296,6 +305,21 @@ pub(crate) async fn call(
                 bail!("Discord voice took too long to connect. Try again.");
             }
             result = &mut joining => break result,
+            Ok(event) = live.recv() => match event {
+                Live::VoiceChannel { guild: moved, channel: to } if moved == guild && to != channel => {
+                    channel = to;
+                    moved_to(state, &discord_states.borrow(), guild, &channel);
+                    snapshots.send_replace(state.clone());
+                }
+                // Someone moved this account while it connected, as a bot
+                // does from a channel that makes rooms. The connection under
+                // way would end in Discord's "session is no longer valid".
+                Live::VoiceMoved { guild: moved, server } if moved == guild => {
+                    tracing::info!("Discord moved the call while it connected");
+                    joining = connect(server, guild, channel.clone(), hearing.clone());
+                }
+                _ => {}
+            },
         }
     };
     let (mut server, mut call) = match joined {
@@ -314,7 +338,6 @@ pub(crate) async fn call(
     let mut share: Option<Share> = None;
     let mut starting: Starting = None;
     let mut watch: Option<Watch> = None;
-    let mut live = discord.live();
     // Ringing the others while they haven't come, with the ringback heard meanwhile.
     let mut ringing: Ringing = None;
     let mut ringback: Option<Ringer> = None;
@@ -325,7 +348,7 @@ pub(crate) async fn call(
         let mut speakers = Some(open_discord_speakers(state, &played, &hearing)?);
         Chosen::write(remembered, state);
         state.phase = Phase::Connected;
-        if guild == PRIVATE && alone(&discord_states.borrow(), channel, &me) {
+        if guild == PRIVATE && alone(&discord_states.borrow(), &channel, &me) {
             // Starting a DM call, rather than joining one, rings the others,
             // once Discord has the call: it rings only in one.
             let (discord, channel) = (discord.clone(), channel.to_owned());
@@ -352,7 +375,7 @@ pub(crate) async fn call(
             let talking = capture.as_ref().is_some_and(Capture::talking);
             let participants = discord_participants(
                 &discord_states.borrow(),
-                channel,
+                &channel,
                 &me,
                 state,
                 &hearing.speaking(),
@@ -362,14 +385,14 @@ pub(crate) async fn call(
                 state.participants = participants;
                 snapshots.send_replace(state.clone());
             }
-            if unrung && !alone(&discord_states.borrow(), channel, &me) {
+            if unrung && !alone(&discord_states.borrow(), &channel, &me) {
                 unrung = false;
                 state.warning = None;
                 snapshots.send_replace(state.clone());
             }
             let calling = guild == PRIVATE
                 && !state.deafened
-                && alone(&discord_states.borrow(), channel, &me)
+                && alone(&discord_states.borrow(), &channel, &me)
                 && state.participants.iter().any(|person| !person.connected);
             if calling != ringback.is_some() {
                 ringback = calling
@@ -462,7 +485,7 @@ pub(crate) async fn call(
                                     stopped.stop(discord, state);
                                 }
                                 state.error = None;
-                                watch = Some(Watch::start(discord, guild, channel, &user, state));
+                                watch = Some(Watch::start(discord, guild, &channel, &user, state));
                             }
                         }
                         Some(Command::StopWatching) => {
@@ -472,7 +495,7 @@ pub(crate) async fn call(
                         }
                         Some(Command::LeaveStale) => {}
                     }
-                    discord.set_self(guild, channel, state.muted, state.deafened);
+                    discord.set_self(guild, &channel, state.muted, state.deafened);
                     snapshots.send_replace(state.clone());
                 }
                 report = next_report(&mut share) => {
@@ -488,7 +511,7 @@ pub(crate) async fn call(
                             {
                                 sharing.phase = SharePhase::Starting;
                                 if let Some(going) = share.as_mut() {
-                                    going.key = Some(stream::key(guild, channel, &me));
+                                    going.key = Some(stream::key(guild, &channel, &me));
                                 }
                                 let (discord, guild, channel) = (discord.clone(), guild.to_owned(), channel.to_owned());
                                 starting = Some(Box::pin(async move { discord.go_live(&guild, &channel).await }));
@@ -558,7 +581,7 @@ pub(crate) async fn call(
                             Some(format!("Discord didn't ring them: {error}"))
                         }
                     };
-                    if warning.is_some() && alone(&discord_states.borrow(), channel, &me) {
+                    if warning.is_some() && alone(&discord_states.borrow(), &channel, &me) {
                         unrung = true;
                         state.warning = warning;
                         snapshots.send_replace(state.clone());
@@ -622,12 +645,19 @@ pub(crate) async fn call(
                             snapshots.send_replace(state.clone());
                         }
                     }
+                    // Someone moved this account to another channel of the
+                    // server; Discord names its voice server next.
+                    Live::VoiceChannel { guild: moved, channel: to } if moved == guild && to != channel => {
+                        channel = to;
+                        moved_to(state, &discord_states.borrow(), guild, &channel);
+                        snapshots.send_replace(state.clone());
+                    }
                     // Discord moved the call to another voice server: the
                     // call carries on there.
                     Live::VoiceMoved { guild: moved, server: next } if moved == guild => {
                         if dropped || next.endpoint != server.endpoint || next.token != server.token {
                             tracing::info!("Discord moved the call to another voice server");
-                            match tokio::time::timeout(MOVE_TIMEOUT, call.move_to(&next)).await {
+                            match tokio::time::timeout(MOVE_TIMEOUT, call.move_to(&next, &channel)).await {
                                 Ok(Ok(())) => {
                                     server = next;
                                     dropped = false;
@@ -678,6 +708,13 @@ pub(crate) async fn call(
                 changed = discord_states.changed() => {
                     if changed.is_err() || discord_states.borrow().status != Status::Online {
                         bail!("Lost the connection to Discord. Join again when it's back.");
+                    }
+                    // A channel made for the call may be named only now.
+                    if let Some(name) = call_name(&discord_states.borrow(), guild, &channel)
+                        && name != state.name
+                    {
+                        state.name = name.to_owned();
+                        snapshots.send_replace(state.clone());
                     }
                 }
                 _ = ticks.tick() => {}
@@ -819,6 +856,33 @@ fn discord_participants(
     }
     participants.sort_by_key(|person| std::cmp::Reverse(person.local));
     participants
+}
+
+/// Shows the call in `channel`, where someone moved this account.
+fn moved_to(state: &mut State, snapshot: &Snapshot, guild: &str, channel: &str) {
+    tracing::info!("moved to another voice channel");
+    state.room = Some(crate::discord::room_id(guild, channel));
+    if let Some(name) = call_name(snapshot, guild, channel) {
+        state.name = name.to_owned();
+    }
+}
+
+/// The name of the voice channel or DM call, once Discord said it.
+fn call_name<'a>(snapshot: &'a Snapshot, guild: &str, channel: &str) -> Option<&'a str> {
+    if guild == PRIVATE {
+        snapshot
+            .conversations
+            .iter()
+            .find(|found| found.id == channel)
+            .map(|found| found.name.as_str())
+    } else {
+        snapshot
+            .servers
+            .iter()
+            .flat_map(|server| &server.voice_channels)
+            .find(|found| found.id == channel)
+            .map(|found| found.name.as_str())
+    }
 }
 
 /// Whether nobody but this account is in a call.

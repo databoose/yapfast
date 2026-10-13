@@ -248,6 +248,12 @@ pub enum Live {
         stream_key: String,
         reason: Option<String>,
     },
+    /// This account is in `channel`, a voice channel of `guild`: where it
+    /// joined, or where someone such as a bot moved it.
+    VoiceChannel {
+        guild: String,
+        channel: String,
+    },
     /// Discord moved this account's call in `guild`, or with [`PRIVATE`] its
     /// DM call, to another voice server, which the call connects to.
     VoiceMoved {

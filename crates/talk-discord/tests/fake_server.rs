@@ -825,7 +825,7 @@ async fn talks_to_the_fake_server() {
     .await;
     assert_eq!(moved.token, "fake-voice-token-moved");
     assert_eq!(moved.session_id, assigned.session_id);
-    timeout(WAIT, call.move_to(&moved))
+    timeout(WAIT, call.move_to(&moved, &lounge))
         .await
         .expect("timed out moving the call")
         .unwrap();
@@ -1037,6 +1037,50 @@ async fn talks_to_the_fake_server() {
     call.leave();
     discord.leave(&guild);
     snapshot_where(&discord, |snapshot| in_lounge(snapshot).is_none()).await;
+
+    // Joining Create Room, a bot moves Alice to a room it makes, which puts
+    // her call on another voice server; Talk hears where, and connects there.
+    let voice_channel = |snapshot: &Snapshot, name: &str| {
+        snapshot
+            .servers
+            .iter()
+            .flat_map(|server| &server.voice_channels)
+            .find(|found| found.name == name)
+            .map(|found| found.id.clone())
+    };
+    let create_room = voice_channel(&discord.snapshots().borrow(), "Create Room").unwrap();
+    discord.join(&guild, &create_room).await.unwrap();
+    let room = live_where(&mut live, |event| match event {
+        Live::VoiceChannel {
+            guild: moved,
+            channel,
+        } if moved == guild && channel != lounge && channel != create_room => Some(channel),
+        _ => None,
+    })
+    .await;
+    let moved = live_where(&mut live, |event| match event {
+        Live::VoiceMoved {
+            guild: moved,
+            server,
+        } if moved == guild => Some(server),
+        _ => None,
+    })
+    .await;
+    assert_eq!(moved.token, "fake-voice-token-moved");
+    let made = snapshot_where(&discord, |snapshot| {
+        voice_channel(snapshot, "Alice's room").is_some()
+    })
+    .await;
+    assert_eq!(voice_channel(&made, "Alice's room"), Some(room.clone()));
+    let mut call = timeout(
+        WAIT,
+        Call::connect(&moved, &guild, &room, std::sync::Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to the room")
+    .unwrap();
+    call.leave();
+    discord.leave(&guild);
 
     // A DM call: Alice starts one with Bob, connecting with the DM for the
     // server, and rings him; he answers.
