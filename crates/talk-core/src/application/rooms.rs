@@ -360,7 +360,7 @@ impl Application {
 
     pub(super) fn open(&mut self, id: String) -> Vec<Effect> {
         let Some(room) = self.state.rooms.iter().find(|room| room.id == id) else {
-            return self.open_thread(id);
+            return self.open_thread(id, false);
         };
         let navigation = if room.direct {
             Some(Navigation::DirectMessages)
@@ -379,9 +379,10 @@ impl Application {
     }
 
     /// Opens a Discord thread that isn't listed, as a message's link to it
-    /// or a notification from it does: Discord tells a user account only of
-    /// the threads it's in, so Talk asks for it, and opens it once it lists.
-    fn open_thread(&mut self, id: String) -> Vec<Effect> {
+    /// or a notification from it does, in place of the open room or
+    /// `beside` it: Discord tells a user account only of the threads it's
+    /// in, so Talk asks for it, and opens it once it lists.
+    pub(super) fn open_thread(&mut self, id: String, beside: bool) -> Vec<Effect> {
         let in_server = discord::parse_room(&id).is_some_and(|(guild, _)| {
             guild != discord::DM_GUILD
                 && self
@@ -393,21 +394,24 @@ impl Application {
         if !in_server || self.state.preview || !self.state.discord_online {
             return vec![];
         }
-        self.pending_open = Some(id.clone());
+        if beside {
+            self.pending_aside = Some(id.clone());
+        } else {
+            self.pending_open = Some(id.clone());
+        }
         vec![Effect::Backend(Command::Discord(
-            DiscordCommand::OpenThread { room: id },
+            DiscordCommand::OpenThread { room: id, beside },
         ))]
     }
 
     /// The thread [`Self::open_thread`] asked for couldn't be had.
     pub(super) fn thread_opened(&mut self, room: String, result: Result<(), String>) {
-        if let Err(error) = result
-            && self
-                .pending_open
-                .take_if(|pending| *pending == room)
-                .is_some()
-        {
-            self.state.notice = Some(error);
+        if let Err(error) = result {
+            let opening = self.pending_open.take_if(|pending| *pending == room);
+            let beside = self.pending_aside.take_if(|pending| *pending == room);
+            if opening.is_some() || beside.is_some() {
+                self.state.notice = Some(error);
+            }
         }
     }
 
@@ -546,6 +550,19 @@ impl Application {
     }
 
     pub(super) fn select(&mut self, id: String) -> Vec<Effect> {
+        // A thread beside the channel goes when another room shows.
+        let changes = self.state.selected.as_ref() != Some(&id)
+            && self
+                .state
+                .rooms
+                .iter()
+                .any(|room| room.id == id && self.state.in_scope(room));
+        let mut effects = if changes { self.close_aside() } else { vec![] };
+        effects.extend(self.show_room(id));
+        effects
+    }
+
+    fn show_room(&mut self, id: String) -> Vec<Effect> {
         let Some(room) = self
             .state
             .rooms
@@ -649,6 +666,12 @@ impl Application {
 
     /// Closes the conversation on screen, leaving none selected.
     pub(super) fn deselect(&mut self) -> Vec<Effect> {
+        let mut effects = self.close_aside();
+        effects.extend(self.close_room());
+        effects
+    }
+
+    fn close_room(&mut self) -> Vec<Effect> {
         self.remember_view();
         self.state.selected = None;
         self.state.confirm_delete = None;

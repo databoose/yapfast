@@ -22,6 +22,10 @@ pub fn command(
     if matches!(command, Command::Open(_) | Command::CloseRoom) {
         channels.close();
     }
+    if let Command::Aside(room) = command {
+        aside(room, discord, channels, done, events);
+        return;
+    }
     if let Command::MarkRead { room, sync } = &command {
         if let (Ok(discord), Some((guild, channel))) = (discord, discord::parse_room(room)) {
             discord.mark_read(guild, channel, *sync);
@@ -124,7 +128,7 @@ pub fn command(
             channels.open = Some(channel);
             return;
         }
-        match OpenChannel::open(discord, &room, done, channels.previews.clone()) {
+        match OpenChannel::open(discord, &room, false, done, channels.previews.clone()) {
             // The member list follows as Live::Members.
             Some(mut channel) => {
                 // Shown at once as it was kept on disk, while the latest page loads.
@@ -143,11 +147,11 @@ pub fn command(
         }
         return;
     }
-    let Some(channel) = channels
-        .open
-        .as_mut()
-        .filter(|channel| channel.room == room)
-    else {
+    // Discord ends the typing a message follows.
+    if matches!(command, Command::Send { .. }) {
+        channels.typed = None;
+    }
+    let Some(channel) = channels.shown_mut(&room) else {
         let again = "Open this conversation again, then retry.";
         let _ = match command {
             Command::Send { room, body, .. } => events.send(Event::SendResult {
@@ -183,8 +187,6 @@ pub fn command(
             reply,
             files,
         } => {
-            // Discord ends the typing a message follows.
-            channels.typed = None;
             let result = channel.send(discord, done, body.clone(), reply, files);
             publish(channel, discord, done, events);
             let _ = events.send(Event::SendResult { room, body, result });
@@ -260,6 +262,48 @@ pub fn command(
     }
 }
 
+/// Shows a thread beside the open channel, in place of any shown before,
+/// or with none, stops.
+fn aside(
+    room: Option<String>,
+    discord: Result<&Discord, &str>,
+    channels: &mut Channels,
+    done: &UnboundedSender<Done>,
+    events: &UnboundedSender<Event>,
+) {
+    let shown = channels.aside.as_ref();
+    if room.is_some() && room.as_ref() == shown.map(|shown| &shown.room) {
+        return;
+    }
+    if let (Some(shown), Ok(discord)) = (shown, discord) {
+        discord.beside(&shown.guild, None);
+    }
+    channels.close_aside();
+    let (Some(room), Ok(discord)) = (room, discord) else {
+        return;
+    };
+    // Shown at once as it was kept, while the latest page loads.
+    let channel = match channels.reopen(&room) {
+        Some(mut channel) => {
+            discord.beside(&channel.guild, Some(&channel.channel));
+            channel.refresh(discord, done);
+            Some(channel)
+        }
+        None => OpenChannel::open(discord, &room, true, done, channels.previews.clone()),
+    };
+    let Some(mut channel) = channel else {
+        let _ = events.send(Event::RoomError {
+            room,
+            message: "Could not open this Discord thread.".into(),
+        });
+        return;
+    };
+    if channel.loaded {
+        publish(&mut channel, discord, done, events);
+    }
+    channels.aside = Some(channel);
+}
+
 /// Which history a command asks for, if any.
 fn direction(command: &Command) -> Option<Direction> {
     match command {
@@ -302,7 +346,8 @@ pub fn finished(
             return;
         }
     };
-    let shown = channels.is_open(&room);
+    // The channel on screen it's for: the open one or the thread beside it.
+    let shown = channels.is_open(&room).then(|| room.clone());
     // Closed channels kept lately take what finished too.
     let channel = channels.get_mut(&room);
     let mut changed = false;
@@ -443,8 +488,8 @@ pub fn finished(
     };
     window.map(say);
     if changed
-        && shown
-        && let (Some(discord), Some(channel)) = (discord, channels.open.as_mut())
+        && let Some(shown) = shown
+        && let (Some(discord), Some(channel)) = (discord, channels.shown_mut(&shown))
     {
         publish(channel, discord, done, events);
     }
@@ -514,6 +559,18 @@ pub fn live(
     }
     if let Ok(event) = &event {
         channels.follow(event);
+    }
+    // The thread beside the open channel follows as it does.
+    if let Some(aside) = channels.aside.as_mut() {
+        match &event {
+            Ok(Live::Members { .. }) => {}
+            Ok(event) => {
+                if aside.live(event) {
+                    publish(aside, discord, done, events);
+                }
+            }
+            Err(_) => aside.refresh(discord, done),
+        }
     }
     let Some(channel) = channels.open.as_mut() else {
         return;

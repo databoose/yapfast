@@ -836,6 +836,7 @@ impl Matrix {
             // Matrix videos are files to save for now.
             Command::Voice(_)
             | Command::Discord(_)
+            | Command::Aside(_)
             | Command::PlayVideo { .. }
             | Command::Video(_) => {}
         }

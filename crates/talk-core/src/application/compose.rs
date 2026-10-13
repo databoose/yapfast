@@ -45,9 +45,15 @@ impl Application {
     }
 
     pub(super) fn set_draft(&mut self, body: String) -> Vec<Effect> {
-        let Some(id) = self.state.selected.clone() else {
-            return vec![];
-        };
+        match self.state.selected.clone() {
+            Some(id) => self.set_draft_in(id, body),
+            None => vec![],
+        }
+    }
+
+    /// Changes the draft of a room on screen: the selected one, or the
+    /// thread beside it.
+    pub(super) fn set_draft_in(&mut self, id: String, body: String) -> Vec<Effect> {
         if self
             .state
             .drafts
@@ -73,11 +79,13 @@ impl Application {
     }
 
     pub(super) fn reply(&mut self, item: String) -> Vec<Effect> {
-        let (Some(id), Some(message)) = (self.state.selected.clone(), self.state.message(&item))
-        else {
+        let (Some(id), Some(message)) = (
+            self.state.room_of(&item).cloned(),
+            self.state.message(&item),
+        ) else {
             return vec![];
         };
-        if !message.can_reply || !self.state.can_write() {
+        if !message.can_reply || !self.state.can_write_in(&id) {
             return vec![];
         }
         let reply = Compose::Reply {
@@ -92,17 +100,19 @@ impl Application {
     }
 
     pub(super) fn edit(&mut self, item: String) -> Vec<Effect> {
-        let (Some(id), Some(message)) = (self.state.selected.clone(), self.state.message(&item))
-        else {
+        let (Some(id), Some(message)) = (
+            self.state.room_of(&item).cloned(),
+            self.state.message(&item),
+        ) else {
             return vec![];
         };
-        if !message.can_edit || !self.state.can_write() {
+        if !message.can_edit || !self.state.can_write_in(&id) {
             return vec![];
         }
         let body = message.body.clone();
         let draft = match self.state.compose.get(&id) {
             Some(Compose::Edit { draft, .. }) => draft.clone(),
-            _ => self.state.draft().to_owned(),
+            _ => self.state.drafts.get(&id).cloned().unwrap_or_default(),
         };
         self.state
             .compose
@@ -136,11 +146,19 @@ impl Application {
     }
 
     pub(super) fn send(&mut self) -> Vec<Effect> {
-        if !self.state.can_send() {
+        match self.state.selected.clone() {
+            Some(id) => self.send_in(id),
+            None => vec![],
+        }
+    }
+
+    /// Sends what the composer of a room on screen holds: the selected
+    /// room's, or the thread's beside it.
+    pub(super) fn send_in(&mut self, id: String) -> Vec<Effect> {
+        if !self.state.can_send_in(&id) {
             return vec![];
         }
-        let id = self.state.selected.clone().expect("selected room exists");
-        let draft = self.state.draft().to_owned();
+        let draft = self.state.drafts.get(&id).cloned().unwrap_or_default();
         let body = if self.state.preview {
             draft.clone()
         } else {
@@ -217,8 +235,10 @@ impl Application {
             compose => {
                 let files: Vec<chat::OutgoingFile> = self
                     .state
-                    .staged()
-                    .iter()
+                    .staged
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
                     .map(|file| chat::OutgoingFile {
                         path: file.path.clone(),
                         spoiler: file.spoiler,
@@ -226,7 +246,11 @@ impl Application {
                     .collect();
                 self.sent_files = files.iter().map(|file| file.path.clone()).collect();
                 // A message goes after the newest, which show again for it.
-                let mut effects = self.jump_to_present();
+                let mut effects = if self.state.selected.as_ref() == Some(&id) {
+                    self.jump_to_present()
+                } else {
+                    vec![]
+                };
                 effects.push(Effect::Backend(Command::Send {
                     room: id,
                     body,

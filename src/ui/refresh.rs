@@ -162,6 +162,7 @@ impl Adapter {
         }
         if reach.composer {
             self.show_composer(window);
+            self.show_aside(window);
         }
         if reach.voice {
             self.show_voice(window);
@@ -203,6 +204,7 @@ impl Adapter {
         self.show_dialogs(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
+        self.show_aside(window);
         self.show_voice(window);
         self.show_video(window);
         let state = &self.app.state;
@@ -1440,6 +1442,94 @@ impl Adapter {
 
     /// The composer: what it may do, its files, its reply or edit, mentions and
     /// its hint.
+    /// The thread beside the open channel: its rows, built again only for
+    /// messages that changed, and its composer.
+    pub(super) fn show_aside(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        let Some(aside) = &state.aside else {
+            if window.get_aside_open() {
+                window.set_aside_open(false);
+                self.aside_messages = Arc::new(Vec::new());
+                self.aside_rows.clear();
+                self.models.aside_messages.clear();
+            }
+            return;
+        };
+        let room = &aside.room;
+        let name = state.aside_room().map_or("", |listed| listed.name.as_str());
+        window.set_aside_open(true);
+        window.set_aside_name(name.into());
+        window.set_aside_ready(aside.ready);
+        window.set_aside_loading(aside.loading_history);
+        window.set_aside_start(aside.history_start);
+        window.set_aside_failed(aside.history_failed);
+        window.set_aside_composer_enabled(state.can_write_in(room));
+        window.set_aside_can_send(state.can_send_in(room));
+        let draft = state.aside_draft();
+        if window.get_aside_draft() != draft {
+            window.set_aside_draft(draft.into());
+        }
+        window.set_aside_compose_label(match state.aside_compose() {
+            Some(Compose::Reply { author, body, .. }) => {
+                format!("Replying to {author}: {body}").into()
+            }
+            Some(Compose::Edit { .. }) => "Editing your message".into(),
+            None => SharedString::default(),
+        });
+        if Arc::ptr_eq(&self.aside_messages, &aside.messages) {
+            return;
+        }
+        let shown: HashMap<&str, &Arc<ChatMessage>> = self
+            .aside_messages
+            .iter()
+            .map(|message| (message.id.as_str(), message))
+            .collect();
+        let mut previous = std::mem::take(&mut self.aside_rows);
+        let mut before: Option<&ChatMessage> = None;
+        let rows: Vec<MessageRow> = aside
+            .messages
+            .iter()
+            .map(|message| {
+                let unchanged = shown
+                    .get(message.id.as_str())
+                    .is_some_and(|shown| Arc::ptr_eq(shown, message) || shown == &message);
+                let mut row = match previous.remove(&message.id) {
+                    Some(row) if unchanged => row,
+                    _ => self
+                        .layout
+                        .restyle(message, message_row(message, &self.revealed)),
+                };
+                self.aside_rows.insert(message.id.clone(), row.clone());
+                let day = day(message.timestamp);
+                let new_day = !day.is_empty()
+                    && before.is_none_or(|before| self::day(before.timestamp) != day);
+                row.first = new_day || before.is_none_or(|before| !continues(before, message));
+                row.picture = slint::Image::default();
+                row.picture_url = if collapsed(message, &self.revealed) {
+                    SharedString::default()
+                } else {
+                    message.avatar.as_deref().unwrap_or_default().into()
+                };
+                row.reply_picture = slint::Image::default();
+                row.reply_picture_url = message
+                    .reply
+                    .as_ref()
+                    .and_then(|reply| reply.avatar.as_deref())
+                    .unwrap_or_default()
+                    .into();
+                row.day = if new_day {
+                    day.into()
+                } else {
+                    SharedString::default()
+                };
+                before = Some(message);
+                row
+            })
+            .collect();
+        show_rows(&self.models.aside_messages, rows);
+        self.aside_messages = aside.messages.clone();
+    }
+
     pub(super) fn show_composer(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         let room = state.selected_room();
@@ -1650,6 +1740,10 @@ impl Adapter {
         }
         let state = &self.app.state;
         let restyle = std::mem::take(&mut self.restyle);
+        // The thread beside builds its rows again with the timeline's.
+        if restyle {
+            self.aside_messages = Arc::new(Vec::new());
+        }
         if messages_changed || selection_changed || reset || pictures_arrived || restyle {
             if selection_changed || reset {
                 window.set_react_item(SharedString::default());

@@ -211,10 +211,10 @@ pub struct Snapshot {
     /// read it.
     #[serde(skip)]
     pub listed: Option<(String, u64)>,
-    /// The server channel or thread on screen, by id, which lists a thread
-    /// this account isn't in while it shows.
+    /// The server channel or thread on screen, and a thread beside it, by
+    /// id: a thread this account isn't in lists while it shows.
     #[serde(skip)]
-    pub viewing: Option<String>,
+    pub viewing: Vec<String>,
     /// Who is who, as the service knows them; see [`SharedNames`].
     #[serde(skip)]
     pub names: SharedNames,
@@ -337,10 +337,16 @@ impl std::fmt::Debug for VoiceServer {
 
 enum Request {
     /// A thread about to open, from its channel object, for the tracker to
-    /// know and list.
+    /// know and list: in place of the channel on screen, or beside it.
     OpenThread {
         guild: String,
         thread: Value,
+        beside: bool,
+    },
+    /// The thread shown beside the channel on screen, or none.
+    Beside {
+        guild: String,
+        thread: Option<String>,
     },
     Join {
         guild: String,
@@ -486,6 +492,7 @@ impl Discord {
                 lists: MemberLists::new(lists, live.clone(), names.clone()),
                 presence,
                 viewing: None,
+                beside: None,
             },
         ));
         Ok(Self {
@@ -1082,10 +1089,11 @@ impl Discord {
         self.api.delete_channel(channel).await
     }
 
-    /// Learns of a thread of a server, by id, to open: snapshots list it
-    /// while it's on screen, as Discord tells a user account only of the
-    /// threads it joined.
-    pub async fn open_thread(&self, guild: &str, thread: &str) -> Result<()> {
+    /// Learns of a thread of a server, by id, to open in place of the
+    /// channel on screen, or `beside` it: snapshots list it while it's on
+    /// screen, as Discord tells a user account only of the threads it
+    /// joined.
+    pub async fn open_thread(&self, guild: &str, thread: &str, beside: bool) -> Result<()> {
         let value = self.api.channel(thread).await?;
         if !ready::is_thread(&value) || value["guild_id"] != guild {
             bail!("That isn't a thread of this server.");
@@ -1093,8 +1101,18 @@ impl Discord {
         let _ = self.requests.send(Request::OpenThread {
             guild: guild.into(),
             thread: value,
+            beside,
         });
         Ok(())
+    }
+
+    /// Shows a thread of a server beside the channel on screen, or with
+    /// none, stops; snapshots list it meanwhile.
+    pub fn beside(&self, guild: &str, thread: Option<&str>) {
+        let _ = self.requests.send(Request::Beside {
+            guild: guild.into(),
+            thread: thread.map(str::to_owned),
+        });
     }
 
     /// Leaves a server this account doesn't own. Snapshots drop it once its

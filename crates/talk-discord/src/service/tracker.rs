@@ -83,9 +83,10 @@ pub(super) struct Tracker {
     requests: HashMap<String, (bool, bool, String)>,
     /// The RTC server of each stream this account shares or watches, by key.
     streams: HashMap<String, String>,
-    /// The channel or thread on screen, which lists a thread this account
-    /// isn't in while it shows.
+    /// The channel or thread on screen, and a thread beside it, each of
+    /// which lists while it shows though this account isn't in it.
     viewing: Option<String>,
+    beside: Option<String>,
 }
 
 /// A user's Nitro from their user object, as [`Account::premium_type`].
@@ -121,6 +122,7 @@ impl Tracker {
             requests: HashMap::new(),
             streams: HashMap::new(),
             viewing: None,
+            beside: None,
         };
         tracker.sort_servers();
         if let Some(encoded) = ready["user_settings_proto"].as_str() {
@@ -153,10 +155,10 @@ impl Tracker {
         self.sort_servers();
     }
 
-    /// Keeps on screen the thread `channel` of `guild`, if `earlier` knew it
-    /// and READY, which lists only the threads this account is in, didn't.
-    pub(super) fn keep_viewed(&mut self, earlier: &[Arc<Server>], guild: &str, channel: &str) {
-        self.viewing = Some(channel.to_owned());
+    /// Keeps the thread `channel` of `guild`, on screen, if `earlier` knew
+    /// it and READY, which lists only the threads this account is in,
+    /// didn't.
+    pub(super) fn keep_thread(&mut self, earlier: &[Arc<Server>], guild: &str, channel: &str) {
         let Some(thread) = earlier
             .iter()
             .find(|server| server.id == guild)
@@ -864,20 +866,28 @@ impl Tracker {
         });
     }
 
-    /// Who can read a server's channel; see [`ready::Server::readers`].
     /// Takes in the channel on screen; returns whether what lists changed,
     /// which it does when a thread comes or goes.
     pub(super) fn view(&mut self, guild: &str, channel: Option<&str>) -> bool {
-        let thread = |id: Option<&str>| {
-            id.is_some_and(|id| {
-                self.servers
-                    .iter()
-                    .any(|server| server.threads.iter().any(|thread| thread.id == id))
-            })
-        };
-        let changed = thread(self.viewing.as_deref()) || thread(channel);
+        let changed = self.is_thread(self.viewing.as_deref()) || self.is_thread(channel);
         self.viewing = channel.filter(|_| guild != PRIVATE).map(str::to_owned);
         changed
+    }
+
+    /// Takes in the thread shown beside the channel on screen, or that
+    /// none is; returns whether what lists changed.
+    pub(super) fn beside(&mut self, thread: Option<&str>) -> bool {
+        let changed = self.beside.as_deref() != thread;
+        self.beside = thread.map(str::to_owned);
+        changed
+    }
+
+    fn is_thread(&self, id: Option<&str>) -> bool {
+        id.is_some_and(|id| {
+            self.servers
+                .iter()
+                .any(|server| server.threads.iter().any(|thread| thread.id == id))
+        })
     }
 
     /// The channel whose member list shows for a channel: a thread's
@@ -895,6 +905,7 @@ impl Tracker {
         parent.unwrap_or(channel)
     }
 
+    /// Who can read a server's channel; see [`ready::Server::readers`].
     pub(super) fn readers(&self, guild: &str, channel: &str) -> String {
         self.servers
             .iter()
@@ -1200,7 +1211,7 @@ impl Tracker {
             friend_requests: self.friend_requests(&names),
             voice,
             listed: None,
-            viewing: self.viewing.clone(),
+            viewing: self.viewing.iter().chain(&self.beside).cloned().collect(),
             names: super::SharedNames::new(self.names.clone()),
         }
     }
@@ -2012,10 +2023,14 @@ mod tests {
 
         // Viewing a thread lists it, so what lists changes.
         assert!(tracker.view("10", Some("400")));
-        assert_eq!(tracker.snapshot().viewing.as_deref(), Some("400"));
+        assert_eq!(tracker.snapshot().viewing, ["400"]);
         assert_eq!(tracker.listed_channel("10", "400".into()), "11");
         assert!(tracker.view("10", Some("11")));
         assert!(!tracker.view("10", Some("11")));
+        // Or beside it.
+        assert!(tracker.beside(Some("400")));
+        assert_eq!(tracker.snapshot().viewing, ["11", "400"]);
+        assert!(tracker.beside(None));
 
         // Its channel takes its threads along when deleted.
         tracker.apply(

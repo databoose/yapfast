@@ -715,6 +715,71 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn a_thread_beside_the_open_channel_shows_its_own_pages() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let general = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    let plans = discord
+        .snapshots()
+        .borrow()
+        .servers
+        .iter()
+        .flat_map(|server| &server.threads)
+        .find(|thread| thread.name == "Plans")
+        .map(|thread| discord::room_id(FAKE_GUILD, &thread.id))
+        .expect("the fake's Plans thread");
+    command(
+        Command::Open(general.clone()),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    command(
+        Command::Aside(Some(plans.clone())),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    // What was kept on disk shows at once; the page Discord sends follows.
+    while received.try_recv().is_ok() {}
+    let authors = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| match event {
+            Event::Timeline { room, messages } if *room == plans => Some(
+                messages
+                    .iter()
+                    .map(|message| message.author.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(
+        authors.iter().any(|author| author == "Carol"),
+        "{authors:?}"
+    );
+    assert_eq!(channels.open.as_ref().unwrap().room, general);
+    command(
+        Command::Aside(None),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    assert!(channels.aside.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
 async fn a_jump_shows_the_messages_around_one_then_newer_pages_to_the_present() {
     let discord = fake_discord().await;
     let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();

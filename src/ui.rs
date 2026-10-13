@@ -723,6 +723,8 @@ struct Models {
     message_requests: Rc<VecModel<RoomRow>>,
     spam_rooms: Rc<VecModel<RoomRow>>,
     messages: Rc<VecModel<MessageRow>>,
+    /// The messages of the thread beside the open channel.
+    aside_messages: Rc<VecModel<MessageRow>>,
     roster: Rc<VecModel<MemberRow>>,
     mentions: Rc<VecModel<MentionRow>>,
     new_dm_people: Rc<VecModel<ContactRow>>,
@@ -761,6 +763,7 @@ impl Models {
         window.set_message_requests(ModelRc::from(self.message_requests.clone()));
         window.set_spam_rooms(ModelRc::from(self.spam_rooms.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
+        window.set_aside_messages(ModelRc::from(self.aside_messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
         window.set_mentions(ModelRc::from(self.mentions.clone()));
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
@@ -845,6 +848,9 @@ struct Adapter {
     messages: Arc<Vec<Arc<ChatMessage>>>,
     /// The rows built for those messages, by id, so the list keeps their state.
     rows: HashMap<String, MessageRow>,
+    /// The same for the thread beside the open channel.
+    aside_messages: Arc<Vec<Arc<ChatMessage>>>,
+    aside_rows: HashMap<String, MessageRow>,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
     /// A hash of what the friends picker's rows were built from, so they're
@@ -1025,6 +1031,8 @@ impl Adapter {
                 latest_due: false,
                 revealed: HashSet::new(),
                 restyle: false,
+                aside_messages: Arc::new(Vec::new()),
+                aside_rows: HashMap::new(),
                 mention_at: None,
                 mention_dismissed: None,
                 emoji_word: None,

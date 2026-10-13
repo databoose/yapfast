@@ -1026,6 +1026,10 @@ pub enum Command {
     /// Show a room. Every network hears it, so each closes its own open room
     /// when another network's room opens.
     Open(String),
+    /// Show a Discord thread, by room id, beside the open room, as Discord
+    /// opens a thread from its channel; or with none, stop. Its timeline
+    /// comes as the open room's does.
+    Aside(Option<String>),
     /// Close the open room, on every network.
     CloseRoom,
     /// Queue a Markdown message, optionally replying to an item, with the
@@ -1207,11 +1211,12 @@ pub enum DiscordCommand {
         user: String,
         nickname: String,
     },
-    /// Learn of a Discord thread, by room id, so it lists while it's open:
-    /// Discord tells a user account only of the threads it's in.
-    /// [`Event::ThreadOpened`] follows.
+    /// Learn of a Discord thread, by room id, so it lists while it's open,
+    /// in place of the open room or `beside` it: Discord tells a user
+    /// account only of the threads it's in. [`Event::ThreadOpened`] follows.
     OpenThread {
         room: String,
+        beside: bool,
     },
     /// Close a Discord DM; the DM list changes when Discord confirms it.
     CloseDm {
@@ -1388,7 +1393,7 @@ impl Command {
         match self {
             Command::Voice(_) => Route::Voice,
             // Only Discord's videos play for now.
-            Command::Discord(_) | Command::Video(_) => Route::Discord,
+            Command::Discord(_) | Command::Video(_) | Command::Aside(_) => Route::Discord,
             Command::Open(_) | Command::CloseRoom | Command::FindPeople { .. } => Route::Every,
             Command::Send { room, .. }
             | Command::Edit { room, .. }

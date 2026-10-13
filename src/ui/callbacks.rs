@@ -69,6 +69,47 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             },
         );
     });
+    // The thread beside the open channel reports its rows in view the same
+    // way, the latest of those a burst of scrolling reported.
+    let timer = Rc::new(slint::Timer::default());
+    let range = Rc::new(Cell::new((-1, -1)));
+    let state = Rc::downgrade(adapter);
+    let weak = window.as_weak();
+    window.on_aside_viewport(move |top, bottom| {
+        range.set((top, bottom));
+        if timer.running() {
+            return;
+        }
+        let (state, weak, range) = (state.clone(), weak.clone(), range.clone());
+        timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(50),
+            move || {
+                let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
+                    return;
+                };
+                let mut adapter = adapter.borrow_mut();
+                let Some(aside) = &adapter.app.state.aside else {
+                    return;
+                };
+                let (top, bottom) = range.get();
+                let messages = &aside.messages;
+                if messages.is_empty() || top < 0 {
+                    return;
+                }
+                const MARGIN: usize = 6;
+                let first = (top as usize).min(messages.len() - 1);
+                let last = (bottom.max(top) as usize).min(messages.len() - 1);
+                let items = messages[first.saturating_sub(MARGIN)
+                    ..=last.saturating_add(MARGIN).min(messages.len() - 1)]
+                    .iter()
+                    .map(|message| message.item.clone())
+                    .collect();
+                let room = aside.room.clone();
+                adapter.action(&window, Action::VisibleMessages { room, items });
+            },
+        );
+    });
     let state = Rc::downgrade(adapter);
     let weak = window.as_weak();
     OPEN.with(|open| {
@@ -192,6 +233,22 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_confirm_delete_message, Action::ConfirmDelete);
     bind!(on_cancel_delete, Action::CancelDelete);
     bind!(on_cancel_compose, Action::CancelCompose);
+    bind!(on_aside_close, Action::CloseAside);
+    bind!(on_aside_expand, Action::ExpandAside);
+    bind!(on_aside_earlier, Action::AsideEarlier);
+    bind!(on_aside_send, Action::SendAside);
+    bind!(on_aside_cancel_compose, Action::CancelAsideCompose);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_aside_draft_edited(move |text| {
+            let Some(window) = weak.upgrade() else { return };
+            let mut adapter = adapter.borrow_mut();
+            if adapter.app.state.aside_draft() != text.as_str() {
+                adapter.action(&window, Action::SetAsideDraft(text.into()));
+            }
+        });
+    }
     bind!(on_close_forward, Action::CloseForward);
     bind!(on_dismiss_notice, Action::DismissNotice);
     bind!(on_close_image, Action::CloseImage);
@@ -855,9 +912,11 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
-    window.on_open_room(move |id| {
+    window.on_open_aside(move |id| {
         if let Some(window) = weak.upgrade() {
-            state.borrow_mut().action(&window, Action::Open(id.into()));
+            state
+                .borrow_mut()
+                .action(&window, Action::OpenAside(id.into()));
         }
     });
     let state = adapter.clone();

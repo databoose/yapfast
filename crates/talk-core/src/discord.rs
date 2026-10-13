@@ -176,8 +176,8 @@ struct Indexed {
     voice: Vec<(String, Vec<talk_discord::service::VoiceMember>)>,
     /// The member count of its channel whose list was on screen.
     listed: Option<(String, u64)>,
-    /// Its thread on screen, which lists while it shows.
-    viewing: Option<String>,
+    /// Its threads on screen, which list while they show.
+    viewing: Vec<String>,
     rooms: Vec<ChatRoom>,
     server: ChatServer,
 }
@@ -206,14 +206,13 @@ impl Indexed {
             .filter(|(channel, _)| server.text_channels.iter().any(|text| &text.id == channel))
     }
 
-    fn viewing<'a>(
-        snapshot: &'a Snapshot,
-        server: &talk_discord::ready::Server,
-    ) -> Option<&'a String> {
+    fn viewing(snapshot: &Snapshot, server: &talk_discord::ready::Server) -> Vec<String> {
         snapshot
             .viewing
-            .as_ref()
+            .iter()
             .filter(|viewing| server.threads.iter().any(|thread| &thread.id == *viewing))
+            .cloned()
+            .collect()
     }
 
     /// Whether these rooms still show `server` in `snapshot`.
@@ -228,7 +227,7 @@ impl Indexed {
             && self.show_hidden == show_hidden
             && self.premium == premium
             && self.listed.as_ref() == Self::listed(snapshot, server)
-            && self.viewing.as_ref() == Self::viewing(snapshot, server)
+            && self.viewing == Self::viewing(snapshot, server)
             && Self::voice(snapshot, server)
                 .map(Some)
                 .chain(std::iter::once(None))
@@ -280,7 +279,7 @@ impl Index {
                             .map(|(id, members)| (id.clone(), members.clone()))
                             .collect(),
                         listed: Indexed::listed(snapshot, server).cloned(),
-                        viewing: Indexed::viewing(snapshot, server).cloned(),
+                        viewing: Indexed::viewing(snapshot, server),
                         rooms: made,
                         server: listed,
                     }
@@ -388,15 +387,14 @@ fn server_rooms(
         )
     });
     // Threads list under their channels: those this account is in that are
-    // still active, and the one on screen.
+    // still active, and those on screen.
     let mut threads: std::collections::HashMap<&str, Vec<&talk_discord::ready::Channel>> =
         std::collections::HashMap::new();
     for thread in &server.threads {
         let Some(details) = thread.thread.as_deref() else {
             continue;
         };
-        let shown =
-            details.joined && !details.archived || snapshot.viewing.as_ref() == Some(&thread.id);
+        let shown = details.joined && !details.archived || snapshot.viewing.contains(&thread.id);
         if shown
             && thread.access != Access::Hidden
             && let Some(parent) = thread.parent.as_deref()
@@ -822,7 +820,7 @@ mod tests {
         assert_eq!(servers[0].channels.len(), 4);
         // The thread on screen lists while it shows, joined or not.
         let viewing = Snapshot {
-            viewing: Some("42".into()),
+            viewing: vec!["42".into()],
             ..first.clone()
         };
         let mut kept = Index::default();

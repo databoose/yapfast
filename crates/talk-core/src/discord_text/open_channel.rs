@@ -173,12 +173,13 @@ pub struct OpenChannel {
 }
 
 impl OpenChannel {
-    /// Opens a channel and starts loading its latest messages. What was kept
-    /// on disk shows meanwhile, and the latest page fits in as it does for a
-    /// channel kept in memory.
+    /// Opens a channel, or a thread `beside` the open channel, and starts
+    /// loading its latest messages. What was kept on disk shows meanwhile,
+    /// and the latest page fits in as it does for a channel kept in memory.
     pub(super) fn open(
         discord: &Discord,
         room: &str,
+        beside: bool,
         done: &UnboundedSender<Done>,
         previews: SharedPreviews,
     ) -> Option<Self> {
@@ -200,7 +201,11 @@ impl OpenChannel {
             open.shown.messages.insert(message.order(), message);
             open.loaded = true;
         }
-        discord.view(&open.guild, Some(&open.channel));
+        if beside {
+            discord.beside(&open.guild, Some(&open.channel));
+        } else {
+            discord.view(&open.guild, Some(&open.channel));
+        }
         open.load(discord, done, Load::Latest);
         Some(open)
     }
@@ -1185,6 +1190,24 @@ impl OpenChannel {
 
     /// The thread a message leads to, as Talk knows it now if it does: its
     /// name and count change after the message.
+    /// Whether a thread a shown message leads to changed apart from it: its
+    /// name, its count or whether it's archived, which its link shows.
+    pub(super) fn links_changed(&self, snapshot: &talk_discord::service::Snapshot) -> bool {
+        let server = snapshot
+            .servers
+            .iter()
+            .find(|server| server.id == self.guild)
+            .map(|server| &**server);
+        self.rendered.iter().any(|(order, row)| {
+            row.thread.is_some()
+                && self
+                    .shown
+                    .messages
+                    .get(order)
+                    .is_some_and(|message| row.thread != self.thread_link(server, message))
+        })
+    }
+
     fn thread_link(
         &self,
         server: Option<&talk_discord::ready::Server>,

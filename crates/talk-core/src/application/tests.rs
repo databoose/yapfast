@@ -2267,7 +2267,7 @@ fn discord_threads_open_once_listed() {
                 .collect(),
             ..Default::default()
         })],
-        viewing: viewing.map(Into::into),
+        viewing: viewing.into_iter().map(Into::into).collect(),
         ..Default::default()
     };
     let mut app = connected();
@@ -2278,7 +2278,7 @@ fn discord_threads_open_once_listed() {
     let effects = app.dispatch(Action::Open("discord:10:30".into()));
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::OpenThread { room }))]
+        [Effect::Backend(Command::Discord(DiscordCommand::OpenThread { room, beside: false }))]
             if room == "discord:10:30"
     ));
     app.apply(Event::ThreadOpened {
@@ -2314,6 +2314,134 @@ fn discord_threads_open_once_listed() {
             .any(|room| room.id == "discord:10:31")
     );
     assert_eq!(app.state.selected.as_deref(), Some("discord:10:30"));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_threads_show_beside_their_channel() {
+    use talk_discord::{
+        ready::{Channel, Server, Thread},
+        service::{Snapshot, Status},
+    };
+    let snapshot = |threads: &[&str], viewing: &[&str]| Snapshot {
+        status: Status::Online,
+        servers: vec![Arc::new(Server {
+            id: "10".into(),
+            name: "Test".into(),
+            text_channels: vec![
+                Channel {
+                    id: "21".into(),
+                    name: "general".into(),
+                    ..Default::default()
+                },
+                Channel {
+                    id: "22".into(),
+                    name: "news".into(),
+                    ..Default::default()
+                },
+            ],
+            threads: threads
+                .iter()
+                .map(|id| Channel {
+                    id: (*id).into(),
+                    name: "Plans".into(),
+                    parent: Some("21".into()),
+                    thread: Some(Box::new(Thread {
+                        joined: *id == "30",
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })],
+        viewing: viewing.iter().map(|id| (*id).into()).collect(),
+        ..Default::default()
+    };
+    let mut app = connected();
+    app.apply(discord_event(snapshot(&["30"], &[])));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:21".into()));
+    let effects = app.dispatch(Action::OpenAside("discord:10:30".into()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Aside(Some(room)))] if room == "discord:10:30"
+    ));
+    app.apply(Event::Timeline {
+        room: "discord:10:30".into(),
+        messages: timeline(vec![ChatMessage {
+            item: "d:5".into(),
+            body: "Saturday?".into(),
+            can_react: true,
+            can_reply: true,
+            ..Default::default()
+        }]),
+    });
+    let aside = app.state.aside.as_ref().unwrap();
+    assert!(aside.ready && aside.messages.len() == 1);
+    assert_eq!(app.state.selected.as_deref(), Some("discord:10:21"));
+
+    // Its messages act in the thread, and its composer writes there.
+    let effects = app.dispatch(Action::React {
+        item: "d:5".into(),
+        key: "👍".into(),
+    });
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::React { room, .. })] if room == "discord:10:30"
+    ));
+    app.dispatch(Action::Reply("d:5".into()));
+    assert!(matches!(
+        app.state.compose.get("discord:10:30"),
+        Some(Compose::Reply { item, .. }) if item == "d:5"
+    ));
+    assert!(
+        app.state.compose().is_none(),
+        "the channel's composer stays"
+    );
+    app.dispatch(Action::SetAsideDraft("Yes".into()));
+    let effects = app.dispatch(Action::SendAside);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Send { room, body, reply: Some(reply), .. })]
+            if room == "discord:10:30" && body == "Yes" && reply == "d:5"
+    ));
+    app.apply(Event::SendResult {
+        room: "discord:10:30".into(),
+        body: "Yes".into(),
+        result: Ok(()),
+    });
+
+    // Expanding it shows it in place of its channel.
+    let effects = app.dispatch(Action::ExpandAside);
+    assert!(app.state.aside.is_none());
+    assert_eq!(app.state.selected.as_deref(), Some("discord:10:30"));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Aside(None)), .., Effect::Backend(Command::Open(room))]
+            if room == "discord:10:30"
+    ));
+
+    // One that isn't listed shows once Discord gives it, and goes with
+    // its channel.
+    app.dispatch(Action::SelectRoom("discord:10:21".into()));
+    let effects = app.dispatch(Action::OpenAside("discord:10:31".into()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::OpenThread { room, beside: true }))]
+            if room == "discord:10:31"
+    ));
+    let effects = app.apply(discord_event(snapshot(&["30", "31"], &["21", "31"])));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Aside(Some(room))) if room == "discord:10:31"
+    )));
+    let effects = app.dispatch(Action::SelectRoom("discord:10:22".into()));
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::Backend(Command::Aside(None)))
+    ));
+    assert!(app.state.aside.is_none());
 }
 
 #[test]

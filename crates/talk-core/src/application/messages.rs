@@ -4,7 +4,10 @@ use super::*;
 
 impl Application {
     pub(super) fn react(&mut self, item: String, key: String) -> Vec<Effect> {
-        if !self.state.can_write()
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
+        if !self.state.can_write_in(&room)
             || !self
                 .state
                 .message(&item)
@@ -12,7 +15,6 @@ impl Application {
         {
             return vec![];
         }
-        let room = self.state.selected.clone().expect("selected room exists");
         let adding = !self.state.message(&item).is_some_and(|message| {
             message
                 .reactions
@@ -79,7 +81,7 @@ impl Application {
         let Some(item) = self.state.confirm_delete.take() else {
             return vec![];
         };
-        let Some(room) = self.state.selected.clone() else {
+        let Some(room) = self.state.room_of(&item).cloned() else {
             return vec![];
         };
         if self
@@ -125,7 +127,9 @@ impl Application {
         {
             return vec![];
         }
-        let room = self.state.selected.clone().expect("selected room exists");
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
         vec![Effect::Backend(Command::SaveAttachment {
             room,
             item,
@@ -145,7 +149,7 @@ impl Application {
             .message(&item)
             .and_then(|message| message.attachments.get(index))
             .is_some_and(|attachment| attachment.video);
-        let Some(room) = self.state.selected.clone().filter(|_| video) else {
+        let Some(room) = self.state.room_of(&item).cloned().filter(|_| video) else {
             return vec![];
         };
         vec![Effect::Backend(Command::PlayVideo {
@@ -277,7 +281,9 @@ impl Application {
         {
             return vec![];
         }
-        let room = self.state.selected.clone().expect("selected room exists");
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
         vec![Effect::Backend(command(room, item))]
     }
 
@@ -298,7 +304,16 @@ impl Application {
     /// Downloads the viewer's image at viewing size, unless it has it or is
     /// getting it. The preview shows until it arrives.
     pub(super) fn load_image(&mut self) -> Vec<Effect> {
-        let (Some(viewer), Some(room)) = (&mut self.state.viewer, &self.state.selected) else {
+        let Some(room) = self
+            .state
+            .viewer
+            .as_ref()
+            .and_then(|viewer| self.state.room_of(&viewer.item))
+            .cloned()
+        else {
+            return vec![];
+        };
+        let Some(viewer) = &mut self.state.viewer else {
             return vec![];
         };
         if self.state.preview || viewer.pictures.contains_key(&viewer.index) {
@@ -306,7 +321,7 @@ impl Application {
         }
         viewer.pictures.insert(viewer.index, None);
         vec![Effect::Backend(Command::ViewImage {
-            room: room.clone(),
+            room,
             item: viewer.item.clone(),
             index: viewer.index,
         })]

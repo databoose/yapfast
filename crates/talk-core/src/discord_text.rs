@@ -331,6 +331,17 @@ impl Chat {
                     channel.refresh(&self.discord, &self.done);
                 }
                 self.online = online;
+                // A thread a message leads to shows its new count on the link.
+                for channel in self
+                    .channels
+                    .open
+                    .iter_mut()
+                    .chain(&mut self.channels.aside)
+                {
+                    if channel.loaded && channel.links_changed(&snapshot) {
+                        render::publish(channel, &self.discord, &self.done, events);
+                    }
+                }
                 let _ = events.send(Event::Discord(snapshot));
                 if let Some(channel) = &mut self.channels.open {
                     render::send_topic(channel, &self.discord, events, false);
