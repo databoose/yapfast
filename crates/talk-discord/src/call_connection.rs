@@ -51,6 +51,9 @@ const MOST: usize = 20;
 const GONE: u8 = 5;
 /// A speaker heard from no more in this long gives up their decoder.
 const FORGET: Duration = Duration::from_secs(10);
+/// A tick this late means the call stalled rather than woke late: its
+/// schedule starts again from now instead of rushing out what it missed.
+const STALLED: Duration = Duration::from_millis(100);
 /// While a speaker's audio is dropped for one reason, it's logged again
 /// after this many more packets: 10 s.
 const STILL_DROPPING: u32 = 500;
@@ -279,7 +282,10 @@ impl Media {
         let interval = connection.interval;
         let mut heartbeat = tokio::time::interval_at(Instant::now() + interval, interval);
         let mut ticks = tokio::time::interval(Duration::from_millis(20));
-        ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // Windows wakes timers on its 15.6 ms clock, so a 20 ms tick often
+        // comes at 31 ms. Catching up on the ticks missed keeps 50 frames a
+        // second each way; delaying them sent and played two thirds of that.
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Burst);
         let mut keepalive = tokio::time::interval(KEEPALIVE);
         let mut datagram = vec![0u8; 2048];
         let result: Result<Ended> = async {
@@ -322,7 +328,10 @@ impl Media {
                             call_video::Sending::clear(connection).await?;
                         }
                     },
-                    _ = ticks.tick() => {
+                    due = ticks.tick() => {
+                        if due.elapsed() > STALLED {
+                            ticks.reset();
+                        }
                         self.send(connection, sending).await?;
                         self.hear(listener);
                         self.watching.repair(connection).await?;
