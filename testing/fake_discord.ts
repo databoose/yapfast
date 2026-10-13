@@ -97,7 +97,10 @@
 // Alice's Crew role may manage channels: POST /guilds/{id}/channels makes a
 // channel or category in "Server", and GET, PATCH and DELETE /channels/{id}
 // read, change and delete one, each with its CHANNEL_ event. Deleting a
-// category leaves its channels outside any, as Discord does.
+// category leaves its channels outside any, as Discord does. DELETE
+// /users/@me/guilds/{id} leaves "Server", owned by Bob, with GUILD_DELETE and
+// GUILD_MEMBER_REMOVE, and READY leaves it out until POST /_control/rejoin
+// brings her back with its GUILD_CREATE.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
 // remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
 // code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
@@ -1054,6 +1057,9 @@ const madeChannels = new Map<string, GuildChannel>();
 const channelEdits = new Map<string, Partial<GuildChannel>>();
 const deletedChannels = new Set<string>();
 
+// Whether Alice left "Server"; see DELETE /users/@me/guilds/{id}.
+let leftServer = false;
+
 /** "Server"'s channels as they are now. */
 function guildChannels(): GuildChannel[] {
   const channel = guildChannel;
@@ -1249,8 +1255,8 @@ function ready(ws: Socket) {
       nsfw_allowed: true,
     },
     users: [...Object.values(users), ...Object.values(strangers), ...fillerPeople].filter((user) => user.id !== ALICE).map(wireUser),
-    guilds: [guild(), ...fillers],
-    merged_members: [[alice], ...fillers.map((filler) => [{ ...alice, roles: [filler.roles[1]!.id, filler.roles[4]!.id] }])],
+    guilds: [...(leftServer ? [] : [guild()]), ...fillers],
+    merged_members: [...(leftServer ? [] : [[alice]]), ...fillers.map((filler) => [{ ...alice, roles: [filler.roles[1]!.id, filler.roles[4]!.id] }])],
     read_state: {
       entries: [...readStates].map(([id, read]) => ({
         id,
@@ -1302,6 +1308,19 @@ function ready(ws: Socket) {
 function readySupplemental() {
   const inServer = [...voice].filter(([, state]) => state.guild === GUILD);
   const inVoice = inServer.map(([id]) => id);
+  if (leftServer) {
+    return {
+      guilds: [],
+      merged_members: [],
+      merged_presences: {
+        guilds: [],
+        friends: [users.bob, users.carol, users.dave].map((user) => ({ user_id: user.id, ...presences[user.id] })),
+      },
+      lazy_private_channels: [],
+      disclose: [],
+      game_invites: [],
+    };
+  }
   return {
     guilds: [
       {
@@ -3063,6 +3082,15 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
   }
 
+  // Leaving "Server", which Bob owns, as a member rather than lurking.
+  if (method === "DELETE" && path === `/users/@me/guilds/${GUILD}`) {
+    if (leftServer) return json({ message: "Unknown Guild", code: 10004 }, 404);
+    leftServer = true;
+    dispatch("GUILD_DELETE", { id: GUILD });
+    dispatch("GUILD_MEMBER_REMOVE", { guild_id: GUILD, user: wireUser(users.alice) });
+    return new Response(null, { status: 204 });
+  }
+
   // Closing a DM takes it out of her list until either of them writes.
   if (method === "DELETE" && (m = path.match(/^\/channels\/(\d+)$/))) {
     const dm = privates.get(m[1]!);
@@ -3869,6 +3897,21 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/invites") {
       return Response.json(invites);
+    }
+    if (req.method === "POST" && path === "/_control/rejoin") {
+      if (!leftServer) return new Response("Alice is in Server\n", { status: 400 });
+      leftServer = false;
+      dispatch("GUILD_CREATE", {
+        ...guild(),
+        joined_at: new Date().toISOString(),
+        members: [member(users.alice)],
+        voice_states: [],
+        presences: [],
+        threads: [],
+        stage_instances: [],
+        guild_scheduled_events: [],
+      });
+      return new Response("Alice joined Server again\n");
     }
     if (req.method === "POST" && path === "/_control/busy-start") {
       if (fillerList.length === 0) return new Response("no filler servers; start with --servers N\n", { status: 400 });

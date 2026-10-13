@@ -2554,6 +2554,7 @@ fn a_discord_servers_menus_show_and_change_its_notifications() {
             "Mute server",
             "Notification settings",
             "Hide muted channels",
+            "Leave server",
             "Copy link",
             "Copy ID"
         ]
@@ -2589,7 +2590,11 @@ fn a_discord_servers_menus_show_and_change_its_notifications() {
     window.invoke_prepare_menu("header:discord:10".into(), false);
     assert_eq!(
         texts(window.get_menu_rows()),
-        ["Notification settings", "Hide muted channels"]
+        [
+            "Notification settings",
+            "Hide muted channels",
+            "Leave server"
+        ]
     );
     assert_eq!(window.get_header_server(), "", "until the server is open");
     window.invoke_navigate_server("discord:10".into());
@@ -2873,4 +2878,27 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         "Are you sure you want to delete Talk? This cannot be undone."
     );
     assert!(prompt.danger && !prompt.named);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn leaving_a_server_asks_first_in_red() {
+    let (window, adapter, _directory) = discord_server_window();
+    window.invoke_prepare_menu("discord:10".into(), false);
+    let leave = window
+        .get_menu_rows()
+        .iter()
+        .find(|row| row.text == "Leave server")
+        .unwrap();
+    assert!(leave.danger && leave.separated);
+    window.invoke_choose_menu("discord:10".into(), false, "leave-server".into());
+    assert!(window.get_leave_open());
+    let prompt = window.get_leave_prompt();
+    assert_eq!(prompt.title, "Leave 'Test'");
+    assert_eq!(prompt.confirm, "Leave server");
+    assert!(prompt.danger && !prompt.named && !prompt.saving);
+    window.invoke_leave_server();
+    assert!(adapter.borrow().app.state.leave.as_ref().unwrap().leaving);
+    window.invoke_close_leave();
+    assert!(!window.get_leave_open());
 }

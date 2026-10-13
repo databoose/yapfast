@@ -2187,6 +2187,29 @@ async fn talks_to_the_fake_server() {
     live_where(&mut members, |live| listed(live, &|dave| dave.is_some())).await;
     assert_eq!(discord.name(&guild, &me).as_deref(), Some("Alice"));
 
+    // Leaving "Server", which Bob owns, takes it out of her list; the fake
+    // lets her back in, so the tests after these find it again.
+    discord.leave_server(&guild).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        !snapshot.servers.iter().any(|known| known.id == guild)
+    })
+    .await;
+    assert!(
+        discord.leave_server(&guild).await.is_err(),
+        "she isn't in it"
+    );
+    post_control(server, "/_control/rejoin", "");
+    let snapshot = snapshot_where(&discord, |snapshot| {
+        snapshot.servers.iter().any(|known| known.id == guild)
+    })
+    .await;
+    assert!(
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .any(|channel| channel.id == general)
+    );
+
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();
     assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");

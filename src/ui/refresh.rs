@@ -199,6 +199,7 @@ impl Adapter {
         self.show_members(window);
         self.show_invite(window);
         self.show_channel_dialog(window);
+        self.show_leave(window);
         self.show_dialogs(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
@@ -1130,6 +1131,28 @@ impl Adapter {
             loading: dialog.settings.is_none() && dialog.error.is_none(),
             saving: dialog.saving,
             error: dialog.error.as_deref().unwrap_or_default().into(),
+        });
+    }
+
+    /// Asks before leaving a Discord server, as Discord's dialog does.
+    fn show_leave(&self, window: &TalkWindow) {
+        let leave = self.app.state.leave.as_ref();
+        window.set_leave_open(leave.is_some());
+        let Some(leave) = leave else {
+            return;
+        };
+        window.set_leave_prompt(ChannelPrompt {
+            title: format!("Leave '{}'", leave.name).into(),
+            detail: format!(
+                "Are you sure you want to leave {}? You won't be able to rejoin this server unless you are re-invited.",
+                leave.name
+            )
+            .into(),
+            confirm: "Leave server".into(),
+            danger: true,
+            saving: leave.leaving,
+            error: leave.error.as_deref().unwrap_or_default().into(),
+            ..Default::default()
         });
     }
 

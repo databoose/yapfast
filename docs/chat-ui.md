@@ -187,8 +187,9 @@ The window follows Discord's arrangement:
   Notification settings, whose submenu picks All messages, Only @mentions
   or Nothing, with the level that applies under it, and ticks Suppress
   @everyone and @here and Suppress all role @mentions; Hide muted
-  channels, a box to tick; and, where the account may manage channels,
-  Create channel and Create category.
+  channels, a box to tick; where the account may manage channels, Create
+  channel and Create category; and, in red, Leave server, which asks
+  first and isn't offered to the server's owner.
 - A sidebar, 240px by default and resizable by dragging its edge, with the
   server name, a filter, and uppercase TEXT CHANNELS and VOICE CHANNELS groups.
   A Discord server's name, with a chevron beside it, opens a dropdown below

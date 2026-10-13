@@ -75,6 +75,8 @@ pub enum MenuChoice {
     EditChannel,
     DuplicateChannel,
     DeleteChannel,
+    /// Leave a Discord server this account doesn't own.
+    LeaveServer,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.

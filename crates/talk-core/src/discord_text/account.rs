@@ -452,6 +452,28 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::LeaveServer { server }) = command {
+        let guild = discord::parse_server(&server).map(str::to_owned);
+        match (discord, guild) {
+            (Ok(discord), Some(guild)) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord.leave_server(&guild).await.map_err(|error| {
+                        tracing::warn!(error = format!("{error:#}"), "could not leave a server");
+                        format!("Couldn't leave the server: {error}")
+                    });
+                    let _ = events.send(Event::LeftServer { server, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::LeftServer {
+                    server,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::Discord(
         command @ (DiscordCommand::CreateChannel { .. }
         | DiscordCommand::ChannelSettings { .. }
