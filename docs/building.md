@@ -138,7 +138,6 @@ dependency in Cargo.toml:
   audio tracks and cancellable joins.
 - `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling,
   remote track volume and camera capture from pooled buffers.
-- `songbird`: songbird 0.6.0, fixed to receive audio in DAVE calls.
 - `davey`: davey 0.1.4, keeping its key packages when a Go Live stream's group
   id changes.
 - `tungstenite`: tungstenite 0.26.2, giving back the read buffer a large frame
@@ -240,9 +239,8 @@ GPUI's FXC shader build is no longer used.
 The supported build route for this migration is the Linux MSVC cross-build.
 Native Windows development needs Rustup, Visual Studio C++ tools and SDK, CMake,
 LLVM and Protobuf, plus the same prepared Skia archive through
-`SKIA_BINARIES_URL`, and `LIBOPUS_LIB_DIR` naming a folder whose `lib`
-holds an empty `opus.lib`, as the Windows Nix shell sets it, so songbird uses
-libwebrtc's libopus. That native-host preparation/build route has not been checked.
+`SKIA_BINARIES_URL`. Opus comes from the libopus in libwebrtc's archive.
+That native-host preparation/build route has not been checked.
 The downloadable package needs none of these tools to run.
 
 Before accepting the Windows build, check text entry, selection, copy/paste,

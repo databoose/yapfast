@@ -308,7 +308,7 @@ pub enum Live {
     StreamMoved(StreamServer),
 }
 
-/// What songbird needs to open the voice connection Discord assigned.
+/// What a call needs to open the voice connection Discord assigned.
 #[derive(Clone)]
 pub struct VoiceServer {
     pub user_id: String,

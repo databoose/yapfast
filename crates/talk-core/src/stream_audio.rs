@@ -16,7 +16,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use talk_discord::stream_connection::{Sound, SoundSender};
+use talk_discord::{
+    opus,
+    stream_connection::{Sound, SoundSender},
+};
 
 use crate::audio_io::{Heard, Output, RATE};
 
@@ -141,12 +144,7 @@ impl Capture {
         let inputs = Inputs::default();
         let stop = Arc::new(AtomicBool::new(false));
         let capture = listen(inputs.clone(), stop.clone())?;
-        let mut encoder =
-            opus2::Encoder::new(RATE, opus2::Channels::Stereo, opus2::Application::Audio)
-                .map_err(|error| anyhow::anyhow!("could not start the Opus encoder: {error}"))?;
-        encoder
-            .set_bitrate(opus2::Bitrate::Bits(BITRATE))
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let mut encoder = opus::Encoder::new(2, opus::Application::Audio, BITRATE)?;
         let stopping = stop.clone();
         let mixer = std::thread::Builder::new()
             .name("talk-stream-sound".into())
@@ -293,7 +291,7 @@ fn play(
                     return;
                 }
             };
-            let mut decoder = match opus2::Decoder::new(RATE, opus2::Channels::Stereo) {
+            let mut decoder = match opus::Decoder::new(2) {
                 Ok(decoder) => decoder,
                 Err(error) => {
                     tracing::warn!(%error, "could not start the Opus decoder");

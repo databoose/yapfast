@@ -21,10 +21,12 @@
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
 // connects to a voice server here that answers the handshake without DAVE and
-// counts the audio each call sends: GET /_control/voice-audio lists, by
-// SSRC, its packets, those that didn't open or weren't Opus, those with more
-// than Opus's 3-byte silence, and op 5's speaking value. A Go Live stream's
-// video is decrypted and its VP8 frames
+// counts the audio each call connection sends: GET /_control/call-audio
+// lists it by connection, and GET /_control/voice-audio by SSRC with op 5's
+// latest speaking value, and whether it ever said it was speaking. POST /_control/bob-speak makes Bob say two
+// seconds of a tone in every call Alice is in. POST /_control/voice-drop closes her call's voice
+// connections with 4015, as a voice server restarting does, for them to
+// resume with op 7. A Go Live stream's video is decrypted and its VP8 frames
 // counted; GET /_control/video lists what each stream received. POST
 // /_control/voice-move moves Alice's call in the server to another voice
 // server, and GET /_control/voice-identifies lists the tokens voice
@@ -948,6 +950,8 @@ type SocketData = {
   ssrc?: number;
   /** A viewer's stream, which starts once it asks for video with op 15. */
   waiting?: { key: Buffer; ssrc: number };
+  /** A call connection's transport key, once it selected the protocol. */
+  callKey?: Buffer;
   /** A remote login: the client's key, the nonce it must prove, and the code. */
   remoteAuth?: { key?: CryptoKey; nonce?: Uint8Array; fingerprint?: string; scanned?: boolean; timer?: Timer };
 };
@@ -1811,21 +1815,41 @@ type Received = {
   badRetransmissions: number;
 };
 const received = new Map<number, Received>();
+
+/** What a call connection sent, by its audio SSRC: Opus packets, those that
+ *  didn't open, the silent frames among them and those longer than silence,
+ *  and op 5's speaking values. */
+type CallAudio = { token: string; packets: number; undecryptable: number; silent: number; voiced: number; speaking: number[]; resumed: number };
+const callAudio = new Map<number, CallAudio>();
+/** Each call connection's SSRC by its voice session, for resuming. */
+const callSessions = new Map<string, number>();
+/** Each closed call connection's key, by SSRC, for its resume. */
+const resumedKeys = new Map<number, Buffer>();
+/** Bob's voice in calls: Opus packets from testing/fixtures/voice-tone.ogg. */
+function oggPackets(file: Buffer): Buffer[] {
+  const packets: Buffer[] = [];
+  let partial: Buffer[] = [];
+  for (let at = 0; at + 27 <= file.length && file.toString("ascii", at, at + 4) === "OggS"; ) {
+    const segments = file[at + 26]!;
+    let body = at + 27 + segments;
+    for (const size of file.subarray(at + 27, at + 27 + segments)) {
+      partial.push(file.subarray(body, body + size));
+      body += size;
+      if (size < 255) {
+        packets.push(Buffer.concat(partial));
+        partial = [];
+      }
+    }
+    at = body;
+  }
+  // The first two are the Opus header and tags.
+  return packets.slice(2);
+}
+const BOB_AUDIO_SSRC = 6000;
 /** The same records, by the stream's audio SSRC. */
 const receivedAudio = new Map<number, Received>();
 /** And by its RTX SSRC. */
 const receivedRtx = new Map<number, Received>();
-/** What each call's voice connection sent, by its SSRC. */
-type Spoken = {
-  key: Buffer;
-  mode: string;
-  packets: number;
-  undecryptable: number;
-  /** Opus packets longer than its 3-byte silence frame. */
-  voiced: number;
-  speaking: number | null;
-};
-const spoken = new Map<number, Spoken>();
 /** Previews streamers uploaded: their size, and whether they were JPEGs. */
 const previews: { stream: string; bytes: number; jpeg: boolean }[] = [];
 
@@ -1866,6 +1890,36 @@ function annexB(file: Buffer): { units: Buffer[]; keyframe: boolean }[] {
     if (type === 5) frames.at(-1)!.keyframe = true;
   }
   return frames.filter((frame) => frame.units.length > 0);
+}
+
+const voiceTone = oggPackets(readFileSync(new URL("voice-tone.ogg", fixtures)));
+
+/** Bob says the tone in Alice's call on `ws`, 20 ms a packet, then five
+ *  silent frames, marking himself speaking with op 5 first. */
+function bobSpeaks(ws: Socket) {
+  const key = ws.data.callKey;
+  const peer = ws.data.ssrc ? peers.get(ws.data.ssrc) : undefined;
+  if (!key || !peer) return false;
+  ws.send(JSON.stringify({ op: 5, d: { user_id: users.bob.id, ssrc: BOB_AUDIO_SSRC, speaking: 1 } }));
+  const frames = [...voiceTone, ...Array(5).fill(OPUS_SILENCE)];
+  let index = 0;
+  let counter = 1;
+  const sequence = 20_000;
+  const timer = setInterval(() => {
+    if (index >= frames.length || ws.readyState !== 1) {
+      clearInterval(timer);
+      return;
+    }
+    const header = Buffer.alloc(12);
+    header[0] = 0x80;
+    header[1] = 120 | (index === 0 ? 0x80 : 0);
+    header.writeUInt16BE((sequence + index) & 0xffff, 2);
+    header.writeUInt32BE(index * 960, 4);
+    header.writeUInt32BE(BOB_AUDIO_SSRC, 8);
+    udp.send(sealRtp(Buffer.concat([header, frames[index]!]), key, counter++, 12), peer.port, peer.address);
+    index++;
+  }, 20);
+  return true;
 }
 
 const recordings = {
@@ -2064,20 +2118,24 @@ function receiveRtx(stream: Received, packet: Buffer) {
 }
 
 /** Counts a packet of a stream's sound: Opus, payload type 120. */
-function receiveSpoken(call: Spoken, packet: Buffer) {
-  call.packets++;
-  const plain = call.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, call.key) : undefined;
-  if (!plain || (plain[1]! & 0x7f) !== 120) {
-    call.undecryptable++;
-    return;
-  }
-  if (plain.length - rtpExtensions(plain).at > 3) call.voiced++;
-}
-
 function receiveAudio(stream: Received, packet: Buffer) {
   stream.audioPackets++;
   const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
   if (!plain || (plain[1]! & 0x7f) !== 120) stream.audioUndecryptable++;
+}
+
+/** Counts a call's Opus packet, and its silent frames. */
+function receiveCallAudio(call: CallAudio, ssrc: number, packet: Buffer) {
+  call.packets++;
+  const key = [...voiceSockets].find((ws) => ws.data.ssrc === ssrc)?.data.callKey;
+  const plain = key ? openRtp(packet, key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== 120) {
+    call.undecryptable++;
+    return;
+  }
+  const opus = plain.subarray(rtpExtensions(plain).at);
+  if (opus.equals(OPUS_SILENCE)) call.silent++;
+  else if (opus.length > 3) call.voiced++;
 }
 
 /** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
@@ -2178,8 +2236,8 @@ const udp = await Bun.udpSocket({
           const ssrc = data.readUInt32BE(8);
           const sound = receivedAudio.get(ssrc);
           const resent = receivedRtx.get(ssrc);
-          const call = spoken.get(ssrc);
-          if (call) receiveSpoken(call, data);
+          const call = callAudio.get(ssrc);
+          if (call) receiveCallAudio(call, ssrc, data);
           else if (sound) receiveAudio(sound, data);
           else if (resent) receiveRtx(resent, data);
           else receiveVideo(data);
@@ -2262,6 +2320,7 @@ function voiceMessage(ws: Socket, text: string) {
         for (const old of voiceSockets) if (old.data.voiceToken === VOICE_TOKEN) old.close(4014, "Disconnected.");
       }
       if (String(d.token).startsWith("stream-token-")) ws.data.stream = String(d.token).slice("stream-token-".length);
+      else callSessions.set(String(d.session_id), ws.data.ssrc);
       reply(2, {
         ssrc: ws.data.ssrc,
         ip: args.host,
@@ -2291,8 +2350,10 @@ function voiceMessage(ws: Socket, text: string) {
         received.set(ws.data.ssrc + 1, record);
         receivedAudio.set(ws.data.ssrc, record);
         receivedRtx.set(ws.data.ssrc + 2, record);
-      } else if (ws.data.ssrc) {
-        spoken.set(ws.data.ssrc, { key, mode: d.data?.mode, packets: 0, undecryptable: 0, voiced: 0, speaking: null });
+      }
+      if (!ws.data.stream && ws.data.ssrc) {
+        ws.data.callKey = key;
+        callAudio.set(ws.data.ssrc, { token: ws.data.voiceToken ?? "", packets: 0, undecryptable: 0, silent: 0, voiced: 0, speaking: [], resumed: 0 });
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
       const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
@@ -2321,8 +2382,23 @@ function voiceMessage(ws: Socket, text: string) {
     case 5: { // Speaking: a stream's sound is marked as soundshare.
       const stream = ws.data.ssrc ? receivedAudio.get(ws.data.ssrc) : undefined;
       if (stream) stream.speaking = Number(d.speaking);
-      const call = ws.data.ssrc ? spoken.get(ws.data.ssrc) : undefined;
-      if (call) call.speaking = Number(d.speaking);
+      const call = ws.data.ssrc ? callAudio.get(ws.data.ssrc) : undefined;
+      if (call) call.speaking.push(Number(d.speaking));
+      break;
+    }
+    case 7: { // Resume: the session carries on, with its SSRC and key.
+      const ssrc = callSessions.get(String(d.session_id));
+      const old = ssrc ? [...voiceSockets].find((other) => other !== ws && other.data.ssrc === ssrc) : undefined;
+      const call = ssrc ? callAudio.get(ssrc) : undefined;
+      if (!ssrc || !call || String(d.token) !== call.token) {
+        ws.close(4006, "Session is no longer valid.");
+        return;
+      }
+      ws.data.ssrc = ssrc;
+      ws.data.voiceToken = call.token;
+      ws.data.callKey = old?.data.callKey ?? [...voiceSockets].find((other) => other.data.callKey && other.data.ssrc === ssrc)?.data.callKey ?? resumedKeys.get(ssrc);
+      call.resumed++;
+      reply(9, null);
       break;
     }
     case 12: { // Video attributes
@@ -3255,6 +3331,17 @@ const server = Bun.serve<SocketData>({
     }
     if (path === "/_control/logouts") return Response.json(logouts);
     if (path === "/_control/voice-identifies") return Response.json(voiceIdentifies);
+    if (path === "/_control/call-audio") return Response.json(Object.fromEntries(callAudio));
+    if (req.method === "POST" && path === "/_control/bob-speak") {
+      const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
+      const spoke = calls.filter((ws) => bobSpeaks(ws)).length;
+      return new Response(`Bob speaks in ${spoke} call(s)\n`, { status: spoke ? 200 : 409 });
+    }
+    if (req.method === "POST" && path === "/_control/voice-drop") {
+      const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
+      for (const ws of calls) ws.close(4015, "Voice server crashed.");
+      return new Response(`dropped ${calls.length} call connection(s)\n`, { status: calls.length ? 200 : 409 });
+    }
     if (req.method === "POST" && path === "/_control/voice-move") {
       // Discord moves Alice's call in the server to another voice server: it
       // names the new one, and the old one closes with 4014 once she's there.
@@ -3327,7 +3414,7 @@ const server = Bun.serve<SocketData>({
       return eachRemoteLogin((ws) => ws.close(1000));
     }
     if (path === "/_control/voice-audio") {
-      return json(Object.fromEntries([...spoken].map(([ssrc, { key: _, ...call }]) => [ssrc, call])));
+      return json(Object.fromEntries([...callAudio].map(([ssrc, { speaking, ...call }]) => [ssrc, { ...call, speaking: speaking.at(-1) ?? null, spoke: speaking.includes(1) }])));
     }
     if (path === "/_control/video") {
       return json({
@@ -3572,6 +3659,7 @@ const server = Bun.serve<SocketData>({
         return;
       }
       if (ws.data.voice && ws.data.ssrc) clearInterval(watchers.get(ws.data.ssrc)?.timer);
+      if (ws.data.voice && ws.data.ssrc && ws.data.callKey) resumedKeys.set(ws.data.ssrc, ws.data.callKey);
       voiceSockets.delete(ws);
       sockets.delete(ws);
       if (!ws.data.voice && !ws.data.stream && ws.data.identified && code !== 1000 && code !== 1001) {

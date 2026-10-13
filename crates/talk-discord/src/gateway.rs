@@ -1,6 +1,7 @@
 //! Discord's main gateway, as a user client: identify, heartbeats, and
-//! dispatched events. Voice media goes through songbird; this only carries the
-//! voice state and voice server details that songbird needs to connect.
+//! dispatched events. Voice media goes through the voice connection
+//! (`voice_connection.rs`); this only carries the voice state and voice server
+//! details it needs to connect.
 //!
 //! A lost connection resumes the session where it can, as Discord asks of
 //! every client: Talk connects to the session's resume address, sends RESUME

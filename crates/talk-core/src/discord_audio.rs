@@ -882,7 +882,8 @@ mod tests {
             .expect("the fake heard no call");
         assert_eq!(call["undecryptable"], 0);
         assert!(call["voiced"].as_u64().unwrap() > 50, "too little was sent");
-        assert_eq!(call["speaking"], 1, "it should say it's speaking");
+        // Once the beeps stop, it says it stopped, as Discord's clients do.
+        assert_eq!(call["spoke"], true, "it should say it's speaking");
     }
 
     /// Two seconds of beeps on the default speakers.

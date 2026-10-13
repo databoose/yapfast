@@ -1,28 +1,26 @@
-//! Discord voice: songbird runs the voice connection with DAVE, using the
-//! voice server the gateway assigned.
+//! Discord voice: a call over Talk's own voice connection
+//! (`call_connection.rs`), with DAVE, using the voice server the gateway
+//! assigned.
 
 use std::{
-    collections::{HashMap, VecDeque},
-    io::{Read, Seek, SeekFrom},
-    num::NonZeroU64,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use anyhow::{Result, anyhow, bail};
-use async_trait::async_trait;
-use songbird::{
-    Config, ConnectionInfo, CoreEvent, Driver, Event, EventContext, EventHandler,
-    driver::{Channels, DecodeConfig, DecodeMode, SampleRate},
-    input::{Input, RawAdapter},
-    tracks::TrackHandle,
+use anyhow::{Context, Result, bail};
+use serde_json::json;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::{
+    call_connection::{self, Order, Sending},
+    ready::PRIVATE,
+    rtp,
+    service::VoiceServer,
+    voice_connection::{Identity, lock},
 };
-use symphonia::core::io::MediaSource;
-
-/// Controls a playing input, such as pausing the microphone between words.
-pub use songbird::tracks::TrackHandle as Track;
-
-use crate::{ready::PRIVATE, service::VoiceServer};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Received audio is interleaved stereo.
@@ -30,7 +28,7 @@ pub const CHANNELS: u16 = 2;
 /// Samples per channel in one 20 ms frame.
 pub const FRAME: usize = SAMPLE_RATE as usize / 50;
 
-/// Receives a call's audio and connection changes, on songbird's threads.
+/// Receives a call's audio and connection changes, on the call's thread.
 pub trait Listener: Send + Sync + 'static {
     /// Every 20 ms: each speaking user's decoded audio, as interleaved stereo
     /// at 48 kHz, by Discord user id.
@@ -40,10 +38,11 @@ pub trait Listener: Send + Sync + 'static {
 }
 
 pub struct Call {
-    driver: Driver,
-    /// The server and channel ids the connection identifies with.
-    guild_id: NonZeroU64,
-    channel_id: NonZeroU64,
+    orders: mpsc::UnboundedSender<Order>,
+    /// The microphone, once it plays.
+    sending: Arc<Mutex<Option<Sending>>>,
+    /// The server, or the DM, the connection identifies with.
+    server_id: String,
 }
 
 impl Call {
@@ -56,143 +55,103 @@ impl Call {
         listener: Arc<dyn Listener>,
     ) -> Result<Self> {
         // A call identifies with its channel where a server's would its server.
-        let guild_id = if guild_id == PRIVATE {
+        let server_id = if guild_id == PRIVATE {
             channel_id
         } else {
             guild_id
         };
-        let config = Config::default().decode_mode(DecodeMode::Decode(DecodeConfig::new(
-            Channels::Stereo,
-            SampleRate::Hz48000,
-        )));
-        let (guild_id, channel_id) = (id(guild_id)?, id(channel_id)?);
-        let mut driver = Driver::new(config);
-        let handler = Handler {
-            listener,
-            speakers: Mutex::default(),
-            rtcp_logged: Mutex::default(),
-        };
-        let handler = Arc::new(handler);
-        for event in [
-            CoreEvent::DriverDisconnect,
-            CoreEvent::SpeakingStateUpdate,
-            CoreEvent::VoiceTick,
-            CoreEvent::RtcpPacket,
-        ] {
-            driver.add_global_event(Event::Core(event), Shared(handler.clone()));
-        }
-        let mut call = Self {
-            driver,
-            guild_id,
-            channel_id,
-        };
-        call.connect_to(server).await?;
-        Ok(call)
+        let sending = Arc::new(Mutex::new(None));
+        let identity = identity(server, server_id, channel_id)?;
+        let (orders, connected) = call_connection::start(identity, listener, sending.clone())?;
+        connected
+            .await
+            .context("the call stopped while connecting")?
+            .context("could not connect to Discord voice")?;
+        Ok(Self {
+            orders,
+            sending,
+            server_id: server_id.to_owned(),
+        })
     }
 
     /// Connects to `server` for `channel_id`, as when Discord moves the call
     /// to another voice server, or someone moves this account to another
     /// channel of the server. What plays carries on there.
     pub async fn move_to(&mut self, server: &VoiceServer, channel_id: &str) -> Result<()> {
-        // DAVE keys the call's encryption by its channel.
-        self.channel_id = id(channel_id)?;
-        self.connect_to(server).await
-    }
-
-    async fn connect_to(&mut self, server: &VoiceServer) -> Result<()> {
-        self.driver
-            .connect(ConnectionInfo {
-                channel_id: self.channel_id.into(),
-                endpoint: server.endpoint.clone(),
-                guild_id: self.guild_id.into(),
-                session_id: server.session_id.clone(),
-                token: server.token.clone(),
-                user_id: id(&server.user_id)?.into(),
-            })
+        let identity = identity(server, &self.server_id, channel_id)?;
+        let (reply, replied) = oneshot::channel();
+        if self.orders.send(Order::Move(identity, reply)).is_err() {
+            bail!("the call has ended");
+        }
+        replied
             .await
-            .map_err(|error| anyhow!("could not connect to Discord voice: {error}"))
+            .context("the call ended while moving")?
+            .context("could not connect to Discord voice")
     }
 
-    /// Sends this input's audio, mixed with anything already playing.
-    pub fn play(&mut self, input: Input) -> TrackHandle {
-        self.driver.play_input(input)
+    /// Sends this input's audio from now on, replacing any before it.
+    pub fn play(&mut self, input: Input) -> Track {
+        let playing = Arc::new(AtomicBool::new(true));
+        *lock(&self.sending) = Some(Sending {
+            buffer: input.buffer,
+            playing: playing.clone(),
+        });
+        Track(playing)
     }
 
     pub fn leave(&mut self) {
-        self.driver.leave();
+        let _ = self.orders.send(Order::Leave);
     }
 }
 
-fn id(value: &str) -> Result<NonZeroU64> {
-    match value.parse::<u64>().ok().and_then(NonZeroU64::new) {
-        Some(id) => Ok(id),
-        None => bail!("{value} isn't a Discord id"),
+impl Drop for Call {
+    fn drop(&mut self) {
+        self.leave();
     }
 }
 
-struct Handler {
-    listener: Arc<dyn Listener>,
-    /// Discord user id per RTP source, learned from speaking updates.
-    speakers: Mutex<HashMap<u32, u64>>,
-    /// When the voice server's RTCP was last logged: what it reports about
-    /// a working sender, to compare with a Go Live stream's.
-    rtcp_logged: Mutex<Option<Instant>>,
+/// Who a call's connection identifies as. Its DAVE group is the channel.
+fn identity(server: &VoiceServer, server_id: &str, channel_id: &str) -> Result<Identity> {
+    Ok(Identity {
+        endpoint: server.endpoint.clone(),
+        server_id: server_id.to_owned(),
+        user_id: server.user_id.clone(),
+        session_id: server.session_id.clone(),
+        token: server.token.clone(),
+        streams: json!([{"type": "video", "rid": rtp::STREAM_RID, "quality": 100}]),
+        user: id(&server.user_id)?,
+        group: id(channel_id)?,
+    })
 }
 
-struct Shared(Arc<Handler>);
-
-#[async_trait]
-impl EventHandler for Shared {
-    async fn act(&self, context: &EventContext<'_>) -> Option<Event> {
-        let handler = &self.0;
-        match context {
-            EventContext::SpeakingStateUpdate(speaking) => {
-                if let Some(user) = speaking.user_id {
-                    handler
-                        .speakers
-                        .lock()
-                        .unwrap()
-                        .insert(speaking.ssrc, user.0);
-                }
-            }
-            EventContext::VoiceTick(tick) => {
-                let speakers = handler.speakers.lock().unwrap();
-                let voices: Vec<(u64, &[i16])> = tick
-                    .speaking
-                    .iter()
-                    .filter_map(|(ssrc, data)| {
-                        Some((*speakers.get(ssrc)?, data.decoded_voice.as_deref()?))
-                    })
-                    .collect();
-                drop(speakers);
-                handler.listener.tick(&voices);
-            }
-            EventContext::RtcpPacket(rtcp) => {
-                let mut logged = handler.rtcp_logged.lock().unwrap();
-                if logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(5)) {
-                    *logged = Some(Instant::now());
-                    let end = rtcp.packet.len().saturating_sub(rtcp.payload_end_pad);
-                    tracing::debug!(
-                        rtcp = ?crate::rtp::rtcp_kinds(&rtcp.packet[..end]),
-                        "the voice server sent RTCP"
-                    );
-                }
-            }
-            EventContext::DriverDisconnect(data) => {
-                let requested = matches!(
-                    data.reason,
-                    Some(songbird::events::context_data::DisconnectReason::Requested)
-                );
-                if !requested {
-                    handler
-                        .listener
-                        .disconnected(&format!("{:?} {:?}", data.kind, data.reason));
-                }
-            }
-            _ => {}
-        }
-        None
+fn id(value: &str) -> Result<u64> {
+    match value.parse::<u64>() {
+        Ok(id) if id != 0 => Ok(id),
+        _ => bail!("{value} isn't a Discord id"),
     }
+}
+
+/// Starts and stops a playing input, such as the microphone between words.
+/// Stopping sends five silent frames and says this account stopped
+/// speaking, as Discord's clients do.
+#[derive(Clone)]
+pub struct Track(Arc<AtomicBool>);
+
+impl Track {
+    pub fn play(&self) -> Result<()> {
+        self.0.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn pause(&self) -> Result<()> {
+        self.0.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// Audio for [`Call::play`]: the microphone's buffer.
+pub struct Input {
+    buffer: Arc<Mutex<VecDeque<f32>>>,
 }
 
 /// Where Talk writes the processed microphone, as mono f32 at 48 kHz.
@@ -208,70 +167,29 @@ const MICROPHONE_BACKLOG: usize = SAMPLE_RATE as usize / 4;
 
 impl Microphone {
     pub fn push(&self, samples: &[f32]) {
-        let mut buffer = self.buffer.lock().unwrap();
+        let mut buffer = lock(&self.buffer);
         buffer.extend(samples);
         let excess = buffer.len().saturating_sub(MICROPHONE_BACKLOG);
         buffer.drain(..excess);
     }
 
     pub fn clear(&self) {
-        self.buffer.lock().unwrap().clear();
+        lock(&self.buffer).clear();
     }
 }
 
-/// A live microphone input for [`Call::play`], and its writer.
+/// A live microphone input for [`Call::play`], and its writer. The call
+/// takes 20 ms of it every 20 ms while it plays, and silence when the
+/// writer is behind.
 pub fn live_microphone() -> (Microphone, Input) {
-    let microphone = Microphone {
-        buffer: Arc::default(),
-    };
-    let source = LiveSource {
-        buffer: microphone.buffer.clone(),
-    };
-    (microphone, RawAdapter::new(source, SAMPLE_RATE, 1).into())
-}
-
-/// Reads whatever the microphone has written. songbird pulls 20 ms at a time
-/// while the track plays; when the writer is behind, a short stretch of
-/// silence keeps the track going without letting it read far ahead.
-struct LiveSource {
-    buffer: Arc<Mutex<VecDeque<f32>>>,
-}
-
-const SILENCE: usize = SAMPLE_RATE as usize / 100;
-
-impl Read for LiveSource {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        let room = out.len() / 4;
-        let mut buffer = self.buffer.lock().unwrap();
-        let count = if buffer.is_empty() {
-            let count = room.min(SILENCE);
-            out[..count * 4].fill(0);
-            count
-        } else {
-            let count = room.min(buffer.len());
-            for (chunk, sample) in out.chunks_exact_mut(4).zip(buffer.drain(..count)) {
-                chunk.copy_from_slice(&sample.to_le_bytes());
-            }
-            count
-        };
-        Ok(count * 4)
-    }
-}
-
-impl Seek for LiveSource {
-    fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-}
-
-impl MediaSource for LiveSource {
-    fn is_seekable(&self) -> bool {
-        false
-    }
-
-    fn byte_len(&self) -> Option<u64> {
-        None
-    }
+    let buffer: Arc<Mutex<VecDeque<f32>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(MICROPHONE_BACKLOG)));
+    (
+        Microphone {
+            buffer: buffer.clone(),
+        },
+        Input { buffer },
+    )
 }
 
 #[cfg(test)]
@@ -279,31 +197,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_microphone_reads_what_was_written_then_silence() {
-        let microphone = Microphone {
-            buffer: Arc::default(),
-        };
-        let mut source = LiveSource {
-            buffer: microphone.buffer.clone(),
-        };
-        microphone.push(&[0.5, -0.5]);
-        let mut out = [0u8; 64];
-        assert_eq!(source.read(&mut out).unwrap(), 8);
-        assert_eq!(f32::from_le_bytes(out[4..8].try_into().unwrap()), -0.5);
-        // Empty: silence, never end of stream.
-        assert_eq!(source.read(&mut out).unwrap(), 64);
-        assert!(out.iter().all(|byte| *byte == 0));
+    fn backlog_keeps_the_newest_audio() {
+        let (microphone, input) = live_microphone();
+        microphone.push(&vec![0.0; MICROPHONE_BACKLOG]);
+        microphone.push(&[1.0]);
+        let buffer = lock(&input.buffer);
+        assert_eq!(buffer.len(), MICROPHONE_BACKLOG);
+        assert_eq!(buffer.back(), Some(&1.0));
     }
 
     #[test]
-    fn backlog_keeps_the_newest_audio() {
-        let microphone = Microphone {
-            buffer: Arc::default(),
+    fn a_dm_call_identifies_with_its_channel_and_keys_dave_by_it() {
+        let server = VoiceServer {
+            user_id: "1".into(),
+            session_id: "s".into(),
+            token: "t".into(),
+            endpoint: "voice.example".into(),
         };
-        microphone.push(&vec![0.0; MICROPHONE_BACKLOG]);
-        microphone.push(&[1.0]);
-        let buffer = microphone.buffer.lock().unwrap();
-        assert_eq!(buffer.len(), MICROPHONE_BACKLOG);
-        assert_eq!(buffer.back(), Some(&1.0));
+        let call = identity(&server, "20", "30").unwrap();
+        assert_eq!((call.user, call.group), (1, 30));
+        assert_eq!(call.server_id, "20");
+        assert!(identity(&server, "20", "x").is_err());
     }
 }

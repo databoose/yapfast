@@ -181,9 +181,8 @@ voice gate sends audio only during speech. The owner and a friend talked
 through it on 2026-10-06. Audio goes through `audio_io.rs`, PulseAudio on
 Linux and WASAPI on Windows, and libwebrtc's processing module; see the
 [Windows guide](windows-beta.md#discord-voice-on-windows) for what's been
-checked there. songbird's DAVE receive fix is
-described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
-groups in `vendor/davey/README.talk.md`.
+checked there. davey's change for Go Live groups is described in
+`vendor/davey/README.talk.md`.
 
 Discord may move a call to another voice server, saying so with a new
 `VOICE_SERVER_UPDATE` while the call is connected. Talk connects the call
@@ -200,8 +199,9 @@ Camera video comes after the beta, together with video in Talk.
 Since March 2026, Discord voice requires its end-to-end encryption, DAVE, and
 [rejects clients without it](https://support.discord.com/hc/en-us/articles/38749827197591-A-V-E2EE-Enforcement-for-Non-Stage-Voice-Calls).
 [davey](https://github.com/Snazzah/davey) (MIT) implements DAVE in Rust.
-[songbird](https://github.com/serenity-rs/songbird) (ISC) has a voice connection
-built on it, but it's written for bots and may only partly fit.
+Calls first ran on [songbird](https://github.com/serenity-rs/songbird) (ISC),
+a voice connection for bots built on it; they now run on Talk's own, the one
+Go Live uses. [How calls carry video](#how-calls-carry-video) says why.
 
 Talk's current audio path runs inside LiveKit's libwebrtc. Discord voice needs
 its own Opus encoding and decoding plus the same audio processing. libwebrtc's
@@ -211,14 +211,55 @@ module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
 Discord voice gets a small path of its own: `audio_io.rs` for the microphone and
 speakers at 48 kHz, the processing module for echo cancellation and gain
 (noise suppression became DeepFilterNet; see [Microphone](#microphone)), then
-songbird for Opus and DAVE. Feed the speaker mix to
+Talk's voice connection for Opus and DAVE. Feed the speaker mix to
 the processing module's reverse stream so echo cancellation has its reference.
 
-songbird encodes with `opus2`, which builds its own libopus, while Talk's
-libwebrtc archive already contains libopus. On Linux both link, and the linker
-takes each symbol from the first. Under MSVC they'd clash, so the Windows build
-gives `opus2` an empty library and it uses libwebrtc's; see the
-[Windows guide](windows-beta.md#build-validation-on-2026-10-13).
+Opus comes from the libopus inside Talk's libwebrtc archive, called directly
+(`talk_discord::opus`). songbird and Go Live's sound used `opus2`, which
+builds a libopus of its own; two copies of the same symbols risk a clash when
+linking, particularly with MSVC on Windows, and now there's one. The Windows
+build gave `opus2` an empty library so that it used libwebrtc's; with `opus2`
+gone, it needs none.
+
+### How calls carry video
+
+Camera video in calls needed a choice: add video to songbird, or move calls
+onto the connection Go Live already uses (`voice_connection.rs`, shared by
+`stream_connection.rs` and `call_connection.rs`). Talk moved calls.
+
+| | Video in songbird | Talk's own connection |
+| --- | --- | --- |
+| Threads per call | songbird's mixer thread, its disposal thread and tasks on Talk's runtime, then video beside them | One thread with its own small runtime, as each Go Live stream has |
+| Code | 19,000 vendored lines, patched in the gateway task, the mixer and the UDP receiver for video, and its DAVE for video frames | About 800 new lines with tests (the call's media loop and jitter buffer, and Opus); the gateway code moved out of Go Live's; songbird's vendor copy and its dependencies go |
+| Voice gateway | Version 4, older than Discord's clients | Version 8, as Discord's clients and Go Live use: sequence acknowledgements and numbered binary messages |
+| DAVE | songbird's, for Opus only | Talk's (`dave.rs`, on davey), already encrypting Go Live's video and sound |
+| Video pieces | New: packetizing, reassembly, NACK and RTX, keyframe requests | Go Live's, tested against the fake and Discord |
+| libopus | Two copies, songbird's `opus2` and libwebrtc's | libwebrtc's alone |
+| Risk to calls that work | Low for audio until the patch grows | The audio path is new: Opus in and out, a jitter buffer, loss concealment, speaking |
+
+songbird's audio works, and keeping it was the lower risk for audio alone.
+But video would have meant patching most of songbird's driver, and keeping
+those patches through its releases, while Talk already had a version 8
+connection carrying video with DAVE. The new audio path keeps the API
+`talk_core` uses (`Call`, `Microphone`, `Track`, `Listener`), so
+`discord_audio.rs` and the audio I/O beneath it (`audio_io.rs`) don't change, and the fake
+voice server now exchanges audio both ways to test it.
+
+A call's connection sends Opus as songbird did, stereo at 128 kbit/s in its
+music mode, 20 ms a packet, with five silent frames when the microphone
+pauses, as Discord's clients do. It marks speaking with op 5 when
+it starts. Received audio waits in a jitter buffer per speaker: playing
+starts once 60 ms has arrived, a missing packet plays as Opus's loss
+concealment (or from the next packet's forward error correction), and a
+speaker who stays silent for 100 ms drops out of the mix until they speak
+again. When the voice gateway drops, the connection resumes with op 7, and
+connects again from scratch if resuming fails.
+
+Measured on 2026-10-13 in a call on the fake server, Discord-only `fast`
+build, Skia Software, averaged over 10 s: muted, songbird took 18 threads
+and 14 MiB of anonymous memory, Talk's connection 17 and 13 to 15 MiB, both
+at 0.4% of a core. Unmuted, with the microphone's processing running, both
+took 34 MiB; songbird 7.2% of a core and Talk's connection 6.2%.
 
 ### DM calls
 
@@ -329,8 +370,8 @@ rather than one), so Talk doesn't run both. The
 gate keeps the last 100 ms while shut and sends them when it opens, so a soft
 start such as an "h" isn't cut off; speech goes out that much later until the
 gate closes. It stays shut for the first 200 ms after the microphone opens,
-while the suppressor learns the noise. Opus stays at songbird's 128 kbps in
-its music mode.
+while the suppressor learns the noise. Opus stays at 128 kbps in its music
+mode, as songbird sent it.
 
 "Take out your room's echo in Discord calls" (`reduce_room_echo`, off unless
 turned on) is for a voice that sounds far away in a bare room: the reverb the
@@ -449,10 +490,10 @@ picked by its id; see the
 
 Once Discord has started the stream, Talk unpauses it with op 22, as
 Discord-video-stream does, and the worker gets its server and sends the video
-there (`talk_discord::stream_connection`). The connection is like a call's,
-but on voice gateway version 8 as Discord's clients use, where songbird uses
-4: heartbeats acknowledge the last sequence number, and binary DAVE messages
-start with one. It identifies with the stream's RTC server and `video: true`,
+there (`talk_discord::stream_connection`). The connection is a call's
+(`voice_connection.rs`), on voice gateway version 8 as Discord's clients
+use: heartbeats acknowledge the last sequence number, and binary DAVE
+messages start with one. It identifies with the stream's RTC server and `video: true`,
 discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
 encryption. Talk offers H264 only and announces its size with op 12, again
 whenever someone connects. Frames come from OpenH264 in libwebrtc's archive
@@ -1403,7 +1444,8 @@ linked account, kept in memory. With `TALK_DISCORD_TEST_UNLINKED=1` too, Talk
 starts unlinked and links against the fake, whose controls scan and confirm
 the code. The fake resumes a dropped gateway session, replaying what it
 missed, and can send op 7. `crates/talk-discord/tests/fake_server.rs`
-runs against it. It counts the audio a call sends (`/_control/voice-audio`),
+runs against it. It counts the audio a call sends (`/_control/call-audio`,
+and by SSRC `/_control/voice-audio`),
 which the ignored `discord_audio` test `a_call_sends_what_the_microphone_hears`
 checks: Talk joins the Lounge, unmutes and beeps into a microphone that hears
 its speakers, as a private PulseAudio of null sinks does. What the fake can't show, such as media and DAVE with
@@ -1416,7 +1458,8 @@ Synapse stack with recorded Discord events instead of a live connection.
 
 ## Licences
 
-davey and songbird are permissive, so closed-source Talk can use them. GPL
+davey is permissive, so closed-source Talk can use it, as songbird was
+while it ran calls. GPL
 clients such as [Abaddon](https://github.com/uowuo/abaddon) are reference
 material only, under the borrowing rules in the
 [implementation plan](implementation-plan.md#reference-projects).
