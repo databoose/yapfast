@@ -136,11 +136,19 @@ impl Dave {
         self.version != 0 && self.session.as_ref().is_some_and(DaveSession::is_ready)
     }
 
-    /// Where the MLS handshake is, for the stream's log.
+    /// Where the MLS handshake is, for the log: with the group's epoch and
+    /// voice privacy code, which Discord's clients show in a call's
+    /// encryption details, so the two ends can be compared.
     pub fn status(&self) -> String {
         match &self.session {
             _ if self.version == 0 => "off".to_owned(),
-            Some(session) => format!("{:?}, ready {}", session.status(), session.is_ready()),
+            Some(session) => format!(
+                "{:?}, ready {}, epoch {}, code {}",
+                session.status(),
+                session.is_ready(),
+                session.epoch().map_or(0, |epoch| epoch.as_u64()),
+                session.voice_privacy_code().unwrap_or("none"),
+            ),
             None => "no session".to_owned(),
         }
     }
@@ -156,6 +164,11 @@ impl Dave {
                 vec![]
             }
             Event::DavePrepareTransition(event) => {
+                tracing::info!(
+                    transition_id = event.transition_id,
+                    version = event.protocol_version,
+                    "DAVE prepares a transition"
+                );
                 self.pending
                     .insert(event.transition_id, event.protocol_version);
                 if event.transition_id == 0 {
@@ -172,9 +185,18 @@ impl Dave {
             }
             Event::DaveExecuteTransition(event) => {
                 self.execute(event.transition_id);
+                tracing::info!(
+                    transition_id = event.transition_id,
+                    dave = self.status(),
+                    "DAVE executed a transition"
+                );
                 vec![]
             }
             Event::DavePrepareEpoch(event) if event.epoch == 1 => {
+                tracing::info!(
+                    version = event.protocol_version,
+                    "DAVE starts a new group; sending a new key package"
+                );
                 self.version = event.protocol_version;
                 self.reinit()
             }
@@ -201,6 +223,10 @@ impl Dave {
                 });
                 match result {
                     Some(Ok(Some(commit))) => {
+                        tracing::info!(
+                            welcome = commit.welcome.is_some(),
+                            "committing DAVE proposals"
+                        );
                         out.push(Out::Binary(Event::from(DaveMlsCommitWelcome {
                             commit: commit.commit,
                             welcome: commit.welcome,
@@ -214,7 +240,7 @@ impl Dave {
                             .as_ref()
                             .is_some_and(|session| session.status() != SessionStatus::ACTIVE) =>
                     {
-                        tracing::debug!(?error, "proposals for a group Talk isn't in yet");
+                        tracing::info!(?error, "DAVE proposals for a group Talk isn't in yet");
                     }
                     Some(Err(error)) => {
                         tracing::warn!(?error, "could not process MLS proposals");
@@ -235,7 +261,7 @@ impl Dave {
                         SessionStatus::AWAITING_RESPONSE | SessionStatus::ACTIVE
                     )
                 }) {
-                    tracing::debug!(
+                    tracing::info!(
                         transition_id = event.transition_id,
                         "a DAVE commit before Talk is in the group; waiting for its welcome"
                     );
@@ -286,7 +312,11 @@ impl Dave {
     /// After a commit or welcome: ready for the transition, or start over.
     fn joined(&mut self, transition_id: u16, result: Option<Result<(), String>>) -> Vec<Out> {
         if let Some(Ok(())) = result {
-            tracing::info!(transition_id, "joined the DAVE group");
+            tracing::info!(
+                transition_id,
+                dave = self.status(),
+                "applied a DAVE commit or welcome"
+            );
         }
         match result {
             Some(Ok(())) if transition_id != 0 => {

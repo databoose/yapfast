@@ -51,6 +51,9 @@ const MOST: usize = 20;
 const GONE: u8 = 5;
 /// A speaker heard from no more in this long gives up their decoder.
 const FORGET: Duration = Duration::from_secs(10);
+/// While a speaker's audio is dropped for one reason, it's logged again
+/// after this many more packets: 10 s.
+const STILL_DROPPING: u32 = 500;
 /// Gateway drops in a row that resuming or reconnecting may follow.
 const RETRIES: u32 = 3;
 
@@ -222,9 +225,10 @@ struct Media {
     /// Everyone else, by their audio SSRC, and whose each SSRC is.
     speakers: HashMap<u32, Speaker>,
     users: HashMap<u32, u64>,
-    /// Why each SSRC's audio was last dropped, and whether the microphone
-    /// was last sent end-to-end encrypted, as logged.
-    dropped: HashMap<u32, String>,
+    /// Why each SSRC's audio is being dropped and how many packets have
+    /// gone, and whether the microphone was last sent end-to-end encrypted,
+    /// as logged.
+    dropped: HashMap<u32, (String, u32)>,
     encrypting: Option<bool>,
     /// This account's camera, while it films, and everyone else's.
     filming: Option<call_video::Sending>,
@@ -365,17 +369,31 @@ impl Media {
         }
     }
 
-    /// Logs why a speaker's audio is dropped, once for each reason, since
-    /// it otherwise vanishes without a trace.
+    /// Logs why a speaker's audio is dropped when the reason changes, and
+    /// every 10 s while it lasts, since it otherwise vanishes unheard.
     fn report_drop(&mut self, ssrc: u32, reason: &str, dave: &Dave) {
-        if self.dropped.get(&ssrc).is_none_or(|last| last != reason) {
-            tracing::info!(
-                ssrc,
-                reason,
-                dave = dave.status(),
-                "dropping a speaker's audio in a call"
-            );
-            self.dropped.insert(ssrc, reason.to_owned());
+        match self.dropped.get_mut(&ssrc) {
+            Some((last, count)) if last == reason => {
+                *count += 1;
+                if *count % STILL_DROPPING == 0 {
+                    tracing::info!(
+                        ssrc,
+                        reason,
+                        dropped = *count,
+                        dave = dave.status(),
+                        "still dropping a speaker's audio in a call"
+                    );
+                }
+            }
+            _ => {
+                tracing::info!(
+                    ssrc,
+                    reason,
+                    dave = dave.status(),
+                    "dropping a speaker's audio in a call"
+                );
+                self.dropped.insert(ssrc, (reason.to_owned(), 1));
+            }
         }
     }
 
@@ -493,11 +511,22 @@ impl Media {
             self.report_drop(packet.ssrc, "whose SSRC it is is unknown", &connection.dave);
             return Ok(());
         };
+        // Silence passes in the clear even while sealed audio fails.
+        let sealed = packet.payload.ends_with(&[0xfa, 0xfa]);
         let Some(opus) = connection.dave.decrypt_opus(user, packet.payload.to_vec()) else {
             let reason = connection.dave.unreadable.take().unwrap_or_default();
             self.report_drop(packet.ssrc, &reason, &connection.dave);
             return Ok(());
         };
+        if sealed && let Some((reason, dropped)) = self.dropped.remove(&packet.ssrc) {
+            tracing::info!(
+                ssrc = packet.ssrc,
+                user,
+                reason,
+                dropped,
+                "hearing a speaker again in a call"
+            );
+        }
         let speaker = match self.speakers.entry(packet.ssrc) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => match Speaker::new(user) {
