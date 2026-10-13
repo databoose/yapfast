@@ -641,3 +641,42 @@ are higher than their means. A first set, run while a build compiled beside
 it, was discarded.
 
 Reproduce as for the server foundations above, with the two builds.
+
+## 2026-10-13: Matrix call cameras
+
+[Matrix call cameras, 2026-10-13](2026-10-13-linux-matrix-cameras.json)
+measures Alice's `fast` build in a five-person call on the local stack as the
+others turn their cameras on, then Alice, then everyone off, twice. The load
+accounts film the 640×360 test pattern; each tile shows about 245×137 at
+1120×760. The host was short of memory during the run: the kernel swapped part
+of Talk out and dropped its library pages, so RSS and PSS fell as cameras
+turned on. The table gives Talk's anonymous memory plus its swap, which those
+don't move, and CPU as a percentage of one core.
+
+| Profile | Software memory | Software CPU | GPU memory | GPU CPU | Threads |
+| --- | --- | --- | --- | --- | --- |
+| No cameras | 35.5 MiB | 4.9% | 101.3 MiB | 2.8% | 37 |
+| One remote camera | 35.5 MiB | 11.3% | 101.3 MiB | 8.5% | 40 |
+| Two remote cameras | 35.8 MiB | 10.3% | 101.3 MiB | 11.4% | 43 |
+| Four remote cameras | 39.0 MiB | 18.4% | 104.1 MiB | 17.9% | 49 |
+| Four remote cameras and Alice's own | 54.8 MiB | 20.1% | 120.8 MiB | 17.9% | 55 |
+| Every camera off again | 55.0 MiB | 2.2% | 120.8 MiB | 5.3% | 54 |
+| On and off a second time | 56.1 MiB | 2.9% | 121.8 MiB | 4.4% | 54 |
+
+Threads are the Software run's. Each remote camera adds three: its decoder,
+its incoming stream and its frame decryptor. Remote cameras cost little
+memory, because each frame is decoded into WebRTC's own buffer and converted
+straight into the tile's. Alice's own camera costs about 16 MiB, nearly all
+of it LiveKit's VP8 simulcast encoder. CPU on this host was noisy: another
+Talk session shared it.
+
+Turning cameras off mutes the tracks and pauses the streams at the server, so
+CPU returns to the call's own, but the encoder and the idle decoders stay
+until the call ends. Unpublishing would free nothing: an earlier run that
+unpublished Alice's camera grew by about 17 MiB and nine threads with each
+round, because LiveKit leaves an unpublished track's sender and encoder in
+the connection. Muting keeps the second round level. A later quick run with
+the camera source's pool emptied and the heap trimmed on camera-off returned
+3 MiB of it (53.4 to 50.4 MiB, Software).
+
+Reproduce, with the test stack up: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_cameras.py --load-executable TEST_BIN --output .local/measure-cameras'`.

@@ -394,8 +394,9 @@ async fn worker(
 /// call with the microphone on, so Talk would stay at its size in the call.
 /// Return it once the call has finished freeing it: its audio threads and
 /// connections close on their own after it ends, and a Discord call had freed
-/// everything 2 s after leaving.
-fn trim_after_call() {
+/// everything 2 s after leaving. Turning a camera off frees its picture
+/// buffers the same way.
+pub(crate) fn trim_after_call() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     tokio::task::spawn_local(async {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;

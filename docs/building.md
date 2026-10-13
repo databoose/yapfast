@@ -136,8 +136,8 @@ dependency in Cargo.toml:
   mipmapped pictures, and uncopied fonts and pictures, above.
 - `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native
   audio tracks and cancellable joins.
-- `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling and
-  remote track volume.
+- `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling,
+  remote track volume and camera capture from pooled buffers.
 - `songbird`: songbird 0.6.0, fixed to receive audio in DAVE calls.
 - `davey`: davey 0.1.4, keeping its key packages when a Go Live stream's group
   id changes.

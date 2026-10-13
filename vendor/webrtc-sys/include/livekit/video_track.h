@@ -20,6 +20,7 @@
 
 #include "api/media_stream_interface.h"
 #include "api/video/video_frame.h"
+#include "common_video/include/video_frame_buffer_pool.h"
 #include "livekit/helper.h"
 #include "livekit/media_stream_track.h"
 #include "livekit/video_frame.h"
@@ -105,8 +106,19 @@ class VideoTrackSource {
     void set_packet_trailer_handler(
         std::shared_ptr<PacketTrailerHandler> handler);
 
+    // Talk: see VideoTrackSource::release_buffers.
+    void release_buffers();
+
+    // Talk: see VideoTrackSource::capture_i420.
+    bool capture_i420(const uint8_t* y, int stride_y, const uint8_t* u,
+                      int stride_u, const uint8_t* v, int stride_v, int width,
+                      int height, int64_t timestamp_us);
+
    private:
     mutable webrtc::Mutex mutex_;
+    // Talk: the buffers capture_i420 writes into, reused once the encoder
+    // lets go of them.
+    webrtc::VideoFrameBufferPool pool_{false, 4};
     webrtc::TimestampAligner timestamp_aligner_;
     VideoResolution resolution_;
     std::shared_ptr<PacketTrailerHandler> packet_trailer_handler_;
@@ -135,6 +147,18 @@ class VideoTrackSource {
   void set_packet_trailer_handler(
       std::shared_ptr<PacketTrailerHandler> handler) const;
 
+  // Talk: sends an I420 picture the application keeps, copied (and scaled,
+  // if the encoder asks for less) into a buffer from a small pool, so a
+  // camera filming for a call allocates no buffer per frame. False when the
+  // frame is dropped.
+  bool capture_i420(const uint8_t* y, int stride_y, const uint8_t* u,
+                    int stride_u, const uint8_t* v, int stride_v, int width,
+                    int height, int64_t timestamp_us) const;
+
+  // Talk: lets go of capture_i420's pooled buffers, for while the camera is
+  // off. Buffers the encoder still holds go when it lets go of them.
+  void release_buffers() const;
+
   webrtc::scoped_refptr<InternalSource> get() const;
 
  private:
@@ -143,6 +167,11 @@ class VideoTrackSource {
 
 std::shared_ptr<VideoTrackSource> new_video_track_source(
     const VideoResolution& resolution, bool is_screencast);
+
+// Talk: the source new_video_track_source last made on this thread, while it
+// lives. libwebrtc's NativeVideoSource keeps its handle to itself; asked
+// right after making one, this reaches it for capture_i420.
+std::shared_ptr<VideoTrackSource> last_video_track_source();
 
 static std::shared_ptr<MediaStreamTrack> video_to_media(
     std::shared_ptr<VideoTrack> track) {

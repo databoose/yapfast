@@ -200,6 +200,8 @@ struct Shared {
     /// it isn't on screen.
     shown_at: AtomicU64,
     buffers: Mutex<Buffers>,
+    /// Told whenever the size shown changes, for a sender to match.
+    shown: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Default)]
@@ -242,13 +244,27 @@ impl Feed {
         Self::default()
     }
 
+    /// A feed that tells `shown` whenever the size it shows at changes, so
+    /// whoever sends its pictures can send them at that size, or stop.
+    pub fn watched(shown: Arc<tokio::sync::Notify>) -> Self {
+        Self(Arc::new(Shared {
+            shown: Some(shown),
+            ..Shared::default()
+        }))
+    }
+
     /// The UI shows the feed at `width` by `height` pixels, or nowhere.
     pub fn show_at(&self, size: Option<(u32, u32)>) {
         let word = size.map_or(0, |(width, height)| {
             u64::from(width) << 32 | u64::from(height)
         });
-        if self.0.shown_at.swap(word, Ordering::Relaxed) != word && size.is_none() {
-            self.release();
+        if self.0.shown_at.swap(word, Ordering::Relaxed) != word {
+            if size.is_none() {
+                self.release();
+            }
+            if let Some(shown) = &self.0.shown {
+                shown.notify_one();
+            }
         }
     }
 
@@ -381,6 +397,21 @@ mod tests {
         feed.show_at(None);
         assert_eq!(feed.lock().made, 0);
         assert!(feed.lock().shown.is_none());
+    }
+
+    #[test]
+    fn a_watched_feed_says_when_its_size_changes() {
+        let shown = Arc::new(tokio::sync::Notify::new());
+        let feed = Feed::watched(shown.clone());
+        let told = || futures_util::FutureExt::now_or_never(shown.notified()).is_some();
+        feed.show_at(None);
+        assert!(!told(), "nothing changed");
+        feed.show_at(Some((320, 180)));
+        assert!(told());
+        feed.show_at(Some((320, 180)));
+        assert!(!told(), "the same size");
+        feed.show_at(None);
+        assert!(told(), "scrolled away");
     }
 
     #[test]

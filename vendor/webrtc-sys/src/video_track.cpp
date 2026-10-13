@@ -27,6 +27,7 @@
 #include "audio/remix_resample.h"
 #include "common_audio/include/audio_util.h"
 #include "livekit/dmabuf_video_frame_buffer.h"
+#include "libyuv/scale.h"
 #include "livekit/media_stream.h"
 #include "livekit/packet_trailer.h"
 #include "livekit/video_track.h"
@@ -197,6 +198,61 @@ bool VideoTrackSource::InternalSource::on_captured_frame(
   return true;
 }
 
+bool VideoTrackSource::InternalSource::capture_i420(const uint8_t* y,
+                                                    int stride_y,
+                                                    const uint8_t* u,
+                                                    int stride_u,
+                                                    const uint8_t* v,
+                                                    int stride_v,
+                                                    int width,
+                                                    int height,
+                                                    int64_t timestamp_us) {
+  webrtc::scoped_refptr<webrtc::I420Buffer> buffer;
+  int64_t aligned_timestamp_us;
+  {
+    webrtc::MutexLock lock(&mutex_);
+    aligned_timestamp_us = timestamp_aligner_.TranslateTimestamp(
+        timestamp_us, webrtc::TimeMicros());
+    if (resolution_.height == 0 || resolution_.width == 0) {
+      resolution_ = VideoResolution{static_cast<uint32_t>(width),
+                                    static_cast<uint32_t>(height)};
+    }
+    int adapted_width, adapted_height, crop_width, crop_height, crop_x, crop_y;
+    if (!AdaptFrame(width, height, aligned_timestamp_us, &adapted_width,
+                    &adapted_height, &crop_width, &crop_height, &crop_x,
+                    &crop_y)) {
+      return false;
+    }
+    // Every buffer is still with the encoder: drop this frame.
+    buffer = pool_.CreateI420Buffer(adapted_width, adapted_height);
+    if (!buffer) {
+      return false;
+    }
+    // Crop offsets are even, as I420's halved chroma planes need.
+    crop_x &= ~1;
+    crop_y &= ~1;
+    libyuv::I420Scale(y + crop_y * stride_y + crop_x, stride_y,
+                      u + crop_y / 2 * stride_u + crop_x / 2, stride_u,
+                      v + crop_y / 2 * stride_v + crop_x / 2, stride_v,
+                      crop_width, crop_height, buffer->MutableDataY(),
+                      buffer->StrideY(), buffer->MutableDataU(),
+                      buffer->StrideU(), buffer->MutableDataV(),
+                      buffer->StrideV(), adapted_width, adapted_height,
+                      libyuv::kFilterBox);
+  }
+  OnFrame(webrtc::VideoFrame::Builder()
+              .set_video_frame_buffer(buffer)
+              .set_rotation(webrtc::kVideoRotation_0)
+              .set_timestamp_us(aligned_timestamp_us)
+              .build());
+  return true;
+}
+
+void VideoTrackSource::InternalSource::release_buffers() {
+  webrtc::MutexLock lock(&mutex_);
+  pool_.Release();
+}
+
 void VideoTrackSource::InternalSource::set_packet_trailer_handler(
     std::shared_ptr<PacketTrailerHandler> handler) {
   webrtc::MutexLock lock(&mutex_);
@@ -216,6 +272,23 @@ bool VideoTrackSource::on_captured_frame(
     const FrameMetadata& frame_metadata) const {
   auto rtc_frame = frame->get();
   return source_->on_captured_frame(rtc_frame, frame_metadata);
+}
+
+bool VideoTrackSource::capture_i420(const uint8_t* y,
+                                    int stride_y,
+                                    const uint8_t* u,
+                                    int stride_u,
+                                    const uint8_t* v,
+                                    int stride_v,
+                                    int width,
+                                    int height,
+                                    int64_t timestamp_us) const {
+  return source_->capture_i420(y, stride_y, u, stride_u, v, stride_v, width,
+                               height, timestamp_us);
+}
+
+void VideoTrackSource::release_buffers() const {
+  source_->release_buffers();
 }
 
 bool VideoTrackSource::capture_dmabuf_frame(int dmabuf_fd,
@@ -254,9 +327,19 @@ webrtc::scoped_refptr<VideoTrackSource::InternalSource> VideoTrackSource::get()
   return source_;
 }
 
+// Talk: the source most recently made on each thread; see
+// last_video_track_source.
+static thread_local std::weak_ptr<VideoTrackSource> last_source;
+
 std::shared_ptr<VideoTrackSource> new_video_track_source(
     const VideoResolution& resolution, bool is_screencast) {
-  return std::make_shared<VideoTrackSource>(resolution, is_screencast);
+  auto source = std::make_shared<VideoTrackSource>(resolution, is_screencast);
+  last_source = source;
+  return source;
+}
+
+std::shared_ptr<VideoTrackSource> last_video_track_source() {
+  return last_source.lock();
 }
 
 }  // namespace livekit_ffi
