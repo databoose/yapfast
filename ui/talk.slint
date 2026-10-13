@@ -440,6 +440,7 @@ export component TalkWindow inherits Window {
     in-out property <int> text-size: 1;
     in-out property <bool> link-previews: true;
     in-out property <bool> unmute-on-join;
+    in-out property <bool> deafen-on-join;
     in-out property <bool> level-voice: true;
     in-out property <int> noise-suppression;
     in-out property <int> noise-strength;
@@ -494,9 +495,12 @@ export component TalkWindow inherits Window {
     callback earlier;
     callback jump-to-unread;
     callback join-voice;
+    /// Mutes or unmutes the call, or out of one, changes how the next starts.
     callback toggle-mute;
     /// Turns the microphone on as a call connects, for unmute-on-join.
     callback join-unmuted;
+    /// Deafens as a call connects, for deafen-on-join.
+    callback join-deafened;
     callback toggle-deafen;
     callback toggle-share;
     /// Share the screen at this resolution, as in share-resolution, and frame rate.
@@ -684,10 +688,17 @@ export component TalkWindow inherits Window {
     property <bool> is-editing: root.compose-label == "Editing your message";
     property <color> voice-color: root.voice-tone == 1 ? Theme.live : root.voice-tone == 2 ? Theme.danger : Theme.accent;
 
-    // Talk joins calls muted; this preference turns the microphone on once connected.
+    // Talk joins calls muted and hearing; these preferences deafen, or turn the
+    // microphone on, once connected.
     changed voice-ready => {
-        if root.voice-ready && root.unmute-on-join && root.muted { root.join-unmuted(); }
+        if !root.voice-ready { return; }
+        if root.deafen-on-join { if !root.deafened { root.join-deafened(); } }
+        else if root.unmute-on-join && root.muted { root.join-unmuted(); }
     }
+    // Out of a call, the account panel's toggles show and change how the next
+    // call starts. Deafening mutes too, as it does in a call.
+    property <bool> shown-deafened: root.voice-active ? root.deafened : root.deafen-on-join;
+    property <bool> shown-muted: root.voice-active ? root.muted : !root.unmute-on-join || root.deafen-on-join;
 
     // The device menus open above the toggle whose caret was clicked.
     property <length> menu-x;
@@ -1032,22 +1043,24 @@ export component TalkWindow inherits Window {
                                 clicked => { root.open-status-menu(); }
                             }
                         }
-                        if root.voice-active: DeviceToggle {
-                            icon: root.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
-                            label: root.muted ? "Unmute" : "Mute"; alert: root.muted;
+                        DeviceToggle {
+                            icon: root.shown-muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
+                            label: root.voice-active ? (root.muted ? "Unmute" : "Mute") : root.shown-muted ? "Join calls unmuted" : "Join calls muted";
+                            alert: root.shown-muted;
                             menu-label: "Input options"; open: root.input-open;
-                            enabled: root.voice-ready;
+                            enabled: root.voice-ready || !root.voice-active;
                             clicked => { root.toggle-mute(); }
                             menu => {
                                 root.menu-x = self.absolute-position.x; root.menu-y = self.absolute-position.y + (self.height - 32px) / 2;
                                 root.refresh-devices(); input-menu.show();
                             }
                         }
-                        if root.voice-active: DeviceToggle {
-                            icon: root.deafened ? @image-url("icons/headphone-off.svg") : @image-url("icons/headphones.svg");
-                            label: root.deafened ? "Undeafen" : "Deafen"; alert: root.deafened;
+                        DeviceToggle {
+                            icon: root.shown-deafened ? @image-url("icons/headphone-off.svg") : @image-url("icons/headphones.svg");
+                            label: root.voice-active ? (root.deafened ? "Undeafen" : "Deafen") : root.deafen-on-join ? "Join calls undeafened" : "Join calls deafened";
+                            alert: root.shown-deafened;
                             menu-label: "Output options"; open: root.output-open;
-                            enabled: root.voice-ready;
+                            enabled: root.voice-ready || !root.voice-active;
                             clicked => { root.toggle-deafen(); }
                             menu => {
                                 root.menu-x = self.absolute-position.x; root.menu-y = self.absolute-position.y + (self.height - 32px) / 2;

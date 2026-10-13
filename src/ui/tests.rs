@@ -255,6 +255,18 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     window.set_voice_ready(true);
     slint::platform::update_timers_and_animations();
     assert!(unmuted.get());
+    // Deafening on joining wins over unmuting.
+    let (unmuted, deafened) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let record = unmuted.clone();
+    window.on_join_unmuted(move || record.set(true));
+    let record = deafened.clone();
+    window.on_join_deafened(move || record.set(true));
+    window.set_voice_ready(false);
+    slint::platform::update_timers_and_animations();
+    window.set_deafen_on_join(true);
+    window.set_voice_ready(true);
+    slint::platform::update_timers_and_animations();
+    assert!(deafened.get() && !unmuted.get());
 }
 
 #[test]
@@ -1346,6 +1358,13 @@ fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
     window.invoke_send();
     assert_eq!(window.get_messages().row_count(), count + 1);
     assert!(window.get_draft().is_empty());
+    // Out of a call, the toggles change how the next one starts, and are kept.
+    window.invoke_toggle_deafen();
+    assert!(window.get_deafen_on_join() && adapter.borrow().layout.deafen_on_join);
+    window.invoke_toggle_mute();
+    assert!(window.get_unmute_on_join() && !window.get_deafen_on_join());
+    window.invoke_toggle_mute();
+    assert!(!window.get_unmute_on_join() && !adapter.borrow().layout.unmute_on_join);
     let voice_room = rooms.iter().find(|room| room.voice).unwrap();
     // Clicking a voice channel joins it.
     window.invoke_select_room(voice_room.id.clone().into());
