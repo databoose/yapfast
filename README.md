@@ -66,6 +66,10 @@ Not there yet:
 Use Discord in a browser for these until then. The
 [Discord plan](docs/discord.md) has the details and the order of work.
 
+Talk speaks to Discord the way its own apps do, as documented by
+[Discord Userdoccers](https://docs.discord.food), a community effort to
+document the user side of Discord's API. Thanks to everyone who writes it.
+
 ## Linux development
 
 On this NixOS host, enter the pinned environment with:
