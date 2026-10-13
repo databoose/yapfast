@@ -155,16 +155,27 @@ unsafe impl Send for Stream {}
 
 impl Stream {
     fn open(device: &IMMDevice, format: Format, buffer: Duration) -> Result<Self> {
+        // SAFETY: a plain COM call.
+        let client =
+            unsafe { device.Activate(CLSCTX_ALL, None) }.context("the device refused a stream")?;
+        Self::initialize(client, format, buffer, 0)
+    }
+
+    /// Starts `client` as a stream, with `flags` besides the usual ones.
+    fn initialize(
+        client: IAudioClient,
+        format: Format,
+        buffer: Duration,
+        flags: u32,
+    ) -> Result<Self> {
         // SAFETY: plain COM calls; the format outlives Initialize.
         unsafe {
-            let client: IAudioClient = device
-                .Activate(CLSCTX_ALL, None)
-                .context("the device refused a stream")?;
             let wave = wave_format(format);
             client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    flags
+                        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                         | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                         | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
                     hundred_nanoseconds(buffer),
@@ -407,10 +418,268 @@ impl Input {
 }
 
 #[cfg(feature = "discord")]
-pub fn others(
-    _: fn(&str) -> bool,
-    _: super::Hear,
-    _: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<std::thread::JoinHandle<()>> {
-    anyhow::bail!("Talk shares sound on Linux only for now")
+pub use others::others;
+
+/// Other applications' sound, through process loopback: one stream of
+/// everything the system plays but Talk's own processes, from Windows 10's
+/// 2004 update on. It can't leave out other applications, so `skip` has no
+/// effect here.
+#[cfg(feature = "discord")]
+mod others {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        thread::JoinHandle,
+    };
+
+    use windows::{
+        Win32::{
+            Foundation::WAIT_TIMEOUT,
+            Media::Audio::{
+                AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
+                AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
+                IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+                IActivateAudioInterfaceCompletionHandler_Impl,
+                PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+            },
+            System::{
+                Com::{
+                    BLOB,
+                    StructuredStorage::{
+                        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
+                    },
+                },
+                Diagnostics::ToolHelp::{
+                    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                    TH32CS_SNAPPROCESS,
+                },
+                Variant::VT_BLOB,
+            },
+        },
+        core::{HRESULT, Interface, Ref, implement},
+    };
+
+    use super::*;
+    use crate::audio_io::{Hear, Heard, RATE};
+
+    /// What a packet of other applications' sound holds at most.
+    const LISTENING: Duration = Duration::from_millis(100);
+    /// How often the capture thread looks for `stop` while nothing plays.
+    const STOP_CHECK_MS: u32 = 100;
+
+    pub fn others(
+        _skip: fn(&str) -> bool,
+        mut heard: Hear,
+        stop: Arc<AtomicBool>,
+    ) -> Result<JoinHandle<()>> {
+        let (opened, opening) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("talk-stream-hear".into())
+            .spawn(move || {
+                com();
+                let format = Format {
+                    rate: RATE,
+                    channels: 2,
+                    float: true,
+                };
+                let stream = activate(talk_process())
+                    .and_then(|client| {
+                        Stream::initialize(client, format, LISTENING, AUDCLNT_STREAMFLAGS_LOOPBACK)
+                    })
+                    .and_then(|mut stream| {
+                        // SAFETY: an initialized client.
+                        let capture = unsafe { stream.client.GetService::<IAudioCaptureClient>() }?;
+                        stream.start()?;
+                        Ok((stream, capture))
+                    });
+                let (stream, capture) = match stream {
+                    Ok(stream) => {
+                        let _ = opened.send(Ok(()));
+                        stream
+                    }
+                    Err(error) => {
+                        let _ = opened.send(Err(error));
+                        return;
+                    }
+                };
+                heard(Heard::Started {
+                    source: 0,
+                    process: None,
+                });
+                if let Err(error) = hear(&stream, &capture, &mut *heard, &stop) {
+                    tracing::warn!(
+                        error = format!("{error:#}"),
+                        "stopped hearing other applications"
+                    );
+                }
+                heard(Heard::Stopped { source: 0 });
+            })
+            .context("could not start hearing other applications")?;
+        match opening.recv() {
+            Ok(Ok(())) => Ok(thread),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error.context("Windows won't share other applications' sound"))
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(anyhow!("could not hear other applications"))
+            }
+        }
+    }
+
+    /// Passes on what the stream hears until `stop`.
+    fn hear(
+        stream: &Stream,
+        capture: &IAudioCaptureClient,
+        heard: &mut dyn FnMut(Heard<'_>),
+        stop: &AtomicBool,
+    ) -> Result<()> {
+        // For packets the engine hands over at an odd address, which it
+        // shouldn't: a copy the size of its buffer, made once.
+        let mut unaligned = vec![0f32; stream.buffer as usize * 2];
+        while !stop.load(Ordering::Relaxed) {
+            // SAFETY: the event lives as long as the stream.
+            let waited = unsafe { WaitForSingleObject(stream.event, STOP_CHECK_MS) };
+            ensure!(
+                waited == WAIT_OBJECT_0 || waited == WAIT_TIMEOUT,
+                "the sound stopped"
+            );
+            loop {
+                // SAFETY: an initialized, running client.
+                if unsafe { capture.GetNextPacketSize() }? == 0 {
+                    break;
+                }
+                let (mut data, mut count, mut flags) = (std::ptr::null_mut(), 0, 0);
+                // SAFETY: the engine lends `count` frames of stereo floats
+                // at `data` until ReleaseBuffer.
+                unsafe {
+                    capture.GetBuffer(&mut data, &mut count, &mut flags, None, None)?;
+                    let length = count as usize * 2;
+                    // Nothing playing: the mixer hears nothing rather than silence.
+                    let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null();
+                    if !silent && length > 0 {
+                        let samples = data.cast::<f32>();
+                        let samples: &[f32] = if samples.is_aligned() {
+                            std::slice::from_raw_parts(samples, length)
+                        } else {
+                            let room = unaligned.len();
+                            let into = &mut unaligned[..length.min(room)];
+                            std::ptr::copy_nonoverlapping(
+                                data,
+                                into.as_mut_ptr().cast(),
+                                size_of_val(into),
+                            );
+                            into
+                        };
+                        heard(Heard::Samples { source: 0, samples });
+                    }
+                    capture.ReleaseBuffer(count)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Signals once Windows has made the loopback stream.
+    #[implement(IActivateAudioInterfaceCompletionHandler)]
+    struct Activated(mpsc::Sender<()>);
+
+    impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
+        fn ActivateCompleted(
+            &self,
+            _: Ref<IActivateAudioInterfaceAsyncOperation>,
+        ) -> windows::core::Result<()> {
+            let _ = self.0.send(());
+            Ok(())
+        }
+    }
+
+    /// A loopback stream of everything but `process` and the processes it
+    /// started.
+    fn activate(process: u32) -> Result<IAudioClient> {
+        let mut parameters = AUDIOCLIENT_ACTIVATION_PARAMS {
+            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                    TargetProcessId: process,
+                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                },
+            },
+        };
+        // Never cleared, which would free the parameters it points to.
+        let variant = std::mem::ManuallyDrop::new(PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_BLOB,
+                    Anonymous: PROPVARIANT_0_0_0 {
+                        blob: BLOB {
+                            cbSize: size_of_val(&parameters) as u32,
+                            pBlobData: (&raw mut parameters).cast(),
+                        },
+                    },
+                    ..Default::default()
+                }),
+            },
+        });
+        let (done, activated) = mpsc::channel();
+        let handler: IActivateAudioInterfaceCompletionHandler = Activated(done).into();
+        // SAFETY: the parameters outlive the call, which copies them, and
+        // the operation's result is read only once it completes.
+        unsafe {
+            let operation = ActivateAudioInterfaceAsync(
+                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+                &IAudioClient::IID,
+                Some(&raw const *variant),
+                &handler,
+            )?;
+            activated
+                .recv_timeout(Duration::from_secs(5))
+                .context("Windows didn't answer")?;
+            let (mut result, mut client) = (HRESULT(0), None);
+            operation.GetActivateResult(&mut result, &mut client)?;
+            result.ok()?;
+            Ok(client.context("no stream")?.cast()?)
+        }
+    }
+
+    /// The process whose tree is Talk's own: the Talk that started this
+    /// stream worker, or this process when it's Talk itself.
+    fn talk_process() -> u32 {
+        let own = std::process::id();
+        // SAFETY: a snapshot this function owns, and entries sized as asked.
+        let parent = unsafe {
+            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return own;
+            };
+            let find = |process: u32| {
+                let mut entry = PROCESSENTRY32W {
+                    dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                    ..Default::default()
+                };
+                let mut found = Process32FirstW(snapshot, &mut entry).is_ok();
+                while found && entry.th32ProcessID != process {
+                    found = Process32NextW(snapshot, &mut entry).is_ok();
+                }
+                found.then_some(entry)
+            };
+            let parent = find(own).and_then(|this| {
+                let parent = find(this.th32ParentProcessID)?;
+                let name = |entry: &PROCESSENTRY32W| {
+                    let length = entry.szExeFile.iter().position(|&unit| unit == 0);
+                    String::from_utf16_lossy(&entry.szExeFile[..length.unwrap_or(260)])
+                        .to_lowercase()
+                };
+                (name(&parent) == name(&this)).then_some(parent.th32ProcessID)
+            });
+            let _ = CloseHandle(snapshot);
+            parent
+        };
+        parent.unwrap_or(own)
+    }
 }

@@ -544,8 +544,16 @@ export component TalkWindow inherits Window {
     callback join-deafened;
     callback toggle-deafen;
     callback toggle-share;
-    /// Share the screen at this resolution, as in share-resolution, and frame rate.
-    callback go-live(int, int);
+    /// Share what share-sources lists at this index, or the screen when it
+    /// lists none, at this resolution, as in share-resolution, and frame rate.
+    callback go-live(int, int, int);
+    /// The screens and windows to share, where Talk lists them (share-lists):
+    /// asked for as the share menu opens, which shows once they're in, with
+    /// the first picked.
+    in property <bool> share-lists;
+    in property <[string]> share-sources;
+    callback list-share-sources();
+    public function show-share-menu() { share-menu.show(); }
     callback stream-tick;
     /// Watch the participant with this id's stream.
     callback watch-stream(string);
@@ -786,13 +794,20 @@ export component TalkWindow inherits Window {
         }
     }
     // The quality picked in the share menu, from the last choice each time it opens.
+    property <int> pick-source;
     property <int> pick-resolution;
     property <int> pick-fps;
     function open-share-menu(x: length, y: length) {
         root.menu-x = x; root.menu-y = y;
+        root.pick-source = 0;
         root.pick-resolution = root.share-resolution;
         root.pick-fps = root.share-fps;
-        share-menu.show();
+        // Shown once the list is in, so it opens at its full height.
+        if root.share-lists {
+            root.list-share-sources();
+        } else {
+            share-menu.show();
+        }
     }
     share-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
@@ -800,8 +815,9 @@ export component TalkWindow inherits Window {
         width: 240px;
         close-policy: PopupClosePolicy.close-on-click-outside;
         ShareMenu {
+            sources: root.share-sources; pick-source <=> root.pick-source;
             pick-resolution <=> root.pick-resolution; pick-fps <=> root.pick-fps;
-            go-live(resolution, fps) => { root.go-live(resolution, fps); share-menu.close(); }
+            go-live(source, resolution, fps) => { root.go-live(source, resolution, fps); share-menu.close(); }
         }
     }
     // The emoji picker and a message's menu open beside the control that asked for

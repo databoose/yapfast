@@ -194,8 +194,6 @@ impl<S: Sample> Input<S> {
 
 /// What [`others`] hears from the other applications playing.
 #[cfg(feature = "discord")]
-// Windows doesn't hear other applications yet.
-#[cfg_attr(windows, allow(dead_code))]
 pub enum Heard<'a> {
     /// An application started playing, from this process when the system says.
     Started {
@@ -212,9 +210,10 @@ pub enum Heard<'a> {
     },
 }
 
-/// Hears what every other application plays, each on its own, at [`RATE`]
-/// in stereo, on a thread of its own until `stop`. Talk's own processes are
-/// left out, and so are applications whose name or program `skip` picks.
+/// Hears what every other application plays, at [`RATE`] in stereo, on a
+/// thread of its own until `stop`. Talk's own processes are left out. On
+/// Linux each application comes on its own, and those whose name or program
+/// `skip` picks are left out too; Windows mixes them all into one.
 /// Returns once it hears, or with why it can't.
 #[cfg(feature = "discord")]
 pub fn others(
@@ -249,8 +248,6 @@ mod tests {
     #[test]
     #[ignore = "needs a sound server whose default input hears its default output"]
     fn hears_what_it_plays() {
-        let tone =
-            |at: usize| 0.25 * (at as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin();
         let block = RATE as usize / 100;
         let mut input =
             Input::<i16>::open(None, "Test input", RATE, 1, Duration::from_millis(10)).unwrap();
@@ -259,25 +256,11 @@ mod tests {
         for chunk in heard[..RATE as usize * 3 / 10].chunks_mut(block) {
             input.read(chunk).unwrap();
         }
-        let playing = std::thread::spawn(move || {
-            let mut output =
-                Output::<f32>::open(None, "Test tone", RATE, 2, Some(Duration::from_millis(60)))
-                    .unwrap();
-            let mut frame = [0f32; RATE as usize / 50 * 2];
-            for start in (0..RATE as usize).step_by(frame.len() / 2) {
-                for (at, pair) in frame.chunks_exact_mut(2).enumerate() {
-                    pair.fill(tone(start + at));
-                }
-                output.write(&frame).unwrap();
-            }
-            let latency = output.latency();
-            output.drain().unwrap();
-            latency
-        });
+        let playing = std::thread::spawn(play_tone);
         for chunk in heard.chunks_mut(block) {
             input.read(chunk).unwrap();
         }
-        let latency = playing.join().unwrap();
+        playing.join().unwrap();
         let peak = heard
             .iter()
             .map(|sample| sample.unsigned_abs())
@@ -292,7 +275,7 @@ mod tests {
         let at = |index: Option<usize>| index.map(|index| index as f32 / RATE as f32);
         let (first, last) = (heard.iter().position(loud), heard.iter().rposition(loud));
         eprintln!(
-            "peak {peak}, {crossings} zero crossings, heard from {:?} s to {:?} s, latency {latency:?}",
+            "peak {peak}, {crossings} zero crossings, heard from {:?} s to {:?} s",
             at(first),
             at(last)
         );
@@ -344,6 +327,92 @@ mod tests {
             "name:Unplugged speakers"
         };
         assert!(Output::<i16>::open(Some(gone), "Test", RATE, 2, None).is_err());
+    }
+
+    fn tone(at: usize) -> f32 {
+        0.25 * (at as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin()
+    }
+
+    /// Plays a second of a 440 Hz tone on the default speakers.
+    fn play_tone() {
+        let mut output =
+            Output::<f32>::open(None, "Test tone", RATE, 2, Some(Duration::from_millis(60)))
+                .unwrap();
+        let mut frame = [0f32; RATE as usize / 50 * 2];
+        for start in (0..RATE as usize).step_by(frame.len() / 2) {
+            for (at, pair) in frame.chunks_exact_mut(2).enumerate() {
+                pair.fill(tone(start + at));
+            }
+            output.write(&frame).unwrap();
+        }
+        output.drain().unwrap();
+    }
+
+    /// For [`hears_other_applications`], from another process.
+    #[test]
+    #[ignore = "plays a tone"]
+    fn plays_a_tone() {
+        play_tone();
+    }
+
+    /// Hears a tone another process plays, and not one this process plays.
+    #[cfg(feature = "discord")]
+    #[test]
+    #[ignore = "needs a sound server that hears other applications"]
+    fn hears_other_applications() {
+        use std::sync::{Mutex, atomic::Ordering};
+
+        let heard = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let into = heard.clone();
+        let hearing = others(
+            |_| false,
+            move |heard| {
+                if let Heard::Samples { samples, .. } = heard {
+                    into.lock().unwrap().extend_from_slice(samples);
+                }
+            },
+            stop.clone(),
+        )
+        .unwrap();
+        let loudest = |heard: &[f32]| {
+            heard
+                .iter()
+                .fold(0f32, |peak, sample| peak.max(sample.abs()))
+        };
+        play_tone();
+        std::thread::sleep(Duration::from_millis(300));
+        let own = loudest(&std::mem::take(&mut *heard.lock().unwrap()));
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "audio_io::tests::plays_a_tone",
+                "--exact",
+                "--ignored",
+                "--quiet",
+            ])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(child.success());
+        std::thread::sleep(Duration::from_millis(300));
+        stop.store(true, Ordering::Relaxed);
+        hearing.join().unwrap();
+        let other = heard.lock().unwrap().clone();
+        let crossings = other
+            .chunks_exact(2)
+            .map(|pair| pair[0])
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
+            .count();
+        eprintln!(
+            "own tone peak {own}, other's peak {}, {crossings} crossings in {} frames",
+            loudest(&other),
+            other.len() / 2
+        );
+        assert!(own < 0.01, "heard its own tone");
+        assert!(loudest(&other) > 0.2, "didn't hear the other's tone");
+        assert!((800..960).contains(&crossings), "not all of the tone");
     }
 
     #[test]
