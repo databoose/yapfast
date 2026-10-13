@@ -1018,10 +1018,44 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             state.borrow_mut().action(&window, Action::Voice(command));
         }
     });
+    #[cfg(feature = "discord")]
+    window.set_share_lists(talk_core::stream_worker::LISTS_SOURCES);
+    #[cfg(feature = "discord")]
+    let weak = window.as_weak();
+    #[cfg(feature = "discord")]
+    window.on_list_share_sources(move || {
+        // Listing starts a capturer for screens and one for windows, so it
+        // runs beside the window, and the menu opens when it's done.
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            let listed = talk_core::stream_worker::shareable();
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                let titles: Vec<SharedString> = listed
+                    .iter()
+                    .map(|listed| listed.title.as_str().into())
+                    .collect();
+                window.set_share_sources(Rc::new(VecModel::from(titles)).into());
+                SHAREABLE.with_borrow_mut(|shareable| {
+                    *shareable = listed.into_iter().map(|listed| listed.source).collect();
+                });
+                window.invoke_show_share_menu();
+            });
+        });
+    });
     let state = adapter.clone();
     let weak = window.as_weak();
-    window.on_go_live(move |resolution, fps| {
+    window.on_go_live(move |source, resolution, fps| {
         if let Some(window) = weak.upgrade() {
+            #[cfg(feature = "discord")]
+            {
+                let picked =
+                    SHAREABLE.with_borrow(|shareable| shareable.get(source as usize).copied());
+                talk_core::stream_worker::pick(
+                    picked.unwrap_or(talk_core::stream_worker::Source::Screen),
+                );
+            }
+            #[cfg(not(feature = "discord"))]
+            let _ = source;
             let resolution = match resolution {
                 0 => voice::Resolution::P720,
                 2 => voice::Resolution::Source,
@@ -1339,4 +1373,10 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             }
         });
     }
+}
+
+#[cfg(feature = "discord")]
+thread_local! {
+    /// What the share menu lists to share, in its order.
+    static SHAREABLE: RefCell<Vec<talk_core::stream_worker::Source>> = const { RefCell::new(Vec::new()) };
 }

@@ -6,7 +6,9 @@
 //!
 //! The file lives in the runtime directory, which is memory on Linux, and is
 //! removed once the worker has it open, so the memory returns when both
-//! processes let go.
+//! processes let go. Windows won't remove a mapped file, so there it's a
+//! temporary file, kept in memory while it fits, that goes once the last
+//! process closes it.
 
 use std::{
     fs::{File, OpenOptions},
@@ -94,7 +96,68 @@ pub struct Frames {
     mapping: Mapping,
     /// The slot the UI reads, while it reads it.
     front: Mutex<u32>,
-    path: Mutex<Option<tempfile::TempPath>>,
+    name: Mutex<Option<Name>>,
+}
+
+/// What keeps the file's name until [`Frames::unlink`].
+#[cfg(not(windows))]
+type Name = tempfile::TempPath;
+
+#[cfg(windows)]
+struct Name {
+    path: PathBuf,
+    /// Opened to delete the file once every process closes it.
+    _file: File,
+}
+
+#[cfg(windows)]
+impl std::ops::Deref for Name {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(not(windows))]
+fn create_file(directory: PathBuf) -> std::io::Result<(File, Name)> {
+    let file = tempfile::Builder::new()
+        .prefix("talk-frames-")
+        .tempfile_in(directory)?;
+    Ok(file.into_parts())
+}
+
+#[cfg(windows)]
+fn create_file(directory: PathBuf) -> std::io::Result<(File, Name)> {
+    use std::{os::windows::fs::OpenOptionsExt, sync::atomic::AtomicUsize};
+
+    const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
+    const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+    static CREATED: AtomicUsize = AtomicUsize::new(0);
+    loop {
+        let path = directory.join(format!(
+            "talk-frames-{}-{}",
+            std::process::id(),
+            CREATED.fetch_add(1, Ordering::Relaxed)
+        ));
+        // The worker opens it with the standard library's sharing, which lets
+        // it be deleted.
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .attributes(FILE_ATTRIBUTE_TEMPORARY)
+            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+            .open(&path);
+        match opened {
+            Ok(file) => {
+                let name = file.try_clone()?;
+                return Ok((file, Name { path, _file: name }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 impl std::fmt::Debug for Frames {
@@ -113,43 +176,40 @@ impl Frames {
             .map(PathBuf::from)
             .filter(|directory| directory.is_dir())
             .unwrap_or_else(std::env::temp_dir);
-        let file = tempfile::Builder::new()
-            .prefix("talk-frames-")
-            .tempfile_in(directory)
-            .context("could not create the video frames file")?;
+        let (file, name) =
+            create_file(directory).context("could not create the video frames file")?;
         let capacity = capacity(width, height);
-        file.as_file()
-            .set_len((HEADER + SLOTS as usize * capacity) as u64)
+        file.set_len((HEADER + SLOTS as usize * capacity) as u64)
             .context("could not size the video frames file")?;
         {
             // SAFETY: the file was just created and no one else has it yet.
-            let mut map = unsafe { MmapMut::map_mut(file.as_file()) }
-                .context("could not map the video frames")?;
+            let mut map =
+                unsafe { MmapMut::map_mut(&file) }.context("could not map the video frames")?;
             map[..4].copy_from_slice(&MAGIC.to_ne_bytes());
             map[4..8].copy_from_slice(&u32::try_from(capacity)?.to_ne_bytes());
             // The worker starts with slot 0 and the UI with slot 2.
             map[8..12].copy_from_slice(&1u32.to_ne_bytes());
         }
-        let (file, path) = file.into_parts();
         Ok(Self {
             mapping: Mapping::open(&file)?,
             front: Mutex::new(2),
-            path: Mutex::new(Some(path)),
+            name: Mutex::new(Some(name)),
         })
     }
 
     /// Where the worker opens the file, until [`Self::unlink`].
     pub fn path(&self) -> Option<PathBuf> {
-        self.path
+        self.name
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_deref()
             .map(Path::to_owned)
     }
 
-    /// Removes the file's name once the worker has it open.
+    /// Removes the file's name once the worker has it open. On Windows the
+    /// name stays until both processes close the file.
     pub fn unlink(&self) {
-        self.path
+        self.name
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
@@ -248,7 +308,10 @@ mod tests {
         let path = frames.path().unwrap();
         let mut writer = Writer::open(&path).unwrap();
         frames.unlink();
-        assert!(!path.exists() && frames.path().is_none());
+        assert!(frames.path().is_none());
+        if cfg!(not(windows)) {
+            assert!(!path.exists());
+        }
         assert!(frames.take(|_, _, _| ()).is_none(), "nothing yet");
         assert!(writer.fits(2, 4) && !writer.fits(5, 2));
 
@@ -270,5 +333,8 @@ mod tests {
         // A video's frames carry their time.
         writer.write_timed(1, 1, 1234, |pixels| pixels.fill(0));
         assert_eq!(frames.take_timed(|_, _, _| ()), Some(((), 1234)));
+
+        drop((writer, frames));
+        assert!(!path.exists(), "gone once both let go");
     }
 }

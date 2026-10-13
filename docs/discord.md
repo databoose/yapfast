@@ -7,9 +7,9 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | Audio on Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | A check of Windows audio on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
-| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
+| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows; camera video, after the beta |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search | Threads, forums, pinning, forwarding, the menus of servers and channels |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
@@ -435,10 +435,16 @@ frames carry their time, which the seek bar shows.
 back. On Linux it starts `/proc/self/exe`, the running Talk, since Talk's path
 names a deleted file once a rebuild or update replaces it. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
 file in the runtime directory. The file is unlinked once the worker opens it.
+Windows won't delete a mapped file, so there it's a temporary file that
+Windows deletes once both processes close it.
 On Linux, libwebrtc's capturer asks the screen sharing portal what to share.
 The portal answers over D-Bus through GLib, so the worker runs GLib's main
 context while it waits for the dialog and for frames. Talk tells Discord it's
-live only once frames flow, so a cancelled dialog shares nothing.
+live only once frames flow, so a cancelled dialog shares nothing. Windows has
+no such dialog, so the share menu lists the screens and windows libwebrtc's
+capturers find (`stream_worker::shareable`), and the worker captures the one
+picked by its id; see the
+[Windows guide](windows-beta.md#go-live-on-windows).
 `TALK_STREAM_TEST_PATTERN=1` shares moving colour bars instead of a screen.
 
 Once Discord has started the stream, Talk unpauses it with op 22, as
@@ -503,8 +509,10 @@ application has 40 ms queued and keeping at most 200 ms of each, and encodes
 Opus at 64 kbit/s, what Discord's client gives a stream's sound. Frames go out
 as plain Opus RTP on the stream's audio SSRC, DAVE-encrypted, with sender
 reports, and op 5 marks them as shared sound (speaking flag 2). Nothing is
-sent while no application plays. Other systems share video only for now, and
-so does the test pattern. Two ignored tests check the capture against the
+sent while no application plays. On Windows, WASAPI's process loopback hears
+everything but Talk's own process tree as one stream, from Windows 10's 2004
+update on; it can't leave other Discord clients out. Other systems share
+video only for now, and so does the test pattern. Two ignored tests check the capture against the
 machine's sound server with a quiet tone: another process's is heard, and
 Talk's own is not.
 
@@ -1151,7 +1159,6 @@ In rough order. The browser covers these until then.
 - Making and changing server folders.
 - Joining servers by invite, and leaving them.
 - Discord's push-to-talk, and its voice settings.
-- Audio on Windows.
 - Camera video and the soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
