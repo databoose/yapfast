@@ -315,6 +315,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             members: dm.people as u64,
             unread: u64::from(dm.unread),
             mentions: dm.mentions,
+            muted: dm.muted,
             last_read: read_item(dm.last_read),
             locked: false,
             // Replying waits until the request is accepted.
@@ -389,6 +390,7 @@ fn server_rooms(
                     .map_or(0, |members| members.len() as u64),
                 unread: 0,
                 mentions: 0,
+                muted: false,
                 last_read: None,
                 locked: channel.access != Access::Join,
                 read_only: false,
@@ -421,6 +423,7 @@ fn server_rooms(
                     .map_or(0, |(_, count)| *count),
                 unread: u64::from(channel.unread),
                 mentions: channel.mentions,
+                muted: false,
                 last_read: read_item(channel.last_read),
                 locked: channel.access == Access::Hidden,
                 read_only: channel.access == Access::Locked,

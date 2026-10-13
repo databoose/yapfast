@@ -67,6 +67,10 @@ pub(super) struct Tracker {
     friends: Vec<String>,
     /// Those this account blocked, by user id.
     blocked: Vec<String>,
+    /// Those this account ignores, by user id.
+    ignored: Vec<String>,
+    /// The nicknames this account gave its friends, by user id.
+    nicknames: HashMap<String, String>,
     /// The server list's order and folders, from the settings.
     order: Vec<String>,
     folders: Vec<settings::Folder>,
@@ -104,6 +108,8 @@ impl Tracker {
             presences: HashMap::new(),
             friends: Vec::new(),
             blocked: Vec::new(),
+            ignored: Vec::new(),
+            nicknames: HashMap::new(),
             order: Vec::new(),
             folders: Vec::new(),
             status: "online".into(),
@@ -246,8 +252,10 @@ impl Tracker {
                 let id = data["id"].as_str().or_else(|| data["user_id"].as_str());
                 self.friends.retain(|friend| Some(friend.as_str()) != id);
                 self.blocked.retain(|blocked| Some(blocked.as_str()) != id);
+                self.ignored.retain(|ignored| Some(ignored.as_str()) != id);
                 if let Some(id) = id {
                     self.requests.remove(id);
+                    self.nicknames.remove(id);
                 }
                 true
             }
@@ -709,7 +717,22 @@ impl Tracker {
         else {
             return;
         };
-        // An update may leave out the type, which then hasn't changed.
+        // An update may leave out what hasn't changed.
+        if let Some(ignored) = relationship["user_ignored"].as_bool() {
+            self.ignored.retain(|user| user != id);
+            if ignored {
+                self.ignored.push(id.to_owned());
+            }
+        }
+        if relationship.get("nickname").is_some() {
+            match relationship["nickname"]
+                .as_str()
+                .filter(|nickname| !nickname.is_empty())
+            {
+                Some(nickname) => self.nicknames.insert(id.to_owned(), nickname.to_owned()),
+                None => self.nicknames.remove(id),
+            };
+        }
         let Some(kind) = relationship["type"].as_u64() else {
             return;
         };
@@ -756,9 +779,13 @@ impl Tracker {
             .iter()
             .map(|user| {
                 let known = self.presences.get(user);
+                let nickname = self.nicknames.get(user).cloned();
                 Friend {
                     user_id: user.clone(),
-                    name: names.user_name(user).unwrap_or("Discord user").to_owned(),
+                    name: nickname.clone().unwrap_or_else(|| {
+                        names.user_name(user).unwrap_or("Discord user").to_owned()
+                    }),
+                    nickname,
                     avatar: names.avatar(None, user),
                     presence: known.map(|(presence, _)| *presence),
                     activity: known.and_then(|(_, activity)| activity.clone()),
@@ -782,13 +809,15 @@ impl Tracker {
             .map(|mut private| {
                 self.unreads.mark_private(&mut private);
                 let name = |user: &String| names.user_name(user).unwrap_or("Discord user");
+                // A friend's DM goes by the nickname this account gave them.
+                let nickname = |user: &String| self.nicknames.get(user).map(String::as_str);
                 let title = match (&private.name, private.recipients.as_slice()) {
                     (Some(name), _) => name.clone(),
                     (None, []) if private.group => "Unnamed group".into(),
                     (None, recipients) if private.group => {
                         recipients.iter().map(name).collect::<Vec<_>>().join(", ")
                     }
-                    (None, [user, ..]) => name(user).to_owned(),
+                    (None, [user, ..]) => nickname(user).unwrap_or_else(|| name(user)).to_owned(),
                     (None, []) => "Discord user".into(),
                 };
                 let avatar = if private.group {
@@ -832,6 +861,7 @@ impl Tracker {
                     unread: private.unread && !private.spam,
                     mentions: if private.request { 0 } else { private.mentions },
                     last_read: private.last_read,
+                    muted: private.muted,
                     call,
                     ringing,
                     presence: known.map(|(presence, _)| *presence),
@@ -955,6 +985,7 @@ impl Tracker {
             friends: self.friends.clone(),
             friend_list: self.friend_list(&names),
             blocked: self.blocked.clone(),
+            ignored: self.ignored.clone(),
             presence: self.status.clone(),
             custom_status: self
                 .custom_status

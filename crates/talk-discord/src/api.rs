@@ -421,6 +421,97 @@ impl Api {
             .await
     }
 
+    /// Blocks `user`, which ends a friendship or friend request with them.
+    pub async fn block(&self, user: &str, place: &str) -> Result<()> {
+        let path = format!("/users/@me/relationships/{user}");
+        let request = with_json(self.request(Method::PUT, &path), &json!({"type": 2}));
+        self.empty(request.header("X-Context-Properties", context(place)))
+            .await
+    }
+
+    /// Ignores `user`, or stops ignoring them: Discord hides their messages
+    /// and quiets their DMs, and they aren't told.
+    pub async fn ignore(&self, user: &str, ignore: bool) -> Result<()> {
+        let path = format!("/users/@me/relationships/{user}/ignore");
+        let method = if ignore { Method::PUT } else { Method::DELETE };
+        self.empty(self.request(method, &path)).await
+    }
+
+    /// Sets the nickname this account gives a friend, or clears it with an
+    /// empty one.
+    pub async fn set_friend_nickname(&self, user: &str, nickname: &str) -> Result<()> {
+        let path = format!("/users/@me/relationships/{user}");
+        let nickname = (!nickname.is_empty()).then_some(nickname);
+        let body = json!({"nickname": nickname});
+        self.empty(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
+    /// This account's note on `user`; empty when it has none.
+    pub async fn note(&self, user: &str) -> Result<String> {
+        let path = format!("/users/@me/notes/{user}");
+        match self.json(self.request(Method::GET, &path)).await {
+            Ok(answer) => Ok(answer["note"].as_str().unwrap_or_default().to_owned()),
+            // Discord keeps no empty notes.
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<Refused>(),
+                    Some(Refused(StatusCode::NOT_FOUND))
+                ) =>
+            {
+                Ok(String::new())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Sets this account's note on `user`, or removes it with an empty one.
+    pub async fn set_note(&self, user: &str, note: &str) -> Result<()> {
+        let path = format!("/users/@me/notes/{user}");
+        let body = json!({"note": note});
+        self.empty(with_json(self.request(Method::PUT, &path), &body))
+            .await
+    }
+
+    /// Closes a DM, which leaves the DM list until either side writes again.
+    pub async fn close_dm(&self, channel: &str) -> Result<()> {
+        let path = format!("/channels/{channel}");
+        self.json(self.request(Method::DELETE, &path))
+            .await
+            .map(drop)
+    }
+
+    /// Mutes a DM or group DM for `seconds`, or for good with none; with
+    /// `muted` false, unmutes it.
+    pub async fn mute_private(
+        &self,
+        channel: &str,
+        muted: bool,
+        seconds: Option<u64>,
+    ) -> Result<()> {
+        let config = muted.then(|| match seconds {
+            Some(seconds) => {
+                let end = chrono::Utc::now() + chrono::Duration::seconds(seconds as i64);
+                json!({
+                    "selected_time_window": seconds,
+                    "end_time": end.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                })
+            }
+            // Discord's client gives -1 for a mute without an end.
+            None => json!({"selected_time_window": -1, "end_time": null}),
+        });
+        let body = json!({"channel_overrides": {channel: {
+            "muted": muted,
+            "mute_config": config,
+        }}});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/guilds/@me/settings"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// Whether this account may ring the others in a DM, beyond calling them.
     pub async fn ringable(&self, channel: &str) -> Result<bool> {
         let path = format!("/channels/{channel}/call");
@@ -592,9 +683,11 @@ async fn body(response: Response) -> Value {
 /// A refusal with this status and body, as an error a person can act on.
 fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
     // Discord's own words go in the error's chain, for logs: `{:#}` shows them.
+    // The status stays at its root, for callers to tell refusals apart.
+    let detail = anyhow::Error::new(Refused(status));
     let detail = match (body["code"].as_u64(), body["message"].as_str()) {
-        (Some(code), Some(message)) => anyhow!("Discord answered {status}, code {code}: {message}"),
-        _ => anyhow!("Discord answered {status}"),
+        (Some(code), Some(message)) => detail.context(format!("code {code}: {message}")),
+        _ => detail,
     };
     detail.context(match (status, body["code"].as_u64()) {
         (_, Some(UNKNOWN_USERNAME)) => anyhow!("Discord has nobody by that username."),

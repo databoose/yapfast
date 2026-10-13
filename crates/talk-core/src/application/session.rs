@@ -140,8 +140,10 @@ impl Application {
         let selection_version = self.state.selection_version.wrapping_add(1);
         let reset_version = self.state.reset_version.wrapping_add(1);
         let reaction_uses = std::mem::take(&mut self.reaction_uses);
+        let pinned = std::mem::take(&mut self.state.pinned);
         *self = Self::default();
         self.reaction_uses = reaction_uses;
+        self.state.pinned = pinned;
         self.state.selection_version = selection_version;
         self.state.reset_version = reset_version;
     }

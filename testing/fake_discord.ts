@@ -61,6 +61,11 @@
 // /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
 // a friend request by username: Frank takes none, and unknown names fail.
+// From a DM's menu, PUT /users/@me/relationships/{id} with type 2 blocks,
+// DELETE ends a friendship or block, PUT and DELETE .../{id}/ignore ignore and
+// stop, and PATCH gives a friend a nickname. GET and PUT /users/@me/notes/{id}
+// read and write Alice's note on someone, DELETE /channels/{id} closes a DM,
+// and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
 // remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
 // code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
@@ -160,6 +165,30 @@ const relationships = new Map<string, number>([
   [strangers.erin!.id, 3],
 ]);
 const FRIEND_ACCEPT_MS = 2000;
+// Whom Alice ignores, the nicknames she gave friends and her notes, by user id.
+const ignored = new Set<string>();
+const nicknames = new Map<string, string>();
+const notes = new Map<string, string>();
+// Her DMs' notification overrides, by channel id: muted, until when if set.
+const dmOverrides = new Map<string, { muted: boolean; end_time: string | null; selected_time_window: number }>();
+const wireRelationship = (id: string, type: number) => ({
+  id, type, nickname: nicknames.get(id) ?? null, user_id: id, since: JOINED_AT, user_ignored: ignored.has(id),
+});
+const wireDmSettings = () => ({
+  guild_id: null,
+  muted: false,
+  mute_config: null,
+  message_notifications: 3,
+  flags: 0,
+  version: 1,
+  channel_overrides: [...dmOverrides].map(([channel_id, override]) => ({
+    channel_id,
+    muted: override.muted,
+    mute_config: override.muted ? { end_time: override.end_time, selected_time_window: override.selected_time_window } : null,
+    message_notifications: 3,
+    collapsed: false,
+  })),
+});
 
 // Alice's settings as Discord keeps them: a protobuf message in base64, of
 // which the fake knows only the status, field 11, holding the custom status.
@@ -1044,12 +1073,13 @@ function ready(ws: Socket) {
           version: 1,
           channel_overrides: [],
         },
+        wireDmSettings(),
       ],
       partial: false,
       version: 1,
     },
     private_channels: [...privates].map(([id, channel]) => wirePrivate(id, channel, "ids")),
-    relationships: [...relationships].map(([id, type]) => ({ id, type, nickname: null, user_id: id, since: JOINED_AT })),
+    relationships: [...relationships].map(([id, type]) => wireRelationship(id, type)),
     connected_accounts: [],
     guild_join_requests: [],
     experiments: [],
@@ -2330,11 +2360,83 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     if (method === "DELETE") {
       if (before === undefined) return notFound("Unknown Relationship", 10011);
       relationships.delete(id);
+      nicknames.delete(id);
       dispatch("RELATIONSHIP_REMOVE", { id, type: before, nickname: null });
+      return empty();
+    }
+    const body: any = await req.json().catch(() => ({}));
+    if (body.type === 2) {
+      nicknames.delete(id);
+      befriend(user, 2);
       return empty();
     }
     request(user);
     return empty();
+  }
+  if ((m = path.match(/^\/users\/@me\/relationships\/(\d+)\/ignore$/)) && (method === "PUT" || method === "DELETE")) {
+    const id = m[1]!;
+    if (!userById.get(id) || id === ALICE) return notFound("Unknown User", 10013);
+    if (method === "PUT") ignored.add(id);
+    else ignored.delete(id);
+    dispatch("RELATIONSHIP_UPDATE", wireRelationship(id, relationships.get(id) ?? 0));
+    return empty();
+  }
+  if (method === "PATCH" && (m = path.match(/^\/users\/@me\/relationships\/(\d+)$/))) {
+    const id = m[1]!;
+    if (relationships.get(id) !== 1) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    const body: any = await req.json().catch(() => ({}));
+    if (typeof body.nickname === "string" && body.nickname.length > 32) {
+      return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    }
+    if (body.nickname) nicknames.set(id, body.nickname);
+    else nicknames.delete(id);
+    dispatch("RELATIONSHIP_UPDATE", wireRelationship(id, 1));
+    return empty();
+  }
+
+  // Alice's notes on people: Discord answers 404 for someone she has none on.
+  if ((m = path.match(/^\/users\/@me\/notes\/(\d+)$/))) {
+    const id = m[1]!;
+    if (method === "GET") {
+      const note = notes.get(id);
+      if (note === undefined) return notFound("Unknown User", 10013);
+      return json({ note, note_user_id: id, user_id: ALICE });
+    }
+    if (method === "PUT") {
+      const body: any = await req.json().catch(() => ({}));
+      if (typeof body.note === "string" && body.note.length > 256) {
+        return json({ message: "Invalid Form Body", code: 50035 }, 400);
+      }
+      if (body.note) notes.set(id, body.note);
+      else notes.delete(id);
+      dispatch("USER_NOTE_UPDATE", { id, note: body.note ?? "" });
+      return empty();
+    }
+  }
+
+  // Closing a DM takes it out of her list until either of them writes.
+  if (method === "DELETE" && (m = path.match(/^\/channels\/(\d+)$/))) {
+    const dm = privates.get(m[1]!);
+    if (!dm) return notFound("Unknown Channel", 10003);
+    privates.delete(m[1]!);
+    const wire = wirePrivate(m[1]!, dm, "objects");
+    dispatch("CHANNEL_DELETE", wire);
+    return json(wire);
+  }
+
+  // Muting a DM, for a while or for good, and unmuting it.
+  if (method === "PATCH" && path === "/users/@me/guilds/@me/settings") {
+    const body: any = await req.json().catch(() => ({}));
+    for (const [channel, override] of Object.entries<any>(body.channel_overrides ?? {})) {
+      dmOverrides.set(channel, {
+        muted: !!override.muted,
+        end_time: override.mute_config?.end_time ?? null,
+        selected_time_window: override.mute_config?.selected_time_window ?? -1,
+      });
+    }
+    const settings = wireDmSettings();
+    dispatch("USER_GUILD_SETTINGS_UPDATE", settings);
+    return json(settings);
   }
 
   // Alice may ring her friends in a DM, and anyone in a group.

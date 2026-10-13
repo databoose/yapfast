@@ -117,6 +117,7 @@ impl SidebarShown {
             &state.servers,
             &state.friends,
             &state.friend_requests,
+            &state.pinned,
         )
             .hash(&mut hasher);
         hasher.finish()
@@ -449,6 +450,14 @@ impl Adapter {
             listed.retain(|room| {
                 room.category != discord::REQUESTS && room.category != discord::SPAM
             });
+            // Pinned DMs come first, in the order they were pinned.
+            listed.sort_by_key(|room| {
+                state
+                    .pinned
+                    .iter()
+                    .position(|id| *id == room.id)
+                    .unwrap_or(usize::MAX)
+            });
         }
         let rows: Vec<_> = listed
             .into_iter()
@@ -496,6 +505,8 @@ impl Adapter {
                     discord: room.direct && room.network == Network::Discord,
                     locked: room.locked,
                     person: room.person.is_some(),
+                    pinned: room.direct && state.pinned.contains(&room.id),
+                    muted: room.muted,
                     people: if room.people.is_empty() {
                         ModelRc::default()
                     } else {
@@ -779,6 +790,64 @@ impl Adapter {
         update_model(&self.models.role_members, role_members);
     }
 
+    /// The dialog from a DM's menu about its other person.
+    fn show_person_dialog(&self, window: &TalkWindow) {
+        let dialog = self.app.state.person_dialog.as_ref();
+        // The field starts from the note or nickname there is, once it's here.
+        if let Some(text) = dialog.and_then(|dialog| dialog.text.as_deref())
+            && (!window.get_person_open() || window.get_person_prompt().loading)
+        {
+            window.set_person_text(text.into());
+        }
+        window.set_person_open(dialog.is_some());
+        let Some(dialog) = dialog else {
+            return;
+        };
+        let name = &dialog.name;
+        let (title, text, field, confirm, danger) = match dialog.ask {
+            PersonAsk::Note => (
+                format!("Note on {name}"),
+                "Only you see your note, in Discord too.".into(),
+                "Note",
+                "Save",
+                false,
+            ),
+            PersonAsk::Nickname => (
+                format!("Nickname for {name}"),
+                "Only you see the nickname you give a friend. Leave it empty to remove it.".into(),
+                "Nickname",
+                "Save",
+                false,
+            ),
+            PersonAsk::Unfriend => (
+                format!("Remove {name} as a friend?"),
+                format!("You'll need to send {name} a friend request to be friends again."),
+                "",
+                "Remove friend",
+                true,
+            ),
+            PersonAsk::Block => (
+                format!("Block {name}?"),
+                format!(
+                    "Blocking {name} also removes them as a friend. Their messages show collapsed, and they can't message you."
+                ),
+                "",
+                "Block",
+                true,
+            ),
+        };
+        window.set_person_prompt(PersonPrompt {
+            title: title.into(),
+            text: text.into(),
+            field: field.into(),
+            confirm: confirm.into(),
+            danger,
+            loading: dialog.text.is_none(),
+            saving: dialog.saving,
+            error: dialog.error.as_deref().unwrap_or_default().into(),
+        });
+    }
+
     /// The dialogs for adding a friend, the custom status, a new DM and forwarding.
     fn show_dialogs(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
@@ -806,6 +875,7 @@ impl Adapter {
             }) => error.as_str().into(),
             _ => SharedString::default(),
         });
+        self.show_person_dialog(window);
         let editor = state.status_editor.as_ref();
         // Opening the dialog starts from the status there is.
         if editor.is_some() && !window.get_status_open() {

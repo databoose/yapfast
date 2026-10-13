@@ -28,7 +28,7 @@ import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiBut
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
-import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu } from "dialogs.slint";
+import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 
 // Rust sees these, besides TalkWindow.
@@ -74,6 +74,13 @@ export component TalkWindow inherits Window {
     callback open-add-friend;
     callback add-friend(string);
     callback close-add-friend;
+    // A dialog from a DM's menu about its other person: what it asks, the
+    // note or nickname written, and the answer.
+    in property <bool> person-open;
+    in property <PersonPrompt> person-prompt;
+    in-out property <string> person-text;
+    callback answer-person(string);
+    callback close-person;
     // The Discord custom status and its dialog. Clear-after picks from
     // never, 30 minutes, an hour, four hours and today.
     in property <bool> has-custom-status;
@@ -284,6 +291,8 @@ export component TalkWindow inherits Window {
     /// when it's asked for, and the choice made. Each names its server,
     /// conversation or person by id, and whether it's a person.
     in property <[MenuRow]> menu-rows;
+    /// The submenu one of its rows opens.
+    in property <[MenuRow]> menu-subrows;
     callback prepare-menu(string, bool);
     callback choose-menu(string, bool, string);
     /// Show a mutual friend's profile, by Discord user id: as a card, or large.
@@ -771,6 +780,17 @@ export component TalkWindow inherits Window {
     // from a person's menu opens where the menu did.
     property <string> menu-target;
     property <bool> menu-person;
+    // A message author's card, beside their avatar or name, and their menu.
+    function author-card(item: string, sender: string, x: length, y: length, width: length, height: length) {
+        root.active-item = item;
+        root.anchor(x, y, width, height, false);
+        root.profile-at-pointer = true;
+        root.show-profile(sender);
+    }
+    function author-menu(item: string, sender: string, x: length, y: length) {
+        root.active-item = item;
+        root.open-context-menu(sender, true, x, y);
+    }
     function open-context-menu(id: string, person: bool, x: length, y: length) {
         root.anchor(x, y, 0px, 0px, true);
         root.menu-target = id;
@@ -778,13 +798,18 @@ export component TalkWindow inherits Window {
         root.prepare-menu(id, person);
         if root.menu-rows.length > 0 { context-menu.show(); }
     }
+    // The popup spans the menu and room for its submenu, which opens to the
+    // menu's right, or its left near the window's right edge.
+    // A menu without a submenu needs only its own width.
+    property <bool> menu-submenu: root.menu-subrows.length > 0;
+    property <bool> menu-flip: root.menu-submenu && root.anchor-x + 200px + 224px > root.width - 8px;
     context-menu := PopupWindow {
-        width: 200px; height: context-menu-content.content-height;
-        x: max(8px, min(root.width - self.width - 8px, root.anchor-x));
+        width: root.menu-submenu ? 424px : 200px; height: context-menu-content.content-height;
+        x: max(8px, min(root.width - 200px - 8px, root.anchor-x)) - (root.menu-flip ? 224px : 0px);
         y: root.anchor-y + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height);
         close-policy: PopupClosePolicy.close-on-click-outside;
         context-menu-content := ContextMenu {
-            rows: root.menu-rows;
+            rows: root.menu-rows; subrows: root.menu-subrows; flip: root.menu-flip;
             chose(id) => {
                 if root.menu-person { root.profile-at-pointer = true; }
                 root.choose-menu(root.menu-target, root.menu-person, id);
@@ -1392,20 +1417,14 @@ export component TalkWindow inherits Window {
                                                             initial: message.initial; tint: message.tint; picture: message.picture; picture-url: message.picture-url;
                                                         }
                                                         // Clicking the author's avatar shows their card beside it;
-                                                        // a right click opens their menu.
+                                                        // a right click opens their menu. Their name does the same.
                                                         if message.first && message.sender != "": TouchArea {
                                                             x: 0px; y: message.has-reply ? 24px : 2px; width: 40px; height: 40px;
                                                             mouse-cursor: MouseCursor.pointer;
-                                                            clicked => {
-                                                                root.active-item = message.item;
-                                                                root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
-                                                                root.profile-at-pointer = true;
-                                                                root.show-profile(message.sender);
-                                                            }
+                                                            clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
                                                             pointer-event(event) => {
                                                                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                                                    root.active-item = message.item;
-                                                                    root.open-context-menu(message.sender, true, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                                                    root.author-menu(message.item, message.sender, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                                                                 }
                                                             }
                                                         }
@@ -1441,7 +1460,29 @@ export component TalkWindow inherits Window {
                                                         }
                                                         if message.first: HorizontalLayout {
                                                             spacing: 8px;
-                                                            StyledText { text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center; }
+                                                            Rectangle {
+                                                                min-width: author-name.min-width; preferred-width: author-name.preferred-width;
+                                                                preferred-height: author-name.preferred-height; horizontal-stretch: 0;
+                                                                author-name := StyledText {
+                                                                    width: parent.width; height: parent.height;
+                                                                    text: message.author-styled; link-color: Theme.link; default-color: message.has-color ? message.color : Theme.text; default-font-size: root.message-font-size; max-lines: 1; vertical-alignment: center;
+                                                                }
+                                                                // Underlined while pointed at, as a link is.
+                                                                if author-touch.has-hover: Rectangle {
+                                                                    y: (parent.height + root.message-font-size) / 2 + 1px; height: 1px;
+                                                                    background: message.has-color ? message.color : Theme.text;
+                                                                }
+                                                                author-touch := TouchArea {
+                                                                    enabled: message.sender != "";
+                                                                    mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                                                                    clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                                                                    pointer-event(event) => {
+                                                                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                                                            root.author-menu(message.item, message.sender, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                             if message.bot: Middle { BotTag { } }
                                                             StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
                                                             Rectangle { horizontal-stretch: 1; }
@@ -1978,6 +2019,12 @@ export component TalkWindow inherits Window {
         add-friend-sending: root.add-friend-sending; add-friend-sent: root.add-friend-sent; add-friend-note: root.add-friend-note;
         add-friend(name) => { root.add-friend(name); }
         close-add-friend => { root.close-add-friend(); }
+    }
+    // About a DM's other person; see PersonDialog.
+    if root.person-open: PersonDialog {
+        prompt: root.person-prompt; text <=> root.person-text;
+        answer(text) => { root.answer-person(text); }
+        close => { root.close-person(); }
     }
     // The custom status; see StatusDialog.
     if root.status-open: StatusDialog {

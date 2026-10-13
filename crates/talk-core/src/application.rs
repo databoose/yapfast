@@ -25,7 +25,7 @@ mod profiles;
 mod rooms;
 mod session;
 
-pub use rooms::{MenuChoice, network_id, network_link};
+pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 
 use calls::call_sounds;
 use compose::has_markdown;
@@ -86,6 +86,29 @@ pub struct AddFriend {
     pub sending: bool,
     /// The last request's outcome: who it went to, or why it didn't.
     pub outcome: Option<Result<String, String>>,
+}
+
+/// A dialog from a Discord DM's menu about its other person: writing a note
+/// or a friend nickname, or confirming an unfriending or a block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonDialog {
+    pub user: String,
+    /// Their name, as the DM shows it.
+    pub name: String,
+    pub ask: PersonAsk,
+    /// The note or nickname as it stands; `None` while the note is on its way.
+    pub text: Option<String>,
+    pub saving: bool,
+    pub error: Option<String>,
+}
+
+/// What a [`PersonDialog`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersonAsk {
+    Note,
+    Nickname,
+    Unfriend,
+    Block,
 }
 
 /// The dialog that sets the Discord custom status.
@@ -200,6 +223,13 @@ pub struct AppState {
     pub discord_presence: Option<String>,
     /// Its friends, by user id, and friend requests waiting for an answer.
     pub discord_friends: Vec<String>,
+    /// Those it blocked and those it ignores, by user id.
+    pub discord_blocked: Vec<String>,
+    pub discord_ignored: Vec<String>,
+    /// DMs pinned to the top of the DM list on this device, by room id, the
+    /// first pinned first.
+    pub pinned: Vec<String>,
+    pub person_dialog: Option<PersonDialog>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -753,6 +783,34 @@ pub enum Action {
     ShowProfilePanel(bool),
     /// Ignore a Discord user's friend request, or cancel this account's.
     RemoveFriendRequest(String),
+    /// Pin a DM to the top of the DM list, or unpin it.
+    Pin {
+        room: String,
+        pinned: bool,
+    },
+    /// The DMs pinned on this device, as it remembers them.
+    SetPinned(Vec<String>),
+    /// Close a Discord DM; it comes back when either side writes.
+    CloseDm(String),
+    /// Mute a Discord DM, or unmute it.
+    MuteDm {
+        room: String,
+        muting: chat::Muting,
+    },
+    /// Change how the Discord account stands with someone. Unfriending and
+    /// blocking ask first, through [`Action::AskPerson`].
+    ChangeRelationship {
+        user: String,
+        change: chat::RelationshipChange,
+    },
+    /// Open a dialog about a Discord user, from their DM's menu; carry out
+    /// what it asks for, with the note or nickname written; or close it.
+    AskPerson {
+        user: String,
+        ask: PersonAsk,
+    },
+    AnswerPerson(String),
+    ClosePersonDialog,
     /// Open the dialog that adds a friend by Discord username, send the
     /// request, or close it.
     OpenAddFriend,
@@ -1312,6 +1370,20 @@ impl Application {
                 }
                 _ => vec![],
             },
+            Action::Pin { room, pinned } => self.pin(room, pinned),
+            Action::SetPinned(pinned) => {
+                self.state.pinned = pinned;
+                vec![]
+            }
+            Action::CloseDm(room) => self.close_dm(room),
+            Action::MuteDm { room, muting } => self.mute_dm(room, muting),
+            Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
+            Action::AskPerson { user, ask } => self.ask_person(user, ask),
+            Action::AnswerPerson(text) => self.answer_person(text),
+            Action::ClosePersonDialog => {
+                self.state.person_dialog = None;
+                vec![]
+            }
             Action::LinkDiscord => {
                 if self.state.preview || self.state.discord_linked || !cfg!(feature = "discord") {
                     return vec![];
@@ -1558,6 +1630,33 @@ impl Application {
                 }
             }
             Event::DiscordUnlinked => return self.forget_discord(),
+            Event::Note { user, result } => {
+                if let Some(dialog) = self
+                    .state
+                    .person_dialog
+                    .as_mut()
+                    .filter(|dialog| dialog.user == user && dialog.ask == PersonAsk::Note)
+                {
+                    match result {
+                        Ok(note) => dialog.text = Some(note),
+                        Err(error) => {
+                            dialog.text = Some(String::new());
+                            dialog.error = Some(format!("Couldn't load your note: {error}"));
+                        }
+                    }
+                }
+            }
+            Event::PersonSaved(result) => {
+                if let Some(dialog) = &mut self.state.person_dialog {
+                    match result {
+                        Ok(()) => self.state.person_dialog = None,
+                        Err(error) => {
+                            dialog.saving = false;
+                            dialog.error = Some(error);
+                        }
+                    }
+                }
+            }
             Event::CustomStatusSet(Ok(())) => {
                 self.state.status_editor = None;
             }

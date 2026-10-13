@@ -950,6 +950,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             // is unread rather than how much; encrypted mentions are found the same way.
             unread: room.num_unread_messages(),
             mentions: room.num_unread_mentions(),
+            muted: false,
             last_read: room
                 .read_receipts()
                 .latest_active

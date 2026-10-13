@@ -92,6 +92,9 @@ pub struct Conversation {
     /// The snowflake of the last message this account read here, or 0.
     #[serde(default)]
     pub last_read: u64,
+    /// Muted in this account's notification settings, for now or for good.
+    #[serde(default)]
+    pub muted: bool,
     /// A call is going on here. Who is in it is in [`Snapshot::voice`].
     pub call: bool,
     /// Whom Discord is ringing for the call, this account perhaps among them.
@@ -122,8 +125,12 @@ pub struct FriendRequest {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Friend {
     pub user_id: String,
+    /// The nickname this account gave them, else their name.
     pub name: String,
     pub avatar: String,
+    /// The nickname this account gave them.
+    #[serde(default)]
+    pub nickname: Option<String>,
     /// Whether they're around and their custom status or what they're doing,
     /// when Discord says. Not saved, since it's stale by the next start.
     #[serde(skip)]
@@ -167,6 +174,9 @@ pub struct Snapshot {
     /// Those this account blocked, by user id. Their messages show collapsed,
     /// and they don't notify.
     pub blocked: Vec<String>,
+    /// Those this account ignores, by user id.
+    #[serde(default)]
+    pub ignored: Vec<String>,
     /// This account's status: `online`, `idle`, `dnd` or `invisible`.
     pub presence: String,
     /// This account's custom status, until it ends.
@@ -625,6 +635,56 @@ impl Discord {
     /// Ignores a friend request to this account, or cancels one it sent.
     pub async fn remove_friend_request(&self, user: &str) -> Result<()> {
         self.api.remove_relationship(user, "Friends").await
+    }
+
+    /// Ends a friendship. The lists change when Discord confirms it.
+    pub async fn unfriend(&self, user: &str) -> Result<()> {
+        self.api.remove_relationship(user, "ContextMenu").await
+    }
+
+    /// Blocks someone, or unblocks them.
+    pub async fn block(&self, user: &str, block: bool) -> Result<()> {
+        if block {
+            self.api.block(user, "ContextMenu").await
+        } else {
+            self.api.remove_relationship(user, "ContextMenu").await
+        }
+    }
+
+    /// Ignores someone, or stops ignoring them.
+    pub async fn ignore(&self, user: &str, ignore: bool) -> Result<()> {
+        self.api.ignore(user, ignore).await
+    }
+
+    /// Sets the nickname this account gives a friend; empty clears it.
+    pub async fn set_friend_nickname(&self, user: &str, nickname: &str) -> Result<()> {
+        self.api.set_friend_nickname(user, nickname).await
+    }
+
+    /// This account's note on someone; empty when it has none.
+    pub async fn note(&self, user: &str) -> Result<String> {
+        self.api.note(user).await
+    }
+
+    /// Sets this account's note on someone; empty removes it.
+    pub async fn set_note(&self, user: &str, note: &str) -> Result<()> {
+        self.api.set_note(user, note).await
+    }
+
+    /// Closes a DM; the DM list changes when Discord confirms it.
+    pub async fn close_dm(&self, channel: &str) -> Result<()> {
+        self.api.close_dm(channel).await
+    }
+
+    /// Mutes a DM or group DM for `seconds`, or for good with none, or
+    /// unmutes it; the DM list changes when Discord confirms it.
+    pub async fn mute_private(
+        &self,
+        channel: &str,
+        muted: bool,
+        seconds: Option<u64>,
+    ) -> Result<()> {
+        self.api.mute_private(channel, muted, seconds).await
     }
 
     /// Declines a call ringing this account; the call goes on without it.

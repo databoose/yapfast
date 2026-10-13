@@ -220,8 +220,9 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         let weak = window.as_weak();
         window.on_prepare_menu(move |id, person| {
             if let Some(window) = weak.upgrade() {
-                let rows = menus::menu(&adapter.borrow(), &id, person);
+                let (rows, subrows) = menus::menu(&adapter.borrow(), &id, person);
                 window.set_menu_rows(ModelRc::new(VecModel::from(rows)));
+                window.set_menu_subrows(ModelRc::new(VecModel::from(subrows)));
             }
         });
     }
@@ -293,6 +294,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_cancel_discord_link, Action::CancelDiscordLink);
     bind!(on_unlink_discord, Action::UnlinkDiscord);
     bind!(on_close_add_friend, Action::CloseAddFriend);
+    bind!(on_close_person, Action::ClosePersonDialog);
+    bind_item!(on_answer_person, Action::AnswerPerson);
     bind_item!(on_add_friend, Action::AddFriend);
     bind!(on_open_status, Action::OpenStatusEditor);
     bind_item!(on_set_status, Action::SetStatus);
