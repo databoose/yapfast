@@ -30,6 +30,9 @@ pub struct ListedMember {
     pub activity: Option<String>,
     /// Their roles' ids, shared with [`Names`]; empty outside a server.
     pub roles: Arc<[String]>,
+    /// When their timeout ends, in Unix milliseconds, while they're timed
+    /// out as far as Talk knows.
+    pub timed_out_until: Option<u64>,
 }
 
 /// Whether someone is around, as their status dot shows.
@@ -161,6 +164,11 @@ impl MemberList {
     /// How many people can read the channel, once Discord has said.
     pub fn count(&self) -> Option<u64> {
         self.count
+    }
+
+    /// Whether it lists `user`.
+    pub fn lists(&self, user: &str) -> bool {
+        self.people.contains_key(user)
     }
 
     /// Whether Discord has sent the list yet.
@@ -296,7 +304,12 @@ impl MemberList {
             match row {
                 Row::Group(id) => group = Some((id, self.heading(id, server))),
                 Row::Member(user) => {
-                    let person = self.people.get(user).cloned().unwrap_or_default();
+                    let mut person = self.people.get(user).cloned().unwrap_or_default();
+                    // GUILD_MEMBER_UPDATE changes them in Names, without
+                    // a list operation for the row.
+                    if let Some(roles) = names.shared_roles(&self.guild, user) {
+                        person.roles = roles;
+                    }
                     members.push(ListedMember {
                         user_id: user.clone(),
                         name: names
@@ -313,6 +326,7 @@ impl MemberList {
                         color: server.and_then(|server| server.color(&person.roles)),
                         activity: person.activity,
                         roles: person.roles,
+                        timed_out_until: names.timed_out_until(&self.guild, user),
                     });
                 }
                 Row::Unknown => {}

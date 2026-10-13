@@ -56,6 +56,7 @@ wl-clipboard-rs = { version = "0.9.4", optional = true }
 
 [dev-dependencies]
 i-slint-backend-testing = "=1.18.1"
+talk-core = { path = "crates/talk-core", default-features = false, features = ["test-fixtures"] }
 tempfile.workspace = true
 
 [workspace.dependencies]

@@ -398,6 +398,8 @@ export component MenuItem inherits Rectangle {
     in property <bool> submenu;
     /// A destructive choice, such as deleting: drawn in red.
     in property <bool> danger;
+    /// Shown, greyed, but not to be chosen; a ContextMenu doesn't report it.
+    in property <bool> disabled;
     /// Drawn as the pointer's choice; a ContextMenu moves it with the keys too.
     in property <bool> highlighted: pointer.has-hover;
     callback clicked;
@@ -413,10 +415,12 @@ export component MenuItem inherits Rectangle {
     accessible-description: root.subtitle;
     accessible-checkable: root.checkbox;
     accessible-checked: root.checked;
+    accessible-enabled: !root.disabled;
     accessible-action-default => { root.clicked(); }
     forward-focus: focus;
     HorizontalLayout {
         padding-left: 8px; padding-right: 8px; spacing: 8px;
+        opacity: root.disabled ? 0.45 : 1;
         Image {
             source: root.current ? @image-url("icons/check.svg") : root.icon;
             width: 16px; image-fit: contain;
@@ -458,7 +462,7 @@ export component MenuItem inherits Rectangle {
             return reject;
         }
         pointer := TouchArea {
-            mouse-cursor: MouseCursor.pointer;
+            mouse-cursor: root.disabled ? MouseCursor.default : MouseCursor.pointer;
             clicked => { root.clicked(); }
             changed has-hover => { if self.has-hover { root.hovered(); } }
         }
@@ -483,6 +487,9 @@ export struct MenuRow {
     /// Ticked, for a checkbox; otherwise the current choice, as a level in
     /// a submenu is, marked with a check in place of its icon.
     checked: bool,
+    /// Greyed, and not to be chosen, such as a role this account may not
+    /// give.
+    disabled: bool,
 }
 
 // The rows of a ContextMenu or of a submenu.
@@ -495,8 +502,9 @@ component MenuRows inherits VerticalLayout {
     in property <int> holding: -1;
     callback hovered(int);
     callback clicked(int);
-    /// A row became the current one: which, and how far down the window.
-    callback lit(int, length);
+    /// A row became the current one: which, how far down the window, and
+    /// how tall it is.
+    callback lit(int, length, length);
     padding: 6px; spacing: 2px;
     for row[index] in root.rows: VerticalLayout {
         spacing: 2px;
@@ -506,12 +514,12 @@ component MenuRows inherits VerticalLayout {
         }
         MenuItem {
             text: row.text; subtitle: row.subtitle; icon: row.icon; danger: row.danger;
-            checkbox: row.checkbox; checked: row.checked;
+            checkbox: row.checkbox; checked: row.checked; disabled: row.disabled;
             submenu: root.submenus[index].length > 0;
             highlighted: root.current == index || root.holding == index;
             hovered => { root.hovered(index); }
             clicked => { root.clicked(index); }
-            changed highlighted => { if self.highlighted { root.lit(index, self.absolute-position.y); } }
+            changed highlighted => { if self.highlighted { root.lit(index, self.absolute-position.y, self.height); } }
         }
     }
 }
@@ -522,7 +530,8 @@ component MenuRows inherits VerticalLayout {
 // move through the choices, wrapping, Home and End go to the ends, Enter or
 // Space chooses, Right opens a row's submenu and Left leaves it, and Escape
 // closes the submenu, then the menu. A checkbox row reports `toggled`
-// rather than `chose`, and the menu stays open.
+// rather than `chose`, and the menu stays open; a disabled row reports
+// neither. A menu or submenu taller than `tallest` scrolls.
 export component ContextMenu inherits Rectangle {
     in property <[MenuRow]> rows;
     /// Each row's submenu, by the row's index: empty for a row without one,
@@ -531,6 +540,7 @@ export component ContextMenu inherits Rectangle {
     /// The room right of where the menu opens; submenus that wouldn't fit
     /// there open on its left.
     in property <length> room: 100000px;
+    in property <length> tallest: 100000px;
     // A menu and a submenu are as wide as their rows, within these.
     property <length> narrowest: 188px;
     property <length> widest: 320px;
@@ -541,8 +551,10 @@ export component ContextMenu inherits Rectangle {
     // beside it, so a submenu opening moves nothing.
     out property <length> content-width: root.menu-width + (root.has-submenus ? 4px + root.widest : 0px);
     out property <bool> flip: root.has-submenus && root.content-width > root.room;
+    property <length> main-height: min(main.preferred-height, root.tallest);
+    property <length> sub-height: min(sub.preferred-height, root.tallest);
     // The submenu stays within the menu's height, so opening it moves nothing.
-    out property <length> content-height: max(main.preferred-height, root.sub-open ? sub.preferred-height : 0px);
+    out property <length> content-height: max(root.main-height, root.sub-open ? root.sub-height : 0px);
     callback chose(string);
     callback toggled(string);
     callback close;
@@ -579,7 +591,16 @@ export component ContextMenu inherits Rectangle {
         root.sub-open = true;
     }
     function pick(row: MenuRow) {
+        if row.disabled { return; }
         if row.checkbox { root.toggled(row.id); } else { root.chose(row.id); }
+    }
+    // Where a menu that scrolls goes to show the row lit `y` down it and
+    // `height` tall, as the keys move to it.
+    pure function reveal(shown: length, content: length, content-y: length, y: length, height: length) -> length {
+        let top = y - 6px;
+        let bottom = y + height + 6px;
+        let moved = top < 0px ? content-y - top : bottom > shown ? content-y - (bottom - shown) : content-y;
+        return max(min(0px, shown - content), min(0px, moved));
     }
     // Clicks between the menu and the submenu close it, as clicks outside do.
     TouchArea { clicked => { root.close(); } }
@@ -617,11 +638,15 @@ export component ContextMenu inherits Rectangle {
         }
         Rectangle {
             x: root.flip ? root.content-width - root.menu-width : 0px; y: 0px;
-            width: root.menu-width; height: main.preferred-height;
+            width: root.menu-width; height: root.main-height;
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            clip: true;
             TouchArea { }
+            main-flick := Flickable {
+            content-height: main.preferred-height;
             main := MenuRows {
+                width: root.menu-width;
                 rows: root.rows; submenus: root.submenus;
                 current: root.sub-current >= 0 ? -1 : root.current;
                 holding: root.sub-open ? root.sub-row : -1;
@@ -641,25 +666,36 @@ export component ContextMenu inherits Rectangle {
                         root.pick(root.rows[index]);
                     }
                 }
-                lit(index, y) => {
+                lit(index, y, height) => {
+                    let before = main-flick.content-y;
+                    main-flick.content-y = root.reveal(main-flick.height, main-flick.content-height, main-flick.content-y, y - main-flick.absolute-position.y, height);
                     root.lit-row = index;
-                    root.lit-y = max(0px, y - root.absolute-position.y - 6px);
+                    root.lit-y = max(0px, y + main-flick.content-y - before - root.absolute-position.y - 6px);
                     if root.sub-row == index { root.sub-y = root.lit-y; }
                 }
+            }
             }
         }
         Rectangle {
             visible: root.sub-open;
             x: root.flip ? root.widest - root.submenu-width : root.menu-width + 4px;
             y: max(0px, min(root.sub-y, root.content-height - self.height));
-            width: root.submenu-width; height: sub.preferred-height;
+            width: root.submenu-width; height: root.sub-height;
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            clip: true;
             TouchArea { }
+            sub-flick := Flickable {
+            content-height: sub.preferred-height;
             sub := MenuRows {
+                width: root.submenu-width;
                 rows: root.subrows; current: root.sub-current;
                 hovered(index) => { root.sub-current = index; }
                 clicked(index) => { root.pick(root.subrows[index]); }
+                lit(index, y, height) => {
+                    sub-flick.content-y = root.reveal(sub-flick.height, sub-flick.content-height, sub-flick.content-y, y - sub-flick.absolute-position.y, height);
+                }
+            }
             }
         }
     }

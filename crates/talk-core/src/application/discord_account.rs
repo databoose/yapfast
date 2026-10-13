@@ -1,6 +1,6 @@
 //! The linked Discord account: its friends and requests, linking, the custom status, and what its snapshots list.
 
-use super::*;
+use super::{members, *};
 
 impl Application {
     pub(super) fn open_dm_screen(&mut self, screen: DmScreen) -> Vec<Effect> {
@@ -290,40 +290,48 @@ impl Application {
         ))]
     }
 
-    /// Opens a dialog about the other person in a Discord DM, fetching the
-    /// note it shows.
+    /// Opens a dialog about a Discord user, from their DM's menu or their
+    /// menu as a server member, fetching the note it shows. A server's own
+    /// dialogs open through [`Self::ask_member`].
     pub(super) fn ask_person(&mut self, user: String, ask: PersonAsk) -> Vec<Effect> {
-        let Some(room) = self
-            .state
-            .rooms
-            .iter()
-            .find(|room| room.direct && room.person.as_deref() == Some(&user))
-        else {
-            return vec![];
-        };
-        if self.state.discord_user.is_none() || self.state.preview {
+        if self.state.discord_user.is_none()
+            || self.state.preview
+            || self.state.relation(&user) == Relation::Me
+            || user.starts_with('@')
+        {
             return vec![];
         }
         let friend = self.state.friends.iter().find(|friend| friend.id == user);
-        if ask == PersonAsk::Nickname && friend.is_none() {
+        // As their DM names them, or the open channel.
+        let name = self
+            .state
+            .dm_with(&user)
+            .map(|room| room.name.clone())
+            .or_else(|| self.state.person(&user).map(|person| person.name))
+            .or_else(|| friend.map(|friend| friend.name.clone()));
+        let Some(name) = name else {
             return vec![];
-        }
+        };
         let text = match ask {
             PersonAsk::Note => None,
-            PersonAsk::Nickname => Some(
-                friend
-                    .and_then(|friend| friend.nickname.clone())
-                    .unwrap_or_default(),
-            ),
+            PersonAsk::Nickname => match friend {
+                Some(friend) => Some(friend.nickname.clone().unwrap_or_default()),
+                None => return vec![],
+            },
             PersonAsk::Unfriend | PersonAsk::Block => Some(String::new()),
+            PersonAsk::ServerNickname | PersonAsk::Timeout | PersonAsk::Kick | PersonAsk::Ban => {
+                return vec![];
+            }
         };
         self.state.person_dialog = Some(PersonDialog {
             user: user.clone(),
-            name: room.name.clone(),
+            name,
             ask,
             text,
             saving: false,
             error: None,
+            server: None,
+            choice: 0,
         });
         if ask == PersonAsk::Note {
             vec![Effect::Backend(Command::Discord(DiscordCommand::Note {
@@ -335,7 +343,8 @@ impl Application {
     }
 
     /// Carries out what the person dialog asks for: saving the note or
-    /// nickname written, or unfriending or blocking.
+    /// nickname written, unfriending or blocking, or a member's change with
+    /// its reason.
     pub(super) fn answer_person(&mut self, text: String) -> Vec<Effect> {
         let Some(dialog) = self
             .state
@@ -361,6 +370,17 @@ impl Application {
                 };
                 self.state.person_dialog = None;
                 return self.change_relationship(user, change);
+            }
+            PersonAsk::ServerNickname | PersonAsk::Timeout | PersonAsk::Kick | PersonAsk::Ban => {
+                let Some(server) = dialog.server.clone() else {
+                    return vec![];
+                };
+                let change = members::change(dialog.ask, dialog.choice, text);
+                DiscordCommand::Member {
+                    server,
+                    user,
+                    change,
+                }
             }
         };
         dialog.saving = true;

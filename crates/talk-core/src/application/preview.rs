@@ -225,6 +225,7 @@ pub(super) fn preview_members(room: &str) -> Vec<ChatMember> {
             color: None,
             activity: None,
             roles: Default::default(),
+            timed_out_until: None,
         })
         .collect();
     chat::sort_members(&mut members);

@@ -628,8 +628,8 @@ async fn talks_to_the_fake_server() {
     assert_eq!(mentionable, ["Mods"]);
     assert_eq!(
         listed.mentionable(true).len(),
-        3,
-        "Bots and Crew too, for those who may"
+        5,
+        "Bots, Crew, Staff and Leads too, for those who may"
     );
 
     // New DMs: friends come first, others by name, and opening a DM with
@@ -1581,6 +1581,119 @@ async fn talks_to_the_fake_server() {
         [true, true, true, true, true, false, false],
         "by name, Crew, @everyone, @here and a reply; not Mods, nor nothing"
     );
+
+    // A member's menu. Alice is Staff: she renames herself, and Dave, who
+    // has no role, but not Carol, a Lead above her. Each change comes back
+    // as GUILD_MEMBER_UPDATE, and the member list follows.
+    let (carol, dave) = ("1400000000000000003", "1400000000000000004");
+    let mods = "1400000000000000110";
+    let mut members = discord.live();
+    discord.view(&guild, Some(&general));
+    let listed =
+        |live: Live, check: &dyn Fn(Option<&talk_discord::member_list::ListedMember>) -> bool| {
+            let Live::Members { channel, members } = live else {
+                return None;
+            };
+            (channel == general && check(members.iter().find(|member| member.user_id == dave)))
+                .then_some(())
+        };
+    discord.set_member_nick(&guild, &me, "Ally").await.unwrap();
+    discord
+        .set_member_nick(&guild, dave, "Davey")
+        .await
+        .unwrap();
+    assert!(discord.set_member_nick(&guild, carol, "Caz").await.is_err());
+    live_where(&mut members, |live| {
+        listed(live, &|dave| dave.is_some_and(|dave| dave.name == "Davey"))
+    })
+    .await;
+    assert_eq!(discord.name(&guild, &me).as_deref(), Some("Ally"));
+
+    // Roles below hers she gives and takes; Dave moves under Mods and
+    // takes its colour.
+    discord.member_role(&guild, dave, mods, true).await.unwrap();
+    live_where(&mut members, |live| {
+        listed(live, &|dave| {
+            dave.is_some_and(|dave| {
+                dave.group.starts_with("Mods")
+                    && dave.color == Some(3447003)
+                    && dave.roles.contains(&mods.to_owned())
+            })
+        })
+    })
+    .await;
+    for above in ["1400000000000000113", "1400000000000000114"] {
+        assert!(
+            discord
+                .member_role(&guild, dave, above, true)
+                .await
+                .is_err(),
+            "{above}"
+        );
+    }
+    discord
+        .member_role(&guild, dave, mods, false)
+        .await
+        .unwrap();
+    live_where(&mut members, |live| {
+        listed(live, &|dave| {
+            dave.is_some_and(|dave| !dave.group.starts_with("Mods"))
+        })
+    })
+    .await;
+
+    // A timeout, with its reason in the audit log, and its end.
+    let soon = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 60_000;
+    discord
+        .time_out(&guild, dave, Some(soon), "spam, ☕")
+        .await
+        .unwrap();
+    live_where(&mut members, |live| {
+        listed(live, &|dave| {
+            dave.is_some_and(|dave| dave.timed_out_until.is_some())
+        })
+    })
+    .await;
+    assert!(
+        discord
+            .time_out(&guild, carol, Some(soon), "")
+            .await
+            .is_err()
+    );
+    discord.time_out(&guild, dave, None, "").await.unwrap();
+    live_where(&mut members, |live| {
+        listed(live, &|dave| {
+            dave.is_some_and(|dave| dave.timed_out_until.is_none())
+        })
+    })
+    .await;
+
+    // A kick and a ban take him off the list; the owner can't be.
+    assert!(discord.kick(&guild, &bob, "").await.is_err());
+    discord.kick(&guild, dave, "").await.unwrap();
+    live_where(&mut members, |live| listed(live, &|dave| dave.is_none())).await;
+    post_control(server, "/_control/members-reset", "");
+    live_where(&mut members, |live| listed(live, &|dave| dave.is_some())).await;
+    discord.ban(&guild, dave, 3600, "raids").await.unwrap();
+    live_where(&mut members, |live| listed(live, &|dave| dave.is_none())).await;
+    let audit: serde_json::Value =
+        serde_json::from_str(&self::control(server, "GET", "/_control/audit-log", "")).unwrap();
+    assert_eq!(
+        audit,
+        serde_json::json!([
+            {"action": "timeout", "user": dave, "reason": "spam, ☕"},
+            {"action": "timeout-removed", "user": dave, "reason": null},
+            {"action": "kick", "user": dave, "reason": null},
+            {"action": "ban", "user": dave, "reason": "raids"},
+        ])
+    );
+    post_control(server, "/_control/members-reset", "");
+    live_where(&mut members, |live| listed(live, &|dave| dave.is_some())).await;
+    assert_eq!(discord.name(&guild, &me).as_deref(), Some("Alice"));
 
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();

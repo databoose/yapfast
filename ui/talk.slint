@@ -76,12 +76,14 @@ export component TalkWindow inherits Window {
     callback open-add-friend;
     callback add-friend(string);
     callback close-add-friend;
-    // A dialog from a DM's menu about its other person: what it asks, the
-    // note or nickname written, and the answer.
+    // A dialog from a DM's or a member's menu about its person: what it
+    // asks, the note, nickname or reason written, the option picked, and
+    // the answer.
     in property <bool> person-open;
     in property <PersonPrompt> person-prompt;
     in-out property <string> person-text;
     callback answer-person(string);
+    callback choose-person-option(int);
     callback close-person;
     // The Discord custom status and its dialog. Clear-after picks from
     // never, 30 minutes, an hour, four hours and today.
@@ -863,7 +865,7 @@ export component TalkWindow inherits Window {
         close-policy: PopupClosePolicy.close-on-click-outside;
         context-menu-content := ContextMenu {
             rows: root.menu-rows; submenus: root.menu-submenus;
-            room: root.width - 8px - root.anchor-x;
+            room: root.width - 8px - root.anchor-x; tallest: root.height - 16px;
             chose(id) => {
                 if root.menu-person { root.profile-at-pointer = true; }
                 root.choose-menu(root.menu-target, root.menu-person, id);
@@ -2162,6 +2164,7 @@ export component TalkWindow inherits Window {
     if root.person-open: PersonDialog {
         prompt: root.person-prompt; text <=> root.person-text;
         answer(text) => { root.answer-person(text); }
+        choose(index) => { root.choose-person-option(index); }
         close => { root.close-person(); }
     }
     // The custom status; see StatusDialog.

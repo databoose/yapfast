@@ -9,7 +9,7 @@ use super::{
     render::{chat_profile, found_in},
     *,
 };
-use crate::chat::{Muting, NotificationChange, NotifyLevel, RelationshipChange};
+use crate::chat::{MemberChange, Muting, NotificationChange, NotifyLevel, RelationshipChange};
 
 /// Carries out a command about the account, or gives back any other.
 pub(super) fn command(
@@ -80,6 +80,7 @@ pub(super) fn command(
                     presence: None,
                     activity: None,
                     roles: discord.roles(guild, &user),
+                    timed_out_until: None,
                     id: user,
                 })
                 .collect();
@@ -133,6 +134,7 @@ pub(super) fn command(
                         presence: None,
                         activity: None,
                         roles: discord.roles(&guild, &user),
+                        timed_out_until: None,
                         id: user,
                     })
                     .collect();
@@ -419,13 +421,23 @@ pub(super) fn command(
         | DiscordCommand::SetNickname { .. }
         | DiscordCommand::CloseDm { .. }
         | DiscordCommand::Mute { .. }
-        | DiscordCommand::Notifications { .. }),
+        | DiscordCommand::Notifications { .. }
+        | DiscordCommand::Member { .. }),
     ) = command
     {
         change_person(command, discord, events);
         return None;
     }
     Some(command)
+}
+
+/// Whether a member's change comes from a dialog, which waits for how it
+/// went; a role or the end of a timeout is chosen from the menu.
+fn from_dialog(change: &MemberChange) -> bool {
+    !matches!(
+        change,
+        MemberChange::Role { .. } | MemberChange::Timeout { until_ms: None, .. }
+    )
 }
 
 /// Whether `muting` mutes, and for how many seconds; none for good.
@@ -474,6 +486,9 @@ fn change_person(
                 DiscordCommand::SetNote { .. } | DiscordCommand::SetNickname { .. } => {
                     Event::PersonSaved(Err(why.into()))
                 }
+                DiscordCommand::Member { change, .. } if from_dialog(&change) => {
+                    Event::PersonSaved(Err(why.into()))
+                }
                 _ => Event::Error(why.into()),
             });
             return;
@@ -505,6 +520,56 @@ fn change_person(
                     result.map_err(|error| error.to_string()),
                 ));
                 return;
+            }
+            DiscordCommand::Member {
+                server,
+                user,
+                change,
+            } => {
+                let guild = discord::parse_server(&server).unwrap_or_default();
+                let dialog = from_dialog(&change);
+                let (result, what) = match change {
+                    MemberChange::Nickname(nick) => (
+                        discord.set_member_nick(guild, &user, &nick).await,
+                        "change the nickname",
+                    ),
+                    MemberChange::Role { role, add } => (
+                        discord.member_role(guild, &user, &role, add).await,
+                        if add {
+                            "give the role"
+                        } else {
+                            "take the role away"
+                        },
+                    ),
+                    MemberChange::Timeout { until_ms, reason } => (
+                        discord.time_out(guild, &user, until_ms, &reason).await,
+                        if until_ms.is_some() {
+                            "time them out"
+                        } else {
+                            "remove the timeout"
+                        },
+                    ),
+                    MemberChange::Kick { reason } => {
+                        (discord.kick(guild, &user, &reason).await, "kick them")
+                    }
+                    MemberChange::Ban {
+                        delete_seconds,
+                        reason,
+                    } => (
+                        discord.ban(guild, &user, delete_seconds, &reason).await,
+                        "ban them",
+                    ),
+                };
+                if !dialog {
+                    (result, what)
+                } else {
+                    if let Err(error) = &result {
+                        tracing::warn!(error = format!("{error:#}"), "could not {what}");
+                    }
+                    let result = result.map_err(|error| format!("Could not {what}: {error}"));
+                    let _ = events.send(Event::PersonSaved(result));
+                    return;
+                }
             }
             DiscordCommand::Relationship { user, change } => match change {
                 RelationshipChange::Unfriend => {

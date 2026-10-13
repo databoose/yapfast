@@ -803,6 +803,7 @@ impl Adapter {
     /// The member list, the reactions offered on messages, and a role's card.
     fn show_members(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
+        let now = talk_core::clock::now_ms();
         let members = match &state.members {
             Some(Ok(members)) => members.as_slice(),
             _ => &[],
@@ -828,6 +829,7 @@ impl Adapter {
                     tint: tint(&member.name),
                     picture: slint::Image::default(),
                     picture_url: member.avatar.as_deref().unwrap_or_default().into(),
+                    timed_out: member.timed_out_until.is_some_and(|until| until > now),
                     presence: presence_name(member.presence).into(),
                     color: role_color(member.color),
                     has_color: member.color.is_some(),
@@ -960,10 +962,79 @@ impl Adapter {
                 "Block",
                 true,
             ),
+            PersonAsk::ServerNickname if self.app.state.relation(&dialog.user) == Relation::Me => (
+                "Change your nickname".into(),
+                "Everyone in this server sees it. Leave it empty to go by your name.".into(),
+                "Nickname",
+                "Save",
+                false,
+            ),
+            PersonAsk::ServerNickname => (
+                format!("Change {name}'s nickname"),
+                "Everyone in this server sees it. Leave it empty to reset it to their name.".into(),
+                "Nickname",
+                "Save",
+                false,
+            ),
+            PersonAsk::Timeout => (
+                format!("Time out {name}"),
+                format!(
+                    "Until it ends, {name} can read the server but can't send messages, react, or join voice. The reason goes in the server's audit log."
+                ),
+                "Reason (optional)",
+                "Time out",
+                true,
+            ),
+            PersonAsk::Kick => (
+                format!("Kick {name}?"),
+                format!(
+                    "{name} can join again with a new invite. The reason goes in the server's audit log."
+                ),
+                "Reason (optional)",
+                "Kick",
+                true,
+            ),
+            PersonAsk::Ban => (
+                format!("Ban {name}?"),
+                format!(
+                    "{name} can't join again until unbanned. The reason goes in the server's audit log."
+                ),
+                "Reason (optional)",
+                "Ban",
+                true,
+            ),
+        };
+        let (heading, options) = match dialog.ask {
+            PersonAsk::Timeout => ("DURATION", TIMEOUT_TIMES.map(span).to_vec()),
+            PersonAsk::Ban => (
+                "DELETE THEIR MESSAGES FROM",
+                // As Discord's: hours up to a day, then days.
+                BAN_HISTORY
+                    .map(|seconds| match seconds / 3600 {
+                        0 => "Don't delete any".to_owned(),
+                        1 => "The last hour".to_owned(),
+                        hours if hours <= 24 => format!("The last {hours} hours"),
+                        hours => format!("The last {} days", hours / 24),
+                    })
+                    .to_vec(),
+            ),
+            _ => ("", vec![]),
+        };
+        // The same dialog keeps the rows it shows.
+        let shown = window.get_person_prompt();
+        let options = if shown.title == title.as_str() && shown.options.row_count() == options.len()
+        {
+            shown.options
+        } else {
+            let options: Vec<SharedString> = options.into_iter().map(Into::into).collect();
+            ModelRc::new(VecModel::from(options))
         };
         window.set_person_prompt(PersonPrompt {
             title: title.into(),
             text: text.into(),
+            options_heading: heading.into(),
+            options,
+            chosen: i32::try_from(dialog.choice).unwrap_or_default(),
             field: field.into(),
             confirm: confirm.into(),
             danger,
@@ -2105,6 +2176,20 @@ fn show_found(model: &VecModel<FoundRow>, messages: &[ChatMessage], twelve_hour:
     for message in &messages[kept..] {
         model.push(found_row(message, twelve_hour));
     }
+}
+
+/// A length of time in seconds as a moderation dialog offers it, such as
+/// "60 seconds", "6 hours" or "1 week".
+pub(super) fn span(seconds: u32) -> String {
+    let (count, unit) = match seconds {
+        seconds if seconds % (7 * 86400) == 0 => (seconds / (7 * 86400), "week"),
+        seconds if seconds % 86400 == 0 => (seconds / 86400, "day"),
+        seconds if seconds % 3600 == 0 => (seconds / 3600, "hour"),
+        seconds if seconds % 60 == 0 && seconds > 60 => (seconds / 60, "minute"),
+        seconds => (seconds, "second"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural}")
 }
 
 pub(super) fn unread_label(unread: &[Arc<ChatMessage>]) -> String {

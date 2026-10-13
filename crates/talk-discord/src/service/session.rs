@@ -400,6 +400,11 @@ impl Session<'_> {
         if applied.unwrap_or_else(|| self.tracker.apply(event, data)) {
             self.publisher.changed();
         }
+        // Names took the change in, so what shows the member follows.
+        if matches!(event, Event::GuildMemberUpdate | Event::GuildMemberRemove) {
+            self.shared.lists.member_changed(&self.tracker, data);
+            let _ = self.shared.live.send(Live::Names);
+        }
         if !awaited && let Some(moved) = self.tracker.moved(event, data) {
             let _ = self.shared.live.send(moved);
         }

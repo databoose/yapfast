@@ -14,6 +14,8 @@ export struct MemberRow {
     /// A custom status or what they're doing, under the name.
     activity: string,
     picture-url: string,
+    /// Timed out in their Discord server, marked with a clock by the name.
+    timed-out: bool,
 }
 
 // The open room's members, grouped by role under the conversation header.
@@ -71,9 +73,17 @@ export component MemberPanel inherits Rectangle {
                     }
                     VerticalLayout {
                         alignment: center; horizontal-stretch: 1;
-                        Text {
-                            text: member.name; color: member.has-color ? member.color : Theme.secondary; font-size: 16px; font-weight: 500; overflow: elide;
-                            opacity: member.presence == "offline" ? 0.5 : 1;
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            Text {
+                                text: member.name; color: member.has-color ? member.color : Theme.secondary; font-size: 16px; font-weight: 500; overflow: elide;
+                                opacity: member.presence == "offline" ? 0.5 : 1;
+                            }
+                            if member.timed-out: Image {
+                                source: @image-url("icons/clock.svg"); width: 14px; image-fit: contain;
+                                colorize: Theme.danger;
+                                accessible-role: image; accessible-label: "Timed out";
+                            }
                         }
                         if member.activity != "": Text {
                             text: member.activity; color: Theme.muted; font-size: 12px; overflow: elide;

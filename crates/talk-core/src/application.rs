@@ -20,6 +20,7 @@ mod calls;
 mod compose;
 mod discord_account;
 mod header;
+mod members;
 mod messages;
 mod preview;
 mod profiles;
@@ -27,6 +28,9 @@ mod rooms;
 mod server;
 mod session;
 
+#[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
+pub use members::member_server;
+pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 
 use calls::call_sounds;
@@ -90,27 +94,41 @@ pub struct AddFriend {
     pub outcome: Option<Result<String, String>>,
 }
 
-/// A dialog from a Discord DM's menu about its other person: writing a note
-/// or a friend nickname, or confirming an unfriending or a block.
+/// A dialog from a Discord DM's or member's menu about its person: writing
+/// a note or a friend nickname, confirming an unfriending or a block, or in
+/// a server, their nickname, a timeout, a kick or a ban.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonDialog {
     pub user: String,
-    /// Their name, as the DM shows it.
+    /// Their name, as the DM or the server shows it.
     pub name: String,
     pub ask: PersonAsk,
-    /// The note or nickname as it stands; `None` while the note is on its way.
+    /// The note, nickname or reason as it stands; `None` while the note is
+    /// on its way.
     pub text: Option<String>,
     pub saving: bool,
     pub error: Option<String>,
+    /// The Discord server, by its server id, for a member's dialog.
+    pub server: Option<String>,
+    /// Which of a timeout's [`TIMEOUT_TIMES`], or of a ban's
+    /// [`BAN_HISTORY`], is chosen.
+    pub choice: usize,
 }
 
 /// What a [`PersonDialog`] asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersonAsk {
     Note,
+    /// The nickname this account gives a friend.
     Nickname,
     Unfriend,
     Block,
+    // A server member's, with [`Action::AskMember`].
+    /// Their nickname in the server, this account's own included.
+    ServerNickname,
+    Timeout,
+    Kick,
+    Ban,
 }
 
 /// The dialog that sets the Discord custom status.
@@ -556,6 +574,7 @@ impl AppState {
                 color: message.color,
                 activity: None,
                 roles: Default::default(),
+                timed_out_until: None,
             });
         }
         let target = Target::User(user.to_owned());
@@ -578,6 +597,7 @@ impl AppState {
             color: None,
             activity: None,
             roles: Default::default(),
+            timed_out_until: None,
         })
     }
 
@@ -962,6 +982,32 @@ pub enum Action {
     },
     AnswerPerson(String),
     ClosePersonDialog,
+    // A server member's menu; see `members.rs`.
+    /// Put a mention of someone in the open channel's composer.
+    MentionPerson(String),
+    /// Open the DM with someone and start its call, starting the DM first
+    /// with a friend Talk has none with.
+    CallPerson(String),
+    /// Open a dialog about a member of a Discord server, by its server id
+    /// or one of its channels' room ids, when this account may. With
+    /// [`PersonAsk::ServerNickname`] and this account's own id it changes
+    /// its own nickname there.
+    AskMember {
+        place: String,
+        user: String,
+        ask: PersonAsk,
+    },
+    /// Choose a timeout's length or how much a ban deletes, by its index in
+    /// [`TIMEOUT_TIMES`] or [`BAN_HISTORY`].
+    ChoosePersonOption(usize),
+    /// Give a member a role or take it away, or end their timeout, when this
+    /// account may; the rest of [`chat::MemberChange`] goes through
+    /// [`Action::AskMember`].
+    ChangeMember {
+        place: String,
+        user: String,
+        change: chat::MemberChange,
+    },
     /// Open the dialog that adds a friend by Discord username, send the
     /// request, or close it.
     OpenAddFriend,
@@ -1073,6 +1119,8 @@ pub struct Application {
     pending_open: Option<String>,
     /// A DM with a friend is starting, to open once it has.
     starting_dm: bool,
+    /// Its call starts once it opens, as [`Action::CallPerson`] asks.
+    pending_call: bool,
     /// The composer text of the message being sent, which `Event::SendResult` clears
     /// once sent; the backend has it with its mentions in the network's form.
     sent_draft: Option<String>,
@@ -1276,7 +1324,10 @@ impl Application {
             .pending_open
             .take_if(|room| self.state.rooms.iter().any(|listed| &listed.id == room))
         {
-            effects.extend(self.dispatch(Action::Open(room)));
+            effects.extend(self.dispatch(Action::Open(room.clone())));
+            if std::mem::take(&mut self.pending_call) {
+                effects.extend(self.dispatch(Action::RequestJoinVoice(room)));
+            }
         }
         effects.extend(self.show_panel_profile());
         effects.extend(self.request_pictures());
@@ -1556,6 +1607,20 @@ impl Application {
                 self.state.person_dialog = None;
                 vec![]
             }
+            Action::MentionPerson(user) => self.mention_person(user),
+            Action::CallPerson(user) => self.call_person(user),
+            Action::AskMember { place, user, ask } => self.ask_member(place, user, ask),
+            Action::ChoosePersonOption(choice) => {
+                if let Some(dialog) = &mut self.state.person_dialog {
+                    dialog.choice = choice;
+                }
+                vec![]
+            }
+            Action::ChangeMember {
+                place,
+                user,
+                change,
+            } => self.change_member(place, user, change),
             Action::LinkDiscord => {
                 if self.state.preview || self.state.discord_linked || !cfg!(feature = "discord") {
                     return vec![];
@@ -1866,6 +1931,7 @@ impl Application {
                     new_dm.starting = false;
                     new_dm.error = Some(error);
                 } else if std::mem::take(&mut self.starting_dm) {
+                    self.pending_call = false;
                     self.state.notice = Some(error);
                 }
             }

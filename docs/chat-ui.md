@@ -44,8 +44,8 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   other person's profile there instead, which the person icon in its header
   hides or shows. A Discord text channel
   lists whoever can read it, grouped as in Discord: under hoisted roles, then
-  ONLINE and OFFLINE, with counts, avatars, status dots, role colours and
-  custom statuses. Talk subscribes to the list's
+  ONLINE and OFFLINE, with counts, avatars, status dots, role colours,
+  custom statuses, and a red clock beside someone timed out. Talk subscribes to the list's
   first 100 rows while the channel is open, and Discord keeps them current.
 - Read live text messages. Earlier history loads as the timeline scrolls
   within a screen of its top, a page at a time (30 events for Matrix, 50
@@ -188,8 +188,11 @@ The window follows Discord's arrangement:
   beside the menu, or on its left near the window's right edge. A row can
   carry a second line under its text, such as the level a notification
   submenu has chosen, a check in place of its icon for the current choice,
-  or a box to tick. Ticking leaves the menu open. `src/ui/menus.rs` builds
-  a menu's rows with each row's submenu, and ticks a box when it's chosen.
+  or a box to tick. Ticking leaves the menu open. A row can show greyed, as a
+  role this account may not give does, and can't be chosen. A menu or
+  submenu taller than the window scrolls, and the keys keep their row in
+  sight. `src/ui/menus.rs` builds a menu's rows with each row's submenu, and
+  ticks a box when it's chosen.
 - A dock across the rail and sidebar: the voice panel, then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
   audio devices, message text size, clock and link previews, notifications,
@@ -212,9 +215,14 @@ The window follows Discord's arrangement:
 - A right click on someone, in the member list, on a message author's avatar
   or name, or in the friends list, opens their menu: Profile, Message to open
   or start the DM with them, and on Discord Add friend, Accept friend request
-  or Cancel friend request, then Copy ID. In a one-to-one DM, the other
-  person's menu is the DM's own, less Mark as read and Copy link, and Copy ID
-  copies theirs. Clicking an author's avatar or name, which underlines while
+  or Cancel friend request, then Copy ID. In a Discord server's channel it's
+  their menu as a member, as Discord's: Mention, Call, a note and nickname,
+  their roles in a submenu of checkboxes, and Time out, Kick and Ban last, in
+  red, as this account's permissions and its rank against theirs allow; see
+  [Discord](discord.md#a-server-members-menu). Time out and Ban ask how long
+  or how much in their dialog, and each asks a reason. In a one-to-one DM, the
+  other person's menu is the DM's own, less Mark as read and Copy link, and
+  Copy ID copies theirs. Clicking an author's avatar or name, which underlines while
   pointed at, shows their card beside it.
 - A voice stage with participant tiles, a green border while someone speaks,
   and round mute, deafen and leave controls.
