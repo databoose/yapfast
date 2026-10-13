@@ -50,7 +50,8 @@ Not there yet:
 
 - Discord voice and Go Live work only on Linux. On Windows, joining Discord
   voice stops with that message. Discord on Windows is otherwise untested.
-- Linking stops with an error if Discord asks for a captcha.
+- A captcha Discord asks for while linking opens in the browser; it hasn't
+  been solved against real Discord yet.
 - Threads and forum channels.
 - Search and pinned messages in servers, and pinning messages.
 - Forwarding messages as forwards.

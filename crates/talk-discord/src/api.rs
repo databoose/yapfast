@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
+    captcha::Captcha,
     client,
     limits::{self, Limits},
     settings::{self, CustomStatus},
@@ -153,15 +154,21 @@ impl Api {
     }
 
     /// Trades a remote login's ticket for the login, encrypted with the key
-    /// that started it, in base64; see [`crate::remote_auth`].
-    pub async fn remote_auth_login(&self, ticket: &str) -> Result<String> {
+    /// that started it, in base64; see [`crate::remote_auth`]. Discord may
+    /// ask for a [`Captcha`] first, whose solution goes with the next try.
+    pub async fn remote_auth_login(
+        &self,
+        ticket: &str,
+        solved: Option<(&Captcha, &str)>,
+    ) -> Result<String> {
         let body = json!({"ticket": ticket});
-        let answer = self
-            .json(with_json(
-                self.request(Method::POST, "/users/@me/remote-auth/login"),
-                &body,
-            ))
-            .await?;
+        let mut request = self.request(Method::POST, "/users/@me/remote-auth/login");
+        if let Some((captcha, solution)) = solved {
+            for (name, value) in captcha.headers(solution) {
+                request = request.header(name, value);
+            }
+        }
+        let answer = self.json(with_json(request, &body)).await?;
         answer["encrypted_token"]
             .as_str()
             .map(str::to_owned)
@@ -898,8 +905,13 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
                 let wait = body["retry_after"].as_f64().unwrap_or(1.0).ceil();
                 anyhow!("Discord asks Talk to slow down. Try again in {wait} s.")
             }
-            _ if body["captcha_key"].is_array() => {
-                anyhow!("Discord asked for a captcha. Do this in the Discord app for now.")
+            StatusCode::BAD_REQUEST if body["captcha_key"].is_array() => {
+                let message = "Discord asked for a captcha. Do this in the Discord app for now.";
+                // The captcha, for a caller that can show it.
+                return match Captcha::from_body(body) {
+                    Some(captcha) => anyhow::Error::new(captcha).context(message),
+                    None => anyhow!(message),
+                };
             }
             _ => match body["message"].as_str() {
                 Some(message) => anyhow!("Discord refused: {message}"),

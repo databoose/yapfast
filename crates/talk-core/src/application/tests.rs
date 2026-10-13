@@ -2929,6 +2929,21 @@ fn links_discord_by_qr_code_and_unlinks_it() {
         app.state.discord_link,
         Some(DiscordLink::Scanned("alice".into()))
     );
+    // Discord wants a captcha: the browser opens its page, and the dialog
+    // can open it again.
+    let page = "http://127.0.0.1:9/captcha/1".to_owned();
+    assert!(matches!(
+        app.linking(Progress::Captcha(page.clone())).as_slice(),
+        [Effect::OpenPage(opened)] if *opened == page
+    ));
+    assert_eq!(
+        app.state.discord_link,
+        Some(DiscordLink::Captcha(page.clone()))
+    );
+    assert!(matches!(
+        app.dispatch(Action::OpenDiscordCaptcha).as_slice(),
+        [Effect::OpenPage(opened)] if *opened == page
+    ));
     assert!(matches!(
         app.linking(Progress::Linked).as_slice(),
         [Effect::Backend(Command::Discord(DiscordCommand::Start))]

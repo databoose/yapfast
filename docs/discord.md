@@ -6,7 +6,7 @@ recorded on 2026-10-06.
 
 | Area | Works on Linux | Open |
 | --- | --- | --- |
-| [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
+| [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking; Discord's captcha, in the browser | A captcha solved against real Discord |
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio on real Windows; cameras on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
@@ -147,10 +147,25 @@ once, without restarting: voice reaches it through a slot the chat backend
 fills. When Discord can't start then, or as Talk starts, such as when the
 credential store can't be read, Talk says why. What waits on Discord, such as
 a friend request, the custom status or a profile, fails with that reason
-rather than waiting, as it does when the chat backend stops. Discord may
-still ask for a captcha when trading the ticket, which Talk
-reports as an error for now; a fallback through a small embedded web view is
-still open.
+rather than waiting, as it does when the chat backend stops.
+
+Discord may ask for a captcha when trading the ticket, as it does of logins
+from devices it doesn't know
+([captcha handling](https://docs.discord.food/topics/captcha-handling)): a
+400 with `captcha_key`, an hCaptcha site key that changes, and often
+`captcha_rqdata`, `captcha_rqtoken` and `captcha_session_id`. Talk has no web
+view, so `captcha.rs` serves a page with the challenge on `127.0.0.1`, at a
+random path, and opens it in the browser; the dialog says so and can open it
+again. The page loads hCaptcha's `api.js` with `host=discord.com`, as
+hCaptcha's mobile SDKs name the host they stand for, sets the rqdata, and
+posts the solution back. Talk trades the ticket again with `X-Captcha-Key`,
+`X-Captcha-Rqtoken` and `X-Captcha-Session-Id`, keeping the login gateway's
+heartbeat going meanwhile, and shows a new captcha up to three times if
+Discord doesn't take one. The listener lives only while the page waits, so
+nothing stays loaded afterwards. hCaptcha's site check passed Discord's site
+key for `127.0.0.1` on 2026-10-13; whether Discord takes a solution made this
+way awaits a real captcha. The fake server asks for one after
+`POST /_control/qr-captcha`.
 
 Store the Discord token in the OS credential store, next to the Matrix session.
 The token gives full control of the account, so it never goes into Matrix, not
@@ -1415,7 +1430,6 @@ In rough order. The browser covers these until then.
 - The soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
-- A captcha fallback for linking, through a small embedded web view.
 - The blocked on the friends page, beside Online and All.
 - Blocking and unblocking from a profile.
 - Animated custom emoji, which show their first frame.

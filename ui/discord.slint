@@ -23,13 +23,16 @@ export component DiscordBadge inherits Rectangle {
 // Linking Discord by QR code: the risk to the account first, then the code to
 // scan with the phone app, then who scanned it while they confirm. The phase
 // is 0 before linking, 1 while Talk gets a code, 2 showing it, 3 once it's
-// scanned, and 4 when linking failed.
+// scanned, 4 when linking failed, and 5 while Discord's captcha waits in the
+// browser.
 export component DiscordLinkPanel inherits VerticalLayout {
     in property <int> phase;
     in property <image> code;
     in property <string> name;
     in property <string> note;
     callback begin;
+    // Opens the captcha's page in the browser again.
+    callback reopen;
     spacing: 16px;
     if root.phase == 0 || root.phase == 4: VerticalLayout {
         spacing: 12px;
@@ -56,6 +59,18 @@ export component DiscordLinkPanel inherits VerticalLayout {
                 text: root.phase == 4 ? "Try again" : "Show the code"; primary: true;
                 clicked => { root.begin(); }
             }
+        }
+    }
+    if root.phase == 5: VerticalLayout {
+        spacing: 8px;
+        Text { text: "Solve the captcha in your browser"; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
+        Text {
+            text: "Discord wants to check you're a person before it links your account. Talk opened the check in your browser; linking finishes once it's solved.";
+            color: Theme.secondary; font-size: 14px; wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: start; padding-top: 8px;
+            ActionButton { text: "Open it again"; clicked => { root.reopen(); } }
         }
     }
     if root.phase >= 1 && root.phase <= 3: HorizontalLayout {

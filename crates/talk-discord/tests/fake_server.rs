@@ -1900,6 +1900,36 @@ async fn talks_to_the_fake_server() {
         Some(&remote_auth::Stopped::Cancelled)
     );
 
+    // Discord asks for a captcha before it hands the login over: Talk
+    // serves the challenge on a page of its own and trades the ticket again
+    // with the solution the page posts back.
+    post_control(server, "/_control/qr-captcha", "");
+    let (steps, mut shown) = tokio::sync::mpsc::unbounded_channel();
+    let linking = tokio::spawn(remote_auth::link(move |step| {
+        let _ = steps.send(step);
+    }));
+    assert!(matches!(next_step(&mut shown).await, Step::Code(_)));
+    post_control(server, "/_control/qr-scan", "");
+    assert!(matches!(next_step(&mut shown).await, Step::Scanned { .. }));
+    post_control(server, "/_control/qr-confirm", "");
+    let Step::Captcha(page) = next_step(&mut shown).await else {
+        panic!("no captcha")
+    };
+    let browser = reqwest::Client::new();
+    let html = browser
+        .get(&page)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains(r#""fake-sitekey""#), "{html}");
+    assert!(html.contains(r#""fake-rqdata""#), "{html}");
+    browser.post(&page).body("solved").send().await.unwrap();
+    let login = timeout(WAIT, linking).await.unwrap().unwrap().unwrap();
+    assert_eq!(login, client::TEST_TOKEN);
+
     // Talk sent back the device cookie the API set, once it had it: the API
     // set it once, or twice if the first requests went together.
     let cookies: serde_json::Value =

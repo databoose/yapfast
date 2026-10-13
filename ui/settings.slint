@@ -569,12 +569,14 @@ export component DiscordLinkSettings inherits VerticalLayout {
     in property <string> link-name;
     in property <string> link-note;
     callback link-discord;
+    callback open-discord-captcha;
     spacing: 16px;
     SettingsTitle { text: "Discord"; }
     Label { text: "Link your Discord account to see its servers and DMs in Talk, and join its calls. The login stays on this computer, in the system's credential store."; }
     DiscordLinkPanel {
         phase: root.link-phase; code: root.link-code; name: root.link-name; note: root.link-note;
         begin => { root.link-discord(); }
+        reopen => { root.open-discord-captcha(); }
     }
 }
 

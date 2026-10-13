@@ -10,6 +10,8 @@
 
 use std::{fmt, time::Duration};
 
+use tokio::time::Interval;
+
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{
     Engine,
@@ -28,7 +30,14 @@ use tokio_tungstenite::{
     },
 };
 
-use crate::{api::Api, client, ready};
+use crate::{
+    api::Api,
+    captcha::{self, Captcha},
+    client, ready,
+};
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 const URL: &str = "wss://remote-auth-gateway.discord.gg/?v=2";
 /// The key size Discord's web client uses.
@@ -41,6 +50,9 @@ pub enum Step {
     Code(String),
     /// Someone scanned it, and their app asks them to confirm.
     Scanned { name: String, avatar: String },
+    /// They confirmed, and Discord wants a captcha solved first: the page
+    /// with it, to open in the browser.
+    Captcha(String),
 }
 
 /// Why linking stopped without a login.
@@ -151,7 +163,7 @@ pub async fn link(mut step: impl FnMut(Step)) -> Result<String> {
                 let ticket = message["ticket"]
                     .as_str()
                     .context("Discord's login service sent no ticket")?;
-                let encrypted = Api::anonymous()?.remote_auth_login(ticket).await?;
+                let encrypted = trade(ticket, &mut socket, &mut heartbeat, &mut step).await?;
                 let _ = socket.close(None).await;
                 return login(&key, &Value::String(encrypted));
             }
@@ -164,6 +176,54 @@ pub async fn link(mut step: impl FnMut(Step)) -> Result<String> {
             _ => {}
         }
     }
+}
+
+/// How many captchas linking shows before giving up: Discord asks again
+/// when it doesn't take a solution.
+const CAPTCHAS: usize = 3;
+
+/// Trades a confirmed login's ticket for the login, showing Discord's
+/// captcha when it asks for one. The login service hears heartbeats while
+/// someone solves it, as it would while the code shows.
+async fn trade(
+    ticket: &str,
+    socket: &mut Socket,
+    heartbeat: &mut Interval,
+    step: &mut impl FnMut(Step),
+) -> Result<String> {
+    let api = Api::anonymous()?;
+    let mut solved: Option<(Captcha, String)> = None;
+    for shown in 0..=CAPTCHAS {
+        let solution = solved
+            .as_ref()
+            .map(|(captcha, solution)| (captcha, solution.as_str()));
+        let error = match api.remote_auth_login(ticket, solution).await {
+            Ok(encrypted) => return Ok(encrypted),
+            Err(error) => error,
+        };
+        let Some(captcha) = error.downcast_ref::<Captcha>().cloned() else {
+            return Err(error);
+        };
+        if shown == CAPTCHAS {
+            bail!("Discord didn't take the captcha. Try again.");
+        }
+        let page = captcha::Page::serve(&captcha).await?;
+        step(Step::Captcha(page.url.clone()));
+        let solution = page.solution();
+        tokio::pin!(solution);
+        let mut open = true;
+        let solution = loop {
+            tokio::select! {
+                solution = &mut solution => break solution?,
+                _ = heartbeat.tick(), if open => {
+                    open = socket.send(text(json!({"op": "heartbeat"}))).await.is_ok();
+                }
+                message = socket.next(), if open => open = matches!(message, Some(Ok(_))),
+            }
+        };
+        solved = Some((captcha, solution));
+    }
+    unreachable!("the last captcha returns")
 }
 
 fn text(value: Value) -> Message {

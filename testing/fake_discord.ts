@@ -105,7 +105,9 @@
 // remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
 // code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
 // says no, and /_control/qr-expire ends the code as the real one does after
-// two minutes. Start Talk with TALK_DISCORD_TEST_UNLINKED=1 to link. POST
+// two minutes. POST /_control/qr-captcha makes the next ticket's trade ask
+// for an hCaptcha, as Discord does of a login it doesn't trust, until a try
+// brings X-Captcha-Key "solved" with the rqtoken and session it was given. Start Talk with TALK_DISCORD_TEST_UNLINKED=1 to link. POST
 // /auth/logout ends the session, and GET /_control/logouts counts them.
 // A gateway session whose connection drops resumes with op 6, getting the
 // events it missed; a close with 1000 or 1001 ends it instead. POST
@@ -1451,6 +1453,16 @@ const remoteLogins = new Set<Socket>();
 let logouts = 0;
 // Each confirmed login's ticket, with the key to encrypt the login to.
 const tickets = new Map<string, CryptoKey>();
+/** Whether trading a ticket asks for a captcha first. */
+let ticketCaptcha = false;
+const TICKET_CAPTCHA = {
+  captcha_key: ["captcha-required"],
+  captcha_service: "hcaptcha",
+  captcha_sitekey: "fake-sitekey",
+  captcha_rqdata: "fake-rqdata",
+  captcha_rqtoken: "fake-rqtoken",
+  captcha_session_id: "fake-session",
+};
 
 async function seal(key: CryptoKey, data: Uint8Array | string): Promise<string> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
@@ -2628,6 +2640,13 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     const body: any = await req.json().catch(() => ({}));
     const key = tickets.get(String(body.ticket));
     if (!key) return json({ message: "Invalid ticket", code: 50035 }, 400);
+    if (ticketCaptcha) {
+      const solved = req.headers.get("x-captcha-key") === "solved"
+        && req.headers.get("x-captcha-rqtoken") === TICKET_CAPTCHA.captcha_rqtoken
+        && req.headers.get("x-captcha-session-id") === TICKET_CAPTCHA.captcha_session_id;
+      if (!solved) return json(TICKET_CAPTCHA, 400);
+      ticketCaptcha = false;
+    }
     tickets.delete(String(body.ticket));
     return json({ encrypted_token: await seal(key, TOKEN) });
   }
@@ -3731,6 +3750,10 @@ const server = Bun.serve<SocketData>({
         tickets.set(ticket, key);
         ws.send(JSON.stringify({ op: "pending_login", ticket }));
       });
+    }
+    if (req.method === "POST" && path === "/_control/qr-captcha") {
+      ticketCaptcha = true;
+      return new Response("the next ticket asks for a captcha\n");
     }
     if (req.method === "POST" && path === "/_control/qr-cancel") {
       return eachRemoteLogin((ws) => {

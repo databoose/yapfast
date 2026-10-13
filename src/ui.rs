@@ -1218,6 +1218,11 @@ impl Adapter {
                     #[cfg(feature = "discord")]
                     self.link_discord();
                 }
+                Effect::OpenPage(page) => {
+                    if let Err(error) = webbrowser::open(&page) {
+                        tracing::warn!(%error, "could not open a page in the browser");
+                    }
+                }
                 Effect::StopDiscordLink => {
                     #[cfg(feature = "discord")]
                     {

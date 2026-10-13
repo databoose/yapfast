@@ -330,6 +330,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_open_friends, Action::OpenDmScreen(DmScreen::Friends));
     bind_item!(on_message_friend, Action::MessagePerson);
     bind!(on_link_discord, Action::LinkDiscord);
+    bind!(on_open_discord_captcha, Action::OpenDiscordCaptcha);
     bind!(on_cancel_discord_link, Action::CancelDiscordLink);
     bind!(on_unlink_discord, Action::UnlinkDiscord);
     bind!(on_close_add_friend, Action::CloseAddFriend);

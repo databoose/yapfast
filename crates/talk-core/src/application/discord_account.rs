@@ -198,6 +198,12 @@ impl Application {
         match progress {
             Progress::Code(address) => *link = DiscordLink::Code(address),
             Progress::Scanned(name) => *link = DiscordLink::Scanned(name),
+            // The browser shows the captcha; the dialog says so and can
+            // open it again.
+            Progress::Captcha(page) => {
+                *link = DiscordLink::Captcha(page.clone());
+                return vec![Effect::OpenPage(page)];
+            }
             // A code that showed expired, so a new one replaces it. Without
             // one, the service turned Talk away.
             Progress::Expired if *link == DiscordLink::Starting => {

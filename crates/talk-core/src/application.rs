@@ -81,6 +81,9 @@ pub enum DiscordLink {
     Code(String),
     /// Someone scanned it, by their username, and confirms on their phone.
     Scanned(String),
+    /// They confirmed, and Discord wants a captcha solved first, on the page
+    /// at this address, open in the browser.
+    Captcha(String),
     Failed(String),
 }
 
@@ -1099,8 +1102,10 @@ pub enum Action {
     AddFriend(String),
     CloseAddFriend,
     /// Link a Discord account by QR code, or start again with a new code;
-    /// stop linking; or forget the linked account on this device.
+    /// open the captcha Discord asked for again; stop linking; or forget the
+    /// linked account on this device.
     LinkDiscord,
+    OpenDiscordCaptcha,
     CancelDiscordLink,
     UnlinkDiscord,
     /// Open the custom status dialog, set the status, clear it, or close it.
@@ -1168,6 +1173,8 @@ pub enum Effect {
     /// under way. Stop linking.
     LinkDiscord,
     StopDiscordLink,
+    /// Open this web page in the browser.
+    OpenPage(String),
     /// Film for a preview call with the camera with this id, or the first,
     /// into this feed; or stop filming.
     PreviewCamera(Option<(Option<String>, crate::picture::Feed)>),
@@ -1725,6 +1732,10 @@ impl Application {
                 self.state.discord_link = Some(DiscordLink::Starting);
                 vec![Effect::LinkDiscord]
             }
+            Action::OpenDiscordCaptcha => match &self.state.discord_link {
+                Some(DiscordLink::Captcha(page)) => vec![Effect::OpenPage(page.clone())],
+                _ => vec![],
+            },
             Action::CancelDiscordLink => match self.state.discord_link.take() {
                 Some(_) => vec![Effect::StopDiscordLink],
                 None => vec![],

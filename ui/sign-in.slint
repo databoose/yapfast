@@ -25,6 +25,7 @@ export component SignInScreen inherits Rectangle {
     callback restore;
     callback explore-preview;
     callback link-discord;
+    callback open-discord-captcha;
     background: Theme.rail;
     Text { x: 32px; y: 24px; text: "Talk"; color: Theme.accent; font-size: 24px; font-weight: 900; letter-spacing: -0.4px; }
     ScrollView {
@@ -54,6 +55,7 @@ export component SignInScreen inherits Rectangle {
                             if !root.busy: DiscordLinkPanel {
                                 phase: root.link-phase; code: root.link-code; name: root.link-name; note: root.link-note;
                                 begin => { root.link-discord(); }
+                                reopen => { root.open-discord-captcha(); }
                             }
                             if root.notice != "" && (root.busy || root.link-phase == 0): Text {
                                 text: root.notice; color: root.busy ? Theme.secondary : Theme.danger; font-size: 15px; wrap: word-wrap;

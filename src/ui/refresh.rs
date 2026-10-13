@@ -290,6 +290,7 @@ impl Adapter {
                 Some(DiscordLink::Starting) => (1, "", ""),
                 Some(DiscordLink::Code(_)) => (2, "", ""),
                 Some(DiscordLink::Scanned(name)) => (3, name.as_str(), ""),
+                Some(DiscordLink::Captcha(_)) => (5, "", ""),
                 Some(DiscordLink::Failed(error)) => (4, "", error.as_str()),
             };
             window.set_link_phase(phase);

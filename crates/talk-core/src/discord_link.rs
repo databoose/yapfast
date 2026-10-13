@@ -17,6 +17,8 @@ pub enum Progress {
     Code(String),
     /// Someone scanned it, by their username, and confirms on their phone.
     Scanned(String),
+    /// Discord wants a captcha solved, on the page at this address.
+    Captcha(String),
     /// The account is linked and its login saved.
     Linked,
     /// The code expired before anyone confirmed it.
@@ -40,6 +42,7 @@ async fn run(progress: impl Fn(Progress)) {
         progress(match step {
             Step::Code(address) => Progress::Code(address),
             Step::Scanned { name, .. } => Progress::Scanned(name),
+            Step::Captcha(page) => Progress::Captcha(page),
         })
     })
     .await;

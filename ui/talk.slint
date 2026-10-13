@@ -213,6 +213,7 @@ export component TalkWindow inherits Window {
     in property <string> link-name;
     in property <string> link-note;
     callback link-discord;
+    callback open-discord-captcha;
     callback cancel-discord-link;
     callback unlink-discord;
     in-out property <bool> show-hidden-channels;
@@ -1097,6 +1098,7 @@ export component TalkWindow inherits Window {
         restore => { root.restore(); }
         explore-preview => { root.explore-preview(); }
         link-discord => { root.link-discord(); }
+        open-discord-captcha => { root.open-discord-captcha(); }
     }
 
     HorizontalLayout {
@@ -2204,6 +2206,7 @@ export component TalkWindow inherits Window {
         if root.settings-section == 4 && !root.discord-linked: DiscordLinkSettings {
             link-phase: root.link-phase; link-code: root.link-code; link-name: root.link-name; link-note: root.link-note;
             link-discord => { root.link-discord(); }
+            open-discord-captcha => { root.open-discord-captcha(); }
         }
         if root.settings-section == 4 && root.discord-linked: DiscordSettings {
             matrix-build: root.matrix-build;
