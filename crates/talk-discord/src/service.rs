@@ -20,7 +20,7 @@ use crate::{
     message::{self, Message, Names, Page},
     notifications::Change,
     profile::{self, Profile},
-    ready::{PRIVATE, Server},
+    ready::{self, PRIVATE, Server},
     search,
     settings::{self, CustomStatus},
     stream::StreamServer,
@@ -211,6 +211,10 @@ pub struct Snapshot {
     /// read it.
     #[serde(skip)]
     pub listed: Option<(String, u64)>,
+    /// The server channel or thread on screen, by id, which lists a thread
+    /// this account isn't in while it shows.
+    #[serde(skip)]
+    pub viewing: Option<String>,
     /// Who is who, as the service knows them; see [`SharedNames`].
     #[serde(skip)]
     pub names: SharedNames,
@@ -332,6 +336,11 @@ impl std::fmt::Debug for VoiceServer {
 }
 
 enum Request {
+    /// A thread, from its channel object, for the tracker to know.
+    PutThread {
+        guild: String,
+        thread: Value,
+    },
     Join {
         guild: String,
         channel: String,
@@ -475,6 +484,7 @@ impl Discord {
                 api: api.clone(),
                 lists: MemberLists::new(lists, live.clone(), names.clone()),
                 presence,
+                viewing: None,
             },
         ));
         Ok(Self {
@@ -1069,6 +1079,21 @@ impl Discord {
     /// Deletes a server's channel or category for good.
     pub async fn delete_channel(&self, channel: &str) -> Result<()> {
         self.api.delete_channel(channel).await
+    }
+
+    /// Learns of a thread of a server, by id, so snapshots list it while
+    /// it's on screen: Discord tells a user account only of the threads it
+    /// joined.
+    pub async fn open_thread(&self, guild: &str, thread: &str) -> Result<()> {
+        let value = self.api.channel(thread).await?;
+        if !ready::is_thread(&value) || value["guild_id"] != guild {
+            bail!("That isn't a thread of this server.");
+        }
+        let _ = self.requests.send(Request::PutThread {
+            guild: guild.into(),
+            thread: value,
+        });
+        Ok(())
     }
 
     /// Leaves a server this account doesn't own. Snapshots drop it once its

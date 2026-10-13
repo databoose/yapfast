@@ -83,6 +83,9 @@ pub(super) struct Tracker {
     requests: HashMap<String, (bool, bool, String)>,
     /// The RTC server of each stream this account shares or watches, by key.
     streams: HashMap<String, String>,
+    /// The channel or thread on screen, which lists a thread this account
+    /// isn't in while it shows.
+    viewing: Option<String>,
 }
 
 /// A user's Nitro from their user object, as [`Account::premium_type`].
@@ -117,6 +120,7 @@ impl Tracker {
             custom_status: None,
             requests: HashMap::new(),
             streams: HashMap::new(),
+            viewing: None,
         };
         tracker.sort_servers();
         if let Some(encoded) = ready["user_settings_proto"].as_str() {
@@ -147,6 +151,39 @@ impl Tracker {
             }
         }
         self.sort_servers();
+    }
+
+    /// Keeps on screen the thread `channel` of `guild`, if `earlier` knew it
+    /// and READY, which lists only the threads this account is in, didn't.
+    pub(super) fn keep_viewed(&mut self, earlier: &[Arc<Server>], guild: &str, channel: &str) {
+        self.viewing = Some(channel.to_owned());
+        let Some(thread) = earlier
+            .iter()
+            .find(|server| server.id == guild)
+            .and_then(|server| server.threads.iter().find(|thread| thread.id == channel))
+        else {
+            return;
+        };
+        if let Some(server) = self.server_mut(guild)
+            && server.channel(channel).is_none()
+        {
+            let mut thread = thread.clone();
+            if let Some(details) = thread.thread.as_deref_mut() {
+                details.leave();
+            }
+            server.threads.push(thread);
+            server
+                .threads
+                .sort_by_key(|thread| std::cmp::Reverse(thread.id.parse::<u64>().unwrap_or(0)));
+        }
+    }
+
+    /// Learns of a thread from its channel object.
+    pub(super) fn put_thread(&mut self, guild: &str, thread: &Value) {
+        self.unreads.learn_thread(thread);
+        if let Some(server) = self.server_mut(guild) {
+            server.put_thread(thread);
+        }
     }
 
     /// Applies one dispatched event; returns whether anything visible changed.
@@ -416,6 +453,122 @@ impl Tracker {
                 }
                 true
             }
+            Event::ThreadCreate | Event::ThreadUpdate | Event::ThreadDelete => {
+                let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
+                else {
+                    return false;
+                };
+                let Some(server) = self.server_mut(guild) else {
+                    return false;
+                };
+                if *event == Event::ThreadDelete {
+                    server.remove_channel(id);
+                } else {
+                    server.put_thread(data);
+                }
+                true
+            }
+            Event::ThreadListSync => {
+                let Some(server) = data["guild_id"]
+                    .as_str()
+                    .and_then(|guild| self.server_mut(guild))
+                else {
+                    return false;
+                };
+                for thread in data["threads"].as_array().into_iter().flatten() {
+                    server.put_thread(thread);
+                }
+                for member in data["members"].as_array().into_iter().flatten() {
+                    if let Some(thread) = member["id"].as_str().and_then(|id| server.thread_mut(id))
+                    {
+                        thread.join(member);
+                    }
+                }
+                true
+            }
+            Event::ThreadMemberUpdate => {
+                let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
+                else {
+                    return false;
+                };
+                let Some(thread) = self
+                    .server_mut(guild)
+                    .and_then(|server| server.thread_mut(id))
+                else {
+                    return false;
+                };
+                thread.join(data);
+                true
+            }
+            // Whether this account joined or left; others' only change
+            // the thread's member count, which Talk doesn't show.
+            Event::ThreadMembersUpdate => {
+                let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
+                else {
+                    return false;
+                };
+                let me = self.me.clone();
+                let added = data["added_members"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|member| member["user_id"] == me.as_str());
+                let removed = data["removed_member_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|user| *user == me.as_str());
+                if added.is_none() && !removed {
+                    return false;
+                }
+                if let Some(member) = added {
+                    self.unreads.joined_thread(id, member);
+                }
+                let Some(thread) = self
+                    .server_mut(guild)
+                    .and_then(|server| server.thread_mut(id))
+                else {
+                    return false;
+                };
+                match added {
+                    Some(member) => thread.join(member),
+                    None => thread.leave(),
+                }
+                true
+            }
+            // A thread counts its messages, which its first message in its
+            // channel shows; Discord doesn't send the thread again for it.
+            Event::MessageCreate | Event::MessageDelete => {
+                let (Some(guild), Some(channel)) =
+                    (data["guild_id"].as_str(), data["channel_id"].as_str())
+                else {
+                    return false;
+                };
+                let known = self
+                    .servers
+                    .iter()
+                    .find(|server| server.id == guild)
+                    .is_some_and(|server| server.threads.iter().any(|thread| thread.id == channel));
+                if !known {
+                    return false;
+                }
+                let Some(thread) = self
+                    .server_mut(guild)
+                    .and_then(|server| server.thread_mut(channel))
+                else {
+                    return false;
+                };
+                // Its first message, which points at the one it was started
+                // from, isn't counted.
+                if *event == Event::MessageCreate && data["type"] != 21 {
+                    thread.messages += 1;
+                    // A message opens an archived thread again.
+                    thread.archived = false;
+                } else {
+                    thread.messages = thread.messages.saturating_sub(1);
+                }
+                true
+            }
             // Large servers report voice in these until subscribed.
             Event::PassiveUpdateV1 | Event::PassiveUpdateV2 => {
                 let Some(guild) = data["guild_id"].as_str() else {
@@ -639,14 +792,20 @@ impl Tracker {
             return false;
         }
         let channel = message["channel_id"].as_str().unwrap_or_default();
-        let category = message["guild_id"].as_str().and_then(|guild| {
-            let server = self.servers.iter().find(|server| server.id == guild)?;
-            let channel = server
-                .text_channels
-                .iter()
-                .find(|known| known.id == channel)?;
-            channel.parent.as_deref()
-        });
+        let server = message["guild_id"]
+            .as_str()
+            .and_then(|guild| self.servers.iter().find(|server| server.id == guild));
+        let known = server.and_then(|server| server.channel(channel));
+        let thread = known.and_then(|known| known.thread.as_deref());
+        // A thread notifies as its channel does, unless it says otherwise.
+        let place = match (thread, known) {
+            (Some(_), Some(known)) => known.parent.as_deref().unwrap_or(channel),
+            _ => channel,
+        };
+        let category = server
+            .and_then(|server| server.channel(place))
+            .filter(|known| known.thread.is_none())
+            .and_then(|known| known.parent.as_deref());
         let author = message["author"]["id"].as_str().unwrap_or_default();
         let unwanted = self.blocked.iter().any(|blocked| blocked == author)
             || self
@@ -656,7 +815,7 @@ impl Tracker {
         !unwanted
             && self
                 .unreads
-                .notifies(message, &self.me, &self.my_roles, category)
+                .notifies(message, &self.me, &self.my_roles, place, category, thread)
     }
 
     /// Learns the status from settings, all or some of them, in base64.
@@ -706,6 +865,36 @@ impl Tracker {
     }
 
     /// Who can read a server's channel; see [`ready::Server::readers`].
+    /// Takes in the channel on screen; returns whether what lists changed,
+    /// which it does when a thread comes or goes.
+    pub(super) fn view(&mut self, guild: &str, channel: Option<&str>) -> bool {
+        let thread = |id: Option<&str>| {
+            id.is_some_and(|id| {
+                self.servers
+                    .iter()
+                    .any(|server| server.threads.iter().any(|thread| thread.id == id))
+            })
+        };
+        let changed = thread(self.viewing.as_deref()) || thread(channel);
+        self.viewing = channel.filter(|_| guild != PRIVATE).map(str::to_owned);
+        changed
+    }
+
+    /// The channel whose member list shows for a channel: a thread's
+    /// channel, as Discord sends no list for a thread.
+    pub(super) fn listed_channel(&self, guild: &str, channel: String) -> String {
+        let parent = self
+            .servers
+            .iter()
+            .find(|server| server.id == guild)
+            .and_then(|server| {
+                let known = server.channel(&channel)?;
+                known.thread.as_ref()?;
+                known.parent.clone()
+            });
+        parent.unwrap_or(channel)
+    }
+
     pub(super) fn readers(&self, guild: &str, channel: &str) -> String {
         self.servers
             .iter()
@@ -1011,6 +1200,7 @@ impl Tracker {
             friend_requests: self.friend_requests(&names),
             voice,
             listed: None,
+            viewing: self.viewing.clone(),
             names: super::SharedNames::new(self.names.clone()),
         }
     }
@@ -1708,6 +1898,131 @@ mod tests {
             &json!({"guild_id": "10", "user": {"id": "1"}, "roles": ["20"]}),
         );
         assert_eq!(channels(&mut tracker), ["Lounge", "Staff"]);
+    }
+
+    #[test]
+    fn follows_threads_this_account_is_in_and_views() {
+        let may = (ready::permission::VIEW_CHANNEL
+            | ready::permission::SEND_MESSAGES
+            | ready::permission::SEND_MESSAGES_IN_THREADS)
+            .to_string();
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [{"id": "10", "properties": {"name": "Test", "owner_id": "9"},
+                "roles": [{"id": "10", "permissions": may}],
+                "channels": [{"id": "11", "name": "general", "type": 0, "position": 0}],
+                "threads": [{"id": "300", "type": 11, "name": "Plans", "parent_id": "11",
+                    "guild_id": "10", "last_message_id": "350", "message_count": 2,
+                    "thread_metadata": {"archived": false, "locked": false},
+                    "member": {"join_timestamp": "2026-01-01T00:00:00+00:00", "flags": 0}}]}],
+            "merged_members": [[{"user_id": "1", "roles": []}]],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let threads = |tracker: &mut Tracker| -> Vec<(String, bool, ready::Access, bool, u64)> {
+            tracker.snapshot().servers[0]
+                .threads
+                .iter()
+                .map(|thread| {
+                    let details = thread.thread.as_deref().unwrap();
+                    (
+                        thread.id.clone(),
+                        details.joined,
+                        thread.access,
+                        thread.unread,
+                        details.messages,
+                    )
+                })
+                .collect()
+        };
+        use ready::Access::{Hidden, Join, Locked};
+        // Read up to when it joined.
+        assert_eq!(
+            threads(&mut tracker),
+            [("300".into(), true, Join, false, 2)]
+        );
+
+        // Someone else's thread is known, the newest first, without this
+        // account in it; its messages count, but not its first.
+        let made = json!({"id": "400", "type": 11, "name": "Later", "parent_id": "11",
+            "guild_id": "10", "owner_id": "2", "thread_metadata": {"archived": false, "locked": false}});
+        assert!(tracker.apply(&Event::ThreadCreate, &made));
+        let message = |channel: &str, id: &str, kind: u64| {
+            json!({"id": id, "type": kind, "channel_id": channel, "guild_id": "10",
+                   "author": {"id": "2"}, "content": "hi"})
+        };
+        tracker.apply(
+            &Event::MessageCreate,
+            &message("400", "1500000000000000000", 21),
+        );
+        tracker.apply(
+            &Event::MessageCreate,
+            &message("400", "1500000000000000001", 0),
+        );
+        tracker.apply(
+            &Event::MessageCreate,
+            &message("300", "1500000000000000002", 0),
+        );
+        assert_eq!(
+            threads(&mut tracker),
+            [
+                ("400".into(), false, Join, true, 1),
+                ("300".into(), true, Join, true, 3),
+            ]
+        );
+
+        // Joining and leaving it, as Discord tells this account.
+        let members = |added: Value, removed: Value| {
+            json!({"id": "400", "guild_id": "10", "member_count": 2,
+                   "added_members": added, "removed_member_ids": removed})
+        };
+        tracker.apply(
+            &Event::ThreadMembersUpdate,
+            &members(
+                json!([{"user_id": "1", "flags": 0, "muted": true}]),
+                json!([]),
+            ),
+        );
+        let joined = tracker.servers[0].threads[0].thread.clone().unwrap();
+        assert!(joined.joined && joined.mute.muted);
+        // An update without the member keeps it.
+        let locked = json!({"id": "400", "type": 11, "name": "Later", "parent_id": "11",
+            "guild_id": "10", "thread_metadata": {"archived": false, "locked": true}});
+        tracker.apply(&Event::ThreadUpdate, &locked);
+        assert_eq!(
+            threads(&mut tracker)[0],
+            ("400".into(), true, Locked, false, 1)
+        );
+        tracker.apply(
+            &Event::ThreadMembersUpdate,
+            &members(json!([]), json!(["1"])),
+        );
+        assert!(
+            !tracker.servers[0].threads[0]
+                .thread
+                .as_ref()
+                .unwrap()
+                .joined
+        );
+
+        // A private thread it isn't in stays hidden.
+        let private = json!({"id": "500", "type": 12, "name": "Secret", "parent_id": "11",
+            "guild_id": "10", "thread_metadata": {"archived": false, "locked": false}});
+        tracker.put_thread("10", &private);
+        assert_eq!(threads(&mut tracker)[0].2, Hidden);
+
+        // Viewing a thread lists it, so what lists changes.
+        assert!(tracker.view("10", Some("400")));
+        assert_eq!(tracker.snapshot().viewing.as_deref(), Some("400"));
+        assert_eq!(tracker.listed_channel("10", "400".into()), "11");
+        assert!(tracker.view("10", Some("11")));
+        assert!(!tracker.view("10", Some("11")));
+
+        // Its channel takes its threads along when deleted.
+        tracker.apply(
+            &Event::ChannelDelete,
+            &json!({"id": "11", "guild_id": "10", "type": 0}),
+        );
+        assert!(threads(&mut tracker).is_empty());
     }
 
     #[test]

@@ -35,6 +35,8 @@ pub(super) struct Shared {
     pub(super) lists: MemberLists,
     /// The presence this session last sent, which it identifies with again.
     pub(super) presence: Value,
+    /// The server and channel or thread on screen, kept through reconnecting.
+    pub(super) viewing: Option<(String, String)>,
 }
 
 pub(super) async fn run(
@@ -112,6 +114,7 @@ fn refuse(request: Request, shared: &mut Shared) {
             )));
         }
         Request::View { guild, channel } => {
+            shared.viewing = channel.clone().map(|channel| (guild.clone(), channel));
             shared.lists.view_offline(&shared.snapshots, guild, channel);
         }
         _ => {}
@@ -139,6 +142,9 @@ async fn connected_session(
     drop(ready);
     trim_startup_heap();
     tracker.keep_unavailable(&shared.snapshots.borrow().servers);
+    if let Some((guild, channel)) = &shared.viewing {
+        tracker.keep_viewed(&shared.snapshots.borrow().servers, guild, channel);
+    }
     shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
     let mut session = Session {
         gateway,
@@ -279,13 +285,21 @@ impl Session<'_> {
                     .update_voice_state(server(&guild), Some(&channel), mute, deaf, video)
                     .await
             }
+            Request::PutThread { guild, thread } => {
+                self.tracker.put_thread(&guild, &thread);
+                self.publisher.changed();
+                Ok(())
+            }
             Request::View { guild, channel } => {
+                self.shared.viewing = channel.clone().map(|channel| (guild.clone(), channel));
+                let threads = self.tracker.view(&guild, channel.as_deref());
+                let channel = channel.map(|channel| self.tracker.listed_channel(&guild, channel));
                 let listed = self
                     .shared
                     .lists
                     .view(&self.tracker, gateway, guild, channel)
                     .await?;
-                if listed {
+                if listed || threads {
                     self.publisher.changed();
                 }
                 Ok(())

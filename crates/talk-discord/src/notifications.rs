@@ -54,8 +54,9 @@ pub struct Mute {
 }
 
 impl Mute {
-    /// The `muted` flag and `mute_config` of a settings object or override.
-    fn read(value: &Value) -> Self {
+    /// The `muted` flag and `mute_config` of a settings object, an
+    /// override or a thread member.
+    pub(crate) fn read(value: &Value) -> Self {
         let muted = value["muted"].as_bool().unwrap_or(false);
         Self {
             muted,

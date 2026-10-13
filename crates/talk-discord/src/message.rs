@@ -24,8 +24,10 @@ const DEFAULT: u64 = 0;
 const CALL: u64 = 3;
 const PINNED: u64 = 6;
 const MEMBER_JOIN: u64 = 7;
+const THREAD_CREATED: u64 = 18;
 const REPLY: u64 = 19;
 const CHAT_INPUT_COMMAND: u64 = 20;
+const THREAD_STARTER_MESSAGE: u64 = 21;
 const CONTEXT_MENU_COMMAND: u64 = 23;
 
 /// The message flag that hides its embeds.
@@ -90,6 +92,34 @@ pub struct Message {
     /// It mentions @everyone or @here, and its author may.
     #[serde(default)]
     pub mention_everyone: bool,
+    /// The thread started from it, or that a notice of one names.
+    #[serde(default)]
+    pub thread: Option<ThreadLink>,
+}
+
+/// A thread a message leads to, as the message carried it; the thread as
+/// Talk knows it now, if it does, is newer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ThreadLink {
+    pub id: String,
+    pub name: String,
+    /// Its messages after the first.
+    pub messages: u64,
+    pub archived: bool,
+}
+
+impl ThreadLink {
+    /// A thread's channel object.
+    fn of(thread: &Value) -> Option<Self> {
+        Some(Self {
+            id: thread["id"].as_str()?.to_owned(),
+            name: thread["name"].as_str().unwrap_or_default().to_owned(),
+            messages: thread["message_count"].as_u64().unwrap_or_default(),
+            archived: thread["thread_metadata"]["archived"]
+                .as_bool()
+                .unwrap_or(false),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -297,11 +327,30 @@ pub(crate) fn written(kind: u64) -> bool {
 }
 
 /// A message object, from the API or the gateway. Kinds Talk doesn't show,
-/// such as boosts and thread notices, give `None`.
+/// such as boosts, give `None`.
 pub fn parse(value: &Value) -> Option<Message> {
     let kind = value["type"].as_u64().unwrap_or(DEFAULT);
+    // A thread's first message shows the one it was started from, as
+    // Discord's client does.
+    if kind == THREAD_STARTER_MESSAGE {
+        let original = &value["referenced_message"];
+        if !original.is_object() {
+            return None;
+        }
+        let mut message = parse(original)?;
+        message.id = value["id"].as_str()?.into();
+        message.channel_id = value["channel_id"].as_str().unwrap_or_default().into();
+        message.nonce = None;
+        message.editable = false;
+        message.thread = None;
+        return Some(message);
+    }
     let system = match kind {
         kind if written(kind) => None,
+        THREAD_CREATED => Some(format!(
+            "started a thread: {}.",
+            value["content"].as_str().unwrap_or_default()
+        )),
         MEMBER_JOIN => Some("joined the server.".to_owned()),
         PINNED => Some("pinned a message.".to_owned()),
         // Discord updates it with when the call ended.
@@ -449,6 +498,20 @@ pub fn parse(value: &Value) -> Option<Message> {
         mentions: ids(&value["mentions"], |user| user["id"].as_str()),
         mention_roles: ids(&value["mention_roles"], Value::as_str),
         mention_everyone: value["mention_everyone"].as_bool().unwrap_or(false),
+        thread: match kind {
+            // The notice names the thread in its reference, and its name
+            // in its content.
+            THREAD_CREATED => {
+                value["message_reference"]["channel_id"]
+                    .as_str()
+                    .map(|id| ThreadLink {
+                        id: id.to_owned(),
+                        name: value["content"].as_str().unwrap_or_default().to_owned(),
+                        ..Default::default()
+                    })
+            }
+            _ => ThreadLink::of(&value["thread"]),
+        },
     })
 }
 
@@ -1098,6 +1161,52 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn links_threads_and_shows_a_threads_first_message() {
+        let started = parse(&json!({"id": "500", "type": 0, "channel_id": "11",
+            "author": {"id": "2", "username": "bob"}, "content": "Who's in?",
+            "thread": {"id": "500", "type": 11, "name": "Saturday", "message_count": 4,
+                       "thread_metadata": {"archived": true}}}))
+        .unwrap();
+        assert_eq!(
+            started.thread,
+            Some(ThreadLink {
+                id: "500".into(),
+                name: "Saturday".into(),
+                messages: 4,
+                archived: true,
+            })
+        );
+        let notice = parse(&json!({"id": "600", "type": 18, "channel_id": "11",
+            "author": {"id": "2", "username": "bob"}, "content": "Sunday",
+            "message_reference": {"channel_id": "700", "guild_id": "10"}}))
+        .unwrap();
+        assert_eq!(notice.system.as_deref(), Some("started a thread: Sunday."));
+        assert_eq!(
+            notice.thread.map(|thread| thread.id).as_deref(),
+            Some("700")
+        );
+        // In the thread, its first message is the one it was started from.
+        let first = parse(&json!({"id": "501", "type": 21, "channel_id": "500",
+            "author": {"id": "2", "username": "bob"}, "content": "",
+            "message_reference": {"channel_id": "11", "message_id": "500"},
+            "referenced_message": {"id": "500", "type": 0, "channel_id": "11",
+                "author": {"id": "2", "username": "bob"}, "content": "Who's in?",
+                "thread": {"id": "500", "name": "Saturday"}}}))
+        .unwrap();
+        assert_eq!(
+            (first.id.as_str(), first.channel_id.as_str()),
+            ("501", "500")
+        );
+        assert_eq!(first.content, "Who's in?");
+        assert!(first.thread.is_none() && !first.editable);
+        assert!(
+            parse(&json!({"id": "502", "type": 21, "channel_id": "500",
+            "author": {"id": "2"}, "referenced_message": null}))
+            .is_none()
+        );
+    }
 
     #[test]
     fn says_how_long_calls_lasted() {
