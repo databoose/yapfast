@@ -8,7 +8,7 @@ use std::sync::Arc;
 use realfft::RealFftPlanner;
 use serde::{Deserialize, Serialize};
 
-const RATE: u32 = 48_000;
+use crate::audio_io::{Output, RATE};
 const TAU: f32 = std::f32::consts::TAU;
 
 /// The instrument every sound plays on.
@@ -296,59 +296,36 @@ pub fn play(set: SoundSet, sound: Sound, volume: f32, speaker: Option<&str>) {
         .spawn(move || {
             let mut samples = render(set, sound);
             samples.iter_mut().for_each(|sample| *sample *= volume);
-            #[cfg(target_os = "linux")]
-            if let Err(error) = linux::play(&samples, speaker.as_deref()) {
-                tracing::warn!(%error, ?sound, "could not play a sound");
+            if let Err(error) = play_samples(&samples, speaker.as_deref()) {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    ?sound,
+                    "could not play a sound"
+                );
             }
-            #[cfg(not(target_os = "linux"))]
-            let _ = (samples, speaker);
         });
     if let Err(error) = started {
         tracing::warn!(%error, "could not start a sound");
     }
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
-    use anyhow::{Context, Result};
-    use libpulse_binding::{
-        sample::{Format, Spec},
-        stream::Direction,
-    };
-    use libpulse_simple_binding::Simple;
-
-    use super::RATE;
-    use crate::meter::pulse;
-
-    /// Plays interleaved stereo samples to the end.
-    pub fn play(samples: &[f32], speaker: Option<&str>) -> Result<()> {
-        // Speakers that are gone play on the default ones.
-        let sink = pulse::sink(speaker).unwrap_or(None);
-        let spec = Spec {
-            format: Format::S16le,
-            channels: 2,
-            rate: RATE,
-        };
-        let output = Simple::new(
-            None,
-            "Talk",
-            Direction::Playback,
-            sink.as_deref(),
-            "Sound",
-            &spec,
-            None,
-            None,
-        )
+/// Plays interleaved stereo samples to the end.
+fn play_samples(samples: &[f32], speaker: Option<&str>) -> anyhow::Result<()> {
+    use anyhow::Context;
+    // Speakers that are gone play on the default ones.
+    let mut output = Output::<i16>::open_or_default(speaker, "Sound", RATE, 2, None)
         .context("could not open the speakers")?;
-        let bytes: Vec<u8> = samples
-            .iter()
-            .map(|sample| (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
-            .flat_map(i16::to_le_bytes)
-            .collect();
-        output.write(&bytes).context("could not play")?;
-        output.drain().context("could not finish playing")?;
-        Ok(())
+    let mut chunk = [0i16; RATE as usize / 50 * 2];
+    for part in samples.chunks(chunk.len()) {
+        for (sample, value) in chunk.iter_mut().zip(part) {
+            *sample = (value.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+        }
+        output
+            .write(&chunk[..part.len()])
+            .context("could not play")?;
     }
+    output.drain().context("could not finish playing")?;
+    Ok(())
 }
 
 #[cfg(test)]

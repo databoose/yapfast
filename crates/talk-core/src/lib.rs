@@ -8,6 +8,7 @@
 use anyhow::Context;
 
 pub mod application;
+mod audio_io;
 pub mod backend;
 #[cfg(feature = "matrix")]
 pub mod calls;

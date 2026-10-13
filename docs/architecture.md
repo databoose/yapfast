@@ -119,6 +119,14 @@ A visible change usually touches each of these steps:
    `src/event.rs` names the gateway's events. Backend events come back
    through `Application::apply`.
 
+Talk's own sound outside LiveKit's calls goes through
+[`audio_io.rs`](../crates/talk-core/src/audio_io.rs): Discord voice, the input
+meter, ringing, Talk's sounds, a watched stream's or a video's sound, and what
+other applications play for Go Live. It opens a microphone or speakers by the
+device id LiveKit lists, `None` being the system's default, and reads or writes
+on the caller's thread in the caller's own buffers. On Linux that's
+PulseAudio, or PipeWire's PulseAudio server.
+
 Each `ChatRoom` carries its `network` and its `capabilities`, such as
 whether its messages can be forwarded or its channels sit under
 categories, which its backend sets

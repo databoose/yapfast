@@ -25,6 +25,7 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
+    audio_io::Output,
     frames::Writer,
     stream_worker::{Control, Report},
     video::{Next, Source, Video, fit},
@@ -268,11 +269,19 @@ pub fn play(
     let speaker = job
         .sound
         .then(|| {
-            sound::Output::open(job.speakers.as_deref())
-                .inspect_err(|error| {
-                    tracing::warn!(error = format!("{error:#}"), "playing the video silently")
-                })
-                .ok()
+            // About 100 ms queued: enough to ride out a busy moment.
+            Output::<f32>::open_or_default(
+                job.speakers.as_deref(),
+                "Video",
+                RATE,
+                CHANNELS as u16,
+                Some(Duration::from_millis(100)),
+            )
+            .context("could not open the speakers")
+            .inspect_err(|error| {
+                tracing::warn!(error = format!("{error:#}"), "playing the video silently")
+            })
+            .ok()
         })
         .flatten();
     let decoder = {
@@ -576,14 +585,14 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
 }
 
 /// The sound thread: plays queued sound when the clock reaches it.
-fn play_sound(output: sound::Output, shared: &Shared) {
+fn play_sound(mut output: Output<f32>, shared: &Shared) {
     // 10 ms at a time.
     let frames = RATE as usize / 100;
     let mut generation = None;
     let mut flushed = true;
     let mut chunk = Vec::with_capacity(frames * CHANNELS);
     loop {
-        let latency = output.latency_ms();
+        let latency = output.latency().as_millis() as u64;
         let mut state = shared.lock();
         if state.stop {
             return;
@@ -733,102 +742,6 @@ fn stereo(frame: &[f32]) -> [f32; 2] {
             ]
         }
         [] => [0.0, 0.0],
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod sound {
-    pub struct Output;
-
-    impl Output {
-        pub fn open(_speakers: Option<&str>) -> anyhow::Result<Self> {
-            anyhow::bail!("Talk plays videos' sound on Linux only for now")
-        }
-
-        pub fn latency_ms(&self) -> u64 {
-            0
-        }
-
-        pub fn flush(&self) {}
-
-        pub fn write(&self, _samples: &[f32]) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-mod sound {
-    use anyhow::{Context, Result};
-    use libpulse_binding::{
-        def::BufferAttr,
-        sample::{Format, Spec},
-        stream::Direction,
-    };
-    use libpulse_simple_binding::Simple;
-
-    use super::{CHANNELS, RATE};
-
-    /// The speakers, through PulseAudio or PipeWire's PulseAudio server.
-    pub struct Output(Simple);
-
-    impl Output {
-        pub fn open(speakers: Option<&str>) -> Result<Self> {
-            let spec = Spec {
-                format: Format::F32le,
-                channels: CHANNELS as u8,
-                rate: RATE,
-            };
-            // About 100 ms queued: enough to ride out a busy moment.
-            let attributes = BufferAttr {
-                maxlength: u32::MAX,
-                tlength: RATE / 10 * CHANNELS as u32 * 4,
-                prebuf: u32::MAX,
-                minreq: u32::MAX,
-                fragsize: u32::MAX,
-            };
-            let open = |device: Option<&str>| {
-                Simple::new(
-                    None,
-                    "Talk",
-                    Direction::Playback,
-                    device,
-                    "Video",
-                    &spec,
-                    None,
-                    Some(&attributes),
-                )
-            };
-            let output = match open(speakers) {
-                Err(error) if speakers.is_some() => {
-                    tracing::warn!(%error, "playing the video's sound on the default speakers");
-                    open(None)
-                }
-                opened => opened,
-            };
-            output
-                .map(Self)
-                .map_err(|error| anyhow::anyhow!("{error}"))
-                .context("could not open the speakers")
-        }
-
-        pub fn latency_ms(&self) -> u64 {
-            self.0.get_latency().map_or(0, |latency| latency.0 / 1000)
-        }
-
-        pub fn flush(&self) {
-            let _ = self.0.flush();
-        }
-
-        pub fn write(&self, samples: &[f32]) -> Result<()> {
-            let bytes: Vec<u8> = samples
-                .iter()
-                .flat_map(|sample| sample.to_le_bytes())
-                .collect();
-            self.0
-                .write(&bytes)
-                .map_err(|error| anyhow::anyhow!("{error}"))
-        }
     }
 }
 

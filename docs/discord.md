@@ -178,8 +178,9 @@ Scope for the beta:
 Clicking a voice channel joins through the same voice dock and one-call rule
 as Matrix voice. Calls start muted, mute and deafen show in Discord, and a
 voice gate sends audio only during speech. The owner and a friend talked
-through it on 2026-10-06. Audio uses PulseAudio and libwebrtc's processing
-module, so Windows needs its own audio backend. songbird's DAVE receive fix is
+through it on 2026-10-06. Audio goes through `audio_io.rs`, PulseAudio on
+Linux, and libwebrtc's processing module, so Windows needs its own audio
+backend. songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
 
@@ -206,7 +207,7 @@ its own Opus encoding and decoding plus the same audio processing. libwebrtc's
 device module can't be reused outside a LiveKit room: it hands captured audio
 straight to WebRTC and only plays remote WebRTC streams. Its audio processing
 module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
-Discord voice gets a small path of its own: PulseAudio for the microphone and
+Discord voice gets a small path of its own: `audio_io.rs` for the microphone and
 speakers at 48 kHz, the processing module for echo cancellation and gain
 (noise suppression became DeepFilterNet; see [Microphone](#microphone)), then
 songbird for Opus and DAVE. Feed the speaker mix to
@@ -489,7 +490,8 @@ stream only, and lists them at `/_control/video`.
 
 A shared screen carries the sound every other application plays, as Discord's
 client and Vesktop share it; Talk's own sound stays out, so viewers never hear
-the call echoed back (`stream_audio`). On Linux, PulseAudio or PipeWire's
+the call echoed back (`stream_audio`, with `audio_io::others` hearing the
+applications). On Linux, PulseAudio or PipeWire's
 PulseAudio server monitors each application's playback stream on its own
 (`pa_stream_set_monitor_stream`, as pavucontrol's level meters do), and
 streams from Talk's processes are skipped by process id. So are other Discord
