@@ -334,6 +334,29 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_unlink_discord, Action::UnlinkDiscord);
     bind!(on_close_add_friend, Action::CloseAddFriend);
     bind!(on_close_person, Action::ClosePersonDialog);
+    bind!(on_close_invite, Action::CloseInvite);
+    bind_item!(on_open_invite, Action::OpenInvite);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_make_invite(move |age, uses| {
+            let pick = |list: &[u32], index: i32| {
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| list.get(index))
+                    .copied()
+            };
+            if let (Some(window), Some(max_age), Some(max_uses)) = (
+                weak.upgrade(),
+                pick(&INVITE_AGES, age),
+                pick(&INVITE_USES, uses),
+            ) {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::MakeInvite { max_age, max_uses });
+            }
+        });
+    }
     bind_item!(on_answer_person, Action::AnswerPerson);
     {
         let adapter = adapter.clone();

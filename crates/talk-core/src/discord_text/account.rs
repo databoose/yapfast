@@ -1,7 +1,7 @@
 //! Commands about the account rather than a channel: finding people,
 //! profiles, role members, member search, friends, the status, calls
-//! ringing, message requests, a channel's pins and search, group DMs, and
-//! notification settings.
+//! ringing, message requests, a channel's pins and search, group DMs,
+//! notification settings and invites.
 
 use super::{
     channels::SEARCH_PAUSE,
@@ -417,6 +417,39 @@ pub(super) fn command(
             });
             let _ = events.send(Event::GroupChanged(result));
         });
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::CreateInvite {
+        room,
+        max_age,
+        max_uses,
+    }) = command
+    {
+        let channel = discord::parse_room(&room).map(|(_, channel)| channel.to_owned());
+        match (discord, channel) {
+            (Ok(discord), Some(channel)) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .create_invite(&channel, max_age, max_uses)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not make an invite"
+                            );
+                            format!("Could not make an invite: {error}")
+                        });
+                    let _ = events.send(Event::InviteMade { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::InviteMade {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
         return None;
     }
     if let Command::Discord(

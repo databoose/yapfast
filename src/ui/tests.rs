@@ -2684,3 +2684,66 @@ fn empty_categories_go_where_discords_order_puts_them() {
         .collect();
     assert_eq!(listed, ["", "A!", "B", "", "C!", "D", "E!"]);
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_invite_dialog_shows_its_link_and_how_long_it_lasts() {
+    let (window, adapter, _directory) = discord_server_window();
+    let show = |invite: talk_core::application::InviteDialog| {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.state.invite = Some(invite);
+        adapter.refresh(&window);
+    };
+    let invite = talk_core::application::InviteDialog {
+        server: "Test".into(),
+        room: "discord:10:14".into(),
+        channel: "Lounge".into(),
+        voice: true,
+        max_age: 43_200,
+        max_uses: 25,
+        link: None,
+        making: true,
+        error: None,
+    };
+    show(invite.clone());
+    assert!(window.get_invite_open());
+    let prompt = window.get_invite_prompt();
+    assert_eq!(prompt.title, "Invite friends to Test");
+    assert_eq!(prompt.detail, "They'll land in Lounge.");
+    assert!(prompt.making && prompt.link.is_empty() && prompt.note.is_empty());
+    assert_eq!(
+        (window.get_invite_age(), window.get_invite_uses()),
+        (3, 4),
+        "its choices"
+    );
+
+    // Choosing others stays while the dialog is open.
+    window.set_invite_age(6);
+    show(talk_core::application::InviteDialog {
+        link: Some("https://discord.gg/abc".into()),
+        making: false,
+        ..invite.clone()
+    });
+    let prompt = window.get_invite_prompt();
+    assert_eq!(prompt.link, "https://discord.gg/abc");
+    assert_eq!(
+        prompt.note,
+        "This link expires in 12 hours and works 25 times."
+    );
+    assert_eq!(window.get_invite_age(), 6);
+
+    show(talk_core::application::InviteDialog {
+        max_age: 0,
+        max_uses: 1,
+        channel: "general".into(),
+        voice: false,
+        link: Some("https://discord.gg/abc".into()),
+        making: false,
+        ..invite
+    });
+    let prompt = window.get_invite_prompt();
+    assert_eq!(prompt.note, "This link never expires and works once.");
+    assert_eq!(prompt.detail, "They'll land in #general.");
+    window.invoke_close_invite();
+    assert!(!window.get_invite_open());
+}

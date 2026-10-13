@@ -52,6 +52,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
         .rooms
         .iter()
         .any(|found| Some(&found.id) == room.as_ref() && !found.people.is_empty());
+    let server = state.servers.iter().any(|server| server.id == id);
     let mut group = None;
     let mut rows: Vec<MenuRow> = choices
         .into_iter()
@@ -60,6 +61,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 MenuChoice::Timeout => (format!("Time out {}", name()), &icons.timeout),
                 MenuChoice::Kick => (format!("Kick {}", name()), &icons.kick),
                 MenuChoice::Ban => (format!("Ban {}", name()), &icons.ban),
+                MenuChoice::Invite if server => ("Invite to server".into(), &icons.befriend),
                 choice => {
                     let (text, icon) = label(icons, choice, in_call);
                     (text.to_owned(), icon)
@@ -86,7 +88,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::UnmuteServer
                 | MenuChoice::ServerNotifications
                 | MenuChoice::HideMuted => 2,
-                MenuChoice::CopyLink | MenuChoice::CopyId => 3,
+                MenuChoice::CopyLink | MenuChoice::CopyId | MenuChoice::Invite => 3,
                 MenuChoice::Roles => 4,
                 MenuChoice::Timeout
                 | MenuChoice::RemoveTimeout
@@ -197,6 +199,8 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::UnmuteServer => ("Unmute server", &icons.unmute),
         MenuChoice::ServerNotifications => ("Notification settings", &icons.unmute),
         MenuChoice::HideMuted => ("Hide muted channels", &icons.ignore),
+        // A server's says so above.
+        MenuChoice::Invite => ("Invite to channel", &icons.befriend),
     }
 }
 
@@ -627,6 +631,7 @@ pub(super) fn choose(
         MenuChoice::Roles => None,
         // Notify's choices, above.
         MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
+        MenuChoice::Invite => Some(Action::OpenInvite(target)),
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer
         | MenuChoice::UnmuteServer
@@ -674,7 +679,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 36] = [
+const CHOICES: [MenuChoice; 37] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -711,6 +716,7 @@ const CHOICES: [MenuChoice; 36] = [
     MenuChoice::UnmuteServer,
     MenuChoice::ServerNotifications,
     MenuChoice::HideMuted,
+    MenuChoice::Invite,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -751,6 +757,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::UnmuteServer => "unmute-server",
         MenuChoice::ServerNotifications => "server-notifications",
         MenuChoice::HideMuted => "hide-muted",
+        MenuChoice::Invite => "invite",
     }
 }
 

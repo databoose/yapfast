@@ -16,7 +16,39 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 2] = [MenuChoice::ServerNotifications, MenuChoice::HideMuted];
+const HEADER: [MenuChoice; 3] = [
+    MenuChoice::Invite,
+    MenuChoice::ServerNotifications,
+    MenuChoice::HideMuted,
+];
+
+/// How long an invite lasts, in seconds, as Discord's invite dialog offers:
+/// 30 minutes, an hour, 6 and 12 hours, a day, 7 days, and for good.
+pub const INVITE_AGES: [u32; 7] = [1800, 3600, 21_600, 43_200, 86_400, 604_800, 0];
+/// How many times an invite works, any number first.
+pub const INVITE_USES: [u32; 7] = [0, 1, 5, 10, 25, 50, 100];
+/// What a new invite dialog's link starts with, as in Discord: 7 days, any
+/// number of times.
+const FIRST_INVITE: (u32, u32) = (604_800, 0);
+
+/// An invite dialog: where it invites to, and the link Discord made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InviteDialog {
+    /// The server's name.
+    pub server: String,
+    /// The channel the link lands people in, by its room id, and its name.
+    pub room: String,
+    pub channel: String,
+    pub voice: bool,
+    /// How long the link lasts, in seconds, 0 for good, and how many times
+    /// it works, 0 for any number.
+    pub max_age: u32,
+    pub max_uses: u32,
+    /// The link, once Discord made it.
+    pub link: Option<String>,
+    pub making: bool,
+    pub error: Option<String>,
+}
 
 impl Application {
     /// What the menu of a listed server, Discord category or conversation
@@ -33,6 +65,9 @@ impl Application {
         }
         if self.state.is_category(id) {
             return self.category_choices(id, &listed);
+        }
+        if self.discord_channel(id) {
+            return self.discord_channel_choices(id, &listed);
         }
         listed
     }
@@ -58,11 +93,25 @@ impl Application {
             .any(|server| server.discord && server.id == id)
     }
 
-    /// The server menu: marking it read, its notifications, then copying.
+    /// A listed channel of a Discord server.
+    fn discord_channel(&self, id: &str) -> bool {
+        discord::parse_room(id).is_some_and(|(guild, _)| guild != discord::DM_GUILD)
+            && self
+                .state
+                .rooms
+                .iter()
+                .any(|room| room.id == id && !room.direct)
+    }
+
+    /// The server menu: marking it read, inviting, its notifications, then
+    /// copying.
     fn discord_server_choices(&self, id: &str, listed: &[MenuChoice]) -> Vec<MenuChoice> {
         let mut choices = vec![];
         if listed.contains(&MenuChoice::MarkRead) {
             choices.push(MenuChoice::MarkRead);
+        }
+        if self.state.discord_online && self.invite_channel(id).is_some() {
+            choices.push(MenuChoice::Invite);
         }
         // Discord takes changes only while it's connected.
         if self.state.discord_online
@@ -77,6 +126,116 @@ impl Application {
         }
         choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
         choices
+    }
+
+    /// A Discord channel's menu: a conversation's, with inviting to it
+    /// before its link.
+    fn discord_channel_choices(&self, id: &str, listed: &[MenuChoice]) -> Vec<MenuChoice> {
+        let mut choices = listed.to_vec();
+        if self.state.discord_online
+            && self.invite_channel(id).is_some()
+            && let Some(at) = choices
+                .iter()
+                .position(|choice| *choice == MenuChoice::CopyLink)
+        {
+            choices.insert(at, MenuChoice::Invite);
+        }
+        choices
+    }
+
+    /// The channel an invite from a Discord server's or channel's menu
+    /// lands people in, by its room id: the channel itself, or for the
+    /// server the open channel, else the first in Discord's order, as
+    /// Discord's client picks; each only if this account may invite there.
+    pub fn invite_channel(&self, place: &str) -> Option<String> {
+        let invitable = |room: &str| {
+            self.may(room, chat::Permission::ViewChannel)
+                && self.may(room, chat::Permission::CreateInvite)
+                && !self.state.is_category(room)
+        };
+        let server = self
+            .state
+            .servers
+            .iter()
+            .find(|server| server.discord && server.id == place);
+        let Some(server) = server else {
+            return invitable(place).then(|| place.to_owned());
+        };
+        self.state
+            .selected
+            .iter()
+            .filter(|open| server.channels.contains(open))
+            .chain(&server.channels)
+            .find(|room| invitable(room))
+            .cloned()
+    }
+
+    pub(super) fn open_invite(&mut self, place: String) -> Vec<Effect> {
+        if !self.menu_choices(&place).contains(&MenuChoice::Invite) {
+            return vec![];
+        }
+        let Some(room) = self.invite_channel(&place) else {
+            return vec![];
+        };
+        let listed = self.state.rooms.iter().find(|known| known.id == room);
+        let server = self
+            .state
+            .servers
+            .iter()
+            .find(|server| server.channels.contains(&room));
+        self.state.invite = Some(InviteDialog {
+            server: server.map(|server| server.name.clone()).unwrap_or_default(),
+            channel: listed.map(|room| room.name.clone()).unwrap_or_default(),
+            voice: listed.is_some_and(|room| room.voice),
+            room,
+            max_age: FIRST_INVITE.0,
+            max_uses: FIRST_INVITE.1,
+            link: None,
+            making: false,
+            error: None,
+        });
+        self.make_invite(FIRST_INVITE.0, FIRST_INVITE.1)
+    }
+
+    /// Asks Discord for a new link for the invite dialog, unless one is on
+    /// its way or the choices are none Discord's dialog offers.
+    pub(super) fn make_invite(&mut self, max_age: u32, max_uses: u32) -> Vec<Effect> {
+        let offered = INVITE_AGES.contains(&max_age) && INVITE_USES.contains(&max_uses);
+        let Some(invite) = self
+            .state
+            .invite
+            .as_mut()
+            .filter(|invite| !invite.making && offered)
+        else {
+            return vec![];
+        };
+        invite.max_age = max_age;
+        invite.max_uses = max_uses;
+        invite.making = true;
+        invite.error = None;
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::CreateInvite {
+                room: invite.room.clone(),
+                max_age,
+                max_uses,
+            },
+        ))]
+    }
+
+    pub(super) fn invite_made(&mut self, room: String, result: Result<String, String>) {
+        let Some(invite) = self
+            .state
+            .invite
+            .as_mut()
+            .filter(|invite| invite.room == room && invite.making)
+        else {
+            return;
+        };
+        invite.making = false;
+        match result {
+            Ok(code) => invite.link = Some(format!("https://discord.gg/{code}")),
+            Err(error) => invite.error = Some(error),
+        }
     }
 
     /// A category's menu: marking its channels read, then its notification

@@ -65,6 +65,8 @@ pub enum MenuChoice {
     /// A box to tick that keeps a Discord server's muted channels out of
     /// its channel list.
     HideMuted,
+    /// Make an invite link to a Discord server or channel.
+    Invite,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.

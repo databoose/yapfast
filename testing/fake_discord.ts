@@ -91,7 +91,9 @@
 // read and write Alice's note on someone, DELETE /channels/{id} closes a DM,
 // and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs. PATCH
 // /users/@me/guilds/{id}/settings changes her notification settings for a
-// server and its channels, and USER_GUILD_SETTINGS_UPDATE says so.
+// server and its channels, and USER_GUILD_SETTINGS_UPDATE says so. POST
+// /channels/{id}/invites makes an invite to a channel of "Server", which
+// @everyone may, as on Discord, and GET /_control/invites lists them.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
 // remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
 // code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
@@ -276,9 +278,9 @@ let alicePresence: unknown = null;
 const HISTORY_START = Date.UTC(2026, 9, 1, 9, 0, 0);
 const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
 const bit = (n: number) => 2 ** n;
-// View, send, embed, attach, read history, react, connect, speak, voice
-// activity, change one's own nickname.
-const EVERYONE = [10, 11, 14, 15, 16, 6, 20, 21, 25, 26].reduce((sum, n) => sum + bit(n), 0);
+// Invite, view, send, embed, attach, read history, react, connect, speak,
+// voice activity, change one's own nickname: Discord's defaults for @everyone.
+const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26].reduce((sum, n) => sum + bit(n), 0);
 // Kick, ban, manage nicknames, manage roles, moderate members.
 const MODERATION = [1, 2, 27, 28, 40].reduce((sum, n) => sum + bit(n), 0);
 
@@ -2564,6 +2566,9 @@ const json = (body: unknown, status = 200) => Response.json(body, { status });
 const empty = () => new Response(null, { status: 204 });
 const notFound = (message = "404: Not Found", code = 0) => json({ message, code }, 404);
 
+/** The invites Alice made, oldest first, for GET /_control/invites. */
+const invites: Record<string, unknown>[] = [];
+
 /** Files uploaded for a message that isn't sent yet, by uploaded filename. */
 const uploads = new Map<string, { filename: string; data?: Uint8Array }>();
 let uploadCount = 0;
@@ -3096,6 +3101,40 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       dispatch("CALL_UPDATE", wireCall(channel));
     }
     return empty();
+  }
+
+  // An invite to one of the server's channels, as Discord makes them: it
+  // lasts max_age seconds (a day unless asked, never with 0) and works
+  // max_uses times (any number with 0).
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/invites$/))) {
+    const channel = guild().channels.find((known) => known.id === m![1] && known.type !== 4);
+    if (!channel) return notFound("Unknown Channel", 10003);
+    const body: any = await req.json().catch(() => ({}));
+    const maxAge = body.max_age ?? 86400;
+    const maxUses = body.max_uses ?? 0;
+    if (!Number.isInteger(maxAge) || maxAge < 0 || maxAge > 5184000 || !Number.isInteger(maxUses) || maxUses < 0 || maxUses > 100) {
+      return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    }
+    const now = Date.now();
+    const code = Array.from({ length: 8 }, () => "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 57)]).join("");
+    const invite = {
+      type: 0,
+      code,
+      inviter: wireUser(users.alice),
+      max_age: maxAge,
+      created_at: iso(now),
+      expires_at: maxAge === 0 ? null : iso(now + maxAge * 1000),
+      guild: { id: GUILD, name: "Server", icon: "server1", splash: null, banner: null, description: null, features: [], verification_level: 0, vanity_url_code: null, nsfw_level: 0, premium_subscription_count: 0 },
+      guild_id: GUILD,
+      channel: { id: channel.id, type: channel.type, name: channel.name },
+      uses: 0,
+      max_uses: maxUses,
+      temporary: body.temporary === true,
+    };
+    invites.push(invite);
+    const { guild: _, channel: wire, ...rest } = invite;
+    dispatch("INVITE_CREATE", { ...rest, channel_id: wire.id, guild_id: GUILD });
+    return json(invite);
   }
 
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/attachments$/))) {
@@ -3738,6 +3777,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/acks") {
       return Response.json(acks);
+    }
+    if (req.method === "GET" && path === "/_control/invites") {
+      return Response.json(invites);
     }
     if (req.method === "POST" && path === "/_control/busy-start") {
       if (fillerList.length === 0) return new Response("no filler servers; start with --servers N\n", { status: 400 });
