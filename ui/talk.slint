@@ -985,6 +985,7 @@ export component TalkWindow inherits Window {
                     // Server rail.
                     ServerRail {
                         dms-selected: root.dms-selected; dms-unread: root.dms-unread; dms-badge: root.dms-badge; servers: root.servers;
+                        matrix-build: root.matrix-build;
                         navigate-dms => { root.navigate-dms(); }
                         navigate-server(id) => { root.navigate-server(id); }
                         toggle-folder(id) => { root.toggle-folder(id); }
