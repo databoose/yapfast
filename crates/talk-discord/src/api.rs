@@ -15,6 +15,21 @@ const API: &str = "https://discord.com/api/v9";
 /// The most messages one history request returns.
 pub const PAGE: usize = 50;
 
+/// Which of a channel's messages a page holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Span<'a> {
+    /// The newest.
+    Latest,
+    /// Those before a snowflake.
+    Before(&'a str),
+    /// Those after a snowflake, which Discord's client asks for as the
+    /// timeline scrolls down through older messages.
+    After(&'a str),
+    /// Those on both sides of a snowflake, as for a jump to a message;
+    /// Discord answers even when no message has it.
+    Around(&'a str),
+}
+
 #[derive(Debug, Deserialize)]
 pub struct User {
     pub id: String,
@@ -167,11 +182,14 @@ impl Api {
         serde_json::from_value(body).context("could not understand Discord's answer")
     }
 
-    /// Up to [`PAGE`] messages before `before`, or the latest, newest first.
-    pub async fn messages(&self, channel: &str, before: Option<&str>) -> Result<Vec<Value>> {
+    /// Up to [`PAGE`] messages of a channel, newest first, as [`Span`] says.
+    pub async fn messages(&self, channel: &str, span: Span<'_>) -> Result<Vec<Value>> {
         let mut path = format!("/channels/{channel}/messages?limit={PAGE}");
-        if let Some(before) = before {
-            path.push_str(&format!("&before={before}"));
+        match span {
+            Span::Latest => {}
+            Span::Before(id) => path.push_str(&format!("&before={id}")),
+            Span::After(id) => path.push_str(&format!("&after={id}")),
+            Span::Around(id) => path.push_str(&format!("&around={id}")),
         }
         match self.json(self.request(Method::GET, &path)).await? {
             Value::Array(messages) => Ok(messages),

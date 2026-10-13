@@ -25,7 +25,7 @@ use tokio::{
 
 use crate::{
     chat::{
-        Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery,
+        Attachment, ChatMember, ChatMessage, Command, Contact, CustomEmoji, Delivery, Direction,
         DiscordCommand, Embed, EmbedField, Event, History, MAX_PREVIEW_DOWNLOAD_BYTES,
         MentionGroup, Notification, OutgoingFile, Picture, Placement, Profile, ProfileFriend,
         ProfileRole, ProfileServer, Reaction, Reply, Role, Video, VideoCommand, decode_preview,
@@ -44,7 +44,7 @@ mod render;
 
 pub use channels::Channels;
 pub use commands::{command, finished, live};
-pub use open_channel::OpenChannel;
+pub use open_channel::{Load, OpenChannel};
 
 /// Discord's message length limit without Nitro, in characters.
 pub const MAX_CHARS: usize = 2000;
@@ -66,7 +66,9 @@ const MAX_VIDEO_BYTES: u64 = 1024 * 1024 * 1024;
 pub enum Done {
     History {
         room: String,
-        older: bool,
+        load: Load,
+        /// [`OpenChannel::generation`] when it was asked for.
+        generation: u64,
         result: Result<Page, String>,
     },
     Sent {

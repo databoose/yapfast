@@ -5,6 +5,7 @@
 use std::{sync::Arc, time::Duration};
 
 use talk_discord::{
+    api::Span,
     client,
     member_list::Presence,
     message::Shown,
@@ -232,7 +233,10 @@ async fn talks_to_the_fake_server() {
 
     // Two pages of history: 50, then the rest, oldest first. The latest
     // starts with a boost, which counts but doesn't show.
-    let latest = discord.history(&guild, &general, None).await.unwrap();
+    let latest = discord
+        .history(&guild, &general, Span::Latest)
+        .await
+        .unwrap();
     assert!(latest.full);
     let (oldest, latest) = (latest.oldest.unwrap(), latest.messages);
     assert_eq!(latest.len(), 49);
@@ -243,7 +247,7 @@ async fn talks_to_the_fake_server() {
         "read up to the fixture's last five messages"
     );
     let older = discord
-        .history(&guild, &general, Some(&oldest.to_string()))
+        .history(&guild, &general, Span::Before(&oldest.to_string()))
         .await
         .unwrap();
     assert!(!older.full);
@@ -255,6 +259,30 @@ async fn talks_to_the_fake_server() {
         (2, true)
     );
     assert!(older[3].reply.is_some());
+    // A jump asks for the messages around one, and scrolling down from
+    // there for those after, as Discord's client does.
+    let welcome = &older[0].id;
+    let around = discord
+        .history(&guild, &general, Span::Around(welcome))
+        .await
+        .unwrap();
+    assert_eq!(
+        &around.messages[0].id, welcome,
+        "nothing is before the first"
+    );
+    assert!(around.messages.len() >= 20 && around.messages.len() <= 26);
+    let newest = around.messages.last().unwrap().id.clone();
+    let after = discord
+        .history(&guild, &general, Span::After(&newest))
+        .await
+        .unwrap();
+    assert!(!after.full, "the rest of the channel");
+    assert!(after.messages[0].order() > around.messages.last().unwrap().order());
+    assert_eq!(
+        after.messages.last().map(|message| &message.id),
+        latest.last().map(|message| &message.id),
+        "up to the newest, oldest first"
+    );
     let image = &older[1].attachments[0];
     let preview = discord
         .download(image.preview_url.as_deref().unwrap(), 1 << 20)
@@ -442,7 +470,7 @@ async fn talks_to_the_fake_server() {
             .is_some_and(|avatar| avatar.contains("/avatars/1400000000000000002/bob1.png"))
     );
     let history = discord
-        .history(PRIVATE, &dm_bob, None)
+        .history(PRIVATE, &dm_bob, Span::Latest)
         .await
         .unwrap()
         .messages;
@@ -711,7 +739,7 @@ async fn talks_to_the_fake_server() {
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
     let asked = discord
-        .history(PRIVATE, &erin, None)
+        .history(PRIVATE, &erin, Span::Latest)
         .await
         .unwrap()
         .messages;
@@ -768,7 +796,7 @@ async fn talks_to_the_fake_server() {
     assert_eq!(article.embeds[0].provider.as_deref(), Some("Example News"));
     assert_eq!(article.attachments[0].shown, Shown::Embed(0));
     let latest = discord
-        .history(&guild, &general, None)
+        .history(&guild, &general, Span::Latest)
         .await
         .unwrap()
         .messages;
@@ -1568,7 +1596,7 @@ async fn talks_to_the_fake_server() {
             .contains(&"1400000000000000112".to_owned())
     );
     let latest = discord
-        .history(&guild, &general, None)
+        .history(&guild, &general, Span::Latest)
         .await
         .unwrap()
         .messages;

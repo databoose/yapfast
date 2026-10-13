@@ -65,7 +65,10 @@ pub fn command(
         | Command::SaveAttachment { room, .. }
         | Command::ViewImage { room, .. }
         | Command::VisibleMessages { room, .. }
-        | Command::Earlier(room) => room.clone(),
+        | Command::Earlier(room)
+        | Command::Later(room)
+        | Command::Around { room, .. }
+        | Command::Present(room) => room.clone(),
         Command::Forward { room, target, .. }
             if Network::of(room) == Network::Discord || Network::of(target) == Network::Discord =>
         {
@@ -85,9 +88,17 @@ pub fn command(
         Ok(discord) => discord,
         Err(why) => {
             let _ = events.send(Event::RoomError {
-                room,
+                room: room.clone(),
                 message: why.into(),
             });
+            // History asked for says it failed, so nothing waits on it.
+            if let Some(direction) = direction(&command) {
+                let _ = events.send(Event::HistoryLoaded {
+                    room,
+                    direction,
+                    history: History::Failed,
+                });
+            }
             return;
         }
     };
@@ -147,11 +158,14 @@ pub fn command(
                 item,
                 result: Err(again.into()),
             }),
-            Command::Earlier(room) => events.send(Event::HistoryLoaded {
-                room,
-                history: History::Failed,
-            }),
-            _ => Ok(()),
+            command => match direction(&command) {
+                Some(direction) => events.send(Event::HistoryLoaded {
+                    room,
+                    direction,
+                    history: History::Failed,
+                }),
+                None => Ok(()),
+            },
         };
         return;
     };
@@ -205,10 +219,52 @@ pub fn command(
         Command::Earlier(room) if !channel.earlier(discord, done) => {
             let _ = events.send(Event::HistoryLoaded {
                 room,
-                history: History::Start,
+                direction: Direction::Earlier,
+                history: channel.history(),
             });
         }
+        // No window shows, or it reached the newest messages kept, which
+        // show with it now.
+        Command::Later(room) if !channel.later(discord, done) => {
+            publish(channel, discord, done, events);
+            let _ = events.send(Event::HistoryLoaded {
+                room,
+                direction: Direction::Later,
+                history: channel.history(),
+            });
+        }
+        Command::Around { room, item } => match discord::item_order(&item) {
+            Some(order) => channel.around(discord, done, order),
+            None => {
+                let _ = events.send(Event::RoomError {
+                    room: room.clone(),
+                    message: "Talk couldn't find that message.".into(),
+                });
+                let _ = events.send(Event::HistoryLoaded {
+                    room,
+                    direction: Direction::Around,
+                    history: History::Failed,
+                });
+                publish(channel, discord, done, events);
+            }
+        },
+        Command::Present(_) => {
+            channel.present();
+            if channel.loaded {
+                publish(channel, discord, done, events);
+            }
+        }
         _ => {}
+    }
+}
+
+/// Which history a command asks for, if any.
+fn direction(command: &Command) -> Option<Direction> {
+    match command {
+        Command::Earlier(_) => Some(Direction::Earlier),
+        Command::Later(_) => Some(Direction::Later),
+        Command::Around { .. } => Some(Direction::Around),
+        _ => None,
     }
 }
 
@@ -282,31 +338,61 @@ pub fn finished(
                 picture,
             });
         }
-        (Done::History { older, result, .. }, channel) => {
+        (
+            Done::History {
+                load,
+                generation,
+                result,
+                ..
+            },
+            channel,
+        ) => {
+            let mut direction = match load {
+                Load::Latest => None,
+                Load::Earlier => Some(Direction::Earlier),
+                Load::Later => Some(Direction::Later),
+                Load::Around(_) => Some(Direction::Around),
+            };
             let history = match (result, channel) {
-                (Ok(page), Some(channel)) => {
-                    channel.loaded(older, page);
-                    changed = true;
-                    if channel.complete {
-                        History::Start
-                    } else {
-                        History::More
-                    }
+                // Asked for before what shows was replaced; it's dropped.
+                (_, Some(channel)) if load != Load::Latest && generation != channel.generation => {
+                    None
                 }
-                (Ok(_), None) => History::Failed,
+                (Ok(page), Some(channel)) => {
+                    let detached = channel.detached();
+                    channel.loaded(load, page);
+                    changed = true;
+                    // The latest page reached the window, which shows with
+                    // the newest messages now, as when a later page does.
+                    if detached && !channel.detached() && load == Load::Latest {
+                        direction = Some(Direction::Later);
+                    }
+                    Some(channel.history())
+                }
+                (Ok(_), None) => Some(History::Failed),
                 (Err(error), channel) => {
                     if let Some(channel) = channel {
-                        channel.loading_earlier &= !older;
+                        match load {
+                            Load::Latest => {}
+                            Load::Earlier => channel.loading_earlier = false,
+                            Load::Later => channel.loading_later = false,
+                            // What showed shows on.
+                            Load::Around(_) => {
+                                channel.focusing = false;
+                                changed = true;
+                            }
+                        }
                     }
                     let _ = events.send(Event::RoomError {
                         room: room.clone(),
                         message: error,
                     });
-                    History::Failed
+                    Some(History::Failed)
                 }
             };
-            // Said once the page is published, so the timeline has it.
-            history_loaded = older.then_some((room, history));
+            history_loaded = direction
+                .zip(history)
+                .map(|(direction, history)| (room, direction, history));
         }
         (_, None) => {}
         (Done::Sent { nonce, result, .. }, Some(channel)) => {
@@ -340,15 +426,27 @@ pub fn finished(
         // Handled above.
         (Done::Typing { .. } | Done::MembersLate { .. }, Some(_)) => {}
     }
+    // A page is said to have come once it's published, so the timeline has
+    // it, but a window before it: until then the timeline stays as it was.
+    let say = |(room, direction, history)| {
+        let _ = events.send(Event::HistoryLoaded {
+            room,
+            direction,
+            history,
+        });
+    };
+    let (window, page) = match history_loaded {
+        Some(loaded @ (_, Direction::Around, _)) => (Some(loaded), None),
+        loaded => (None, loaded),
+    };
+    window.map(say);
     if changed
         && shown
         && let (Some(discord), Some(channel)) = (discord, channels.open.as_mut())
     {
         publish(channel, discord, done, events);
     }
-    if let Some((room, history)) = history_loaded {
-        let _ = events.send(Event::HistoryLoaded { room, history });
-    }
+    page.map(say);
 }
 
 /// Applies a gateway event to the open channel and those kept. Missed

@@ -37,8 +37,8 @@ use matrix_sdk_ui::{
     sync_service::State,
     timeline::{
         AttachmentConfig, AttachmentSource, EventSendState, EventTimelineItem, MsgLikeKind,
-        SendTarget, Timeline, TimelineBuilder, TimelineDetails, TimelineEventItemId,
-        TimelineItemContent,
+        SendTarget, Timeline, TimelineBuilder, TimelineDetails, TimelineEventFocusThreadMode,
+        TimelineEventItemId, TimelineFocus, TimelineItemContent,
     },
 };
 use tokio::{
@@ -53,8 +53,8 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Delivery,
-        Event, History, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification, Picture,
-        Placement, Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view,
+        Direction, Event, History, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification,
+        Picture, Placement, Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view,
         notification_text, plain_snippet, sort_members,
     },
     network::Network,
@@ -74,6 +74,11 @@ type Updates = Pin<Box<dyn Stream<Item = ()> + Send>>;
 /// The open conversation and the background work that belongs to it.
 struct OpenRoom {
     timeline: Arc<Timeline>,
+    /// The timeline is a window of older messages around one jumped to,
+    /// which live messages don't go in.
+    focused: bool,
+    /// The room's first message is in the timeline.
+    start: bool,
     pictures: HashMap<String, Option<Arc<Picture>>>,
     requested: HashSet<String>,
     visible: HashSet<String>,
@@ -86,6 +91,59 @@ struct OpenRoom {
 impl OpenRoom {
     fn id(&self) -> &str {
         self.timeline.room().room_id().as_str()
+    }
+
+    /// How the timeline reaches the room's ends, for [`Event::HistoryLoaded`].
+    fn history(&self) -> History {
+        History::Loaded {
+            start: self.start,
+            present: !self.focused,
+        }
+    }
+
+    /// The oldest event in the timeline that the homeserver has.
+    async fn first_event(&self) -> Option<OwnedEventId> {
+        self.timeline
+            .items()
+            .await
+            .iter()
+            .find_map(|item| item.as_event()?.event_id().map(ToOwned::to_owned))
+    }
+
+    async fn has_event(&self, id: &OwnedEventId) -> bool {
+        self.timeline
+            .items()
+            .await
+            .iter()
+            .any(|item| item.as_event().and_then(|event| event.event_id()) == Some(id))
+    }
+
+    /// Shows the messages around `event` in place of the timeline, or with
+    /// none the room's newest messages, which follow live ones; `false` when
+    /// the homeserver couldn't give them. The SDK keeps the newest messages
+    /// in its event cache, so going back to them doesn't load them again.
+    async fn refocus(&mut self, event: Option<OwnedEventId>, updates: &mut Updates) -> bool {
+        let room = self.timeline.room().clone();
+        let focused = event.is_some();
+        let builder = match event {
+            Some(target) => TimelineBuilder::new(&room).with_focus(TimelineFocus::Event {
+                target,
+                num_context_events: HISTORY_PAGE,
+                thread_mode: TimelineEventFocusThreadMode::Automatic {
+                    hide_threaded_events: false,
+                },
+            }),
+            None => TimelineBuilder::new(&room),
+        };
+        let Ok(timeline) = builder.build().await else {
+            return false;
+        };
+        let (_, stream) = timeline.subscribe().await;
+        *updates = Box::pin(stream.map(|_| ()));
+        self.timeline = Arc::new(timeline);
+        self.focused = focused;
+        self.start = false;
+        true
     }
 }
 
@@ -420,6 +478,8 @@ impl Matrix {
                         self.updates = Box::pin(stream.map(|_| ()));
                         let mut active = OpenRoom {
                             timeline: Arc::new(active),
+                            focused: false,
+                            start: false,
                             pictures: HashMap::new(),
                             requested: HashSet::new(),
                             visible: HashSet::new(),
@@ -431,7 +491,11 @@ impl Matrix {
                         publish_timeline(&mut active, client, &self.media_sender, events).await;
                         // Sync often delivers only the latest event; fill the first screen.
                         if active.timeline.items().await.len() < usize::from(HISTORY_PAGE) {
-                            let _ = active.timeline.paginate_backwards(HISTORY_PAGE).await;
+                            active.start = active
+                                .timeline
+                                .paginate_backwards(HISTORY_PAGE)
+                                .await
+                                .unwrap_or(false);
                             publish_timeline(&mut active, client, &self.media_sender, events).await;
                         }
                         *open = Some(active);
@@ -580,8 +644,9 @@ impl Matrix {
                 let history = match open.as_mut().filter(|active| active.id() == id) {
                     Some(active) => match active.timeline.paginate_backwards(HISTORY_PAGE).await {
                         Ok(start) => {
+                            active.start = start;
                             publish_timeline(active, client, &self.media_sender, events).await;
-                            if start { History::Start } else { History::More }
+                            active.history()
                         }
                         Err(_) => {
                             let _ = events.send(Event::RoomError { room: id.clone(), message: "Could not load older messages. Check your connection and try again.".into() });
@@ -590,7 +655,118 @@ impl Matrix {
                     },
                     None => History::Failed,
                 };
-                let _ = events.send(Event::HistoryLoaded { room: id, history });
+                let _ = events.send(Event::HistoryLoaded {
+                    room: id,
+                    direction: Direction::Earlier,
+                    history,
+                });
+            }
+            Command::Later(id) => {
+                let history = match open.as_mut().filter(|active| active.id() == id) {
+                    Some(active) if active.focused => {
+                        match active.timeline.paginate_forwards(HISTORY_PAGE).await {
+                            Ok(end) => {
+                                // A window doesn't follow live messages, so
+                                // at the newest one the live timeline takes
+                                // its place. It starts from the newest the
+                                // SDK keeps, and earlier pages load until it
+                                // has the window's first message again: rows
+                                // going from above the screen would move it.
+                                if end {
+                                    let first = active.first_event().await;
+                                    let pages = active.timeline.items().await.len()
+                                        / usize::from(HISTORY_PAGE)
+                                        + 1;
+                                    let start = active.start;
+                                    if active.refocus(None, &mut self.updates).await {
+                                        active.start = start;
+                                        for _ in 0..pages {
+                                            let reached = match &first {
+                                                Some(first) => active.has_event(first).await,
+                                                None => true,
+                                            };
+                                            if reached {
+                                                break;
+                                            }
+                                            match active
+                                                .timeline
+                                                .paginate_backwards(HISTORY_PAGE)
+                                                .await
+                                            {
+                                                Ok(false) => {}
+                                                Ok(true) => {
+                                                    active.start = true;
+                                                    break;
+                                                }
+                                                Err(_) => break,
+                                            }
+                                        }
+                                    }
+                                }
+                                publish_timeline(active, client, &self.media_sender, events).await;
+                                active.history()
+                            }
+                            Err(_) => {
+                                let _ = events.send(Event::RoomError {
+                                    room: id.clone(),
+                                    message: "Could not load newer messages. Check your connection and try again.".into(),
+                                });
+                                History::Failed
+                            }
+                        }
+                    }
+                    Some(active) => active.history(),
+                    None => History::Failed,
+                };
+                let _ = events.send(Event::HistoryLoaded {
+                    room: id,
+                    direction: Direction::Later,
+                    history,
+                });
+            }
+            Command::Around { room, item } => {
+                let Some(active) = open.as_mut().filter(|active| active.id() == room) else {
+                    let _ = events.send(Event::HistoryLoaded {
+                        room,
+                        direction: Direction::Around,
+                        history: History::Failed,
+                    });
+                    return true;
+                };
+                let event = match parse_item(&item) {
+                    Some(TimelineEventItemId::EventId(event)) => Some(event),
+                    _ => None,
+                };
+                let found = match event {
+                    Some(event) => active.refocus(Some(event), &mut self.updates).await,
+                    None => false,
+                };
+                if !found {
+                    let _ = events.send(Event::RoomError {
+                        room: room.clone(),
+                        message: "Talk couldn't find that message.".into(),
+                    });
+                }
+                // Said before the window is published; see Command::Around.
+                let _ = events.send(Event::HistoryLoaded {
+                    room,
+                    direction: Direction::Around,
+                    history: if found {
+                        active.history()
+                    } else {
+                        History::Failed
+                    },
+                });
+                publish_timeline(active, client, &self.media_sender, events).await;
+            }
+            Command::Present(room) => {
+                if let Some(active) = open
+                    .as_mut()
+                    .filter(|active| active.id() == room && active.focused)
+                    && active.refocus(None, &mut self.updates).await
+                {
+                    publish_timeline(active, client, &self.media_sender, events).await;
+                }
             }
             Command::VisibleMessages { room, items } => {
                 if let Some(active) = open.as_mut().filter(|active| active.id() == room) {
@@ -1721,7 +1897,8 @@ async fn publish_timeline(
         message.timestamp = seconds;
         messages.push(Arc::new(message));
     }
-    let unread = open.timeline.room().num_unread_messages() > 0;
+    // A window of older messages doesn't read the room; the newest do.
+    let unread = !open.focused && open.timeline.room().num_unread_messages() > 0;
     open.pictures.retain(|key, _| wanted.contains(key));
     // Reply details use this same set; keep their event ids as well.
     open.requested
@@ -1826,6 +2003,8 @@ mod tests {
         let room = session.client.get_room(id).unwrap();
         OpenRoom {
             timeline: Arc::new(TimelineBuilder::new(&room).build().await.unwrap()),
+            focused: false,
+            start: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
             visible: HashSet::new(),
@@ -2299,6 +2478,154 @@ mod tests {
                         .iter()
                         .any(|r| r.id == encrypted.as_str() && r.unread == 0) =>
                 {
+                    Some(())
+                }
+                _ => None,
+            })
+            .await;
+            drop(commands);
+            tokio::time::timeout(Duration::from_secs(10), actor)
+                .await
+                .unwrap()
+                .unwrap();
+        });
+    }
+
+    #[test]
+    #[ignore = "requires scripts/test-stack up; creates disposable accounts"]
+    fn jumping_shows_the_messages_around_one_until_newer_pages_reach_the_present() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        crate::logging::init();
+        let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
+        runtime.block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let data = root.path().join("alice");
+            let alice = Session::login(
+                data.clone(),
+                HOMESERVER,
+                &register().await,
+                "talk-test-only",
+            )
+            .await
+            .unwrap();
+            alice.synchronize().await.unwrap();
+            let encrypted = encrypted_room(&alice, "Deep history").await;
+            let room = alice.client.get_room(&encrypted).unwrap();
+            let mut sent = Vec::new();
+            for n in 1..=80 {
+                let response = room
+                    .send(RoomMessageEventContent::text_plain(format!("message {n}")))
+                    .await
+                    .unwrap();
+                sent.push(response.response.event_id);
+            }
+            drop(room);
+            drop(alice);
+            let (commands, mut events, actor) = start(&data).await;
+            receive(&mut events, |event| match event {
+                Event::Sync(true) => Some(()),
+                _ => None,
+            })
+            .await;
+            commands.send(Command::Open(encrypted.to_string())).unwrap();
+            timeline_where(&mut events, |messages| {
+                messages.iter().any(|m| m.body == "message 80")
+            })
+            .await;
+            let has = |messages: &[Arc<ChatMessage>], body: &str| {
+                messages.iter().any(|message| message.body == body)
+            };
+
+            // The messages around an early one show in place of the newest,
+            // said before they come.
+            let around = |n: usize| Command::Around {
+                room: encrypted.to_string(),
+                item: format!("e:{}", sent[n - 1]),
+            };
+            commands.send(around(5)).unwrap();
+            let history = receive(&mut events, |event| match event {
+                Event::HistoryLoaded {
+                    direction: Direction::Around,
+                    history,
+                    ..
+                } => Some(history),
+                Event::Timeline { messages, .. } if has(&messages, "message 5") => {
+                    panic!("the window came before it was said")
+                }
+                _ => None,
+            })
+            .await;
+            assert_eq!(
+                history,
+                History::Loaded {
+                    start: false,
+                    present: false
+                }
+            );
+            let window = timeline_where(&mut events, |messages| has(messages, "message 5")).await;
+            assert!(!has(&window, "message 80"), "the newest aren't in it");
+
+            // Newer pages load until they reach the newest, which then
+            // follow live messages again.
+            let mut pages = 0;
+            loop {
+                commands
+                    .send(Command::Later(encrypted.to_string()))
+                    .unwrap();
+                let history = receive(&mut events, |event| match event {
+                    Event::HistoryLoaded {
+                        direction: Direction::Later,
+                        history,
+                        ..
+                    } => Some(history),
+                    _ => None,
+                })
+                .await;
+                pages += 1;
+                match history {
+                    History::Loaded { present: true, .. } => break,
+                    History::Loaded { .. } if pages < 6 => {}
+                    history => panic!("{history:?} after {pages} pages"),
+                }
+            }
+            commands
+                .send(Command::Send {
+                    room: encrypted.to_string(),
+                    body: "after the window".into(),
+                    reply: None,
+                    files: vec![],
+                })
+                .unwrap();
+            // The live timeline that took the window's place still has its
+            // first messages, so the rows on screen stayed.
+            let live = timeline_where(&mut events, |messages| {
+                has(messages, "after the window") && has(messages, "message 80")
+            })
+            .await;
+            assert!(has(&window, "message 3"));
+            assert!(has(&live, "message 3"), "the window's first messages stay");
+
+            // Back to the present from a window, the newest show again.
+            commands.send(around(10)).unwrap();
+            timeline_where(&mut events, |messages| {
+                has(messages, "message 10") && !has(messages, "message 80")
+            })
+            .await;
+            commands
+                .send(Command::Present(encrypted.to_string()))
+                .unwrap();
+            timeline_where(&mut events, |messages| has(messages, "after the window")).await;
+
+            // One that isn't in the room says so, and what showed stays.
+            commands
+                .send(Command::Around {
+                    room: encrypted.to_string(),
+                    item: "e:$missing:localhost".into(),
+                })
+                .unwrap();
+            receive(&mut events, |event| match event {
+                Event::RoomError { message, .. } => {
+                    assert!(message.contains("couldn't find"), "{message}");
                     Some(())
                 }
                 _ => None,

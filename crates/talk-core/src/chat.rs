@@ -932,15 +932,27 @@ pub struct ChatMessage {
     pub can_forward: bool,
 }
 
-/// How loading a page of earlier history ended.
+/// How loading history ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum History {
-    /// There's more before it.
-    More,
-    /// The room's first message is loaded, so there's nothing before it.
-    Start,
+    /// It's in the timeline. With `start` the room's first message is
+    /// loaded, so there's nothing before it; with `present` its newest is,
+    /// so the timeline follows live messages. Without `present` it's a
+    /// window of older messages, which live ones don't go in.
+    Loaded { start: bool, present: bool },
     /// It failed, and [`Event::RoomError`] said why.
     Failed,
+}
+
+/// Which history a page loaded; see [`Event::HistoryLoaded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// [`Command::Earlier`].
+    Earlier,
+    /// [`Command::Later`].
+    Later,
+    /// [`Command::Around`].
+    Around,
 }
 
 pub enum Start {
@@ -1060,6 +1072,22 @@ pub enum Command {
     /// [`Event::HistoryLoaded`] follows. A backend loads one page at a time
     /// per room, and answers at once when the first message is loaded.
     Earlier(String),
+    /// Load the page after the newest message of a window of older
+    /// messages, which [`Command::Around`] opened; [`Event::HistoryLoaded`]
+    /// follows, and says when the window reached the newest message.
+    Later(String),
+    /// Show the messages around an item of the open room in place of its
+    /// timeline: a window of older messages, unless it reaches the newest.
+    /// [`Event::HistoryLoaded`] answers first; the timeline follows, the
+    /// window or, when loading it failed, what was shown. Any page of
+    /// history on its way is dropped.
+    Around {
+        room: String,
+        item: String,
+    },
+    /// Show the room's newest messages again in place of a window of older
+    /// ones, reusing those the backend kept where it can.
+    Present(String),
     /// The timeline items in or near the viewport. Only their image previews
     /// need decoding; metadata for other loaded items stays available.
     VisibleMessages {
@@ -1277,7 +1305,10 @@ impl Command {
             | Command::MarkRead { room, .. }
             | Command::SaveDraft { room, .. }
             | Command::VisibleMessages { room, .. }
-            | Command::Earlier(room) => network(room),
+            | Command::Earlier(room)
+            | Command::Later(room)
+            | Command::Around { room, .. }
+            | Command::Present(room) => network(room),
             // Discord turns down forwarding from or to its channels.
             Command::Forward { room, target, .. } => match network(room) {
                 Route::Matrix => network(target),
@@ -1400,10 +1431,12 @@ pub enum Event {
         room: String,
         message: String,
     },
-    /// A page of earlier history [`Command::Earlier`] asked for is in the
-    /// room's timeline, or why there's none.
+    /// A page of history [`Command::Earlier`], [`Command::Later`] or
+    /// [`Command::Around`] asked for is in the room's timeline, or why
+    /// there's none.
     HistoryLoaded {
         room: String,
+        direction: Direction,
         history: History,
     },
     /// The open room's joined members, by role and then name.
@@ -1994,6 +2027,15 @@ mod tests {
             (send(&matrix), Route::Matrix),
             (send(&discord), Route::Discord),
             (Command::Earlier(discord.clone()), Route::Discord),
+            (Command::Later(matrix.clone()), Route::Matrix),
+            (
+                Command::Around {
+                    room: discord.clone(),
+                    item: "d:1".into(),
+                },
+                Route::Discord,
+            ),
+            (Command::Present(matrix.clone()), Route::Matrix),
             (
                 Command::VisibleMessages {
                     room: matrix.clone(),

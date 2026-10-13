@@ -348,6 +348,11 @@ pub(super) fn publish(
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
 ) {
+    // The timeline stays as it is while the messages around one jumped to
+    // are on their way.
+    if channel.focusing {
+        return;
+    }
     let messages = channel.publish(discord, done);
     let _ = events.send(Event::Timeline {
         room: channel.room.clone(),

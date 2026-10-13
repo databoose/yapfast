@@ -478,10 +478,14 @@ impl Application {
         // The preview's samples are all there is.
         self.state.history_start = self.state.preview;
         self.state.history_failed = false;
+        self.state.detached = false;
+        self.state.loading_later = false;
+        self.state.later_failed = false;
         self.state.jump = None;
         self.seeking = None;
+        self.focusing = false;
         self.state.first_unread = None;
-        self.read_marker = read_marker.map(|marker| (marker, 0));
+        self.read_marker = read_marker.map(|marker| (marker, false));
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.visible_messages.clear();
@@ -554,6 +558,11 @@ impl Application {
         self.state.loading_history = false;
         self.state.history_start = false;
         self.state.history_failed = false;
+        self.state.detached = false;
+        self.state.loading_later = false;
+        self.state.later_failed = false;
+        self.seeking = None;
+        self.focusing = false;
         self.state.first_unread = None;
         self.read_marker = None;
         self.state.notice = None;

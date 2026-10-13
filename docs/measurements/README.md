@@ -576,3 +576,44 @@ saving the binary outside `target`. For each run, start a fresh session with
 do 'sleep 8' 'click 36 36' 'sleep 4' 'click 36 102' 'sleep 8' 'move 550 25'
 'sleep 4'`, and sample `.local/ui-session/talk.pid` with
 `scripts/measure-process PID --seconds 10`. Alternate the builds.
+
+## 2026-10-13: jumping to a message
+
+The [record](2026-10-13-linux-jump-window.json) compares commit `96910e8`
+with `18808f9`, whose jumps load the messages around the one jumped to, as a
+window of older messages, rather than every page between the newest message
+and it. The measured build lacked three fixes made after it, none on this
+path: Matrix's live timeline keeping a window's first messages, history
+answering when Discord is away, and no earlier page while a window loads.
+Discord-only `fast` builds ran on the fake with `--extra 940`, which gives
+#general 944 messages, and jumped from the pins to Bob's welcome, the
+channel's first message.
+
+| Build | Requests per jump | Heap in use, #general | Heap in use after the jump | Heap held after the jump | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| `96910e8` | 16–17 pages `before` | 7.78 MiB | 13.92 MiB (13.76–14.21) | 17.29 MiB | 94.6 MiB |
+| `18808f9` | 1 `around`, 1 `before` | 7.78 MiB | 9.85 MiB (9.57–10.04) | 11.34 MiB | 89.0 MiB |
+
+Means of three runs each. The jump grew the heap by 6.14 MiB before and by
+2.07 MiB after: two thirds less, because the timeline now holds about 25
+messages, and then what scrolling loads, rather than the 800 to 850 it
+loaded getting there. Talk's whole heap is small, as the rest of its memory
+is mapped code, fonts and Skia, so the peak RSS falls by less, 5.6 MiB. The
+second request is the window's first page `before` its oldest message,
+which comes back empty and shows the channel's start. Other worktrees' builds
+ran meanwhile and the host was swapping, so the sampled RSS and PSS fell
+whenever the kernel reclaimed Talk's file-backed pages; the record keeps
+them, but heap in use, which reclaim doesn't change, is the comparison.
+
+Reproduce: build each with `nix develop path:./nix --command cargo build
+--locked --profile fast --no-default-features --features desktop,discord`,
+saving the binary outside `target`. For each run, start a fresh session with
+`scripts/ui-session start --discord --bin PATH --fake-args '--extra 940'`,
+then `scripts/ui-session do 'sleep 8' 'click 36 102' 'sleep 8' 'move 550
+25' 'sleep 4'`, sample `.local/ui-session/talk.pid` with
+`scripts/measure-process PID --seconds 10`, and append `stats` to
+`.local/ui-session/window-control`, which prints glibc's `malloc_stats` to
+`.local/ui-session/talk.log`. Then `scripts/ui-session do 'control history'
+'click 774 24' 'sleep 2' 'move 700 125' 'sleep 1' 'click 735 128' 'sleep 20'
+'move 550 25' 'sleep 4'`, sample and print the statistics again, and read
+the requests with `scripts/ui-session do 'get history'`. Alternate the builds.

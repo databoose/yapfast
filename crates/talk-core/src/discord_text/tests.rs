@@ -40,13 +40,37 @@ fn answers_discord_commands_while_discord_is_away() {
         received.try_recv(),
         Ok(Event::Profile { result: Err(error), .. }) if error == why
     ));
+    // So does a window of older messages the timeline waits for.
+    without(
+        Command::Around {
+            room: "discord:10:11".into(),
+            item: "d:5".into(),
+        },
+        why,
+        &events,
+    );
+    assert!(matches!(received.try_recv(), Ok(Event::RoomError { .. })));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Event::HistoryLoaded {
+            direction: Direction::Around,
+            history: History::Failed,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn live_events_echoes_and_failed_sends() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
-    open.loaded(false, shown(vec![message("3", None), message("5", None)]));
-    assert!(open.complete, "a short first page is the whole channel");
+    open.loaded(
+        Load::Latest,
+        shown(vec![message("3", None), message("5", None)]),
+    );
+    assert!(
+        open.shown.complete,
+        "a short first page is the whole channel"
+    );
     assert!(open.live(&Live::Created(message("7", None))));
     assert!(!open.live(&Live::Created(Message {
         channel_id: "12".into(),
@@ -66,7 +90,7 @@ fn live_events_echoes_and_failed_sends() {
         ..message("7", None)
     };
     open.edited(edited);
-    let seven = &open.messages[&7];
+    let seven = &open.shown.messages[&7];
     assert_eq!(
         (seven.content.as_str(), seven.reactions.len()),
         ("changed", 1)
@@ -75,7 +99,7 @@ fn live_events_echoes_and_failed_sends() {
         channel: "11".into(),
         id: "3".into()
     }));
-    let order: Vec<_> = open.messages.keys().copied().collect();
+    let order: Vec<_> = open.shown.messages.keys().copied().collect();
     assert_eq!(order, [5, 7]);
 
     // A send that failed can be cancelled; one that arrives replaces its echo.
@@ -102,7 +126,7 @@ fn live_events_echoes_and_failed_sends() {
 }
 
 fn ids(open: &OpenChannel) -> Vec<u64> {
-    open.messages.keys().copied().collect()
+    open.shown.messages.keys().copied().collect()
 }
 
 /// A page as Discord sends it, when Talk shows every message on it.
@@ -125,9 +149,9 @@ fn page(ids: impl IntoIterator<Item = u64>) -> Vec<Message> {
 fn the_latest_page_fits_what_was_kept() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     // Two full pages kept: 1000 to 1099.
-    open.loaded(false, shown(page(1050..1100)));
-    open.loaded(true, shown(page(1000..1050)));
-    assert!(!open.complete);
+    open.loaded(Load::Latest, shown(page(1050..1100)));
+    open.loaded(Load::Earlier, shown(page(1000..1050)));
+    assert!(!open.shown.complete);
 
     // Since then 1060 was deleted, 1099 edited, and 1100 to 1109 came.
     let mut latest = page((1060..1110).filter(|&id| id != 1060));
@@ -137,23 +161,23 @@ fn the_latest_page_fits_what_was_kept() {
         .find(|message| message.id == "1099")
         .unwrap()
         .content = "edited".into();
-    open.loaded(false, shown(latest));
+    open.loaded(Load::Latest, shown(latest));
     assert_eq!(
         ids(&open),
         (1000..1110).filter(|&id| id != 1060).collect::<Vec<_>>()
     );
-    assert_eq!(open.messages[&1099].content, "edited");
+    assert_eq!(open.shown.messages[&1099].content, "edited");
 
     // A full page entirely newer than what's kept leaves a gap: only it stays.
-    open.loaded(false, shown(page(2000..2050)));
+    open.loaded(Load::Latest, shown(page(2000..2050)));
     assert_eq!(ids(&open), (2000..2050).collect::<Vec<_>>());
-    assert!(!open.complete);
+    assert!(!open.shown.complete);
 
     // A short page is the whole channel: what it lacks was deleted.
-    open.loaded(false, shown(page([2010, 2049])));
+    open.loaded(Load::Latest, shown(page([2010, 2049])));
     assert_eq!(ids(&open), [2010, 2049]);
-    assert!(open.complete);
-    open.loaded(false, shown(vec![]));
+    assert!(open.shown.complete);
+    open.loaded(Load::Latest, shown(vec![]));
     assert!(ids(&open).is_empty(), "every message deleted");
 }
 
@@ -166,8 +190,11 @@ fn messages_talk_does_not_show_still_fill_a_page() {
         oldest: Some(1050),
         full: true,
     };
-    open.loaded(false, boosted(page(1051..1100)));
-    assert!(!open.complete, "a full page with a boost isn't the start");
+    open.loaded(Load::Latest, boosted(page(1051..1100)));
+    assert!(
+        !open.shown.complete,
+        "a full page with a boost isn't the start"
+    );
     assert_eq!(
         open.earliest(),
         Some(1050),
@@ -176,21 +203,21 @@ fn messages_talk_does_not_show_still_fill_a_page() {
 
     // A whole page of boosts moves on past them.
     open.loaded(
-        true,
+        Load::Earlier,
         Page {
             messages: vec![],
             oldest: Some(1000),
             full: true,
         },
     );
-    assert!(!open.complete);
+    assert!(!open.shown.complete);
     assert_eq!(open.earliest(), Some(1000));
-    open.loaded(true, shown(page(990..1000)));
-    assert!(open.complete);
+    open.loaded(Load::Earlier, shown(page(990..1000)));
+    assert!(open.shown.complete);
     assert_eq!(open.earliest(), Some(990));
 
     // The latest page starting at a boost after what's kept leaves no gap.
-    open.loaded(false, boosted(page(1051..1100)));
+    open.loaded(Load::Latest, boosted(page(1051..1100)));
     assert_eq!(open.earliest(), Some(990));
 }
 
@@ -215,9 +242,12 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
     };
     // Fifty more than it keeps, the newest page with pictures.
     let total = KEPT_MESSAGES as u64 + 50;
-    open.loaded(false, shown((total - 50..total).map(with_image).collect()));
+    open.loaded(
+        Load::Latest,
+        shown((total - 50..total).map(with_image).collect()),
+    );
     for start in (0..(total - 50) / 50).rev().map(|page| page * 50) {
-        open.loaded(true, shown(page(start..start + 50)));
+        open.loaded(Load::Earlier, shown(page(start..start + 50)));
     }
     for id in total - 50..total {
         let url = format!("preview/{id}");
@@ -226,7 +256,7 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
     }
     open.shelve();
     assert_eq!(ids(&open), (50..total).collect::<Vec<_>>());
-    assert!(!open.complete, "the oldest went, so they load again");
+    assert!(!open.shown.complete, "the oldest went, so they load again");
     assert!(
         open.pictures.is_empty(),
         "closed channels do not own decoded pixels"
@@ -257,7 +287,10 @@ fn changes_render_again_only_the_messages_they_change() {
         }],
         ..message("9", None)
     };
-    open.loaded(false, shown([page([3, 5, 7]), vec![with_image]].concat()));
+    open.loaded(
+        Load::Latest,
+        shown([page([3, 5, 7]), vec![with_image]].concat()),
+    );
     let show = |open: &mut OpenChannel| {
         for order in [3, 5, 7, 9] {
             open.rendered.insert(order, Arc::default());
@@ -338,7 +371,7 @@ fn messages_render_again_once_what_they_show_changes() {
 fn channels_go_to_disk_once_they_change() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     assert!(open.take_changes().is_none(), "nothing to save yet");
-    open.loaded(false, shown(page(1..=3)));
+    open.loaded(Load::Latest, shown(page(1..=3)));
     let (channel, saved) = open.take_changes().unwrap();
     assert_eq!(channel, "11");
     assert_eq!(saved.len(), 3);
@@ -363,7 +396,7 @@ fn channels_go_to_disk_once_they_change() {
 fn closed_channels_follow_live_events_and_open_again() {
     let mut channels = Channels::default();
     let mut first = OpenChannel::new("discord:10:11").unwrap();
-    first.loaded(false, shown(page([3, 5])));
+    first.loaded(Load::Latest, shown(page([3, 5])));
     channels.open = Some(first);
     channels.close();
     assert!(channels.open.is_none());
@@ -388,7 +421,7 @@ fn closed_channels_follow_live_events_and_open_again() {
 fn a_busy_closed_channel_keeps_only_its_newest_messages() {
     let mut channels = Channels::default();
     let mut busy = OpenChannel::new("discord:10:11").unwrap();
-    busy.loaded(false, shown(page([1, 2])));
+    busy.loaded(Load::Latest, shown(page([1, 2])));
     channels.open = Some(busy);
     channels.close();
     let total = KEPT_MESSAGES as u64 + 50;
@@ -397,7 +430,114 @@ fn a_busy_closed_channel_keeps_only_its_newest_messages() {
     }
     let busy = channels.reopen("discord:10:11").unwrap();
     assert_eq!(ids(&busy), (51..=total).collect::<Vec<_>>());
-    assert!(!busy.complete, "the oldest went, so they load again");
+    assert!(!busy.shown.complete, "the oldest went, so they load again");
+}
+
+#[test]
+fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them() {
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    let newest = |open: &OpenChannel| -> Vec<u64> {
+        open.latest
+            .as_ref()
+            .map(|latest| latest.messages.keys().copied().collect())
+            .unwrap_or_default()
+    };
+    open.loaded(Load::Latest, shown(page(1000..1050)));
+    open.loaded(Load::Around(900), shown(page(875..925)));
+    assert!(open.detached());
+    assert_eq!(ids(&open), (875..925).collect::<Vec<_>>());
+    assert_eq!(newest(&open), (1000..1050).collect::<Vec<_>>(), "kept");
+
+    // New messages join the newest kept, not the window; edits show in both.
+    assert!(!open.live(&Live::Created(message("1050", None))));
+    assert_eq!(newest(&open).last(), Some(&1050));
+    assert_eq!(ids(&open).last(), Some(&924));
+    assert!(open.live(&Live::Updated(Message {
+        content: "edited".into(),
+        ..message("900", None)
+    })));
+    assert_eq!(open.shown.messages[&900].content, "edited");
+    let (_, saved) = open.take_changes().unwrap();
+    assert_eq!(
+        saved.last().map(|message| message.id.as_str()),
+        Some("1050"),
+        "the newest go to disk, not the window"
+    );
+
+    // Earlier pages grow it up to what a closed channel keeps, letting go
+    // of its newest messages, which load again.
+    for start in [825, 775, 725, 675] {
+        open.loaded(Load::Earlier, shown(page(start..start + 50)));
+    }
+    assert_eq!(ids(&open), (675..875).collect::<Vec<_>>());
+    // Newer pages keep the oldest, above what's on screen.
+    open.loaded(Load::Later, shown(page(875..925)));
+    open.loaded(Load::Later, shown(page(925..975)));
+    assert_eq!(ids(&open), (675..975).collect::<Vec<_>>());
+    assert!(open.detached());
+    // One that reaches the newest kept shows them with it, as they are.
+    open.loaded(Load::Later, shown(page(975..1025)));
+    assert!(!open.detached());
+    assert_eq!(ids(&open).last(), Some(&1050));
+    assert_eq!(open.shown.messages[&1050].content, "1050");
+    assert!(open.live(&Live::Created(message("1051", None))));
+
+    // Back to the present, the newest show again as they were kept.
+    open.loaded(Load::Around(500), shown(page(475..525)));
+    let generation = open.generation;
+    open.present();
+    assert!(!open.detached());
+    assert_eq!(ids(&open).first(), Some(&675), "the window went");
+    assert_ne!(
+        open.generation, generation,
+        "pages for the window are dropped"
+    );
+
+    // A short page after a window is the newest, even with nothing kept.
+    let mut fresh = OpenChannel::new("discord:10:11").unwrap();
+    fresh.loaded(Load::Around(10), shown(page(5..15)));
+    assert!(fresh.detached());
+    fresh.loaded(Load::Later, shown(page(15..20)));
+    assert!(!fresh.detached());
+    assert_eq!(ids(&fresh), (5..20).collect::<Vec<_>>());
+
+    // Closing lets the window go.
+    fresh.loaded(Load::Latest, shown(page(100..150)));
+    fresh.loaded(Load::Around(7), shown(page(5..55)));
+    assert!(fresh.detached());
+    fresh.shelve();
+    assert!(!fresh.detached());
+    assert_eq!(ids(&fresh), (100..150).collect::<Vec<_>>());
+}
+
+#[test]
+fn pages_for_what_showed_before_are_dropped() {
+    let mut channels = Channels::default();
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.loaded(Load::Latest, shown(page(100..150)));
+    open.loading_earlier = true;
+    open.present();
+    open.generation += 1;
+    channels.open = Some(open);
+    let (done, _) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    finished(
+        Done::History {
+            room: "discord:10:11".into(),
+            load: Load::Earlier,
+            generation: 0,
+            result: Ok(shown(page(50..100))),
+        },
+        None,
+        &mut channels,
+        &done,
+        &events,
+    );
+    assert!(received.try_recv().is_err(), "nothing is said of it");
+    assert_eq!(
+        ids(channels.open.as_ref().unwrap()),
+        (100..150).collect::<Vec<_>>()
+    );
 }
 
 /// The fake Discord's server and its #general.
@@ -522,20 +662,35 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         while let Ok(work) = finished.try_recv() {
             assert!(
-                !matches!(work, Done::History { older: true, .. }),
+                !matches!(
+                    work,
+                    Done::History {
+                        load: Load::Earlier,
+                        ..
+                    }
+                ),
                 "no second page was asked for"
             );
             super::finished(work, Some(&discord), &mut channels, &done, &events);
         }
-        if history != History::More || pages > 20 {
+        let more = History::Loaded {
+            start: false,
+            present: true,
+        };
+        if history != more || pages > 20 {
             break history;
         }
     };
-    assert_eq!(history, History::Start);
+    let start = History::Loaded {
+        start: true,
+        present: true,
+    };
+    assert_eq!(history, start);
     let open = channels.open.as_ref().unwrap();
-    assert!(open.complete);
+    assert!(open.shown.complete);
     assert!(
-        open.messages
+        open.shown
+            .messages
             .values()
             .next()
             .unwrap()
@@ -554,11 +709,129 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
     );
     assert!(matches!(
         received.try_recv(),
-        Ok(Event::HistoryLoaded {
-            history: History::Start,
-            ..
-        })
+        Ok(Event::HistoryLoaded { history, .. }) if history == start
     ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn a_jump_shows_the_messages_around_one_then_newer_pages_to_the_present() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    // Opened by hand, without its latest page, so the window of the fake's
+    // short history doesn't reach the newest messages kept at once.
+    channels.open = OpenChannel::new(&room);
+    let welcome = discord
+        .pins(FAKE_GUILD, FAKE_GENERAL)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|message| message.content.starts_with("Welcome to **Talk**"))
+        .expect("the fake pins Bob's welcome")
+        .id;
+    let run = |command: Command, channels: &mut Channels| {
+        super::command(command, Ok(&discord), channels, &done, &events);
+    };
+    run(
+        Command::Around {
+            room: room.clone(),
+            item: format!("d:{welcome}"),
+        },
+        &mut channels,
+    );
+    // Said before the window is published, which then shows the message.
+    let said = std::cell::Cell::new(false);
+    let window = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| match event {
+            Event::HistoryLoaded {
+                direction: Direction::Around,
+                history,
+                ..
+            } => {
+                assert_eq!(
+                    *history,
+                    History::Loaded {
+                        start: false,
+                        present: false
+                    }
+                );
+                said.set(true);
+                None
+            }
+            Event::Timeline { messages, .. } => {
+                assert!(said.get(), "the window comes after it's said");
+                Some(messages.clone())
+            }
+            _ => None,
+        },
+    )
+    .await;
+    assert_eq!(window[0].item, format!("d:{welcome}"), "the first message");
+    assert!(
+        window.len() <= talk_discord::api::PAGE / 2 + 1,
+        "half a page of newer messages, and nothing before the first"
+    );
+    assert!(channels.open.as_ref().unwrap().detached());
+    // Newer pages load as the window scrolls down, until the newest.
+    let mut pages = 0;
+    let history = loop {
+        run(Command::Later(room.clone()), &mut channels);
+        let history = until(
+            &discord,
+            &mut channels,
+            &done,
+            &mut finished,
+            &mut received,
+            |event| match event {
+                Event::HistoryLoaded {
+                    direction: Direction::Later,
+                    history,
+                    ..
+                } => Some(*history),
+                _ => None,
+            },
+        )
+        .await;
+        pages += 1;
+        if history
+            != (History::Loaded {
+                start: false,
+                present: false,
+            })
+            || pages > 5
+        {
+            break history;
+        }
+    };
+    assert!(
+        matches!(history, History::Loaded { present: true, .. }),
+        "{history:?}"
+    );
+    let open = channels.open.as_ref().unwrap();
+    assert!(!open.detached());
+    let ids: Vec<u64> = open.shown.messages.keys().copied().collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(ids.len() > window.len(), "the newer pages joined it");
+    // Asked again, it says at once that it's at the present.
+    run(Command::Later(room.clone()), &mut channels);
+    assert!(
+        std::iter::from_fn(|| received.try_recv().ok()).any(|event| matches!(
+            event,
+            Event::HistoryLoaded {
+                direction: Direction::Later,
+                history: History::Loaded { present: true, .. },
+                ..
+            }
+        ))
+    );
 }
 
 #[test]
@@ -652,7 +925,7 @@ async fn a_file_marked_as_a_spoiler_arrives_as_one() {
 fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     open.loaded(
-        false,
+        Load::Latest,
         shown(vec![
             Message {
                 attachments: vec![talk_discord::message::Attachment {
@@ -732,7 +1005,7 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
     };
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     open.previews = previews.clone();
-    open.loaded(false, shown(vec![with_image("1"), with_image("2")]));
+    open.loaded(Load::Latest, shown(vec![with_image("1"), with_image("2")]));
     assert!(
         open.publish(&discord, &done)
             .iter()
@@ -766,7 +1039,7 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
     // A different chat using the same URL also reuses the cached allocation.
     let mut other = OpenChannel::new("discord:10:12").unwrap();
     other.previews = previews;
-    other.loaded(false, shown(vec![with_image("1")]));
+    other.loaded(Load::Latest, shown(vec![with_image("1")]));
     other.visible(vec!["d:1".into()]);
     let rows = other.publish(&discord, &done);
     assert!(Arc::ptr_eq(

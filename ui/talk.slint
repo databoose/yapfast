@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
+import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -195,6 +195,11 @@ export component TalkWindow inherits Window {
     // for Retry.
     in property <bool> history-start;
     in property <bool> history-failed;
+    // The timeline is a window of older messages that doesn't reach the
+    // newest, and newer ones are loading, or failed to.
+    in property <bool> detached;
+    in property <bool> loading-later;
+    in property <bool> later-failed;
     // The row the "New" divider is on, or -1, and what the bar that jumps to
     // it says while it's out of view.
     in property <int> unread-index: -1;
@@ -534,6 +539,8 @@ export component TalkWindow inherits Window {
     callback filter-edited;
     callback send;
     callback earlier;
+    callback later;
+    callback jump-to-present;
     callback jump-to-unread;
     callback join-voice;
     /// Mutes or unmutes the call, or out of one, changes how the next starts.
@@ -674,9 +681,11 @@ export component TalkWindow inherits Window {
     property <length> lead;
     function settle-lead() { root.lead = max(0px, timeline.height - (timeline.content-height - root.lead)); }
     changed timeline-viewport => { root.settle-lead(); if root.follow-latest { root.scroll-to-latest(); } }
+    // The end of a window of older messages isn't the newest, so it isn't followed.
     changed timeline-position => {
-        if timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 0.5px { root.follow-latest = true; }
+        if !root.detached && timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 0.5px { root.follow-latest = true; }
     }
+    changed detached => { if self.detached { root.follow-latest = false; } }
     changed timeline-content => {
         root.settle-lead();
         if root.follow-latest { root.scroll-to-latest(); }
@@ -706,6 +715,11 @@ export component TalkWindow inherits Window {
         && root.messages.length > 0 && !root.loading-history && !root.history-start && !root.history-failed
         && -timeline.content-y < timeline.height;
     changed wants-earlier => { if self.wants-earlier { root.earlier(); } }
+    // And newer ones as a window of older messages nears its end.
+    property <bool> wants-later: root.detached && root.room-ready && !root.preview && !root.busy
+        && root.messages.length > 0 && !root.loading-later && !root.later-failed
+        && timeline.content-y - min(0px, timeline.height - timeline.content-height) < timeline.height;
+    changed wants-later => { if self.wants-later { root.later(); } }
     // Formatted messages are not selectable, so Copy goes through a hidden text field.
     public function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
     clipboard := TextInput { visible: false; width: 0px; height: 0px; }
@@ -1440,7 +1454,7 @@ export component TalkWindow inherits Window {
                                             + (message.day != "" || message.unread-start ? 26px : 0px);
                                         if message.mentions-me: Rectangle {
                                             y: parent.top + (parent.head > 0 ? col.padding-top + parent.head : 0px);
-                                            height: parent.height - self.y;
+                                            height: parent.height - self.y - (index == root.messages.length - 1 && root.detached ? 74px : 0px);
                                             background: Theme.accent.transparentize(0.9);
                                             Rectangle { x: 0px; width: 2px; background: Theme.accent; }
                                         }
@@ -1465,7 +1479,8 @@ export component TalkWindow inherits Window {
                                             }
                                             col := VerticalLayout {
                                                 padding-top: message.day != "" || message.unread-start ? 12px : message.first ? 14px : 1px;
-                                                padding-bottom: index == root.messages.length - 1 ? 20px : 1px;
+                                                // The last row leaves room for the bar over a window's end.
+                                                padding-bottom: index == root.messages.length - 1 ? (root.detached ? 52px : 20px) : 1px;
                                                 spacing: 0px;
                                                 // History starts with what's before it: earlier messages
                                                 // loading, or the conversation's start.
@@ -1629,6 +1644,13 @@ export component TalkWindow inherits Window {
                                                         }
                                                     }
                                                 }
+                                                // A window of older messages ends with what's after it: newer
+                                                // messages loading, or a way to load them.
+                                                if index == root.messages.length - 1 && root.detached && root.room-ready: HistoryEdge {
+                                                    newer: true; loading: root.loading-later; failed: root.later-failed;
+                                                    enabled: !root.busy && !root.preview;
+                                                    earlier => { root.later(); }
+                                                }
                                             }
                                         }
                                         // Actions, the reaction picker and delete confirmation float over the
@@ -1689,6 +1711,11 @@ export component TalkWindow inherits Window {
                                 x: (parent.width - self.width) / 2; y: 12px;
                                 label: root.unread-label; above: root.unread-above;
                                 jump => { root.jump-to-unread(); }
+                            }
+                            // A window of older messages says so over its end, with the way back.
+                            if root.room-selected && root.detached && !root.requests-open && !root.friends-open: PresentBar {
+                                x: 16px; width: parent.width - 32px; y: parent.height - self.height - 8px;
+                                jump => { root.jump-to-present(); }
                             }
                             if root.requests-open: RequestsScreen {
                                 width: parent.width; height: parent.height;

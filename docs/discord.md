@@ -585,7 +585,11 @@ loads from Discord 50 messages at a time (`GET /channels/{id}/messages` with
 `before` the oldest loaded message and `limit=50`) as the timeline scrolls
 near its top, one page at a time per channel, until a short page shows the
 channel's first message is there; and new messages, edits, deletions
-and reactions arrive live. Opening a channel subscribes to its server, as the
+and reactions arrive live. A jump to a message that isn't loaded, from a
+reply's quote, a pin or a search result, asks for the 50 around it
+(`around` its snowflake), as Discord's client does, and they show in place
+of the timeline as a window of older messages; see [jumping to a
+message](#jumping-to-a-message). Opening a channel subscribes to its server, as the
 web client does, because Discord sends large servers' messages only to
 subscribers. Talk sends, replies, edits, deletes,
 reacts and sends files through Discord's cloud uploads. Mentions and timestamps
@@ -642,9 +646,9 @@ Before it does, Talk notes the channel's last read message, from READY's read
 state or the last acknowledgement since, and the "New" divider goes above the
 first message after it from someone else. Snowflakes order messages, so the
 divider finds its place even when the last read message was deleted. When
-every loaded message is unread, earlier pages load until a read one is there,
-up to five pages of 50; past that the divider goes above the oldest loaded
-message.
+every loaded message is unread, the 50 around the last read one load in
+place of the newest, as a window of older messages that opens at the
+divider; when even those are all newer, the divider goes above the oldest.
 The open text channel lists its members on the right as Discord's sidebar
 does: under hoisted roles, then online, then offline, with offline members
 faded. Each shows a status dot for online, idle or do not disturb, their name
@@ -823,9 +827,8 @@ an error.
   message", which "Show it" opens, and they don't notify or show typing.
   Talk learns the blocked from READY's relationships (type 2) and keeps them
   current from RELATIONSHIP_ADD and RELATIONSHIP_REMOVE.
-- A reply's quoted line jumps to the original: Talk loads earlier history,
-  up to 20 pages, until the original is there, then brings it into view and
-  highlights it for a moment. When it's further back than that, Talk says so.
+- A reply's quoted line jumps to the original and highlights it for a
+  moment, as described under [jumping to a message](#jumping-to-a-message).
 - Desktop notifications follow the person's Discord settings: each channel's,
   category's or server's level (every message, mentions only or nothing),
   falling back to the server's default, with mutes leaving only mentions. DMs
@@ -868,6 +871,39 @@ an error.
   shows the status to others itself, so Talk sends it with opcode 3 once
   connected, whenever the settings change, and clears it when it ends. A
   custom emoji in a status needs Nitro.
+
+### Jumping to a message
+
+A reply's quote, a pin, a search result and the bar over the "New" divider
+jump to a message. A loaded one scrolls into view. Otherwise Talk asks for
+`GET /channels/{id}/messages?around={id}&limit=50`, as Discord's client does,
+and the messages around it show in place of the timeline: a window of older
+messages, with "You're viewing older messages" and "Jump to present" in a bar
+over its end. Discord answers around a snowflake even when no message has it,
+so a deleted message's place shows, and Talk says it couldn't find the
+message. A jump into another channel opens that channel at the message.
+
+Scrolling down the window loads the 50 `after` its newest message, and up,
+the 50 `before` its oldest, a page at a time. Discord doesn't say how it
+splits a page around a snowflake, so Talk learns where the channel starts
+from a page before, and that the window reached the newest message from a
+short page after, or once it reaches the newest messages Talk kept.
+
+While the window shows, the channel's newest messages wait beside it, at
+most 200 as a closed channel keeps, and follow new messages, edits,
+deletions and reactions; edits, deletions and reactions show in the window
+too, but new messages don't go in it. The channel stays unread, and isn't
+marked read, until the newest show. Jump to present, sending a message, or a
+page that reaches them shows them again without asking Discord, and the
+window goes. Leaving the channel lets the window go too, and only the
+newest go to disk. Pages loading for a window that a newer jump or the
+present replaced are dropped when they come.
+
+The window holds what was asked for, not every page between it and the
+present. Growing upwards past 200 messages, it lets go of its newest,
+below the screen, which load again; growing downwards it keeps its oldest,
+which are above the rows on screen and would move them if they went, until
+it joins the newest messages.
 
 ### Notification settings
 
@@ -1101,8 +1137,8 @@ a search too; the rest of its header is still to come.
   gateway for those of authors it doesn't know yet and waits up to five
   seconds for them; then they show with their server nickname, avatar and
   role colour.
-- Clicking a pin or a result jumps to it in the timeline, loading earlier
-  history until it's there, up to 20 pages, as a reply's original does.
+- Clicking a pin or a result jumps to it in the timeline, as a reply's
+  original does; see [jumping to a message](#jumping-to-a-message).
   Pins and results show their text and name their files, without
   downloading them.
 - Adding friends to a one-to-one DM makes a new group of them and the other

@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
-    api::{Api, PAGE},
+    api::{Api, PAGE, Span},
     cache,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
@@ -488,12 +488,12 @@ impl Discord {
         });
     }
 
-    /// A page of messages before `before`, or the latest page.
-    pub async fn history(&self, guild: &str, channel: &str, before: Option<&str>) -> Result<Page> {
-        let values = self.api.messages(channel, before).await?;
+    /// A page of a channel's messages.
+    pub async fn history(&self, guild: &str, channel: &str, span: Span<'_>) -> Result<Page> {
+        let values = self.api.messages(channel, span).await?;
         // The open channel shows them again once their authors arrive.
         let (mut messages, _) = self.learn(guild, &values, false);
-        messages.reverse();
+        messages.sort_by_key(Message::order);
         Ok(Page {
             messages,
             oldest: values

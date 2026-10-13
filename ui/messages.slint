@@ -749,15 +749,18 @@ export component NoConversation inherits VerticalLayout {
 
 // What's above the oldest loaded message: earlier messages on their way, a way
 // to load them, or the start of the conversation. It's as tall in each, so
-// changing from one to another doesn't move the messages below.
+// changing from one to another doesn't move the messages below. Below the
+// newest message of a window of older ones, it's the same for newer messages.
 export component HistoryEdge inherits HorizontalLayout {
     in property <bool> loading;
     in property <bool> failed;
     in property <bool> start;
+    in property <bool> newer;
     in property <bool> enabled;
     in property <bool> room-direct;
     in property <string> room-name;
     callback earlier;
+    property <string> which: root.newer ? "newer" : "earlier";
     alignment: center; height: 42px; padding-top: 4px; padding-bottom: 8px;
     if root.start: Text {
         text: root.room-direct ? "This is the beginning of your messages with " + root.room-name + "."
@@ -768,7 +771,7 @@ export component HistoryEdge inherits HorizontalLayout {
         width: content.preferred-width; height: 30px; border-radius: 15px; clip: true;
         background: touch.has-hover && touch.enabled ? Theme.active : Theme.raised;
         accessible-role: button;
-        accessible-label: root.loading ? "Loading earlier messages" : root.failed ? "Couldn't load earlier messages. Retry" : "Earlier messages";
+        accessible-label: root.loading ? "Loading " + root.which + " messages" : root.failed ? "Couldn't load " + root.which + " messages. Retry" : root.newer ? "Newer messages" : "Earlier messages";
         accessible-enabled: touch.enabled;
         accessible-action-default => { if touch.enabled { root.earlier(); } }
         // The shimmer of the skeletons that stand in for other things loading.
@@ -784,7 +787,7 @@ export component HistoryEdge inherits HorizontalLayout {
                 width: 16px; image-fit: contain; colorize: root.failed ? Theme.danger : Theme.secondary;
             }
             Text {
-                text: root.loading ? "Loading earlier messages..." : root.failed ? "Couldn't load earlier messages. Retry" : "Earlier messages";
+                text: root.loading ? "Loading " + root.which + " messages..." : root.failed ? "Couldn't load " + root.which + " messages. Retry" : root.newer ? "Newer messages" : "Earlier messages";
                 color: Theme.secondary; font-size: 14px; font-weight: 500; vertical-alignment: center;
             }
         }
@@ -811,6 +814,34 @@ export component UnreadBar inherits Rectangle {
         Image {
             source: @image-url("icons/chevron-down.svg"); width: 16px; image-fit: contain;
             colorize: Theme.on-accent; transform-rotation: root.above ? 180deg : 0deg;
+        }
+    }
+    touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.jump(); } }
+}
+
+// Says the timeline shows a window of older messages, which new ones don't go
+// in, and goes back to the newest, as Discord's bar over the composer does.
+export component PresentBar inherits Rectangle {
+    callback jump;
+    height: 36px; border-radius: 8px;
+    background: Theme.raised; border-color: Theme.edge; border-width: 1px;
+    drop-shadow-blur: 12px; drop-shadow-color: #00000060; drop-shadow-offset-y: 4px;
+    accessible-role: button;
+    accessible-label: "You're viewing older messages. Jump to present";
+    accessible-action-default => { root.jump(); }
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 12px; spacing: 8px;
+        Text {
+            text: "You're viewing older messages"; color: Theme.secondary; font-size: 14px; font-weight: 500;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+        }
+        Text {
+            text: "Jump to present"; color: touch.has-hover ? Theme.accent-hover : Theme.accent;
+            font-size: 14px; font-weight: 700; vertical-alignment: center;
+        }
+        Image {
+            source: @image-url("icons/chevron-down.svg"); width: 16px; image-fit: contain;
+            colorize: touch.has-hover ? Theme.accent-hover : Theme.accent;
         }
     }
     touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.jump(); } }

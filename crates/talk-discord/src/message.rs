@@ -49,7 +49,8 @@ pub struct Page {
     /// The snowflake of the oldest message Discord sent, shown or not;
     /// earlier history is before it.
     pub oldest: Option<u64>,
-    /// Discord sent a whole page, so there may be more before it.
+    /// Discord sent a whole page, so there may be more beyond it: before
+    /// it, or for a page after a snowflake, after it.
     pub full: bool,
 }
 

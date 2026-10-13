@@ -31,7 +31,8 @@ Its local preview uses the same model and emits no network effects.
 A client sends an `Action` to `Application::dispatch` and applies backend events
 with `Application::apply`. These methods return effects for starting a session
 or sending a backend command. `AppState` supplies ordinary Rust data for rendering,
-including shared timeline storage through `Arc<Vec<ChatMessage>>`. `dispatch`
+including shared timeline storage through `Arc<Vec<Arc<ChatMessage>>>`, whose
+rows a backend sends again unchanged when they didn't change. `dispatch`
 routes each action to a method in the module for its area, under
 [`application/`](../crates/talk-core/src/application): `compose`, `messages`,
 `rooms`, `profiles`, `calls`, `session`, `preview`, `discord_account`,
@@ -54,7 +55,17 @@ composer update uses the new room's draft, so it cannot overwrite that draft wit
 the previous room's text.
 
 Timeline rows retain text, attachment dimensions and message actions for all
-loaded history. The UI reports visible item ids, with six rows of margin on
+loaded history. The timeline ends at the newest message, or is a window of
+older messages that doesn't reach it (`AppState::detached`): `Action::Jump`
+to a message that isn't loaded sends `Command::Around`, and the backend
+shows the messages around it in place of the timeline, answering with
+`Event::HistoryLoaded` before the window's `Event::Timeline`, so the
+application can leave timelines meant for what showed before.
+`Command::Earlier` and `Command::Later` add a page at either end, and each
+`Event::HistoryLoaded` says whether the timeline reaches the room's first
+message and its newest. `Command::Present` shows the newest again: Discord
+keeps them beside the window, following live events, and Matrix rebuilds
+its live timeline from the SDK's event cache. Neither loads them again. The UI reports visible item ids, with six rows of margin on
 each side, through `Action::VisibleMessages` and `Command::VisibleMessages`.
 Discord and Matrix download and decode previews for those items and release
 distant decoded handles. Reports are coalesced over 50 ms, reject old rooms,
