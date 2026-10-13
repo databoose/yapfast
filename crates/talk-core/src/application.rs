@@ -22,6 +22,7 @@ mod discord_account;
 mod header;
 mod members;
 mod messages;
+mod places;
 mod preview;
 mod profiles;
 mod rooms;
@@ -31,6 +32,7 @@ mod session;
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::member_server;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
+pub use places::ListedCategory;
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 
 use calls::call_sounds;
@@ -343,6 +345,10 @@ pub struct AppState {
     /// Counts pictures arriving and going, so a client can tell when its own
     /// copies of them are out of date.
     pub picture_changes: u64,
+    /// Counts changes to Discord servers' categories, and to the roles that
+    /// decide who sees them, so a client can tell when
+    /// [`Application::categories`] may list others.
+    pub category_changes: u64,
     pub navigation: Navigation,
     pub selected: Option<String>,
     pub room_ready: bool,

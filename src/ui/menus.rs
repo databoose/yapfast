@@ -9,6 +9,10 @@ use talk_core::{
 
 use super::*;
 
+/// How a menu target names a Discord server's header, whose dropdown lists
+/// some of the server menu's choices: this, then the server's id.
+pub(super) const HEADER: &str = "header:";
+
 /// A menu's rows, and the submenu each opens by the row's index: empty for a
 /// row without one, and none at all when no row has one, as the window's
 /// ContextMenu takes them.
@@ -22,12 +26,16 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             .map_or_else(Menu::default, |notify| notify.bell(adapter));
     }
     let icons = &adapter.icons;
-    let state = &adapter.app.state;
+    let app = &adapter.app;
+    let state = &app.state;
     let choices = if person {
-        adapter.app.person_choices(id)
+        app.person_choices(id)
+    } else if let Some(server) = id.strip_prefix(HEADER) {
+        app.header_choices(server)
     } else {
-        state.menu_choices(id)
+        app.menu_choices(id)
     };
+    let id = id.strip_prefix(HEADER).unwrap_or(id);
     // Moderation names whom it's about, as Discord's does.
     let named = std::cell::OnceCell::new();
     let name = || {
@@ -73,7 +81,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 MenuChoice::Mute
                 | MenuChoice::Unmute
                 | MenuChoice::ChannelMute
-                | MenuChoice::ChannelNotifications => 2,
+                | MenuChoice::ChannelNotifications
+                | MenuChoice::MuteServer
+                | MenuChoice::UnmuteServer
+                | MenuChoice::ServerNotifications
+                | MenuChoice::HideMuted => 2,
                 MenuChoice::CopyLink | MenuChoice::CopyId => 3,
                 MenuChoice::Roles => 4,
                 MenuChoice::Timeout
@@ -83,9 +95,25 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 _ => 0,
             };
             let separated = group.replace(starts).is_some_and(|last| last != starts);
+            let notifications = || app.server_notifications(id);
+            let subtitle = match choice {
+                MenuChoice::UnmuteServer => notifications()
+                    .and_then(|notifications| notifications.own.muted_until)
+                    .map(|until| muted_until(until / 1000, adapter.layout.twelve_hour_clock))
+                    .unwrap_or_default(),
+                MenuChoice::ServerNotifications => notifications()
+                    .map(|notifications| {
+                        let own = notifications.own;
+                        level_name(own.level.unwrap_or(own.inherited)).to_owned()
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            let checkbox = choice == MenuChoice::HideMuted;
             MenuRow {
                 id: choice_id(choice).into(),
                 text: text.into(),
+                subtitle: subtitle.into(),
                 icon: icon.clone(),
                 danger: matches!(
                     choice,
@@ -96,6 +124,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Ban
                 ),
                 separated,
+                checkbox,
+                checked: checkbox && notifications().is_some_and(|known| known.hide_muted),
                 ..Default::default()
             }
         })
@@ -109,8 +139,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     let submenus = rows
         .iter()
         .map(|row| {
-            if row.id == choice_id(MenuChoice::Mute) {
+            if row.id == choice_id(MenuChoice::Mute) || row.id == choice_id(MenuChoice::MuteServer)
+            {
                 mute_times()
+            } else if row.id == choice_id(MenuChoice::ServerNotifications) {
+                notification_rows(app, id)
             } else if row.id == choice_id(MenuChoice::Roles) {
                 role_rows(adapter, id)
             } else if let Some(notify) = &notify {
@@ -160,6 +193,10 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         // Notify::dress names these.
         MenuChoice::ChannelMute => ("Mute", &icons.mute),
         MenuChoice::ChannelNotifications => ("Notification settings", &icons.unmute),
+        MenuChoice::MuteServer => ("Mute server", &icons.mute),
+        MenuChoice::UnmuteServer => ("Unmute server", &icons.unmute),
+        MenuChoice::ServerNotifications => ("Notification settings", &icons.unmute),
+        MenuChoice::HideMuted => ("Hide muted channels", &icons.ignore),
     }
 }
 
@@ -330,6 +367,53 @@ fn level_name(level: NotifyLevel) -> &'static str {
     }
 }
 
+/// The levels a server's notification submenu offers, the one that
+/// applies checked, then its switches.
+fn notification_rows(app: &Application, server: &str) -> Vec<MenuRow> {
+    let Some(notifications) = app.server_notifications(server) else {
+        return vec![];
+    };
+    let own = notifications.own;
+    let current = own.level.unwrap_or(own.inherited);
+    // A server has no default above it.
+    let levels = LEVELS.into_iter().filter_map(|(id, level)| {
+        let level = level?;
+        Some(MenuRow {
+            id: id.into(),
+            text: level_name(level).into(),
+            checked: level == current,
+            ..Default::default()
+        })
+    });
+    let switch = |id: &str, text: &str, on: bool, separated: bool| MenuRow {
+        id: id.into(),
+        text: text.into(),
+        checkbox: true,
+        checked: on,
+        separated,
+        ..Default::default()
+    };
+    levels
+        .chain([
+            switch(
+                SUPPRESS_EVERYONE,
+                "Suppress @everyone and @here",
+                notifications.suppress_everyone,
+                true,
+            ),
+            switch(
+                SUPPRESS_ROLES,
+                "Suppress all role @mentions",
+                notifications.suppress_roles,
+                false,
+            ),
+        ])
+        .collect()
+}
+
+const SUPPRESS_EVERYONE: &str = "suppress-everyone";
+const SUPPRESS_ROLES: &str = "suppress-roles";
+
 /// When a mute ends, as its Unmute row says it: the time today, or the day too.
 fn muted_until(seconds: u64, twelve_hour: bool) -> String {
     let now = talk_core::clock::now_ms() / 1000;
@@ -420,6 +504,26 @@ pub(super) fn choose(
     };
     if let Some(chosen) = notify.and_then(|notify| notify.change(id)) {
         adapter.action(window, change(chosen));
+        return;
+    }
+    let target = target
+        .strip_prefix(HEADER)
+        .map(str::to_owned)
+        .unwrap_or(target);
+    let server = adapter
+        .app
+        .state
+        .servers
+        .iter()
+        .any(|server| server.id == target);
+    if server && let Some(change) = server_change(&adapter.app, &target, id) {
+        adapter.action(
+            window,
+            Action::ChangeNotifications {
+                place: target,
+                change,
+            },
+        );
         return;
     }
     let (room, user) = subjects(&adapter.app.state, &target, person);
@@ -523,6 +627,11 @@ pub(super) fn choose(
         MenuChoice::Roles => None,
         // Notify's choices, above.
         MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
+        // A server's notifications change above; their rows are submenus.
+        MenuChoice::MuteServer
+        | MenuChoice::UnmuteServer
+        | MenuChoice::ServerNotifications
+        | MenuChoice::HideMuted => None,
     };
     let Some(action) = action else {
         return;
@@ -535,7 +644,37 @@ pub(super) fn choose(
     }
 }
 
-const CHOICES: [MenuChoice; 32] = [
+/// The change to a Discord server's notification settings a choice from
+/// its menu makes: a mute, a level or a switch, each switch the opposite of
+/// what Discord last said.
+pub(super) fn server_change(
+    app: &Application,
+    server: &str,
+    id: &str,
+) -> Option<NotificationChange> {
+    if let Some(muting) = MUTE_TIMES.into_iter().find(|&muting| mute_id(muting) == id) {
+        return Some(NotificationChange::Mute(muting));
+    }
+    if let Some((_, Some(level))) = LEVELS.into_iter().find(|(level, _)| *level == id) {
+        return Some(NotificationChange::Level(Some(level)));
+    }
+    let known = app.server_notifications(server)?;
+    match id {
+        SUPPRESS_EVERYONE => Some(NotificationChange::SuppressEveryone(
+            !known.suppress_everyone,
+        )),
+        SUPPRESS_ROLES => Some(NotificationChange::SuppressRoles(!known.suppress_roles)),
+        _ if id == choice_id(MenuChoice::HideMuted) => {
+            Some(NotificationChange::HideMuted(!known.hide_muted))
+        }
+        _ if id == choice_id(MenuChoice::UnmuteServer) => {
+            Some(NotificationChange::Mute(Muting::Off))
+        }
+        _ => None,
+    }
+}
+
+const CHOICES: [MenuChoice; 36] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -568,6 +707,10 @@ const CHOICES: [MenuChoice; 32] = [
     MenuChoice::Ban,
     MenuChoice::ChannelMute,
     MenuChoice::ChannelNotifications,
+    MenuChoice::MuteServer,
+    MenuChoice::UnmuteServer,
+    MenuChoice::ServerNotifications,
+    MenuChoice::HideMuted,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -604,6 +747,10 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::Ban => "ban",
         MenuChoice::ChannelMute => "channel-mute",
         MenuChoice::ChannelNotifications => "channel-notifications",
+        MenuChoice::MuteServer => "mute-server",
+        MenuChoice::UnmuteServer => "unmute-server",
+        MenuChoice::ServerNotifications => "server-notifications",
+        MenuChoice::HideMuted => "hide-muted",
     }
 }
 

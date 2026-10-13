@@ -94,6 +94,7 @@ pub(super) struct SidebarShown {
     filter: SharedString,
     friend_filter: SharedString,
     picture_changes: u64,
+    category_changes: u64,
 }
 
 impl SidebarShown {
@@ -106,6 +107,7 @@ impl SidebarShown {
             filter: window.get_filter(),
             friend_filter: window.get_friend_filter(),
             picture_changes: state.picture_changes,
+            category_changes: state.category_changes,
         }
     }
 
@@ -131,6 +133,7 @@ impl SidebarShown {
             && self.filter == window.get_filter()
             && self.friend_filter == window.get_friend_filter()
             && self.picture_changes == state.picture_changes
+            && self.category_changes == state.category_changes
             && self.lists == Self::lists(state)
     }
 }
@@ -324,6 +327,19 @@ impl Adapter {
                 .iter()
                 .find(|server| &server.id == id)
                 .map_or("Server".into(), |server| server.name.clone().into()),
+        });
+        // A Discord server's name opens its menu, as Discord's does.
+        window.set_header_server(match &state.navigation {
+            Navigation::Server(id)
+                if !state.preview
+                    && state
+                        .servers
+                        .iter()
+                        .any(|server| server.discord && &server.id == id) =>
+            {
+                id.as_str().into()
+            }
+            _ => SharedString::default(),
         });
         window.set_filter_placeholder(
             if state.navigation == Navigation::DirectMessages {
@@ -551,9 +567,13 @@ impl Adapter {
                 }
             })
             .collect();
-        // Categories fold as their server last left them, except while filtering.
+        // Categories fold as their server last left them, except while
+        // filtering; one without channels shows as its heading alone.
         let rows = match &state.navigation {
             Navigation::Server(server) if query.is_empty() => {
+                let rows = with_empty_categories(rows, &self.app.categories(server), |room| {
+                    self.app.category_of(room)
+                });
                 match self.layout.collapsed.get(server) {
                     Some(collapsed) => fold_collapsed(
                         rows,
@@ -2243,6 +2263,51 @@ pub(super) fn fold_collapsed(
         }
     }
     folded
+}
+
+/// Rows with a heading alone for each of a server's `categories` that holds
+/// no channels, where Discord's order puts it among those that do.
+pub(super) fn with_empty_categories(
+    rows: Vec<RoomRow>,
+    categories: &[ListedCategory],
+    category_of: impl Fn(&str) -> Option<String>,
+) -> Vec<RoomRow> {
+    if !categories.iter().any(|category| category.empty) {
+        return rows;
+    }
+    // Its id names the category, for the heading's menu.
+    let heading = |category: &ListedCategory| RoomRow {
+        id: category.id.as_str().into(),
+        heading: category.name.to_uppercase().into(),
+        hidden: true,
+        ..Default::default()
+    };
+    let mut next = 0;
+    let mut listed = Vec::with_capacity(rows.len() + categories.len());
+    for row in rows {
+        if !row.heading.is_empty()
+            && let Some(category) = category_of(&row.id)
+            && let Some(at) = categories[next..]
+                .iter()
+                .position(|known| known.id == category)
+        {
+            listed.extend(
+                categories[next..next + at]
+                    .iter()
+                    .filter(|category| category.empty)
+                    .map(heading),
+            );
+            next += at + 1;
+        }
+        listed.push(row);
+    }
+    listed.extend(
+        categories[next..]
+            .iter()
+            .filter(|category| category.empty)
+            .map(heading),
+    );
+    listed
 }
 
 /// A custom emoji and its picture, once that has arrived.

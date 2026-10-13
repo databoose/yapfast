@@ -256,11 +256,11 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     }
     {
         let adapter = adapter.clone();
+        // An empty category's heading names the category itself.
         window.on_category_of(move |room| {
-            adapter
-                .borrow()
-                .app
-                .category_of(&room)
+            let app = &adapter.borrow().app;
+            app.category_of(&room)
+                .or_else(|| app.state.is_category(&room).then(|| room.to_string()))
                 .unwrap_or_default()
                 .into()
         });

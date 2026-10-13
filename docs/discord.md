@@ -1031,7 +1031,8 @@ category's goes in `channel_overrides`, keyed by its id rather than listed:
 level is `message_notifications`. `Action::ChangeNotifications` asks for a
 change to a server, by its server id, or to a channel or category, by its
 room id: a mute for one of the DM menu's times, a level, or one of the
-server's switches. The fake keeps each server's settings and answers with
+server's switches. A server's menu and its header's dropdown offer the
+server's own. The fake keeps each server's settings and answers with
 USER_GUILD_SETTINGS_UPDATE.
 
 A server text channel and a category offer their own mute and level, as
@@ -1051,7 +1052,8 @@ Discord's do, built alike in `src/ui/menus.rs` (`Notify`):
   category" or "Unmute category" and "Notification settings", for the
   category's own override; a muted category's channels show muted. The
   heading names its first channel, and Talk finds the channel's category
-  (`Application::category_of`).
+  (`Application::category_of`); an empty category's heading names the
+  category itself.
 
 ### Permissions and roles
 
@@ -1068,7 +1070,9 @@ or by the owner, but never @everyone or one an integration manages
 (`Server::may_grant`). The core asks through `Application::may`,
 `outranks` and `may_grant`, and `server_roles` lists a server's roles,
 highest first, with their colours, from the server the latest snapshot
-shares. Members' roles are learned with their names; member list rows and
+shares. A category keeps its overwrites too, so `may` answers for one by
+its room id, and the channel list leaves out an empty category its
+permissions hide. Members' roles are learned with their names; member list rows and
 `ChatMember::roles` share each member's list with them rather than copying
 it.
 

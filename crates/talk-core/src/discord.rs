@@ -644,6 +644,7 @@ mod tests {
                     let category = talk_discord::ready::Category {
                         name: name.into(),
                         position,
+                        ..Default::default()
                     };
                     (id.to_owned(), category)
                 })

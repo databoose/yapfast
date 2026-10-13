@@ -22,7 +22,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 import { Theme, Tip, Middle } from "theme.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
-import { ServerRow, RoomRow, StatusDot, ServerRail, RoomList } from "rail.slint";
+import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
@@ -112,6 +112,9 @@ export component TalkWindow inherits Window {
     callback start-dm(int);
     callback close-new-dm;
     in property <string> sidebar-title;
+    /// The Discord server whose name heads the sidebar and opens its menu;
+    /// empty for DMs and Matrix servers.
+    in property <string> header-server;
     in property <string> filter-placeholder;
     in property <string> sidebar-empty;
     in property <[ServerRow]> servers;
@@ -928,7 +931,15 @@ export component TalkWindow inherits Window {
         root.active-item = item;
         root.open-context-menu(sender, true, x, y);
     }
+    // The menu open is the one a server's header opened, whose chevron turns.
+    property <bool> header-menu;
+    property <bool> header-menu-open: root.header-menu && context-menu.is-open;
+    function open-header-menu(x: length, y: length) {
+        root.open-context-menu("header:" + root.header-server, false, x, y);
+        root.header-menu = true;
+    }
     function open-context-menu(id: string, person: bool, x: length, y: length) {
+        root.header-menu = false;
         root.anchor(x, y, 0px, 0px, true);
         root.menu-target = id;
         root.menu-person = person;
@@ -1083,7 +1094,12 @@ export component TalkWindow inherits Window {
                             spacing: 0px;
                             Rectangle {
                                 height: 48px;
-                                Text { x: 16px; width: parent.width - (root.dms-selected && !root.preview ? (root.discord-linked ? 88px : 56px) : 32px); text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                if root.header-server == "": Text { x: 16px; width: parent.width - (root.dms-selected && !root.preview ? (root.discord-linked ? 88px : 56px) : 32px); text: root.sidebar-title; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                if root.header-server != "": server-header := ServerHeader {
+                                    x: 8px; y: 8px; width: parent.width - 16px; height: 32px;
+                                    name: root.sidebar-title; open: root.header-menu-open;
+                                    clicked => { root.open-header-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+                                }
                                 if root.dms-selected && !root.preview && root.discord-linked: IconButton {
                                     x: parent.width - 2 * self.width - 14px;
                                     icon: @image-url("icons/user-plus.svg"); label: "Add a friend"; size: 28px; glyph: 18px; tip-side: 2;

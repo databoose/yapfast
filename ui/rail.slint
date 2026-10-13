@@ -405,7 +405,7 @@ export component ChannelRow inherits Rectangle {
 }
 
 // A channel category's heading. Clicking it collapses the category, or opens
-// it again; a right click, or the Menu key, opens its menu.
+// it again; a right click, or the Menu key or Shift+F10, opens its menu.
 component CategoryHeading inherits Rectangle {
     in property <string> text;
     in property <bool> collapsed;
@@ -455,6 +455,48 @@ component CategoryHeading inherits Rectangle {
 }
 
 // The server rail: the DMs, then each server.
+// A Discord server's name at the top of its channel list, as in Discord: it
+// opens the server's menu below it, and its chevron turns over while that's
+// open. The Menu key or Shift+F10 opens it too.
+export component ServerHeader inherits Rectangle {
+    in property <string> name;
+    in property <bool> open;
+    callback clicked;
+    border-radius: 6px;
+    background: touch.has-hover || root.open ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name + ", server menu";
+    accessible-action-default => { root.clicked(); }
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " || event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 6px; alignment: start;
+        Text {
+            text: root.name; font-size: 16px; font-weight: 700; color: Theme.text;
+            vertical-alignment: center; overflow: elide;
+        }
+        Image {
+            source: @image-url("icons/chevron-down.svg"); width: 16px; height: 16px; y: (parent.height - self.height) / 2;
+            colorize: Theme.muted; transform-rotation: root.open ? 180deg : 0deg;
+            animate transform-rotation { duration: 120ms; easing: ease-out; }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { keys.focus(); root.clicked(); }
+    }
+    if keys.has-focus: Rectangle {
+        border-radius: root.border-radius; border-width: 2px; border-color: Theme.accent;
+    }
+}
+
 export component ServerRail inherits Rectangle {
     in property <bool> dms-selected;
     in property <bool> dms-unread;
