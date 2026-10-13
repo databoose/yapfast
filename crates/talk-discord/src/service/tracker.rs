@@ -311,6 +311,7 @@ impl Tracker {
                 known.name = update.name;
                 known.icon = update.icon;
                 known.premium_tier = update.premium_tier;
+                known.default_level = update.default_level;
                 self.sort_servers();
                 true
             }
@@ -605,6 +606,7 @@ impl Tracker {
                     presence,
                     color: None,
                     activity,
+                    roles: Arc::default(),
                 }
             })
             .collect();

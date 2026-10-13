@@ -8,6 +8,7 @@ use talk_discord::{
     client,
     member_list::Presence,
     message::Shown,
+    notifications::{Change, Level},
     ready::PRIVATE,
     remote_auth::{self, Step},
     rtp::Codec,
@@ -658,10 +659,10 @@ async fn talks_to_the_fake_server() {
 
     // A DM's pins, and a search of it, which waits while Discord indexes
     // the DM, newest first.
-    let pinned: Vec<_> = discord.pins(&dm_bob).await.unwrap();
+    let pinned: Vec<_> = discord.pins(PRIVATE, &dm_bob).await.unwrap();
     assert_eq!(pinned.len(), 1);
     assert_eq!(pinned[0].content, "Did you see the trip notes?");
-    let found = discord.search(&dm_bob, "SEE", 0).await.unwrap();
+    let found = discord.search(PRIVATE, &dm_bob, "SEE", 0).await.unwrap();
     let said: Vec<_> = found
         .messages
         .iter()
@@ -669,6 +670,25 @@ async fn talks_to_the_fake_server() {
         .collect();
     assert_eq!(said, ["See you at nine", "Did you see the trip notes?"]);
     assert_eq!(found.total, 2);
+
+    // A server channel's pins, and a search of it through its server,
+    // which Discord indexes the same way.
+    let pinned = discord.pins(&guild, &general).await.unwrap();
+    assert_eq!(pinned.len(), 1);
+    assert!(pinned[0].content.starts_with("Welcome to **Talk**"));
+    let found = discord
+        .search(&guild, &general, "welcome", 0)
+        .await
+        .unwrap();
+    let said: Vec<_> = found
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(said.len(), 2);
+    assert_eq!(said[0], "The welcome has the plan");
+    assert!(said[1].starts_with("Welcome to **Talk**"));
+    assert_eq!(discord.name(&guild, &bob).as_deref(), Some("Bob"));
 
     // Friends added to a DM make a group of them; more join it later.
     let dave = discord.find_people("da")[0].id.clone();
@@ -1380,6 +1400,93 @@ async fn talks_to_the_fake_server() {
     discord.mute_private(&dave, true, None).await.unwrap();
     snapshot_where(&discord, |snapshot| {
         dave_dm(snapshot).is_some_and(|dm| dm.muted)
+    })
+    .await;
+
+    // The server's and #general's notification settings, as Discord
+    // confirms them: a channel's mute keeps its level, and the server's
+    // switches are its own.
+    let ours = |snapshot: &Snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .find(|server| server.id == guild)
+            .cloned()
+            .unwrap()
+    };
+    let change = |channel: Option<&'static str>, change| {
+        let (discord, guild, general) = (discord.clone(), guild.clone(), general.clone());
+        async move {
+            let channel = channel.map(|_| general.as_str());
+            discord
+                .change_notifications(&guild, channel, change)
+                .await
+                .unwrap();
+        }
+    };
+    let here = Some("general");
+    change(
+        here,
+        Change::Mute {
+            muted: true,
+            seconds: Some(3600),
+        },
+    )
+    .await;
+    change(here, Change::Level(Some(Level::Nothing))).await;
+    change(None, Change::HideMutedChannels(true)).await;
+    change(None, Change::Level(Some(Level::All))).await;
+    let muted = snapshot_where(&discord, |snapshot| {
+        let server = ours(snapshot);
+        server.notifications.hide_muted_channels
+            && server.notifications.level == Some(Level::All)
+            && server.text_channels[0].muted
+            && server.notifications.of(&general).level == Some(Level::Nothing)
+    })
+    .await;
+    let own = ours(&muted).notifications.of(&general);
+    assert!(own.mute.muted && own.mute.until.is_some());
+    change(
+        here,
+        Change::Mute {
+            muted: false,
+            seconds: None,
+        },
+    )
+    .await;
+    change(
+        None,
+        Change::Mute {
+            muted: true,
+            seconds: None,
+        },
+    )
+    .await;
+    snapshot_where(&discord, |snapshot| {
+        let server = ours(snapshot);
+        server.muted
+            && server.notifications.mute.until.is_none()
+            && !server.text_channels[0].muted
+            && server.notifications.of(&general).level == Some(Level::Nothing)
+    })
+    .await;
+    // As it was, for what follows.
+    change(
+        None,
+        Change::Mute {
+            muted: false,
+            seconds: None,
+        },
+    )
+    .await;
+    change(None, Change::HideMutedChannels(false)).await;
+    change(None, Change::Level(Some(Level::Mentions))).await;
+    change(here, Change::Level(None)).await;
+    snapshot_where(&discord, |snapshot| {
+        let server = ours(snapshot);
+        !server.muted
+            && server.notifications.level == Some(Level::Mentions)
+            && server.notifications.of(&general).level.is_none()
     })
     .await;
     discord.unfriend(&dave_user).await.unwrap();

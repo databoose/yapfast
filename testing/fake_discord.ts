@@ -41,10 +41,12 @@
 // Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
 // Carol, whom she has none with yet, or with several people makes a group DM,
 // and PUT /channels/{id}/recipients/{user} adds someone to a group.
-// GET /channels/{id}/messages/pins lists a DM's pins: Bob's question in his
-// DM and Carol's in the group. GET /channels/{id}/messages/search finds a
-// DM's messages by their text, 25 at a time; the first search of each DM
-// answers 202, as Discord's does while it indexes the DM.
+// GET /channels/{id}/messages/pins lists a channel's pins: Bob's welcome in
+// #general, his question in his DM and Carol's in the group. GET
+// /channels/{id}/messages/search finds a DM's messages by their text, 25 at
+// a time, and GET /guilds/{id}/messages/search?channel_id=... a server
+// channel's; the first search of each DM or server answers 202, as
+// Discord's does while it indexes it.
 // POST /_control/typing makes Bob start typing in #general, or with ?dm in
 // his DM; GET /_control/typed lists the channels Alice said she was typing in.
 // GET /_control/acks lists Alice's read acknowledgements, oldest first: each
@@ -71,7 +73,9 @@
 // DELETE ends a friendship or block, PUT and DELETE .../{id}/ignore ignore and
 // stop, and PATCH gives a friend a nickname. GET and PUT /users/@me/notes/{id}
 // read and write Alice's note on someone, DELETE /channels/{id} closes a DM,
-// and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs.
+// and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs. PATCH
+// /users/@me/guilds/{id}/settings changes her notification settings for a
+// server and its channels, and USER_GUILD_SETTINGS_UPDATE says so.
 // Linking by QR code goes through a remote login gateway at /remote-auth/, as
 // remote-auth-gateway.discord.gg speaks it. POST /_control/qr-scan scans the
 // code shown as Alice, /_control/qr-confirm confirms it, /_control/qr-cancel
@@ -178,26 +182,60 @@ const FRIEND_ACCEPT_MS = 2000;
 const ignored = new Set<string>();
 const nicknames = new Map<string, string>();
 const notes = new Map<string, string>();
-// Her DMs' notification overrides, by channel id: muted, until when if set.
-const dmOverrides = new Map<string, { muted: boolean; end_time: string | null; selected_time_window: number }>();
 const wireRelationship = (id: string, type: number) => ({
   id, type, nickname: nicknames.get(id) ?? null, user_id: id, since: JOINED_AT, user_ignored: ignored.has(id),
 });
-const wireDmSettings = () => ({
-  guild_id: null,
-  muted: false,
-  mute_config: null,
-  message_notifications: 3,
-  flags: 0,
-  version: 1,
-  channel_overrides: [...dmOverrides].map(([channel_id, override]) => ({
-    channel_id,
-    muted: override.muted,
-    mute_config: override.muted ? { end_time: override.end_time, selected_time_window: override.selected_time_window } : null,
-    message_notifications: 3,
-    collapsed: false,
-  })),
-});
+// Alice's notification settings by server, "@me" for her DMs, as Discord
+// keeps her user guild settings: the server's mute and level, which
+// mentions call on her, whether muted channels hide, and each channel's and
+// category's override. PATCH /users/@me/guilds/{id}/settings changes them.
+type MuteConfig = { end_time: string | null; selected_time_window: number };
+type ChannelOverride = { muted: boolean; mute_config: MuteConfig | null; message_notifications: number; collapsed: boolean };
+type GuildSettings = {
+  muted: boolean;
+  mute_config: MuteConfig | null;
+  message_notifications: number;
+  suppress_everyone: boolean;
+  suppress_roles: boolean;
+  hide_muted_channels: boolean;
+  overrides: Map<string, ChannelOverride>;
+};
+const guildSettings = new Map<string, GuildSettings>();
+const settingsOf = (guild: string) => {
+  let settings = guildSettings.get(guild);
+  if (!settings) {
+    settings = {
+      muted: false,
+      mute_config: null,
+      // Her own level in "Server" is mentions; DMs use the default.
+      message_notifications: guild === "@me" ? 3 : 1,
+      suppress_everyone: false,
+      suppress_roles: false,
+      hide_muted_channels: false,
+      overrides: new Map(),
+    };
+    guildSettings.set(guild, settings);
+  }
+  return settings;
+};
+const wireGuildSettings = (guild: string) => {
+  const settings = settingsOf(guild);
+  return {
+    guild_id: guild === "@me" ? null : guild,
+    muted: settings.muted,
+    mute_config: settings.mute_config,
+    message_notifications: settings.message_notifications,
+    suppress_everyone: settings.suppress_everyone,
+    suppress_roles: settings.suppress_roles,
+    hide_muted_channels: settings.hide_muted_channels,
+    mobile_push: true,
+    mute_scheduled_events: false,
+    notify_highlights: 0,
+    flags: 0,
+    version: 1,
+    channel_overrides: [...settings.overrides].map(([channel_id, override]) => ({ channel_id, ...override })),
+  };
+};
 
 // Alice's settings as Discord keeps them: a protobuf message in base64, of
 // which the fake knows only the status, field 11, holding the custom status.
@@ -748,6 +786,7 @@ post(WEEKEND, users.bob, "I'm in", DM_START + 60_000);
 const tripNotes = post(DM_BOB, users.bob, "Did you see the trip notes?", DM_START + 120_000);
 // Pinned messages by channel, the latest pinned first.
 const pins = new Map<string, { message: Message; at: number }[]>([
+  [GENERAL, [{ message: welcome, at: HISTORY_START + 200_000 }]],
   [DM_BOB, [{ message: tripNotes, at: DM_START + 130_000 }]],
   [WEEKEND, [{ message: hike, at: DM_START + 10_000 }]],
 ]);
@@ -1077,21 +1116,8 @@ function ready(ws: Socket) {
     },
     user_guild_settings: {
       entries: [
-        {
-          guild_id: GUILD,
-          muted: false,
-          mute_config: null,
-          suppress_everyone: false,
-          suppress_roles: false,
-          message_notifications: 1,
-          mobile_push: true,
-          hide_muted_channels: false,
-          notify_highlights: 0,
-          flags: 0,
-          version: 1,
-          channel_overrides: [],
-        },
-        wireDmSettings(),
+        wireGuildSettings(GUILD),
+        wireGuildSettings("@me"),
       ],
       partial: false,
       version: 1,
@@ -1410,6 +1436,7 @@ function gatewayMessage(ws: Socket, text: string) {
         chunk_index: 0,
         chunk_count: 1,
         not_found: ids.filter((id) => !userById.has(id)),
+        ...(d.nonce ? { nonce: d.nonce } : {}),
       });
       break;
     }
@@ -2363,6 +2390,33 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     });
   }
 
+  // A server's messages, in the channels `channel_id` names or in all of
+  // them, found by their text; the first search of each server answers 202,
+  // as Discord's does while it indexes it.
+  if (method === "GET" && (m = path.match(/^\/guilds\/(\d+)\/messages\/search$/))) {
+    const guild = m[1]!;
+    const channels = [...messages.keys()].filter((id) => !privates.has(id) && (fillerChannels.get(id) ?? GUILD) === guild);
+    if (!channels.length) return notFound("Unknown Guild", 10004);
+    const asked = url.searchParams.getAll("channel_id");
+    if (asked.some((id) => !channels.includes(id))) return notFound("Unknown Channel", 10003);
+    if (!indexed.has(guild)) {
+      indexed.add(guild);
+      return json({ message: "Index not yet available. Try again later", code: 110000, documents_indexed: 0, retry_after: 0 }, 202);
+    }
+    const content = (url.searchParams.get("content") ?? "").toLowerCase();
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    const found = (asked.length ? asked : channels)
+      .flatMap((id) => messages.get(id)!)
+      .filter((message) => (message.type === 0 || message.type === 19) && message.content.toLowerCase().includes(content))
+      .sort((a, b) => (BigInt(b.id) > BigInt(a.id) ? 1 : -1));
+    return json({
+      analytics_id: "fake",
+      doing_deep_historical_index: false,
+      total_results: found.length,
+      messages: found.slice(offset, offset + 25).map((message) => [{ ...wireMessage(message, origin), guild_id: guild }]),
+    });
+  }
+
   // Accepting a message request makes it a DM; ignoring it closes the DM.
   if ((m = path.match(/^\/channels\/(\d+)\/recipients\/@me$/))) {
     const id = m[1]!;
@@ -2516,19 +2570,31 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(wire);
   }
 
-  // Muting a DM, for a while or for good, and unmuting it.
-  if (method === "PATCH" && path === "/users/@me/guilds/@me/settings") {
-    const body: any = await req.json().catch(() => ({}));
-    for (const [channel, override] of Object.entries<any>(body.channel_overrides ?? {})) {
-      dmOverrides.set(channel, {
-        muted: !!override.muted,
-        end_time: override.mute_config?.end_time ?? null,
-        selected_time_window: override.mute_config?.selected_time_window ?? -1,
-      });
+  // Alice's notification settings for a server or her DMs: what the body
+  // gives changes, and the rest stays. Channels' overrides come by id.
+  if (method === "PATCH" && (m = path.match(/^\/users\/@me\/guilds\/(\d+|@me)\/settings$/))) {
+    const guild = m[1]!;
+    if (guild !== "@me" && guild !== GUILD && !fillers.some((filler) => filler.id === guild)) {
+      return notFound("Unknown Guild", 10004);
     }
-    const settings = wireDmSettings();
-    dispatch("USER_GUILD_SETTINGS_UPDATE", settings);
-    return json(settings);
+    const body: any = await req.json().catch(() => ({}));
+    const settings = settingsOf(guild);
+    for (const key of ["muted", "message_notifications", "suppress_everyone", "suppress_roles", "hide_muted_channels"] as const) {
+      if (key in body) (settings as any)[key] = body[key];
+    }
+    if ("mute_config" in body) settings.mute_config = body.mute_config;
+    if (!settings.muted) settings.mute_config = null;
+    for (const [channel, change] of Object.entries<any>(body.channel_overrides ?? {})) {
+      const override = settings.overrides.get(channel) ?? { muted: false, mute_config: null, message_notifications: 3, collapsed: false };
+      for (const key of ["muted", "mute_config", "message_notifications", "collapsed"] as const) {
+        if (key in change) (override as any)[key] = change[key];
+      }
+      if (!override.muted) override.mute_config = null;
+      settings.overrides.set(channel, override);
+    }
+    const wire = wireGuildSettings(guild);
+    dispatch("USER_GUILD_SETTINGS_UPDATE", wire);
+    return json(wire);
   }
 
   // Alice may ring her friends in a DM, and anyone in a group.

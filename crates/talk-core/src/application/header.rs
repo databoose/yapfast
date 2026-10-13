@@ -1,5 +1,6 @@
-//! What a DM's header opens: its pinned messages, a search of its messages,
-//! and the picker that adds friends to it.
+//! What a conversation's header opens: its pinned messages and a search of
+//! its messages, in a DM or a server channel, and the picker that adds
+//! friends to a DM.
 
 use super::*;
 
@@ -11,7 +12,7 @@ impl Application {
         self.state.pins = None;
         let Some(room) = self
             .state
-            .dm_that(|can| can.dm_pins)
+            .conversation_that(|can| can.pins)
             .filter(|_| shown)
             .map(|room| room.id.clone())
         else {
@@ -37,7 +38,7 @@ impl Application {
         let query = query.trim().to_owned();
         let room = self
             .state
-            .dm_that(|can| can.dm_search)
+            .conversation_that(|can| can.search)
             .map(|room| room.id.clone());
         let (Some(room), false) = (room, query.is_empty()) else {
             self.state.search = None;

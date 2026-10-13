@@ -4,7 +4,7 @@
 //! GUILD_MEMBER_LIST_UPDATE events, and keeps them current with operations
 //! on those rows.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use serde_json::Value;
 
@@ -28,6 +28,8 @@ pub struct ListedMember {
     pub color: Option<u32>,
     /// Their custom status, else what they're doing, as Discord shows it.
     pub activity: Option<String>,
+    /// Their roles' ids, shared with [`Names`]; empty outside a server.
+    pub roles: Arc<[String]>,
 }
 
 /// Whether someone is around, as their status dot shows.
@@ -67,7 +69,8 @@ impl Presence {
 /// What the list says about one member besides their name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Person {
-    roles: Vec<String>,
+    /// Shared with [`Names`] while it knows them.
+    roles: Arc<[String]>,
     presence: Presence,
     activity: Option<String>,
 }
@@ -309,6 +312,7 @@ impl MemberList {
                         presence: person.presence,
                         color: server.and_then(|server| server.color(&person.roles)),
                         activity: person.activity,
+                        roles: person.roles,
                     });
                 }
                 Row::Unknown => {}
@@ -347,12 +351,7 @@ fn row(guild: &str, item: &Value, names: &mut Names, people: &mut HashMap<String
     people.insert(
         user.to_owned(),
         Person {
-            roles: member["roles"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|role| role.as_str().map(str::to_owned))
-                .collect(),
+            roles: names.shared_roles(guild, user).unwrap_or_default(),
             presence: Presence::parse(presence),
             activity: activity(&presence["activities"]),
         },

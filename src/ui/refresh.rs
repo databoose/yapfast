@@ -684,8 +684,8 @@ impl Adapter {
     fn show_dm_tools(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         let twelve_hour = self.layout.twelve_hour_clock;
-        window.set_can_pin(state.dm_that(|can| can.dm_pins).is_some());
-        window.set_can_search(state.dm_that(|can| can.dm_search).is_some());
+        window.set_can_pin(state.conversation_that(|can| can.pins).is_some());
+        window.set_can_search(state.conversation_that(|can| can.search).is_some());
         window.set_can_add_people(
             state.discord_online && state.dm_that(|can| can.group_dms).is_some(),
         );

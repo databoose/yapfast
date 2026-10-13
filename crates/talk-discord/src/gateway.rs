@@ -424,12 +424,17 @@ impl Gateway {
     }
 
     /// Asks for these members' server profiles, which arrive as GUILD_MEMBERS_CHUNK.
-    pub async fn request_members(&mut self, guild_id: &str, user_ids: &[String]) -> Result<()> {
-        self.send(
-            REQUEST_GUILD_MEMBERS,
-            json!({"guild_id": [guild_id], "user_ids": user_ids, "presences": false}),
-        )
-        .await
+    pub async fn request_members(
+        &mut self,
+        guild_id: &str,
+        user_ids: &[String],
+        nonce: Option<&str>,
+    ) -> Result<()> {
+        let mut request = json!({"guild_id": [guild_id], "user_ids": user_ids, "presences": false});
+        if let Some(nonce) = nonce {
+            request["nonce"] = nonce.into();
+        }
+        self.send(REQUEST_GUILD_MEMBERS, request).await
     }
 
     /// Asks for up to `limit` members whose names start with `query`; they arrive as a

@@ -4,7 +4,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::atomic::{AtomicU64, Ordering::Relaxed},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering::Relaxed},
+    },
 };
 
 use serde_json::Value;
@@ -661,7 +664,8 @@ pub struct Names {
     /// Server avatar hashes by server and user id.
     member_avatars: HashMap<(String, String), String>,
     /// Members' roles by server and user id, for the colour of their name.
-    roles: HashMap<(String, String), Vec<String>>,
+    /// Member lists and the core share each, rather than copying it.
+    roles: HashMap<(String, String), Arc<[String]>>,
     /// Changes whenever a name, avatar or role of someone known changes, so
     /// what was shown with them can tell it's out of date. Someone new
     /// changes nothing shown, which was rendered after learning them.
@@ -717,7 +721,7 @@ impl Names {
             roles: saved
                 .roles
                 .into_iter()
-                .map(|(guild, user, roles)| ((guild, user), roles))
+                .map(|(guild, user, roles)| ((guild, user), roles.into()))
                 .collect(),
             usernames: saved.usernames.into_iter().collect(),
             ..Self::default()
@@ -833,7 +837,7 @@ impl Names {
         learned |= changed(&mut self.member_avatars, key.clone(), avatar);
         // Some member objects leave the roles out.
         if let Some(roles) = member["roles"].as_array() {
-            let roles = roles
+            let roles: Arc<[String]> = roles
                 .iter()
                 .filter_map(|role| role.as_str().map(str::to_owned))
                 .collect();
@@ -886,7 +890,16 @@ impl Names {
         self.touch(user);
         self.roles
             .get(&(guild.to_owned(), user.to_owned()))
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], |roles| roles)
+    }
+
+    /// A member's roles in a server, as far as they're known, shared rather
+    /// than copied; none when they aren't known.
+    pub fn shared_roles(&self, guild: &str, user: &str) -> Option<Arc<[String]>> {
+        self.touch(user);
+        self.roles
+            .get(&(guild.to_owned(), user.to_owned()))
+            .cloned()
     }
 
     /// Learns the author and the mentioned users of a message object, and

@@ -23,6 +23,7 @@ impl Application {
                 unavailable: false,
                 icon: None,
                 folder: None,
+                hide_muted: false,
             },
             ChatServer {
                 id: "coop".into(),
@@ -37,6 +38,7 @@ impl Application {
                 unavailable: false,
                 icon: None,
                 folder: None,
+                hide_muted: false,
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());
@@ -222,6 +224,7 @@ pub(super) fn preview_members(room: &str) -> Vec<ChatMember> {
             presence: None,
             color: None,
             activity: None,
+            roles: Default::default(),
         })
         .collect();
     chat::sort_members(&mut members);

@@ -145,6 +145,8 @@ async fn connected_session(
         publisher: Publisher::new(shared.snapshots.clone()),
         acks: ReadAcks::new(shared.api.clone()),
         status_ends: Box::pin(tokio::time::sleep(status_left(&tracker))),
+        mute_end: tracker.unreads.next_mute_end(),
+        mutes_end: Box::pin(tokio::time::sleep(until(tracker.unreads.next_mute_end()))),
         tracker,
         shared,
         join: VoiceJoin::new(),
@@ -182,6 +184,10 @@ struct Session<'a> {
     acks: ReadAcks,
     /// When the custom status ends by itself.
     status_ends: Pin<Box<Sleep>>,
+    /// When the soonest mute in force ends, in Unix milliseconds, and the
+    /// wait for it, after which what shows muted changes by itself.
+    mute_end: Option<u64>,
+    mutes_end: Pin<Box<Sleep>>,
 }
 
 impl Session<'_> {
@@ -213,6 +219,11 @@ impl Session<'_> {
                     self.tracker.custom_status = None;
                     self.publisher.changed();
                     self.show_presence().await
+                }
+                () = self.mutes_end.as_mut(), if self.mute_end.is_some() => {
+                    self.publisher.changed();
+                    self.mutes_changed();
+                    Ok(())
                 }
                 () = self.shared.lists.went_stale(), if self.shared.lists.unsent() => {
                     // The list on screen went stale without Discord sending it.
@@ -327,10 +338,19 @@ impl Session<'_> {
                 query,
                 reply,
             } => self.searches.start(gateway, &guild, &query, reply).await,
-            Request::Members { guild, users } => {
-                // Discord answers at most 100 users per request.
-                for users in users.chunks(100) {
-                    gateway.request_members(&guild, users).await?;
+            Request::Members {
+                guild,
+                users,
+                reply,
+            } => {
+                // Discord answers at most 100 users per request; a reply
+                // waits for the first hundred.
+                let mut chunks = users.chunks(100);
+                if let (Some(reply), Some(users)) = (reply, chunks.next()) {
+                    self.searches.members(gateway, &guild, users, reply).await?;
+                }
+                for users in chunks {
+                    gateway.request_members(&guild, users, None).await?;
                 }
                 Ok(())
             }
@@ -383,6 +403,9 @@ impl Session<'_> {
         if !awaited && let Some(moved) = self.tracker.moved(event, data) {
             let _ = self.shared.live.send(moved);
         }
+        if *event == Event::UserGuildSettingsUpdate {
+            self.mutes_changed();
+        }
         if *event == Event::UserSettingsProtoUpdate {
             self.custom_status_changed();
             self.show_presence().await?;
@@ -415,6 +438,25 @@ impl Session<'_> {
             .as_mut()
             .reset(Instant::now() + status_left(&self.tracker));
     }
+}
+
+impl Session<'_> {
+    /// Waits for the soonest mute in force now to end. The wait is set
+    /// again even for the same end, since one that elapsed would otherwise
+    /// end at once each time it's polled.
+    fn mutes_changed(&mut self) {
+        self.mute_end = self.tracker.unreads.next_mute_end();
+        self.mutes_end
+            .as_mut()
+            .reset(Instant::now() + until(self.mute_end));
+    }
+}
+
+/// How long until `at`, in Unix milliseconds; long when there's no `at`.
+fn until(at: Option<u64>) -> Duration {
+    at.map_or(Duration::from_secs(86_400 * 365), |at| {
+        Duration::from_millis(at.saturating_sub(now_ms()))
+    })
 }
 
 /// How long until the custom status ends by itself; long when it doesn't.

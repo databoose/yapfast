@@ -12,6 +12,7 @@ pub mod gateway;
 pub mod limits;
 pub mod member_list;
 pub mod message;
+pub mod notifications;
 pub mod profile;
 pub mod ready;
 pub mod remote_auth;

@@ -24,6 +24,7 @@ mod messages;
 mod preview;
 mod profiles;
 mod rooms;
+mod server;
 mod session;
 
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
@@ -470,23 +471,37 @@ impl AppState {
         }
     }
 
-    /// The rooms [`Self::in_scope`], in order. It finds the server once, so
-    /// it suits going through every room, as [`Self::in_scope`] for each
-    /// doesn't with many servers.
+    /// Whether a muted channel stays out of the list, in a server set to
+    /// hide them: the open one stays, and so does one that mentions this
+    /// account, whose count the server shows on the rail.
+    fn hidden_muted(&self, room: &ChatRoom) -> bool {
+        room.muted && room.mentions == 0 && self.selected.as_ref() != Some(&room.id)
+    }
+
+    /// The rooms [`Self::in_scope`], in order, but for the muted channels a
+    /// server hides. It finds the server once, so it suits going through
+    /// every room, as [`Self::in_scope`] for each doesn't with many servers.
     pub fn scoped_rooms(&self) -> impl Iterator<Item = &ChatRoom> {
+        let server = match &self.navigation {
+            Navigation::DirectMessages => None,
+            Navigation::Server(id) => self.servers.iter().find(|server| &server.id == id),
+        };
         let channels: Option<HashSet<&str>> = match &self.navigation {
             Navigation::DirectMessages => None,
-            Navigation::Server(id) => Some(
-                self.servers
-                    .iter()
-                    .find(|server| &server.id == id)
+            Navigation::Server(_) => Some(
+                server
                     .map(|server| server.channels.iter().map(String::as_str).collect())
                     .unwrap_or_default(),
             ),
         };
+        let hide_muted = server.is_some_and(|server| server.hide_muted);
         self.rooms.iter().filter(move |room| match &channels {
             None => room.direct,
-            Some(channels) => !room.direct && channels.contains(room.id.as_str()),
+            Some(channels) => {
+                !room.direct
+                    && channels.contains(room.id.as_str())
+                    && !(hide_muted && self.hidden_muted(room))
+            }
         })
     }
 
@@ -540,6 +555,7 @@ impl AppState {
                 presence: None,
                 color: message.color,
                 activity: None,
+                roles: Default::default(),
             });
         }
         let target = Target::User(user.to_owned());
@@ -561,6 +577,7 @@ impl AppState {
             presence: None,
             color: None,
             activity: None,
+            roles: Default::default(),
         })
     }
 
@@ -700,6 +717,17 @@ impl AppState {
     ) -> Option<&ChatRoom> {
         self.selected_room()
             .filter(|room| room.direct && !room.request && can(&room.capabilities))
+    }
+
+    /// The selected conversation, when it's a DM, group DM or text channel
+    /// this account may read, whose network lets it do what `can` asks, and
+    /// not a message request.
+    pub fn conversation_that(
+        &self,
+        can: impl Fn(&crate::network::Capabilities) -> bool,
+    ) -> Option<&ChatRoom> {
+        self.selected_room()
+            .filter(|room| !room.voice && !room.locked && !room.request && can(&room.capabilities))
     }
 
     /// Who is in the selected DM besides this account, as far as Talk knows:
@@ -913,6 +941,12 @@ pub enum Action {
     MuteDm {
         room: String,
         muting: chat::Muting,
+    },
+    /// Change this account's notification settings for a Discord server, by
+    /// its server id, or for a channel or category in it, by its room id.
+    ChangeNotifications {
+        place: String,
+        change: chat::NotificationChange,
     },
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
@@ -1512,6 +1546,9 @@ impl Application {
                 vec![]
             }
             Action::MuteDm { room, muting } => self.mute_dm(room, muting),
+            Action::ChangeNotifications { place, change } => {
+                self.change_notifications(place, change)
+            }
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),

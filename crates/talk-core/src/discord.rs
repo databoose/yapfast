@@ -99,6 +99,11 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(PREFIX)?.split_once(':')
 }
 
+/// The Discord server a server id names, as [`server_id`] makes it.
+pub fn parse_server(id: &str) -> Option<&str> {
+    id.strip_prefix(PREFIX).filter(|guild| !guild.contains(':'))
+}
+
 /// Who is in a voice channel or DM call.
 #[cfg(feature = "discord")]
 fn in_voice(snapshot: &Snapshot, channel: &str) -> Vec<VoicePerson> {
@@ -423,7 +428,8 @@ fn server_rooms(
                     .map_or(0, |(_, count)| *count),
                 unread: u64::from(channel.unread),
                 mentions: channel.mentions,
-                muted: false,
+                // Muted itself or through its category.
+                muted: channel.muted,
                 last_read: read_item(channel.last_read),
                 locked: channel.access == Access::Hidden,
                 read_only: channel.access == Access::Locked,
@@ -451,6 +457,7 @@ fn server_rooms(
         icon: server.icon.clone(),
         // Index::update sets it, since a folder changes without its servers.
         folder: None,
+        hide_muted: server.notifications.hide_muted_channels,
     };
     (rooms, server)
 }

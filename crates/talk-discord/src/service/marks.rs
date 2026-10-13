@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::{
+    notifications::Notifications,
     ready::{Access, Server},
     unread::Unreads,
 };
@@ -18,13 +19,16 @@ pub(super) struct Published {
 }
 
 /// What [`super::tracker::Tracker::snapshot`] sets on a server for this account: whether
-/// it's muted, its roles there and which mentions its settings suppress, then
+/// it's muted, its roles there, its notification settings and which mentions
+/// they suppress, then
 /// for each text channel and each voice channel, in order, what
 /// [`ChannelMarks`] holds.
 #[derive(PartialEq, Eq)]
 pub(super) struct Marks {
     muted: bool,
     roles: Vec<String>,
+    /// Shared with the tracker's, and compared by address first.
+    settings: Arc<Notifications>,
     suppressed: (bool, bool),
     channels: Vec<ChannelMarks>,
 }
@@ -68,6 +72,7 @@ impl Marks {
         Self {
             muted: unreads.server_muted(&server.id),
             roles: roles.to_vec(),
+            settings: settings(server, unreads),
             suppressed: unreads.suppressed(&server.id),
             channels,
         }
@@ -85,6 +90,7 @@ impl Marks {
         Self {
             muted: unreads.server_muted(&server.id),
             roles: self.roles.clone(),
+            settings: settings(server, unreads),
             suppressed: unreads.suppressed(&server.id),
             channels,
         }
@@ -95,6 +101,7 @@ impl Marks {
         let mut marked = server.clone();
         marked.muted = self.muted;
         marked.my_roles.clone_from(&self.roles);
+        marked.notifications = self.settings.clone();
         (marked.suppress_everyone, marked.suppress_roles) = self.suppressed;
         let channels = marked
             .text_channels
@@ -110,6 +117,15 @@ impl Marks {
         }
         marked
     }
+}
+
+/// The account's notification settings for `server`, the defaults until
+/// Discord sends them.
+fn settings(server: &Server, unreads: &Unreads) -> Arc<Notifications> {
+    unreads
+        .settings(&server.id)
+        .cloned()
+        .unwrap_or_else(|| server.notifications.clone())
 }
 
 #[cfg(test)]

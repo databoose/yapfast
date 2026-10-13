@@ -249,6 +249,92 @@ pub struct ChatServer {
     /// The folder it sits in on the rail. A folder's servers come one after
     /// another in [`RoomIndex::servers`].
     pub folder: Option<ServerFolder>,
+    /// Its muted channels stay out of the channel list, as this account's
+    /// Discord notification settings for it say.
+    pub hide_muted: bool,
+}
+
+/// A Discord server's role, as a roles menu lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerRole {
+    pub id: String,
+    pub name: String,
+    /// Higher roles list first, and outrank lower ones.
+    pub position: i64,
+    /// Its RGB colour, if it has one.
+    pub color: Option<u32>,
+    /// An integration such as a bot or boosting gives it; nobody grants or
+    /// takes it by hand.
+    pub managed: bool,
+}
+
+/// What a Discord server's roles may let this account do, as Discord names
+/// it: [`crate::application::Application::may`] asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Permission {
+    CreateInvite,
+    Kick,
+    Ban,
+    /// Time members out.
+    Moderate,
+    ManageRoles,
+    ManageChannels,
+    ManageServer,
+    /// Change its own nickname.
+    ChangeNickname,
+    ManageNicknames,
+    ViewChannel,
+    SendMessages,
+}
+
+/// Which messages notify, in a Discord server or channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyLevel {
+    All,
+    Mentions,
+    Nothing,
+}
+
+/// How a Discord server, channel or category notifies this account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Notifications {
+    /// Muted itself, at least till `muted_until`. A channel in a muted
+    /// category shows muted too ([`ChatRoom::muted`]), but isn't itself.
+    pub muted: bool,
+    /// When the mute ends, in Unix milliseconds; none while it lasts until
+    /// unmuted.
+    pub muted_until: Option<u64>,
+    /// Its own level; none to follow its category, or for a server, the
+    /// server's default.
+    pub level: Option<NotifyLevel>,
+    /// The level that applies when `level` is none, as a menu's subtitle
+    /// shows it.
+    pub inherited: NotifyLevel,
+}
+
+/// How a Discord server notifies this account, and its switches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerNotifications {
+    pub own: Notifications,
+    /// @everyone and @here don't call on this account.
+    pub suppress_everyone: bool,
+    /// Role mentions don't call on this account.
+    pub suppress_roles: bool,
+    /// See [`ChatServer::hide_muted`].
+    pub hide_muted: bool,
+}
+
+/// A change to a Discord server's, channel's or category's notification
+/// settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationChange {
+    Mute(Muting),
+    /// Which messages notify; none to follow the category's or the server's.
+    Level(Option<NotifyLevel>),
+    /// The rest are a server's alone.
+    HideMuted(bool),
+    SuppressEveryone(bool),
+    SuppressRoles(bool),
 }
 
 /// A folder of servers on the rail, as Discord's server list keeps them.
@@ -353,6 +439,9 @@ pub struct ChatMember {
     pub color: Option<u32>,
     /// Their custom status, else what they're doing, from Discord.
     pub activity: Option<String>,
+    /// Their Discord roles' ids, as far as they're known, shared with what
+    /// learned them; empty for Matrix. See [`crate::application::Application::server_roles`].
+    pub roles: Arc<[String]>,
 }
 
 /// Someone to start a DM with.
@@ -1039,12 +1128,13 @@ pub enum DiscordCommand {
     CloseDm {
         room: String,
     },
-    /// A Discord DM's pinned messages; [`Event::Pins`] follows.
+    /// A Discord DM's or server channel's pinned messages; [`Event::Pins`]
+    /// follows.
     Pins {
         room: String,
     },
-    /// Look for a Discord DM's messages that contain `query`, a page from
-    /// the `offset`th found; [`Event::Found`] follows.
+    /// Look for a Discord DM's or server channel's messages that contain
+    /// `query`, a page from the `offset`th found; [`Event::Found`] follows.
     Search {
         room: String,
         query: String,
@@ -1060,6 +1150,14 @@ pub enum DiscordCommand {
     Mute {
         room: String,
         muting: Muting,
+    },
+    /// Change this account's notification settings for a Discord server,
+    /// by its server id, or a channel or category in it, by its room id.
+    /// Snapshots show the change once Discord confirms it; a failure comes
+    /// back as [`Event::Error`].
+    Notifications {
+        place: String,
+        change: NotificationChange,
     },
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
@@ -1095,7 +1193,7 @@ pub enum RelationshipChange {
     Unignore,
 }
 
-/// How long a Discord DM stays muted.
+/// How long a Discord DM, server, channel or category stays muted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Muting {
     Off,

@@ -868,6 +868,7 @@ fn load_members(open: &mut OpenRoom, events: &UnboundedSender<Event>) {
                         presence: None,
                         color: None,
                         activity: None,
+                        roles: Default::default(),
                     })
                     .collect();
                 sort_members(&mut members);
@@ -916,6 +917,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             unavailable: false,
             icon: None,
             folder: None,
+            hide_muted: false,
         });
     }
     for room in client
