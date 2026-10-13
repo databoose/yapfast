@@ -1329,7 +1329,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 window.set_gate_sending(meter.sending());
                 window.set_gate_meter_note(SharedString::from(
                     if !talk_core::discord_audio::AVAILABLE {
-                        "Discord voice and its level work on Linux for now."
+                        "Discord voice and its level aren't available on this system yet."
                     } else if meter.failed() {
                         "Talk can't read this microphone. Check that it's connected, or choose another."
                     } else {

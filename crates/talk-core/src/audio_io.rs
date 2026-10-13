@@ -6,8 +6,8 @@
 //! room in the speakers' queue. Samples go to the system as they are, with no
 //! copy of their own.
 //!
-//! Linux goes through PulseAudio, or PipeWire's PulseAudio server. Other
-//! systems have no sound here yet.
+//! Linux goes through PulseAudio, or PipeWire's PulseAudio server, and
+//! Windows through WASAPI. Other systems have no sound here yet.
 
 use std::{marker::PhantomData, time::Duration};
 #[cfg(feature = "discord")]
@@ -23,13 +23,18 @@ mod pulse;
 #[cfg(target_os = "linux")]
 use pulse as platform;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod wasapi;
+#[cfg(target_os = "windows")]
+use wasapi as platform;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use unsupported as platform;
 
 /// Whether this system has sound here.
-pub const AVAILABLE: bool = cfg!(target_os = "linux");
+pub const AVAILABLE: bool = cfg!(any(target_os = "linux", target_os = "windows"));
 
 /// The rate every stream runs at, unless it asks for another.
 pub const RATE: u32 = 48_000;
@@ -189,6 +194,8 @@ impl<S: Sample> Input<S> {
 
 /// What [`others`] hears from the other applications playing.
 #[cfg(feature = "discord")]
+// Windows doesn't hear other applications yet.
+#[cfg_attr(windows, allow(dead_code))]
 pub enum Heard<'a> {
     /// An application started playing, from this process when the system says.
     Started {
@@ -244,8 +251,14 @@ mod tests {
     fn hears_what_it_plays() {
         let tone =
             |at: usize| 0.25 * (at as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin();
+        let block = RATE as usize / 100;
         let mut input =
             Input::<i16>::open(None, "Test input", RATE, 1, Duration::from_millis(10)).unwrap();
+        // Hearing first, so the tone's start isn't lost to the input starting.
+        let mut heard = vec![0i16; RATE as usize * 2];
+        for chunk in heard[..RATE as usize * 3 / 10].chunks_mut(block) {
+            input.read(chunk).unwrap();
+        }
         let playing = std::thread::spawn(move || {
             let mut output =
                 Output::<f32>::open(None, "Test tone", RATE, 2, Some(Duration::from_millis(60)))
@@ -261,9 +274,8 @@ mod tests {
             output.drain().unwrap();
             latency
         });
-        let mut heard = vec![0i16; RATE as usize * 3 / 2];
-        for block in heard.chunks_mut(RATE as usize / 100) {
-            input.read(block).unwrap();
+        for chunk in heard.chunks_mut(block) {
+            input.read(chunk).unwrap();
         }
         let latency = playing.join().unwrap();
         let peak = heard
@@ -276,12 +288,62 @@ mod tests {
             .windows(2)
             .filter(|pair| (pair[0] < 0) != (pair[1] < 0))
             .count();
-        eprintln!("peak {peak}, {crossings} zero crossings, latency {latency:?}");
+        let loud = |sample: &i16| sample.unsigned_abs() > 1000;
+        let at = |index: Option<usize>| index.map(|index| index as f32 / RATE as f32);
+        let (first, last) = (heard.iter().position(loud), heard.iter().rposition(loud));
+        eprintln!(
+            "peak {peak}, {crossings} zero crossings, heard from {:?} s to {:?} s, latency {latency:?}",
+            at(first),
+            at(last)
+        );
         assert!(peak > 6000, "heard too little: peak {peak}");
         assert!(
-            (600..1400).contains(&crossings),
-            "not the tone: {crossings} crossings"
+            (800..960).contains(&crossings),
+            "not all of the tone: {crossings} crossings"
         );
+    }
+
+    /// Opens every microphone and speaker LiveKit lists by its id, and
+    /// reads and writes a little on each.
+    #[test]
+    #[ignore = "needs sound devices"]
+    fn opens_every_listed_device() {
+        let (microphones, speakers) = crate::voice::list_devices().unwrap();
+        assert!(
+            !microphones.is_empty() && !speakers.is_empty(),
+            "no devices"
+        );
+        for microphone in &microphones {
+            eprintln!("microphone {:?}: {}", microphone.name, microphone.id);
+            let mut input = Input::<i16>::open(
+                Some(&microphone.id),
+                "Test input",
+                RATE,
+                1,
+                Duration::from_millis(10),
+            )
+            .unwrap();
+            input.read(&mut [0; RATE as usize / 100]).unwrap();
+        }
+        for speaker in &speakers {
+            eprintln!("speakers {:?}: {}", speaker.name, speaker.id);
+            let mut output = Output::<i16>::open(
+                Some(&speaker.id),
+                "Test silence",
+                RATE,
+                2,
+                Some(Duration::from_millis(60)),
+            )
+            .unwrap();
+            output.write(&[0; RATE as usize / 10 * 2]).unwrap();
+            output.drain().unwrap();
+        }
+        let gone = if cfg!(windows) {
+            "{0.0.0.00000000}.{00000000-0000-0000-0000-000000000000}"
+        } else {
+            "name:Unplugged speakers"
+        };
+        assert!(Output::<i16>::open(Some(gone), "Test", RATE, 2, None).is_err());
     }
 
     #[test]

@@ -83,7 +83,6 @@ pub(crate) fn set_limit(decibels: f32) {
 }
 
 #[cfg(feature = "discord")]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn limit() -> f32 {
     f32::from_bits(LIMIT.load(Ordering::Relaxed))
 }
@@ -114,8 +113,6 @@ pub(crate) fn dereverb() -> bool {
 pub(crate) use denoise::{BLOCK, Denoiser};
 
 #[cfg(feature = "discord")]
-// Only Linux has Discord voice's microphone yet.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod denoise {
     use df::tract::{DfParams, DfTract, RuntimeParams};
     use ndarray::{ArrayView2, ArrayViewMut2};

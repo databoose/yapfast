@@ -261,7 +261,7 @@ pub(crate) async fn call(
 ) -> Result<()> {
     ensure!(
         discord_audio::AVAILABLE,
-        "Discord voice works on Linux for now."
+        "Discord voice has no sound on this system yet."
     );
     let mut discord_states = discord.snapshots();
     let me = discord_states.borrow().user_id.clone().unwrap_or_default();

@@ -798,6 +798,135 @@ mod tests {
         assert!(!gate.block(&block, -10.0, false).is_empty());
     }
 
+    /// Joins the fake Discord's Lounge, unmutes, and beeps where the
+    /// microphone hears it: the call sends Opus that isn't silence and says
+    /// it's speaking. Needs `bun testing/fake_discord.ts`,
+    /// `TALK_DISCORD_TEST_SERVER`, and a sound server whose default input
+    /// hears its default output, such as a private PulseAudio of null sinks,
+    /// or Wine on one.
+    #[test]
+    #[ignore = "needs testing/fake_discord.ts, TALK_DISCORD_TEST_SERVER and sound devices"]
+    fn a_call_sends_what_the_microphone_hears() {
+        use crate::voice::{Command, Phase, State};
+        let server = talk_discord::client::test_server().expect("TALK_DISCORD_TEST_SERVER");
+        // A beep isn't speech, but it's loud enough to open the gate anyway
+        // with the suppressor off, which would take a steady tone out.
+        crate::noise::set(crate::noise::Suppressor::Off);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let sent = runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            let discord =
+                talk_discord::service::Discord::start(talk_discord::token::load().unwrap())
+                    .unwrap();
+            let mut online = discord.snapshots();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                online
+                    .wait_for(|snapshot| snapshot.status == talk_discord::service::Status::Online),
+            )
+            .await
+            .expect("the fake Discord didn't come online")
+            .unwrap();
+            let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+            let (snapshots, mut states) = tokio::sync::watch::channel(State::default());
+            let mut state = State::default();
+            let call = crate::discord_voice::call(
+                &discord,
+                "1400000000000000100",
+                "1400000000000000103",
+                &mut state,
+                &mut received,
+                &snapshots,
+                None,
+            );
+            let speak = async {
+                let connected = tokio::time::timeout(
+                    Duration::from_secs(20),
+                    states.wait_for(|state| state.phase == Phase::Connected),
+                )
+                .await
+                .is_ok();
+                assert!(
+                    connected,
+                    "the call didn't connect: {:?}",
+                    states.borrow().error
+                );
+                commands.send(Command::Mute(false)).unwrap();
+                tokio::task::spawn_blocking(beep).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let sent = spoken(server);
+                commands.send(Command::Leave).unwrap();
+                sent
+            };
+            tokio::pin!(call);
+            // The call ending first is a failure to join.
+            let sent = tokio::select! {
+                ended = &mut call => panic!("the call ended: {ended:?}"),
+                sent = speak => sent,
+            };
+            call.await.unwrap();
+            // Long enough for leaving to reach the fake before the process ends.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            sent
+        }));
+        eprintln!("the fake heard {sent}");
+        // This call is the newest the fake heard, by SSRC.
+        let (_, call) = sent
+            .as_object()
+            .unwrap()
+            .iter()
+            .max_by_key(|(ssrc, _)| ssrc.parse::<u32>().unwrap())
+            .expect("the fake heard no call");
+        assert_eq!(call["undecryptable"], 0);
+        assert!(call["voiced"].as_u64().unwrap() > 50, "too little was sent");
+        assert_eq!(call["speaking"], 1, "it should say it's speaking");
+    }
+
+    /// Two seconds of beeps on the default speakers.
+    fn beep() {
+        let mut output = Output::<i16>::open(
+            None,
+            "Test beeps",
+            SAMPLE_RATE,
+            1,
+            Some(Duration::from_millis(60)),
+        )
+        .unwrap();
+        let mut block = [0i16; BLOCK];
+        for index in 0..200 {
+            for (at, sample) in block.iter_mut().enumerate() {
+                let time = (index * BLOCK + at) as f32 / SAMPLE_RATE as f32;
+                let on = index % 40 < 25;
+                *sample = if on {
+                    (8000.0 * (time * 440.0 * std::f32::consts::TAU).sin()) as i16
+                } else {
+                    0
+                };
+            }
+            output.write(&block).unwrap();
+        }
+        output.drain().unwrap();
+    }
+
+    /// What the fake Discord heard from each call.
+    fn spoken(server: &str) -> serde_json::Value {
+        use std::io::{Read, Write};
+        let address = server.trim_start_matches("http://").trim_end_matches('/');
+        let mut connection = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            connection,
+            "GET /_control/voice-audio HTTP/1.0\r\nHost: {address}\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        connection.read_to_string(&mut response).unwrap();
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        serde_json::from_str(body).unwrap()
+    }
+
     #[test]
     fn hearing_tracks_who_spoke() {
         let (ended, _) = tokio::sync::mpsc::unbounded_channel();

@@ -21,7 +21,10 @@
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
 // connects to a voice server here that answers the handshake without DAVE and
-// drops the audio. A Go Live stream's video is decrypted and its VP8 frames
+// counts the audio each call sends: GET /_control/voice-audio lists, by
+// SSRC, its packets, those that didn't open or weren't Opus, those with more
+// than Opus's 3-byte silence, and op 5's speaking value. A Go Live stream's
+// video is decrypted and its VP8 frames
 // counted; GET /_control/video lists what each stream received. POST
 // /_control/voice-move moves Alice's call in the server to another voice
 // server, and GET /_control/voice-identifies lists the tokens voice
@@ -1456,7 +1459,9 @@ function gatewayMessage(ws: Socket, text: string) {
         voice.delete(ALICE);
       }
       moved(ALICE, before, ws.data.origin);
-      if (channel && before?.channel !== channel) {
+      // Joining from another session, as after a client that never left,
+      // moves the voice state to this one, which gets a voice server too.
+      if (channel && (before?.channel !== channel || before.session !== ws.data.session)) {
         const server = guild
           ? { guild_id: GUILD, token: VOICE_TOKEN }
           : { guild_id: null, channel_id: channel, token: callToken(channel) };
@@ -1766,6 +1771,17 @@ const received = new Map<number, Received>();
 const receivedAudio = new Map<number, Received>();
 /** And by its RTX SSRC. */
 const receivedRtx = new Map<number, Received>();
+/** What each call's voice connection sent, by its SSRC. */
+type Spoken = {
+  key: Buffer;
+  mode: string;
+  packets: number;
+  undecryptable: number;
+  /** Opus packets longer than its 3-byte silence frame. */
+  voiced: number;
+  speaking: number | null;
+};
+const spoken = new Map<number, Spoken>();
 /** Previews streamers uploaded: their size, and whether they were JPEGs. */
 const previews: { stream: string; bytes: number; jpeg: boolean }[] = [];
 
@@ -2004,6 +2020,16 @@ function receiveRtx(stream: Received, packet: Buffer) {
 }
 
 /** Counts a packet of a stream's sound: Opus, payload type 120. */
+function receiveSpoken(call: Spoken, packet: Buffer) {
+  call.packets++;
+  const plain = call.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, call.key) : undefined;
+  if (!plain || (plain[1]! & 0x7f) !== 120) {
+    call.undecryptable++;
+    return;
+  }
+  if (plain.length - rtpExtensions(plain).at > 3) call.voiced++;
+}
+
 function receiveAudio(stream: Received, packet: Buffer) {
   stream.audioPackets++;
   const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
@@ -2108,7 +2134,9 @@ const udp = await Bun.udpSocket({
           const ssrc = data.readUInt32BE(8);
           const sound = receivedAudio.get(ssrc);
           const resent = receivedRtx.get(ssrc);
-          if (sound) receiveAudio(sound, data);
+          const call = spoken.get(ssrc);
+          if (call) receiveSpoken(call, data);
+          else if (sound) receiveAudio(sound, data);
           else if (resent) receiveRtx(resent, data);
           else receiveVideo(data);
         }
@@ -2219,6 +2247,8 @@ function voiceMessage(ws: Socket, text: string) {
         received.set(ws.data.ssrc + 1, record);
         receivedAudio.set(ws.data.ssrc, record);
         receivedRtx.set(ws.data.ssrc + 2, record);
+      } else if (ws.data.ssrc) {
+        spoken.set(ws.data.ssrc, { key, mode: d.data?.mode, packets: 0, undecryptable: 0, voiced: 0, speaking: null });
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
       const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
@@ -2247,6 +2277,8 @@ function voiceMessage(ws: Socket, text: string) {
     case 5: { // Speaking: a stream's sound is marked as soundshare.
       const stream = ws.data.ssrc ? receivedAudio.get(ws.data.ssrc) : undefined;
       if (stream) stream.speaking = Number(d.speaking);
+      const call = ws.data.ssrc ? spoken.get(ws.data.ssrc) : undefined;
+      if (call) call.speaking = Number(d.speaking);
       break;
     }
     case 12: { // Video attributes
@@ -3235,6 +3267,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "POST" && path === "/_control/qr-expire") {
       return eachRemoteLogin((ws) => ws.close(1000));
+    }
+    if (path === "/_control/voice-audio") {
+      return json(Object.fromEntries([...spoken].map(([ssrc, { key: _, ...call }]) => [ssrc, call])));
     }
     if (path === "/_control/video") {
       return json({

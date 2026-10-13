@@ -179,8 +179,9 @@ Clicking a voice channel joins through the same voice dock and one-call rule
 as Matrix voice. Calls start muted, mute and deafen show in Discord, and a
 voice gate sends audio only during speech. The owner and a friend talked
 through it on 2026-10-06. Audio goes through `audio_io.rs`, PulseAudio on
-Linux, and libwebrtc's processing module, so Windows needs its own audio
-backend. songbird's DAVE receive fix is
+Linux and WASAPI on Windows, and libwebrtc's processing module; see the
+[Windows guide](windows-beta.md#discord-voice-on-windows) for what's been
+checked there. songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
 
@@ -245,7 +246,7 @@ stops ringing them.
 
 A call ringing this account shows a card at the top of the window with the
 DM's picture, Decline and Accept, and Talk rings: a rising arpeggio
-synthesized in `ring.rs` and played through PulseAudio on the call's speakers
+synthesized in `ring.rs` and played through `audio_io.rs` on the call's speakers
 until the call is answered, declined or stops ringing. While Talk isn't in
 front a desktop notification says who is calling. On Do Not Disturb the card
 shows without the ring or the notification. Accepting opens the DM and
@@ -558,7 +559,7 @@ libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
 (`native/decode.c`) and writes RGBA at up to 1080p into the shared frames.
 Watching is possible only in the call you're in. The stream's sound, Opus on
 the streamer's audio SSRC, is DAVE-decrypted as audio and played by the worker
-through PulseAudio on the call's speakers (`stream_audio::Player`), about 100
+through `audio_io.rs` on the call's speakers (`stream_audio::Player`), about 100
 ms queued; being deafened silences it, which Talk tells the worker with a
 `hear` control. Talk's workers play as "Talk", which sharing leaves out, so a
 stream you watch never reaches one you share. Watching a stream from Discord's
@@ -793,8 +794,8 @@ an error.
   libwebrtc's FFmpeg lacks it. The file downloads into `discord-videos/`
   beside the account file, and plays as it arrives: the worker's reads wait
   for the download. It goes when the video stops, as when the channel
-  closes. Sound plays on the call's speakers through PulseAudio, on Linux
-  only for now. Over the mute button a slider sets how loud, as does the
+  closes. Sound plays on the call's speakers through `audio_io.rs`, on
+  Linux and Windows. Over the mute button a slider sets how loud, as does the
   wheel; its travel is squared, so its middle sounds about half as loud.
   Turning it to nothing mutes, and unmuting brings back the level it had.
   The next video plays as loud, until Talk closes.
@@ -1303,7 +1304,10 @@ linked account, kept in memory. With `TALK_DISCORD_TEST_UNLINKED=1` too, Talk
 starts unlinked and links against the fake, whose controls scan and confirm
 the code. The fake resumes a dropped gateway session, replaying what it
 missed, and can send op 7. `crates/talk-discord/tests/fake_server.rs`
-runs against it. What the fake can't show, such as media and DAVE with
+runs against it. It counts the audio a call sends (`/_control/voice-audio`),
+which the ignored `discord_audio` test `a_call_sends_what_the_microphone_hears`
+checks: Talk joins the Lounge, unmutes and beeps into a microphone that hears
+its speakers, as a private PulseAudio of null sinks does. What the fake can't show, such as media and DAVE with
 Discord's servers, needs real Discord. Use a separate test account, which the
 owner provides, in a private test server. Run these tests by hand, never in CI: repeated automated logins
 are what gets accounts flagged. Keep the QR-linked test token in the developer's

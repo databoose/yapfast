@@ -55,6 +55,49 @@ device models were not supplied. Restart behavior, extended waiting alone,
 network interruption, forced crashes, resizing and copy/paste were not covered
 by this confirmation.
 
+## Discord voice on Windows
+
+Discord voice, the input meter and the Discord input sensitivity meter,
+ringing, Talk's sounds, and a watched stream's or a video's sound use WASAPI
+on Windows, in `crates/talk-core/src/audio_io/wasapi.rs`. Each stream is
+shared-mode and event-driven: the audio engine converts between Talk's 48 kHz
+and the device's format, and reading or writing waits for its event on the
+thread that already did the reading or writing on Linux, copying straight
+between Talk's buffers and the engine's. WebRTC's Windows device module names
+each device by its endpoint id (`{0.0.0.00000000}.{…}` for speakers,
+`{0.0.1.00000000}.{…}` for microphones), so the chosen device opens directly
+by that id; none is the console default. Go Live doesn't share other
+applications' sound on Windows yet.
+
+Checked under Wine 10.0 on 2026-10-13, with Wine's audio going to a private
+PulseAudio of null sinks, so nothing reached real speakers:
+
+- `audio_io::tests::hears_what_it_plays`: a second of a 440 Hz tone played
+  through WASAPI is heard back whole (876–879 zero crossings for 880).
+- `audio_io::tests::opens_every_listed_device`: every microphone and speaker
+  LiveKit lists opens by its id, and an unknown id is refused.
+- `discord_audio::processes_a_recording`: the Discord microphone's processing,
+  WebRTC's echo cancellation and gain control with DeepFilterNet, gives the
+  same bytes as on Linux.
+- `discord_audio::tests::a_call_sends_what_the_microphone_hears`, against
+  `testing/fake_discord.ts`: Talk joins the Lounge, unmutes, and the fake
+  receives 56–91 Opus packets that aren't silence from two seconds of beeps,
+  with the speaking flag, in three runs out of three.
+- The rest of `talk-core`'s tests pass, except
+  `frames::tests::frames_pass_from_writer_to_reader`: Windows won't remove the
+  video frames file while it's mapped, so watching a stream or playing a
+  video leaves it in the temporary folder.
+
+Run them from the Windows shell with `cargo xwin test --no-run --profile fast
+--target x86_64-pc-windows-msvc -p talk-core --lib`, then run the test
+executable under Wine with `PULSE_SERVER` naming the private PulseAudio.
+
+Wine's capture starts 0.3–1 s after it's opened, so the first moments a
+microphone hears are lost there. Real Windows needs checking for that, along
+with Bluetooth headsets, a device unplugged during a call, a default device
+changed during a call, exclusive-mode applications, and whether the
+communications ducking setting turns other sound down during a call.
+
 ## Build validation on 2026-10-13
 
 The first cross-build since Discord voice, Go Live's native codecs and

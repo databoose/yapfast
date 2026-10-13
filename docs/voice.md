@@ -41,7 +41,7 @@ Disturb.
 `sounds.rs` makes each sound as it plays, so nothing is bundled. The four sets
 are Felt piano, Soft marimba, Mellow Rhodes and Glow, all in F major pentatonic
 so any two sound well together. They play on the call's speakers through
-`audio_io.rs`, so for now they're Linux-only, like ringing. Settings › Sounds chooses
+`audio_io.rs`, on Linux and Windows, like ringing. Settings › Sounds chooses
 the set and the volume, from 0% to 200%. A slider's percentage becomes a gain
 by its square, which spreads the quiet settings along more of it. At 100%, the
 default, the loudest sounds peak 12 dB under full scale, and at 200% they reach
@@ -82,7 +82,8 @@ The input menu's level meter reads the chosen microphone locally through
 `audio_io.rs`, raw and before any processing, only while the menu is open. It
 works while muted, outside calls and in the preview, and it never touches the
 call: muted, nothing is published or sent. It shows as "Input level" in the
-system's recording streams. Windows has no meter yet.
+system's recording streams on Linux. On Windows it reads the microphone
+through WASAPI.
 
 ## Run the local demo
 
