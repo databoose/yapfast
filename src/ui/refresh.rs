@@ -1848,6 +1848,15 @@ impl Adapter {
             voice.microphone.as_deref(),
         ));
         window.set_speaker_index(device_index(&voice.speakers, voice.speaker.as_deref()));
+        update_model(
+            &self.models.cameras,
+            voice
+                .cameras
+                .iter()
+                .map(|device| device_label(&device.name))
+                .collect(),
+        );
+        window.set_camera_index(device_index(&voice.cameras, voice.camera.as_deref()));
     }
 
     /// The open profile card, and the profile beside a one-to-one DM, with

@@ -1149,6 +1149,13 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         {
             window.set_share_frame(frame);
         }
+        if let Some(frame) = adapter
+            .camera_test
+            .as_ref()
+            .and_then(|(_, feed)| feed.take(pictures::frame))
+        {
+            window.set_camera_preview(frame);
+        }
         if let Some(frame) = voice
             .watching
             .as_ref()
@@ -1366,6 +1373,40 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         }
     });
     let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_select_camera(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let id = usize::try_from(index).ok().and_then(|index| {
+            let adapter = state.borrow();
+            adapter
+                .app
+                .state
+                .voice
+                .cameras
+                .get(index)
+                .map(|device| device.id.clone())
+        });
+        if let Some(id) = id {
+            let mut adapter = state.borrow_mut();
+            adapter.action(&window, Action::Voice(voice::Command::Camera(id)));
+            if adapter.camera_test.is_some() {
+                adapter.camera_test = None;
+                start_camera_test(&mut adapter, &window);
+            }
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_test_camera(move |on| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        adapter.camera_test = None;
+        window.set_camera_note(SharedString::default());
+        if on {
+            start_camera_test(&mut adapter, &window);
+        }
+    });
+    let state = adapter.clone();
     window.on_metering(move |on| {
         let mut adapter = state.borrow_mut();
         let microphone = adapter.app.state.voice.microphone.clone();
@@ -1419,4 +1460,17 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
 thread_local! {
     /// What the share menu lists to share, in its order.
     static SHAREABLE: RefCell<Vec<talk_core::stream_worker::Source>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Films with the chosen camera into the voice settings' preview, which is
+/// about 400 by 225 points.
+fn start_camera_test(adapter: &mut Adapter, window: &TalkWindow) {
+    let scale = window.window().scale_factor();
+    let feed = talk_core::picture::Feed::new();
+    feed.show_at(Some(((400.0 * scale) as u32, (225.0 * scale) as u32)));
+    let camera = adapter.app.state.voice.camera.clone();
+    match talk_core::camera::Camera::open(camera.as_deref(), Box::new(feed.sink())) {
+        Ok(camera) => adapter.camera_test = Some((camera, feed)),
+        Err(error) => window.set_camera_note(error.to_string().into()),
+    }
 }

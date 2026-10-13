@@ -25,6 +25,59 @@ created until Unmute. Leaving releases the audio handle, and restarting Talk
 requires joining again. Preview calls are simulated, but the preview lists and
 chooses real devices without remembering them.
 
+## Cameras
+
+Settings › Voice & video chooses the camera, beside the microphone and
+speakers, and remembers it in `devices.json`. "Test video" films with it in a
+preview there until stopped, or until settings close. An unplugged camera
+gives way to the first one listed until it returns, as audio devices do.
+`--audio-devices` lists cameras too.
+
+Talk films through libwebrtc's own capture module, which its libwebrtc
+archive already holds (`native/camera.cc`, about 16 KB of code). On Linux the
+module reads V4L2 devices on a thread of its own. Talk registers for the
+device's raw frames, so the module hands over the driver's buffer without
+converting it, and libyuv converts each one (YUY2, MJPEG, NV12 and the rest)
+into the same I420 buffer, frame after frame. It asks for 1280×720 at 30
+frames a second, as Discord's client films without Nitro and as LiveKit's
+default camera does, and scales down a camera that can't film that small.
+
+A picture on screen, such as the preview, is a `picture::Feed`: whoever makes
+the frames converts each straight to RGBA at the size it shows, in one of at
+most four Slint pixel buffers the feed reuses, and the window shows that
+buffer without a copy. Off screen, a feed converts nothing and lets go of its
+buffers. On 2026-10-13 the settings preview, a 1280×720 YUY2 camera shown at
+400×225, took 4.4% of a core and 3.5 MiB of RSS, including Slint drawing it 30
+times a second with Skia Software. One capture thread came and went with it.
+
+The other ways to film, compared before choosing:
+
+| | libwebrtc's module | V4L2 directly | PipeWire's camera portal | nokhwa |
+| --- | --- | --- | --- | --- |
+| New dependencies | None | A V4L2 crate, and an MJPEG decoder | None in libwebrtc's module; a portal dialog | The crate, its backends and image decoders |
+| Copies per frame | One conversion into a reused buffer | The same, written by Talk | The same | A new buffer per frame |
+| Windows | DirectShow, in the same module | No | No | Media Foundation |
+| Sandboxes such as Flatpak | V4L2 needs the device | The same | Yes | The same as V4L2 |
+
+The portal is in the same module: `VideoCaptureOptions` with PipeWire allowed
+asks it over D-Bus, as screen sharing asks its own portal. Talk will turn it
+on when it ships in a sandbox; until then V4L2 needs no dialog.
+
+Windows will build `native/camera.cc` with MSVC and get DirectShow through the
+same factory. webrtc-sys already links `strmiids`, DirectShow's interface ids.
+DirectShow needs COM on the threads that list and open cameras; the module's
+device list initialises it, which a Windows run should confirm. The Windows
+libwebrtc archive includes the module's DirectShow capture
+(`VideoCaptureDS`), so this is mostly opening the build's and `camera.rs`'s
+Linux-only gates and a check on real Windows; it comes after the camera
+stack.
+
+`TALK_CAMERA_TEST_PATTERN=1` adds a "Test pattern" camera that films moving
+bars, for tests and machines without a camera. `cargo test -p talk-core
+films_a_real_camera -- --ignored` films the first real camera for a second; a
+V4L2 loopback device fed by `ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30
+-pix_fmt yuyv422 -f v4l2 /dev/videoN` works as one.
+
 ## Sounds
 
 Talk plays its own short sounds when this account joins or leaves a call, and

@@ -297,6 +297,7 @@ pub(crate) async fn call(
                 // Used once the call connects.
                 Some(Command::Microphone(id)) => state.microphone = Some(id),
                 Some(Command::Speaker(id)) => state.speaker = Some(id),
+                Some(Command::Camera(id)) => state.camera = Some(id),
                 Some(Command::Devices) => { let _ = devices(state); }
                 _ => {}
             },
@@ -458,6 +459,10 @@ pub(crate) async fn call(
                                 Ok(opened) => speakers = Some(opened),
                                 Err(_) => state.error = Some("Could not switch speakers. Refresh devices and choose another.".into()),
                             }
+                        }
+                        Some(Command::Camera(id)) => {
+                            state.camera = Some(id);
+                            Chosen::write(remembered, state);
                         }
                         Some(Command::GoLive(quality)) => {
                             if share.is_none() {

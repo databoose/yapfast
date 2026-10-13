@@ -137,17 +137,15 @@ impl Application {
     }
 
     /// The preview's devices as listed for it; nothing else about voice is real.
-    pub fn preview_devices(
-        &mut self,
-        devices: Result<(Vec<voice::Device>, Vec<voice::Device>), String>,
-    ) {
+    pub fn preview_devices(&mut self, devices: Result<voice::Devices, String>) {
         if !self.state.preview {
             return;
         }
         match devices {
-            Ok((microphones, speakers)) => {
-                self.state.voice.microphones = microphones;
-                self.state.voice.speakers = speakers;
+            Ok(devices) => {
+                self.state.voice.microphones = devices.microphones;
+                self.state.voice.speakers = devices.speakers;
+                self.state.voice.cameras = devices.cameras;
             }
             Err(error) => self.state.voice.error = Some(error),
         }
@@ -159,8 +157,10 @@ impl Application {
         voice::State {
             microphones: voice.microphones.clone(),
             speakers: voice.speakers.clone(),
+            cameras: voice.cameras.clone(),
             microphone: voice.microphone.clone(),
             speaker: voice.speaker.clone(),
+            camera: voice.camera.clone(),
             ..Default::default()
         }
     }

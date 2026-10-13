@@ -291,7 +291,11 @@ mod tests {
     #[test]
     #[ignore = "needs sound devices"]
     fn opens_every_listed_device() {
-        let (microphones, speakers) = crate::voice::list_devices().unwrap();
+        let crate::voice::Devices {
+            microphones,
+            speakers,
+            ..
+        } = crate::voice::list_devices().unwrap();
         assert!(
             !microphones.is_empty() && !speakers.is_empty(),
             "no devices"

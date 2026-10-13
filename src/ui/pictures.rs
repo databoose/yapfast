@@ -149,6 +149,36 @@ pub(super) fn decode_into_slint_buffers() {
     });
 }
 
+/// A moving picture's frame in Slint's own buffer, which it shows as it is.
+struct SlintFrame(slint::SharedPixelBuffer<slint::Rgba8Pixel>);
+
+impl talk_core::picture::FrameBuffer for SlintFrame {
+    fn size(&self) -> (u32, u32) {
+        (self.0.width(), self.0.height())
+    }
+
+    fn pixels_mut(&mut self) -> &mut [u8] {
+        // The feed writes only buffers Slint no longer shows, so this never
+        // copies.
+        self.0.make_mut_bytes()
+    }
+}
+
+/// Has moving pictures made in Slint's buffers from now on.
+pub(super) fn make_frames_in_slint_buffers() {
+    talk_core::picture::set_frame_buffers(|width, height| {
+        Box::new(SlintFrame(slint::SharedPixelBuffer::new(width, height)))
+    });
+}
+
+/// A moving picture's frame, shown without a copy.
+pub(crate) fn frame(buffer: &dyn talk_core::picture::FrameBuffer) -> slint::Image {
+    match (buffer as &dyn std::any::Any).downcast_ref::<SlintFrame>() {
+        Some(frame) => slint::Image::from_rgba8(frame.0.clone()),
+        None => slint::Image::default(),
+    }
+}
+
 pub(crate) fn picture(picture: &Picture) -> slint::Image {
     let buffer = match picture.rgba.buffer::<SlintPixels>() {
         Some(pixels) => pixels.0.clone(),

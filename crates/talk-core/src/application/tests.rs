@@ -1389,23 +1389,27 @@ fn the_preview_lists_and_chooses_real_devices_across_calls() {
         id: id.into(),
         name: id.into(),
     };
-    app.preview_devices(Ok((
-        vec![device("mic-a"), device("mic-b")],
-        vec![device("out")],
-    )));
+    app.preview_devices(Ok(voice::Devices {
+        microphones: vec![device("mic-a"), device("mic-b")],
+        speakers: vec![device("out")],
+        cameras: vec![device("camera-a"), device("camera-b")],
+    }));
     assert!(
         app.dispatch(Action::Voice(voice::Command::Microphone("mic-b".into())))
             .is_empty()
     );
+    app.dispatch(Action::Voice(voice::Command::Camera("camera-b".into())));
     app.dispatch(Action::RequestJoinVoice("lounge".into()));
     app.dispatch(Action::Voice(voice::Command::Leave));
     assert_eq!(app.state.voice.microphones.len(), 2);
     assert_eq!(app.state.voice.microphone.as_deref(), Some("mic-b"));
+    assert_eq!(app.state.voice.cameras.len(), 2);
+    assert_eq!(app.state.voice.camera.as_deref(), Some("camera-b"));
     app.preview_devices(Err("No sound server.".into()));
     assert_eq!(app.state.voice.error.as_deref(), Some("No sound server."));
     // A signed-in session lists devices in its voice worker instead.
     app.dispatch(Action::Logout);
-    app.preview_devices(Ok((vec![], vec![])));
+    app.preview_devices(Ok(voice::Devices::default()));
     assert!(app.state.voice.error.is_none());
 }
 

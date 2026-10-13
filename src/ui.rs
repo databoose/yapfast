@@ -68,6 +68,7 @@ pub fn run(
     plan: graphics::Plan,
 ) -> Result<Exit> {
     decode_into_slint_buffers();
+    pictures::make_frames_in_slint_buffers();
     // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
     // surface; Talk owns the fallback and tells the user about it.
     let renderer = match plan.renderer {
@@ -719,6 +720,7 @@ struct Models {
     friends_online: Rc<VecModel<FriendRow>>,
     microphones: Rc<VecModel<SharedString>>,
     speakers: Rc<VecModel<SharedString>>,
+    cameras: Rc<VecModel<SharedString>>,
     staged: Rc<VecModel<StagedFile>>,
 }
 
@@ -749,6 +751,7 @@ impl Models {
         window.set_friends_online(ModelRc::from(self.friends_online.clone()));
         window.set_microphones(ModelRc::from(self.microphones.clone()));
         window.set_speakers(ModelRc::from(self.speakers.clone()));
+        window.set_cameras(ModelRc::from(self.cameras.clone()));
         window.set_staged(ModelRc::from(self.staged.clone()));
     }
 }
@@ -857,6 +860,8 @@ struct Adapter {
     dialog: Option<slint::JoinHandle<()>>,
     /// Reads the microphone while the input menu shows its level.
     meter: Option<InputMeter>,
+    /// Films with the chosen camera while voice settings try it.
+    camera_test: Option<(talk_core::camera::Camera, talk_core::picture::Feed)>,
     /// Runs the microphone through Discord's processing while voice settings
     /// show the voice gate's sensitivity.
     #[cfg(feature = "discord")]
@@ -970,6 +975,7 @@ impl Adapter {
                 viewer_size: None,
                 dialog: None,
                 meter: None,
+                camera_test: None,
                 #[cfg(feature = "discord")]
                 gate_meter: None,
                 thumbnails: HashMap::new(),

@@ -110,7 +110,7 @@ export component Choices inherits Rectangle {
 // Settings cover the window: sections on the left, the chosen one, given as
 // children, on the right. Escape or the close button returns to the conversation.
 export component SettingsScreen inherits Rectangle {
-    /// The section showing: 0 account, 1 voice and audio, 2 messages,
+    /// The section showing: 0 account, 1 voice and video, 2 messages,
     /// 3 notifications, 4 Discord, 5 sounds.
     in-out property <int> settings-section;
     in property <bool> discord-build;
@@ -140,7 +140,7 @@ export component SettingsScreen inherits Rectangle {
                             selected: root.settings-section == 0; clicked => { root.settings-section = 0; }
                         }
                         ChannelRow {
-                            text: "Voice & audio"; icon: @image-url("icons/headphones.svg");
+                            text: "Voice & video"; icon: @image-url("icons/headphones.svg");
                             selected: root.settings-section == 1; clicked => { root.settings-section = 1; root.refresh-devices(); }
                         }
                         ChannelRow {
@@ -240,12 +240,19 @@ export component AccountSettings inherits VerticalLayout {
     }
 }
 
-// Settings: the audio devices, and how calls start and sound.
+// Settings: the audio devices and camera, and how calls start and sound.
 export component VoiceSettings inherits VerticalLayout {
     in property <[string]> microphones;
     in property <[string]> speakers;
+    in property <[string]> cameras;
     in property <int> microphone-index;
     in property <int> speaker-index;
+    in property <int> camera-index;
+    /// Filming to try the camera, and what it films; and why it can't, if
+    /// it couldn't start.
+    in-out property <bool> camera-testing;
+    in property <image> camera-preview;
+    in property <string> camera-note;
     in-out property <bool> unmute-on-join;
     in-out property <bool> level-voice;
     /// What suppresses noise in Discord calls: 0 DeepFilterNet, 1 RNNoise, 2
@@ -265,10 +272,11 @@ export component VoiceSettings inherits VerticalLayout {
     in property <bool> discord;
     callback select-microphone(int);
     callback select-speaker(int);
+    callback select-camera(int);
     callback refresh-devices;
     callback preferences-changed;
     spacing: 16px;
-    SettingsTitle { text: "Voice & audio"; }
+    SettingsTitle { text: "Voice & video"; }
     HorizontalLayout {
         spacing: 16px;
         VerticalLayout {
@@ -283,6 +291,39 @@ export component VoiceSettings inherits VerticalLayout {
         }
     }
     if root.microphones.length == 0 && root.speakers.length == 0: Label { text: "No audio devices found. Connect one, then refresh."; }
+    HorizontalLayout {
+        spacing: 16px;
+        VerticalLayout {
+            spacing: 8px; horizontal-stretch: 1; alignment: start;
+            SettingsHeading { text: "CAMERA"; }
+            ComboBox { model: root.cameras; current-index: root.camera-index; enabled: root.cameras.length > 0; accessible-label: "Camera device"; selected => { root.select-camera(self.current-index); } }
+            if root.cameras.length == 0: Label { text: "No camera found. Connect one, then refresh."; }
+        }
+        VerticalLayout {
+            spacing: 8px; horizontal-stretch: 1;
+            SettingsHeading { text: "PREVIEW"; }
+            Rectangle {
+                height: self.width * 9 / 16; border-radius: 8px; background: #000000; clip: true;
+                accessible-role: image; accessible-label: root.camera-testing ? "Your camera" : "Camera preview, off";
+                if root.camera-testing: Image { width: parent.width; height: parent.height; source: root.camera-preview; image-fit: contain; }
+                if !root.camera-testing || root.camera-preview.width == 0: VerticalLayout {
+                    alignment: center; spacing: 10px; padding: 12px;
+                    Image { height: 30px; source: @image-url("icons/video.svg"); image-fit: contain; colorize: Theme.secondary; }
+                    Text {
+                        text: root.camera-note != "" ? root.camera-note : root.camera-testing ? "Starting your camera..." : "Your camera is off.";
+                        color: Theme.secondary; font-size: 14px; horizontal-alignment: center; wrap: word-wrap;
+                    }
+                }
+            }
+            HorizontalLayout {
+                ActionButton {
+                    text: root.camera-testing ? "Stop video" : "Test video"; small: true; enabled: root.cameras.length > 0;
+                    clicked => { root.camera-testing = !root.camera-testing; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
     HorizontalLayout {
         ActionButton { text: "Refresh devices"; icon: @image-url("icons/refresh-cw.svg"); ghost: true; small: true; clicked => { root.refresh-devices(); } }
         Rectangle { horizontal-stretch: 1; }
