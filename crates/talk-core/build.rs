@@ -20,10 +20,10 @@ fn main() {
         .include(third_party.join("libyuv/include"))
         .warnings(true)
         .compile("talk_picture");
-    // Linux captures through V4L2. Windows's DirectShow side of the same
-    // module is in its libwebrtc archive too, but isn't built yet; see
-    // docs/voice.md.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // Linux captures through V4L2, and Windows through DirectShow, both in
+    // the same module of the libwebrtc archive.
+    if matches!(target_os.as_str(), "linux" | "windows") {
         let mut camera = cc::Build::new();
         camera
             .cpp(true)
@@ -31,8 +31,10 @@ fn main() {
             .include(&include)
             .include(third_party.join("abseil-cpp"))
             .include(third_party.join("libyuv/include"))
-            .flag("-std=c++20")
+            .std("c++20")
             .flag("-Wno-deprecated-declarations")
+            // libwebrtc's headers mark some pointers and not others.
+            .flag("-Wno-nullability-completeness")
             .warnings(true);
         // The toolchain sets its own hardening mode.
         for (key, value) in webrtc_sys_build::webrtc_defines() {
@@ -41,13 +43,18 @@ fn main() {
             }
         }
         camera.compile("talk_camera");
+        // DirectShow's device list reads each camera's name and path as a
+        // VARIANT; webrtc-sys links the rest.
+        if target_os == "windows" {
+            println!("cargo:rustc-link-lib=dylib=oleaut32");
+        }
     }
     if std::env::var_os("CARGO_FEATURE_DISCORD").is_none() {
         return;
     }
-    let os = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
-        Ok("windows") => "win",
-        Ok("macos") => "mac",
+    let os = match target_os.as_str() {
+        "windows" => "win",
+        "macos" => "mac",
         _ => "linux",
     };
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {

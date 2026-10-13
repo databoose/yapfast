@@ -337,7 +337,7 @@ async fn connected(
         let mut watching = Watching::default();
         // The LiveKit identity of each member, to match cameras to people.
         let mut members: HashMap<String, String> = HashMap::new();
-        state.can_film = cfg!(target_os = "linux");
+        state.can_film = cfg!(any(target_os = "linux", windows));
         state.phase = Phase::Connected;
         loop {
             let people = roster.borrow_and_update().clone();

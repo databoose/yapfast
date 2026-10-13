@@ -48,8 +48,8 @@ adding by username, and Talk sets your status and custom status.
 
 Not there yet:
 
-- Discord voice and Go Live work only on Linux. On Windows, joining Discord
-  voice stops with that message. Discord on Windows is otherwise untested.
+- Discord on Windows, including voice, Go Live and cameras, has been checked
+  under Wine but not yet on real Windows.
 - A captcha Discord asks for while linking opens in the browser; it hasn't
   been solved against real Discord yet.
 - Threads and forum channels.
@@ -58,7 +58,7 @@ Not there yet:
 - Blocking and unblocking, and a list of blocked people. Messages from people
   you blocked elsewhere already show collapsed.
 - Server folders, joining servers by invite, and leaving them.
-- Discord's push-to-talk and voice settings, the soundboard and camera video.
+- Discord's push-to-talk and voice settings, and the soundboard.
 - Polls, activities and server administration.
 - Marking an upload as a spoiler.
 - Animated custom emoji in messages show their first frame.

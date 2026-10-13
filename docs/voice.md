@@ -34,11 +34,12 @@ gives way to the first one listed until it returns, as audio devices do.
 `--audio-devices` lists cameras too.
 
 Talk films through libwebrtc's own capture module, which its libwebrtc
-archive already holds (`native/camera.cc`, about 16 KB of code). On Linux the
-module reads V4L2 devices on a thread of its own. Talk registers for the
-device's raw frames, so the module hands over the driver's buffer without
-converting it, and libyuv converts each one (YUY2, MJPEG, NV12 and the rest)
-into the same I420 buffer, frame after frame. It asks for 1280×720 at 30
+archive already holds (`native/camera.cc`, about 16 KB of code), through V4L2
+on Linux and DirectShow on Windows. The module reads the device on a thread
+of its own. Talk registers for the device's raw frames, so the module hands
+over the driver's buffer without converting it, and libyuv converts each one
+(YUY2, MJPEG, NV12, RGB and the rest) into the same I420 buffer, frame after
+frame. It asks for 1280×720 at 30
 frames a second, as Discord's client films without Nitro and as LiveKit's
 default camera does, and scales down a camera that can't film that small.
 
@@ -99,20 +100,27 @@ The portal is in the same module: `VideoCaptureOptions` with PipeWire allowed
 asks it over D-Bus, as screen sharing asks its own portal. Talk will turn it
 on when it ships in a sandbox; until then V4L2 needs no dialog.
 
-Windows will build `native/camera.cc` with MSVC and get DirectShow through the
-same factory. webrtc-sys already links `strmiids`, DirectShow's interface ids.
-DirectShow needs COM on the threads that list and open cameras; the module's
-device list initialises it, which a Windows run should confirm. The Windows
-libwebrtc archive includes the module's DirectShow capture
-(`VideoCaptureDS`), so this is mostly opening the build's and `camera.rs`'s
-Linux-only gates and a check on real Windows; it comes after the camera
-stack.
+On Windows the same module films through DirectShow (`VideoCaptureDS`), from
+the Windows libwebrtc archive, and libyuv flips DirectShow's bottom-up RGB in
+the same conversion. The module's device list joins COM's multithreaded
+apartment on the thread that opens a camera, and leaves it on the thread that
+closes it. A camera there is opened, kept and closed by a thread of its own,
+`talk-camera`, so no other thread's apartment is joined or left by mistake;
+it's one thread more than on Linux, parked while the camera films. A camera's
+id is its device path (`\\?\usb#vid_…&pid_…#…`), which stays the same across
+restarts; a camera without a serial number may get a new one in another USB
+port, and the first camera stands in until it's chosen again. A camera
+without a device path, such as a virtual one, goes by its name. Cameras that
+only Media Foundation lists, such as some laptops' built-in MIPI cameras,
+aren't listed. [Windows beta](windows-beta.md#cameras-on-windows) has what
+was checked under Wine.
 
 `TALK_CAMERA_TEST_PATTERN=1` adds a "Test pattern" camera that films moving
 bars, for tests and machines without a camera. `cargo test -p talk-core
-films_a_real_camera -- --ignored` films the first real camera for a second; a
-V4L2 loopback device fed by `ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30
--pix_fmt yuyv422 -f v4l2 /dev/videoN` works as one.
+films_a_real_camera -- --ignored` films the first real camera for a second,
+or the first whose name holds `TALK_TEST_CAMERA`; a V4L2 loopback device fed
+by `ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30 -pix_fmt yuyv422 -f
+v4l2 /dev/videoN` works as one.
 
 ## Sounds
 
