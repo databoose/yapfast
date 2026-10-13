@@ -840,6 +840,8 @@ pub enum Action {
     /// Turn the microphone on as a call connects, as a preference asks; quietly,
     /// since joining already made a sound.
     UnmuteOnJoin,
+    /// Deafen as a call connects, as a preference asks; quietly too.
+    DeafenOnJoin,
     /// List Discord channels this account can't see, locked.
     ShowHiddenChannels(bool),
     /// Mark Discord channels read on Discord when reading them in Talk.
@@ -1482,6 +1484,7 @@ impl Application {
             Action::Voice(voice::Command::Join(id)) => self.dispatch(Action::RequestJoinVoice(id)),
             Action::Voice(command) => self.voice_command(command),
             Action::UnmuteOnJoin => self.voice_command_quietly(voice::Command::Mute(false)),
+            Action::DeafenOnJoin => self.voice_command_quietly(voice::Command::Deafen(true)),
         }
     }
 

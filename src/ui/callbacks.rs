@@ -500,6 +500,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
         layout.unmute_on_join = window.get_unmute_on_join();
+        layout.deafen_on_join = window.get_deafen_on_join();
         layout.level_voice = Some(window.get_level_voice());
         talk_core::leveling::set_enabled(window.get_level_voice());
         layout.noise_suppression = chosen(&SUPPRESSORS, window.get_noise_suppression());
@@ -952,6 +953,10 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     let weak = window.as_weak();
     window.on_toggle_mute(move || {
         if let Some(window) = weak.upgrade() {
+            if !state.borrow().app.state.voice.active() {
+                state.borrow_mut().toggle_on_join(&window, false);
+                return;
+            }
             let muted = state.borrow().app.state.voice.muted;
             state
                 .borrow_mut()
@@ -1179,8 +1184,19 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_join_deafened(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(&window, Action::DeafenOnJoin);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_toggle_deafen(move || {
         if let Some(window) = weak.upgrade() {
+            if !state.borrow().app.state.voice.active() {
+                state.borrow_mut().toggle_on_join(&window, true);
+                return;
+            }
             let deafened = state.borrow().app.state.voice.deafened;
             state
                 .borrow_mut()

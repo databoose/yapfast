@@ -490,6 +490,8 @@ struct Layout {
     link_previews: Option<bool>,
     /// Joining a call turns the microphone on.
     unmute_on_join: bool,
+    /// Joining a call deafens.
+    deafen_on_join: bool,
     /// Your voice is evened out in calls; on unless turned off.
     level_voice: Option<bool>,
     /// What takes out noise in Discord calls, and how far; DeepFilterNet,
@@ -603,6 +605,7 @@ impl Layout {
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
         window.set_unmute_on_join(self.unmute_on_join);
+        window.set_deafen_on_join(self.deafen_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
         talk_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
         window.set_noise_suppression(choice(&SUPPRESSORS, self.noise_suppression));
@@ -1189,6 +1192,34 @@ impl Adapter {
         if voice.active() && voice.deafened && !matches!(sound, Sound::Deafen | Sound::Undeafen) {
             return;
         }
+        self.play(sound);
+    }
+
+    /// Out of a call, mutes or deafens the next one, or stops doing so, with
+    /// the sound it makes in a call. Unmuting undeafens, as in a call.
+    fn toggle_on_join(&mut self, window: &TalkWindow, deafen: bool) {
+        let layout = &mut self.layout;
+        let sound = if deafen {
+            layout.deafen_on_join = !layout.deafen_on_join;
+            if layout.deafen_on_join {
+                Sound::Deafen
+            } else {
+                Sound::Undeafen
+            }
+        } else if layout.deafen_on_join {
+            (layout.deafen_on_join, layout.unmute_on_join) = (false, true);
+            Sound::Undeafen
+        } else {
+            layout.unmute_on_join = !layout.unmute_on_join;
+            if layout.unmute_on_join {
+                Sound::Unmute
+            } else {
+                Sound::Mute
+            }
+        };
+        window.set_unmute_on_join(layout.unmute_on_join);
+        window.set_deafen_on_join(layout.deafen_on_join);
+        layout.write(&self.root);
         self.play(sound);
     }
 

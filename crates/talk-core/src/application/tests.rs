@@ -1317,6 +1317,9 @@ fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
     // The preference that unmutes on joining does so without a sound.
     assert!(app.dispatch(Action::UnmuteOnJoin).is_empty());
     assert!(!app.state.voice.muted);
+    // And the one that deafens, which mutes as well.
+    assert!(app.dispatch(Action::DeafenOnJoin).is_empty());
+    assert!(app.state.voice.muted && app.state.voice.deafened);
     assert!(app.dispatch(Action::Logout).is_empty());
     assert!(!app.state.preview);
     assert!(!app.state.voice.active());
@@ -1388,6 +1391,12 @@ fn calls_sound_as_people_come_and_go_but_not_while_reconnecting_or_ringing() {
     assert!(matches!(
         app.dispatch(Action::UnmuteOnJoin).as_slice(),
         [Effect::Backend(Command::Voice(voice::Command::Mute(false)))]
+    ));
+    assert!(matches!(
+        app.dispatch(Action::DeafenOnJoin).as_slice(),
+        [Effect::Backend(Command::Voice(voice::Command::Deafen(
+            true
+        )))]
     ));
 }
 
