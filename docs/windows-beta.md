@@ -35,7 +35,10 @@ With Alice signed in on Linux and Bob on Windows:
 3. Choose microphone and speakers in the voice settings. Use headphones.
 4. Unmute both people and confirm each can hear the other.
 5. Check mute, deafen, leaving, and rejoining. Browse general while voice stays connected.
-6. Record Windows version, GPU/driver, audio devices, input/copy/paste behavior,
+6. Choose a camera in the voice settings, try "Test video", then turn the camera
+   on in Lounge. Each should see the other's camera. Restart Talk and check the
+   camera is still chosen.
+7. Record Windows version, GPU/driver, audio devices, cameras, input/copy/paste behavior,
    window resizing, and any error text. Never include passwords or recovery keys.
 
 The build and execution evidence is recorded in [compatibility](compatibility.md).
@@ -164,6 +167,45 @@ sharing a window that's minimized, moved to another screen or closed while
 shared, screens on mixed-DPI setups, Windows Graphics Capture's yellow
 border, process loopback hearing other applications and leaving out Talk's
 own voices, and the worker's start-up time from a packaged build.
+
+## Cameras on Windows
+
+Cameras film through libwebrtc's DirectShow capture; see
+[Cameras](voice.md#cameras) for how, and how a camera's id is kept.
+
+Checked under Wine 10.0 on 2026-10-14. That Wine is built without libv4l2,
+so its DirectShow reads only a V4L2 device that supports `read()` and BGR24:
+a v4l2loopback device fed by `ffmpeg -re -f lavfi -i
+testsrc2=size=1280x720:rate=30 -pix_fmt bgr24 -f v4l2 /dev/videoN`. It also
+lists a USB webcam, which then fails to open.
+
+- `camera::tests::the_test_pattern_films_until_dropped` passes.
+- `films_a_real_camera` with `TALK_TEST_CAMERA` naming the loopback films 32–34
+  frames in a second at 1280×720. A frame dumped from it shows the picture
+  the right way up, not mirrored, and in its colours.
+- The packaged `talk.exe` passes `--help` and `--smoke-test`, and
+  `--audio-devices` lists the test pattern, the webcam and the loopback.
+- The Discord-only `talk.exe` on `scripts/ui-session --discord`, through a
+  `--bin` script like Go Live's below. Settings list the cameras, "Test
+  video" shows the loopback, and the choice is still there after Talk
+  restarts. In a DM call with Bob on the fake Discord, the webcam that won't
+  open says "Could not start your camera" and the call goes on. With the
+  loopback, the fake receives 671 H264 frames at 1280×720 with 8 keyframes
+  and none undecryptable; Bob's camera shows in his tile; turning the camera
+  off stops it, and the `talk-camera` thread and Wine's capture threads go.
+- The full `talk.exe` in a Matrix call on the local stack (`scripts/test-stack
+  up`), signed in as a new account whose first device it is, so it's
+  verified: the camera publishes a 1280×720 VP8 track with three simulcast
+  layers to LiveKit, and a Linux Talk in the same call shows it moving. The
+  Windows build shows the Linux participant's camera too.
+
+Only real Windows can check a real camera through DirectShow's kernel
+streaming (MJPEG, YUY2 and NV12, and the capability chosen for 1280×720 at 30
+frames a second), that a camera's id survives restarts and replugging, COM on
+the threads that list and open cameras, a camera another application is
+using, the camera privacy setting turned off, built-in laptop cameras that
+only Media Foundation lists, and the memory and processor time a camera
+takes.
 
 ## Build validation on 2026-10-13
 

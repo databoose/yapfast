@@ -351,7 +351,7 @@ pub(crate) async fn call(
     let result = async {
         let mut speakers = Some(open_discord_speakers(state, &played, &hearing)?);
         Chosen::write(remembered, state);
-        state.can_film = cfg!(target_os = "linux");
+        state.can_film = cfg!(any(target_os = "linux", windows));
         state.phase = Phase::Connected;
         if guild == PRIVATE && alone(&discord_states.borrow(), &channel, &me) {
             // Starting a DM call, rather than joining one, rings the others,

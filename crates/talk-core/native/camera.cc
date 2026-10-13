@@ -1,8 +1,8 @@
 /* Cameras through libwebrtc's video capture module, inside Talk's libwebrtc
- * archive: V4L2 on Linux, and DirectShow on Windows once Talk builds this
- * there. Frames arrive raw from the device (YUY2, MJPEG, NV12 and so on), on
- * the module's own capture thread, and come out as I420 planes in buffers this
- * camera reuses for every frame. */
+ * archive: V4L2 on Linux, and DirectShow on Windows. Frames arrive raw from
+ * the device (YUY2, MJPEG, NV12 and so on), on the module's own capture
+ * thread, and come out as I420 planes in buffers this camera reuses for every
+ * frame. */
 #include <stdint.h>
 #include <string.h>
 

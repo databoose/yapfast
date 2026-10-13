@@ -7,7 +7,7 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking; Discord's captcha, in the browser | A captcha solved against real Discord |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio on real Windows; cameras on Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio and cameras on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and channel menus, invites, making and changing channels, threads, leaving servers | Starting threads, forums, pinning, forwarding, server settings and privacy |
@@ -1470,7 +1470,6 @@ In rough order. The browser covers these until then.
 - A server's privacy settings: direct messages, message requests and
   activity status from its members.
 - Discord's push-to-talk, and its voice settings.
-- Cameras on Windows.
 - The soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
