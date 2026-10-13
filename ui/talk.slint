@@ -24,7 +24,7 @@ import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkel
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
-import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
+import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, ThreadChip, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
@@ -161,6 +161,9 @@ export component TalkWindow inherits Window {
     in property <string> notice;
     in-out property <string> graphics-notice;
     in property <string> room-name;
+    /// A Discord thread's channel: its name, and its room id to go back to.
+    in property <string> room-parent;
+    in property <string> room-parent-id;
     in property <image> room-icon;
     in property <bool> room-direct;
     in property <string> room-initial;
@@ -611,6 +614,9 @@ export component TalkWindow inherits Window {
     /// A folder on the rail was clicked: open or close it.
     callback toggle-folder(string);
     callback select-room(string);
+    /// Go to wherever a conversation is listed and open it, as a link to a
+    /// Discord thread does, asking for one that isn't listed.
+    callback open-room(string);
     callback draft-edited(string);
     callback filter-edited;
     callback send;
@@ -1283,6 +1289,19 @@ export component TalkWindow inherits Window {
                                 }
                             }
                         }
+                        // A thread follows its channel, which leads back to it.
+                        if root.room-parent != "" && root.room-selected: Image { source: @image-url("icons/hash.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
+                        if root.room-parent != "" && root.room-selected: parent-name := Text {
+                            text: root.room-parent; font-size: 16px; font-weight: 700; vertical-alignment: center;
+                            color: parent-touch.has-hover ? Theme.text : Theme.secondary;
+                            accessible-role: button; accessible-label: "Back to " + root.room-parent;
+                            accessible-action-default => { root.select-room(root.room-parent-id); }
+                            parent-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.select-room(root.room-parent-id); }
+                            }
+                        }
+                        if root.room-parent != "" && root.room-selected: Image { source: @image-url("icons/chevron-right.svg"); width: 16px; image-fit: contain; colorize: Theme.faint; }
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.requests-open: Image { source: @image-url("icons/inbox.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.friends-open: Image { source: @image-url("icons/users.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
@@ -1662,6 +1681,7 @@ export component TalkWindow inherits Window {
                                                 if index == 0 && root.room-ready: HistoryEdge {
                                                     loading: root.loading-history; failed: root.history-failed; start: root.history-start;
                                                     enabled: !root.busy && !root.preview; room-direct: root.room-direct; room-name: root.room-name;
+                                                    room-thread: root.room-parent != "";
                                                     earlier => { root.earlier(); }
                                                 }
                                                 // A new day's date, and the "New" divider in marigold above
@@ -1803,6 +1823,10 @@ export component TalkWindow inherits Window {
                                                             reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                                                             view-image(id, index) => { root.view-image(id, index); }
                                                         }
+                                                        if message.thread-room != "": ThreadChip {
+                                                            name: message.thread-name; detail: message.thread-detail;
+                                                            clicked => { root.open-room(message.thread-room); }
+                                                        }
                                                         if message.reactions.length > 0: HorizontalLayout {
                                                             spacing: 6px; alignment: start; padding-top: 4px;
                                                             for reaction in message.reactions: ReactionToggle {
@@ -1921,6 +1945,7 @@ export component TalkWindow inherits Window {
                             if root.room-selected && root.messages.length == 0 && root.room-ready: ConversationStart {
                                 width: parent.width; height: parent.height;
                                 room-selected: root.room-selected; room-ready: root.room-ready; room-direct: root.room-direct; room-name: root.room-name;
+                                room-thread: root.room-parent != "";
                                 room-icon: root.room-icon; room-initial: root.room-initial; room-tint: root.room-tint; room-picture: root.room-picture;
                             }
                             // Who else is typing, just above the composer in the room the
@@ -1996,7 +2021,7 @@ export component TalkWindow inherits Window {
                                         }
                                         composer := Composer {
                                             text <=> root.draft; enabled: root.composer-enabled; label: "Message";
-                                            placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
+                                            placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : root.room-selected && !root.room-direct && root.room-parent == "" ? "Message #" + root.room-name : root.room-selected ? "Message " + root.room-name : "Write a message";
                                             edited(text) => { root.draft-edited(text); }
                                             accepted => { root.send(); }
                                             suggesting: root.mentions.length > 0 || root.emoji-suggestions.length > 0;

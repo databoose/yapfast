@@ -523,7 +523,7 @@ pub fn live(
             channel: id,
             members,
         }) => {
-            if id == channel.channel {
+            if id == channel.channel || id == channel.members_of {
                 let _ = events.send(Event::Members {
                     room: channel.room.clone(),
                     members: Ok(members.into_iter().map(chat_member).collect()),

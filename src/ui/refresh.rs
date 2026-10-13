@@ -492,7 +492,7 @@ impl Adapter {
                     .unwrap_or(usize::MAX)
             });
         }
-        let rows: Vec<_> = listed
+        let mut rows: Vec<_> = listed
             .into_iter()
             .map(|room| {
                 let heading = if direct {
@@ -575,10 +575,18 @@ impl Adapter {
                     }
                     .into(),
                     detail: dm_detail(room).into(),
+                    thread: room.parent.is_some(),
                     ..Default::default()
                 }
             })
             .collect();
+        // A channel's threads follow it, so a thread's line runs on to the
+        // next row when that's a thread too.
+        for index in 1..rows.len() {
+            if rows[index].thread && rows[index - 1].thread {
+                rows[index - 1].thread_continues = true;
+            }
+        }
         // Categories fold as their server last left them, except while
         // filtering; one without channels shows as its heading alone.
         let rows = match &state.navigation {
@@ -694,7 +702,14 @@ impl Adapter {
             state,
             room.and_then(|room| room.avatar.as_deref()),
         ));
-        window.set_room_icon(if room.is_some_and(|room| room.voice) {
+        let parent = room
+            .and_then(|room| room.parent.as_deref())
+            .and_then(|parent| state.rooms.iter().find(|listed| listed.id == parent));
+        window.set_room_parent(parent.map_or("", |parent| parent.name.as_str()).into());
+        window.set_room_parent_id(parent.map_or("", |parent| parent.id.as_str()).into());
+        window.set_room_icon(if room.is_some_and(|room| room.parent.is_some()) {
+            self.icons.thread.clone()
+        } else if room.is_some_and(|room| room.voice) {
             self.icons.voice.clone()
         } else if room.is_some_and(|room| room.direct) {
             self.icons.dm.clone()

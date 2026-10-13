@@ -124,6 +124,9 @@ pub struct OpenChannel {
     pub room: String,
     pub(super) guild: String,
     pub(super) channel: String,
+    /// The channel whose member list shows here: a thread's channel, else
+    /// this one.
+    pub(super) members_of: String,
     /// The loaded messages the timeline shows: the channel's newest, which
     /// live messages join, or while [`Self::latest`] keeps those, a window
     /// of older ones around a message jumped to.
@@ -181,6 +184,18 @@ impl OpenChannel {
     ) -> Option<Self> {
         let mut open = Self::new(room)?;
         open.previews = previews;
+        if let Some(parent) = discord
+            .snapshots()
+            .borrow()
+            .servers
+            .iter()
+            .find(|server| server.id == open.guild)
+            .and_then(|server| server.channel(&open.channel))
+            .filter(|channel| channel.thread.is_some())
+            .and_then(|thread| thread.parent.clone())
+        {
+            open.members_of = parent;
+        }
         for message in talk_discord::cache::messages(&open.channel) {
             open.shown.messages.insert(message.order(), message);
             open.loaded = true;
@@ -196,6 +211,7 @@ impl OpenChannel {
             room: room.to_owned(),
             guild: guild.to_owned(),
             channel: channel.to_owned(),
+            members_of: channel.to_owned(),
             shown: Run::default(),
             latest: None,
             pending: Vec::new(),

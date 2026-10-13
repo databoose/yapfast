@@ -790,6 +790,7 @@ impl Models {
 struct Icons {
     dm: slint::Image,
     text: slint::Image,
+    thread: slint::Image,
     voice: slint::Image,
     lock: slint::Image,
     read: slint::Image,
@@ -938,6 +939,9 @@ impl Adapter {
         let icons = Icons {
             dm: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/message-circle.svg"))?,
             text: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/hash.svg"))?,
+            thread: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/messages-square.svg"
+            ))?,
             voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
             lock: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/lock.svg"))?,
             read: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/check.svg"))?,

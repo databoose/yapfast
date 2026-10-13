@@ -855,6 +855,13 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_open_room(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(&window, Action::Open(id.into()));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_select_room(move |id| {
         if let Some(window) = weak.upgrade() {
             state
