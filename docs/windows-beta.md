@@ -173,10 +173,13 @@ libopus, which clang-cl couldn't compile (its SSE4.1 files need flags CMake
 gives only GCC-style compilers) and whose symbols would clash with the libopus
 inside libwebrtc's archive. The Windows Nix shell now gives `opus2` an empty
 `opus.lib` through `LIBOPUS_LIB_DIR`, so it uses libwebrtc's copy and the
-executable holds one libopus. Linux is unchanged.
+executable holds one libopus. Linux is unchanged. Since Discord calls moved
+onto Talk's own voice connection, nothing builds `opus2`: Talk calls
+libwebrtc's libopus directly (`talk_discord::opus`), and the shell's empty
+library is gone.
 
-`--smoke-test` now encodes 100 ms of a tone with Opus through `opus2` and
-decodes it again. It and `--help` passed under Wine 10.0 in a private prefix
+`--smoke-test` now encodes 100 ms of a tone with Opus, now through
+`talk_discord::opus`, and decodes it again. It and `--help` passed under Wine 10.0 in a private prefix
 without a display, for both the `fast` and the release build. The release
 executable is 211.3 MiB and the portable ZIP 141.3 MiB; Discord voice,
 DeepFilterNet's model and Go Live's codecs account for the growth since

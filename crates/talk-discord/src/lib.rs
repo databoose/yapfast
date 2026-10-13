@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod cache;
+mod call_connection;
 pub mod client;
 pub mod cookies;
 mod dave;
@@ -13,6 +14,7 @@ pub mod limits;
 pub mod member_list;
 pub mod message;
 pub mod notifications;
+pub mod opus;
 pub mod profile;
 pub mod ready;
 pub mod remote_auth;
@@ -25,3 +27,4 @@ pub mod stream_connection;
 pub mod token;
 pub mod unread;
 pub mod voice;
+mod voice_connection;

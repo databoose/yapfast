@@ -4,7 +4,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{BufRead, Cursor, Write},
+    io::{BufRead, Write},
     path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -12,13 +12,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use songbird::input::RawAdapter;
 use talk_discord::{
     api::Api,
     ready::Access,
     service::{Discord, Snapshot, Status},
     token,
-    voice::{CHANNELS, Call, Listener, SAMPLE_RATE},
+    voice::{CHANNELS, Call, FRAME, Listener, SAMPLE_RATE, live_microphone},
 };
 
 const USAGE: &str = "usage: talk-discord-probe <command>
@@ -201,7 +200,17 @@ async fn join(channel_id: &str, seconds: u64) -> Result<()> {
     // The probe talks: show it unmuted.
     discord.set_self(&server.id, channel_id, false, false);
     println!("Voice connected.");
-    call.play(RawAdapter::new(Cursor::new(beeps(seconds)), SAMPLE_RATE, CHANNELS.into()).into());
+    let (microphone, input) = live_microphone();
+    call.play(input);
+    // Writes the beeps as a microphone would, 20 ms at a time.
+    let beeping = tokio::spawn(async move {
+        let beeps = beeps(seconds);
+        let mut ticks = tokio::time::interval(Duration::from_millis(20));
+        for frame in beeps.chunks(FRAME) {
+            ticks.tick().await;
+            microphone.push(frame);
+        }
+    });
     println!(
         "Playing a beep every second for {seconds} s. Speak in the channel; Ctrl+C ends early."
     );
@@ -230,6 +239,7 @@ async fn join(channel_id: &str, seconds: u64) -> Result<()> {
         }
     }
 
+    beeping.abort();
     call.leave();
     discord.leave(&server.id);
     // Let the leave reach Discord before the connection closes.
@@ -267,28 +277,25 @@ fn save_recordings(recorder: &Recorder, names: &HashMap<u64, String>) -> Result<
     Ok(())
 }
 
-/// A short 660 Hz beep at the start of every second, as interleaved stereo
-/// little-endian f32, the format songbird's raw adapter reads.
-fn beeps(seconds: u64) -> Vec<u8> {
+/// A short 660 Hz beep at the start of every second, as mono f32, the
+/// microphone's format.
+fn beeps(seconds: u64) -> Vec<f32> {
     let rate = SAMPLE_RATE as usize;
     let frames = rate * seconds as usize;
     let beep = rate * 3 / 10;
     let fade = rate / 200;
-    let mut bytes = Vec::with_capacity(frames * usize::from(CHANNELS) * 4);
-    for frame in 0..frames {
-        let t = frame % rate;
-        let sample = if t < beep {
-            let envelope = (t.min(beep - t) as f32 / fade as f32).min(1.0);
-            let phase = 2.0 * std::f32::consts::PI * 660.0 * frame as f32 / rate as f32;
-            0.25 * envelope * phase.sin()
-        } else {
-            0.0
-        };
-        for _ in 0..CHANNELS {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-    }
-    bytes
+    (0..frames)
+        .map(|frame| {
+            let t = frame % rate;
+            if t < beep {
+                let envelope = (t.min(beep - t) as f32 / fade as f32).min(1.0);
+                let phase = 2.0 * std::f32::consts::PI * 660.0 * frame as f32 / rate as f32;
+                0.25 * envelope * phase.sin()
+            } else {
+                0.0
+            }
+        })
+        .collect()
 }
 
 fn write_wav(path: &Path, samples: &[i16]) -> Result<()> {

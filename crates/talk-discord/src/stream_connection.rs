@@ -1,13 +1,11 @@
 //! A Go Live stream's media connection, to the server Discord assigned the
 //! stream: sending this account's stream, or receiving someone else's. It's
-//! a voice connection of its own: the voice gateway, version 4 like
-//! songbird's calls, identifying with the stream's RTC server and video;
-//! UDP with Discord's transport encryption; and DAVE for the frames. Talk
-//! sends VP8 and receives VP8 or H264.
+//! a voice connection of its own (`voice_connection.rs`), identifying with
+//! the stream's RTC server and video. Talk sends H264 and receives VP8 or
+//! H264.
 
 use std::{
     collections::HashMap,
-    net::IpAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -16,27 +14,19 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
-use futures_util::{SinkExt, StreamExt};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use songbird::model::{Event, serialize_binary_event};
 use tokio::{
-    net::{TcpStream, UdpSocket},
     sync::{mpsc, oneshot},
-    time::{Instant, timeout},
+    time::Instant,
 };
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 use crate::{
-    dave::{Dave, Out},
-    rtp::{self, Assembler, Codec, Packetizer, Transport},
+    rtp::{self, Assembler, Codec, Packetizer},
     stream::{self, StreamServer},
+    voice_connection::{Connection, Identity, lock, receive, send_json},
 };
 
-/// A voice gateway version Discord's clients use, as Discord-video-stream
-/// does; songbird's version 4 is enough for calls.
-const VERSION: u8 = 8;
-const HANDSHAKE: Duration = Duration::from_secs(15);
 /// How often a viewer may ask for a keyframe while frames are lost.
 const KEYFRAME_REQUESTS: Duration = Duration::from_millis(500);
 /// How often a streamer sends an RTCP sender report.
@@ -290,135 +280,6 @@ impl StreamReceiver {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// The voice gateway's address. A test server on this machine may give a
-/// plain WebSocket address, as songbird accepts for calls.
-fn gateway_url(endpoint: &str) -> Result<reqwest::Url> {
-    if let Some(local) = endpoint.strip_prefix("ws://") {
-        let url = reqwest::Url::parse(&format!("ws://{local}/?v={VERSION}"))?;
-        return match url.host() {
-            Some(url::Host::Ipv4(ip)) if ip.is_loopback() => Ok(url),
-            Some(url::Host::Domain("localhost")) => Ok(url),
-            _ => bail!("Discord gave a stream server Talk won't connect to"),
-        };
-    }
-    Ok(reqwest::Url::parse(&format!(
-        "wss://{endpoint}/?v={VERSION}"
-    ))?)
-}
-
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-async fn send_json(ws: &mut Socket, op: u8, data: Value) -> Result<()> {
-    ws.send(Message::text(json!({"op": op, "d": data}).to_string()))
-        .await?;
-    Ok(())
-}
-
-async fn send_out(ws: &mut Socket, out: Vec<Out>) -> Result<()> {
-    for out in out {
-        let message = match out {
-            Out::Json(event) => Message::text(serde_json::to_string(&event)?),
-            Out::Binary(event) => {
-                Message::binary(serialize_binary_event(&event).map_err(|error| anyhow!("{error}"))?)
-            }
-        };
-        ws.send(message).await?;
-    }
-    Ok(())
-}
-
-/// A message from the voice gateway: its op and data, or a DAVE event.
-enum Incoming {
-    Json(u64, Value),
-    Dave(Event),
-}
-
-/// The next message, noting its sequence number for heartbeats to
-/// acknowledge: version 8 numbers JSON messages in `seq`, and binary ones in
-/// their first two bytes.
-async fn receive(ws: &mut Socket, seq: &mut Option<u64>) -> Result<Incoming> {
-    loop {
-        match ws
-            .next()
-            .await
-            .context("Discord closed the stream connection")??
-        {
-            Message::Text(text) => {
-                let value: Value = serde_json::from_str(&text)?;
-                if let Some(number) = value["seq"].as_u64() {
-                    *seq = Some(number);
-                }
-                let op = value["op"].as_u64().unwrap_or(u64::MAX);
-                // The voice model knows DAVE's JSON ops and who's connected.
-                if matches!(op, 11 | 13 | 21 | 22 | 24)
-                    && let Ok(event) = serde_json::from_value::<Event>(value.clone())
-                {
-                    return Ok(Incoming::Dave(event));
-                }
-                return Ok(Incoming::Json(op, value["d"].clone()));
-            }
-            Message::Binary(bytes) => match binary(&bytes) {
-                Ok((number, event)) => {
-                    *seq = Some(number);
-                    return Ok(Incoming::Dave(event));
-                }
-                Err(error) => tracing::debug!(%error, "unknown binary voice message"),
-            },
-            Message::Close(frame) => {
-                bail!(
-                    "Discord closed the stream connection{}",
-                    frame
-                        .map(|frame| format!(" ({}: {})", frame.code, frame.reason))
-                        .unwrap_or_default()
-                )
-            }
-            _ => {}
-        }
-    }
-}
-
-/// A binary DAVE message and its sequence number. Version 8 puts the number
-/// before the opcode; the voice model reads from the opcode on, as version 4
-/// sends it.
-fn binary(bytes: &[u8]) -> Result<(u64, Event)> {
-    let Some((number, message)) = bytes.split_first_chunk::<2>() else {
-        bail!("a binary voice message too short for its sequence number");
-    };
-    let event =
-        songbird::model::deserialize_binary_event(message).map_err(|error| anyhow!("{error}"))?;
-    Ok((u64::from(u16::from_be_bytes(*number)), event))
-}
-
-/// Discord's address discovery: the server tells the client its public
-/// address and port, which it then selects the protocol with.
-async fn discover(udp: &UdpSocket, ssrc: u32) -> Result<(IpAddr, u16)> {
-    let mut request = [0u8; 74];
-    request[..2].copy_from_slice(&1u16.to_be_bytes());
-    request[2..4].copy_from_slice(&70u16.to_be_bytes());
-    request[4..8].copy_from_slice(&ssrc.to_be_bytes());
-    udp.send(&request).await?;
-    let mut answer = [0u8; 74];
-    let length = timeout(Duration::from_secs(5), udp.recv(&mut answer))
-        .await
-        .context("the stream server didn't answer address discovery")??;
-    if length < 74 || u16::from_be_bytes([answer[0], answer[1]]) != 2 {
-        bail!("the stream server's address discovery answer was malformed");
-    }
-    let address = &answer[8..72];
-    let end = address
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(address.len());
-    let ip = std::str::from_utf8(&address[..end])?.parse()?;
-    Ok((ip, u16::from_be_bytes([answer[72], answer[73]])))
-}
-
 fn video_attributes(
     ssrc: u32,
     video: u32,
@@ -451,239 +312,50 @@ enum Role {
     Receive,
 }
 
-/// A connection after its handshake.
-struct Connection {
-    ws: Socket,
-    udp: UdpSocket,
-    transport: Transport,
-    dave: Dave,
-    ssrc: u32,
-    video: u32,
-    rtx: u32,
-    interval: Duration,
-    /// The video codec Discord chose, if it said.
-    codec: Option<Codec>,
-    /// Gateway messages that arrived during the handshake.
-    early: Vec<(u64, Value)>,
-    /// The last sequence number the server sent, for heartbeats.
-    seq: Option<u64>,
-}
-
-impl Connection {
-    async fn open(server: &StreamServer, user: u64, channel: u64, role: Role) -> Result<Self> {
-        let url = gateway_url(&server.endpoint)?;
-        let (mut ws, _) = timeout(HANDSHAKE, tokio_tungstenite::connect_async(url.as_str()))
-            .await
-            .context("the stream server didn't answer")??;
-        send_json(
-            &mut ws,
-            0,
-            json!({
-                "server_id": server.rtc_server_id,
-                "user_id": server.user_id,
-                "session_id": server.session_id,
-                "token": server.token,
-                "video": true,
-                "streams": [{"type": "screen", "rid": rtp::STREAM_RID, "quality": 100}],
-                "max_dave_protocol_version": davey::DAVE_PROTOCOL_VERSION,
-            }),
-        )
-        .await?;
-        // Talk encodes in SEND_CODEC, and decodes VP8 or H264.
-        let (payload_type, rtx_payload_type) = SEND_CODEC.payload_types();
-        let codecs = match role {
-            Role::Send => json!([
-                {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
-                {"name": SEND_CODEC.name(), "type": "video", "priority": 1000,
-                 "payload_type": payload_type, "rtx_payload_type": rtx_payload_type,
-                 "encode": true, "decode": true},
-            ]),
-            Role::Receive => json!([
-                {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
-                {"name": "H264", "type": "video", "priority": 1000, "payload_type": rtp::H264,
-                 "rtx_payload_type": rtp::H264_RTX, "encode": false, "decode": true},
-                {"name": "VP8", "type": "video", "priority": 2000, "payload_type": rtp::VP8,
-                 "rtx_payload_type": rtp::VP8_RTX, "encode": false, "decode": true},
-            ]),
-        };
-
-        let mut dave_early = vec![];
-        let mut early = vec![];
-        let mut seq = None;
-        let handshake = async {
-            let (mut interval, mut ready) = (None, None);
-            while interval.is_none() || ready.is_none() {
-                match receive(&mut ws, &mut seq).await? {
-                    Incoming::Json(8, hello) => interval = hello["heartbeat_interval"].as_f64(),
-                    Incoming::Json(2, data) => ready = Some(data),
-                    Incoming::Json(op, data) => early.push((op, data)),
-                    Incoming::Dave(event) => dave_early.push(event),
-                }
-            }
-            let (interval, ready) = (interval.unwrap_or(41_250.0), ready.unwrap_or_default());
-            tracing::debug!(%ready, "the stream server is ready");
-            let ssrc = ready["ssrc"]
-                .as_u64()
-                .context("the stream server sent no SSRC")? as u32;
-            let ip: IpAddr = ready["ip"]
-                .as_str()
-                .context("the stream server sent no address")?
-                .parse()?;
-            let port = ready["port"]
-                .as_u64()
-                .context("the stream server sent no port")? as u16;
-            let modes: Vec<&str> = ready["modes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            let mode = Transport::MODES
-                .into_iter()
-                .find(|mode| modes.contains(mode))
-                .context("the stream server offers no encryption Talk knows")?;
-            // Discord numbers the video SSRCs after the audio one.
-            let stream = &ready["streams"][0];
-            let video = stream["ssrc"]
-                .as_u64()
-                .map_or(ssrc.wrapping_add(1), |ssrc| ssrc as u32);
-            let rtx = stream["rtx_ssrc"]
-                .as_u64()
-                .map_or(ssrc.wrapping_add(2), |ssrc| ssrc as u32);
-
-            let udp = UdpSocket::bind(if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).await?;
-            udp.connect((ip, port)).await?;
-            let (address, port) = discover(&udp, ssrc).await?;
-            send_json(
-                &mut ws,
-                1,
-                json!({
-                    "protocol": "udp",
-                    "codecs": codecs,
-                    "data": {"address": address.to_string(), "port": port, "mode": mode},
-                }),
-            )
-            .await?;
-            let session = loop {
-                match receive(&mut ws, &mut seq).await? {
-                    Incoming::Json(4, session) => break session,
-                    Incoming::Json(op, data) => early.push((op, data)),
-                    Incoming::Dave(event) => dave_early.push(event),
-                }
-            };
-            let mut described = session.clone();
-            if let Some(fields) = described.as_object_mut() {
-                fields.remove("secret_key");
-            }
-            tracing::debug!(session = %described, "the stream server described the session");
-            let key: Vec<u8> = session["secret_key"]
-                .as_array()
-                .context("the stream server sent no key")?
-                .iter()
-                .filter_map(|byte| byte.as_u64().map(|byte| byte as u8))
-                .collect();
-            let transport = Transport::new(session["mode"].as_str().unwrap_or(mode), &key)?;
-            let version = session["dave_protocol_version"].as_u64().unwrap_or(0) as u16;
-            let codec = session["video_codec"].as_str().and_then(Codec::from_name);
-            anyhow::Ok((interval, ssrc, video, rtx, udp, transport, version, codec))
-        };
-        let (interval, ssrc, video, rtx, udp, transport, version, codec) =
-            timeout(HANDSHAKE, handshake)
-                .await
-                .context("the stream server took too long to connect")??;
-
-        // Discord made a stream's DAVE group id just before its RTC server
-        // id, in the one stream seen so far; Dave moves to the id the voice
-        // server uses if this guess is wrong.
-        let group = server
-            .rtc_server_id
-            .parse::<u64>()
-            .map_or(channel, |id| id.saturating_sub(1));
-        let mut dave = Dave::new(user, group);
-        if let Some(streamer) =
-            stream::parse(&server.stream_key).and_then(|(_, _, streamer)| streamer.parse().ok())
-        {
-            dave.recognise(streamer);
-        }
-        for (op, data) in &early {
-            let mut text = data.to_string();
-            text.truncate(400);
-            tracing::debug!(op, data = %text, "the stream server said while connecting");
-            for user in announced(*op, data) {
-                dave.recognise(user);
-            }
-        }
-        send_out(&mut ws, dave.start(version)).await?;
-        for event in dave_early {
-            send_out(&mut ws, dave.handle(event)).await?;
-        }
-        tracing::info!(
-            dave = version,
-            ?codec,
-            rtc_server = %server.rtc_server_id,
-            channel,
-            "connected to a Discord stream"
-        );
-        Ok(Self {
-            ws,
-            udp,
-            transport,
-            dave,
-            ssrc,
-            video,
-            rtx,
-            interval: Duration::from_secs_f64(interval / 1000.0),
-            codec,
-            early,
-            seq,
-        })
-    }
-
-    async fn heartbeat(&mut self) -> Result<()> {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64);
-        send_json(
-            &mut self.ws,
-            3,
-            json!({"t": nonce, "seq_ack": self.seq.map_or(-1, |seq| seq as i64)}),
-        )
-        .await
-    }
-
-    /// Answers DAVE; other messages go back to the caller.
-    async fn handle(&mut self, message: Incoming) -> Result<Option<(u64, Value)>> {
-        match message {
-            Incoming::Dave(event) => {
-                let out = self.dave.handle(event);
-                send_out(&mut self.ws, out).await?;
-                Ok(None)
-            }
-            Incoming::Json(op, data) => {
-                for user in announced(op, &data) {
-                    self.dave.recognise(user);
-                }
-                Ok(Some((op, data)))
-            }
-        }
-    }
-}
-
-/// Who a voice gateway message says is in the stream, for DAVE's check of
-/// the people proposed into its group: op 11 lists them, while speaking
-/// (5) and video attributes (12) carry one.
-fn announced(op: u64, data: &Value) -> Vec<u64> {
-    let id = |value: &Value| value.as_str().and_then(|id| id.parse().ok());
-    match op {
-        11 => data["user_ids"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(id)
-            .collect(),
-        5 | 12 => id(&data["user_id"]).into_iter().collect(),
-        _ => vec![],
-    }
+/// Connects to a stream's server: identifying with its RTC server and a
+/// screen, and offering the codecs `role` needs.
+async fn open(server: &StreamServer, user: u64, channel: u64, role: Role) -> Result<Connection> {
+    // Discord made a stream's DAVE group id just before its RTC server id,
+    // in the one stream seen so far; Dave moves to the id the voice server
+    // uses if this guess is wrong.
+    let group = server
+        .rtc_server_id
+        .parse::<u64>()
+        .map_or(channel, |id| id.saturating_sub(1));
+    let identity = Identity {
+        endpoint: server.endpoint.clone(),
+        server_id: server.rtc_server_id.clone(),
+        user_id: server.user_id.clone(),
+        session_id: server.session_id.clone(),
+        token: server.token.clone(),
+        streams: json!([{"type": "screen", "rid": rtp::STREAM_RID, "quality": 100}]),
+        user,
+        group,
+    };
+    // Talk encodes in SEND_CODEC, and decodes VP8 or H264.
+    let (payload_type, rtx_payload_type) = SEND_CODEC.payload_types();
+    let codecs = match role {
+        Role::Send => json!([
+            {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
+            {"name": SEND_CODEC.name(), "type": "video", "priority": 1000,
+             "payload_type": payload_type, "rtx_payload_type": rtx_payload_type,
+             "encode": true, "decode": true},
+        ]),
+        Role::Receive => json!([
+            {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
+            {"name": "H264", "type": "video", "priority": 1000, "payload_type": rtp::H264,
+             "rtx_payload_type": rtp::H264_RTX, "encode": false, "decode": true},
+            {"name": "VP8", "type": "video", "priority": 2000, "payload_type": rtp::VP8,
+             "rtx_payload_type": rtp::VP8_RTX, "encode": false, "decode": true},
+        ]),
+    };
+    let streamer: Vec<u64> = stream::parse(&server.stream_key)
+        .and_then(|(_, _, streamer)| streamer.parse().ok())
+        .into_iter()
+        .collect();
+    let connection = Connection::open(&identity, codecs, &streamer).await?;
+    tracing::info!(rtc_server = %server.rtc_server_id, channel, "connected to a Discord stream");
+    Ok(connection)
 }
 
 async fn send(
@@ -695,7 +367,7 @@ async fn send(
     mut frames: mpsc::Receiver<Frame>,
     mut sounds: mpsc::Receiver<Sound>,
 ) -> Result<()> {
-    let mut connection = Connection::open(server, user, channel, Role::Send).await?;
+    let mut connection = open(server, user, channel, Role::Send).await?;
     let (ssrc, video, rtx) = (connection.ssrc, connection.video, connection.rtx);
     let mut size = *lock(&shared.size);
     send_json(
@@ -991,7 +663,7 @@ async fn receive_stream(
     ),
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let mut connection = Connection::open(server, user, channel, Role::Receive).await?;
+    let mut connection = open(server, user, channel, Role::Receive).await?;
     let mut streamer = Streamer {
         codec: connection.codec,
         ..Streamer::default()
@@ -1199,31 +871,6 @@ async fn receive_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn plain_websockets_only_on_this_machine() {
-        assert_eq!(
-            gateway_url("c-ams.discord.media:443").unwrap().as_str(),
-            "wss://c-ams.discord.media/?v=8"
-        );
-        assert_eq!(
-            gateway_url("ws://127.0.0.1:9/voice").unwrap().as_str(),
-            "ws://127.0.0.1:9/voice/?v=8"
-        );
-        assert!(gateway_url("ws://example.com/voice").is_err());
-    }
-
-    #[test]
-    fn reads_binary_messages_after_their_sequence_number() {
-        // Sequence 5, op 30 (a welcome) for transition 4.
-        let (seq, event) = binary(&[0, 5, 30, 0, 4, 1, 2, 3]).unwrap();
-        assert_eq!(seq, 5);
-        assert!(
-            matches!(&event, Event::DaveMlsWelcome(welcome) if welcome.transition_id == 4 && welcome.welcome == [1, 2, 3]),
-            "{event:?}"
-        );
-        assert!(binary(&[0]).is_err());
-    }
 
     #[test]
     fn learns_the_streamers_video() {

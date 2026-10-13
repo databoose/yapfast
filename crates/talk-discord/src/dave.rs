@@ -1,7 +1,7 @@
-//! DAVE, Discord's end-to-end encryption, for a Go Live stream connection.
-//! songbird runs it for calls; a stream connection needs the same MLS
-//! handshake, so this follows songbird's `driver/tasks/ws.rs` (ISC), but
-//! answers with the messages to send instead of sending them.
+//! DAVE, Discord's end-to-end encryption, for calls and Go Live streams. Its
+//! MLS handshake follows songbird's `driver/tasks/ws.rs` (ISC), which ran
+//! calls before, but answers with the messages to send instead of sending
+//! them.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -11,7 +11,7 @@ use std::{
 use davey::{Codec, DaveSession, MediaType, ProposalsOperationType, SessionStatus};
 
 use crate::rtp;
-use songbird::model::{
+use serenity_voice_model::{
     Event,
     payload::{
         DaveMlsCommitWelcome, DaveMlsInvalidCommitWelcome, DaveMlsKeyPackage,
@@ -65,7 +65,7 @@ impl Dave {
     }
 
     /// Encrypts a video frame once the group is ready. Until then frames go
-    /// out as they are, as songbird does for audio, and receivers pass them
+    /// out as they are, as Discord's clients send audio, and receivers pass them
     /// through during the transition.
     pub fn encrypt(&mut self, codec: rtp::Codec, frame: &[u8]) -> Vec<u8> {
         let codec = match codec {
@@ -100,7 +100,7 @@ impl Dave {
     }
 
     /// Decrypts a received frame from `sender`. Frames without DAVE's
-    /// marker pass through, as songbird's audio does; encrypted frames that
+    /// marker pass through, as Discord's clients allow; encrypted frames that
     /// can't be decrypted yet are dropped.
     pub fn decrypt(&mut self, sender: u64, frame: Vec<u8>) -> Option<Vec<u8>> {
         self.decrypt_media(sender, MediaType::VIDEO, frame)
@@ -391,7 +391,7 @@ fn vector(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 
 #[cfg(test)]
 mod tests {
-    use songbird::model::payload::{DaveExecuteTransition, DavePrepareTransition};
+    use serenity_voice_model::payload::{DaveExecuteTransition, DavePrepareTransition};
 
     use super::*;
 
@@ -508,7 +508,7 @@ mod tests {
         use davey::DaveSession;
         let (streamer, viewer, group) = (10, 20, 77);
         let server = Server::new();
-        let sender = songbird::model::payload::DaveMlsExternalSender {
+        let sender = serenity_voice_model::payload::DaveMlsExternalSender {
             external_sender: server.external_sender(),
         };
 
@@ -528,10 +528,12 @@ mod tests {
             .expect("the streamer commits the viewer's addition");
         // Discord sends the proposals to everyone; the viewer learns the
         // group from them and doesn't make a new key package.
-        let out = dave.handle(Event::from(songbird::model::payload::DaveMlsProposals {
-            operation_type: DaveMlsProposalsOperationType::Append,
-            proposals: proposals.clone(),
-        }));
+        let out = dave.handle(Event::from(
+            serenity_voice_model::payload::DaveMlsProposals {
+                operation_type: DaveMlsProposalsOperationType::Append,
+                proposals: proposals.clone(),
+            },
+        ));
         assert_eq!(dave.channel_id, group);
         assert!(
             !out.iter()
@@ -539,7 +541,7 @@ mod tests {
             "{out:?}"
         );
 
-        let out = dave.handle(Event::from(songbird::model::payload::DaveMlsWelcome {
+        let out = dave.handle(Event::from(serenity_voice_model::payload::DaveMlsWelcome {
             transition_id: 4,
             welcome: commit.welcome.expect("a welcome for the viewer"),
         }));
@@ -548,7 +550,7 @@ mod tests {
             "{out:?}"
         );
         dave.handle(Event::from(
-            songbird::model::payload::DaveExecuteTransition { transition_id: 4 },
+            serenity_voice_model::payload::DaveExecuteTransition { transition_id: 4 },
         ));
         assert!(dave.session.as_ref().unwrap().is_ready());
 
@@ -588,15 +590,17 @@ mod tests {
         let mut dave = Dave::new(1, 2);
         dave.start(1);
         dave.handle(Event::from(
-            songbird::model::payload::DaveMlsExternalSender {
+            serenity_voice_model::payload::DaveMlsExternalSender {
                 external_sender: Server::new().external_sender(),
             },
         ));
         let message = [&[0, 1, 0, 1, 8][..], &77u64.to_be_bytes(), &[0; 40]].concat();
-        let out = dave.handle(Event::from(songbird::model::payload::DaveMlsProposals {
-            operation_type: DaveMlsProposalsOperationType::Append,
-            proposals: [&[message.len() as u8][..], &message].concat(),
-        }));
+        let out = dave.handle(Event::from(
+            serenity_voice_model::payload::DaveMlsProposals {
+                operation_type: DaveMlsProposalsOperationType::Append,
+                proposals: [&[message.len() as u8][..], &message].concat(),
+            },
+        ));
         let session = dave.session.as_ref().unwrap();
         assert_eq!(session.channel_id(), 77);
         assert!(
@@ -612,7 +616,7 @@ mod tests {
         dave.start(1);
         let commit = [&[0, 1, 0, 1, 8][..], &77u64.to_be_bytes(), &[0; 40]].concat();
         dave.handle(Event::from(
-            songbird::model::payload::DaveMlsAnnounceCommitTransition {
+            serenity_voice_model::payload::DaveMlsAnnounceCommitTransition {
                 transition_id: 3,
                 commit_message: commit,
             },

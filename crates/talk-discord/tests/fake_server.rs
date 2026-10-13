@@ -34,6 +34,65 @@ impl Listener for Quiet {
     }
 }
 
+/// A call's audio: the loudest sample heard from each user.
+#[derive(Default)]
+struct Hearer(std::sync::Mutex<std::collections::HashMap<u64, i16>>);
+
+impl Listener for Hearer {
+    fn tick(&self, voices: &[(u64, &[i16])]) {
+        let mut heard = self.0.lock().unwrap();
+        for (user, samples) in voices {
+            let loudest = samples
+                .iter()
+                .map(|sample| sample.saturating_abs())
+                .max()
+                .unwrap_or(0);
+            let entry = heard.entry(*user).or_default();
+            *entry = (*entry).max(loudest);
+        }
+    }
+    fn disconnected(&self, reason: &str) {
+        panic!("voice disconnected: {reason}");
+    }
+}
+
+/// What the fake heard from the call connection that identified with `token`.
+fn call_audio(server: &str, token: &str) -> serde_json::Value {
+    let calls: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/call-audio", "")).unwrap();
+    calls
+        .as_object()
+        .unwrap()
+        .values()
+        .rev()
+        .find(|call| call["token"] == token)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Waits until `check` holds, polling the fake.
+async fn until(what: &str, mut check: impl FnMut() -> bool) {
+    let started = std::time::Instant::now();
+    while !check() {
+        assert!(started.elapsed() < WAIT, "timed out waiting until {what}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Speaks `frames` 20 ms frames of a tone into the microphone, in time.
+async fn say(microphone: &talk_discord::voice::Microphone, frames: usize) {
+    for frame in 0..frames {
+        let tone: Vec<f32> = (0..talk_discord::voice::FRAME)
+            .map(|at| {
+                let t = (frame * talk_discord::voice::FRAME + at) as f32 / 48_000.0;
+                (t * 440.0 * std::f32::consts::TAU).sin() * 0.4
+            })
+            .collect();
+        microphone.push(&tone);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// The recordings the fake streams as Bob, as Talk should reassemble them.
 fn recording(codec: Codec) -> Vec<Vec<u8>> {
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures");
@@ -878,9 +937,10 @@ async fn talks_to_the_fake_server() {
     let refused = discord.watch(&bob_stream).await.unwrap_err();
     assert_eq!(refused.to_string(), "Join the call to watch its streams.");
     let assigned = discord.join(&guild, &lounge).await.unwrap();
+    let hearer = std::sync::Arc::new(Hearer::default());
     let mut call = timeout(
         WAIT,
-        Call::connect(&assigned, &guild, &lounge, std::sync::Arc::new(Quiet)),
+        Call::connect(&assigned, &guild, &lounge, hearer.clone()),
     )
     .await
     .expect("timed out connecting to voice")
@@ -923,6 +983,54 @@ async fn talks_to_the_fake_server() {
         identified.last().map(String::as_str),
         Some("fake-voice-token-moved")
     );
+
+    // The call's audio, on the server it moved to: Alice's microphone goes
+    // out as Opus, marked speaking, then five silent frames when it stops.
+    let (microphone, input) = talk_discord::voice::live_microphone();
+    let track = call.play(input);
+    say(&microphone, 15).await;
+    track.pause().unwrap();
+    until("Alice's microphone stopped", || {
+        call_audio(server, "fake-voice-token-moved")["speaking"] == serde_json::json!([1, 0])
+    })
+    .await;
+    let sent = call_audio(server, "fake-voice-token-moved");
+    assert!(sent["packets"].as_u64().unwrap() >= 15, "{sent}");
+    assert_eq!(sent["undecryptable"], 0, "{sent}");
+    assert_eq!(sent["silent"], 5, "{sent}");
+    // Bob speaks: his tone comes through, decoded.
+    let bob_user: u64 = bob.parse().unwrap();
+    post_control(server, "/_control/bob-speak", "");
+    until("Bob's tone was heard", || {
+        hearer
+            .0
+            .lock()
+            .unwrap()
+            .get(&bob_user)
+            .copied()
+            .unwrap_or(0)
+            > 3_000
+    })
+    .await;
+    // The voice server restarts: the call resumes and carries on.
+    post_control(server, "/_control/voice-drop", "");
+    until("the call resumed", || {
+        call_audio(server, "fake-voice-token-moved")["resumed"] == 1
+    })
+    .await;
+    let before = call_audio(server, "fake-voice-token-moved")["packets"]
+        .as_u64()
+        .unwrap();
+    track.play().unwrap();
+    say(&microphone, 10).await;
+    track.pause().unwrap();
+    until("audio went out after resuming", || {
+        call_audio(server, "fake-voice-token-moved")["packets"]
+            .as_u64()
+            .unwrap()
+            >= before + 10
+    })
+    .await;
 
     let watched = discord.watch(&bob_stream).await.unwrap();
     assert_eq!(watched.stream_key, bob_stream);

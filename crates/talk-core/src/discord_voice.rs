@@ -1,4 +1,4 @@
-//! Discord voice: a call through songbird with Talk's own audio, from asking
+//! Discord voice: a call over Talk's voice connection with its own audio, from asking
 //! Discord to join until leaving.
 use std::{future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 
