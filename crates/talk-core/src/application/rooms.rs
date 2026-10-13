@@ -77,6 +77,9 @@ pub enum MenuChoice {
     DeleteChannel,
     /// Leave a Discord server this account doesn't own.
     LeaveServer,
+    /// Change this account's nickname in a Discord server, through a
+    /// member's nickname dialog.
+    EditServerProfile,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.

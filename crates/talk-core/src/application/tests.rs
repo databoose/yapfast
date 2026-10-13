@@ -4805,3 +4805,44 @@ fn leaving_a_discord_server_asks_first_and_is_not_for_its_owner() {
     );
     assert!(app.state.leave.is_none());
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn editing_a_server_profile_changes_ones_own_nickname_in_the_member_dialog() {
+    use MenuChoice::*;
+    use talk_discord::ready::permission;
+    let mut app = discord_server();
+    assert!(
+        !app.menu_choices("discord:10").contains(&EditServerProfile),
+        "she may not change her nickname"
+    );
+    change_server(&mut app, |server| {
+        let bits =
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES | permission::CHANGE_NICKNAME;
+        server.put_role(
+            &serde_json::json!({"id": "10", "name": "@everyone", "position": 0,
+                                            "permissions": bits.to_string()}),
+        );
+    });
+    let choices = app.menu_choices("discord:10");
+    let at = |choice| choices.iter().position(|known| *known == choice);
+    assert!(at(HideMuted) < at(EditServerProfile) && at(EditServerProfile) < at(LeaveServer));
+    assert_eq!(
+        app.header_choices("discord:10"),
+        [
+            ServerNotifications,
+            EditServerProfile,
+            HideMuted,
+            LeaveServer
+        ],
+        "as Discord's dropdown orders them"
+    );
+    app.dispatch(Action::AskMember {
+        place: "discord:10".into(),
+        user: "1".into(),
+        ask: PersonAsk::ServerNickname,
+    });
+    let dialog = app.state.person_dialog.clone().unwrap();
+    assert_eq!(dialog.ask, PersonAsk::ServerNickname);
+    assert_eq!(dialog.server.as_deref(), Some("discord:10"));
+}
