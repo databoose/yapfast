@@ -17,7 +17,7 @@ use super::*;
 /// is above her; Dave, her friend, has no role; Gus holds Wardens, a low
 /// role with Administrator; Hal is timed out. Everyone may change their own
 /// nickname, and Alice has #general open, "discord:10:11", in the server
-/// "discord:10". `alice` names her roles: "30" for Staff.
+/// "discord:10". "8" is a bot. `alice` names her roles: "30" for Staff.
 pub fn member_server(alice: &[&str]) -> Application {
     let bits = |bits: u64| bits.to_string();
     let staff = permission::KICK_MEMBERS
@@ -59,6 +59,7 @@ pub fn member_server(alice: &[&str]) -> Application {
             }),
         );
     }
+    names.learn_user(&json!({"id": "8", "username": "helper", "bot": true}));
     let mut app = Application::default();
     app.apply(Event::Discord(Arc::new(Snapshot {
         status: Status::Online,
@@ -102,4 +103,40 @@ pub fn member_server(alice: &[&str]) -> Application {
             .collect()),
     });
     app
+}
+
+/// `app` with Alice free to invite to "Test" and in two more servers:
+/// "Club", where she may invite but not to #staff, and whose #news comes
+/// first by position though its category lists it after #lobby; and "Den",
+/// where only #den's overwrite lets her invite.
+pub fn with_clubs(app: &mut Application) {
+    let bits = |bits: u64| bits.to_string();
+    let invite = bits(permission::VIEW_CHANNEL | permission::CREATE_INSTANT_INVITE);
+    let club = ready::server(&json!({
+        "id": "50", "owner_id": "99", "properties": {"name": "Club"},
+        "roles": [{"id": "50", "name": "@everyone", "position": 0, "permissions": invite}],
+        "channels": [
+            {"id": "51", "type": 0, "name": "staff", "position": 0, "permission_overwrites": [
+                {"id": "50", "type": 0, "allow": "0", "deny": bits(permission::CREATE_INSTANT_INVITE)}]},
+            {"id": "52", "type": 0, "name": "lobby", "position": 2},
+            {"id": "53", "type": 4, "name": "Info", "position": 0},
+            {"id": "54", "type": 0, "name": "news", "position": 1, "parent_id": "53"},
+        ],
+    }))
+    .unwrap();
+    let den = ready::server(&json!({
+        "id": "60", "owner_id": "99", "properties": {"name": "Den"},
+        "roles": [{"id": "60", "name": "@everyone", "position": 0,
+                   "permissions": bits(permission::VIEW_CHANNEL)}],
+        "channels": [{"id": "61", "type": 0, "name": "den", "position": 0, "permission_overwrites": [
+            {"id": "60", "type": 0, "allow": bits(permission::CREATE_INSTANT_INVITE), "deny": "0"}]}],
+    }))
+    .unwrap();
+    let mut snapshot = talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap());
+    let mut test = ready::Server::clone(&snapshot.servers[0]);
+    test.put_role(&json!({"id": "10", "name": "@everyone", "position": 0,
+        "permissions": bits(permission::VIEW_CHANNEL | permission::SEND_MESSAGES
+            | permission::CHANGE_NICKNAME | permission::CREATE_INSTANT_INVITE)}));
+    snapshot.servers = vec![Arc::new(test), Arc::new(club), Arc::new(den)];
+    app.apply(Event::Discord(Arc::new(snapshot)));
 }

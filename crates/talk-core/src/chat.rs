@@ -1262,6 +1262,14 @@ pub enum DiscordCommand {
         max_age: u32,
         max_uses: u32,
     },
+    /// Invite a Discord user to a server: make an invite to its channel,
+    /// by its room id, that works once and lasts a day, and send its link
+    /// in a message to their DM, opening the DM if need be;
+    /// [`Event::InviteSent`] follows.
+    SendInvite {
+        user: String,
+        room: String,
+    },
     /// Make a channel or category in a Discord server, by its server id,
     /// inside the category `parent` names by its room id, or a copy of
     /// `copy_of`'s channel, by its room id, with these settings;
@@ -1529,6 +1537,13 @@ pub enum Event {
     InviteMade {
         room: String,
         result: Result<String, String>,
+    },
+    /// Whether [`DiscordCommand::SendInvite`] sent a Discord user an
+    /// invite to the channel by its room id, or why not.
+    InviteSent {
+        user: String,
+        room: String,
+        result: Result<(), String>,
     },
     /// The roles and groups a message in a room may mention.
     MentionGroups {

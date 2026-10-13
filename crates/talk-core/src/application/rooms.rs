@@ -29,6 +29,9 @@ pub enum MenuChoice {
     EditNickname,
     /// Close a one-to-one Discord DM.
     CloseDm,
+    /// Send someone an invite to one of this account's Discord servers, in
+    /// a submenu of them; see `places.rs`.
+    InviteToServer,
     Unfriend,
     Ignore,
     Unignore,

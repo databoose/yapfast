@@ -57,19 +57,24 @@ pub(super) fn change(ask: PersonAsk, choice: usize, text: String) -> MemberChang
 
 impl Application {
     /// What someone's menu offers: in a Discord server's channel, their
-    /// menu as a member of it; elsewhere [`AppState::person_choices`].
+    /// menu as a member of it; elsewhere [`AppState::person_choices`]. Each
+    /// invites them to a server, as Discord's do.
     pub fn person_choices(&self, user: &str) -> Vec<MenuChoice> {
         #[cfg(feature = "discord")]
-        if let Some(place) = self.member_place(user) {
-            return self.member_choices(place, user);
-        }
-        self.state.person_choices(user)
+        let mut choices = match self.member_place(user) {
+            Some(place) => self.member_choices(place, user),
+            None => self.state.person_choices(user),
+        };
+        #[cfg(not(feature = "discord"))]
+        let mut choices = self.state.person_choices(user);
+        self.offer_invite(user, &mut choices);
+        choices
     }
 
     /// The open channel, when someone's menu there is a Discord server
     /// member's: a channel of a known server, and a Discord user.
     #[cfg(feature = "discord")]
-    fn member_place(&self, user: &str) -> Option<&str> {
+    pub(super) fn member_place(&self, user: &str) -> Option<&str> {
         let state = &self.state;
         let place = state.selected.as_deref()?;
         let usable = !state.preview
@@ -382,6 +387,6 @@ impl Application {
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 mod fixture;
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
-pub use fixture::member_server;
+pub use fixture::{member_server, with_clubs};
 #[cfg(all(test, feature = "discord"))]
 mod tests;

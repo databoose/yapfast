@@ -1099,9 +1099,9 @@ it.
 
 Right-clicking someone in a server channel's member list, or a message's
 author there, opens their menu in the order of Discord's: Profile, Mention,
-Message, Call, Add note and the friend nickname; Change nickname, friendship,
-Ignore and Block; Roles; Copy ID; then, in red, Time out, Kick and Ban, each
-naming them. What shows depends on this account's permissions and on its
+Message, Call, Add note and the friend nickname; Change nickname, [Invite to
+server](#invite-to-server), friendship, Ignore and Block; Roles; Copy ID;
+then, in red, Time out, Kick and Ban, each naming them. What shows depends on this account's permissions and on its
 highest role against theirs, checked when the menu opens
 (`application/members.rs`). The member's roles and timeout come from the
 service's names, which each snapshot shares as `SharedNames` rather than
@@ -1151,8 +1151,8 @@ colours and the list follow. A member who leaves is forgotten. A nickname,
 timeout, kick or ban that fails says why in its dialog; a role says so in a
 notice.
 
-Discord's menu also has Invite to listen (Spotify), Apps, an Invite to server
-submenu and Open in moderator view, which Talk leaves out for now.
+Discord's menu also has Invite to listen (Spotify), Apps and Open in
+moderator view, which Talk leaves out for now.
 
 ### Invites
 
@@ -1172,6 +1172,40 @@ channel Discord's client picks for a server, so Talk takes the one it
 would open. The fake makes invites to "Server"'s channels, sends
 INVITE_CREATE, and lists them at `/_control/invites`; its @everyone may
 invite, as Discord's is by default.
+
+### Invite to server
+
+Someone's menu has an Invite to server submenu, as Discord's has, in a
+server member's menu after Change nickname, and in a DM's, a group DM
+member's and a friend's before friendship, Ignore and Block. It lists, in
+the rail's order, the Discord servers where this account may create invites
+(`CREATE_INSTANT_INVITE` on the server) and has a channel to invite to,
+leaving out only the server they're shown as a member of. Discord's client
+lists the rest whether they're in them or not, as it doesn't ask which
+servers it shares with them, and Talk does the same. Nobody is offered it
+for themselves, a bot, or someone blocked or ignored. Talk knows bots from
+the `bot` field of user objects, kept with the service's names. The list is
+built when the menu opens, from the servers the snapshot shares.
+
+Choosing a server picks its channel as Discord's client does: of the text
+and announcement channels this account may see and invite to, the first by
+`position`, not the channel list's order, which goes by category first;
+failing those, such a voice channel. Then three requests:
+
+- `POST /channels/{id}/invites` with `{"max_uses": 1, "unique": true}`, so
+  it works once and lasts Discord's default day, and an
+  `X-Context-Properties` location of "User Invite Context Menu".
+- `POST /users/@me/channels` with their id, which finds the DM or starts it.
+- `POST /channels/{dm}/messages` with the link, `https://discord.gg/{code}`,
+  as its content, and a location of "context_menu".
+
+Discord's client shows nothing more: the DM's CHANNEL_CREATE and the
+message's MESSAGE_CREATE list the DM and show the link in it. Where
+Discord's says nothing on a failure, Talk says why in a notice. Discord's
+client also offers a server without the permission when it has a vanity
+URL, and sends that instead; Talk doesn't keep servers' vanity codes, so it
+leaves those out. The fake makes invites to "Server"'s channels and its
+`--servers` fillers', and `/_control/invites` lists each with its location.
 
 ### Channels and categories
 
@@ -1357,6 +1391,9 @@ Right-clicking a DM offers, besides Profile and copying, these:
   `muted` and a `mute_config` of `selected_time_window`, in seconds or -1 for
   good, and its `end_time`. Unmute sets `muted` false. USER_GUILD_SETTINGS_UPDATE
   brings the change back, and a muted DM shows faint and counts nothing unread.
+
+- [Invite to server](#invite-to-server) sends them an invite to one of this
+  account's servers, chosen in its submenu.
 
 Someone who isn't a friend is offered Add friend, Accept friend request or
 Cancel friend request in place of Remove friend, unless they're blocked.

@@ -1988,6 +1988,27 @@ async fn talks_to_the_fake_server() {
     assert_eq!(made["channel"]["id"], general.as_str());
     assert!(discord.create_invite(&general, 3600, 101).await.is_err());
 
+    // Invite to Server, from Carol's menu: an invite that works once and
+    // lasts Discord's default day, its link sent in her DM.
+    discord.send_invite(&carol_id, &general).await.unwrap();
+    let invites: serde_json::Value =
+        serde_json::from_str(&self::control(server, "GET", "/_control/invites", "")).unwrap();
+    let sent = invites.as_array().unwrap().last().unwrap();
+    assert_eq!(
+        (sent["max_age"].as_u64(), sent["max_uses"].as_u64()),
+        (Some(86_400), Some(1))
+    );
+    assert_eq!(sent["location"], "User Invite Context Menu");
+    let in_dm = discord
+        .history(PRIVATE, &carol_dm, Span::Latest)
+        .await
+        .unwrap()
+        .messages;
+    assert_eq!(
+        in_dm.last().map(|message| message.content.as_str()),
+        Some(format!("https://discord.gg/{}", sent["code"].as_str().unwrap()).as_str())
+    );
+
     // Channels and categories, which her Crew role may manage: one made
     // shows once its CHANNEL_CREATE comes, with Discord's name for it.
     use talk_discord::service::ChannelSettings;

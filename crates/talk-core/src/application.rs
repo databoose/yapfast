@@ -30,9 +30,9 @@ mod rooms;
 mod server;
 mod session;
 
-#[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
-pub use members::member_server;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
+#[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
+pub use members::{member_server, with_clubs};
 pub use places::{
     ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
     SLOWMODES,
@@ -1052,6 +1052,12 @@ pub enum Action {
         max_uses: u32,
     },
     CloseInvite,
+    /// Send a Discord user an invite to a server, by its server id, from
+    /// their menu's Invite to server submenu.
+    InviteToServer {
+        user: String,
+        server: String,
+    },
     /// Open the dialog that makes a channel of this kind, from a Discord
     /// server's menu, by its server id, or one like a channel in its
     /// category, from the channel's menu, by its room id.
@@ -1771,6 +1777,7 @@ impl Application {
                 self.state.invite = None;
                 vec![]
             }
+            Action::InviteToServer { user, server } => self.invite_to_server(user, server),
             Action::NewChannel { place, kind } => self.new_channel(place, kind),
             Action::AskChannel(ask) => self.ask_channel(ask),
             Action::SaveChannel { kind, settings } => self.save_channel(kind, settings),
@@ -2090,6 +2097,7 @@ impl Application {
             }
             Event::GroupChanged(result) => self.group_changed(result),
             Event::InviteMade { room, result } => self.invite_made(room, result),
+            Event::InviteSent { result, .. } => self.invite_sent(result),
             Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
             Event::ChannelSaved(result) => self.channel_saved(result),
             Event::LeftServer { server, result } => self.left_server(server, result),

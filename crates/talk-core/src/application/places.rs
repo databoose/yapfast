@@ -125,6 +125,15 @@ impl Application {
         if self.discord_channel(id) {
             return self.discord_channel_choices(id, &listed);
         }
+        let mut listed = listed;
+        // A one-to-one Discord DM's menu invites its person.
+        if let Some(person) = self.state.rooms.iter().find_map(|room| {
+            (room.id == id && room.direct && !room.request && room.network == Network::Discord)
+                .then_some(room.person.as_deref())
+                .flatten()
+        }) {
+            self.offer_invite(person, &mut listed);
+        }
         listed
     }
 
@@ -407,6 +416,130 @@ impl Application {
         match result {
             Ok(code) => invite.link = Some(format!("https://discord.gg/{code}")),
             Err(error) => invite.error = Some(error),
+        }
+    }
+
+    /// The Discord servers someone's Invite to server submenu lists, in the
+    /// rail's order, as Discord's client lists them: those where this
+    /// account may create invites, and has a channel to invite to, but not
+    /// the server whose member they're shown as. Discord doesn't leave out
+    /// other servers they're in. None for oneself, a bot, or someone
+    /// blocked or ignored. Built when their menu opens.
+    pub fn invite_servers(&self, user: &str) -> Vec<&ChatServer> {
+        #[cfg(feature = "discord")]
+        {
+            let state = &self.state;
+            let listed = |list: &[String]| list.iter().any(|listed| listed == user);
+            let bot = self
+                .discord
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.names.read().is_bot(user));
+            let person = !state.preview
+                && state.discord_online
+                && !user.starts_with('@')
+                && state.relation(user) != Relation::Me
+                && !bot
+                && !listed(&state.discord_blocked)
+                && !listed(&state.discord_ignored);
+            if !person {
+                return vec![];
+            }
+            let shown_in = self
+                .member_place(user)
+                .and_then(discord::parse_room)
+                .map(|(guild, _)| guild);
+            state
+                .servers
+                .iter()
+                .filter(|server| server.discord && !server.unavailable)
+                .filter(|server| discord::parse_server(&server.id) != shown_in)
+                .filter(|server| self.may(&server.id, chat::Permission::CreateInvite))
+                .filter(|server| self.person_invite_channel(&server.id).is_some())
+                .collect()
+        }
+        #[cfg(not(feature = "discord"))]
+        {
+            let _ = user;
+            vec![]
+        }
+    }
+
+    /// Puts Invite to server in someone's menu where Discord's has it,
+    /// before how this account stands with them, when it lists a server.
+    pub(super) fn offer_invite(&self, user: &str, choices: &mut Vec<MenuChoice>) {
+        if self.invite_servers(user).is_empty() {
+            return;
+        }
+        let at = choices
+            .iter()
+            .position(|choice| {
+                matches!(
+                    choice,
+                    MenuChoice::AddFriend
+                        | MenuChoice::AcceptFriend
+                        | MenuChoice::CancelFriendRequest
+                        | MenuChoice::Unfriend
+                        | MenuChoice::Ignore
+                        | MenuChoice::Unignore
+                        | MenuChoice::Block
+                        | MenuChoice::Unblock
+                        | MenuChoice::CopyId
+                )
+            })
+            .unwrap_or(choices.len());
+        choices.insert(at, MenuChoice::InviteToServer);
+    }
+
+    /// The channel an invite from someone's menu lands them in, as Discord's
+    /// client picks it: of the text and announcement channels this account
+    /// may see and invite to, the first by position, else such a voice
+    /// channel. Not the server's order in the channel list, which goes by
+    /// category first.
+    #[cfg(feature = "discord")]
+    fn person_invite_channel<'a>(
+        &'a self,
+        server: &'a str,
+    ) -> Option<&'a talk_discord::ready::Channel> {
+        use talk_discord::ready::permission::{CREATE_INSTANT_INVITE, VIEW_CHANNEL};
+        let (server, None, me) = self.discord_place(server)? else {
+            return None;
+        };
+        let wanted = VIEW_CHANNEL | CREATE_INSTANT_INVITE;
+        let first = |channels: &'a [talk_discord::ready::Channel]| {
+            channels
+                .iter()
+                .filter(|channel| {
+                    server.channel_permissions(channel, me, &server.my_roles) & wanted == wanted
+                })
+                .min_by_key(|channel| (channel.position, &channel.id))
+        };
+        first(&server.text_channels).or_else(|| first(&server.voice_channels))
+    }
+
+    /// Sends someone an invite to a server their menu's submenu lists.
+    pub(super) fn invite_to_server(&mut self, user: String, server: String) -> Vec<Effect> {
+        #[cfg(feature = "discord")]
+        if self
+            .invite_servers(&user)
+            .iter()
+            .any(|listed| listed.id == server)
+            && let Some(channel) = self.person_invite_channel(&server)
+            && let Some(guild) = discord::parse_server(&server)
+        {
+            let room = discord::room_id(guild, &channel.id);
+            return vec![Effect::Backend(Command::Discord(
+                DiscordCommand::SendInvite { user, room },
+            ))];
+        }
+        let _ = (user, server);
+        vec![]
+    }
+
+    /// Says why an invite didn't go. One that went shows in the DM, which
+    /// lists it, as Discord's client shows it.
+    pub(super) fn invite_sent(&mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            self.state.notice = Some(error);
         }
     }
 

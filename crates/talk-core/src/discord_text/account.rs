@@ -452,6 +452,29 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::SendInvite { user, room }) = command {
+        let channel = discord::parse_room(&room).map(|(_, channel)| channel.to_owned());
+        match (discord, channel) {
+            (Ok(discord), Some(channel)) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord.send_invite(&user, &channel).await.map_err(|error| {
+                        tracing::warn!(error = format!("{error:#}"), "could not send an invite");
+                        format!("Couldn't send the invite: {error}")
+                    });
+                    let _ = events.send(Event::InviteSent { user, room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::InviteSent {
+                    user,
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::OpenThread { room, beside }) = command {
         let place =
             discord::parse_room(&room).map(|(guild, thread)| (guild.to_owned(), thread.to_owned()));

@@ -92,8 +92,10 @@
 // and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs. PATCH
 // /users/@me/guilds/{id}/settings changes her notification settings for a
 // server and its channels, and USER_GUILD_SETTINGS_UPDATE says so. POST
-// /channels/{id}/invites makes an invite to a channel of "Server", which
-// @everyone may, as on Discord, and GET /_control/invites lists them.
+// /channels/{id}/invites makes an invite to a channel of "Server" or of a
+// `--servers` filler, which @everyone may, as on Discord, and GET
+// /_control/invites lists them, each with the location its
+// X-Context-Properties named, as Invite to Server's does.
 // Alice's Crew role may manage channels: POST /guilds/{id}/channels makes a
 // channel or category in "Server", and GET, PATCH and DELETE /channels/{id}
 // read, change and delete one, each with its CHANNEL_ event. Deleting a
@@ -3368,13 +3370,19 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return empty();
   }
 
-  // An invite to one of the server's channels, as Discord makes them: it
-  // lasts max_age seconds (a day unless asked, never with 0) and works
-  // max_uses times (any number with 0).
+  // An invite to a channel of one of Alice's servers, as Discord makes
+  // them: it lasts max_age seconds (a day unless asked, never with 0) and
+  // works max_uses times (any number with 0). `unique` asks for a new one
+  // rather than a similar one reused, which the fake never does anyway.
+  // Each keeps where Alice's client said it was made, as `location`.
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/invites$/))) {
-    const channel = guild().channels.find((known) => known.id === m![1] && known.type !== 4);
-    if (!channel) return notFound("Unknown Channel", 10003);
+    const server = [guild(), ...fillers].find((known) => known.channels.some((channel) => channel.id === m![1]));
+    const channel = server?.channels.find((known) => known.id === m![1] && known.type !== 4);
+    if (!server || !channel) return notFound("Unknown Channel", 10003);
     const body: any = await req.json().catch(() => ({}));
+    if (body.unique !== undefined && typeof body.unique !== "boolean") {
+      return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    }
     const maxAge = body.max_age ?? 86400;
     const maxUses = body.max_uses ?? 0;
     if (!Number.isInteger(maxAge) || maxAge < 0 || maxAge > 5184000 || !Number.isInteger(maxUses) || maxUses < 0 || maxUses > 100) {
@@ -3389,16 +3397,16 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       max_age: maxAge,
       created_at: iso(now),
       expires_at: maxAge === 0 ? null : iso(now + maxAge * 1000),
-      guild: { id: GUILD, name: "Server", icon: "server1", splash: null, banner: null, description: null, features: [], verification_level: 0, vanity_url_code: null, nsfw_level: 0, premium_subscription_count: 0 },
-      guild_id: GUILD,
+      guild: { id: server.id, name: server.properties.name, icon: server.properties.icon, splash: null, banner: null, description: null, features: [], verification_level: 0, vanity_url_code: null, nsfw_level: 0, premium_subscription_count: 0 },
+      guild_id: server.id,
       channel: { id: channel.id, type: channel.type, name: channel.name },
       uses: 0,
       max_uses: maxUses,
       temporary: body.temporary === true,
     };
-    invites.push(invite);
+    invites.push({ ...invite, location: where() });
     const { guild: _, channel: wire, ...rest } = invite;
-    dispatch("INVITE_CREATE", { ...rest, channel_id: wire.id, guild_id: GUILD });
+    dispatch("INVITE_CREATE", { ...rest, channel_id: wire.id, guild_id: server.id });
     return json(invite);
   }
 

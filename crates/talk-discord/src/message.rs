@@ -660,6 +660,8 @@ pub struct SavedNames {
     roles: Vec<(String, String, Vec<String>)>,
     #[serde(default)]
     usernames: Vec<(String, String)>,
+    #[serde(default)]
+    bots: Vec<String>,
 }
 
 /// [`Names`] serialized as [`SavedNames`]; see [`Names::saving`].
@@ -676,7 +678,7 @@ impl serde::Serialize for SavingNames<'_> {
             }
         }
         let names = self.0;
-        let mut saved = serializer.serialize_struct("SavedNames", 7)?;
+        let mut saved = serializer.serialize_struct("SavedNames", 8)?;
         saved.serialize_field("users", &List(|| names.users.iter()))?;
         saved.serialize_field(
             "nicknames",
@@ -708,6 +710,7 @@ impl serde::Serialize for SavingNames<'_> {
             }),
         )?;
         saved.serialize_field("usernames", &List(|| names.usernames.iter()))?;
+        saved.serialize_field("bots", &List(|| names.bots.iter()))?;
         saved.end()
     }
 }
@@ -719,6 +722,8 @@ pub struct Names {
     users: HashMap<String, String>,
     /// Usernames by user id, such as `ann` for Ann.
     usernames: HashMap<String, String>,
+    /// The bots and apps among them, which nobody invites to a server.
+    bots: HashSet<String>,
     /// Server nicknames by server and user id.
     nicknames: HashMap<(String, String), String>,
     /// Members whose server profile is known, with or without a nickname.
@@ -791,6 +796,7 @@ impl Names {
                 .map(|(guild, user, roles)| ((guild, user), roles.into()))
                 .collect(),
             usernames: saved.usernames.into_iter().collect(),
+            bots: saved.bots.into_iter().collect(),
             ..Self::default()
         };
         // Those kept from before go before anyone learned since.
@@ -848,6 +854,7 @@ impl Names {
         let seen = &self.seen;
         self.users.retain(|user, _| seen.contains_key(user));
         self.usernames.retain(|user, _| seen.contains_key(user));
+        self.bots.retain(|user| seen.contains_key(user));
         self.avatars.retain(|user, _| seen.contains_key(user));
         self.nicknames
             .retain(|(_, user), _| seen.contains_key(user));
@@ -875,6 +882,16 @@ impl Names {
         }
         if let Some(username) = user["username"].as_str() {
             self.usernames.insert(id.to_owned(), username.to_owned());
+        }
+        // Partial user objects leave it out.
+        match user["bot"].as_bool() {
+            Some(true) => {
+                self.bots.insert(id.to_owned());
+            }
+            Some(false) => {
+                self.bots.remove(id);
+            }
+            None => {}
         }
         // Partial user objects leave the avatar out; null removes it.
         match user.get("avatar") {
@@ -1017,6 +1034,11 @@ impl Names {
                 self.learn_member(guild, &member);
             }
         }
+    }
+
+    /// Whether a user is a bot or an app, as far as it's known.
+    pub fn is_bot(&self, user: &str) -> bool {
+        self.bots.contains(user)
     }
 
     pub fn knows_member(&self, guild: &str, user: &str) -> bool {
@@ -1517,6 +1539,22 @@ mod tests {
         let saved = serde_json::to_vec(&names.saving()).unwrap();
         let restored = Names::restore(serde_json::from_slice(&saved).unwrap());
         assert_eq!(restored.users.len(), names.users.len());
+    }
+
+    #[test]
+    fn knows_bots_from_any_full_user_object_and_keeps_them() {
+        let mut names = Names::default();
+        names.learn_user(&json!({"id": "2", "username": "helper", "bot": true}));
+        names.learn_user(&json!({"id": "3", "username": "ann"}));
+        // A partial user object says nothing of it.
+        names.learn_member("10", &json!({"user": {"id": "2"}, "roles": []}));
+        assert!(names.is_bot("2"));
+        assert!(!names.is_bot("3"));
+        let saved = serde_json::to_vec(&names.saving()).unwrap();
+        let restored = Names::restore(serde_json::from_slice(&saved).unwrap());
+        assert!(restored.is_bot("2"));
+        names.learn_user(&json!({"id": "2", "username": "helper", "bot": false}));
+        assert!(!names.is_bot("2"));
     }
 
     #[test]
