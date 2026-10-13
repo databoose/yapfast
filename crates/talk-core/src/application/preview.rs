@@ -176,6 +176,7 @@ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> 
         members,
         unread: 0,
         mentions: 0,
+        muted: false,
         last_read: None,
         locked: false,
         read_only: false,

@@ -947,7 +947,10 @@ fn menus_offer_what_fits_their_conversation_or_server() {
         .mentions = 1;
     let servers = app.state.servers.clone();
     app.apply(Event::Rooms(RoomIndex { rooms, servers }));
-    assert_eq!(app.state.menu_choices("dm"), [Profile, CopyLink, CopyId]);
+    assert_eq!(
+        app.state.menu_choices("dm"),
+        [Profile, Pin, CopyLink, CopyId]
+    );
     assert_eq!(
         app.state.menu_choices("general"),
         [MarkRead, CopyLink, CopyId]
@@ -995,14 +998,198 @@ fn menus_offer_what_fits_their_conversation_or_server() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn a_discord_dms_menu_manages_its_person_and_notifications() {
+    use MenuChoice::*;
+    use chat::{Muting, RelationshipChange};
+    use talk_discord::service::{Conversation, Friend, Snapshot, Status};
+    let snapshot = |friends: bool, muted: bool, blocked: bool, ignored: bool| Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        friends: if friends { vec!["2".into()] } else { vec![] },
+        friend_list: if friends {
+            vec![Friend {
+                user_id: "2".into(),
+                name: "Annie".into(),
+                avatar: String::new(),
+                nickname: Some("Annie".into()),
+                presence: None,
+                activity: None,
+            }]
+        } else {
+            vec![]
+        },
+        blocked: if blocked { vec!["2".into()] } else { vec![] },
+        ignored: if ignored { vec!["2".into()] } else { vec![] },
+        conversations: vec![
+            Conversation {
+                id: "30".into(),
+                name: "Annie".into(),
+                person: Some("2".into()),
+                people: 2,
+                muted,
+                ..Default::default()
+            },
+            Conversation {
+                id: "31".into(),
+                name: "Group".into(),
+                group: true,
+                people: 3,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut app = Application::default();
+    app.apply(discord_event(snapshot(true, false, false, false)));
+    let dm = "discord:@me:30";
+    assert_eq!(
+        app.state.menu_choices(dm),
+        [
+            Profile,
+            Pin,
+            Call,
+            AddNote,
+            EditNickname,
+            CloseDm,
+            Unfriend,
+            Ignore,
+            Block,
+            Mute,
+            CopyLink,
+            CopyId
+        ]
+    );
+    // A group has no one person to manage.
+    assert_eq!(
+        app.state.menu_choices("discord:@me:31"),
+        [Pin, Call, Mute, CopyLink, CopyId]
+    );
+    app.apply(discord_event(snapshot(false, true, true, true)));
+    assert_eq!(
+        app.state.menu_choices(dm),
+        [
+            Profile, Pin, Call, AddNote, CloseDm, Unignore, Unblock, Unmute, CopyLink, CopyId
+        ],
+        "no nickname nor unfriending for someone who isn't a friend, nor a request to someone blocked"
+    );
+    app.apply(discord_event(snapshot(false, false, false, false)));
+    assert!(app.state.menu_choices(dm).contains(&AddFriend));
+    // In the DM, its person's menu, as their avatar or name opens it, is the
+    // DM's, less what's about the conversation in the list.
+    app.dispatch(Action::Open(dm.into()));
+    let mut in_dm = app.state.menu_choices(dm);
+    in_dm.retain(|choice| *choice != CopyLink);
+    assert_eq!(app.state.person_choices("2"), in_dm);
+    app.apply(discord_event(snapshot(false, true, true, true)));
+
+    // Pinning puts it first on this device, until it's unpinned or closed.
+    app.dispatch(Action::Pin {
+        room: dm.into(),
+        pinned: true,
+    });
+    assert_eq!(app.state.pinned, [dm]);
+    assert_eq!(app.state.menu_choices(dm)[1], Unpin);
+    assert!(matches!(
+        app.dispatch(Action::CloseDm(dm.into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::CloseDm { room }))] if room == dm
+    ));
+    assert!(app.state.pinned.is_empty());
+
+    // Muting goes to Discord; a menu that offers unmuting doesn't mute.
+    assert!(
+        app.dispatch(Action::MuteDm {
+            room: dm.into(),
+            muting: Muting::Minutes(15),
+        })
+        .is_empty()
+    );
+    assert!(matches!(
+        app.dispatch(Action::MuteDm { room: dm.into(), muting: Muting::Off }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Mute { room, muting: Muting::Off }))] if room == dm
+    ));
+
+    // A note loads, then saves; the dialog closes once Discord has it.
+    app.apply(discord_event(snapshot(true, false, false, false)));
+    assert!(matches!(
+        app.dispatch(Action::AskPerson { user: "2".into(), ask: PersonAsk::Note }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Note { user }))] if user == "2"
+    ));
+    assert_eq!(app.state.person_dialog.as_ref().unwrap().text, None);
+    assert!(
+        app.dispatch(Action::AnswerPerson("early".into()))
+            .is_empty(),
+        "not before the note is here"
+    );
+    app.apply(Event::Note {
+        user: "2".into(),
+        result: Ok("Likes tea".into()),
+    });
+    assert_eq!(
+        app.state.person_dialog.as_ref().unwrap().text.as_deref(),
+        Some("Likes tea")
+    );
+    assert!(matches!(
+        app.dispatch(Action::AnswerPerson(" Likes coffee ".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::SetNote { user, note }))]
+            if user == "2" && note == "Likes coffee"
+    ));
+    app.apply(Event::PersonSaved(Err("Discord refused".into())));
+    let dialog = app.state.person_dialog.as_ref().unwrap();
+    assert!(!dialog.saving && dialog.error.as_deref() == Some("Discord refused"));
+    app.dispatch(Action::AnswerPerson("Likes coffee".into()));
+    app.apply(Event::PersonSaved(Ok(())));
+    assert_eq!(app.state.person_dialog, None);
+
+    // The nickname starts from the one there is.
+    app.dispatch(Action::AskPerson {
+        user: "2".into(),
+        ask: PersonAsk::Nickname,
+    });
+    assert_eq!(
+        app.state.person_dialog.as_ref().unwrap().text.as_deref(),
+        Some("Annie")
+    );
+    app.dispatch(Action::ClosePersonDialog);
+
+    // Blocking asks first; ignoring doesn't.
+    assert!(
+        app.dispatch(Action::AskPerson {
+            user: "2".into(),
+            ask: PersonAsk::Block,
+        })
+        .is_empty()
+    );
+    assert!(matches!(
+        app.dispatch(Action::AnswerPerson(String::new())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Relationship {
+            user,
+            change: RelationshipChange::Block,
+        }))] if user == "2"
+    ));
+    assert_eq!(app.state.person_dialog, None);
+    assert!(matches!(
+        app.dispatch(Action::ChangeRelationship {
+            user: "2".into(),
+            change: RelationshipChange::Ignore
+        })
+        .as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::Relationship { .. }
+        ))]
+    ));
+}
+
+#[test]
 fn matrix_peoples_menus_offer_a_dm_but_not_to_this_account() {
     use MenuChoice::*;
     let mut app = connected();
     // In an open room, a Matrix ID is enough for a profile card.
     assert_eq!(app.state.person_choices("@alice:test"), [Profile, CopyId]);
+    // In their own DM, someone's menu is the DM's.
     assert_eq!(
         app.state.person_choices("@dm:preview.local"),
-        [Profile, Message, CopyId]
+        [Profile, Pin, CopyId]
     );
     assert_eq!(
         app.state.person_choices("@bob:test"),
@@ -2153,6 +2340,7 @@ fn discord_friends_are_listed_and_messaged() {
         user_id: id.into(),
         name: name.into(),
         avatar: format!("{id}.png"),
+        nickname: None,
         presence,
         activity: None,
     };
@@ -2186,6 +2374,7 @@ fn discord_friends_are_listed_and_messaged() {
         chat::Friend {
             id: "2".into(),
             name: "Ann".into(),
+            nickname: None,
             avatar: Some("2.png".into()),
             presence: Some(chat::Presence::Idle),
             activity: Some("making tea".into()),

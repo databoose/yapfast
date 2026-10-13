@@ -3,6 +3,7 @@
 //! ringing and message requests.
 
 use super::{channels::SEARCH_PAUSE, commands::NOT_DISCORD, render::chat_profile, *};
+use crate::chat::{Muting, RelationshipChange};
 
 /// Carries out a command about the account, or gives back any other.
 pub(super) fn command(
@@ -302,5 +303,106 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(
+        command @ (DiscordCommand::Relationship { .. }
+        | DiscordCommand::Note { .. }
+        | DiscordCommand::SetNote { .. }
+        | DiscordCommand::SetNickname { .. }
+        | DiscordCommand::CloseDm { .. }
+        | DiscordCommand::Mute { .. }),
+    ) = command
+    {
+        change_person(command, discord, events);
+        return None;
+    }
     Some(command)
+}
+
+/// Carries out a choice from a DM's menu: a change to a relationship, a note
+/// or a nickname, or to the DM itself. Each says how it went.
+fn change_person(
+    command: DiscordCommand,
+    discord: Result<&Discord, &str>,
+    events: &UnboundedSender<Event>,
+) {
+    let discord = match discord {
+        Ok(discord) => discord.clone(),
+        Err(why) => {
+            let _ = events.send(match command {
+                DiscordCommand::Note { user } => Event::Note {
+                    user,
+                    result: Err(why.into()),
+                },
+                DiscordCommand::SetNote { .. } | DiscordCommand::SetNickname { .. } => {
+                    Event::PersonSaved(Err(why.into()))
+                }
+                _ => Event::Error(why.into()),
+            });
+            return;
+        }
+    };
+    let events = events.clone();
+    let channel = |room: &str| {
+        discord::parse_room(room)
+            .map(|(_, channel)| channel.to_owned())
+            .unwrap_or_default()
+    };
+    tokio::spawn(async move {
+        let (result, what) = match command {
+            DiscordCommand::Note { user } => {
+                let result = discord.note(&user).await.map_err(|error| error.to_string());
+                let _ = events.send(Event::Note { user, result });
+                return;
+            }
+            DiscordCommand::SetNote { user, note } => {
+                let result = discord.set_note(&user, &note).await;
+                let _ = events.send(Event::PersonSaved(
+                    result.map_err(|error| error.to_string()),
+                ));
+                return;
+            }
+            DiscordCommand::SetNickname { user, nickname } => {
+                let result = discord.set_friend_nickname(&user, &nickname).await;
+                let _ = events.send(Event::PersonSaved(
+                    result.map_err(|error| error.to_string()),
+                ));
+                return;
+            }
+            DiscordCommand::Relationship { user, change } => match change {
+                RelationshipChange::Unfriend => {
+                    (discord.unfriend(&user).await, "remove the friend")
+                }
+                RelationshipChange::Block => (discord.block(&user, true).await, "block them"),
+                RelationshipChange::Unblock => (discord.block(&user, false).await, "unblock them"),
+                RelationshipChange::Ignore => (discord.ignore(&user, true).await, "ignore them"),
+                RelationshipChange::Unignore => {
+                    (discord.ignore(&user, false).await, "stop ignoring them")
+                }
+            },
+            DiscordCommand::CloseDm { room } => {
+                (discord.close_dm(&channel(&room)).await, "close the DM")
+            }
+            DiscordCommand::Mute { room, muting } => {
+                let (muted, seconds) = match muting {
+                    Muting::Off => (false, None),
+                    Muting::Minutes(minutes) => (true, Some(u64::from(minutes) * 60)),
+                    Muting::Always => (true, None),
+                };
+                let result = discord.mute_private(&channel(&room), muted, seconds).await;
+                (
+                    result,
+                    if muted {
+                        "mute the DM"
+                    } else {
+                        "unmute the DM"
+                    },
+                )
+            }
+            _ => return,
+        };
+        if let Err(error) = result {
+            tracing::warn!(error = format!("{error:#}"), "could not {what}");
+            let _ = events.send(Event::Error(format!("Could not {what}: {error}")));
+        }
+    });
 }

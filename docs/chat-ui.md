@@ -173,9 +173,14 @@ The window follows Discord's arrangement:
   knows only its own call's participants. A right click on a conversation, or
   the Menu key or Shift+F10 on a focused one, opens its menu: Mark as read when
   it's unread, Join voice for a voice channel you aren't in, Profile for a
-  one-to-one DM, then Copy link and Copy ID. Matrix links go through
-  matrix.to. Arrow keys, Home and End move through the menu, Enter chooses, and
-  Escape closes it.
+  one-to-one DM, Pin or Unpin and Start call for a DM, then Copy link and Copy
+  ID. A pinned DM stays at the top of the list, with a pin, on this device. A
+  Discord DM's menu also has Add note, Add or Change friend nickname, Close DM,
+  Remove friend, Ignore and Block, each undone by its opposite, and Mute, whose
+  submenu mutes for 15 minutes, 1, 3, 8 or 24 hours, or until unmuted. A muted
+  DM shows faint. Removing a friend and blocking ask first. Matrix links go
+  through matrix.to. Arrow keys, Home and End move through the menu, Right
+  opens a submenu and Left leaves it, Enter chooses, and Escape closes it.
 - A dock across the rail and sidebar: the voice panel, then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
   audio devices, message text size, clock and link previews, notifications,
@@ -196,10 +201,12 @@ The window follows Discord's arrangement:
   remembers a closed list. While it shows, dragging the left sidebar still
   leaves the conversation 420px.
 - A right click on someone, in the member list, on a message author's avatar
-  or in the friends list, opens their menu: Profile, Message to open or start
-  the DM with them, and on Discord Add friend, Accept friend request or Cancel
-  friend request, then Copy ID. Clicking an author's avatar shows their card
-  beside it.
+  or name, or in the friends list, opens their menu: Profile, Message to open
+  or start the DM with them, and on Discord Add friend, Accept friend request
+  or Cancel friend request, then Copy ID. In a one-to-one DM, the other
+  person's menu is the DM's own, less Mark as read and Copy link, and Copy ID
+  copies theirs. Clicking an author's avatar or name, which underlines while
+  pointed at, shows their card beside it.
 - A voice stage with participant tiles, a green border while someone speaks,
   and round mute, deafen and leave controls.
 

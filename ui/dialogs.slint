@@ -378,3 +378,76 @@ export component StatusMenu inherits Rectangle {
         }
     }
 }
+
+/// A dialog from a DM's menu about its other person.
+export struct PersonPrompt {
+    title: string,
+    /// What it explains, under the title.
+    text: string,
+    /// What its field is for, as its label; empty for a dialog that only asks.
+    field: string,
+    /// What its button says, and whether it does something hard to undo.
+    confirm: string,
+    danger: bool,
+    /// The field's text is on its way, or what was asked is.
+    loading: bool,
+    saving: bool,
+    error: string,
+}
+
+// Writing a note on someone or the nickname you give them, or making sure
+// before unfriending or blocking them.
+export component PersonDialog inherits Rectangle {
+    in property <PersonPrompt> prompt;
+    in-out property <string> text;
+    callback answer(string);
+    callback close;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(440px, root.width - 48px); height: person-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: root.prompt.title;
+        TouchArea { }
+        person-keys := FocusScope {
+            init => { if root.prompt.field == "" { self.focus(); } }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                if event.text == "\n" && root.prompt.field == "" { root.answer(""); return accept; }
+                return reject;
+            }
+            person-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: root.prompt.title; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
+                }
+                if root.prompt.text != "": Label { text: root.prompt.text; }
+                if root.prompt.field != "": TextField {
+                    // A note takes the keys once it's here.
+                    init => { if self.enabled { self.focus-input(); } }
+                    changed enabled => { if self.enabled { self.focus-input(); } }
+                    enabled: !root.prompt.loading;
+                    min-height: 36px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                    placeholder: root.prompt.loading ? "Loading..." : root.prompt.field; label: root.prompt.field;
+                    text <=> root.text;
+                    accepted => { root.answer(root.text); }
+                }
+                if root.prompt.error != "": Text {
+                    text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
+                    ActionButton {
+                        text: root.prompt.confirm; primary: !root.prompt.danger; danger: root.prompt.danger;
+                        enabled: !root.prompt.loading && !root.prompt.saving;
+                        clicked => { root.answer(root.text); }
+                    }
+                }
+            }
+        }
+    }
+}

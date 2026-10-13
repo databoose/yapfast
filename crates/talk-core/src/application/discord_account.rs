@@ -277,6 +277,97 @@ impl Application {
         Err("Discord isn't linked on this device.")
     }
 
+    pub(super) fn change_relationship(
+        &mut self,
+        user: String,
+        change: chat::RelationshipChange,
+    ) -> Vec<Effect> {
+        if self.state.discord_user.is_none() || self.state.preview {
+            return vec![];
+        }
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::Relationship { user, change },
+        ))]
+    }
+
+    /// Opens a dialog about the other person in a Discord DM, fetching the
+    /// note it shows.
+    pub(super) fn ask_person(&mut self, user: String, ask: PersonAsk) -> Vec<Effect> {
+        let Some(room) = self
+            .state
+            .rooms
+            .iter()
+            .find(|room| room.direct && room.person.as_deref() == Some(&user))
+        else {
+            return vec![];
+        };
+        if self.state.discord_user.is_none() || self.state.preview {
+            return vec![];
+        }
+        let friend = self.state.friends.iter().find(|friend| friend.id == user);
+        if ask == PersonAsk::Nickname && friend.is_none() {
+            return vec![];
+        }
+        let text = match ask {
+            PersonAsk::Note => None,
+            PersonAsk::Nickname => Some(
+                friend
+                    .and_then(|friend| friend.nickname.clone())
+                    .unwrap_or_default(),
+            ),
+            PersonAsk::Unfriend | PersonAsk::Block => Some(String::new()),
+        };
+        self.state.person_dialog = Some(PersonDialog {
+            user: user.clone(),
+            name: room.name.clone(),
+            ask,
+            text,
+            saving: false,
+            error: None,
+        });
+        if ask == PersonAsk::Note {
+            vec![Effect::Backend(Command::Discord(DiscordCommand::Note {
+                user,
+            }))]
+        } else {
+            vec![]
+        }
+    }
+
+    /// Carries out what the person dialog asks for: saving the note or
+    /// nickname written, or unfriending or blocking.
+    pub(super) fn answer_person(&mut self, text: String) -> Vec<Effect> {
+        let Some(dialog) = self
+            .state
+            .person_dialog
+            .as_mut()
+            .filter(|dialog| !dialog.saving && dialog.text.is_some())
+        else {
+            return vec![];
+        };
+        let user = dialog.user.clone();
+        let text = text.trim().to_owned();
+        let command = match dialog.ask {
+            PersonAsk::Note => DiscordCommand::SetNote { user, note: text },
+            PersonAsk::Nickname => DiscordCommand::SetNickname {
+                user,
+                nickname: text,
+            },
+            PersonAsk::Unfriend | PersonAsk::Block => {
+                let change = if dialog.ask == PersonAsk::Block {
+                    chat::RelationshipChange::Block
+                } else {
+                    chat::RelationshipChange::Unfriend
+                };
+                self.state.person_dialog = None;
+                return self.change_relationship(user, change);
+            }
+        };
+        dialog.saving = true;
+        dialog.error = None;
+        vec![Effect::Backend(Command::Discord(command))]
+    }
+
     /// Shows what a Discord snapshot says about the account and its lists.
     #[cfg(feature = "discord")]
     pub(super) fn show_snapshot(
@@ -304,12 +395,15 @@ impl Application {
         self.state.discord_presence =
             Some(snapshot.presence.clone()).filter(|presence| !presence.is_empty());
         self.state.discord_friends = snapshot.friends.clone();
+        self.state.discord_blocked = snapshot.blocked.clone();
+        self.state.discord_ignored = snapshot.ignored.clone();
         self.state.friends = snapshot
             .friend_list
             .iter()
             .map(|friend| chat::Friend {
                 id: friend.user_id.clone(),
                 name: friend.name.clone(),
+                nickname: friend.nickname.clone(),
                 avatar: Some(friend.avatar.clone()),
                 presence: friend.presence.map(discord::presence),
                 activity: friend.activity.clone(),
@@ -355,6 +449,9 @@ impl Application {
         self.state.discord_online = false;
         self.state.discord_user = None;
         self.state.discord_friends.clear();
+        self.state.discord_blocked.clear();
+        self.state.discord_ignored.clear();
+        self.state.person_dialog = None;
         self.state.friends.clear();
         self.state.friend_requests.clear();
         self.state.custom_status = None;

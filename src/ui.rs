@@ -15,7 +15,7 @@ use slint::{
 use talk_core::{
     application::{
         Action, AddFriend, AppState, Application, ClearAfter, Compose, DmScreen, Effect,
-        Navigation, NewDm, ProfileView, Relation,
+        Navigation, NewDm, PersonAsk, ProfileView, Relation,
     },
     backend::Backend,
     chat::{
@@ -480,6 +480,8 @@ struct Layout {
     show_hidden_channels: bool,
     /// Reading in Talk marks Discord channels read on Discord; on unless turned off.
     sync_discord_reads: Option<bool>,
+    /// DMs pinned to the top of the DM list, by room ID, the first pinned first.
+    pinned: Vec<String>,
     /// Message times as 9:41 PM rather than 21:41.
     twelve_hour_clock: bool,
     /// Message text: 0 small, 1 default, 2 large.
@@ -751,6 +753,15 @@ struct Icons {
     copy: slint::Image,
     befriend: slint::Image,
     cancel: slint::Image,
+    pin: slint::Image,
+    unpin: slint::Image,
+    note: slint::Image,
+    nickname: slint::Image,
+    unfriend: slint::Image,
+    ignore: slint::Image,
+    block: slint::Image,
+    mute: slint::Image,
+    unmute: slint::Image,
 }
 
 struct Adapter {
@@ -861,6 +872,17 @@ impl Adapter {
                 "../ui/icons/user-plus.svg"
             ))?,
             cancel: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/x.svg"))?,
+            pin: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/pin.svg"))?,
+            unpin: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/pin-off.svg"))?,
+            note: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/sticky-note.svg"))?,
+            nickname: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user-pen.svg"))?,
+            unfriend: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/user-minus.svg"
+            ))?,
+            ignore: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/eye-off.svg"))?,
+            block: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/ban.svg"))?,
+            mute: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/bell-off.svg"))?,
+            unmute: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/bell.svg"))?,
         };
         let models = Models::default();
         models.attach(window);
@@ -873,6 +895,7 @@ impl Adapter {
         app.dispatch(Action::SyncDiscordReads(
             layout.sync_discord_reads.unwrap_or(true),
         ));
+        app.dispatch(Action::SetPinned(layout.pinned.clone()));
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
                 events: None,

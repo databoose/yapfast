@@ -11,8 +11,8 @@ recorded on 2026-10-06.
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications, member lists | Threads, forums, search, pins, forwarding |
-| [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM | |
-| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status | Blocking, and a list of the blocked |
+| [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
+| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
 
 The [later list](#later) has the rest.
@@ -937,6 +937,39 @@ from a profile, `{"location":"Friends"}` otherwise, as base64. Discord
 doesn't let a client send many requests quickly, and Talk only sends one when
 the person clicks. Requests Discord took for spam are listed too, marked
 "Maybe spam".
+
+### A DM's menu
+
+Right-clicking a DM offers, besides Profile and copying, these:
+
+- Pin keeps a DM or group DM at the top of the list. Discord's desktop client
+  doesn't pin DMs, so Talk keeps the pins in `layout.json`, on this device.
+- Start call joins the DM's call, as the phone in its header does.
+- Add note writes this account's note on the other person:
+  `GET /users/@me/notes/{id}` fills the dialog, a 404 meaning there's none,
+  and `PUT` with `{"note": ...}` saves it, an empty one removing it.
+- Add friend nickname, for a friend, is `PATCH
+  /users/@me/relationships/{id}` with `{"nickname": ...}`, or null to remove
+  it. RELATIONSHIP_UPDATE carries it back, and Talk shows a friend by their
+  nickname in the DM list and the friends list, as Discord does.
+- Close DM is `DELETE /channels/{id}`; Discord answers with CHANNEL_DELETE,
+  and the DM returns when either side writes.
+- Remove friend is `DELETE /users/@me/relationships/{id}`, and Block is `PUT`
+  on the same path with `{"type": 2}`, each after the person confirms, with
+  `{"location":"ContextMenu"}` as the context. Unblock is the same `DELETE`.
+- Ignore is `PUT /users/@me/relationships/{id}/ignore`, and `DELETE` stops it.
+  Discord marks the relationship `user_ignored`, which Talk tracks to offer
+  the opposite.
+- Mute is `PATCH /users/@me/guilds/@me/settings` with the channel's override:
+  `muted` and a `mute_config` of `selected_time_window`, in seconds or -1 for
+  good, and its `end_time`. Unmute sets `muted` false. USER_GUILD_SETTINGS_UPDATE
+  brings the change back, and a muted DM shows faint and counts nothing unread.
+
+Someone who isn't a friend is offered Add friend, Accept friend request or
+Cancel friend request in place of Remove friend, unless they're blocked.
+Right-clicking the other person's avatar or name in the DM's messages opens
+the same menu. The person's choices show only in a one-to-one DM. A message request offers
+neither pinning, closing nor muting, as it waits for an answer.
 
 ### Profiles
 

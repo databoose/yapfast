@@ -36,6 +36,8 @@ pub struct ChatRoom {
     pub members: u64,
     pub unread: u64,
     pub mentions: u64,
+    /// Muted in the network's notification settings: a Discord DM.
+    pub muted: bool,
     /// The timeline item of the last message this account read here, which
     /// may not be loaded: a Discord `d:` item, ordered by its snowflake, or
     /// a Matrix `e:` event from its read receipt.
@@ -105,7 +107,9 @@ pub struct FriendRequest {
 pub struct Friend {
     /// Their Discord user id.
     pub id: String,
+    /// The nickname this account gave them, else their name.
     pub name: String,
+    pub nickname: Option<String>,
     /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     /// Whether they're around, when Discord says, and their custom status or
@@ -981,20 +985,65 @@ pub enum Command {
 pub enum DiscordCommand {
     /// The members of a Discord role in the room's server, as far as they're known;
     /// [`Event::RoleMembers`] follows.
-    RoleMembers { room: String, role: String },
+    RoleMembers {
+        room: String,
+        role: String,
+    },
     /// Look for the room's members whose names start with `query`, beyond those
     /// listed; they arrive as [`Event::MemberMatches`]. Only Discord servers need it.
-    SearchMembers { room: String, query: String },
+    SearchMembers {
+        room: String,
+        query: String,
+    },
     /// Accept a Discord message request, or ignore it.
-    AnswerRequest { room: String, accept: bool },
+    AnswerRequest {
+        room: String,
+        accept: bool,
+    },
     /// Decline a Discord DM call ringing this account.
-    DeclineCall { room: String },
+    DeclineCall {
+        room: String,
+    },
     /// Send a Discord user a friend request or accept theirs, or with
     /// `add` false, ignore theirs or cancel this account's.
-    Friend { user: String, add: bool },
+    Friend {
+        user: String,
+        add: bool,
+    },
     /// Send a friend request to whoever has this Discord username;
     /// [`Event::FriendAdded`] follows.
-    AddFriend { username: String },
+    AddFriend {
+        username: String,
+    },
+    /// Change how this account stands with a Discord user. The lists change
+    /// when Discord confirms it; a failure comes back as [`Event::Error`].
+    Relationship {
+        user: String,
+        change: RelationshipChange,
+    },
+    /// Fetch this account's note on a Discord user; [`Event::Note`] follows.
+    Note {
+        user: String,
+    },
+    /// Set this account's note on a Discord user, or the nickname it gives a
+    /// friend; empty clears it. [`Event::PersonSaved`] follows.
+    SetNote {
+        user: String,
+        note: String,
+    },
+    SetNickname {
+        user: String,
+        nickname: String,
+    },
+    /// Close a Discord DM; the DM list changes when Discord confirms it.
+    CloseDm {
+        room: String,
+    },
+    /// Mute a Discord DM or group DM, or unmute it.
+    Mute {
+        room: String,
+        muting: Muting,
+    },
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
@@ -1008,10 +1057,34 @@ pub enum DiscordCommand {
     Unlink,
     /// Fetch a Discord user's profile, as a member of a room's server or as
     /// the other person in a DM. It comes back as [`Event::Profile`].
-    Profile { room: String, user: String },
+    Profile {
+        room: String,
+        user: String,
+    },
     /// Download server icons and avatars by address. Each that arrives comes
     /// back as [`Event::Picture`]; one that fails doesn't.
     Pictures(Vec<String>),
+}
+
+/// A change to how the Discord account stands with someone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationshipChange {
+    Unfriend,
+    Block,
+    Unblock,
+    /// Discord hides an ignored user's messages and quiets their DMs, and
+    /// doesn't tell them.
+    Ignore,
+    Unignore,
+}
+
+/// How long a Discord DM stays muted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Muting {
+    Off,
+    Minutes(u32),
+    /// Until it's unmuted.
+    Always,
 }
 
 /// Who carries out a command.
@@ -1105,6 +1178,14 @@ pub enum Event {
     DmStarted(Result<String, String>),
     /// Whether [`DiscordCommand::AddFriend`]'s request went: to whom, or why not.
     FriendAdded(Result<String, String>),
+    /// [`DiscordCommand::Note`]'s note, empty for none, or why it didn't come.
+    Note {
+        user: String,
+        result: Result<String, String>,
+    },
+    /// Whether [`DiscordCommand::SetNote`] or [`DiscordCommand::SetNickname`]
+    /// saved it, or why not.
+    PersonSaved(Result<(), String>),
     /// Whether [`DiscordCommand::SetCustomStatus`] changed it, or why not.
     CustomStatusSet(Result<(), String>),
     /// Whether [`DiscordCommand::SetStatus`] changed it, or why not.

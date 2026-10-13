@@ -1,6 +1,7 @@
 //! Moving between servers, DMs and rooms, and starting DMs.
 
 use super::*;
+use crate::chat::Muting;
 
 /// What a conversation's or server's menu offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,11 +17,41 @@ pub enum MenuChoice {
     AddFriend,
     AcceptFriend,
     CancelFriendRequest,
+    /// Keep a DM at the top of the DM list on this device, or stop.
+    Pin,
+    Unpin,
+    /// Start a DM's call, or join the one going on.
+    Call,
+    /// Write this account's note on a Discord DM's other person, or the
+    /// nickname it gives them as a friend.
+    AddNote,
+    AddNickname,
+    EditNickname,
+    /// Close a one-to-one Discord DM.
+    CloseDm,
+    Unfriend,
+    Ignore,
+    Unignore,
+    Block,
+    Unblock,
+    /// Mute a Discord DM for one of [`MUTE_TIMES`], or unmute it.
+    Mute,
+    Unmute,
     /// Copy a link to it that its network's apps open.
     CopyLink,
     /// Copy its id as its network knows it.
     CopyId,
 }
+
+/// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.
+pub const MUTE_TIMES: [Muting; 6] = [
+    Muting::Minutes(15),
+    Muting::Minutes(60),
+    Muting::Minutes(3 * 60),
+    Muting::Minutes(8 * 60),
+    Muting::Minutes(24 * 60),
+    Muting::Always,
+];
 
 impl AppState {
     /// What the menu of a listed server or conversation offers, in order;
@@ -34,8 +65,19 @@ impl AppState {
     }
 
     /// What someone's menu offers, by Discord user id or Matrix ID: their
-    /// profile when Talk knows them, a DM, and Discord friendship.
+    /// profile when Talk knows them, a DM, and Discord friendship; in their
+    /// DM, what the DM's menu offers.
     pub fn person_choices(&self, user: &str) -> Vec<MenuChoice> {
+        // In their own DM, someone's menu is the DM's, less what's about it
+        // as a conversation in the list; its ID is theirs.
+        if let Some(dm) = self
+            .selected_room()
+            .filter(|room| room.direct && room.person.as_deref() == Some(user))
+        {
+            let mut choices = self.room_choices(&dm.id);
+            choices.retain(|choice| !matches!(choice, MenuChoice::MarkRead | MenuChoice::CopyLink));
+            return choices;
+        }
         let me =
             self.discord_user.as_deref() == Some(user) || self.account.as_deref() == Some(user);
         let mut choices = vec![];
@@ -96,6 +138,60 @@ impl AppState {
         }
         if room.person.is_some() {
             choices.push(MenuChoice::Profile);
+        }
+        if room.direct && !room.request && !self.preview {
+            choices.push(if self.pinned.contains(&room.id) {
+                MenuChoice::Unpin
+            } else {
+                MenuChoice::Pin
+            });
+        }
+        if room.direct && !connected && self.can_join_voice(id) {
+            choices.push(MenuChoice::Call);
+        }
+        let discord = room.network == Network::Discord
+            && room.direct
+            && !self.preview
+            && self.discord_user.is_some();
+        if discord && let Some(person) = &room.person {
+            choices.push(MenuChoice::AddNote);
+            let friend = self.friends.iter().find(|friend| &friend.id == person);
+            match friend.map(|friend| friend.nickname.is_some()) {
+                Some(false) => choices.push(MenuChoice::AddNickname),
+                Some(true) => choices.push(MenuChoice::EditNickname),
+                None => {}
+            }
+            if !room.request {
+                choices.push(MenuChoice::CloseDm);
+            }
+            let has = |list: &[String]| list.contains(person);
+            match self.relation(person) {
+                Relation::Friend => choices.push(MenuChoice::Unfriend),
+                // Discord takes no request to someone blocked.
+                Relation::Stranger if !has(&self.discord_blocked) => {
+                    choices.push(MenuChoice::AddFriend)
+                }
+                Relation::Incoming => choices.push(MenuChoice::AcceptFriend),
+                Relation::Outgoing => choices.push(MenuChoice::CancelFriendRequest),
+                Relation::Stranger | Relation::Me => {}
+            }
+            choices.push(if has(&self.discord_ignored) {
+                MenuChoice::Unignore
+            } else {
+                MenuChoice::Ignore
+            });
+            choices.push(if has(&self.discord_blocked) {
+                MenuChoice::Unblock
+            } else {
+                MenuChoice::Block
+            });
+        }
+        if discord && !room.request {
+            choices.push(if room.muted {
+                MenuChoice::Unmute
+            } else {
+                MenuChoice::Mute
+            });
         }
         if !self.preview {
             choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
@@ -240,6 +336,52 @@ impl Application {
             .into_iter()
             .map(|room| Effect::Backend(Command::MarkRead { room, sync }))
             .collect()
+    }
+
+    /// Pins a listed DM to the top of the DM list, or unpins it.
+    pub(super) fn pin(&mut self, room: String, pinned: bool) -> Vec<Effect> {
+        let choice = if pinned {
+            MenuChoice::Pin
+        } else {
+            MenuChoice::Unpin
+        };
+        if self.state.menu_choices(&room).contains(&choice) {
+            self.state.pinned.retain(|id| *id != room);
+            if pinned {
+                self.state.pinned.push(room);
+            }
+        }
+        vec![]
+    }
+
+    pub(super) fn close_dm(&mut self, room: String) -> Vec<Effect> {
+        if !self
+            .state
+            .menu_choices(&room)
+            .contains(&MenuChoice::CloseDm)
+        {
+            return vec![];
+        }
+        // Closed, it isn't pinned either.
+        self.state.pinned.retain(|id| *id != room);
+        vec![Effect::Backend(Command::Discord(DiscordCommand::CloseDm {
+            room,
+        }))]
+    }
+
+    pub(super) fn mute_dm(&mut self, room: String, muting: Muting) -> Vec<Effect> {
+        let choice = if muting == Muting::Off {
+            MenuChoice::Unmute
+        } else {
+            MenuChoice::Mute
+        };
+        if !self.state.menu_choices(&room).contains(&choice) {
+            return vec![];
+        }
+        vec![Effect::Backend(Command::Discord(DiscordCommand::Mute {
+            room,
+            muting,
+        }))]
     }
 
     pub(super) fn open_new_dm(&mut self) -> Vec<Effect> {

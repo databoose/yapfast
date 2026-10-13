@@ -1257,6 +1257,68 @@ async fn talks_to_the_fake_server() {
     discord.set_status("online").await.unwrap();
     presence_where(server, |presence| presence["status"] == "online").await;
 
+    // From Dave's DM's menu: a nickname for him and a note on him, ignoring
+    // and muting, then unfriending, blocking and unblocking, and closing it.
+    let dave_dm = |snapshot: &Snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .find(|found| found.id == dave)
+            .cloned()
+    };
+    discord
+        .set_friend_nickname(&dave_user, "Davey")
+        .await
+        .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_dm(snapshot).is_some_and(|dm| dm.name == "Davey")
+            && snapshot
+                .friend_list
+                .iter()
+                .any(|friend| friend.name == "Davey" && friend.nickname.as_deref() == Some("Davey"))
+    })
+    .await;
+    assert_eq!(discord.note(&dave_user).await.unwrap(), "", "no note yet");
+    discord
+        .set_note(&dave_user, "Met at the jam")
+        .await
+        .unwrap();
+    assert_eq!(discord.note(&dave_user).await.unwrap(), "Met at the jam");
+    discord.ignore(&dave_user, true).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.ignored == [dave_user.clone()]).await;
+    discord.ignore(&dave_user, false).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.ignored.is_empty()).await;
+    discord
+        .mute_private(&dave, true, Some(15 * 60))
+        .await
+        .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_dm(snapshot).is_some_and(|dm| dm.muted)
+    })
+    .await;
+    discord.mute_private(&dave, false, None).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_dm(snapshot).is_some_and(|dm| !dm.muted)
+    })
+    .await;
+    discord.mute_private(&dave, true, None).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_dm(snapshot).is_some_and(|dm| dm.muted)
+    })
+    .await;
+    discord.unfriend(&dave_user).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        !snapshot.friends.contains(&dave_user)
+            && dave_dm(snapshot).is_some_and(|dm| dm.name == "Dave")
+    })
+    .await;
+    discord.block(&dave_user, true).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.blocked.contains(&dave_user)).await;
+    discord.block(&dave_user, false).await.unwrap();
+    snapshot_where(&discord, |snapshot| !snapshot.blocked.contains(&dave_user)).await;
+    discord.close_dm(&dave).await.unwrap();
+    snapshot_where(&discord, |snapshot| dave_dm(snapshot).is_none()).await;
+
     // Discord asks the gateway to reconnect: the session resumes, without a
     // new identify, and carries on.
     post_control(server, "/_control/gateway-reconnect", "");
