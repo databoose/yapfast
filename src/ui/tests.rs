@@ -960,6 +960,46 @@ fn a_server_members_menu_follows_permissions_and_ticks_roles() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn invite_to_server_lists_the_servers_in_a_submenu() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    let mut app = talk_core::application::member_server(&["30"]);
+    talk_core::application::with_clubs(&mut app);
+    adapter.borrow_mut().app = app;
+    window.invoke_prepare_menu("4".into(), true);
+    let rows: Vec<MenuRow> = window.get_menu_rows().iter().collect();
+    let at = rows
+        .iter()
+        .position(|row| row.text == "Invite to server")
+        .unwrap();
+    assert_eq!(rows[at - 1].text, "Change nickname");
+    assert_eq!(rows[at + 1].text, "Remove friend");
+    assert!(
+        !rows[at].separated,
+        "in the group of how she stands with them"
+    );
+    let servers = window.get_menu_submenus().row_data(at).unwrap();
+    let servers: Vec<(String, String)> = servers
+        .iter()
+        .map(|row| (row.id.to_string(), row.text.to_string()))
+        .collect();
+    assert_eq!(
+        servers,
+        [("invite-to:discord:50".to_owned(), "Club".to_owned())],
+        "not the server she's shown in, nor one that doesn't let Alice invite"
+    );
+}
+
+#[test]
 fn menus_give_each_row_its_own_submenu_and_tick_checkboxes() {
     i_slint_backend_testing::init_no_event_loop();
     let window = TalkWindow::new().unwrap();

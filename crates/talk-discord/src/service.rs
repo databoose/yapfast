@@ -1014,6 +1014,20 @@ impl Discord {
         self.api.create_invite(channel, max_age, max_uses).await
     }
 
+    /// Invites `user` to a server as Discord's Invite to Server does: makes
+    /// an invite to its `channel` that works once and sends its link in a
+    /// message to their DM, which opening finds or starts. The DM's and the
+    /// message's gateway events show both.
+    pub async fn send_invite(&self, user: &str, channel: &str) -> Result<()> {
+        let code = self.api.create_invite_once(channel).await?;
+        let dm = self.api.open_dm(user).await?;
+        let link = format!("https://discord.gg/{code}");
+        let nonce = crate::message::nonce();
+        let sent = self.api.send_from_menu(&dm, &link, &nonce).await?;
+        self.write_names().learn_message(None, &sent);
+        Ok(())
+    }
+
     /// A channel's name, topic, slowmode in seconds and whether it's
     /// age-restricted, as its dialog edits them.
     pub async fn channel_settings(&self, channel: &str) -> Result<ChannelSettings> {

@@ -1,4 +1,7 @@
-use super::{fixture::member_server as server, *};
+use super::{
+    fixture::{member_server as server, with_clubs},
+    *,
+};
 use MenuChoice::*;
 
 const SERVER: &str = "discord:10";
@@ -327,4 +330,91 @@ fn calling_a_friend_starts_the_dm_and_then_its_call() {
     );
     app.apply(Event::DmStarted(Err("no".into())));
     assert!(!app.pending_call, "nothing to call once it failed");
+}
+
+fn names(servers: Vec<&ChatServer>) -> Vec<&str> {
+    servers
+        .into_iter()
+        .map(|server| server.name.as_str())
+        .collect()
+}
+
+#[test]
+fn invite_to_server_lists_where_one_may_invite_but_the_server_theyre_shown_in() {
+    let mut app = staff();
+    assert!(
+        !app.person_choices("4").contains(&InviteToServer),
+        "nowhere to invite to"
+    );
+    with_clubs(&mut app);
+    // Discord's client lists every other server, as it doesn't know whom
+    // they share with this account.
+    assert_eq!(names(app.invite_servers("3")), ["Club"]);
+    assert_eq!(
+        app.person_choices("4"),
+        [
+            Profile,
+            Mention,
+            Message,
+            Call,
+            AddNote,
+            AddNickname,
+            ServerNickname,
+            InviteToServer,
+            Unfriend,
+            Ignore,
+            Block,
+            Roles,
+            CopyId,
+            Timeout,
+            Kick,
+            Ban
+        ],
+        "after Change nickname, before Remove friend, as in Discord's"
+    );
+    assert!(app.invite_servers("1").is_empty(), "not oneself");
+    assert!(app.invite_servers("8").is_empty(), "not a bot");
+    assert!(!app.person_choices("1").contains(&InviteToServer));
+    // Away from the server, its own members may be invited to it too.
+    app.dispatch(Action::Navigate(Navigation::DirectMessages));
+    assert_eq!(names(app.invite_servers("4")), ["Test", "Club"]);
+    assert_eq!(
+        app.person_choices("4"),
+        [Message, InviteToServer, CopyId],
+        "a friend's"
+    );
+}
+
+#[test]
+fn inviting_someone_sends_them_a_link_to_the_first_channel_by_position() {
+    let mut app = staff();
+    with_clubs(&mut app);
+    let invite = |app: &mut Application, server: &str| {
+        app.dispatch(Action::InviteToServer {
+            user: "3".into(),
+            server: server.into(),
+        })
+    };
+    assert!(matches!(
+        invite(&mut app, "discord:50").as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::SendInvite { user, room }))]
+            if user == "3" && room == "discord:50:54"
+    ));
+    assert!(
+        invite(&mut app, "discord:60").is_empty(),
+        "the server doesn't let her"
+    );
+    assert!(
+        invite(&mut app, SERVER).is_empty(),
+        "Cara is shown as its member"
+    );
+    app.apply(Event::InviteSent {
+        user: "3".into(),
+        room: "discord:50:54".into(),
+        result: Err("Couldn't send the invite: no".into()),
+    });
+    assert_eq!(
+        app.state.notice.as_deref(),
+        Some("Couldn't send the invite: no")
+    );
 }

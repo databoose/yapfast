@@ -48,7 +48,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             })
             .as_str()
     };
-    let (room, _) = subjects(state, id, person);
+    let (room, user) = subjects(state, id, person);
     let in_call = state
         .rooms
         .iter()
@@ -84,6 +84,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             // copying, and moderation; a channel's management, then deleting it.
             let starts = match choice {
                 MenuChoice::ServerNickname
+                | MenuChoice::InviteToServer
                 | MenuChoice::AddFriend
                 | MenuChoice::AcceptFriend
                 | MenuChoice::CancelFriendRequest
@@ -168,6 +169,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 notification_rows(app, id)
             } else if row.id == choice_id(MenuChoice::Roles) {
                 role_rows(adapter, id)
+            } else if row.id == choice_id(MenuChoice::InviteToServer) {
+                invite_rows(app, user.as_deref())
             } else if let Some(notify) = &notify {
                 notify.submenu(&row.id)
             } else {
@@ -196,6 +199,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::AddNickname => ("Add friend nickname", &icons.nickname),
         MenuChoice::EditNickname => ("Change friend nickname", &icons.nickname),
         MenuChoice::CloseDm => ("Close DM", &icons.cancel),
+        MenuChoice::InviteToServer => ("Invite to server", &icons.befriend),
         MenuChoice::Unfriend => ("Remove friend", &icons.unfriend),
         MenuChoice::Ignore => ("Ignore", &icons.ignore),
         MenuChoice::Unignore => ("Stop ignoring", &icons.ignore),
@@ -257,6 +261,26 @@ fn role_rows(adapter: &Adapter, user: &str) -> Vec<MenuRow> {
 
 /// What a role's row in the roles submenu reports, before the role's id.
 const ROLE: &str = "role:";
+
+/// Someone's Invite to server submenu, built as it opens: the servers they
+/// may be invited to, by name, in the rail's order. A DM's is its person's.
+fn invite_rows(app: &Application, user: Option<&str>) -> Vec<MenuRow> {
+    let Some(user) = user else {
+        return vec![];
+    };
+    app.invite_servers(user)
+        .into_iter()
+        .map(|server| MenuRow {
+            id: format!("{INVITE_TO}{}", server.id).into(),
+            text: server.name.as_str().into(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// What a server's row in the Invite to server submenu reports, before the
+/// server's id.
+const INVITE_TO: &str = "invite-to:";
 /// The header's bell names its menu by the open channel's room id after this.
 const BELL: &str = "notifications:";
 
@@ -577,6 +601,11 @@ pub(super) fn choose(
         );
         return;
     }
+    if let (Some(server), Some(user)) = (id.strip_prefix(INVITE_TO), user.clone()) {
+        let server = server.to_owned();
+        adapter.action(window, Action::InviteToServer { user, server });
+        return;
+    }
     if let Some(muting) = MUTE_TIMES.into_iter().find(|&muting| mute_id(muting) == id) {
         if let Some(room) = room {
             adapter.action(window, Action::MuteDm { room, muting });
@@ -656,8 +685,8 @@ pub(super) fn choose(
                 reason: String::new(),
             },
         }),
-        // Its roles are its submenu's.
-        MenuChoice::Roles => None,
+        // Its roles are its submenu's, as are the servers to invite to.
+        MenuChoice::Roles | MenuChoice::InviteToServer => None,
         // Notify's choices, above.
         MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
         MenuChoice::Invite => Some(Action::OpenInvite(target)),
@@ -733,7 +762,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 44] = [
+const CHOICES: [MenuChoice; 45] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -748,6 +777,7 @@ const CHOICES: [MenuChoice; 44] = [
     MenuChoice::AddNickname,
     MenuChoice::EditNickname,
     MenuChoice::CloseDm,
+    MenuChoice::InviteToServer,
     MenuChoice::Unfriend,
     MenuChoice::Ignore,
     MenuChoice::Unignore,
@@ -796,6 +826,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::AddNickname => "add-nickname",
         MenuChoice::EditNickname => "edit-nickname",
         MenuChoice::CloseDm => "close-dm",
+        MenuChoice::InviteToServer => "invite-to-server",
         MenuChoice::Unfriend => "unfriend",
         MenuChoice::Ignore => "ignore",
         MenuChoice::Unignore => "unignore",

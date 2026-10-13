@@ -215,13 +215,7 @@ impl Api {
         reply: Option<&str>,
         uploads: &[Upload],
     ) -> Result<Value> {
-        let mut body = json!({
-            "mobile_network_type": "unknown",
-            "content": content,
-            "nonce": nonce,
-            "tts": false,
-            "flags": 0,
-        });
+        let mut body = message_body(content, nonce);
         if !uploads.is_empty() {
             body["attachments"] = uploads
                 .iter()
@@ -246,6 +240,18 @@ impl Api {
         let path = format!("/channels/{channel}/messages");
         self.json(with_json(self.request(Method::POST, &path), &body))
             .await
+    }
+
+    /// Sends a message of text alone from a menu, such as the link Invite
+    /// to Server sends, saying so as Discord's client does.
+    pub async fn send_from_menu(&self, channel: &str, content: &str, nonce: &str) -> Result<Value> {
+        let path = format!("/channels/{channel}/messages");
+        let request = with_json(
+            self.request(Method::POST, &path),
+            &message_body(content, nonce),
+        )
+        .header("X-Context-Properties", context("context_menu"));
+        self.json(request).await
     }
 
     /// A user's profile, with what they share with this account, and their
@@ -647,9 +653,25 @@ impl Api {
     ) -> Result<String> {
         let path = format!("/channels/{channel}/invites");
         let body = json!({"max_age": max_age, "max_uses": max_uses, "temporary": false});
-        let response = self
-            .execute(with_json(self.request(Method::POST, &path), &body))
-            .await?;
+        self.invite(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Makes an invite to a server's channel for one person, as Discord's
+    /// Invite to Server does: it works once and lasts Discord's default of
+    /// a day, and `unique` asks for a new one rather than a similar one
+    /// reused; its code.
+    pub async fn create_invite_once(&self, channel: &str) -> Result<String> {
+        let path = format!("/channels/{channel}/invites");
+        let body = json!({"max_uses": 1, "unique": true});
+        let request = with_json(self.request(Method::POST, &path), &body)
+            .header("X-Context-Properties", context("User Invite Context Menu"));
+        self.invite(request).await
+    }
+
+    /// The code of the invite a request made.
+    async fn invite(&self, request: RequestBuilder) -> Result<String> {
+        let response = self.execute(request).await?;
         // Discord answers 204, with nothing, when the server paused invites.
         if response.status() == StatusCode::NO_CONTENT {
             bail!("This server has paused invites.");
@@ -931,6 +953,18 @@ const ALREADY_FRIENDS: u64 = 80007;
 fn context(place: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(json!({"location": place}).to_string())
+}
+
+/// A new message's body as Discord's client sends it, before attachments
+/// and a reply.
+fn message_body(content: &str, nonce: &str) -> Value {
+    json!({
+        "mobile_network_type": "unknown",
+        "content": content,
+        "nonce": nonce,
+        "tts": false,
+        "flags": 0,
+    })
 }
 
 fn with_json(request: RequestBuilder, body: &Value) -> RequestBuilder {
