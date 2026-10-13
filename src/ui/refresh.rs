@@ -1797,6 +1797,7 @@ impl Adapter {
                         muted: person.muted,
                         deafened: person.deafened,
                         live: person.streaming,
+                        video: person.video.is_some(),
                         person: person.person.clone().into(),
                         picture: cached_picture(
                             &mut self.pictures,
@@ -1808,6 +1809,40 @@ impl Adapter {
             } else {
                 vec![]
             },
+        );
+        // A picture per participant, kept while their camera stays on and
+        // they stay in that place.
+        let frames = &self.models.participant_frames;
+        let count = if voice.active() {
+            voice.participants.len()
+        } else {
+            0
+        };
+        for (index, person) in voice.participants.iter().take(count).enumerate() {
+            let moved = self.frame_ids.get(index) != Some(&person.id);
+            if (person.video.is_none() || moved) && index < frames.row_count() {
+                frames.set_row_data(index, slint::Image::default());
+            }
+        }
+        self.frame_ids = voice
+            .participants
+            .iter()
+            .take(count)
+            .map(|person| person.id.clone())
+            .collect();
+        while frames.row_count() > count {
+            frames.remove(frames.row_count() - 1);
+        }
+        while frames.row_count() < count {
+            frames.push(slint::Image::default());
+        }
+        window.set_can_film(voice.can_film);
+        window.set_camera_on(voice.camera_on);
+        window.set_call_video(
+            voice
+                .participants
+                .iter()
+                .any(|person| person.video.is_some()),
         );
         let switching = state.switch_voice.as_ref().map(|id| {
             state

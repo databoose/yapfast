@@ -53,6 +53,8 @@ pub struct Participant {
     pub problem: Option<String>,
     /// Sharing their screen.
     pub streaming: bool,
+    /// Their camera, while it's on and the call can show it.
+    pub video: Option<crate::picture::Feed>,
     /// The address of their avatar; see [`crate::chat::DiscordCommand::Pictures`].
     pub avatar: Option<String>,
 }
@@ -138,6 +140,10 @@ pub struct State {
     pub watching: Option<Box<Watching>>,
     /// How the next screen share is sent.
     pub quality: StreamQuality,
+    /// This account films with its camera in the call.
+    pub camera_on: bool,
+    /// The call carries camera video, so the camera can be turned on.
+    pub can_film: bool,
 }
 
 impl Default for State {
@@ -160,6 +166,8 @@ impl Default for State {
             sharing: None,
             watching: None,
             quality: StreamQuality::default(),
+            camera_on: false,
+            can_film: false,
         }
     }
 }
@@ -177,6 +185,8 @@ impl State {
         self.warning = None;
         self.sharing = None;
         self.watching = None;
+        self.camera_on = false;
+        self.can_film = false;
     }
 }
 
@@ -191,6 +201,8 @@ pub enum Command {
     Speaker(String),
     /// Film with the camera with this id from now on.
     Camera(String),
+    /// Turn this account's camera on or off in the call.
+    Video(bool),
     /// Share a screen or window with Discord's Go Live, at this quality,
     /// which is remembered for next time.
     GoLive(StreamQuality),

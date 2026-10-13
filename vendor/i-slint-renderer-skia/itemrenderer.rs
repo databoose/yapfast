@@ -416,10 +416,12 @@ impl<'a> SkiaItemRenderer<'a> {
             // rather than picking a few and looking jagged. Skia builds a
             // picture's mipmaps once, but each video frame is a new picture:
             // building them for a 1080p frame took 4 ms more, so larger ones go
-            // without.
+            // without, and so does any picture drawn no smaller than its
+            // pixels, such as a call's camera made at its tile's size.
             const MIPMAPPED_PIXELS: i64 = 512 * 512;
             let small = i64::from(skia_image.width()) * i64::from(skia_image.height())
-                <= MIPMAPPED_PIXELS;
+                <= MIPMAPPED_PIXELS
+                && (fit.source_to_target_x < 0.99 || fit.source_to_target_y < 0.99);
             let filter_mode: skia_safe::sampling_options::SamplingOptions =
                 match item.rendering() {
                     ImageRendering::Pixelated => {

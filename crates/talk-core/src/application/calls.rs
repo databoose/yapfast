@@ -130,12 +130,33 @@ impl Application {
                             problem: None,
                             avatar: None,
                             streaming: false,
+                            video: None,
                         }],
+                        can_film: true,
                         ..self.preview_voice()
                     };
                 }
             }
-            voice::Command::Leave => self.state.voice = self.preview_voice(),
+            voice::Command::Leave => {
+                let filming = self.state.voice.camera_on;
+                self.state.voice = self.preview_voice();
+                if filming {
+                    let mut effects = call_sounds(&before, &self.state.voice);
+                    effects.push(Effect::PreviewCamera(None));
+                    return effects;
+                }
+            }
+            voice::Command::Video(on) if self.state.voice.active() => {
+                let feed = on.then(crate::picture::Feed::new);
+                for person in &mut self.state.voice.participants {
+                    if person.local {
+                        person.video = feed.clone();
+                    }
+                }
+                self.state.voice.camera_on = on;
+                let camera = self.state.voice.camera.clone();
+                return vec![Effect::PreviewCamera(feed.map(|feed| (camera, feed)))];
+            }
             voice::Command::Devices => return vec![Effect::ListDevices],
             voice::Command::Microphone(id) => self.state.voice.microphone = Some(id),
             voice::Command::Speaker(id) => self.state.voice.speaker = Some(id),

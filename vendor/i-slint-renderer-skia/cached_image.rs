@@ -38,6 +38,11 @@ pub(crate) fn as_skia_image(
     let image_inner: &ImageInner = (&image).into();
     match image_inner {
         ImageInner::None => None,
+        // Talk: a picture made in code, such as a video frame, which Slint
+        // never caches, is read where it is rather than copied each time.
+        ImageInner::EmbeddedImage { buffer, cache_key: ImageCacheKey::Invalid } => {
+            borrowed_skia_image(buffer).or_else(|| image_buffer_to_skia_image(buffer))
+        }
         ImageInner::EmbeddedImage { buffer, cache_key } => {
             let result = image_buffer_to_skia_image(buffer);
             if let Some(img) = result.as_ref() {
@@ -99,6 +104,50 @@ pub(crate) fn as_skia_image(
         #[allow(unreachable_patterns)]
         _ => None,
     }
+}
+
+std::thread_local! {
+    /// Talk: each Skia image that reads a Slint buffer in place, with the
+    /// buffer, which keeps the pixels alive and unchanged while the image
+    /// lives: Slint copies a shared buffer before anyone writes to it.
+    static BORROWED: core::cell::RefCell<Vec<(skia_safe::Image, SharedImageBuffer)>> =
+        Default::default();
+}
+
+/// Talk: lets go of the buffers whose images nothing but [`BORROWED`] holds.
+pub(crate) fn release_borrowed() {
+    // An image whose count is one may go to another thread: skia-safe's
+    // public way to ask whether anything else holds it.
+    use skia_safe::ConditionallySend;
+    BORROWED.with_borrow_mut(|borrowed| borrowed.retain(|(image, _)| !image.can_send()));
+}
+
+/// Talk: a Skia image reading an RGBA buffer's pixels in place.
+fn borrowed_skia_image(buffer: &SharedImageBuffer) -> Option<skia_safe::Image> {
+    let (pixels, alpha_type) = match buffer {
+        SharedImageBuffer::RGBA8(pixels) => (pixels, skia_safe::AlphaType::Unpremul),
+        SharedImageBuffer::RGBA8Premultiplied(pixels) => (pixels, skia_safe::AlphaType::Premul),
+        SharedImageBuffer::RGB8(_) => return None,
+    };
+    let bytes = pixels.as_bytes();
+    let alpha_type = if bytes.as_chunks::<4>().0.iter().all(|px| px[3] == 255) {
+        skia_safe::AlphaType::Opaque
+    } else {
+        alpha_type
+    };
+    let image_info = crate::image_info(
+        skia_safe::ISize::new(pixels.width() as i32, pixels.height() as i32),
+        skia_safe::ColorType::RGBA8888,
+        alpha_type,
+    );
+    // SAFETY: BORROWED keeps the buffer, and so these bytes, until nothing
+    // else holds the image.
+    let data = unsafe { skia_safe::Data::new_bytes(bytes) };
+    let image =
+        skia_safe::images::raster_from_data(&image_info, data, pixels.width() as usize * 4)?;
+    release_borrowed();
+    BORROWED.with_borrow_mut(|borrowed| borrowed.push((image.clone(), buffer.clone())));
+    Some(image)
 }
 
 fn image_buffer_to_skia_image(buffer: &SharedImageBuffer) -> Option<skia_safe::Image> {

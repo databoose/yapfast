@@ -1121,6 +1121,9 @@ pub enum Effect {
     /// under way. Stop linking.
     LinkDiscord,
     StopDiscordLink,
+    /// Film for a preview call with the camera with this id, or the first,
+    /// into this feed; or stop filming.
+    PreviewCamera(Option<(Option<String>, crate::picture::Feed)>),
 }
 
 #[derive(Default)]

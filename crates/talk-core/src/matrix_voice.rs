@@ -376,6 +376,7 @@ async fn connected(
                     problem: problem.map(str::to_owned),
                     avatar: None,
                     streaming: false,
+                    video: None,
                 }
             }).collect();
             state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));
@@ -431,7 +432,7 @@ async fn connected(
                         Chosen::write(remembered, state);
                     }
                     Some(Command::GoLive(_)) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
-                    Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale) => {}
+                    Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale | Command::Video(_)) => {}
                 },
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
                 // Device trust can change while connected, for example after

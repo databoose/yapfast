@@ -297,12 +297,27 @@ impl Feed {
     /// Writes each picture it's given into this feed, at the size it shows.
     /// Off screen, pictures go nowhere.
     pub fn sink(&self) -> impl FnMut(&I420<'_>) + Send + 'static {
+        self.sink_with(false)
+    }
+
+    /// As [`Self::sink`], mirrored, as people see themselves: a camera
+    /// filming its own person shows them as a mirror would.
+    pub fn mirrored_sink(&self) -> impl FnMut(&I420<'_>) + Send + 'static {
+        self.sink_with(true)
+    }
+
+    fn sink_with(&self, mirror: bool) -> impl FnMut(&I420<'_>) + Send + 'static {
         let feed = self.clone();
         let mut scratch = vec![];
         move |picture| {
             if let Some((width, height)) = feed.size_for(picture.width, picture.height) {
                 feed.write(width, height, |rgba| {
                     picture.to_rgba(&mut scratch, rgba, width, height);
+                    if mirror {
+                        for row in rgba.chunks_exact_mut(width as usize * 4) {
+                            row.as_chunks_mut::<4>().0.reverse();
+                        }
+                    }
                 });
             }
         }

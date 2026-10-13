@@ -17,14 +17,20 @@ Three Nix shells cover the work:
 
 Talk pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
 the complete Rust graph. `vendor/i-slint-renderer-skia` is Slint's Skia
-renderer 1.18.1 with three changes. Glyphs use Skia's slight (vertical-only)
+renderer 1.18.1 with four changes. Glyphs use Skia's slight (vertical-only)
 hinting, because the default hinting spaced Satoshi's letters unevenly.
 Smooth pictures up to 512×512 pixels sample mipmaps, because plain bilinear
 sampling made pictures drawn smaller than their pixels, such as avatars, look
 jagged. Larger ones, such as video frames, go without: each frame would build
-its mipmaps anew, 4 ms more for a 1080p frame. Skia reads fonts where fontique
-keeps them rather than copying each file to the heap, which took 10 MiB for
-the colour emoji font. Each change is marked `Talk:` in `itemrenderer.rs` or
+its mipmaps anew, 4 ms more for a 1080p frame. So do pictures drawn no
+smaller than their pixels, such as a call's camera, made at its tile's size.
+Skia reads fonts where fontique keeps them rather than copying each file to
+the heap, which took 10 MiB for the colour emoji font. It reads a picture made
+in code, such as a camera's frame or an avatar, where Slint keeps it too,
+rather than copying it for each new frame: a table on the UI thread keeps the
+Slint buffer beside Skia's image until nothing else holds that image, and
+Slint copies a buffer it shares before anything writes to it. Each change is
+marked `Talk:` in `itemrenderer.rs`, `cached_image.rs`, `lib.rs` or
 `font_cache.rs`. Copy the matching release over it, and reapply them, when
 upgrading Slint.
 
@@ -127,7 +133,7 @@ dependency in Cargo.toml:
   timelines that keep their place as older messages load, and a wheel that
   speeds up when spun fast, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
-  mipmapped pictures and uncopied fonts, above.
+  mipmapped pictures, and uncopied fonts and pictures, above.
 - `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native
   audio tracks and cancellable joins.
 - `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling and

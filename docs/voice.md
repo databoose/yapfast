@@ -50,6 +50,18 @@ buffers. On 2026-10-13 the settings preview, a 1280×720 YUY2 camera shown at
 400×225, took 4.4% of a core and 3.5 MiB of RSS, including Slint drawing it 30
 times a second with Skia Software. One capture thread came and went with it.
 
+In a call that carries video, the camera button in the call's controls turns
+the camera on and off. Each participant whose camera is on has a feed of
+their own, and their tile in the grid shows it in place of their avatar; the
+people list beside the channel marks them with a camera. Your own camera shows
+mirrored, as a mirror would. The grid tells Rust its columns, tile size and
+scroll whenever they change (`call-tiles`), so each feed is made at its tile's
+size in physical pixels, and only while the tile is in view. A tile scrolled
+away, or a grid hidden behind settings or a watched stream, makes no pictures
+and keeps no buffers. Skia draws each frame from Slint's buffer in place
+(`docs/building.md`). So far only preview calls carry video; Matrix and
+Discord calls follow.
+
 The other ways to film, compared before choosing:
 
 | | libwebrtc's module | V4L2 directly | PipeWire's camera portal | nokhwa |

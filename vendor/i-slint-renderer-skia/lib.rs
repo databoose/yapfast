@@ -667,7 +667,7 @@ impl SkiaRenderer {
         let window_adapter = self.window_adapter()?;
         let window = window_adapter.window();
 
-        surface.render(
+        let outcome = surface.render(
             window,
             surface_size,
             &|skia_canvas, gr_context, back_buffer_age| {
@@ -683,7 +683,11 @@ impl SkiaRenderer {
                 )
             },
             &self.pre_present_callback,
-        )
+        );
+        // Talk: pictures read in place that the drawn frame no longer shows
+        // let go of their pixels.
+        cached_image::release_borrowed();
+        outcome
     }
 
     fn render_to_canvas(

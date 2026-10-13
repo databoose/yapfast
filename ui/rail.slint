@@ -631,6 +631,10 @@ export component RoomList inherits VerticalLayout {
                         text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
                         vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
                     }
+                    if person.video: Image {
+                        source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
+                        colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
+                    }
                     if person.live: Middle { LivePill { } }
                     if person.muted || person.deafened: Image {
                         source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
@@ -662,6 +666,10 @@ export component RoomList inherits VerticalLayout {
                             text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
                             color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
                             vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                        }
+                        if person.video: Image {
+                            source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
+                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
                         }
                         if person.live: Middle {
                             LivePill {
