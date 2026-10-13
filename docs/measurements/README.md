@@ -709,3 +709,25 @@ Another worktree's UI session shared the host, so CPU is a little noisy.
 
 Reproduce: `python3 testing/measure_discord_cameras.py --camera CAMERA.h264
 --output .local/measure-discord-cameras`.
+
+## 2026-10-13: Discord server and channel menus
+
+The [record](2026-10-13-linux-server-menus.json) compares `96910e8` with
+the server and channel menus stacked on it, measured at `0a600d7` before
+they were rebased onto the channel header: a server's menu and header
+dropdown, category menus, invites, making, changing and deleting channels
+and categories, and leaving a server. Menu rows are built only when a menu
+opens, the dialogs hold state only while open, and a server's categories
+and roles are compared by `Arc` to tell when the sidebar needs its empty
+categories again. Discord-only `fast` builds ran on the busy fake account
+with the server's #general and its member list open.
+
+| Build | RSS, mean of 3 (range) | PSS, mean of 3 |
+| --- | --- | --- |
+| `96910e8` | 107.1 MiB (106.0–109.2) | 87.7 MiB |
+| This change | 106.8 MiB (106.4–107.1) | 87.3 MiB |
+
+The difference is inside the spread between runs of one build, so the
+menus cost nothing measurable while idle.
+
+Reproduce: as for the server foundations above, with each build's binary.
