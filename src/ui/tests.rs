@@ -2209,6 +2209,55 @@ fn replacing_a_temporary_item_reports_the_view_without_changing_row_count() {
 }
 
 #[test]
+fn an_unread_dm_shows_on_the_rail_above_the_servers_and_opens() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    adapter.borrow_mut().action(&window, Action::Preview);
+    let rail = |window: &TalkWindow| -> Vec<(String, bool, bool)> {
+        window
+            .get_servers()
+            .iter()
+            .map(|row| (row.id.to_string(), row.dm, row.divider))
+            .collect()
+    };
+    let servers = adapter.borrow().app.state.servers.len();
+    let read = rail(&window);
+    assert_eq!(read.len(), servers + 1);
+    assert!(read[0].2, "the divider leads the servers");
+    {
+        let mut adapter = adapter.borrow_mut();
+        let riley = adapter
+            .app
+            .state
+            .rooms
+            .iter_mut()
+            .find(|room| room.id == "riley")
+            .unwrap();
+        riley.unread = 2;
+        riley.mentions = 2;
+        adapter.refresh(&window);
+    }
+    let unread = rail(&window);
+    assert_eq!(unread[0], ("riley".into(), true, false));
+    assert!(unread[1].2);
+    assert_eq!(&unread[1..], &read[..]);
+    let dm = window.get_servers().row_data(0).unwrap();
+    assert_eq!((dm.name.as_str(), dm.badge.as_str()), ("Riley", "2"));
+    window.invoke_open_conversation("riley".into());
+    let adapter = adapter.borrow();
+    assert_eq!(adapter.app.state.navigation, Navigation::DirectMessages);
+    assert_eq!(adapter.app.state.selected.as_deref(), Some("riley"));
+}
+
+#[test]
 fn a_folder_on_the_rail_holds_its_servers_until_opened() {
     let folder = talk_core::chat::ServerFolder {
         id: "discord-folder:7".into(),
