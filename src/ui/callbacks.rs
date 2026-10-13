@@ -358,6 +358,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         });
     }
     bind!(on_close_channel, Action::CloseChannelDialog);
+    bind!(on_leave_server, Action::LeaveServer);
+    bind!(on_close_leave, Action::CloseLeaveServer);
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();

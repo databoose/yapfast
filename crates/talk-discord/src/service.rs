@@ -1071,6 +1071,12 @@ impl Discord {
         self.api.delete_channel(channel).await
     }
 
+    /// Leaves a server this account doesn't own. Snapshots drop it once its
+    /// GUILD_DELETE comes.
+    pub async fn leave_server(&self, guild: &str) -> Result<()> {
+        self.api.leave_guild(guild).await
+    }
+
     /// Declines a call ringing this account; the call goes on without it.
     pub async fn decline(&self, channel: &str) -> Result<()> {
         let me = self.snapshots.borrow().user_id.clone().unwrap_or_default();

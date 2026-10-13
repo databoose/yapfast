@@ -692,6 +692,16 @@ impl Api {
             .map(drop)
     }
 
+    /// Leaves a server, as a member rather than one lurking in it.
+    pub async fn leave_guild(&self, guild: &str) -> Result<()> {
+        let path = format!("/users/@me/guilds/{guild}");
+        self.empty(with_json(
+            self.request(Method::DELETE, &path),
+            &json!({"lurking": false}),
+        ))
+        .await
+    }
+
     /// Whether this account may ring the others in a DM, beyond calling them.
     pub async fn ringable(&self, channel: &str) -> Result<bool> {
         let path = format!("/channels/{channel}/call");

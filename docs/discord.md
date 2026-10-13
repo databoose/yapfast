@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio on real Windows; cameras on Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header | Threads, forums, pinning, forwarding, the rest of the menus of servers and channels |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and channel menus, invites, making and changing channels, leaving servers | Threads, forums, pinning, forwarding, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1177,6 +1177,22 @@ Names are 1 to 100 characters and topics up to 1024, checked before
 asking. The fake lets Alice's Crew role manage "Server"'s channels and
 sends each event.
 
+### Leaving a server
+
+Leave server, in a server's menu or at the end of its header's dropdown,
+asks first, with Discord's words, then sends
+`DELETE /users/@me/guilds/{id}` with `{"lurking": false}`; Discord
+answers 204 and sends GUILD_DELETE, without `unavailable`, and
+GUILD_MEMBER_REMOVE. The tracker already drops a server on such a
+GUILD_DELETE, and Talk goes to the DMs if it was open. The owner isn't
+offered it: Discord has them transfer or delete the server instead. The
+fake lets Alice leave "Server", which Bob owns, leaves it out of READY
+afterwards, and `/_control/rejoin` brings her back with a GUILD_CREATE.
+
+A server's privacy settings, which Discord's menu also has, are left for
+later: they live in the settings protobuf's guild entries, which Talk
+would have to read and write back whole, beyond a menu's reach.
+
 ### DMs
 
 DMs and group DMs are listed under the DM button after Matrix DMs, the latest
@@ -1380,7 +1396,9 @@ In rough order. The browser covers these until then.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.
 - Making and changing server folders.
-- Joining servers by invite, and leaving them.
+- Joining servers by invite.
+- A server's privacy settings: direct messages, message requests and
+  activity status from its members.
 - Discord's push-to-talk, and its voice settings.
 - Cameras on Windows.
 - The soundboard.

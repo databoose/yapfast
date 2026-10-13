@@ -17,13 +17,24 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 5] = [
+const HEADER: [MenuChoice; 6] = [
     MenuChoice::Invite,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::ServerNotifications,
     MenuChoice::HideMuted,
+    MenuChoice::LeaveServer,
 ];
+
+/// Asks before leaving a Discord server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaveDialog {
+    /// The server's id and name.
+    pub server: String,
+    pub name: String,
+    pub leaving: bool,
+    pub error: Option<String>,
+}
 
 /// The slowmodes Discord's channel settings offer, in seconds: off, then
 /// 5 seconds to 6 hours.
@@ -171,8 +182,79 @@ impl Application {
         if self.manages(id) {
             choices.extend([MenuChoice::CreateChannel, MenuChoice::CreateCategory]);
         }
+        if self.state.discord_online && self.may_leave(id) {
+            choices.push(MenuChoice::LeaveServer);
+        }
         choices.extend([MenuChoice::CopyLink, MenuChoice::CopyId]);
         choices
+    }
+
+    /// Whether this account may leave a Discord server: any but one it
+    /// owns, which Discord asks to hand on or delete instead.
+    fn may_leave(&self, id: &str) -> bool {
+        #[cfg(feature = "discord")]
+        if let Some((server, None, me)) = self.discord_place(id) {
+            return server.owner_id.as_deref() != Some(me);
+        }
+        let _ = id;
+        false
+    }
+
+    /// Asks before leaving a Discord server, from its menu.
+    pub(super) fn ask_leave(&mut self, server: String) -> Vec<Effect> {
+        if !self
+            .menu_choices(&server)
+            .contains(&MenuChoice::LeaveServer)
+        {
+            return vec![];
+        }
+        let name = self
+            .state
+            .servers
+            .iter()
+            .find(|known| known.id == server)
+            .map(|known| known.name.clone())
+            .unwrap_or_default();
+        self.state.leave = Some(LeaveDialog {
+            server,
+            name,
+            leaving: false,
+            error: None,
+        });
+        vec![]
+    }
+
+    /// Leaves the server the dialog asked about. Its GUILD_DELETE takes it
+    /// out of the list, and Talk to the DMs if it was open.
+    pub(super) fn leave_server(&mut self) -> Vec<Effect> {
+        let Some(dialog) = self.state.leave.as_mut().filter(|dialog| !dialog.leaving) else {
+            return vec![];
+        };
+        dialog.leaving = true;
+        dialog.error = None;
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::LeaveServer {
+                server: dialog.server.clone(),
+            },
+        ))]
+    }
+
+    pub(super) fn left_server(&mut self, server: String, result: Result<(), String>) {
+        let Some(dialog) = self
+            .state
+            .leave
+            .as_mut()
+            .filter(|dialog| dialog.leaving && dialog.server == server)
+        else {
+            return;
+        };
+        match result {
+            Ok(()) => self.state.leave = None,
+            Err(error) => {
+                dialog.leaving = false;
+                dialog.error = Some(error);
+            }
+        }
     }
 
     /// Whether this account may make, change and delete channels in a

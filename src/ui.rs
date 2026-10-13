@@ -795,6 +795,7 @@ struct Icons {
     edit: slint::Image,
     duplicate: slint::Image,
     delete: slint::Image,
+    leave: slint::Image,
 }
 
 struct Adapter {
@@ -950,6 +951,7 @@ impl Adapter {
                 "../ui/icons/copy-plus.svg"
             ))?,
             delete: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/trash-2.svg"))?,
+            leave: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/log-out.svg"))?,
         };
         let models = Models::default();
         models.attach(window);

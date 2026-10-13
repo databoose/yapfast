@@ -110,7 +110,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::CreateCategory
                 | MenuChoice::EditChannel
                 | MenuChoice::DuplicateChannel => 6,
-                MenuChoice::DeleteChannel => 7,
+                MenuChoice::DeleteChannel | MenuChoice::LeaveServer => 7,
                 _ => 0,
             };
             let separated = group.replace(starts).is_some_and(|last| last != starts);
@@ -142,6 +142,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Kick
                         | MenuChoice::Ban
                         | MenuChoice::DeleteChannel
+                        | MenuChoice::LeaveServer
                 ),
                 separated,
                 checkbox,
@@ -226,6 +227,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::EditChannel => ("Edit channel", &icons.edit),
         MenuChoice::DuplicateChannel => ("Duplicate channel", &icons.duplicate),
         MenuChoice::DeleteChannel => ("Delete channel", &icons.delete),
+        MenuChoice::LeaveServer => ("Leave server", &icons.leave),
     }
 }
 
@@ -668,6 +670,7 @@ pub(super) fn choose(
         MenuChoice::EditChannel => Some(Action::AskChannel(ChannelAsk::Edit(target))),
         MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
         MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
+        MenuChoice::LeaveServer => Some(Action::AskLeaveServer(target)),
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer
         | MenuChoice::UnmuteServer
@@ -715,7 +718,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 42] = [
+const CHOICES: [MenuChoice; 43] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -758,6 +761,7 @@ const CHOICES: [MenuChoice; 42] = [
     MenuChoice::EditChannel,
     MenuChoice::DuplicateChannel,
     MenuChoice::DeleteChannel,
+    MenuChoice::LeaveServer,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -804,6 +808,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::EditChannel => "edit-channel",
         MenuChoice::DuplicateChannel => "duplicate-channel",
         MenuChoice::DeleteChannel => "delete-channel",
+        MenuChoice::LeaveServer => "leave-server",
     }
 }
 

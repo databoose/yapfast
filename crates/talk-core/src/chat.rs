@@ -1261,6 +1261,11 @@ pub enum DiscordCommand {
     DeleteChannel {
         room: String,
     },
+    /// Leave a Discord server, by its server id; [`Event::LeftServer`]
+    /// follows.
+    LeaveServer {
+        server: String,
+    },
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
@@ -1480,6 +1485,12 @@ pub enum Event {
     /// Whether Discord made, changed or deleted the channel a dialog asked
     /// it to: the room id of one it made, or why it didn't.
     ChannelSaved(Result<Option<String>, String>),
+    /// Whether this account left a Discord server, by its server id, or why
+    /// not.
+    LeftServer {
+        server: String,
+        result: Result<(), String>,
+    },
     /// The code of the invite [`DiscordCommand::CreateInvite`] made to a
     /// channel, by its room id, or why Discord made none.
     InviteMade {

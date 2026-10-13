@@ -4286,13 +4286,14 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
             MuteServer,
             ServerNotifications,
             HideMuted,
+            LeaveServer,
             CopyLink,
             CopyId
         ]
     );
     assert_eq!(
         app.header_choices("discord:10"),
-        [ServerNotifications, HideMuted],
+        [ServerNotifications, HideMuted, LeaveServer],
         "the header's dropdown lists the menu's choices in its own order"
     );
     assert!(app.header_choices("discord:10:11").is_empty());
@@ -4510,7 +4511,7 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
     });
     assert_eq!(
         app.menu_choices("discord:10")[4..],
-        [CreateChannel, CreateCategory, CopyLink, CopyId]
+        [CreateChannel, CreateCategory, LeaveServer, CopyLink, CopyId]
     );
     assert_eq!(
         app.header_choices("discord:10"),
@@ -4518,7 +4519,8 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
             CreateChannel,
             CreateCategory,
             ServerNotifications,
-            HideMuted
+            HideMuted,
+            LeaveServer
         ]
     );
     assert_eq!(
@@ -4745,4 +4747,61 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
         ..talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap())
     }));
     assert!(!app.menu_choices("discord:10:11").contains(&EditChannel));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn leaving_a_discord_server_asks_first_and_is_not_for_its_owner() {
+    use MenuChoice::*;
+    let mut app = discord_server();
+    let server = "discord:10".to_owned();
+    app.dispatch(Action::Navigate(Navigation::Server(server.clone())));
+    assert!(
+        app.dispatch(Action::AskLeaveServer(server.clone()))
+            .is_empty()
+    );
+    let dialog = app.state.leave.clone().unwrap();
+    assert_eq!(
+        (dialog.server.as_str(), dialog.name.as_str()),
+        ("discord:10", "Test")
+    );
+    assert!(matches!(
+        app.dispatch(Action::LeaveServer).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::LeaveServer { server }))] if server == "discord:10"
+    ));
+    assert!(app.dispatch(Action::LeaveServer).is_empty(), "once");
+    app.apply(Event::LeftServer {
+        server: server.clone(),
+        result: Err("Couldn't leave the server: no".into()),
+    });
+    let dialog = app.state.leave.clone().unwrap();
+    assert!(!dialog.leaving);
+    assert_eq!(
+        dialog.error.as_deref(),
+        Some("Couldn't leave the server: no")
+    );
+    app.dispatch(Action::LeaveServer);
+    app.apply(Event::LeftServer {
+        server: server.clone(),
+        result: Ok(()),
+    });
+    assert!(app.state.leave.is_none());
+    // Its GUILD_DELETE takes it out of the list, and Talk back to the DMs.
+    app.apply(discord_event(talk_discord::service::Snapshot {
+        servers: vec![],
+        ..talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap())
+    }));
+    assert_eq!(app.state.navigation, Navigation::DirectMessages);
+    assert!(app.state.servers.iter().all(|known| known.id != server));
+
+    // Its owner may not; Discord asks them to hand it on or delete it.
+    let mut app = discord_server();
+    change_server(&mut app, |known| known.owner_id = Some("1".into()));
+    assert!(!app.menu_choices("discord:10").contains(&LeaveServer));
+    assert!(!app.header_choices("discord:10").contains(&LeaveServer));
+    assert!(
+        app.dispatch(Action::AskLeaveServer("discord:10".into()))
+            .is_empty()
+    );
+    assert!(app.state.leave.is_none());
 }

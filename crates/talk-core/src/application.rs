@@ -33,7 +33,8 @@ mod session;
 pub use members::member_server;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 pub use places::{
-    ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, ListedCategory, SLOWMODES,
+    ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
+    SLOWMODES,
 };
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 
@@ -300,6 +301,8 @@ pub struct AppState {
     /// The dialog that makes, changes or deletes a Discord channel or
     /// category, while it's open.
     pub channel_dialog: Option<ChannelDialog>,
+    /// Asks before leaving a Discord server, while it's open.
+    pub leave: Option<LeaveDialog>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -1045,6 +1048,11 @@ pub enum Action {
         settings: chat::ChannelSettings,
     },
     CloseChannelDialog,
+    /// Ask before leaving a Discord server, by its server id; leave the one
+    /// asked about; or stay.
+    AskLeaveServer(String),
+    LeaveServer,
+    CloseLeaveServer,
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
     ChangeRelationship {
@@ -1683,6 +1691,12 @@ impl Application {
                 self.state.channel_dialog = None;
                 vec![]
             }
+            Action::AskLeaveServer(server) => self.ask_leave(server),
+            Action::LeaveServer => self.leave_server(),
+            Action::CloseLeaveServer => {
+                self.state.leave = None;
+                vec![]
+            }
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),
@@ -1971,6 +1985,7 @@ impl Application {
             Event::InviteMade { room, result } => self.invite_made(room, result),
             Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
             Event::ChannelSaved(result) => self.channel_saved(result),
+            Event::LeftServer { server, result } => self.left_server(server, result),
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;
