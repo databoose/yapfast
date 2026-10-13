@@ -447,6 +447,8 @@ export component ServerRail inherits Rectangle {
     /// DM mentions and incoming friend requests, as a badge on the DM home.
     in property <string> dms-badge;
     in property <[ServerRow]> servers;
+    /// Without Matrix every server is Discord's, so names don't say so.
+    in property <bool> matrix-build: true;
     callback navigate-dms;
     callback navigate-server(string);
     callback toggle-folder(string);
@@ -494,9 +496,9 @@ export component ServerRail inherits Rectangle {
                 if !server.folder: RailItem {
                     y: 0px;
                     initial: server.initial; picture: server.picture; picture-url: server.picture-url;
-                    label: server.name + (server.discord ? ", Discord" : "") + (server.unavailable ? ", unavailable" : "")
+                    label: server.name + (server.discord && root.matrix-build ? ", Discord" : "") + (server.unavailable ? ", unavailable" : "")
                         + (server.badge != "" ? ", " + server.badge + " mentions" : server.unread ? ", unread" : "");
-                    tip: server.unavailable ? server.name + " (unavailable in a Discord outage)" : server.discord ? server.name + " (Discord)" : server.name;
+                    tip: server.unavailable ? server.name + " (unavailable in a Discord outage)" : server.discord && root.matrix-build ? server.name + " (Discord)" : server.name;
                     selected: server.selected; unread: server.unread; badge: server.badge; discord: server.discord;
                     opacity: server.unavailable ? 0.5 : 1;
                     clicked => { root.navigate-server(server.id); }
