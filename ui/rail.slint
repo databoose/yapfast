@@ -47,7 +47,7 @@ export struct RoomRow {
     /// for a category with nothing left showing.
     collapsed: bool,
     hidden: bool,
-    /// A DM pinned to the top of the list, and one whose notifications are muted.
+    /// A DM pinned to the top of the list, and a DM or channel whose notifications are muted.
     pinned: bool,
     muted: bool,
 }
@@ -315,7 +315,7 @@ export component ChannelRow inherits Rectangle {
     in property <bool> call;
     /// A DM pinned to the top of the list.
     in property <bool> pinned;
-    /// A DM whose notifications are muted: drawn faint until it's selected or pointed at.
+    /// A DM or channel whose notifications are muted: drawn faint until it's selected or pointed at.
     in property <bool> muted;
     /// A DM person's presence, as RoomRow has it, and a line under the name.
     in property <string> presence;
