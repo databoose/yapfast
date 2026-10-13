@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     discord_audio::{self, Capture, Hearing, Speakers},
+    discord_video::{Filming, Watching as Cameras},
     ring::{Ringer, Tone},
     stream_worker::{self, Report, Worker},
     voice::{
@@ -336,6 +337,8 @@ pub(crate) async fn call(
     let track = call.play(input);
     let _ = track.pause();
     let mut capture: Option<Capture> = None;
+    let mut filming: Option<Filming> = None;
+    let mut cameras = Cameras::start(call.video_frames());
     let mut share: Option<Share> = None;
     let mut starting: Starting = None;
     let mut watch: Option<Watch> = None;
@@ -348,6 +351,7 @@ pub(crate) async fn call(
     let result = async {
         let mut speakers = Some(open_discord_speakers(state, &played, &hearing)?);
         Chosen::write(remembered, state);
+        state.can_film = cfg!(target_os = "linux");
         state.phase = Phase::Connected;
         if guild == PRIVATE && alone(&discord_states.borrow(), &channel, &me) {
             // Starting a DM call, rather than joining one, rings the others,
@@ -381,7 +385,10 @@ pub(crate) async fn call(
                 state,
                 &hearing.speaking(),
                 talking,
+                filming.as_ref().map(|filming| &filming.feed),
+                &mut cameras,
             );
+            cameras.ask(&mut call);
             if participants != state.participants {
                 state.participants = participants;
                 snapshots.send_replace(state.clone());
@@ -461,8 +468,32 @@ pub(crate) async fn call(
                             }
                         }
                         Some(Command::Camera(id)) => {
+                            if let Some(filming) = &mut filming
+                                && let Err(error) = filming.switch(&id)
+                            {
+                                state.error = Some(error.to_string());
+                            }
                             state.camera = Some(id);
                             Chosen::write(remembered, state);
+                        }
+                        Some(Command::Video(true)) => {
+                            if filming.is_none() {
+                                match Filming::start(&mut call, state.camera.as_deref()) {
+                                    Ok(started) => {
+                                        filming = Some(started);
+                                        state.camera_on = true;
+                                        state.error = None;
+                                    }
+                                    Err(error) => state.error = Some(error.to_string()),
+                                }
+                            }
+                        }
+                        Some(Command::Video(false)) => {
+                            if let Some(stopped) = filming.take() {
+                                stopped.stop(&mut call);
+                                crate::voice::trim_after_call();
+                            }
+                            state.camera_on = false;
                         }
                         Some(Command::GoLive(quality)) => {
                             if share.is_none() {
@@ -498,10 +529,9 @@ pub(crate) async fn call(
                                 stopped.stop(discord, state);
                             }
                         }
-                        // Camera video in Discord calls comes with their own voice connection.
-                        Some(Command::LeaveStale | Command::Video(_)) => {}
+                        Some(Command::LeaveStale) => {}
                     }
-                    discord.set_self(guild, &channel, state.muted, state.deafened);
+                    discord.set_self(guild, &channel, state.muted, state.deafened, state.camera_on);
                     snapshots.send_replace(state.clone());
                 }
                 report = next_report(&mut share) => {
@@ -723,6 +753,7 @@ pub(crate) async fn call(
                         snapshots.send_replace(state.clone());
                     }
                 }
+                () = cameras.shown.notified() => {}
                 _ = ticks.tick() => {}
             }
         }
@@ -740,6 +771,10 @@ pub(crate) async fn call(
     snapshots.send_replace(state.clone());
     drop(ringback);
     drop(capture);
+    if let Some(stopped) = filming.take() {
+        stopped.stop(&mut call);
+    }
+    drop(cameras);
     hearing.set_output(None);
     call.leave();
     discord.leave(guild);
@@ -791,7 +826,10 @@ fn open_discord_microphone(
     }
 }
 
-/// Everyone in the Discord voice channel, this account first.
+/// Everyone in the Discord voice channel, this account first, with a feed
+/// for each camera on: this account's `own`, and the others' from
+/// `cameras`, which keeps one for each who films.
+#[allow(clippy::too_many_arguments)]
 fn discord_participants(
     snapshot: &talk_discord::service::Snapshot,
     channel: &str,
@@ -799,14 +837,28 @@ fn discord_participants(
     state: &State,
     speaking: &[u64],
     talking: bool,
+    own: Option<&crate::picture::Feed>,
+    cameras: &mut Cameras,
 ) -> Vec<Participant> {
-    let mut participants: Vec<Participant> = snapshot
-        .voice
-        .get(channel)
-        .into_iter()
-        .flatten()
+    let members = snapshot.voice.get(channel).into_iter().flatten();
+    let filming: Vec<u64> = members
+        .clone()
+        .filter(|member| member.video && member.user_id != me)
+        .filter_map(|member| member.user_id.parse().ok())
+        .collect();
+    cameras.film(&filming);
+    let mut participants: Vec<Participant> = members
         .map(|member| {
             let local = member.user_id == me;
+            let video = if local {
+                own.cloned()
+            } else {
+                member
+                    .user_id
+                    .parse()
+                    .ok()
+                    .and_then(|user| cameras.feed(user))
+            };
             Participant {
                 id: member.user_id.clone(),
                 user: member.name.clone(),
@@ -830,7 +882,7 @@ fn discord_participants(
                 problem: None,
                 avatar: Some(member.avatar.clone()),
                 streaming: member.streaming,
-                video: None,
+                video,
             }
         })
         .collect();

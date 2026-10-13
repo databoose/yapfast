@@ -696,6 +696,7 @@ mod tests {
             muted: false,
             deafened: false,
             streaming: false,
+            video: false,
         };
         let first = Snapshot {
             servers: vec![server("10", "11", "12"), server("20", "21", "22")],
@@ -786,6 +787,7 @@ mod tests {
                     muted: true,
                     deafened: false,
                     streaming: true,
+                    video: false,
                 }],
             )]
             .into(),

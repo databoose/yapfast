@@ -257,7 +257,7 @@ impl Session<'_> {
                 reply,
             } => {
                 let sent = gateway
-                    .update_voice_state(server(&guild), Some(&channel), true, false)
+                    .update_voice_state(server(&guild), Some(&channel), true, false, false)
                     .await;
                 self.join.start(guild, channel, reply);
                 sent
@@ -265,7 +265,7 @@ impl Session<'_> {
             Request::Leave { guild } => {
                 self.join.leave(&guild);
                 gateway
-                    .update_voice_state(server(&guild), None, false, false)
+                    .update_voice_state(server(&guild), None, false, false, false)
                     .await
             }
             Request::SelfState {
@@ -273,9 +273,10 @@ impl Session<'_> {
                 channel,
                 mute,
                 deaf,
+                video,
             } => {
                 gateway
-                    .update_voice_state(server(&guild), Some(&channel), mute, deaf)
+                    .update_voice_state(server(&guild), Some(&channel), mute, deaf, video)
                     .await
             }
             Request::View { guild, channel } => {

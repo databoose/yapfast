@@ -1,13 +1,15 @@
 //! A call's media connection: this account's microphone out as Opus, and
-//! everyone else's in, decoded per speaker for Talk to mix. It runs on a
-//! thread of its own with a small runtime, as a Go Live stream does, over
-//! the same voice connection (`voice_connection.rs`).
+//! everyone else's in, decoded per speaker for Talk to mix; and cameras
+//! both ways (`call_video.rs`). It runs on a thread of its own with a small
+//! runtime, as a Go Live stream does, over the same voice connection
+//! (`voice_connection.rs`).
 
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc as channel,
     },
     time::Duration,
 };
@@ -20,6 +22,7 @@ use tokio::{
 };
 
 use crate::{
+    call_video::{self, Camera, Receiving, VideoFrame},
     opus, rtp,
     voice::{FRAME, Listener},
     voice_connection::{Closed, Connection, Identity, lock, receive, send_json},
@@ -60,6 +63,11 @@ pub(crate) struct Sending {
 pub(crate) enum Order {
     /// Connect to another voice server, as for another channel.
     Move(Identity, oneshot::Sender<Result<()>>),
+    /// Send the camera's frames, or stop.
+    Film(Option<Camera>),
+    /// Ask for these people's cameras, at a quality from 0 to 100 and the
+    /// pixels they show at; no others.
+    Want(HashMap<u64, (u8, u32)>),
     Leave,
 }
 
@@ -69,6 +77,7 @@ pub(crate) fn start(
     identity: Identity,
     listener: Arc<dyn Listener>,
     sending: Arc<Mutex<Option<Sending>>>,
+    video: channel::SyncSender<VideoFrame>,
 ) -> Result<(mpsc::UnboundedSender<Order>, oneshot::Receiver<Result<()>>)> {
     let (orders, ordered) = mpsc::unbounded_channel();
     let (ready, connected) = oneshot::channel();
@@ -85,7 +94,7 @@ pub(crate) fn start(
                     return;
                 }
             };
-            runtime.block_on(run(identity, listener, sending, ordered, ready));
+            runtime.block_on(run(identity, listener, sending, video, ordered, ready));
         })?;
     Ok((orders, connected))
 }
@@ -101,6 +110,7 @@ async fn run(
     mut identity: Identity,
     listener: Arc<dyn Listener>,
     sending: Arc<Mutex<Option<Sending>>>,
+    video: channel::SyncSender<VideoFrame>,
     mut orders: mpsc::UnboundedReceiver<Order>,
     ready: oneshot::Sender<Result<()>>,
 ) {
@@ -114,7 +124,7 @@ async fn run(
             return;
         }
     };
-    let mut media = match Media::new() {
+    let mut media = match Media::new(video) {
         Ok(media) => media,
         Err(error) => {
             listener.disconnected(&format!("{error:#}"));
@@ -184,18 +194,19 @@ async fn run(
     }
 }
 
-/// What a call offers: Opus, and the video codecs Talk decodes.
+/// What a call offers: Opus, H264 for the camera both ways, and VP8 to
+/// receive.
 fn codecs() -> Value {
     json!([
         {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
         {"name": "H264", "type": "video", "priority": 1000, "payload_type": rtp::H264,
-         "rtx_payload_type": rtp::H264_RTX, "encode": false, "decode": true},
+         "rtx_payload_type": rtp::H264_RTX, "encode": true, "decode": true},
         {"name": "VP8", "type": "video", "priority": 2000, "payload_type": rtp::VP8,
          "rtx_payload_type": rtp::VP8_RTX, "encode": false, "decode": true},
     ])
 }
 
-/// The call's audio, kept across moves and reconnections.
+/// The call's audio and video, kept across moves and reconnections.
 struct Media {
     encoder: opus::Encoder,
     /// One frame of the microphone, in both channels, and its Opus packet.
@@ -210,10 +221,13 @@ struct Media {
     /// Everyone else, by their audio SSRC, and whose each SSRC is.
     speakers: HashMap<u32, Speaker>,
     users: HashMap<u32, u64>,
+    /// This account's camera, while it films, and everyone else's.
+    filming: Option<call_video::Sending>,
+    watching: Receiving,
 }
 
 impl Media {
-    fn new() -> Result<Self> {
+    fn new(video: channel::SyncSender<VideoFrame>) -> Result<Self> {
         Ok(Self {
             encoder: opus::Encoder::new(2, opus::Application::Audio, BITRATE)?,
             pcm: vec![0.0; FRAME * 2],
@@ -224,15 +238,18 @@ impl Media {
             silent: 0,
             speakers: HashMap::new(),
             users: HashMap::new(),
+            filming: None,
+            watching: Receiving::new(video),
         })
     }
 
-    /// A new connection: speakers and their SSRCs start over.
+    /// A new connection: speakers, cameras and their SSRCs start over.
     fn reset(&mut self) {
         self.speakers.clear();
         self.users.clear();
         self.speaking = false;
         self.silent = 0;
+        self.watching.reset();
     }
 
     async fn run(
@@ -244,6 +261,7 @@ impl Media {
     ) -> Ended {
         for (op, data) in std::mem::take(&mut connection.early) {
             self.learn(op, &data);
+            self.watching.learn(op, &data);
         }
         let interval = connection.interval;
         let mut heartbeat = tokio::time::interval_at(Instant::now() + interval, interval);
@@ -252,15 +270,49 @@ impl Media {
         let mut keepalive = tokio::time::interval(KEEPALIVE);
         let mut datagram = vec![0u8; 2048];
         let result: Result<Ended> = async {
+            // A new connection hears about the camera again, and what's
+            // wanted of others'.
+            if let Some(filming) = self.filming.as_mut() {
+                filming.announce(connection).await?;
+            }
+            self.watching.ask(connection).await?;
             loop {
                 tokio::select! {
                     order = orders.recv() => match order {
                         None | Some(Order::Leave) => return Ok(Ended::Left),
                         Some(Order::Move(to, reply)) => return Ok(Ended::Moved(to, reply)),
+                        Some(Order::Film(Some(camera))) => {
+                            let mut filming = call_video::Sending::new(camera, connection);
+                            filming.announce(connection).await?;
+                            self.filming = Some(filming);
+                        }
+                        Some(Order::Film(None)) => {
+                            if self.filming.take().is_some() {
+                                call_video::Sending::clear(connection).await?;
+                            }
+                        }
+                        Some(Order::Want(wants)) => {
+                            self.watching.want(wants);
+                            self.watching.ask(connection).await?;
+                        }
+                    },
+                    frame = async {
+                        match self.filming.as_mut() {
+                            Some(filming) => filming.next().await,
+                            None => std::future::pending().await,
+                        }
+                    } => match (frame, self.filming.as_mut()) {
+                        (Some(frame), Some(filming)) => filming.send(connection, frame).await?,
+                        // The camera closed.
+                        _ => {
+                            self.filming = None;
+                            call_video::Sending::clear(connection).await?;
+                        }
                     },
                     _ = ticks.tick() => {
                         self.send(connection, sending).await?;
                         self.hear(listener);
+                        self.watching.repair(connection).await?;
                     }
                     _ = heartbeat.tick() => connection.heartbeat().await?,
                     _ = keepalive.tick() => {
@@ -271,10 +323,13 @@ impl Media {
                     message = receive(&mut connection.ws, &mut connection.seq) => {
                         if let Some((op, data)) = connection.handle(message?).await? {
                             self.learn(op, &data);
+                            if self.watching.learn(op, &data) {
+                                self.watching.ask(connection).await?;
+                            }
                         }
                     }
                     length = connection.udp.recv(&mut datagram) => {
-                        self.receive(connection, &datagram[..length?]);
+                        self.receive(connection, &datagram[..length?]).await?;
                     }
                 }
             }
@@ -371,30 +426,37 @@ impl Media {
         Ok(())
     }
 
-    /// Queues a received Opus packet for its speaker.
-    fn receive(&mut self, connection: &mut Connection, datagram: &[u8]) {
+    /// Queues a received Opus packet for its speaker, hands a camera's
+    /// packet on, and answers RTCP about this account's camera.
+    async fn receive(&mut self, connection: &mut Connection, datagram: &[u8]) -> Result<()> {
         if rtp::is_rtcp(datagram) {
-            return;
+            if let Some(filming) = self.filming.as_mut()
+                && let Some(rtcp) = connection.transport.open(datagram, rtp::RTCP_CLEAR)
+            {
+                filming.feedback(connection, &rtcp).await?;
+            }
+            return Ok(());
         }
         let Some(clear) = rtp::rtp_clear_len(datagram) else {
-            return;
+            return Ok(());
         };
         let Some(plain) = connection.transport.open(datagram, clear) else {
-            return;
+            return Ok(());
         };
         let Some(packet) = rtp::parse(&plain) else {
-            return;
+            return Ok(());
         };
         if packet.payload_type != rtp::OPUS {
-            return;
+            self.watching.receive(connection, &packet).await?;
+            return Ok(());
         }
         // DAVE keys each sender's frames by who they are, which only their
         // speaking message tells.
         let Some(&user) = self.users.get(&packet.ssrc) else {
-            return;
+            return Ok(());
         };
         let Some(opus) = connection.dave.decrypt_opus(user, packet.payload.to_vec()) else {
-            return;
+            return Ok(());
         };
         let speaker = match self.speakers.entry(packet.ssrc) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -402,12 +464,13 @@ impl Media {
                 Ok(speaker) => entry.insert(speaker),
                 Err(error) => {
                     tracing::warn!(%error, "couldn't decode a speaker");
-                    return;
+                    return Ok(());
                 }
             },
         };
         speaker.user = user;
         speaker.push(packet.sequence, opus);
+        Ok(())
     }
 
     /// Plays everyone's next 20 ms, and forgets those long gone.

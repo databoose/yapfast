@@ -70,6 +70,151 @@ fn call_audio(server: &str, token: &str) -> serde_json::Value {
         .unwrap_or_default()
 }
 
+/// What the fake knows of cameras in calls: what Alice's sent, what each
+/// call connection asked for, and Bob's camera sent to them.
+fn call_video(server: &str) -> serde_json::Value {
+    serde_json::from_str(&control(server, "GET", "/_control/call-video", "")).unwrap()
+}
+
+/// Cameras both ways in Alice's call in `channel` of `guild`, whose
+/// connection identified with `token`. Alice films: Discord hears of it in
+/// her voice state and op 12, and her frames go out, one resent when the
+/// fake reports it lost. Bob films: his frames come in whole once asked for,
+/// one repaired, and stop when no longer wanted or when he stops.
+async fn cameras_in_call(
+    server: &str,
+    discord: &Discord,
+    call: &mut Call,
+    (guild, channel, token): (&str, &str, &str),
+    bob: u64,
+) {
+    let me = discord.snapshots().borrow().user_id.clone().unwrap();
+    let filming = |user: &str, on: bool| {
+        let user = user.to_owned();
+        let channel = channel.to_owned();
+        move |snapshot: &Snapshot| {
+            snapshot.voice.get(&channel).is_some_and(|members| {
+                members
+                    .iter()
+                    .any(|member| member.user_id == user && member.video == on)
+            })
+        }
+    };
+    let frames = call.video_frames().expect("the call's camera frames");
+    assert!(call.video_frames().is_none(), "one taker");
+
+    discord.set_self(guild, channel, false, false, true);
+    snapshot_where(discord, filming(&me, true)).await;
+    let camera = call.film(320, 180, 10);
+    let recorded = recording(Codec::H264);
+    for (index, data) in recorded.iter().take(10).enumerate() {
+        camera.send(Frame {
+            data: data.clone(),
+            timestamp: index as u32 * 9000,
+            keyframe: index == 0,
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mine = |video: &serde_json::Value| {
+        video["cameras"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|camera| camera["stream"] == format!("call:{token}"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    until("Alice's camera went out", || {
+        let sent = mine(&call_video(server));
+        sent["frames"].as_u64() >= Some(10) && sent["retransmitted"] == 1
+    })
+    .await;
+    let sent = mine(&call_video(server));
+    assert_eq!(sent["codec"], "H264", "{sent}");
+    assert_eq!(
+        (sent["width"].as_u64(), sent["height"].as_u64()),
+        (Some(320), Some(180))
+    );
+    assert_eq!(
+        sent["announced"],
+        serde_json::json!({"type": "fixed", "width": 320, "height": 180})
+    );
+    assert!(sent["keyframes"].as_u64() >= Some(1), "{sent}");
+    assert_eq!(
+        (
+            &sent["undecryptable"],
+            &sent["unattached"],
+            &sent["badRetransmissions"]
+        ),
+        (
+            &serde_json::json!(0),
+            &serde_json::json!(0),
+            &serde_json::json!(0)
+        ),
+        "{sent}"
+    );
+    assert!(sent["senderReports"].as_u64() >= Some(1), "{sent}");
+    drop(camera);
+    discord.set_self(guild, channel, false, false, false);
+    until("Alice's camera stopped", || {
+        mine(&call_video(server))["stops"] == 1
+    })
+    .await;
+    snapshot_where(discord, filming(&me, false)).await;
+
+    // Bob's camera, asked for at full quality for a 320 by 180 tile.
+    call.want_video([(bob, (100, 320 * 180))].into());
+    post_control(server, "/_control/camera", "");
+    snapshot_where(discord, filming(&bob.to_string(), true)).await;
+    let mut came = vec![];
+    timeout(WAIT, async {
+        while came.len() < 12 {
+            match frames.try_recv() {
+                Ok(frame) => came.push(frame),
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("only {} of Bob's frames came", came.len()));
+    let expected = recording(Codec::H264);
+    assert!(came[0].keyframe, "Bob's camera starts with a keyframe");
+    for (index, frame) in came.iter().enumerate() {
+        assert_eq!((frame.user, frame.codec), (bob, Codec::H264));
+        assert!(frame.data == expected[index], "Bob's frame {index} differs");
+    }
+    let watched = call_video(server);
+    assert!(
+        watched["repairs"]["nacks"].as_u64() >= Some(1)
+            && watched["repairs"]["resent"].as_u64() >= Some(1),
+        "{watched}"
+    );
+    // Off screen: asked for at no quality, and no longer sent.
+    call.want_video(std::collections::HashMap::new());
+    until("Bob's camera was no longer asked for", || {
+        call_video(server)["wants"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|wants| wants["6001"] == 0)
+    })
+    .await;
+    let sent_to = || {
+        call_video(server)["watchers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|watcher| watcher["framesSent"].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    let stopped = sent_to();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(sent_to(), stopped, "Bob's camera still came");
+    post_control(server, "/_control/camera?off", "");
+    snapshot_where(discord, filming(&bob.to_string(), false)).await;
+    while frames.try_recv().is_ok() {}
+}
+
 /// Waits until `check` holds, polling the fake.
 async fn until(what: &str, mut check: impl FnMut() -> bool) {
     let started = std::time::Instant::now();
@@ -1031,6 +1176,14 @@ async fn talks_to_the_fake_server() {
             >= before + 10
     })
     .await;
+    cameras_in_call(
+        server,
+        &discord,
+        &mut call,
+        (&guild, &lounge, "fake-voice-token-moved"),
+        bob_user,
+    )
+    .await;
 
     let watched = discord.watch(&bob_stream).await.unwrap();
     assert_eq!(watched.stream_key, bob_stream);
@@ -1328,6 +1481,14 @@ async fn talks_to_the_fake_server() {
     snapshot_where(&discord, |snapshot| {
         in_call(snapshot) == ["Alice", "Bob"] && ringing(snapshot).is_empty()
     })
+    .await;
+    cameras_in_call(
+        server,
+        &discord,
+        &mut call,
+        (PRIVATE, &dm, &format!("call-token-{dm}")),
+        bob.parse().unwrap(),
+    )
     .await;
 
     // Going live in a DM call names the stream by the call.

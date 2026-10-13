@@ -38,6 +38,7 @@ struct VoiceEntry {
     muted: bool,
     deafened: bool,
     streaming: bool,
+    video: bool,
 }
 
 /// The account's servers and voice channels, kept current from gateway events.
@@ -550,6 +551,7 @@ impl Tracker {
                         muted: flag("self_mute") || flag("mute"),
                         deafened: flag("self_deaf") || flag("deaf"),
                         streaming: flag("self_stream"),
+                        video: flag("self_video"),
                     },
                 );
             }
@@ -858,6 +860,7 @@ impl Tracker {
                         muted: false,
                         deafened: false,
                         streaming: false,
+                        video: false,
                     })
                     .collect();
                 Conversation {
@@ -942,6 +945,7 @@ impl Tracker {
                     muted: entry.muted,
                     deafened: entry.deafened,
                     streaming: entry.streaming,
+                    video: entry.video,
                 });
         }
         for members in voice.values_mut() {

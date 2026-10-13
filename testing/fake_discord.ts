@@ -26,7 +26,12 @@
 // latest speaking value, and whether it ever said it was speaking. POST /_control/bob-speak makes Bob say two
 // seconds of a tone in every call Alice is in. POST /_control/voice-drop closes her call's voice
 // connections with 4015, as a voice server restarting does, for them to
-// resume with op 7. A Go Live stream's video is decrypted and its VP8 frames
+// resume with op 7. POST /_control/camera turns Bob's camera on in the call
+// he's in, and with ?off off again; ?who=carol or dave turns theirs. Calls
+// connected there hear of it with op 12, and get the recording, or the
+// Annex B file FAKE_DISCORD_CAMERA names, once they ask with op 15. Alice's camera
+// is decrypted and its frames counted; GET /_control/call-video lists what
+// each call connection sent and asked for. A Go Live stream's video is decrypted and its VP8 frames
 // counted; GET /_control/video lists what each stream received. POST
 // /_control/voice-move moves Alice's call in the server to another voice
 // server, and GET /_control/voice-identifies lists the tokens voice
@@ -894,7 +899,9 @@ const readStates = new Map<string, { last: string; mentions: number }>([
 
 // Bob shares his screen with Go Live.
 // A voice state's guild is null in a DM or group DM call.
-type VoiceState = { guild: string | null; channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean };
+type VoiceState = {
+  guild: string | null; channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean; self_video?: boolean;
+};
 const voice = new Map<string, VoiceState>([
   [users.bob.id, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
   [users.carol.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
@@ -926,7 +933,7 @@ function wireVoiceState(userId: string, state: VoiceState | undefined, left: str
     session_id: state?.session ?? "voice-left",
     self_mute: state?.self_mute ?? false,
     self_deaf: state?.self_deaf ?? false,
-    self_video: false,
+    self_video: state?.self_video ?? false,
     self_stream: state?.self_stream ?? false,
     mute: false,
     deaf: false,
@@ -952,6 +959,8 @@ type SocketData = {
   waiting?: { key: Buffer; ssrc: number };
   /** A call connection's transport key, once it selected the protocol. */
   callKey?: Buffer;
+  /** The cameras on in this call, by who films, as op 12 announced them. */
+  cameras?: Set<string>;
   /** A remote login: the client's key, the nonce it must prove, and the code. */
   remoteAuth?: { key?: CryptoKey; nonce?: Uint8Array; fingerprint?: string; scanned?: boolean; timer?: Timer };
 };
@@ -1502,6 +1511,7 @@ function gatewayMessage(ws: Socket, text: string) {
           self_deaf: !!d.self_deaf,
           session: ws.data.session,
           self_stream: before?.channel === channel && before.self_stream,
+          self_video: !!d.self_video,
         });
       } else {
         voice.delete(ALICE);
@@ -1922,6 +1932,118 @@ function bobSpeaks(ws: Socket) {
   return true;
 }
 
+/** Who can film in calls, by their name in POST /_control/camera: their
+ *  audio SSRC, which their video's and RTX's follow. */
+const filmers: Record<string, { user: string; ssrc: number }> = {
+  bob: { user: users.bob.id, ssrc: BOB_AUDIO_SSRC },
+  carol: { user: users.carol.id, ssrc: BOB_AUDIO_SSRC + 10 },
+  dave: { user: users.dave.id, ssrc: BOB_AUDIO_SSRC + 20 },
+};
+/** The video codec each call connection offered to encode, and its payload
+ *  type, by its SSRC; a resumed session keeps it. */
+const callCodecs = new Map<number, { name: string; payloadType: number }>();
+/** What each call connection last asked for with op 15, by its SSRC. */
+const callWants = new Map<number, unknown>();
+/** Alice's camera in calls, by its video SSRC: what came, as for a stream. */
+const callCameras = new Map<number, Received & { stops: number }>();
+/** Each camera sent to a call, by the call's SSRC and the camera's video SSRC. */
+const cameraWatchers = new Map<string, Watcher & { sending: boolean }>();
+/** What calls watching cameras went through; see `repairs`. */
+const cameraRepairs = { dropped: 0, reordered: 0, nacks: 0, resent: 0, receiverReports: 0 };
+/** A camera recording other than testing/fixtures', for measuring: an H264
+ *  Annex B file with access unit delimiters, sent at 30 frames a second. */
+const cameraRecording = process.env.FAKE_DISCORD_CAMERA ? annexB(readFileSync(process.env.FAKE_DISCORD_CAMERA)) : undefined;
+
+/** The channel a call connection is for. */
+function callChannel(ws: Socket): string | undefined {
+  const token = ws.data.voiceToken ?? "";
+  return token.startsWith("call-token-") ? token.slice("call-token-".length) : voice.get(ALICE)?.channel;
+}
+
+/** Who films in the channel of the call on `ws`. */
+function filmingFor(ws: Socket): string[] {
+  return Object.keys(filmers).filter((name) => {
+    const state = voice.get(filmers[name]!.user);
+    return !!state?.self_video && state.channel === callChannel(ws);
+  });
+}
+
+/** Tells the call on `ws` about `name`'s camera with op 12, as Discord tells
+ *  each client of another's, or quietly notes it on a resumed session. */
+function offerCamera(ws: Socket, name: string, announce: boolean) {
+  (ws.data.cameras ??= new Set()).add(name);
+  if (!announce) return;
+  const { user, ssrc } = filmers[name]!;
+  ws.send(JSON.stringify({
+    op: 12,
+    d: {
+      user_id: user, audio_ssrc: ssrc, video_ssrc: ssrc + 1, rtx_ssrc: ssrc + 2,
+      streams: [{ type: "video", rid: "100", ssrc: ssrc + 1, rtx_ssrc: ssrc + 2, active: true, quality: 100 }],
+    },
+  }));
+}
+
+/** `name`'s camera went off: the call on `ws` hears so, and stops getting it. */
+function withdrawCamera(ws: Socket, name: string) {
+  const { user, ssrc } = filmers[name]!;
+  ws.data.cameras?.delete(name);
+  stopCamera(ws, ssrc + 1);
+  ws.send(JSON.stringify({ op: 12, d: { user_id: user, audio_ssrc: ssrc, video_ssrc: 0, rtx_ssrc: 0, streams: [] } }));
+}
+
+function stopCamera(ws: Socket, video: number) {
+  const watcher = cameraWatchers.get(`${ws.data.ssrc}:${video}`);
+  if (watcher?.sending) {
+    clearInterval(watcher.timer);
+    watcher.sending = false;
+  }
+}
+
+/** Sends each camera the call on `ws` asks for with op 15, at any quality,
+ *  and stops those it asks for at none. */
+function sendCameras(ws: Socket, wants: any) {
+  for (const name of ws.data.cameras ?? []) {
+    const video = filmers[name]!.ssrc + 1;
+    const quality = Number(wants[String(video)] ?? wants.any ?? 0);
+    const id = `${ws.data.ssrc}:${video}`;
+    let watcher = cameraWatchers.get(id);
+    if (quality > 0 && !watcher?.sending) {
+      const codec = (callCodecs.get(ws.data.ssrc!)?.name ?? "VP8").toLowerCase();
+      watcher ??= { stream: "call", codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0, repairs: cameraRepairs, sending: false };
+      cameraWatchers.set(id, watcher);
+      watcher.sending = true;
+      viewerKeys.set(ws.data.ssrc!, ws.data.callKey!);
+      streamTo(ws, ws.data.callKey!, video, watcher, cameraRecording);
+    } else if (quality === 0) {
+      stopCamera(ws, video);
+    }
+  }
+}
+
+/** Alice announced her camera in a call with op 12, or its end with a zero
+ *  video SSRC: what follows on that SSRC is counted as a stream's video is. */
+function receiveCallCamera(ws: Socket, d: any) {
+  const ssrc = ws.data.ssrc!;
+  const video = Number(d.video_ssrc ?? 0);
+  if (video === 0) {
+    for (const camera of callCameras.values()) if (camera.ssrc === ssrc) camera.stops++;
+    return;
+  }
+  if (callCameras.has(video)) return;
+  const codec = callCodecs.get(ssrc) ?? { name: "VP8", payloadType: 105 };
+  const record = {
+    stream: `call:${ws.data.voiceToken}`, key: ws.data.callKey!, mode: "aead_aes256_gcm_rtpsize",
+    announced: d.streams?.[0]?.max_resolution ?? null,
+    codec: codec.name, payloadType: codec.payloadType,
+    packets: 0, undecryptable: 0, unattached: 0, frames: 0, keyframes: 0, width: 0, height: 0,
+    senderReports: 0, reportedPackets: 0,
+    audioPackets: 0, audioUndecryptable: 0, audioSenderReports: 0, speaking: null,
+    ssrc, rtcpCounter: 1, nacked: null, retransmitted: 0, badRetransmissions: 0, stops: 0,
+  };
+  callCameras.set(video, record);
+  receivedRtx.set(Number(d.rtx_ssrc ?? video + 1), record);
+}
+
 const recordings = {
   vp8: ivf(readFileSync(new URL("stream-vp8.ivf", fixtures))),
   h264: annexB(readFileSync(new URL("stream-h264.h264", fixtures))),
@@ -1931,6 +2053,8 @@ let streamCodec: "vp8" | "h264" = "vp8";
 /** A viewer of Bob's stream and what it was sent. */
 type Watcher = {
   stream: string; codec: string; framesSent: number; soundsSent: number; keyframeRequests: number; timer?: Timer;
+  /** What its connection went through; see `repairs`. */
+  repairs: typeof repairs;
   /** Sends Bob's packet with this sequence number again, as RTX. */
   resend?: (sequence: number) => void;
 };
@@ -1956,9 +2080,9 @@ function sealRtp(packet: Buffer, key: Buffer, counter: number, clear = 16): Buff
   return Buffer.concat([packet.subarray(0, clear), sealed, cipher.getAuthTag(), nonce.subarray(0, 4)]);
 }
 
-/** Streams the recording to a viewer at 10 frames a second until it disconnects. */
-function streamTo(ws: Socket, key: Buffer, ssrc: number) {
-  const watcher = watchers.get(ws.data.ssrc!)!;
+/** Streams the recording to a viewer at 10 frames a second until it
+ *  disconnects, or a camera's to a call: `camera`'s frames at 30 a second. */
+function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(ws.data.ssrc!)!, camera?: { units: Buffer[] }[]) {
   let frame = 0;
   let sequence = 1000;
   let soundSequence = 7000;
@@ -1983,13 +2107,13 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
     history.delete((number - 1024) & 0xffff);
     const sealed = packet(payload, marker, timestamp, payloadType, ssrc, number);
     // As on the internet: one packet lost on the way, and one overtaken.
-    if (number === 1003) return void repairs.dropped++;
+    if (number === 1003) return void watcher.repairs.dropped++;
     if (number === 1008) return void (overtaken = sealed);
     toViewer(sealed);
     if (overtaken) {
       toViewer(overtaken);
       overtaken = undefined;
-      repairs.reordered++;
+      watcher.repairs.reordered++;
     }
   };
   // RFC 4588: on the RTX SSRC, the original sequence number first.
@@ -2000,7 +2124,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
     original.writeUInt16BE(number);
     const rtx = sent.payloadType === 101 ? 102 : 106;
     toViewer(packet(Buffer.concat([original, sent.payload]), sent.marker, sent.timestamp, rtx, ssrc + 1, rtxSequence++));
-    repairs.resent++;
+    watcher.repairs.resent++;
   };
   // A viewer that went away refuses packets until its connection closes.
   const toViewer = (packet: Buffer) => {
@@ -2010,7 +2134,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
     } catch {}
   };
   watcher.timer = setInterval(() => {
-    const timestamp = frame * 9000;
+    const timestamp = frame * (camera ? 3000 : 9000);
     if (watcher.codec === "vp8") {
       const { data } = recordings.vp8[frame % recordings.vp8.length]!;
       for (let at = 0; at < data.length; at += 1100) {
@@ -2019,7 +2143,8 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
       }
       picture = (picture + 1) & 0x7fff;
     } else {
-      const { units } = recordings.h264[frame % recordings.h264.length]!;
+      const h264 = camera ?? recordings.h264;
+      const { units } = h264[frame % h264.length]!;
       units.forEach((unit, index) => {
         const last = index === units.length - 1;
         if (unit.length <= 1100) return send(unit, last, timestamp, 101);
@@ -2033,8 +2158,9 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
     }
     watcher.framesSent++;
     // 100 ms of sound from Bob's audio SSRC, just before his video's: five
-    // Opus frames of silence, plain RTP as a call's audio goes.
-    for (let index = 0; index < 5; index++) {
+    // Opus frames of silence, plain RTP as a call's audio goes. A camera
+    // has no sound of its own.
+    for (let index = 0; index < (watcher.stream === "call" ? 0 : 5); index++) {
       const header = Buffer.alloc(12);
       header[0] = 0x80;
       header[1] = 120;
@@ -2045,7 +2171,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number) {
       watcher.soundsSent++;
     }
     frame++;
-  }, 100);
+  }, camera ? 1000 / 30 : 100);
 }
 
 /** Opens an "rtpsize" AES-GCM packet: the header is authenticated, the rest encrypted. */
@@ -2140,7 +2266,8 @@ function receiveCallAudio(call: CallAudio, ssrc: number, packet: Buffer) {
 
 /** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
 function receiveVideo(packet: Buffer) {
-  const stream = received.get(packet.readUInt32BE(8));
+  const ssrc = packet.readUInt32BE(8);
+  const stream = received.get(ssrc) ?? callCameras.get(ssrc);
   if (!stream) return;
   stream.packets++;
   const plain = stream.mode === "aead_aes256_gcm_rtpsize" ? openRtp(packet, stream.key) : undefined;
@@ -2245,10 +2372,10 @@ const udp = await Bun.udpSocket({
         // A streamer's RTCP sender report, from its video or audio SSRC.
         if (data.length >= 8 && data[1] === 200) {
           const sender = data.readUInt32BE(4);
-          const stream = received.get(sender) ?? receivedAudio.get(sender);
+          const stream = received.get(sender) ?? callCameras.get(sender) ?? receivedAudio.get(sender);
           const report = stream && openRtp(data, stream.key, true);
           if (stream && report && report.length >= 28) {
-            if (received.has(sender)) {
+            if (received.has(sender) || callCameras.has(sender)) {
               stream.senderReports++;
               stream.reportedPackets = report.readUInt32BE(20);
             } else {
@@ -2257,16 +2384,23 @@ const udp = await Bun.udpSocket({
           }
         }
         // RTCP feedback with a picture loss indication, from a viewer's SSRC.
+        // A call's names the camera after the sender, encrypted.
+        const watcherOf = () => {
+          const sender = data.readUInt32BE(4);
+          const key = viewerKeys.get(sender);
+          const plain = !watchers.has(sender) && key ? openRtp(data, key, true) : undefined;
+          return watchers.get(sender) ?? (plain && plain.length >= 12 ? cameraWatchers.get(`${sender}:${plain.readUInt32BE(8)}`) : undefined);
+        };
         if (data.length >= 8 && data[1] === 206 && (data[0]! & 0x1f) === 1) {
-          const watcher = watchers.get(data.readUInt32BE(4));
+          const watcher = watcherOf();
           if (watcher) watcher.keyframeRequests++;
         }
         // A viewer's generic NACK: the packets it asks for again.
-        const asking = data.length >= 8 && data[1] === 205 && (data[0]! & 0x1f) === 1 ? watchers.get(data.readUInt32BE(4)) : undefined;
+        const asking = data.length >= 8 && data[1] === 205 && (data[0]! & 0x1f) === 1 ? watcherOf() : undefined;
         const viewer = asking && viewerKeys.get(data.readUInt32BE(4));
         const nack = asking && viewer && openRtp(data, viewer, true);
         if (asking && nack) {
-          repairs.nacks++;
+          asking.repairs.nacks++;
           for (let at = 12; at + 4 <= nack.length; at += 4) {
             const first = nack.readUInt16BE(at);
             const mask = nack.readUInt16BE(at + 2);
@@ -2274,7 +2408,8 @@ const udp = await Bun.udpSocket({
             for (let bit = 0; bit < 16; bit++) if (mask & (1 << bit)) asking.resend?.((first + bit + 1) & 0xffff);
           }
         }
-        if (data.length >= 8 && data[1] === 201 && watchers.has(data.readUInt32BE(4))) repairs.receiverReports++;
+        const reporting = data.length >= 8 && data[1] === 201 ? watchers.get(data.readUInt32BE(4)) : undefined;
+        if (reporting) reporting.repairs.receiverReports++;
         return;
       }
       peers.set(data.readUInt32BE(4), { address, port });
@@ -2353,6 +2488,7 @@ function voiceMessage(ws: Socket, text: string) {
       }
       if (!ws.data.stream && ws.data.ssrc) {
         ws.data.callKey = key;
+        callCodecs.set(ws.data.ssrc, { name: offered?.name ?? "VP8", payloadType: offered?.payload_type ?? 105 });
         callAudio.set(ws.data.ssrc, { token: ws.data.voiceToken ?? "", packets: 0, undecryptable: 0, silent: 0, voiced: 0, speaking: [], resumed: 0 });
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
@@ -2365,10 +2501,11 @@ function voiceMessage(ws: Socket, text: string) {
           user_id: users.bob.id, audio_ssrc: bob, video_ssrc: bob + 1, rtx_ssrc: bob + 2,
           streams: [{ type: "video", rid: "100", ssrc: bob + 1, rtx_ssrc: bob + 2, active: true, quality: 100 }],
         });
-        watchers.set(ws.data.ssrc, { stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0 });
+        watchers.set(ws.data.ssrc, { stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0, repairs });
         viewerKeys.set(ws.data.ssrc, key);
         ws.data.waiting = { key, ssrc: bob + 1 };
       }
+      if (ws.data.callKey) for (const name of filmingFor(ws)) offerCamera(ws, name, true);
       break;
     }
     case 15: { // Media sink wants: Discord forwards video only to those who ask.
@@ -2376,6 +2513,10 @@ function voiceMessage(ws: Socket, text: string) {
       if (waiting && Number(d.any) > 0) {
         ws.data.waiting = undefined;
         streamTo(ws, waiting.key, waiting.ssrc);
+      }
+      if (ws.data.callKey && ws.data.ssrc) {
+        callWants.set(ws.data.ssrc, d);
+        sendCameras(ws, d);
       }
       break;
     }
@@ -2399,11 +2540,14 @@ function voiceMessage(ws: Socket, text: string) {
       ws.data.callKey = old?.data.callKey ?? [...voiceSockets].find((other) => other.data.callKey && other.data.ssrc === ssrc)?.data.callKey ?? resumedKeys.get(ssrc);
       call.resumed++;
       reply(9, null);
+      // The session still has the cameras on, sent again once asked for.
+      for (const name of filmingFor(ws)) offerCamera(ws, name, false);
       break;
     }
     case 12: { // Video attributes
       const stream = received.get(d.video_ssrc);
       if (stream) stream.announced = d.streams?.[0]?.max_resolution ?? null;
+      if (ws.data.callKey && ws.data.ssrc) receiveCallCamera(ws, d);
       break;
     }
     case 3: // Heartbeat
@@ -3332,6 +3476,29 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/logouts") return Response.json(logouts);
     if (path === "/_control/voice-identifies") return Response.json(voiceIdentifies);
     if (path === "/_control/call-audio") return Response.json(Object.fromEntries(callAudio));
+    if (path === "/_control/call-video") {
+      return json({
+        cameras: [...callCameras.values()].map(({ key: _, ...camera }) => camera),
+        wants: Object.fromEntries(callWants),
+        watchers: [...cameraWatchers.values()].map(({ timer: _, resend: _resend, repairs: _repairs, ...watcher }) => watcher),
+        repairs: cameraRepairs,
+      });
+    }
+    if (req.method === "POST" && path === "/_control/camera") {
+      const query = new URL(req.url).searchParams;
+      const name = query.get("who") ?? "bob";
+      const filmer = filmers[name];
+      const state = filmer && voice.get(filmer.user);
+      if (!filmer || !state) return new Response(`${name} isn't in a call\n`, { status: 409 });
+      state.self_video = !query.has("off");
+      announce(filmer.user);
+      const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey && callChannel(ws) === state.channel);
+      for (const ws of calls) {
+        if (state.self_video) offerCamera(ws, name, true);
+        else withdrawCamera(ws, name);
+      }
+      return new Response(`${name}'s camera is ${state.self_video ? "on" : "off"} in ${calls.length} call(s)\n`);
+    }
     if (req.method === "POST" && path === "/_control/bob-speak") {
       const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
       const spoke = calls.filter((ws) => bobSpeaks(ws)).length;
@@ -3419,7 +3586,7 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/video") {
       return json({
         received: [...received.values()].map(({ key: _, ...stream }) => stream),
-        watchers: [...watchers.values()].map(({ timer: _, resend: _resend, ...watcher }) => watcher),
+        watchers: [...watchers.values()].map(({ timer: _, resend: _resend, repairs: _repairs, ...watcher }) => watcher),
         repairs,
         previews,
       });
@@ -3659,6 +3826,7 @@ const server = Bun.serve<SocketData>({
         return;
       }
       if (ws.data.voice && ws.data.ssrc) clearInterval(watchers.get(ws.data.ssrc)?.timer);
+      if (ws.data.voice && ws.data.ssrc) for (const name of ws.data.cameras ?? []) stopCamera(ws, filmers[name]!.ssrc + 1);
       if (ws.data.voice && ws.data.ssrc && ws.data.callKey) resumedKeys.set(ws.data.ssrc, ws.data.callKey);
       voiceSockets.delete(ws);
       sockets.delete(ws);

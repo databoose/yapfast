@@ -54,9 +54,15 @@ pub struct Picture<'a> {
 }
 
 impl Decoder {
+    /// A decoder on up to four threads, for a stream shown large.
     pub fn new(codec: Codec) -> Result<Self> {
-        let threads =
-            std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4)) as c_uint;
+        let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4));
+        Self::with_threads(codec, threads as u32)
+    }
+
+    /// A decoder on `threads` threads; each keeps frames of its own.
+    pub fn with_threads(codec: Codec, threads: u32) -> Result<Self> {
+        let threads = threads.max(1) as c_uint;
         let kind = match codec {
             Codec::Vp8 => 0,
             Codec::H264 => 1,
@@ -126,6 +132,18 @@ impl Decoder {
 }
 
 impl Picture<'_> {
+    /// The picture's planes, as a feed's sink takes them.
+    pub fn i420(&self) -> crate::picture::I420<'_> {
+        crate::picture::I420 {
+            width: self.width,
+            height: self.height,
+            y: self.y,
+            u: self.u,
+            v: self.v,
+            strides: self.strides,
+        }
+    }
+
     /// Writes the picture as RGBA, `width * 4` bytes a row.
     pub fn to_rgba(&self, out: &mut [u8]) {
         // libyuv's ABGR is R, G, B, A in memory.

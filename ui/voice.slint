@@ -210,8 +210,25 @@ export component ParticipantGrid inherits Flickable {
     // Your shared screen leads the grid.
     property <int> extra: root.sharing ? 1 : 0;
     property <int> count: root.participants.length + self.extra;
-    property <int> columns: max(1, min(self.count, floor((self.span + self.gap) / (240px + self.gap))));
-    property <length> tile-width: min(420px, (self.span - (self.columns - 1) * self.gap) / self.columns);
+    // A few people take the columns, and the size, that make their tiles
+    // largest within both the width and the height, so a short call above a
+    // DM's messages shows everyone without scrolling. Side by side wins
+    // unless stacking makes tiles a tenth larger. More people take tiles at
+    // least 240px wide, and scroll.
+    pure function fitted(columns: int) -> length {
+        let rows = ceil(root.count / columns);
+        min(420px, (root.span - (columns - 1) * root.gap) / columns,
+            (root.height - 2 * root.inset - (rows - 1) * root.gap) / rows / 0.5625)
+    }
+    property <int> fewest: max(1, min(self.count, floor((self.span + self.gap) / (240px + self.gap))));
+    property <int> best-fit: self.count >= 2 && self.fitted(2) * 1.1 > self.fitted(1)
+        ? (self.count >= 3 && self.fitted(3) * 1.1 > self.fitted(2)
+            ? (self.count >= 4 && self.fitted(4) * 1.1 > self.fitted(3) ? 4 : 3) : 2)
+        : 1;
+    property <int> columns: self.count <= 4 ? self.best-fit : self.fewest;
+    property <length> tile-width: self.count <= 4
+        ? max(160px, self.fitted(self.columns))
+        : min(420px, (self.span - (self.columns - 1) * self.gap) / self.columns);
     property <length> tile-height: self.tile-width * 0.5625;
     property <int> rows: ceil(self.count / self.columns);
     property <length> grid-height: self.rows * self.tile-height + max(0, self.rows - 1) * self.gap;

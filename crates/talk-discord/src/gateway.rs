@@ -354,6 +354,7 @@ impl Gateway {
         channel_id: Option<&str>,
         self_mute: bool,
         self_deaf: bool,
+        self_video: bool,
     ) -> Result<()> {
         self.send(
             VOICE_STATE_UPDATE,
@@ -362,7 +363,7 @@ impl Gateway {
                 "channel_id": channel_id,
                 "self_mute": self_mute,
                 "self_deaf": self_deaf,
-                "self_video": false,
+                "self_video": self_video,
             }),
         )
         .await
