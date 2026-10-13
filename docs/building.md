@@ -234,7 +234,9 @@ GPUI's FXC shader build is no longer used.
 The supported build route for this migration is the Linux MSVC cross-build.
 Native Windows development needs Rustup, Visual Studio C++ tools and SDK, CMake,
 LLVM and Protobuf, plus the same prepared Skia archive through
-`SKIA_BINARIES_URL`. That native-host preparation/build route has not been checked.
+`SKIA_BINARIES_URL`, and `LIBOPUS_LIB_DIR` naming a folder whose `lib`
+holds an empty `opus.lib`, as the Windows Nix shell sets it, so songbird uses
+libwebrtc's libopus. That native-host preparation/build route has not been checked.
 The downloadable package needs none of these tools to run.
 
 Before accepting the Windows build, check text entry, selection, copy/paste,

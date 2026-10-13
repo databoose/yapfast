@@ -55,6 +55,24 @@ device models were not supplied. Restart behavior, extended waiting alone,
 network interruption, forced crashes, resizing and copy/paste were not covered
 by this confirmation.
 
+## Build validation on 2026-10-13
+
+The first cross-build since Discord voice, Go Live's native codecs and
+DeepFilterNet landed failed in one place: songbird's `opus2` builds its own
+libopus, which clang-cl couldn't compile (its SSE4.1 files need flags CMake
+gives only GCC-style compilers) and whose symbols would clash with the libopus
+inside libwebrtc's archive. The Windows Nix shell now gives `opus2` an empty
+`opus.lib` through `LIBOPUS_LIB_DIR`, so it uses libwebrtc's copy and the
+executable holds one libopus. Linux is unchanged.
+
+`--smoke-test` now encodes 100 ms of a tone with Opus through `opus2` and
+decodes it again. It and `--help` passed under Wine 10.0 in a private prefix
+without a display, for both the `fast` and the release build. The release
+executable is 211.3 MiB and the portable ZIP 141.3 MiB; Discord voice,
+DeepFilterNet's model and Go Live's codecs account for the growth since
+2026-10-03. The executable's SHA-256 was
+`a8d11fbea3c369b963d4c8c513cf422c5239f06e97005b0d069eba0aca2f5286`.
+
 ## Slint build validation on 2026-10-03
 
 The all-target Windows MSVC compilation check and release link passed. Skia was
