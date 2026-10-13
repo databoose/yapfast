@@ -93,6 +93,27 @@ pub mod ffi {
             timestamp_us: i64,
             frame_metadata: &FrameMetadata,
         ) -> bool;
+        /// Talk: sends an I420 picture, copied into a pooled buffer at the
+        /// size the encoder asks for. False when the frame is dropped.
+        ///
+        /// # Safety
+        /// Each plane holds `height` (halved, rounded up, for `u` and `v`)
+        /// rows of its stride, for the length of the call.
+        unsafe fn capture_i420(
+            self: &VideoTrackSource,
+            y: *const u8,
+            stride_y: i32,
+            u: *const u8,
+            stride_u: i32,
+            v: *const u8,
+            stride_v: i32,
+            width: i32,
+            height: i32,
+            timestamp_us: i64,
+        ) -> bool;
+        /// Talk: lets go of `capture_i420`'s pooled buffers, for while the
+        /// camera is off.
+        fn release_buffers(self: &VideoTrackSource);
         fn set_packet_trailer_handler(
             self: &VideoTrackSource,
             handler: SharedPtr<PacketTrailerHandler>,
@@ -101,6 +122,10 @@ pub mod ffi {
             resolution: &VideoResolution,
             is_screencast: bool,
         ) -> SharedPtr<VideoTrackSource>;
+        /// Talk: the source `new_video_track_source` last made on this
+        /// thread, while it lives. libwebrtc's `NativeVideoSource` keeps its
+        /// handle private; asked right after making one, this reaches it.
+        fn last_video_track_source() -> SharedPtr<VideoTrackSource>;
         fn video_to_media(track: SharedPtr<VideoTrack>) -> SharedPtr<MediaStreamTrack>;
         unsafe fn media_to_video(track: SharedPtr<MediaStreamTrack>) -> SharedPtr<VideoTrack>;
         fn _shared_video_track() -> SharedPtr<VideoTrack>;

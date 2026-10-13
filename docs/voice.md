@@ -59,8 +59,25 @@ scroll whenever they change (`call-tiles`), so each feed is made at its tile's
 size in physical pixels, and only while the tile is in view. A tile scrolled
 away, or a grid hidden behind settings or a watched stream, makes no pictures
 and keeps no buffers. Skia draws each frame from Slint's buffer in place
-(`docs/building.md`). So far only preview calls carry video; Matrix and
-Discord calls follow.
+(`docs/building.md`). Preview and Matrix calls carry video; Discord calls
+follow.
+
+In a Matrix call, Talk publishes the camera to LiveKit as a simulcast VP8
+track, asking for 1280×720, so each receiver can take the layer its tile
+needs. Each picture goes to WebRTC through `capture_i420`, a Talk patch to
+`webrtc-sys` that copies it into one of four pooled buffers rather than a new
+one each frame (`vendor/webrtc-sys/README.talk.md`). Turning the camera off
+mutes the track and closes the camera, as Element does. Unpublishing would
+leave the track's sender and encoder in LiveKit's connection, about 17 MiB
+and nine threads each time, measured. The track goes when the call ends.
+
+Each remote camera arrives as WebRTC's decoded I420 frame, and its feed
+scales and converts it straight into the tile's buffer, with no copy in
+between. The tile's size goes to LiveKit (`set_constraints`), so the server
+sends the smallest layer that fills it, and a camera whose tile is out of
+sight, or muted, is paused at the server: nothing arrives to decode, and its
+buffers go. `testing/measure_cameras.py` measures a five-person call as the
+others' cameras and then Alice's turn on; see `docs/measurements/README.md`.
 
 The other ways to film, compared before choosing:
 

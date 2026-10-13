@@ -26,6 +26,7 @@ use tokio::{
 
 use crate::{
     calls::require_trusted_encrypted_room,
+    matrix_video::{Filming, Watching},
     session::SessionLease,
     voice::{
         Chosen, Command, Participant, Phase, State, audio, collect_devices, device_id, devices,
@@ -332,6 +333,11 @@ async fn connected(
         let mut volumes = crate::volume::changes();
         // The volume each remote audio track plays at, by track id.
         let mut volumes_set: HashMap<String, f32> = HashMap::new();
+        let mut filming: Option<Filming> = None;
+        let mut watching = Watching::default();
+        // The LiveKit identity of each member, to match cameras to people.
+        let mut members: HashMap<String, String> = HashMap::new();
+        state.can_film = cfg!(target_os = "linux");
         state.phase = Phase::Connected;
         loop {
             let people = roster.borrow_and_update().clone();
@@ -347,9 +353,29 @@ async fn connected(
                 }
             }
             let present: HashSet<String> = call.session().room().remote_participants().keys().map(ToString::to_string).collect();
+            let known = members.len();
+            members = people.iter()
+                .filter_map(|person| Some((identity(&person.user_id, person.device_id.as_deref()?, &person.member_id), person.member_id.clone())))
+                .collect();
+            if members.len() != known {
+                watching.constrain_all(&call, &members);
+            }
             state.participants = people.iter().map(|person| {
                 let sfu_identity = person.device_id.as_deref().map(|device| identity(&person.user_id, device, &person.member_id));
                 let present = sfu_identity.as_ref().is_some_and(|id| present.contains(id));
+                // Element mutes its camera track rather than unpublishing it.
+                let filmed = person.streams.iter().any(|stream| stream.kind == MediaStreamKind::Camera && !stream.muted);
+                let video = if person.is_local {
+                    filming.as_ref().filter(|filming| filming.filming()).map(|filming| filming.feed.clone())
+                } else {
+                    let feed = sfu_identity.as_deref().and_then(|id| watching.feed(id));
+                    // A muted camera's tile shows the avatar: its buffers go,
+                    // and the server stops sending it.
+                    if !filmed && let Some(feed) = feed {
+                        feed.show_at(None);
+                    }
+                    feed.filter(|_| filmed).cloned()
+                };
                 if present {
                     published.insert(person.member_id.clone());
                 }
@@ -376,7 +402,7 @@ async fn connected(
                     problem: problem.map(str::to_owned),
                     avatar: None,
                     streaming: false,
-                    video: None,
+                    video,
                 }
             }).collect();
             state.participants.sort_by(|a,b| b.local.cmp(&a.local).then_with(|| a.user.cmp(&b.user)).then_with(|| a.id.cmp(&b.id)));
@@ -428,11 +454,31 @@ async fn connected(
                         }
                     }
                     Some(Command::Camera(id)) => {
+                        if let Some(filming) = &mut filming && let Err(error) = filming.switch(&id) {
+                            state.error = Some(error.to_string());
+                        }
                         state.camera = Some(id);
                         Chosen::write(remembered, state);
                     }
+                    Some(Command::Video(true)) => {
+                        let result = match &mut filming {
+                            Some(filming) => filming.resume(state.camera.as_deref()),
+                            None => Filming::start(&call, state.camera.as_deref()).await.map(|started| filming = Some(started)),
+                        };
+                        match result {
+                            Ok(()) => { state.camera_on = true; state.error = None; }
+                            Err(error) => state.error = Some(error.to_string()),
+                        }
+                    }
+                    Some(Command::Video(false)) => {
+                        if let Some(filming) = &mut filming {
+                            filming.pause();
+                            crate::voice::trim_after_call();
+                        }
+                        state.camera_on = false;
+                    }
                     Some(Command::GoLive(_)) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
-                    Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale | Command::Video(_)) => {}
+                    Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale) => {}
                 },
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
                 // Device trust can change while connected, for example after
@@ -479,10 +525,21 @@ async fn connected(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("Voice ended. Join again to reconnect."),
                     _ => {}
                 },
+                // A camera's tile came into sight, went, or changed size.
+                () = watching.shown.notified() => watching.constrain_all(&call, &members),
                 event = call.events().recv() => match event {
                     Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), .. }) => {
                         if state.deafened { track.disable(); }
                     },
+                    Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant }) => {
+                        if publication.source() == TrackSource::Camera {
+                            watching.subscribed(participant.identity().to_string(), &track);
+                            watching.constrain_all(&call, &members);
+                        }
+                    }
+                    Some(RoomEvent::TrackUnsubscribed { publication, participant, .. }) if publication.source() == TrackSource::Camera => {
+                        watching.unsubscribed(participant.identity().as_str());
+                    }
                     // A full reconnect republishes our microphone with a new
                     // frame cryptor at key index 0, which late joiners cannot use.
                     Some(RoomEvent::LocalTrackRepublished { .. }) => {
@@ -497,6 +554,9 @@ async fn connected(
                 _ = reconnect_timeout(reconnect_deadline) => bail!("Voice could not reconnect within 60 seconds. Join again when your connection returns."),
             }
         }
+        // Leaving takes the track out of the call; the camera closes here.
+        drop(filming);
+        drop(watching);
         if let Some(track) = microphone.take() {
             track.mute();
             if audio.is_recording_initialized() { let _ = audio.stop_recording(); }
@@ -1200,7 +1260,9 @@ mod tests {
     /// Bob plus extra fixture accounts in one process. Generated tones use no audio
     /// device, so one process can publish for every account. Commands appended to
     /// `load.commands`: `chat-start`, `chat-stop`, `say TEXT`, `join N`, `leave`,
-    /// `exit`, `dtx on|off` (for later joins) and `pattern all|conversation`.
+    /// `exit`, `dtx on|off` (for later joins), `pattern all|conversation` and
+    /// `camera N`, which films the first N joined accounts with the test
+    /// pattern (`TALK_CAMERA_TEST_PATTERN=1`), and mutes the rest.
     /// `conversation` passes the tone around, one speaker for 3 s at a time, with
     /// digital silence from everyone else. `TALK_TEST_PUBLISH_ONLY=1` stops the load
     /// accounts subscribing, so this process does not decode every stream.
@@ -1258,6 +1320,7 @@ mod tests {
             let mut handled = 0;
             let mut calls = Vec::new();
             let mut tones = Vec::new();
+            let mut cameras: Vec<crate::matrix_video::Filming> = Vec::new();
             let mut chatting = false;
             let mut dtx = true;
             let conversation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1309,7 +1372,23 @@ mod tests {
                                     }
                                     status(&format!("joined {}", calls.len()));
                                 }
+                                ("camera", count) => {
+                                    let count: usize = count.parse().unwrap();
+                                    for (index, camera) in cameras.iter_mut().enumerate() {
+                                        if index >= count && camera.filming() {
+                                            camera.pause();
+                                        } else if index < count && !camera.filming() {
+                                            camera.resume(Some("test-pattern")).unwrap();
+                                        }
+                                    }
+                                    while cameras.len() < count.min(calls.len()) {
+                                        cameras.push(crate::matrix_video::Filming::start(&calls[cameras.len()], Some("test-pattern")).await.unwrap());
+                                    }
+                                    let filming = cameras.iter().filter(|camera| camera.filming()).count();
+                                    status(&format!("filming {filming}"));
+                                }
                                 ("leave", _) => {
+                                    cameras.clear();
                                     tones.clear();
                                     speakers.store(0, std::sync::atomic::Ordering::Relaxed);
                                     while let Some(call) = calls.pop() {
@@ -1325,6 +1404,7 @@ mod tests {
                     }
                 }
             }
+            cameras.clear();
             tones.clear();
             while let Some(call) = calls.pop() {
                 let _ = tokio::time::timeout(Duration::from_secs(10), call.leave()).await;

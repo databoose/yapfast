@@ -1,7 +1,7 @@
 # Talk patches
 
 This is webrtc-sys 0.3.35 from crates.io under its original Apache-2.0 license.
-Three changes differ from it.
+Four changes differ from it.
 
 ## Windows link fix
 
@@ -26,6 +26,20 @@ LiveKit's Rust API can't set how loud a remote track plays. src/audio_track.cpp
 keeps each audio track wrapper in a registry by track id, and the new
 `set_audio_track_volume` bridge function passes a volume to the matching
 tracks' sources on the signaling thread, as WebRTC's `SetVolume` expects.
+
+## Camera capture from pooled buffers
+
+LiveKit's `NativeVideoSource::capture_frame` takes a new I420 buffer for each
+frame, and the encoder holds it for a while, so a camera filming at 30 frames
+a second allocates 30 buffers a second. The new `capture_i420` bridge method
+on `VideoTrackSource` copies the application's picture, scaled if WebRTC's
+adapter asks for less, into a buffer from a `VideoFrameBufferPool` of four,
+which WebRTC reuses once the encoder lets go. libwebrtc's Rust
+`NativeVideoSource` keeps its native handle private, so
+`last_video_track_source` returns the source most recently made on the
+calling thread; Talk asks for it right after making one. `release_buffers`
+empties the pool while the camera is off. Both are in
+src/video_track.cpp and include/livekit/video_track.h.
 
 Otherwise the Rust API, media code, dependency versions and libwebrtc archive
 stay pinned.

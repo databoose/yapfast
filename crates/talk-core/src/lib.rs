@@ -40,6 +40,8 @@ pub mod logging;
 #[cfg(feature = "matrix")]
 mod matrix_chat;
 #[cfg(feature = "matrix")]
+mod matrix_video;
+#[cfg(feature = "matrix")]
 mod matrix_voice;
 pub mod mention;
 pub mod meter;
