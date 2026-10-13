@@ -23,6 +23,7 @@ use tokio::{
 
 use crate::{
     call_video::{self, Camera, Receiving, VideoFrame},
+    dave::Dave,
     opus, rtp,
     voice::{FRAME, Listener},
     voice_connection::{Closed, Connection, Identity, lock, receive, send_json},
@@ -221,6 +222,10 @@ struct Media {
     /// Everyone else, by their audio SSRC, and whose each SSRC is.
     speakers: HashMap<u32, Speaker>,
     users: HashMap<u32, u64>,
+    /// Why each SSRC's audio was last dropped, and whether the microphone
+    /// was last sent end-to-end encrypted, as logged.
+    dropped: HashMap<u32, String>,
+    encrypting: Option<bool>,
     /// This account's camera, while it films, and everyone else's.
     filming: Option<call_video::Sending>,
     watching: Receiving,
@@ -238,6 +243,8 @@ impl Media {
             silent: 0,
             speakers: HashMap::new(),
             users: HashMap::new(),
+            dropped: HashMap::new(),
+            encrypting: None,
             filming: None,
             watching: Receiving::new(video),
         })
@@ -247,6 +254,8 @@ impl Media {
     fn reset(&mut self) {
         self.speakers.clear();
         self.users.clear();
+        self.dropped.clear();
+        self.encrypting = None;
         self.speaking = false;
         self.silent = 0;
         self.watching.reset();
@@ -338,15 +347,35 @@ impl Media {
         result.unwrap_or_else(Ended::Dropped)
     }
 
-    /// Learns whose audio each SSRC carries from their speaking messages.
+    /// Learns whose audio each SSRC carries from their speaking messages
+    /// and their video ones. Someone already talking when Talk joins may
+    /// send no speaking message again; their video message, sent for
+    /// everyone in the call, names their audio too.
     fn learn(&mut self, op: u64, data: &Value) {
-        if op == 5
-            && let (Some(user), Some(ssrc)) = (
-                data["user_id"].as_str().and_then(|id| id.parse().ok()),
-                data["ssrc"].as_u64(),
-            )
-        {
+        let ssrc = match op {
+            5 => &data["ssrc"],
+            12 => &data["audio_ssrc"],
+            _ => return,
+        };
+        if let (Some(user), Some(ssrc)) = (
+            data["user_id"].as_str().and_then(|id| id.parse().ok()),
+            ssrc.as_u64().filter(|&ssrc| ssrc != 0),
+        ) {
             self.users.insert(ssrc as u32, user);
+        }
+    }
+
+    /// Logs why a speaker's audio is dropped, once for each reason, since
+    /// it otherwise vanishes without a trace.
+    fn report_drop(&mut self, ssrc: u32, reason: &str, dave: &Dave) {
+        if self.dropped.get(&ssrc).is_none_or(|last| last != reason) {
+            tracing::info!(
+                ssrc,
+                reason,
+                dave = dave.status(),
+                "dropping a speaker's audio in a call"
+            );
+            self.dropped.insert(ssrc, reason.to_owned());
         }
     }
 
@@ -381,6 +410,14 @@ impl Media {
             )
             .await?;
             self.speaking = true;
+        }
+        if playing && self.encrypting != Some(connection.dave.encrypting()) {
+            self.encrypting = Some(connection.dave.encrypting());
+            tracing::info!(
+                encrypting = connection.dave.encrypting(),
+                dave = connection.dave.status(),
+                "the call's microphone is sending"
+            );
         }
         if playing {
             let length = self.encoder.encode_float(&self.pcm, &mut self.packet)?;
@@ -450,12 +487,15 @@ impl Media {
             self.watching.receive(connection, &packet).await?;
             return Ok(());
         }
-        // DAVE keys each sender's frames by who they are, which only their
-        // speaking message tells.
+        // DAVE keys each sender's frames by who they are, which only the
+        // voice gateway tells.
         let Some(&user) = self.users.get(&packet.ssrc) else {
+            self.report_drop(packet.ssrc, "whose SSRC it is is unknown", &connection.dave);
             return Ok(());
         };
         let Some(opus) = connection.dave.decrypt_opus(user, packet.payload.to_vec()) else {
+            let reason = connection.dave.unreadable.take().unwrap_or_default();
+            self.report_drop(packet.ssrc, &reason, &connection.dave);
             return Ok(());
         };
         let speaker = match self.speakers.entry(packet.ssrc) {
@@ -633,6 +673,23 @@ mod tests {
         let played = std::iter::from_fn(|| speaker.next().map(|_| ())).count();
         assert_eq!(played, usize::from(GONE) - 1);
         assert!(speaker.next.is_none());
+    }
+
+    #[test]
+    fn learns_whose_audio_from_speaking_and_video_messages() {
+        let (frames, _) = channel::sync_channel(1);
+        let mut media = Media::new(frames).unwrap();
+        media.learn(5, &json!({"user_id": "7", "ssrc": 100, "speaking": 1}));
+        // Already talking when Talk joined: only op 12 names their audio.
+        media.learn(
+            12,
+            &json!({"user_id": "8", "audio_ssrc": 200, "video_ssrc": 0, "streams": []}),
+        );
+        media.learn(
+            12,
+            &json!({"user_id": "9", "audio_ssrc": 0, "video_ssrc": 0}),
+        );
+        assert_eq!(media.users, HashMap::from([(100, 7), (200, 8)]));
     }
 
     #[test]

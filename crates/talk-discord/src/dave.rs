@@ -225,6 +225,22 @@ impl Dave {
             }
             Event::DaveMlsAnnounceCommitTransition(event) => {
                 self.follow(message_group(&event.commit_message));
+                // Before Talk has a group, or has committed to its pending
+                // one, a commit is for a group a welcome will bring it
+                // into. libdave ignores it; refusing it would start over
+                // and lose the key package that welcome is sealed to.
+                if !self.session.as_ref().is_some_and(|session| {
+                    matches!(
+                        session.status(),
+                        SessionStatus::AWAITING_RESPONSE | SessionStatus::ACTIVE
+                    )
+                }) {
+                    tracing::debug!(
+                        transition_id = event.transition_id,
+                        "a DAVE commit before Talk is in the group; waiting for its welcome"
+                    );
+                    return vec![];
+                }
                 let result = self
                     .session
                     .as_mut()
@@ -270,7 +286,7 @@ impl Dave {
     /// After a commit or welcome: ready for the transition, or start over.
     fn joined(&mut self, transition_id: u16, result: Option<Result<(), String>>) -> Vec<Out> {
         if let Some(Ok(())) = result {
-            tracing::info!(transition_id, "joined the stream's DAVE group");
+            tracing::info!(transition_id, "joined the DAVE group");
         }
         match result {
             Some(Ok(())) if transition_id != 0 => {
@@ -583,6 +599,66 @@ mod tests {
             .find_map(|packet| assembler.push(&rtp::parse(packet).unwrap()).frame)
             .expect("the frame, reassembled");
         assert_eq!(dave.decrypt(streamer, whole.data), Some(frame));
+    }
+
+    /// Someone already in a call commits Talk's addition, and the voice
+    /// server announces that commit before the welcome reaches Talk. Talk
+    /// must wait for the welcome rather than refuse the commit and start
+    /// over, then hear and be heard.
+    #[test]
+    fn waits_for_its_welcome_past_a_commit() {
+        use davey::DaveSession;
+        let (friend, me, channel) = (10, 20, 77);
+        let server = Server::new();
+        let sender = serenity_voice_model::payload::DaveMlsExternalSender {
+            external_sender: server.external_sender(),
+        };
+        let mut other = DaveSession::new(1.try_into().unwrap(), friend, channel, None).unwrap();
+        other.set_external_sender(&sender.external_sender).unwrap();
+        other.create_key_package().unwrap();
+
+        let mut dave = Dave::new(me, channel);
+        dave.recognise(friend);
+        let package = key_package(&dave.start(1));
+        dave.handle(Event::from(sender));
+        let commit = other
+            .process_proposals(
+                ProposalsOperationType::APPEND,
+                &server.propose_add(&package, channel),
+                None,
+            )
+            .unwrap()
+            .expect("the friend commits Talk's addition");
+
+        let out = dave.handle(Event::from(
+            serenity_voice_model::payload::DaveMlsAnnounceCommitTransition {
+                transition_id: 3,
+                commit_message: commit.commit.clone(),
+            },
+        ));
+        assert!(out.is_empty(), "no refusal, no new key package: {out:?}");
+        let out = dave.handle(Event::from(serenity_voice_model::payload::DaveMlsWelcome {
+            transition_id: 3,
+            welcome: commit.welcome.expect("a welcome for Talk"),
+        }));
+        assert!(
+            matches!(out.as_slice(), [Out::Json(Event::DaveTransitionReady(ready))] if ready.transition_id == 3),
+            "{out:?}"
+        );
+        dave.handle(Event::from(DaveExecuteTransition { transition_id: 3 }));
+        other.process_commit(&commit.commit).unwrap();
+
+        let sealed = other.encrypt_opus(b"friend's voice").unwrap().into_owned();
+        assert_eq!(
+            dave.decrypt_opus(friend, sealed),
+            Some(b"friend's voice".to_vec())
+        );
+        let sealed = dave.encrypt_opus(b"my voice");
+        assert!(sealed.ends_with(&[0xfa, 0xfa]), "end-to-end encrypted");
+        assert_eq!(
+            other.decrypt(me, MediaType::AUDIO, &sealed).unwrap(),
+            b"my voice"
+        );
     }
 
     #[test]
