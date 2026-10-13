@@ -368,10 +368,15 @@ impl Adapter {
             .iter()
             .map(|room| (room.id.as_str(), room))
             .collect();
-        update_model(
-            &self.models.servers,
-            rail_rows(state, &rooms_by_id, &self.layout.open_folders),
-        );
+        // Unread DMs come and go above the servers, so the rows keep their
+        // places by id rather than all moving down one.
+        let mut rail = unread_dm_rows(state);
+        rail.push(ServerRow {
+            divider: true,
+            ..Default::default()
+        });
+        rail.extend(rail_rows(state, &rooms_by_id, &self.layout.open_folders));
+        update_model_by_id(&self.models.servers, rail, |row| row.id.clone());
         let mut listed_text = false;
         let mut listed_voice = false;
         let mut category: Option<&str> = None;
@@ -2390,6 +2395,34 @@ impl Adapter {
             _ => SharedString::default(),
         });
     }
+}
+
+/// The DMs with unread messages, the latest first, as Discord lists them on
+/// its rail above the servers. Message requests and spam stay on their screen.
+pub(super) fn unread_dm_rows(state: &AppState) -> Vec<ServerRow> {
+    state
+        .rooms
+        .iter()
+        .filter(|room| {
+            room.direct
+                && !room.request
+                && room.category != discord::SPAM
+                && (room.unread > 0 || room.mentions > 0)
+        })
+        .map(|room| ServerRow {
+            id: room.id.as_str().into(),
+            name: room.name.as_str().into(),
+            initial: initial(&room.name),
+            picture_url: room.avatar.as_deref().unwrap_or_default().into(),
+            unread: true,
+            // Discord counts each of a DM's messages; Matrix counts its
+            // unread messages apart from its mentions.
+            badge: count_badge(room.mentions.max(room.unread)),
+            discord: room.network == Network::Discord,
+            dm: true,
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// The rail's rows: each server, and each folder with its servers after it

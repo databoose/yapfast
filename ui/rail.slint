@@ -22,6 +22,11 @@ export struct ServerRow {
     tint: color,
     /// A closed folder's first four servers.
     preview: [FolderServer],
+    /// An unread DM above the servers, as in Discord: `id` is its room's,
+    /// `picture-url` its avatar or group icon, and `badge` its unread messages.
+    dm: bool,
+    /// The line between those DMs and the servers.
+    divider: bool,
 }
 
 export struct RoomRow {
@@ -461,7 +466,6 @@ component CategoryHeading inherits Rectangle {
     }
 }
 
-// The server rail: the DMs, then each server.
 // A Discord server's name at the top of its channel list, as in Discord: it
 // opens the server's menu below it, and its chevron turns over while that's
 // open. The Menu key or Shift+F10 opens it too.
@@ -504,6 +508,7 @@ export component ServerHeader inherits Rectangle {
     }
 }
 
+// The server rail: the DM home, the DMs with unread messages, then each server.
 export component ServerRail inherits Rectangle {
     in property <bool> dms-selected;
     in property <bool> dms-unread;
@@ -515,7 +520,9 @@ export component ServerRail inherits Rectangle {
     callback navigate-dms;
     callback navigate-server(string);
     callback toggle-folder(string);
-    /// A server's menu was asked for: its id, and where in the window.
+    /// An unread DM was clicked: open it.
+    callback open-dm(string);
+    /// A server's or DM's menu was asked for: its id, and where in the window.
     callback open-server-menu(string, length, length);
     width: 72px; background: Theme.rail;
     VerticalLayout {
@@ -527,16 +534,15 @@ export component ServerRail inherits Rectangle {
             selected: root.dms-selected; unread: root.dms-unread; badge: root.dms-badge;
             clicked => { root.navigate-dms(); }
         }
-        HorizontalLayout {
-            alignment: center;
-            Rectangle { width: 32px; height: 2px; border-radius: 1px; background: Theme.line; }
-        }
         // A list view makes only the servers in sight, which
-        // matters on accounts in many servers.
+        // matters on accounts in many servers. Unread DMs scroll with them.
         ListView {
             vertical-stretch: 1;
             for server in root.servers: Rectangle {
-                height: 48px + 8px;
+                height: server.divider ? 2px + 8px : 48px + 8px;
+                if server.divider: Rectangle {
+                    x: (72px - self.width) / 2; y: 0px; width: 32px; height: 2px; border-radius: 1px; background: Theme.line;
+                }
                 // An open folder's servers sit on a strip of its colour,
                 // from its folder down to its last server.
                 if server.open || server.nested: Rectangle {
@@ -556,7 +562,17 @@ export component ServerRail inherits Rectangle {
                     selected: server.selected; unread: server.unread; badge: server.badge;
                     clicked => { root.toggle-folder(server.id); }
                 }
-                if !server.folder: RailItem {
+                if server.dm: RailItem {
+                    y: 0px;
+                    initial: server.initial; picture-url: server.picture-url;
+                    label: server.name + (server.discord && root.matrix-build ? ", Discord" : "")
+                        + (server.badge != "" ? ", " + server.badge + " unread" : ", unread");
+                    tip: server.discord && root.matrix-build ? server.name + " (Discord)" : server.name;
+                    unread: true; badge: server.badge; discord: server.discord;
+                    clicked => { root.open-dm(server.id); }
+                    context-menu(x, y) => { root.open-server-menu(server.id, x, y); }
+                }
+                if !server.folder && !server.dm && !server.divider: RailItem {
                     y: 0px;
                     initial: server.initial; picture: server.picture; picture-url: server.picture-url;
                     label: server.name + (server.discord && root.matrix-build ? ", Discord" : "") + (server.unavailable ? ", unavailable" : "")

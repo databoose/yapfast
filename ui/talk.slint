@@ -636,6 +636,9 @@ export component TalkWindow inherits Window {
     /// A folder on the rail was clicked: open or close it.
     callback toggle-folder(string);
     callback select-room(string);
+    /// Go to wherever a conversation is listed and open it, as an unread DM
+    /// on the rail does.
+    callback open-conversation(string);
     /// Show a Discord thread beside the conversation, as its link in a
     /// message does, asking for one that isn't listed.
     callback open-aside(string);
@@ -1163,6 +1166,7 @@ export component TalkWindow inherits Window {
                         navigate-dms => { root.navigate-dms(); }
                         navigate-server(id) => { root.navigate-server(id); }
                         toggle-folder(id) => { root.toggle-folder(id); }
+                        open-dm(id) => { root.open-conversation(id); }
                         open-server-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
                     }
                     // Channel sidebar: a lighter sheet held by the rail and the dock.
