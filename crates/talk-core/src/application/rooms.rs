@@ -56,6 +56,15 @@ pub enum MenuChoice {
     // one of [`MUTE_TIMES`], or unmuting it, and which of its messages notify.
     ChannelMute,
     ChannelNotifications,
+    // A Discord server's, category's and channel's own; see `places`.
+    /// Mute a Discord server for one of [`MUTE_TIMES`], or unmute it.
+    MuteServer,
+    UnmuteServer,
+    /// A Discord server's notification level and its switches, in a submenu.
+    ServerNotifications,
+    /// A box to tick that keeps a Discord server's muted channels out of
+    /// its channel list.
+    HideMuted,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.
@@ -84,7 +93,7 @@ impl AppState {
     /// Whether an id names a category of a listed Discord server: a room id
     /// in the server that names none of its rooms. Only a category's heading
     /// asks for a menu by one.
-    fn is_category(&self, id: &str) -> bool {
+    pub fn is_category(&self, id: &str) -> bool {
         discord::parse_room(id).is_some_and(|(guild, _)| {
             guild != discord::DM_GUILD
                 && self
@@ -285,7 +294,7 @@ impl AppState {
     }
 }
 
-fn unread(room: &ChatRoom) -> bool {
+pub(super) fn unread(room: &ChatRoom) -> bool {
     room.unread > 0 || room.mentions > 0
 }
 
@@ -377,9 +386,10 @@ impl Application {
         vec![Effect::Backend(Command::StartDm { id: user, discord })]
     }
 
-    /// Marks a conversation read, or every conversation of a server.
+    /// Marks a conversation read, or every conversation of a server or a
+    /// Discord category.
     pub(super) fn mark_read(&mut self, id: String) -> Vec<Effect> {
-        if !self.state.menu_choices(&id).contains(&MenuChoice::MarkRead) {
+        if !self.menu_choices(&id).contains(&MenuChoice::MarkRead) {
             return vec![];
         }
         let sync = self.state.sync_discord_reads;
@@ -388,6 +398,8 @@ impl Application {
                 .unread_channels(&id)
                 .map(|room| room.id.clone())
                 .collect()
+        } else if self.state.is_category(&id) {
+            self.unread_in_category(&id)
         } else {
             vec![id]
         };

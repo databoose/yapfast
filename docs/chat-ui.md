@@ -180,9 +180,27 @@ The window follows Discord's arrangement:
   with a white pill at the rail edge for hover, selection or unread activity.
   Hovering shows the server's name. A right click on a server, or the Menu
   key or Shift+F10 on a focused one, opens its menu: Mark as read when any of
-  its channels is unread, then Copy link and Copy ID.
+  its channels is unread, then Copy link and Copy ID. A Discord server's
+  menu also has, while Discord is connected, Mute server, whose submenu
+  mutes for the DM menu's times, or Unmute server with when the mute ends;
+  Notification settings, whose submenu picks All messages, Only @mentions
+  or Nothing, with the level that applies under it, and ticks Suppress
+  @everyone and @here and Suppress all role @mentions; and Hide muted
+  channels, a box to tick.
 - A sidebar, 240px by default and resizable by dragging its edge, with the
   server name, a filter, and uppercase TEXT CHANNELS and VOICE CHANNELS groups.
+  A Discord server's name, with a chevron beside it, opens a dropdown below
+  it, as in Discord, and the chevron turns over while it's open; Enter, Space,
+  the Menu key or Shift+F10 open it too. The dropdown lists the choices of the
+  server's menu that Discord's dropdown has, in its order, from the same list
+  (`Application::header_choices`), so the two can't disagree. A Discord
+  channel list heads each category's channels with its name; a category
+  without channels shows its heading alone, unless its permissions hide it.
+  A right click on a heading, or the Menu key or Shift+F10 on it, opens the
+  category's menu: Mark as read when its channels have messages to read,
+  its mute and notification settings (below), and Copy ID. The heading
+  names its first channel, or an empty category's own id, and Talk finds
+  the category from that.
   DMs show the person's avatar. Participants of the call you are in appear under
   its voice channel, with a green ring while they speak and a muted icon. Talk
   knows only its own call's participants. A right click on a conversation, or

@@ -182,6 +182,9 @@ pub struct Channel {
 pub struct Category {
     pub name: String,
     pub position: i64,
+    /// Who may see and manage it, as a channel's overwrites say.
+    #[serde(default)]
+    pub overwrites: Arc<Vec<Overwrite>>,
 }
 
 /// What an account may do in a channel.
@@ -355,6 +358,7 @@ impl Server {
                     Category {
                         name: channel["name"].as_str().unwrap_or_default().to_owned(),
                         position: channel["position"].as_i64().unwrap_or_default(),
+                        overwrites: Arc::new(overwrites(channel)),
                     },
                 );
             }
@@ -434,6 +438,25 @@ impl Server {
     /// does: [`Self::server_permissions`], then the channel's overwrites for
     /// @everyone, for the roles, and for the member.
     pub fn channel_permissions(&self, channel: &Channel, user: &str, roles: &[String]) -> u64 {
+        self.overwritten(&channel.overwrites, user, roles)
+    }
+
+    /// What `user`, holding `roles`, may do in a category, as
+    /// [`Self::channel_permissions`] works it out for a channel; none for
+    /// one the server doesn't have.
+    pub fn category_permissions(
+        &self,
+        category: &str,
+        user: &str,
+        roles: &[String],
+    ) -> Option<u64> {
+        let category = self.categories.get(category)?;
+        Some(self.overwritten(&category.overwrites, user, roles))
+    }
+
+    /// [`Self::server_permissions`] with a channel's or category's
+    /// overwrites applied: @everyone's, the roles', then the member's.
+    fn overwritten(&self, overwrites: &[Overwrite], user: &str, roles: &[String]) -> u64 {
         let mut permissions = self.server_permissions(user, roles);
         if permissions == permission::ALL {
             return permissions;
@@ -442,23 +465,20 @@ impl Server {
             permissions &= !deny;
             permissions |= allow;
         };
-        if let Some(everyone) = channel
-            .overwrites
+        if let Some(everyone) = overwrites
             .iter()
             .find(|overwrite| !overwrite.member && overwrite.id == self.id)
         {
             apply(everyone.allow, everyone.deny);
         }
-        let (allow, deny) = channel
-            .overwrites
+        let (allow, deny) = overwrites
             .iter()
             .filter(|overwrite| !overwrite.member && roles.contains(&overwrite.id))
             .fold((0, 0), |(allow, deny), overwrite| {
                 (allow | overwrite.allow, deny | overwrite.deny)
             });
         apply(allow, deny);
-        if let Some(member) = channel
-            .overwrites
+        if let Some(member) = overwrites
             .iter()
             .find(|overwrite| overwrite.member && overwrite.id == user)
         {
@@ -698,8 +718,9 @@ pub fn server(guild: &Value) -> Option<Server> {
     Some(server)
 }
 
-fn parse_channel(channel: &Value) -> Option<Channel> {
-    let overwrites: Vec<Overwrite> = channel["permission_overwrites"]
+/// A channel object's permission overwrites.
+fn overwrites(channel: &Value) -> Vec<Overwrite> {
+    channel["permission_overwrites"]
         .as_array()
         .into_iter()
         .flatten()
@@ -712,7 +733,10 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
                 deny: bits(&overwrite["deny"]),
             })
         })
-        .collect();
+        .collect()
+}
+
+fn parse_channel(channel: &Value) -> Option<Channel> {
     Some(Channel {
         id: channel["id"].as_str()?.to_owned(),
         name: channel["name"].as_str().unwrap_or_default().to_owned(),
@@ -722,7 +746,7 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
             .as_str()
             .filter(|topic| !topic.trim().is_empty())
             .map(Arc::from),
-        overwrites: Arc::new(overwrites),
+        overwrites: Arc::new(overwrites(channel)),
         ..Default::default()
     })
 }
@@ -941,6 +965,32 @@ mod tests {
             Access::Join,
             "administrators too"
         );
+    }
+
+    #[test]
+    fn categories_keep_their_overwrites() {
+        let mut server = server(&json!({
+            "id": "10",
+            "roles": [{"id": "10", "permissions": VIEW_CHANNEL.to_string()},
+                      {"id": "20", "permissions": "0"}],
+            "channels": [{"id": "4", "type": 4, "name": "Staff", "position": 0,
+                          "permission_overwrites": [
+                              {"id": "10", "type": 0, "allow": "0", "deny": VIEW_CHANNEL.to_string()},
+                              {"id": "20", "type": 0, "allow": VIEW_CHANNEL.to_string(), "deny": "0"},
+                          ]}],
+        }))
+        .unwrap();
+        let sees = |server: &Server, roles: &[String]| {
+            server
+                .category_permissions("4", "1", roles)
+                .map(|held| held & VIEW_CHANNEL != 0)
+        };
+        assert_eq!(sees(&server, &[]), Some(false));
+        assert_eq!(sees(&server, &["20".into()]), Some(true));
+        assert_eq!(server.category_permissions("5", "1", &[]), None);
+        // CHANNEL_UPDATE opens it to everyone.
+        server.put_channel(&json!({"id": "4", "type": 4, "name": "Staff", "position": 0}));
+        assert_eq!(sees(&server, &[]), Some(true));
     }
 
     #[test]

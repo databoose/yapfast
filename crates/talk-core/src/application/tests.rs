@@ -4263,3 +4263,97 @@ fn a_dm_search_closes_in_another_dm() {
     app.dispatch(Action::SelectRoom("discord:@me:31".into()));
     assert!(app.state.search.is_none());
 }
+
+/// `app`'s Discord snapshot again, with its first server changed by `change`.
+#[cfg(feature = "discord")]
+fn change_server(app: &mut Application, change: impl FnOnce(&mut talk_discord::ready::Server)) {
+    let mut snapshot = talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap());
+    let mut server = talk_discord::ready::Server::clone(&snapshot.servers[0]);
+    change(&mut server);
+    snapshot.servers[0] = Arc::new(server);
+    app.apply(discord_event(snapshot));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_discord_servers_menu_and_header_offer_its_notifications() {
+    use MenuChoice::*;
+    let mut app = discord_server();
+    assert_eq!(
+        app.menu_choices("discord:10"),
+        [
+            MarkRead,
+            MuteServer,
+            ServerNotifications,
+            HideMuted,
+            CopyLink,
+            CopyId
+        ]
+    );
+    assert_eq!(
+        app.header_choices("discord:10"),
+        [ServerNotifications, HideMuted],
+        "the header's dropdown lists the menu's choices in its own order"
+    );
+    assert!(app.header_choices("discord:10:11").is_empty());
+    assert_eq!(
+        app.menu_choices("discord:10:11"),
+        app.state.menu_choices("discord:10:11"),
+        "a channel's menu is a conversation's"
+    );
+
+    change_server(&mut app, |server| {
+        let mut settings = talk_discord::notifications::Notifications::clone(&server.notifications);
+        settings.mute = talk_discord::notifications::Mute {
+            muted: true,
+            until: None,
+        };
+        server.notifications = Arc::new(settings);
+    });
+    assert_eq!(app.menu_choices("discord:10")[1], UnmuteServer);
+
+    // Discord takes no changes while it's away, so they aren't offered.
+    app.apply(discord_event(talk_discord::service::Snapshot {
+        status: talk_discord::service::Status::Connecting,
+        ..talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap())
+    }));
+    assert_eq!(app.menu_choices("discord:10"), [MarkRead, CopyLink, CopyId]);
+    assert!(app.header_choices("discord:10").is_empty());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_discord_category_has_a_menu_that_marks_its_channels_read() {
+    use MenuChoice::*;
+    let mut app = discord_server();
+    assert!(app.state.is_category("discord:10:4"));
+    assert!(!app.state.is_category("discord:10:11"));
+    assert!(!app.state.is_category("discord:10"));
+    assert_eq!(
+        app.category_of("discord:10:12").as_deref(),
+        Some("discord:10:4")
+    );
+    assert_eq!(app.category_of("discord:10:4"), None);
+    // #memes mentions her; the header's notification choices sit between.
+    assert_eq!(
+        app.menu_choices("discord:10:4"),
+        [MarkRead, ChannelMute, ChannelNotifications, CopyId]
+    );
+    assert!(matches!(
+        app.dispatch(Action::MarkRead("discord:10:4".into())).as_slice(),
+        [Effect::Backend(Command::MarkRead { room, .. })] if room == "discord:10:13"
+    ));
+    change_server(&mut app, |server| {
+        for channel in &mut server.text_channels {
+            channel.mentions = 0;
+        }
+    });
+    assert_eq!(
+        app.menu_choices("discord:10:4"),
+        [ChannelMute, ChannelNotifications, CopyId]
+    );
+    assert!(
+        app.dispatch(Action::MarkRead("discord:10:4".into()))
+            .is_empty()
+    );
+}

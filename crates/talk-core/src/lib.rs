@@ -6,6 +6,10 @@
 #![cfg_attr(not(any(feature = "matrix", feature = "discord")), allow(dead_code))]
 
 use anyhow::Context;
+/// The Discord protocol, for clients that hand the application Discord's
+/// state themselves, as the UI's tests do.
+#[cfg(feature = "discord")]
+pub use talk_discord;
 
 pub mod application;
 mod audio_io;

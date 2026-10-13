@@ -15,7 +15,8 @@ use slint::{
 use talk_core::{
     application::{
         Action, AddFriend, AppState, Application, BAN_HISTORY, ClearAfter, Compose, DmScreen,
-        Effect, Navigation, NewDm, PersonAsk, ProfileView, Relation, Search, TIMEOUT_TIMES,
+        Effect, ListedCategory, Navigation, NewDm, PersonAsk, ProfileView, Relation, Search,
+        TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{

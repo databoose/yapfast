@@ -452,6 +452,23 @@ impl Application {
                 spam: request.spam,
             })
             .collect();
+        // The earlier snapshot still holds its servers' categories and roles,
+        // so sharing them means nothing about them changed.
+        let changed = self.discord.as_ref().is_none_or(|earlier| {
+            snapshot.servers.len() != earlier.servers.len()
+                || snapshot
+                    .servers
+                    .iter()
+                    .zip(&earlier.servers)
+                    .any(|(now, then)| {
+                        now.id != then.id
+                            || !Arc::ptr_eq(&now.categories, &then.categories)
+                            || !Arc::ptr_eq(&now.roles, &then.roles)
+                    })
+        });
+        if changed {
+            self.state.category_changes = self.state.category_changes.wrapping_add(1);
+        }
         self.discord = Some(snapshot);
         let mut effects = self.list_discord();
         effects.extend(self.mark_discord_read());

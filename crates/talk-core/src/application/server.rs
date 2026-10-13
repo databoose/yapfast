@@ -89,21 +89,26 @@ impl Application {
     }
 
     /// Whether this account may do what `permission` names in a Discord
-    /// server, by its server id, or in a channel of it, by its room id, as
-    /// its roles and the channel's overwrites say.
+    /// server, by its server id, or in a channel or category of it, by its
+    /// room id, as its roles and the channel's overwrites say.
     pub fn may(&self, place: &str, permission: Permission) -> bool {
         #[cfg(feature = "discord")]
-        if let Some((server, channel, me)) = self.discord_place(place) {
-            let channel = channel.and_then(|channel| {
+        if let Some((server, id, me)) = self.discord_place(place) {
+            let roles = &server.my_roles;
+            let channel = id.and_then(|id| {
                 server
                     .text_channels
                     .iter()
                     .chain(&server.voice_channels)
-                    .find(|known| known.id == channel)
+                    .find(|known| known.id == id)
             });
-            let held = match channel {
-                Some(channel) => server.channel_permissions(channel, me, &server.my_roles),
-                None => server.server_permissions(me, &server.my_roles),
+            let held = match (channel, id) {
+                (Some(channel), _) => server.channel_permissions(channel, me, roles),
+                // A category, or a channel Talk doesn't know.
+                (None, Some(id)) => server
+                    .category_permissions(id, me, roles)
+                    .unwrap_or_else(|| server.server_permissions(me, roles)),
+                (None, None) => server.server_permissions(me, roles),
             };
             return held & bits(permission) != 0;
         }

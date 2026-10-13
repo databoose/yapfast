@@ -2470,3 +2470,217 @@ fn a_server_search_names_the_server_and_heads_results_with_their_channels() {
         ]
     );
 }
+
+/// A window and adapter showing a Discord server, "10", where Alice, "1",
+/// holds @everyone's permissions: a category "Talk" holding #general and
+/// the Lounge, an empty category "Later", and one only Mods see, "Staff".
+/// Her settings for the server hide muted channels and suppress role
+/// mentions; #general mentions her.
+#[cfg(feature = "discord")]
+fn discord_server_window() -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
+    use talk_core::talk_discord::{
+        notifications::Notifications,
+        ready::{self, permission},
+        service::{Snapshot, Status},
+    };
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    let bits = |bits: u64| bits.to_string();
+    let hidden = serde_json::json!([{"id": "10", "type": 0, "allow": "0",
+                                     "deny": bits(permission::VIEW_CHANNEL)}]);
+    let mut server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99",
+        "properties": {"name": "Test", "default_message_notifications": 1},
+        "roles": [{"id": "10", "name": "@everyone", "position": 0,
+                   "permissions": bits(permission::VIEW_CHANNEL | permission::SEND_MESSAGES)}],
+        "channels": [
+            {"id": "4", "type": 4, "name": "Talk", "position": 0},
+            {"id": "5", "type": 4, "name": "Later", "position": 1},
+            {"id": "6", "type": 4, "name": "Staff", "position": 2, "permission_overwrites": hidden},
+            {"id": "11", "type": 0, "name": "general", "position": 0, "parent_id": "4"},
+            {"id": "14", "type": 2, "name": "Lounge", "position": 1, "parent_id": "4"},
+        ],
+    }))
+    .unwrap();
+    server.notifications = Arc::new(Notifications {
+        hide_muted_channels: true,
+        suppress_roles: true,
+        ..Default::default()
+    });
+    server.text_channels[0].mentions = 1;
+    adapter
+        .borrow_mut()
+        .app
+        .apply(Event::Discord(Arc::new(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            servers: vec![Arc::new(server)],
+            ..Default::default()
+        })));
+    (window, adapter, directory)
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_discord_servers_menus_show_and_change_its_notifications() {
+    use talk_core::chat::{Muting, NotificationChange, NotifyLevel};
+    let (window, adapter, _directory) = discord_server_window();
+    let texts = |rows: ModelRc<MenuRow>| -> Vec<String> {
+        rows.iter().map(|row| row.text.to_string()).collect()
+    };
+    window.invoke_prepare_menu("discord:10".into(), false);
+    let rows = window.get_menu_rows();
+    assert_eq!(
+        texts(rows.clone()),
+        [
+            "Mark as read",
+            "Mute server",
+            "Notification settings",
+            "Hide muted channels",
+            "Copy link",
+            "Copy ID"
+        ]
+    );
+    let notifications = rows.row_data(2).unwrap();
+    assert_eq!(
+        notifications.subtitle, "Only @mentions",
+        "the server's default"
+    );
+    let hide = rows.row_data(3).unwrap();
+    assert!(hide.checkbox && hide.checked);
+    let submenus = window.get_menu_submenus();
+    assert_eq!(
+        submenus.row_data(1).unwrap().row_count(),
+        6,
+        "the mute times"
+    );
+    let levels = submenus.row_data(2).unwrap();
+    assert_eq!(
+        texts(levels.clone()),
+        [
+            "All messages",
+            "Only @mentions",
+            "Nothing",
+            "Suppress @everyone and @here",
+            "Suppress all role @mentions"
+        ]
+    );
+    let checked: Vec<bool> = levels.iter().map(|row| row.checked).collect();
+    assert_eq!(checked, [false, true, false, false, true]);
+
+    // The header's dropdown has the same rows, in Discord's order.
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    assert_eq!(
+        texts(window.get_menu_rows()),
+        ["Notification settings", "Hide muted channels"]
+    );
+    assert_eq!(window.get_header_server(), "", "until the server is open");
+    window.invoke_navigate_server("discord:10".into());
+    assert_eq!(window.get_header_server(), "discord:10");
+
+    // Each choice is the change it names; a switch turns over.
+    let app = &adapter.borrow().app;
+    let change = |id: &str| menus::server_change(app, "discord:10", id);
+    assert_eq!(
+        change("mute-60"),
+        Some(NotificationChange::Mute(Muting::Minutes(60)))
+    );
+    assert_eq!(
+        change("unmute-server"),
+        Some(NotificationChange::Mute(Muting::Off))
+    );
+    assert_eq!(
+        change("level-nothing"),
+        Some(NotificationChange::Level(Some(NotifyLevel::Nothing)))
+    );
+    assert_eq!(
+        change("suppress-roles"),
+        Some(NotificationChange::SuppressRoles(false))
+    );
+    assert_eq!(
+        change("suppress-everyone"),
+        Some(NotificationChange::SuppressEveryone(true))
+    );
+    assert_eq!(
+        change("hide-muted"),
+        Some(NotificationChange::HideMuted(false))
+    );
+    assert_eq!(change("copy-id"), None);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_categories_head_their_channels_and_open_their_menus() {
+    let (window, adapter, _directory) = discord_server_window();
+    window.invoke_navigate_server("discord:10".into());
+    let rows: Vec<RoomRow> = adapter.borrow().models.rooms.iter().collect();
+    let shown: Vec<(&str, String, bool)> = rows
+        .iter()
+        .map(|row| {
+            let category = window.invoke_category_of(row.id.clone()).to_string();
+            (row.heading.as_str(), category, row.hidden)
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("TALK", "discord:10:4".into(), false),
+            ("", "discord:10:4".into(), false),
+            ("LATER", "discord:10:5".into(), true),
+        ],
+        "an empty category shows its heading alone, named by the category; \
+         Staff is hidden from her"
+    );
+    window.invoke_prepare_menu("discord:10:4".into(), false);
+    let texts: Vec<String> = window
+        .get_menu_rows()
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Mark as read",
+            "Mute category",
+            "Notification settings",
+            "Copy ID"
+        ]
+    );
+}
+
+#[test]
+fn empty_categories_go_where_discords_order_puts_them() {
+    let category = |id: &str, empty: bool| ListedCategory {
+        id: id.into(),
+        name: id.into(),
+        empty,
+    };
+    let row = |heading: &str, id: &str| RoomRow {
+        id: id.into(),
+        heading: heading.into(),
+        ..Default::default()
+    };
+    // Each heading names its category's first channel.
+    let rows = vec![row("", "x"), row("B", "b1"), row("", "y"), row("D", "d1")];
+    let categories = [
+        category("a", true),
+        category("b", false),
+        category("c", true),
+        category("d", false),
+        category("e", true),
+    ];
+    let category_of = |id: &str| id.strip_suffix('1').map(str::to_owned);
+    let listed: Vec<String> = refresh::with_empty_categories(rows, &categories, category_of)
+        .iter()
+        .map(|row| format!("{}{}", row.heading, if row.hidden { "!" } else { "" }))
+        .collect();
+    assert_eq!(listed, ["", "A!", "B", "", "C!", "D", "E!"]);
+}
