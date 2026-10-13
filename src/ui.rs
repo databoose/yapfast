@@ -486,6 +486,8 @@ const LAYOUT: &str = "layout.json";
 #[serde(default)]
 struct Layout {
     sidebar_width: Option<f32>,
+    /// The width of a Discord thread shown beside its channel.
+    aside_width: Option<f32>,
     /// The member list shows until someone closes it.
     members_hidden: bool,
     /// So does the profile beside a one-to-one DM.
@@ -626,6 +628,9 @@ impl Layout {
     fn apply(&self, window: &TalkWindow) {
         if let Some(width) = self.sidebar_width {
             window.set_sidebar_width(width);
+        }
+        if let Some(width) = self.aside_width {
+            window.set_aside_width(width);
         }
         window.set_member_list(!self.members_hidden);
         window.set_profile_panel(!self.profile_panel_hidden);

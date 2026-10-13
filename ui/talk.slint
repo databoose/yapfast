@@ -732,6 +732,12 @@ export component TalkWindow inherits Window {
     // The sidebar's width, chosen by dragging its edge; Talk stores it on release.
     in-out property <length> sidebar-width: 240px;
     callback sidebar-resized(length);
+    // The width of the thread beside the channel, chosen by dragging its
+    // edge, which Talk stores on release. It keeps 320 to 800px; dragging
+    // also leaves the conversation 420px.
+    in-out property <length> aside-width: 420px;
+    out property <length> aside-shown: max(320px, min(800px, root.aside-width));
+    callback aside-resized(length);
 
     public function focus-composer() { composer.focus-input(); }
     // The menu is open on a message of the thread beside, whose composer
@@ -860,7 +866,7 @@ export component TalkWindow inherits Window {
     changed friends-open => { Tip.text = ""; }
     property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown && !root.search-open && !root.aside-docked;
     // Search results take the place of the member list or the profile.
-    property <length> docked-width: root.search-open || root.aside-docked ? 420px : (root.members-docked ? 240px : 0px) + (root.profile-docked ? 300px : 0px);
+    property <length> docked-width: root.search-open ? 420px : root.aside-docked ? root.aside-shown : (root.members-docked ? 240px : 0px) + (root.profile-docked ? 300px : 0px);
     // The pin and add buttons open their popovers under themselves.
     property <length> popover-x;
     property <length> popover-y;
@@ -2001,7 +2007,7 @@ export component TalkWindow inherits Window {
                         close => { root.search-text = ""; root.search(""); }
                     }
                     if root.aside-docked: ThreadPanel {
-                        width: 420px;
+                        width: root.aside-shown;
                         name: root.aside-name; messages: root.aside-messages; ready: root.aside-ready;
                         loading: root.aside-loading; start: root.aside-start; failed: root.aside-failed;
                         focus-tick: root.aside-focus-tick;
@@ -2079,6 +2085,26 @@ export component TalkWindow inherits Window {
             if event.kind == PointerEventKind.up { root.sidebar-resized(root.sidebar-shown); }
         }
         double-clicked => { root.sidebar-width = 240px; root.sidebar-resized(240px); }
+        Rectangle {
+            x: 3px; width: 2px;
+            background: parent.pressed ? Theme.faint : Theme.line;
+            opacity: parent.has-hover || parent.pressed ? 1 : 0;
+            animate opacity { duration: 120ms; }
+        }
+    }
+    // So does the edge of the thread beside the conversation, below the header.
+    if root.workspace && root.aside-docked: TouchArea {
+        x: root.width - root.aside-shown - 4px; y: 48px; width: 8px; height: root.height - 48px;
+        mouse-cursor: ew-resize;
+        moved => {
+            if self.pressed {
+                root.aside-width = max(320px, min(800px, root.width - 72px - root.sidebar-shown - 420px, root.aside-shown - (self.mouse-x - self.pressed-x)));
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up { root.aside-resized(root.aside-shown); }
+        }
+        double-clicked => { root.aside-width = 420px; root.aside-resized(420px); }
         Rectangle {
             x: 3px; width: 2px;
             background: parent.pressed ? Theme.faint : Theme.line;

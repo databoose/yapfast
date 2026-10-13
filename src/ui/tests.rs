@@ -1114,6 +1114,56 @@ fn dragging_the_sidebar_edge_resizes_it_within_limits_and_remembers_it() {
 }
 
 #[test]
+fn dragging_the_thread_beside_resizes_it_within_limits_and_remembers_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1400., 760.));
+    window.set_aside_open(true);
+    let drag = |from: f32, to: f32| {
+        let window = window.window();
+        let button = slint::platform::PointerEventButton::Left;
+        let at = |x| slint::LogicalPosition::new(x, 400.);
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(from) });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position: at(from),
+            button,
+        });
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at(to) });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: at(to),
+            button,
+        });
+    };
+    assert_eq!(window.get_aside_shown(), 420.);
+    // Its edge, 980px in, widens it leftwards.
+    drag(980., 880.);
+    assert_eq!(window.get_aside_shown(), 520.);
+    assert_eq!(Layout::read(directory.path()).aside_width, Some(520.));
+    // It keeps 320px, and leaves the conversation 420px.
+    drag(880., 1300.);
+    assert_eq!(window.get_aside_shown(), 320.);
+    drag(1080., 0.);
+    assert_eq!(window.get_aside_shown(), 1400. - 72. - 240. - 420.);
+    // A new window starts at the stored width.
+    let next = TalkWindow::new().unwrap();
+    adapter.borrow_mut().attach(&next);
+    assert_eq!(next.get_aside_width(), 668.);
+    window.hide().unwrap();
+}
+
+#[test]
 fn the_member_list_shows_for_text_channels_and_remembers_being_closed() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

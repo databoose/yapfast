@@ -17,7 +17,8 @@ next default build.
 The display is the window's size, so coordinates are window coordinates.
 
 do commands, run in order; the first error stops the rest:
-  click X Y | rightclick X Y | move X Y | scroll PIXELS (negative scrolls up)
+  click X Y | rightclick X Y | move X Y | drag X Y TO_X TO_Y (left button)
+  scroll PIXELS (negative scrolls up)
   key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace
       delete space up down left right home end pageup pagedown f10 menu,
       a-z, 0-9)

@@ -595,6 +595,12 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         adapter.layout.write(&adapter.root);
     });
     let state = adapter.clone();
+    window.on_aside_resized(move |width| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.aside_width = Some(width);
+        adapter.layout.write(&adapter.root);
+    });
+    let state = adapter.clone();
     window.on_member_list_toggled(move |shown| {
         let mut adapter = state.borrow_mut();
         adapter.layout.members_hidden = !shown;
