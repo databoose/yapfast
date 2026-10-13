@@ -1493,6 +1493,7 @@ fn calls_sound_as_people_come_and_go_but_not_while_reconnecting_or_ringing() {
         connected,
         problem: None,
         streaming: false,
+        video: None,
         avatar: None,
     };
     let call = |phase: Phase, people: &[(&str, bool)]| voice::State {

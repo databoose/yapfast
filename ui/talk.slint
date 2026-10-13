@@ -377,6 +377,15 @@ export component TalkWindow inherits Window {
     in property <string> voice-error;
     in property <string> voice-warning;
     in property <[PersonRow]> participants;
+    /// Each participant's newest camera picture, refreshed by stream-tick.
+    in property <[image]> participant-frames;
+    /// The call carries camera video; this account's camera is on; someone's
+    /// camera is on, so stream-tick brings their pictures.
+    in property <bool> can-film;
+    in property <bool> camera-on;
+    in property <bool> call-video;
+    /// The call's grid of tiles is on screen.
+    out property <bool> grid-shown: root.voice-here && !root.watching && (root.voice-room || root.call-shown) && !root.settings-open;
     /// Sharing a screen is offered in Discord calls.
     in property <bool> can-share;
     in property <bool> sharing;
@@ -592,6 +601,9 @@ export component TalkWindow inherits Window {
     callback list-share-sources();
     public function show-share-menu() { share-menu.show(); }
     callback stream-tick;
+    callback toggle-camera;
+    /// Where the call's tiles are; see ParticipantGrid.
+    callback call-tiles(int, length, length, length, length, length, length);
     /// Watch the participant with this id's stream.
     callback watch-stream(string);
     /// A channel category's heading was clicked; see RoomList.
@@ -811,12 +823,14 @@ export component TalkWindow inherits Window {
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
     // The Discord gate's meter runs while voice settings show it.
     property <bool> gate-metered: root.settings-open && root.settings-section == 1 && root.discord-linked;
+    // Cameras stop making pictures for a grid that left the screen.
+    changed grid-shown => { root.stream-tick(); }
     // The camera films for the preview only while the voice settings show it.
     property <bool> camera-filming: root.settings-open && root.settings-section == 1 && root.camera-testing;
     changed camera-filming => { root.camera-preview = @image-url(""); root.test-camera(self.camera-filming); }
     changed gate-metered => { root.gate-level = -100; root.gate-sending = false; root.gate-meter-note = ""; root.gate-metering(self.gate-metered); }
     Timer { interval: 50ms; running: root.gate-metered; triggered => { root.gate-meter-tick(); } }
-    Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active || root.camera-filming; triggered => { root.stream-tick(); } }
+    Timer { interval: 33ms; running: root.sharing || root.watching || root.video-active || root.camera-filming || (root.call-video && root.grid-shown); triggered => { root.stream-tick(); } }
     input-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);
@@ -1422,14 +1436,18 @@ export component TalkWindow inherits Window {
                                     stop-watching => { root.stop-watching(); }
                                 }
                                 if !root.watching: ParticipantGrid {
-                                    participants: root.participants; sharing: root.sharing; share-live: root.share-live;
+                                    participants: root.participants; frames: root.participant-frames;
+                                    sharing: root.sharing; share-live: root.share-live;
                                     share-status: root.share-status; share-frame: root.share-frame;
                                     watch-stream(id) => { root.watch-stream(id); }
                                     open-volume(person, x, y) => { root.open-volume(person, x, y); }
+                                    tiles(columns, width, height, gap, top, scrolled, shown) => { root.call-tiles(columns, width, height, gap, top, scrolled, shown); }
                                 }
                                 CallControls {
                                     muted: root.muted; deafened: root.deafened; voice-ready: root.voice-ready; voice-leaving: root.voice-leaving;
                                     can-share: root.can-share; sharing: root.sharing;
+                                    can-film: root.can-film; camera-on: root.camera-on;
+                                    toggle-camera => { root.toggle-camera(); }
                                     toggle-mute => { root.toggle-mute(); }
                                     toggle-deafen => { root.toggle-deafen(); }
                                     toggle-share => { root.toggle-share(); }

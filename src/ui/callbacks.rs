@@ -1149,6 +1149,18 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         {
             window.set_share_frame(frame);
         }
+        place_videos(&adapter, &window);
+        let frames = &adapter.models.participant_frames;
+        for (index, person) in voice.participants.iter().enumerate() {
+            if let Some(frame) = person
+                .video
+                .as_ref()
+                .and_then(|feed| feed.take(pictures::frame))
+                && index < frames.row_count()
+            {
+                frames.set_row_data(index, frame);
+            }
+        }
         if let Some(frame) = adapter
             .camera_test
             .as_ref()
@@ -1374,6 +1386,31 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_toggle_camera(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let on = !state.borrow().app.state.voice.camera_on;
+        state
+            .borrow_mut()
+            .action(&window, Action::Voice(voice::Command::Video(on)));
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_call_tiles(move |columns, width, height, gap, top, scrolled, shown| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        adapter.tiles = Some(Tiles {
+            columns: columns.max(0) as u32,
+            width,
+            height,
+            gap,
+            top,
+            scrolled,
+            shown,
+        });
+        place_videos(&adapter, &window);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_select_camera(move |index| {
         let Some(window) = weak.upgrade() else { return };
         let id = usize::try_from(index).ok().and_then(|index| {
@@ -1472,5 +1509,24 @@ fn start_camera_test(adapter: &mut Adapter, window: &TalkWindow) {
     match talk_core::camera::Camera::open(camera.as_deref(), Box::new(feed.sink())) {
         Ok(camera) => adapter.camera_test = Some((camera, feed)),
         Err(error) => window.set_camera_note(error.to_string().into()),
+    }
+}
+
+/// Tells each camera in the call where its tile shows, or that it doesn't,
+/// so pictures are made only for tiles in sight, at their size.
+fn place_videos(adapter: &Adapter, window: &TalkWindow) {
+    let voice = &adapter.app.state.voice;
+    let shown = window.get_grid_shown() && voice.active();
+    let scale = window.window().scale_factor();
+    // A shared screen takes the grid's first place.
+    let before = usize::from(voice.sharing.is_some());
+    for (index, person) in voice.participants.iter().enumerate() {
+        if let Some(feed) = &person.video {
+            let at = adapter
+                .tiles
+                .filter(|_| shown)
+                .and_then(|tiles| tiles.shown_at(index + before, scale));
+            feed.show_at(at);
+        }
     }
 }

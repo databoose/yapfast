@@ -498,7 +498,8 @@ pub(crate) async fn call(
                                 stopped.stop(discord, state);
                             }
                         }
-                        Some(Command::LeaveStale) => {}
+                        // Camera video in Discord calls comes with their own voice connection.
+                        Some(Command::LeaveStale | Command::Video(_)) => {}
                     }
                     discord.set_self(guild, &channel, state.muted, state.deafened);
                     snapshots.send_replace(state.clone());
@@ -829,6 +830,7 @@ fn discord_participants(
                 problem: None,
                 avatar: Some(member.avatar.clone()),
                 streaming: member.streaming,
+                video: None,
             }
         })
         .collect();
@@ -856,6 +858,7 @@ fn discord_participants(
                 problem: Some("Calling...".into()),
                 avatar: Some(member.avatar.clone()),
                 streaming: false,
+                video: None,
             });
         }
     }

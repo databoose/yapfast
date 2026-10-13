@@ -6,6 +6,8 @@ export struct PersonRow {
     id: string, name: string, status: string, muted: bool, deafened: bool, speaking: bool, connected: bool, initial: string, tint: color, picture: image,
     /// Sharing their screen.
     live: bool,
+    /// Their camera is on.
+    video: bool,
     /// This account, in a call.
     local: bool,
     /// Who they are across calls, by Discord or Matrix user id, which their
@@ -179,6 +181,8 @@ export component StreamView inherits Rectangle {
 // The call's participants as tiles in a grid.
 export component ParticipantGrid inherits Flickable {
     in property <[PersonRow]> participants;
+    /// Each participant's newest camera picture, in the same order.
+    in property <[image]> frames;
     in property <bool> sharing;
     in property <bool> share-live;
     in property <string> share-status;
@@ -186,6 +190,19 @@ export component ParticipantGrid inherits Flickable {
     callback watch-stream(string);
     /// A right click on someone, with where it was in the window.
     callback open-volume(PersonRow, length, length);
+    /// Where the tiles are, so cameras are decoded only for tiles in sight,
+    /// at their size: the columns, a tile's width and height, the gap, the
+    /// first row's top, how far the grid is scrolled and its height.
+    callback tiles(int, length, length, length, length, length, length);
+    function report() {
+        root.tiles(root.columns, root.tile-width, root.tile-height, root.gap, root.first-row, -root.content-y, root.height);
+    }
+    init => { self.report(); }
+    changed columns => { self.report(); }
+    changed tile-width => { self.report(); }
+    changed first-row => { self.report(); }
+    changed content-y => { self.report(); }
+    changed height => { self.report(); }
     vertical-stretch: 1;
     property <length> gap: 12px;
     property <length> inset: 24px;
@@ -199,10 +216,11 @@ export component ParticipantGrid inherits Flickable {
     property <int> rows: ceil(self.count / self.columns);
     property <length> grid-height: self.rows * self.tile-height + max(0, self.rows - 1) * self.gap;
     property <length> grid-width: self.columns * self.tile-width + (self.columns - 1) * self.gap;
+    property <length> first-row: max(self.inset, (self.height - self.grid-height) / 2);
     content-height: max(self.height, self.grid-height + 2 * self.inset);
     if root.sharing: Rectangle {
         x: (root.width - root.grid-width) / 2;
-        y: max(root.inset, (root.height - root.grid-height) / 2);
+        y: root.first-row;
         width: root.tile-width; height: root.tile-height;
         border-radius: 12px; background: #000000; clip: true;
         accessible-role: text;
@@ -227,19 +245,25 @@ export component ParticipantGrid inherits Flickable {
             }
         }
     }
-    for person[position] in root.participants: Rectangle {
+    for person[position] in root.participants: tile := Rectangle {
         property <int> index: position + root.extra;
         x: (root.width - root.grid-width) / 2 + mod(self.index, root.columns) * (root.tile-width + root.gap);
-        y: max(root.inset, (root.height - root.grid-height) / 2) + floor(self.index / root.columns) * (root.tile-height + root.gap);
+        y: root.first-row + floor(self.index / root.columns) * (root.tile-height + root.gap);
         width: root.tile-width; height: root.tile-height;
-        border-radius: 12px; background: Theme.raised;
-        border-width: person.speaking ? 3px : 0px; border-color: Theme.live;
+        property <image> frame: person.video ? root.frames[position] : @image-url("");
+        property <bool> filmed: self.frame.width > 0;
+        border-radius: 12px; background: self.filmed ? #000000 : Theme.raised; clip: true;
         accessible-role: text;
-        accessible-label: person.name + ", " + person.status;
-        Avatar {
+        accessible-label: person.name + ", " + person.status + (person.video ? ", camera on" : "");
+        if tile.filmed: Image { width: tile.width; height: tile.height; source: tile.frame; image-fit: contain; }
+        if !tile.filmed: Avatar {
             size: min(80px, parent.height * 0.45); initial: person.initial; tint: person.tint; picture: person.picture;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2 - 8px;
             opacity: person.connected ? 1 : 0.5;
+        }
+        // Drawn over the camera's picture.
+        Rectangle {
+            border-radius: 12px; border-width: person.speaking ? 3px : 0px; border-color: Theme.live;
         }
         // A click watches someone's stream; a right click sets their volumes.
         TouchArea {
@@ -277,7 +301,8 @@ export component ParticipantGrid inherits Flickable {
     }
 }
 
-// The call's controls under the stage: mute, deafen, share the screen, and leave.
+// The call's controls under the stage: mute, deafen, the camera, share the
+// screen, and leave.
 export component CallControls inherits HorizontalLayout {
     in property <bool> muted;
     in property <bool> deafened;
@@ -285,8 +310,12 @@ export component CallControls inherits HorizontalLayout {
     in property <bool> voice-leaving;
     in property <bool> can-share;
     in property <bool> sharing;
+    /// The call carries camera video, and this account's camera is on.
+    in property <bool> can-film;
+    in property <bool> camera-on;
     callback toggle-mute;
     callback toggle-deafen;
+    callback toggle-camera;
     callback toggle-share;
     /// Sharing starts from a menu, opened at this point in the window.
     callback open-share-menu(length, length);
@@ -307,6 +336,14 @@ export component CallControls inherits HorizontalLayout {
         enabled: root.voice-ready;
         fill: self.alert ? Theme.danger.with-alpha(0.18) : Theme.raised;
         clicked => { root.toggle-deafen(); }
+    }
+    if root.can-film: IconButton {
+        size: 52px; glyph: 22px; radius: 26px;
+        icon: root.camera-on ? @image-url("icons/video.svg") : @image-url("icons/video-off.svg");
+        label: root.camera-on ? "Turn off camera" : "Turn on camera"; tint: Theme.text;
+        enabled: root.voice-ready;
+        fill: root.camera-on ? Theme.live.with-alpha(0.22) : Theme.raised;
+        clicked => { root.toggle-camera(); }
     }
     if root.can-share || root.sharing: IconButton {
         size: 52px; glyph: 22px; radius: 26px;

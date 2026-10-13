@@ -39,6 +39,7 @@ mod messages;
 mod pictures;
 mod profile;
 mod refresh;
+mod tiles;
 
 use callbacks::bind_callbacks;
 use messages::*;
@@ -47,6 +48,7 @@ use pictures::*;
 use profile::*;
 use refresh::{Reach, SidebarShown};
 use talk_ui::*;
+use tiles::Tiles;
 
 /// How the desktop window ended.
 pub enum Exit {
@@ -712,6 +714,8 @@ struct Models {
     emoji_suggestions: Rc<VecModel<EmojiCell>>,
     forward_targets: Rc<VecModel<ForwardRow>>,
     participants: Rc<VecModel<PersonRow>>,
+    /// Each participant's newest camera picture, in the same order.
+    participant_frames: Rc<VecModel<slint::Image>>,
     /// Who is in the open DM's call, shown above its messages.
     call_people: Rc<VecModel<PersonRow>>,
     /// Discord friend requests, and friends: all of them, and those around.
@@ -745,6 +749,7 @@ impl Models {
         window.set_emoji_suggestions(ModelRc::from(self.emoji_suggestions.clone()));
         window.set_forward_targets(ModelRc::from(self.forward_targets.clone()));
         window.set_participants(ModelRc::from(self.participants.clone()));
+        window.set_participant_frames(ModelRc::from(self.participant_frames.clone()));
         window.set_call_people(ModelRc::from(self.call_people.clone()));
         window.set_friend_requests(ModelRc::from(self.friend_requests.clone()));
         window.set_friends(ModelRc::from(self.friends.clone()));
@@ -862,6 +867,12 @@ struct Adapter {
     meter: Option<InputMeter>,
     /// Films with the chosen camera while voice settings try it.
     camera_test: Option<(talk_core::camera::Camera, talk_core::picture::Feed)>,
+    /// Films for a preview call with the camera on.
+    preview_camera: Option<talk_core::camera::Camera>,
+    /// Whose camera picture each place in the call's grid holds.
+    frame_ids: Vec<String>,
+    /// Where the call's tiles are, as the grid last said.
+    tiles: Option<Tiles>,
     /// Runs the microphone through Discord's processing while voice settings
     /// show the voice gate's sensitivity.
     #[cfg(feature = "discord")]
@@ -976,6 +987,9 @@ impl Adapter {
                 dialog: None,
                 meter: None,
                 camera_test: None,
+                preview_camera: None,
+                frame_ids: vec![],
+                tiles: None,
                 #[cfg(feature = "discord")]
                 gate_meter: None,
                 thumbnails: HashMap::new(),
@@ -1119,6 +1133,16 @@ impl Adapter {
                             tracing::error!(%error, "could not connect backend events to Slint");
                             self.backend = None;
                             self.app.stopped();
+                        }
+                    }
+                }
+                Effect::PreviewCamera(filming) => {
+                    self.preview_camera = None;
+                    if let Some((camera, feed)) = filming {
+                        let sink = Box::new(feed.mirrored_sink());
+                        match talk_core::camera::Camera::open(camera.as_deref(), sink) {
+                            Ok(camera) => self.preview_camera = Some(camera),
+                            Err(error) => self.app.state.voice.error = Some(error.to_string()),
                         }
                     }
                 }
