@@ -55,6 +55,116 @@ device models were not supplied. Restart behavior, extended waiting alone,
 network interruption, forced crashes, resizing and copy/paste were not covered
 by this confirmation.
 
+## Discord voice on Windows
+
+Discord voice, the input meter and the Discord input sensitivity meter,
+ringing, Talk's sounds, and a watched stream's or a video's sound use WASAPI
+on Windows, in `crates/talk-core/src/audio_io/wasapi.rs`. Each stream is
+shared-mode and event-driven: the audio engine converts between Talk's 48 kHz
+and the device's format, and reading or writing waits for its event on the
+thread that already did the reading or writing on Linux, copying straight
+between Talk's buffers and the engine's. WebRTC's Windows device module names
+each device by its endpoint id (`{0.0.0.00000000}.{…}` for speakers,
+`{0.0.1.00000000}.{…}` for microphones), so the chosen device opens directly
+by that id; none is the console default. Go Live's sound is in
+[Go Live on Windows](#go-live-on-windows).
+
+Checked under Wine 10.0 on 2026-10-13, with Wine's audio going to a private
+PulseAudio of null sinks, so nothing reached real speakers:
+
+- `audio_io::tests::hears_what_it_plays`: a second of a 440 Hz tone played
+  through WASAPI is heard back whole (876–879 zero crossings for 880).
+- `audio_io::tests::opens_every_listed_device`: every microphone and speaker
+  LiveKit lists opens by its id, and an unknown id is refused.
+- `discord_audio::processes_a_recording`: the Discord microphone's processing,
+  WebRTC's echo cancellation and gain control with DeepFilterNet, gives the
+  same bytes as on Linux.
+- `discord_audio::tests::a_call_sends_what_the_microphone_hears`, against
+  `testing/fake_discord.ts`: Talk joins the Lounge, unmutes, and the fake
+  receives 56–91 Opus packets that aren't silence from two seconds of beeps,
+  with the speaking flag, in three runs out of three.
+- The rest of `talk-core`'s tests pass, except
+  `frames::tests::frames_pass_from_writer_to_reader`, which
+  [Go Live on Windows](#go-live-on-windows) fixed.
+
+Run them from the Windows shell with `cargo xwin test --no-run --profile fast
+--target x86_64-pc-windows-msvc -p talk-core --lib`, then run the test
+executable under Wine with `PULSE_SERVER` naming the private PulseAudio.
+
+Wine's capture starts 0.3–1 s after it's opened, so the first moments a
+microphone hears are lost there. Real Windows needs checking for that, along
+with Bluetooth headsets, a device unplugged during a call, a default device
+changed during a call, exclusive-mode applications, and whether the
+communications ducking setting turns other sound down during a call.
+
+## Go Live on Windows
+
+Sharing, watching and playing a video run in the stream worker, as on Linux:
+Talk starts its own executable with `--stream-worker`, which shares Talk's
+console. The video frames reach the window through a temporary file both
+processes map. Windows won't delete a mapped file, so there Talk creates it
+with `FILE_FLAG_DELETE_ON_CLOSE` and `FILE_ATTRIBUTE_TEMPORARY`, which keeps
+it in memory while it fits, and Windows removes it once both processes close
+it. On Linux it's still unlinked once the worker has it open.
+
+Windows has no screen sharing dialog for Talk to use, so the share menu
+lists what there is to share above the resolution: "Entire screen" (or
+"Screen 1", "Screen 2", … with several), then each window with a title.
+Talk's own windows aren't listed. libwebrtc's capturers make the list, on a
+short-lived thread as the menu opens, and the worker finds the picked one by
+its id. A window closed after it was listed ends sharing with "That screen
+or window is gone." Without a pick, Talk shares the first screen, as before.
+
+Go Live's sound comes from WASAPI process loopback: one stream of everything
+Windows plays except Talk's own process tree, the Talk window and its
+workers. It needs Windows 10's 2004 update or later. Unlike Linux, where
+each application is heard on its own and Discord's own client is left out,
+Windows mixes every other application into one stream and can leave out only
+Talk. Where Windows refuses process loopback, Talk shares without sound and
+logs why, as it does on Linux without a PulseAudio server.
+
+Checked under Wine 11.18 Staging on 2026-10-13:
+
+- `frames::tests::frames_pass_from_writer_to_reader` passes, and the file is
+  gone once both sides close it.
+- `stream_worker::tests::shares_a_listed_screen_and_window`, on a private X
+  display with Notepad open: the list holds the screen and "Untitled -
+  Notepad". The screen shares at 1280×720 with Notepad in the picture (35% of
+  it not black). The window shares at Notepad's own 684×512, though black:
+  Wine's GDI window capture gives no pixels without a compositor, where
+  Windows uses Windows Graphics Capture. A window id that's gone ends with
+  the message above.
+- `audio_io::tests::hears_other_applications` shows only the fallback: Wine
+  has no `VAD\Process_Loopback` device, so starting the capture fails with
+  "File not found" and sharing goes on without sound. On Linux the same test
+  hears a tone played by another process (880 zero crossings for 880) and
+  not the one it plays itself.
+- The Discord-only `talk.exe` (`--no-default-features --features
+  desktop,discord`) on `scripts/ui-session --discord`, whose `--bin` was a
+  script that unsets `DISPLAY`, so Wine uses its Wayland driver, starts
+  Notepad and Talk with `wine explorer /desktop=talk,1280x800`, and waits on
+  `wineserver -w`. Without the Wine desktop, Weston's kiosk shell gives
+  Notepad the pointer from behind Talk. Talk joins the
+  Lounge on the fake Discord, and the share menu opens above the button with
+  "Entire screen" and "Untitled - Notepad", leaving out Talk's console.
+  Going live with Notepad starts the worker; the fake receives 1,064 H264
+  frames at 1280×800 with 12 keyframes and none undecryptable, and no sound.
+  Stopping ends the worker and leaves no frames file in the temporary folder.
+  The preview is black there too, since Wine's Wayland driver can't read
+  windows back.
+
+Under Wine with only an X server, Slint panics before the window opens:
+Xvfb reports its monitor at 0 Hz, and Slint's winit backend divides by the
+refresh rate (`frame_throttle.rs`). A Windows display that reports no
+refresh rate would hit the same, so check one under remote desktop or in a
+virtual machine.
+
+Real Windows needs checking for: the window list's contents and titles,
+sharing a window that's minimized, moved to another screen or closed while
+shared, screens on mixed-DPI setups, Windows Graphics Capture's yellow
+border, process loopback hearing other applications and leaving out Talk's
+own voices, and the worker's start-up time from a packaged build.
+
 ## Build validation on 2026-10-13
 
 The first cross-build since Discord voice, Go Live's native codecs and

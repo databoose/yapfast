@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar, CallButton, VolumeSlider, MenuItem } from "controls.slint";
 
@@ -469,17 +470,34 @@ export component InputLevel inherits VerticalLayout {
     if root.meter-note == "" && root.muted: Label { text: "Muted. Nothing you say is sent."; }
 }
 
-// Going live: the resolution and frame rate to share the screen at.
+// Going live: what to share, where Talk lists it, and the resolution and frame
+// rate to share it at.
 export component ShareMenu inherits Rectangle {
+    in property <[string]> sources;
+    in-out property <int> pick-source;
     in-out property <int> pick-resolution;
     in-out property <int> pick-fps;
-    callback go-live(int, int);
+    callback go-live(int, int, int);
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     VerticalLayout {
         padding: 6px; spacing: 2px;
-        HorizontalLayout {
+        if root.sources.length > 0: HorizontalLayout {
             padding-left: 8px; padding-top: 4px; padding-bottom: 4px;
+            Text { text: "SHARE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+        }
+        if root.sources.length > 0: ScrollView {
+            // Five before the list scrolls.
+            height: min(5, root.sources.length) * 32px;
+            VerticalLayout {
+                for source[index] in root.sources: MenuItem {
+                    text: source; checked: index == root.pick-source;
+                    clicked => { root.pick-source = index; }
+                }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 8px; padding-top: root.sources.length > 0 ? 8px : 4px; padding-bottom: 4px;
             Text { text: "RESOLUTION"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
         }
         for choice[index] in ["720p", "1080p", "Source"]: MenuItem {
@@ -498,7 +516,7 @@ export component ShareMenu inherits Rectangle {
             padding: 4px; padding-top: 8px;
             ActionButton {
                 text: "Go Live"; icon: @image-url("icons/screen-share.svg"); primary: true; horizontal-stretch: 1;
-                clicked => { root.go-live(root.pick-resolution, root.pick-fps); }
+                clicked => { root.go-live(root.pick-source, root.pick-resolution, root.pick-fps); }
             }
         }
     }

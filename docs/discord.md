@@ -7,9 +7,9 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking | Captcha fallback |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | Audio on Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out | A check of Windows audio on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls | A check by hand through real Discord |
-| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | Camera video, after the beta |
+| [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows; camera video, after the beta |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search | Threads, forums, pinning, forwarding, the menus of servers and channels |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
@@ -178,8 +178,10 @@ Scope for the beta:
 Clicking a voice channel joins through the same voice dock and one-call rule
 as Matrix voice. Calls start muted, mute and deafen show in Discord, and a
 voice gate sends audio only during speech. The owner and a friend talked
-through it on 2026-10-06. Audio uses PulseAudio and libwebrtc's processing
-module, so Windows needs its own audio backend. songbird's DAVE receive fix is
+through it on 2026-10-06. Audio goes through `audio_io.rs`, PulseAudio on
+Linux and WASAPI on Windows, and libwebrtc's processing module; see the
+[Windows guide](windows-beta.md#discord-voice-on-windows) for what's been
+checked there. songbird's DAVE receive fix is
 described in `vendor/songbird/README.talk.md`, and davey's change for Go Live
 groups in `vendor/davey/README.talk.md`.
 
@@ -206,7 +208,7 @@ its own Opus encoding and decoding plus the same audio processing. libwebrtc's
 device module can't be reused outside a LiveKit room: it hands captured audio
 straight to WebRTC and only plays remote WebRTC streams. Its audio processing
 module can, through `livekit::webrtc::native::apm::AudioProcessingModule`. So
-Discord voice gets a small path of its own: PulseAudio for the microphone and
+Discord voice gets a small path of its own: `audio_io.rs` for the microphone and
 speakers at 48 kHz, the processing module for echo cancellation and gain
 (noise suppression became DeepFilterNet; see [Microphone](#microphone)), then
 songbird for Opus and DAVE. Feed the speaker mix to
@@ -244,7 +246,7 @@ stops ringing them.
 
 A call ringing this account shows a card at the top of the window with the
 DM's picture, Decline and Accept, and Talk rings: a rising arpeggio
-synthesized in `ring.rs` and played through PulseAudio on the call's speakers
+synthesized in `ring.rs` and played through `audio_io.rs` on the call's speakers
 until the call is answered, declined or stops ringing. While Talk isn't in
 front a desktop notification says who is calling. On Do Not Disturb the card
 shows without the ring or the notification. Accepting opens the DM and
@@ -433,10 +435,16 @@ frames carry their time, which the seek bar shows.
 back. On Linux it starts `/proc/self/exe`, the running Talk, since Talk's path
 names a deleted file once a rebuild or update replaces it. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
 file in the runtime directory. The file is unlinked once the worker opens it.
+Windows won't delete a mapped file, so there it's a temporary file that
+Windows deletes once both processes close it.
 On Linux, libwebrtc's capturer asks the screen sharing portal what to share.
 The portal answers over D-Bus through GLib, so the worker runs GLib's main
 context while it waits for the dialog and for frames. Talk tells Discord it's
-live only once frames flow, so a cancelled dialog shares nothing.
+live only once frames flow, so a cancelled dialog shares nothing. Windows has
+no such dialog, so the share menu lists the screens and windows libwebrtc's
+capturers find (`stream_worker::shareable`), and the worker captures the one
+picked by its id; see the
+[Windows guide](windows-beta.md#go-live-on-windows).
 `TALK_STREAM_TEST_PATTERN=1` shares moving colour bars instead of a screen.
 
 Once Discord has started the stream, Talk unpauses it with op 22, as
@@ -489,7 +497,8 @@ stream only, and lists them at `/_control/video`.
 
 A shared screen carries the sound every other application plays, as Discord's
 client and Vesktop share it; Talk's own sound stays out, so viewers never hear
-the call echoed back (`stream_audio`). On Linux, PulseAudio or PipeWire's
+the call echoed back (`stream_audio`, with `audio_io::others` hearing the
+applications). On Linux, PulseAudio or PipeWire's
 PulseAudio server monitors each application's playback stream on its own
 (`pa_stream_set_monitor_stream`, as pavucontrol's level meters do), and
 streams from Talk's processes are skipped by process id. So are other Discord
@@ -500,8 +509,10 @@ application has 40 ms queued and keeping at most 200 ms of each, and encodes
 Opus at 64 kbit/s, what Discord's client gives a stream's sound. Frames go out
 as plain Opus RTP on the stream's audio SSRC, DAVE-encrypted, with sender
 reports, and op 5 marks them as shared sound (speaking flag 2). Nothing is
-sent while no application plays. Other systems share video only for now, and
-so does the test pattern. Two ignored tests check the capture against the
+sent while no application plays. On Windows, WASAPI's process loopback hears
+everything but Talk's own process tree as one stream, from Windows 10's 2004
+update on; it can't leave other Discord clients out. Other systems share
+video only for now, and so does the test pattern. Two ignored tests check the capture against the
 machine's sound server with a quiet tone: another process's is heard, and
 Talk's own is not.
 
@@ -556,7 +567,7 @@ libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
 (`native/decode.c`) and writes RGBA at up to 1080p into the shared frames.
 Watching is possible only in the call you're in. The stream's sound, Opus on
 the streamer's audio SSRC, is DAVE-decrypted as audio and played by the worker
-through PulseAudio on the call's speakers (`stream_audio::Player`), about 100
+through `audio_io.rs` on the call's speakers (`stream_audio::Player`), about 100
 ms queued; being deafened silences it, which Talk tells the worker with a
 `hear` control. Talk's workers play as "Talk", which sharing leaves out, so a
 stream you watch never reaches one you share. Watching a stream from Discord's
@@ -795,8 +806,8 @@ an error.
   libwebrtc's FFmpeg lacks it. The file downloads into `discord-videos/`
   beside the account file, and plays as it arrives: the worker's reads wait
   for the download. It goes when the video stops, as when the channel
-  closes. Sound plays on the call's speakers through PulseAudio, on Linux
-  only for now. Over the mute button a slider sets how loud, as does the
+  closes. Sound plays on the call's speakers through `audio_io.rs`, on
+  Linux and Windows. Over the mute button a slider sets how loud, as does the
   wheel; its travel is squared, so its middle sounds about half as loud.
   Turning it to nothing mutes, and unmuting brings back the level it had.
   The next video plays as loud, until Talk closes.
@@ -1184,7 +1195,6 @@ In rough order. The browser covers these until then.
 - Making and changing server folders.
 - Joining servers by invite, and leaving them.
 - Discord's push-to-talk, and its voice settings.
-- Audio on Windows.
 - Camera video and the soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).
@@ -1337,7 +1347,10 @@ linked account, kept in memory. With `TALK_DISCORD_TEST_UNLINKED=1` too, Talk
 starts unlinked and links against the fake, whose controls scan and confirm
 the code. The fake resumes a dropped gateway session, replaying what it
 missed, and can send op 7. `crates/talk-discord/tests/fake_server.rs`
-runs against it. What the fake can't show, such as media and DAVE with
+runs against it. It counts the audio a call sends (`/_control/voice-audio`),
+which the ignored `discord_audio` test `a_call_sends_what_the_microphone_hears`
+checks: Talk joins the Lounge, unmutes and beeps into a microphone that hears
+its speakers, as a private PulseAudio of null sinks does. What the fake can't show, such as media and DAVE with
 Discord's servers, needs real Discord. Use a separate test account, which the
 owner provides, in a private test server. Run these tests by hand, never in CI: repeated automated logins
 are what gets accounts flagged. Keep the QR-linked test token in the developer's

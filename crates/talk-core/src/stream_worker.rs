@@ -115,10 +115,91 @@ pub enum Job {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
-    /// A screen or window the person picks in the system's dialog.
+    /// A screen or window the person picks in the system's dialog, or what
+    /// they picked from [`shareable`] where there's none.
     Screen,
+    /// A screen by the id [`shareable`] listed it with.
+    Display(u64),
+    /// A window by the id [`shareable`] listed it with.
+    Window(u64),
     /// Moving colour bars, for testing without a screen to capture.
     TestPattern,
+}
+
+/// Whether Talk lists screens and windows to share itself, where the system
+/// has no dialog to pick one: everywhere but Linux.
+pub const LISTS_SOURCES: bool = cfg!(not(target_os = "linux"));
+
+/// A screen or window [`shareable`] lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shareable {
+    pub source: Source,
+    pub title: String,
+}
+
+/// The screens, then the windows, Talk can share, when [`LISTS_SOURCES`].
+/// Talk's own windows aren't among them, nor its console's.
+pub fn shareable() -> Vec<Shareable> {
+    #[cfg(target_os = "linux")]
+    {
+        Vec::new()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use livekit::webrtc::desktop_capturer::DesktopCaptureSourceType;
+        let screens = sources(DesktopCaptureSourceType::Screen);
+        let count = screens.len();
+        let screens = screens
+            .into_iter()
+            .enumerate()
+            .map(|(index, screen)| Shareable {
+                source: Source::Display(screen.id()),
+                title: if count == 1 {
+                    "Entire screen".to_owned()
+                } else {
+                    format!("Screen {}", index + 1)
+                },
+            });
+        // The console belongs to its host, so libwebrtc lists it as another
+        // application's window.
+        #[cfg(windows)]
+        // SAFETY: no arguments; it only reads this process's console.
+        let console = unsafe { windows::Win32::System::Console::GetConsoleWindow() }.0 as u64;
+        #[cfg(not(windows))]
+        let console = 0;
+        let windows = sources(DesktopCaptureSourceType::Window)
+            .into_iter()
+            .filter_map(|window| {
+                let title = window.title();
+                (!title.trim().is_empty() && window.id() != console).then(|| Shareable {
+                    source: Source::Window(window.id()),
+                    title,
+                })
+            });
+        screens.chain(windows).collect()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sources(
+    kind: livekit::webrtc::desktop_capturer::DesktopCaptureSourceType,
+) -> Vec<livekit::webrtc::desktop_capturer::CaptureSource> {
+    livekit::webrtc::desktop_capturer::DesktopCapturer::new(
+        livekit::webrtc::desktop_capturer::DesktopCapturerOptions::new(kind),
+    )
+    .map(|capturer| capturer.get_source_list())
+    .unwrap_or_default()
+}
+
+/// What [`Source::Screen`] shares where Talk lists what to share: the pick
+/// from [`shareable`] in the share menu, until another.
+static PICKED: Mutex<Source> = Mutex::new(Source::Screen);
+
+/// Shares `source` from now on where [`Source::Screen`] is asked for.
+pub fn pick(source: Source) {
+    *PICKED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = source;
 }
 
 /// What Talk tells a running job.
@@ -236,7 +317,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             let sink = Sink {
                 writer: Writer::open(&frames)?,
                 controls: received,
-                sound: source == Source::Screen,
+                sound: source != Source::TestPattern,
                 video: None,
                 fps,
                 started: Instant::now(),
@@ -248,7 +329,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             report(Report::Ready);
             match source {
                 Source::TestPattern => test_pattern(sink, width, height, &stop, report),
-                Source::Screen => capture_screen(sink, width, height, &stop, report),
+                source => capture_screen(source, sink, width, height, &stop, report),
             }
         }
         Job::Watch {
@@ -740,6 +821,7 @@ struct Captured {
 }
 
 fn capture_screen(
+    source: Source,
     sink: Sink,
     max_width: u32,
     max_height: u32,
@@ -753,7 +835,10 @@ fn capture_screen(
     #[cfg(target_os = "linux")]
     let kind = DesktopCaptureSourceType::Generic;
     #[cfg(not(target_os = "linux"))]
-    let kind = DesktopCaptureSourceType::Screen;
+    let kind = match source {
+        Source::Window(_) => DesktopCaptureSourceType::Window,
+        _ => DesktopCaptureSourceType::Screen,
+    };
     let mut options = DesktopCapturerOptions::new(kind);
     options.set_include_cursor(true);
     let mut capturer =
@@ -763,9 +848,19 @@ fn capture_screen(
     let captured = Arc::new(Mutex::new(Captured::default()));
     let (into, seen) = (sink.clone(), captured.clone());
     #[cfg(target_os = "linux")]
-    let source = None;
+    let source = {
+        let _ = source;
+        None
+    };
     #[cfg(not(target_os = "linux"))]
-    let source = capturer.get_source_list().into_iter().next();
+    let source = {
+        let mut listed = capturer.get_source_list().into_iter();
+        let found = match source {
+            Source::Display(id) | Source::Window(id) => listed.find(|listed| listed.id() == id),
+            _ => listed.next(),
+        };
+        Some(found.context("That screen or window is gone.")?)
+    };
     capturer.start_capture(source, move |result| {
         let mut seen = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match result {
@@ -852,6 +947,12 @@ impl Worker {
         source: Source,
         quality: StreamQuality,
     ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
+        let source = match source {
+            Source::Screen => *PICKED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            source => source,
+        };
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT)?;
         let (width, height) = bounds(quality.resolution);
         let job = Job::Share {
@@ -1178,5 +1279,97 @@ mod tests {
         writeln!(feed, "stop").unwrap();
         serving.join().unwrap();
         assert_eq!(reports.recv().unwrap(), Report::Ended { error: None });
+    }
+
+    /// Lists what there is to share, and shares the first screen and the
+    /// first window for a moment each.
+    #[test]
+    #[ignore = "needs a desktop where Talk lists what to share"]
+    fn shares_a_listed_screen_and_window() {
+        let listed = shareable();
+        eprintln!("{listed:#?}");
+        let first = |window: bool| {
+            listed
+                .iter()
+                .find(|listed| matches!(listed.source, Source::Window(_)) == window)
+                .map(|listed| listed.source)
+        };
+        let sources = [
+            first(false).expect("no screen"),
+            first(true).expect("no window"),
+        ];
+        for source in sources {
+            let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+            let job = Job::Share {
+                source,
+                frames: frames.path().unwrap(),
+                width: PREVIEW_WIDTH,
+                height: PREVIEW_HEIGHT,
+                fps: 30,
+            };
+            let (input, mut feed) = std::io::pipe().unwrap();
+            writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
+            let (sender, reports) = std::sync::mpsc::channel();
+            let serving = std::thread::spawn(move || {
+                serve(Box::new(BufReader::new(input)), &mut |report| {
+                    sender.send(report).unwrap();
+                });
+            });
+            assert_eq!(reports.recv().unwrap(), Report::Ready);
+            let sharing = reports.recv_timeout(Duration::from_secs(10)).unwrap();
+            eprintln!("{source:?}: {sharing:?}");
+            assert!(matches!(sharing, Report::Sharing { .. }), "{sharing:?}");
+            // How much of the last picture isn't black, a second and a half
+            // in: what's shared may still be drawing at first.
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            let mut last = None;
+            while Instant::now() < deadline {
+                let taken = frames.take(|width, height, pixels| {
+                    let lit = pixels.chunks_exact(4).filter(|pixel| pixel[..3] != [0; 3]);
+                    (
+                        width,
+                        height,
+                        lit.count() as f32 / (pixels.len() / 4).max(1) as f32,
+                    )
+                });
+                last = taken.or(last);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let (width, height, lit) = last.expect("no frame arrived");
+            eprintln!(
+                "{source:?}: {width}x{height}, {:.0}% of it isn't black",
+                lit * 100.0
+            );
+            writeln!(feed, "stop").unwrap();
+            serving.join().unwrap();
+            // The size may change as capture settles.
+            let ended = reports
+                .iter()
+                .find(|report| !matches!(report, Report::Sharing { .. }));
+            assert_eq!(ended, Some(Report::Ended { error: None }));
+        }
+        // A window closed since it was listed.
+        let frames = Frames::create(16, 16).unwrap();
+        let gone = Job::Share {
+            source: Source::Window(u64::MAX),
+            frames: frames.path().unwrap(),
+            width: 16,
+            height: 16,
+            fps: 1,
+        };
+        let mut reports = Vec::new();
+        let input = format!("{}\n", serde_json::to_string(&gone).unwrap());
+        serve(Box::new(std::io::Cursor::new(input)), &mut |report| {
+            reports.push(report);
+        });
+        assert_eq!(
+            reports,
+            [
+                Report::Ready,
+                Report::Ended {
+                    error: Some("That screen or window is gone.".into())
+                }
+            ]
+        );
     }
 }

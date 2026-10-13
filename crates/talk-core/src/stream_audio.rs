@@ -1,14 +1,9 @@
 //! Go Live's sound. Sharing: what every other application plays, mixed
 //! into 20 ms Opus frames for the stream. Talk's own sound is left out, so
 //! viewers never hear the call echoed back, as Discord's client and Vesktop
-//! do. Watching: the streamer's Opus, decoded and played ([`Player`]).
-//!
-//! On Linux, PulseAudio, or PipeWire's PulseAudio server, monitors each
-//! application's playback stream on its own (`pa_stream_set_monitor_stream`,
-//! as pavucontrol's level meters do). Streams from Talk's processes are
-//! skipped by process id, and so are other Discord clients': their sound is
-//! a call too, which a stream would echo back. Other systems share video
-//! only for now.
+//! do, and so are other Discord clients': their sound is a call too, which a
+//! stream would echo back. [`crate::audio_io::others`] hears the applications.
+//! Watching: the streamer's Opus, decoded and played ([`Player`]).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -23,12 +18,13 @@ use std::{
 use anyhow::{Context, Result};
 use talk_discord::stream_connection::{Sound, SoundSender};
 
-const RATE: u32 = 48_000;
+use crate::audio_io::{Heard, Output, RATE};
+
 const CHANNELS: usize = 2;
 /// Samples of every channel in one 20 ms frame.
 const FRAME: usize = RATE as usize / 50 * CHANNELS;
 /// An application's sound joins the mix once this much waits, which
-/// absorbs PulseAudio delivering it in chunks.
+/// absorbs the system delivering it in chunks.
 const PRIMED: usize = FRAME * 2;
 /// The most kept for an application; older sound is dropped, so clock
 /// drift never grows into delay.
@@ -57,7 +53,7 @@ fn is_discord_client(name: &str) -> bool {
 struct Input {
     samples: VecDeque<f32>,
     primed: bool,
-    /// The process playing it, when PulseAudio says.
+    /// The process playing it, when the system says.
     process: Option<u32>,
 }
 
@@ -69,7 +65,7 @@ impl Input {
     }
 }
 
-/// Each monitored application's sound, by its PulseAudio stream index.
+/// Each monitored application's sound, by the system's number for it.
 type Inputs = Arc<Mutex<HashMap<u32, Input>>>;
 
 /// Mixes the next frame from every application with enough waiting into
@@ -96,6 +92,43 @@ fn mix(inputs: &mut HashMap<u32, Input>, out: &mut [f32]) -> bool {
     heard
 }
 
+/// Hears the other applications into `inputs` until `stop`.
+fn listen(inputs: Inputs, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
+    crate::audio_io::others(
+        is_discord_client,
+        move |heard| {
+            let mut inputs = inputs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match heard {
+                Heard::Started { source, process } => {
+                    inputs.insert(
+                        source,
+                        Input {
+                            process,
+                            ..Input::default()
+                        },
+                    );
+                }
+                Heard::Samples { source, samples } => {
+                    if let Some(input) = inputs.get_mut(&source) {
+                        input.push(samples.iter().copied());
+                    }
+                }
+                Heard::Stopped { source } => {
+                    if let Some(forgotten) = inputs.remove(&source) {
+                        tracing::debug!(
+                            process = ?forgotten.process,
+                            "stopped capturing an application's sound"
+                        );
+                    }
+                }
+            }
+        },
+        stop,
+    )
+}
+
 /// Captures and sends the stream's sound until dropped.
 pub struct Capture {
     stop: Arc<AtomicBool>,
@@ -107,7 +140,7 @@ impl Capture {
     pub fn start(sound: SoundSender) -> Result<Self> {
         let inputs = Inputs::default();
         let stop = Arc::new(AtomicBool::new(false));
-        let capture = platform::start(inputs.clone(), stop.clone())?;
+        let capture = listen(inputs.clone(), stop.clone())?;
         let mut encoder =
             opus2::Encoder::new(RATE, opus2::Channels::Stereo, opus2::Application::Audio)
                 .map_err(|error| anyhow::anyhow!("could not start the Opus encoder: {error}"))?;
@@ -191,13 +224,16 @@ impl Volume {
     }
 }
 
-/// `pcm` at `volume`, clipping at full scale.
-fn scaled(pcm: &[i16], volume: f32) -> impl Iterator<Item = i16> + '_ {
-    pcm.iter().map(move |sample| {
-        (f32::from(*sample) * volume)
+/// Sets `pcm` to `volume`, clipping at full scale.
+fn scale(pcm: &mut [i16], volume: f32) {
+    if volume == 1.0 {
+        return;
+    }
+    for sample in pcm {
+        *sample = (f32::from(*sample) * volume)
             .round()
-            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
-    })
+            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+    }
 }
 
 impl Player {
@@ -210,7 +246,7 @@ impl Player {
         volume: Arc<Volume>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
-        let thread = platform::play(sounds, speakers, hearing, volume, stop.clone())?;
+        let thread = play(sounds, speakers, hearing, volume, stop.clone())?;
         Ok(Self {
             stop,
             thread: Some(thread),
@@ -227,425 +263,75 @@ impl Drop for Player {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-mod platform {
-    use super::*;
-
-    pub fn start(_inputs: Inputs, _stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
-        anyhow::bail!("Talk shares sound on Linux only for now")
-    }
-
-    pub fn play(
-        _sounds: std::sync::mpsc::Receiver<Vec<u8>>,
-        _speakers: Option<String>,
-        _hearing: Arc<AtomicBool>,
-        _volume: Arc<Volume>,
-        _stop: Arc<AtomicBool>,
-    ) -> Result<JoinHandle<()>> {
-        anyhow::bail!("Talk plays streams' sound on Linux only for now")
-    }
-}
-
-#[cfg(target_os = "linux")]
-mod platform {
-    use std::{cell::RefCell, rc::Rc, sync::mpsc};
-
-    use libpulse_binding::{
-        callbacks::ListResult,
-        context::{
-            self, Context as PulseContext, FlagSet as ContextFlags,
-            subscribe::{Facility, InterestMaskSet, Operation},
-        },
-        def::BufferAttr,
-        mainloop::standard::{IterateResult, Mainloop},
-        sample::{Format, Spec},
-        stream::{FlagSet as StreamFlags, PeekResult, Stream},
-        time::MicroSeconds,
-    };
-
-    use super::*;
-
-    /// What PulseAudio's callbacks found, handled after each dispatch so
-    /// no callback touches the context.
-    enum Change {
-        /// A playback stream appeared or changed: look it up.
-        Check(u32),
-        /// A playback stream, the sink it plays on, and its process.
-        Found {
-            input: u32,
-            sink: u32,
-            process: Option<u32>,
-            /// Another Discord client, playing a call.
-            call: bool,
-        },
-        /// The monitor source of the sink a stream plays on.
-        Monitor {
-            input: u32,
-            sink: u32,
-            process: Option<u32>,
-            source: u32,
-        },
-        Gone(u32),
-    }
-
-    type Changes = Rc<RefCell<Vec<Change>>>;
-
-    pub fn play(
-        sounds: mpsc::Receiver<Vec<u8>>,
-        speakers: Option<String>,
-        hearing: Arc<AtomicBool>,
-        volume: Arc<Volume>,
-        stop: Arc<AtomicBool>,
-    ) -> Result<JoinHandle<()>> {
-        use libpulse_binding::stream::Direction;
-        use libpulse_simple_binding::Simple;
-        let (ready, started) = mpsc::sync_channel(1);
-        let thread = std::thread::Builder::new()
-            .name("talk-stream-player".into())
-            .spawn(move || {
-                let spec = Spec {
-                    format: Format::S16le,
-                    channels: CHANNELS as u8,
-                    rate: RATE,
-                };
-                // About 100 ms queued, which rides out the network's jitter.
-                let attributes = BufferAttr {
-                    maxlength: u32::MAX,
-                    tlength: (FRAME * 5 * 2) as u32,
-                    prebuf: u32::MAX,
-                    minreq: u32::MAX,
-                    fragsize: u32::MAX,
-                };
-                let open = |device: Option<&str>| {
-                    Simple::new(
-                        None,
-                        "Talk",
-                        Direction::Playback,
-                        device,
-                        "Stream sound",
-                        &spec,
-                        None,
-                        Some(&attributes),
-                    )
-                };
-                let output = match open(speakers.as_deref()) {
-                    Err(error) if speakers.is_some() => {
-                        tracing::warn!(%error, "playing the stream's sound on the default speakers");
-                        open(None)
-                    }
-                    opened => opened,
-                };
-                let output = match output {
-                    Ok(output) => {
-                        let _ = ready.send(Ok(()));
-                        output
-                    }
-                    Err(error) => {
-                        let _ = ready.send(Err(anyhow::anyhow!("could not open the speakers: {error}")));
-                        return;
-                    }
-                };
-                let mut decoder = match opus2::Decoder::new(RATE, opus2::Channels::Stereo) {
-                    Ok(decoder) => decoder,
-                    Err(error) => {
-                        tracing::warn!(%error, "could not start the Opus decoder");
-                        return;
-                    }
-                };
-                // Opus's longest frame, 120 ms.
-                let mut pcm = vec![0i16; RATE as usize / 1000 * 120 * CHANNELS];
-                while !stop.load(Ordering::Relaxed) {
-                    let opus = match sounds.recv_timeout(Duration::from_millis(100)) {
-                        Ok(opus) => opus,
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    };
-                    if !hearing.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    match decoder.decode(&opus, &mut pcm, false) {
-                        Ok(samples) => {
-                            let bytes: Vec<u8> = scaled(&pcm[..samples * CHANNELS], volume.get())
-                                .flat_map(i16::to_le_bytes)
-                                .collect();
-                            if let Err(error) = output.write(&bytes) {
-                                tracing::warn!(%error, "stopped playing the stream's sound");
-                                break;
-                            }
-                        }
-                        Err(error) => tracing::debug!(%error, "a stream sound frame didn't decode"),
-                    }
+fn play(
+    sounds: std::sync::mpsc::Receiver<Vec<u8>>,
+    speakers: Option<String>,
+    hearing: Arc<AtomicBool>,
+    volume: Arc<Volume>,
+    stop: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>> {
+    use std::sync::mpsc;
+    let (ready, started) = mpsc::sync_channel(1);
+    let thread = std::thread::Builder::new()
+        .name("talk-stream-player".into())
+        .spawn(move || {
+            // About 100 ms queued, which rides out the network's jitter.
+            let output = Output::<i16>::open_or_default(
+                speakers.as_deref(),
+                "Stream sound",
+                RATE,
+                CHANNELS as u16,
+                Some(Duration::from_millis(100)),
+            );
+            let mut output = match output {
+                Ok(output) => {
+                    let _ = ready.send(Ok(()));
+                    output
                 }
-            })
-            .context("could not start playing the stream's sound")?;
-        started
-            .recv()
-            .context("the stream's sound stopped before it started")??;
-        Ok(thread)
-    }
-
-    pub fn start(inputs: Inputs, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
-        let (ready, started) = mpsc::sync_channel(1);
-        let thread = std::thread::Builder::new()
-            .name("talk-stream-capture".into())
-            .spawn(move || {
-                if let Err(error) = run(&inputs, &stop, &ready) {
-                    let _ = ready.try_send(Err(anyhow::anyhow!("{error:#}")));
-                    tracing::warn!(error = format!("{error:#}"), "stopped capturing sound");
-                }
-            })
-            .context("could not start capturing sound")?;
-        started
-            .recv()
-            .context("sound capture stopped before it started")??;
-        Ok(thread)
-    }
-
-    fn run(inputs: &Inputs, stop: &AtomicBool, ready: &mpsc::SyncSender<Result<()>>) -> Result<()> {
-        let mut mainloop = Mainloop::new().context("no PulseAudio main loop")?;
-        let context = Rc::new(RefCell::new(
-            PulseContext::new(&mainloop, "Talk").context("no PulseAudio context")?,
-        ));
-        context
-            .borrow_mut()
-            .connect(None, ContextFlags::NOFLAGS, None)
-            .context("could not reach PulseAudio")?;
-        loop {
-            if let IterateResult::Quit(_) | IterateResult::Err(_) = mainloop.iterate(true) {
-                anyhow::bail!("PulseAudio's main loop failed");
-            }
-            match context.borrow().get_state() {
-                context::State::Ready => break,
-                context::State::Failed | context::State::Terminated => {
-                    anyhow::bail!("could not reach PulseAudio")
-                }
-                _ => {}
-            }
-        }
-        let changes = Changes::default();
-        let found = changes.clone();
-        context.borrow_mut().set_subscribe_callback(Some(Box::new(
-            move |facility, operation, index| {
-                if facility != Some(Facility::SinkInput) {
+                Err(error) => {
+                    let _ = ready.send(Err(error.context("could not open the speakers")));
                     return;
                 }
-                found.borrow_mut().push(match operation {
-                    Some(Operation::Removed) => Change::Gone(index),
-                    _ => Change::Check(index),
-                });
-            },
-        )));
-        context
-            .borrow_mut()
-            .subscribe(InterestMaskSet::SINK_INPUT, |_| {});
-        let found = changes.clone();
-        context
-            .borrow()
-            .introspect()
-            .get_sink_input_info_list(move |result| {
-                if let ListResult::Item(info) = result {
-                    found.borrow_mut().push(found_change(info));
+            };
+            let mut decoder = match opus2::Decoder::new(RATE, opus2::Channels::Stereo) {
+                Ok(decoder) => decoder,
+                Err(error) => {
+                    tracing::warn!(%error, "could not start the Opus decoder");
+                    return;
                 }
-            });
-        let _ = ready.send(Ok(()));
-
-        // Talk's own processes: this worker and the Talk that started it.
-        let excluded = [std::process::id(), std::os::unix::process::parent_id()];
-        let mut streams: HashMap<u32, (u32, Rc<RefCell<Stream>>)> = HashMap::new();
-        while !stop.load(Ordering::Relaxed) {
-            mainloop
-                .prepare(Some(MicroSeconds(50_000)))
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            mainloop
-                .poll()
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            mainloop
-                .dispatch()
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            if let context::State::Failed | context::State::Terminated =
-                context.borrow().get_state()
-            {
-                anyhow::bail!("PulseAudio went away");
-            }
-            let pending = std::mem::take(&mut *changes.borrow_mut());
-            for change in pending {
-                match change {
-                    Change::Check(input) => {
-                        let found = changes.clone();
-                        context
-                            .borrow()
-                            .introspect()
-                            .get_sink_input_info(input, move |result| {
-                                if let ListResult::Item(info) = result {
-                                    found.borrow_mut().push(found_change(info));
-                                }
-                            });
-                    }
-                    Change::Found {
-                        input,
-                        sink,
-                        process,
-                        call,
-                    } => {
-                        if call || process.is_some_and(|process| excluded.contains(&process)) {
-                            continue;
-                        }
-                        if streams.get(&input).is_some_and(|(on, _)| *on == sink) {
-                            continue;
-                        }
-                        let found = changes.clone();
-                        context
-                            .borrow()
-                            .introspect()
-                            .get_sink_info_by_index(sink, move |result| {
-                                if let ListResult::Item(info) = result {
-                                    found.borrow_mut().push(Change::Monitor {
-                                        input,
-                                        sink,
-                                        process,
-                                        source: info.monitor_source,
-                                    });
-                                }
-                            });
-                    }
-                    Change::Monitor {
-                        input,
-                        sink,
-                        process,
-                        source,
-                    } => {
-                        forget(&mut streams, inputs, input);
-                        match monitor(&mut context.borrow_mut(), inputs, input, process, source) {
-                            Ok(stream) => {
-                                streams.insert(input, (sink, stream));
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    error = format!("{error:#}"),
-                                    "could not capture an application's sound"
-                                )
-                            }
+            };
+            // Opus's longest frame, 120 ms.
+            let mut pcm = vec![0i16; RATE as usize / 1000 * 120 * CHANNELS];
+            while !stop.load(Ordering::Relaxed) {
+                let opus = match sounds.recv_timeout(Duration::from_millis(100)) {
+                    Ok(opus) => opus,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if !hearing.load(Ordering::Relaxed) {
+                    continue;
+                }
+                match decoder.decode(&opus, &mut pcm, false) {
+                    Ok(samples) => {
+                        let pcm = &mut pcm[..samples * CHANNELS];
+                        scale(pcm, volume.get());
+                        if let Err(error) = output.write(pcm) {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "stopped playing the stream's sound"
+                            );
+                            break;
                         }
                     }
-                    Change::Gone(input) => forget(&mut streams, inputs, input),
+                    Err(error) => tracing::debug!(%error, "a stream sound frame didn't decode"),
                 }
             }
-        }
-        for input in streams.keys().copied().collect::<Vec<_>>() {
-            forget(&mut streams, inputs, input);
-        }
-        context.borrow_mut().disconnect();
-        Ok(())
-    }
-
-    fn found_change(info: &libpulse_binding::context::introspect::SinkInputInfo) -> Change {
-        Change::Found {
-            input: info.index,
-            sink: info.sink,
-            process: info
-                .proplist
-                .get_str("application.process.id")
-                .and_then(|process| process.parse().ok()),
-            call: ["application.name", "application.process.binary"]
-                .into_iter()
-                .filter_map(|key| info.proplist.get_str(key))
-                .any(|name| is_discord_client(&name)),
-        }
-    }
-
-    /// Records one playback stream from the monitor source of its sink, as
-    /// 48 kHz stereo floats into its input.
-    fn monitor(
-        context: &mut PulseContext,
-        inputs: &Inputs,
-        input: u32,
-        process: Option<u32>,
-        source: u32,
-    ) -> Result<Rc<RefCell<Stream>>> {
-        let spec = Spec {
-            format: Format::FLOAT32NE,
-            rate: RATE,
-            channels: CHANNELS as u8,
-        };
-        let stream = Stream::new(context, "Talk stream sound", &spec, None)
-            .context("PulseAudio refused a capture stream")?;
-        let stream = Rc::new(RefCell::new(stream));
-        stream
-            .borrow_mut()
-            .set_monitor_stream(input)
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        lock(inputs).insert(
-            input,
-            Input {
-                process,
-                ..Input::default()
-            },
-        );
-        let weak = Rc::downgrade(&stream);
-        let into = inputs.clone();
-        stream
-            .borrow_mut()
-            .set_read_callback(Some(Box::new(move |_| {
-                let Some(stream) = weak.upgrade() else { return };
-                let mut stream = stream.borrow_mut();
-                while let Ok(peeked) = stream.peek() {
-                    match peeked {
-                        PeekResult::Data(bytes) => {
-                            let samples = bytes.chunks_exact(4).map(|sample| {
-                                f32::from_ne_bytes([sample[0], sample[1], sample[2], sample[3]])
-                            });
-                            if let Some(input) = lock(&into).get_mut(&input) {
-                                input.push(samples);
-                            }
-                        }
-                        PeekResult::Hole(_) => {}
-                        PeekResult::Empty => break,
-                    }
-                    if stream.discard().is_err() {
-                        break;
-                    }
-                }
-            })));
-        // About 10 ms at a time.
-        let attributes = BufferAttr {
-            maxlength: u32::MAX,
-            tlength: u32::MAX,
-            prebuf: u32::MAX,
-            minreq: u32::MAX,
-            fragsize: (FRAME / 2 * 4) as u32,
-        };
-        stream
-            .borrow_mut()
-            .connect_record(
-                Some(&source.to_string()),
-                Some(&attributes),
-                StreamFlags::ADJUST_LATENCY | StreamFlags::DONT_MOVE,
-            )
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        tracing::debug!(?process, "capturing an application's sound");
-        Ok(stream)
-    }
-
-    /// Stops recording a playback stream and drops what it left.
-    fn forget(streams: &mut HashMap<u32, (u32, Rc<RefCell<Stream>>)>, inputs: &Inputs, input: u32) {
-        if let Some((_, stream)) = streams.remove(&input) {
-            let mut stream = stream.borrow_mut();
-            stream.set_read_callback(None);
-            let _ = stream.disconnect();
-        }
-        if let Some(forgotten) = lock(inputs).remove(&input) {
-            tracing::debug!(
-                process = ?forgotten.process,
-                "stopped capturing an application's sound"
-            );
-        }
-    }
-
-    fn lock(inputs: &Inputs) -> std::sync::MutexGuard<'_, HashMap<u32, Input>> {
-        inputs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
+        })
+        .context("could not start playing the stream's sound")?;
+    started
+        .recv()
+        .context("the stream's sound stopped before it started")??;
+    Ok(thread)
 }
 
 #[cfg(test)]
@@ -696,7 +382,7 @@ mod tests {
         let tone = std::env::var("TALK_TONE").expect("TALK_TONE names a WAV file");
         let inputs = Inputs::default();
         let stop = Arc::new(AtomicBool::new(false));
-        let capture = platform::start(inputs.clone(), stop.clone()).unwrap();
+        let capture = listen(inputs.clone(), stop.clone()).unwrap();
         let mut player = std::process::Command::new("paplay")
             .args(["--volume=100", &tone])
             .spawn()
@@ -726,35 +412,17 @@ mod tests {
     #[test]
     #[ignore]
     fn leaves_out_talks_own_sound() {
-        use libpulse_binding::{sample, stream::Direction};
-        use libpulse_simple_binding::Simple;
         let inputs = Inputs::default();
         let stop = Arc::new(AtomicBool::new(false));
-        let capture = platform::start(inputs.clone(), stop.clone()).unwrap();
-        let spec = sample::Spec {
-            format: sample::Format::FLOAT32NE,
-            channels: 2,
-            rate: RATE,
-        };
-        let player = Simple::new(
-            None,
-            "Talk",
-            Direction::Playback,
-            None,
-            "Discord voice",
-            &spec,
-            None,
-            None,
-        )
-        .unwrap();
+        let capture = listen(inputs.clone(), stop.clone()).unwrap();
+        let mut player = Output::<f32>::open(None, "Discord voice", RATE, 2, None).unwrap();
         // A second of a 440 Hz tone at about -56 dB.
-        let tone: Vec<u8> = (0..RATE)
+        let tone: Vec<f32> = (0..RATE)
             .flat_map(|at| {
                 let level =
                     0.0016 * (at as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin();
                 [level, level]
             })
-            .flat_map(f32::to_ne_bytes)
             .collect();
         player.write(&tone).unwrap();
         player.drain().unwrap();
@@ -803,13 +471,14 @@ mod tests {
     fn plays_a_stream_at_its_volume() {
         let volume = Volume::new(0.5);
         let pcm = [1000i16, -1000, 30_000];
-        assert_eq!(
-            scaled(&pcm, volume.get()).collect::<Vec<_>>(),
-            [500, -500, 15_000]
-        );
+        let mut scaled = pcm;
+        scale(&mut scaled, volume.get());
+        assert_eq!(scaled, [500, -500, 15_000]);
         volume.set(2.0);
+        let mut scaled = pcm;
+        scale(&mut scaled, volume.get());
         assert_eq!(
-            scaled(&pcm, volume.get()).collect::<Vec<_>>(),
+            scaled,
             [2000, -2000, i16::MAX],
             "louder clips at full scale"
         );

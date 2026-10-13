@@ -9761,6 +9761,8 @@ dependencies = [
  "uuid",
  "webrtc-sys",
  "webrtc-sys-build",
+ "windows 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
