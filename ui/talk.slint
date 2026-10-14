@@ -35,7 +35,7 @@ import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
 
 // Rust sees these, besides TalkWindow.
-export { Badges } from "theme.slint";
+export { Theme, Badges } from "theme.slint";
 export { PersonRow } from "voice.slint";
 export { ServerRow, RoomRow, FolderServer } from "rail.slint";
 export { PictureStore } from "controls.slint";
@@ -56,8 +56,12 @@ export component TalkWindow inherits Window {
     // Both faces' x-heights are about half their size, small, so text
     // defaults to 16px.
     default-font-size: 16px;
+    // The std-widgets (ComboBoxes, scrollbars) follow only the colour scheme,
+    // so it follows the theme.
+    property <bool> dark-theme: Theme.dark;
+    changed dark-theme => { Palette.color-scheme = self.dark-theme ? ColorScheme.dark : ColorScheme.light; }
     init => {
-        Palette.color-scheme = ColorScheme.dark;
+        Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
     }
     in property <bool> workspace;
     in property <bool> preview;
@@ -2645,7 +2649,7 @@ export component TalkWindow inherits Window {
     if root.zoom-note != "": Rectangle {
         x: (root.width - self.width) / 2; y: 12px;
         width: zoom-text.preferred-width + 28px; height: 36px;
-        border-radius: 18px; background: #0b0c0e;
+        border-radius: 18px; background: Theme.tooltip;
         drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
         accessible-role: text; accessible-label: "Zoom " + root.zoom-note;
         zoom-text := Text { text: root.zoom-note; color: Theme.text; font-size: 15px; font-weight: 700; }
@@ -2656,7 +2660,7 @@ export component TalkWindow inherits Window {
         x: Tip.side == 1 ? Tip.x + 10px : max(8px, min(root.width - self.w - 8px, Tip.x - self.w / 2));
         y: Tip.side == 1 ? Tip.y - self.h / 2 : Tip.side == 0 ? max(4px, Tip.y - self.h - 6px) : Tip.y + 6px;
         width: self.w; height: self.h;
-        border-radius: 6px; background: #0b0c0e;
+        border-radius: 6px; background: Theme.tooltip;
         drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
         tip-text := Text { text: Tip.text; color: Theme.text; font-size: 14px; font-weight: 700; }
     }

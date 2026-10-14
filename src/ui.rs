@@ -40,6 +40,7 @@ mod messages;
 mod pictures;
 mod profile;
 mod refresh;
+mod theme;
 mod tiles;
 
 use callbacks::bind_callbacks;
@@ -418,6 +419,19 @@ fn control(
                         allocator_stats();
                         Ok(())
                     }
+                    // `theme ID` shows a built-in theme.
+                    command if command.starts_with("theme ") => {
+                        match theme::BUILT_IN
+                            .iter()
+                            .find(|(id, _)| *id == &command["theme ".len()..])
+                        {
+                            Some((_, theme)) => window.borrow().as_ref().map_or(Ok(()), |window| {
+                                adapter.borrow_mut().set_theme(window, theme);
+                                Ok(())
+                            }),
+                            None => Err("no such theme".into()),
+                        }
+                    }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
                     // `pick avatar PATH` or `pick banner PATH` chooses a
                     // picture in the server profile editor.
@@ -647,6 +661,8 @@ impl Layout {
     }
 
     fn apply(&self, window: &TalkWindow) {
+        // Yap is the only theme so far.
+        theme::YAP.apply(window);
         if let Some(width) = self.sidebar_width {
             window.set_sidebar_width(width);
         }
@@ -1101,6 +1117,16 @@ impl Adapter {
         self.models.attach(window);
         self.layout.apply(window);
         self.window = window.as_weak();
+    }
+
+    /// Shows the window in another theme's colours, building again what
+    /// carries the old mention colour in its markup.
+    fn set_theme(&mut self, window: &TalkWindow, theme: &theme::Theme) {
+        if theme.apply(window) {
+            self.restyle = true;
+            self.topic_shown = None;
+            self.refresh(window);
+        }
     }
 
     /// Ctrl+V in the composer: files and pictures on the clipboard wait to go

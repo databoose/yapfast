@@ -225,6 +225,10 @@ def perform(command):
             window.write(f'stage {path}\n')
         # Talk reads the file every half second.
         time.sleep(.8)
+    elif verb == 'theme':
+        with window_control.open('a') as window:
+            window.write(f'theme {rest}\n')
+        time.sleep(.8)
     else:
         raise ValueError(f'unknown command {verb!r}')
     return ''

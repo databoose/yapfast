@@ -3218,3 +3218,37 @@ fn a_threads_activity_reads_as_discords_list_of_threads_says_it() {
     assert_eq!(refresh::ago(0, 400 * 86_400_000), ">1y ago");
     assert_eq!(refresh::ago(now + 1_000, now), "0s ago", "a clock behind");
 }
+
+#[test]
+fn a_theme_paints_the_window_and_the_mentions_in_its_rows() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = TalkWindow::new().unwrap();
+    assert_eq!(
+        theme::Theme::shown(&window),
+        theme::YAP,
+        "the Slint defaults are Yap's, for the first frame"
+    );
+    let message = ChatMessage {
+        body: "hi @Bob".into(),
+        formatted: true,
+        mentions: vec![talk_core::mention::Mentioned {
+            text: "@Bob".into(),
+            target: talk_core::mention::Target::User("2".into()),
+            color: None,
+        }],
+        ..Default::default()
+    };
+    let yap_row = message_row_plain(&message);
+    let light = theme::Theme {
+        dark: false,
+        chat: slint::Color::from_rgb_u8(0xfa, 0xf8, 0xf5),
+        link: slint::Color::from_rgb_u8(0x1a, 0x5f, 0xb4),
+        ..theme::YAP
+    };
+    assert!(light.apply(&window), "mentions change colour");
+    assert_eq!(theme::Theme::shown(&window), light);
+    assert!(message_row_plain(&message).styled != yap_row.styled);
+    assert!(!light.apply(&window), "nothing to build again");
+    assert!(theme::YAP.apply(&window));
+    assert!(message_row_plain(&message).styled == yap_row.styled);
+}

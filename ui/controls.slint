@@ -20,8 +20,8 @@ export component ActionButton inherits Rectangle {
     background: !root.enabled ? (root.primary ? Theme.accent.with-alpha(0.3) : root.ghost ? transparent : Theme.raised)
         : root.primary ? (pointer.has-hover ? Theme.accent-hover : Theme.accent)
         : root.danger ? (pointer.has-hover ? Theme.danger-hover : Theme.danger)
-        : root.ghost ? (pointer.has-hover ? #ffffff14 : transparent)
-        : (pointer.has-hover ? #3c3d46 : #33343c);
+        : root.ghost ? (pointer.has-hover ? Theme.overlay.with-alpha(0.08) : transparent)
+        : (pointer.has-hover ? Theme.button-default-hover : Theme.button-default);
     animate background { duration: Theme.quick; }
     border-width: focus.has-focus ? 2px : 0px;
     border-color: Theme.accent;
@@ -31,7 +31,7 @@ export component ActionButton inherits Rectangle {
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
     property <color> ink: !root.enabled ? (root.primary ? Theme.on-accent.with-alpha(0.6) : Theme.faint)
-        : root.primary ? Theme.on-accent : root.danger ? #ffffff
+        : root.primary ? Theme.on-accent : root.danger ? Theme.on-danger
         : root.ghost && !pointer.has-hover ? Theme.secondary : Theme.text;
     content := HorizontalLayout {
         padding-left: root.small ? 10px : 16px; padding-right: self.padding-left;
@@ -91,7 +91,7 @@ export component IconButton inherits Rectangle {
         background: !root.enabled ? root.fill
             : root.emphasis ? (pointer.has-hover ? Theme.accent-hover : Theme.accent)
             : root.danger && pointer.has-hover ? Theme.danger.with-alpha(0.16)
-            : pointer.has-hover ? root.fill.mix(#ffffff, 0.9) : root.fill;
+            : pointer.has-hover ? root.fill.mix(Theme.overlay, 0.9) : root.fill;
         animate background { duration: Theme.quick; }
         border-width: focus.has-focus ? 2px : 0px;
         border-color: Theme.accent;
@@ -159,7 +159,7 @@ export component DeviceToggle inherits Rectangle {
             accessible-action-default => { root.menu(); }
             Rectangle {
                 y: (parent.height - self.height) / 2; width: 20px; height: 32px; border-radius: 6px;
-                background: caret.has-hover ? #ffffff14 : transparent;
+                background: caret.has-hover ? Theme.overlay.with-alpha(0.08) : transparent;
                 animate background { duration: Theme.quick; }
                 border-width: caret-focus.has-focus ? 2px : 0px;
                 border-color: Theme.accent;
@@ -207,7 +207,7 @@ export global PictureStore {
 // optionally ringed while they speak.
 export component Avatar inherits Rectangle {
     in property <string> initial;
-    in property <color> tint: #6b7280;
+    in property <color> tint: Theme.avatar;
     in property <image> picture;
     in property <string> picture-url;
     property <image> shown-picture: root.picture-url != "" ? PictureStore.picture(root.picture-url, PictureStore.revision) : root.picture;
@@ -311,7 +311,7 @@ export component CallButton inherits VerticalLayout {
             background: touch.has-hover ? root.fill.darker(0.15) : root.fill;
             accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
             accessible-action-default => { if root.enabled { root.clicked(); } }
-            Image { source: root.icon; width: 22px; height: 22px; colorize: #ffffff; }
+            Image { source: root.icon; width: 22px; height: 22px; colorize: Theme.on-danger; }
             touch := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
         }
     }
@@ -346,7 +346,7 @@ export component Skeleton inherits Rectangle {
     Rectangle {
         width: max(120px, parent.width * 0.5); height: parent.height;
         x: Math.mod(animation-tick() / 1ms, 1500) / 1500 * (parent.width + self.width) - self.width;
-        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff10 50%, #ffffff00 100%);
+        background: @linear-gradient(90deg, Theme.shimmer.with-alpha(0) 0%, Theme.shimmer 50%, Theme.shimmer.with-alpha(0) 100%);
     }
 }
 
@@ -445,7 +445,7 @@ export component MenuItem inherits Rectangle {
                 border-width: root.checked ? 0px : 1.5px; border-color: root.highlighted ? Theme.text : Theme.muted;
                 if root.checked: Image {
                     width: 12px; height: 12px; image-fit: contain;
-                    source: @image-url("icons/check.svg"); colorize: #ffffff;
+                    source: @image-url("icons/check.svg"); colorize: Theme.on-accent;
                 }
             }
         }
