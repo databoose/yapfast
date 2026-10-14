@@ -441,15 +441,18 @@ fn server_rooms(
             channel.id.clone(),
         )
     });
-    // Threads list under their channels: those this account is in that are
-    // still active, and those on screen.
+    // Threads list under their channels, as in Discord's client: those this
+    // account is in that are still active, while they're new enough, unread
+    // and not muted, or mention it; and those on screen.
     let mut threads: std::collections::HashMap<&str, Vec<&talk_discord::ready::Channel>> =
         std::collections::HashMap::new();
     for thread in &server.threads {
         let Some(details) = thread.thread.as_deref() else {
             continue;
         };
-        let shown = details.joined && !details.archived || snapshot.viewing.contains(&thread.id);
+        let relevant = !details.quiet || thread.unread && !thread.muted || thread.mentions > 0;
+        let shown = details.joined && !details.archived && relevant
+            || snapshot.viewing.contains(&thread.id);
         if shown
             && thread.access != Access::Hidden
             && let Some(parent) = thread.parent.as_deref()
@@ -904,6 +907,67 @@ mod tests {
             ("thread 40", parent("22"))
         );
         assert!((rooms, servers) == index(&viewing, false));
+    }
+
+    #[test]
+    fn a_quiet_thread_lists_only_while_unread_mentioned_or_on_screen() {
+        let thread = |id: &str, unread, muted, mentions| Channel {
+            id: id.into(),
+            name: format!("thread {id}"),
+            parent: Some("21".into()),
+            unread,
+            muted,
+            mentions,
+            thread: Some(Box::new(talk_discord::ready::Thread {
+                joined: true,
+                quiet: id != "45",
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let server = Server {
+            id: "10".into(),
+            text_channels: vec![Channel {
+                id: "21".into(),
+                name: "21".into(),
+                ..Default::default()
+            }],
+            threads: vec![
+                // Not quiet yet.
+                thread("45", false, false, 0),
+                // Quiet: unread, or mentioning this account even when muted.
+                thread("44", true, false, 0),
+                thread("43", true, true, 1),
+                // Quiet and read, or unread but muted, it doesn't list.
+                thread("42", false, false, 0),
+                thread("41", true, true, 0),
+            ],
+            ..Default::default()
+        };
+        let snapshot = Snapshot {
+            servers: vec![Arc::new(server)],
+            ..Default::default()
+        };
+        let names = |snapshot: &Snapshot| -> Vec<String> {
+            index(snapshot, false)
+                .0
+                .into_iter()
+                .map(|room| room.name)
+                .collect()
+        };
+        assert_eq!(
+            names(&snapshot),
+            ["21", "thread 45", "thread 44", "thread 43"]
+        );
+        // The thread on screen lists while it shows.
+        let viewing = Snapshot {
+            viewing: vec!["42".into()],
+            ..snapshot
+        };
+        assert_eq!(
+            names(&viewing),
+            ["21", "thread 45", "thread 44", "thread 43", "thread 42"]
+        );
     }
 
     #[test]

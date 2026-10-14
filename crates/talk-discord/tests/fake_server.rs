@@ -2380,6 +2380,7 @@ async fn talks_to_the_fake_server() {
     .await;
 
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
+    marks_quiet_threads_as_discords_client_does(&discord, server).await;
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
@@ -2504,6 +2505,38 @@ async fn lists_a_channels_threads_as_discords_client_does(
                 .any(|thread| thread.id == id)
     })
     .await;
+}
+
+/// A thread this account is in goes quiet its archive duration after its
+/// last activity, without Discord saying so; part of
+/// [`talks_to_the_fake_server`], whose session it shares.
+async fn marks_quiet_threads_as_discords_client_does(discord: &Discord, server: &str) {
+    let plans_quiet = |snapshot: &Snapshot| {
+        snapshot.servers[0]
+            .threads
+            .iter()
+            .find(|thread| thread.name == "Plans")
+            .and_then(|thread| thread.thread.as_deref())
+            .map(|details| details.quiet)
+    };
+    // Opened again as the fake started, it isn't quiet yet.
+    assert_eq!(plans_quiet(&discord.snapshots().borrow()), Some(false));
+    // Once its time passes, a snapshot marks it quiet with nothing else
+    // happening.
+    post_control(server, "/_control/thread-quiet?in=1500", "");
+    let updated = snapshot_where(discord, |snapshot| {
+        snapshot.servers[0].threads.iter().any(|thread| {
+            thread
+                .thread
+                .as_deref()
+                .is_some_and(|details| details.archive_after == 60)
+        })
+    })
+    .await;
+    assert_eq!(plans_quiet(&updated), Some(false));
+    snapshot_where(discord, |snapshot| plans_quiet(snapshot) == Some(true)).await;
+    post_control(server, "/_control/thread-quiet?reset", "");
+    snapshot_where(discord, |snapshot| plans_quiet(snapshot) == Some(false)).await;
 }
 
 /// Threads Alice starts, as Discord's client starts them; part of

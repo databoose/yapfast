@@ -1173,6 +1173,20 @@ impl Tracker {
 
     /// The account as it is now, but for [`Snapshot::listed`], which the
     /// member lists know.
+    /// When the next thread this account is in goes quiet after `now`, in
+    /// Unix milliseconds: a snapshot then stops listing it under its channel.
+    pub(super) fn next_quiet(&self, now: u64) -> Option<u64> {
+        self.servers
+            .iter()
+            .flat_map(|server| &server.threads)
+            .filter_map(|thread| {
+                let details = thread.thread.as_deref()?;
+                let at = details.quiet_at(&thread.id);
+                (details.joined && !details.archived && at > now && at != u64::MAX).then_some(at)
+            })
+            .min()
+    }
+
     pub(super) fn snapshot(&mut self) -> Snapshot {
         let names = self
             .names
@@ -1205,6 +1219,7 @@ impl Tracker {
         // the last snapshot marked the same.
         let mut published = HashMap::with_capacity(self.servers.len());
         let mut servers = Vec::with_capacity(self.servers.len());
+        let now = now_ms();
         for server in &self.servers {
             let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
             let last = self
@@ -1213,8 +1228,8 @@ impl Tracker {
                 .filter(|last| Arc::ptr_eq(&last.source, server) && last.roles == roles);
             // What the account may do stays while the server and its roles do.
             let marks = match &last {
-                Some(last) => last.marks.unread(server, &self.unreads),
-                None => Marks::new(server, &self.me, roles, &self.unreads),
+                Some(last) => last.marks.unread(server, &self.unreads, now),
+                None => Marks::new(server, &self.me, roles, &self.unreads, now),
             };
             let (marked, roles) = match last {
                 Some(last) if last.marks == marks => (last.marked, last.roles),
@@ -2019,6 +2034,58 @@ mod tests {
         let known = details(&mut tracker);
         assert_eq!(known.last_message, 360);
         assert_eq!(known.member_preview, ["2", "3"]);
+    }
+
+    #[test]
+    fn a_thread_goes_quiet_after_its_archive_duration_without_activity() {
+        use crate::message::snowflake_at;
+        let now = now_ms() / 1000 * 1000;
+        let hour = 3_600_000;
+        let iso = |ms: u64| {
+            chrono::DateTime::from_timestamp_millis(ms as i64)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let thread = |id: u64, last: u64, opened: u64| {
+            json!({"id": id.to_string(), "type": 11, "name": "Plans", "parent_id": "11",
+                "guild_id": "10", "last_message_id": last.to_string(),
+                "thread_metadata": {"archived": false, "locked": false,
+                    "auto_archive_duration": 1440, "archive_timestamp": iso(opened)},
+                "member": {"join_timestamp": iso(opened), "flags": 0}})
+        };
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [{"id": "10", "properties": {"name": "Test", "owner_id": "1"},
+                "channels": [{"id": "11", "name": "general", "type": 0, "position": 0}],
+                "threads": [
+                    // Its last message was two days ago.
+                    thread(snowflake_at(now - 72 * hour), snowflake_at(now - 48 * hour), now - 72 * hour),
+                    // Opened again an hour ago, a day after its last message.
+                    thread(snowflake_at(now - 96 * hour), snowflake_at(now - 25 * hour), now - hour),
+                ]}],
+            "merged_members": [[{"user_id": "1", "roles": []}]],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let quiet = |tracker: &mut Tracker| -> Vec<bool> {
+            tracker.snapshot().servers[0]
+                .threads
+                .iter()
+                .map(|thread| thread.thread.as_deref().unwrap().quiet)
+                .collect()
+        };
+        assert_eq!(quiet(&mut tracker), [true, false]);
+        // The one opened again goes quiet a day after.
+        assert_eq!(tracker.next_quiet(now), Some(now + 23 * hour));
+
+        // A message wakes the quiet one for another day.
+        let id = snowflake_at(now - 72 * hour).to_string();
+        let message = snowflake_at(now).to_string();
+        tracker.apply(
+            &Event::MessageCreate,
+            &json!({"id": message, "channel_id": id, "guild_id": "10", "author": {"id": "2"}}),
+        );
+        assert_eq!(quiet(&mut tracker), [false, false]);
+        assert_eq!(tracker.next_quiet(now), Some(now + 23 * hour));
     }
 
     #[test]

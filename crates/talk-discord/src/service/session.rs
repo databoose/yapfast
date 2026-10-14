@@ -156,6 +156,7 @@ async fn connected_session(
     }
     tracker.beside(shared.beside.as_ref().map(|(_, thread)| thread.as_str()));
     shared.snapshots.send_replace(Arc::new(tracker.snapshot()));
+    let quiet = tracker.next_quiet(now_ms());
     let mut session = Session {
         gateway,
         publisher: Publisher::new(shared.snapshots.clone()),
@@ -163,6 +164,8 @@ async fn connected_session(
         status_ends: Box::pin(tokio::time::sleep(status_left(&tracker))),
         mute_end: tracker.unreads.next_mute_end(),
         mutes_end: Box::pin(tokio::time::sleep(until(tracker.unreads.next_mute_end()))),
+        quiet,
+        quiets: Box::pin(tokio::time::sleep(until(quiet))),
         tracker,
         shared,
         join: VoiceJoin::new(),
@@ -204,6 +207,10 @@ struct Session<'a> {
     /// wait for it, after which what shows muted changes by itself.
     mute_end: Option<u64>,
     mutes_end: Pin<Box<Sleep>>,
+    /// When the next thread this account is in goes quiet, in Unix
+    /// milliseconds, and the wait for it, after which it stops listing.
+    quiet: Option<u64>,
+    quiets: Pin<Box<Sleep>>,
 }
 
 impl Session<'_> {
@@ -222,6 +229,7 @@ impl Session<'_> {
             let done = tokio::select! {
                 () = self.publisher.due(), if self.publisher.stale() => {
                     self.publisher.publish(&mut self.tracker, &self.shared.lists);
+                    self.quiets_changed();
                     Ok(())
                 }
                 request = requests.recv() => match request {
@@ -235,6 +243,12 @@ impl Session<'_> {
                     self.tracker.custom_status = None;
                     self.publisher.changed();
                     self.show_presence().await
+                }
+                () = self.quiets.as_mut(), if self.quiet.is_some() => {
+                    // Published again, it waits for the next.
+                    self.quiet = None;
+                    self.publisher.changed();
+                    Ok(())
                 }
                 () = self.mutes_end.as_mut(), if self.mute_end.is_some() => {
                     self.publisher.changed();
@@ -501,6 +515,18 @@ impl Session<'_> {
         self.mutes_end
             .as_mut()
             .reset(Instant::now() + until(self.mute_end));
+    }
+}
+
+impl Session<'_> {
+    /// Waits for the next thread to go quiet, once a snapshot is out. The
+    /// wait is set only when its end moves.
+    fn quiets_changed(&mut self) {
+        let quiet = self.tracker.next_quiet(now_ms());
+        if quiet != self.quiet {
+            self.quiet = quiet;
+            self.quiets.as_mut().reset(Instant::now() + until(quiet));
+        }
     }
 }
 

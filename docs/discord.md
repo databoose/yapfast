@@ -1304,6 +1304,15 @@ notifies only of mentions, and a muted thread not at all. Opening one shows
 it in place of the channel, its header reading "general › Plans" with the
 channel's name a link back, and the channel's member list beside it.
 
+As in Discord's client (`ActiveJoinedThreadsStore`), a thread goes quiet
+its `auto_archive_duration` after its newest message, its start or its
+`archive_timestamp`, whichever came last, though Discord may archive it
+much later. A quiet thread lists only while it's unread and not muted,
+mentions the account, or is on screen. The service wakes when the next
+thread goes quiet and publishes a snapshot, so the row goes with nothing
+else happening (`Tracker::next_quiet`). The fake's `/_control/thread-quiet`
+makes Plans go quiet, and `?reset` lists it again.
+
 A message that started a thread carries it as `thread`, and shows a chip
 with its name and count under it; the THREAD_CREATED notice (type 18)
 links to the thread through its `message_reference`, and a thread's first

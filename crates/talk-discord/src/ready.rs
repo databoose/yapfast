@@ -233,6 +233,18 @@ pub struct Thread {
     /// The snowflake of its newest message, or 0 before it has one.
     #[serde(default)]
     pub last_message: u64,
+    /// How many minutes of quiet archive it, from its `auto_archive_duration`;
+    /// 0 when Discord didn't say.
+    #[serde(default)]
+    pub archive_after: u16,
+    /// When it was last archived or opened again, in Unix milliseconds, from
+    /// its `archive_timestamp`; 0 when Discord didn't say.
+    #[serde(default)]
+    pub archive_changed: u64,
+    /// Quiet for its [`Thread::archive_after`] as the last snapshot saw it,
+    /// though Discord may not have archived it yet; see [`Thread::quiet_at`].
+    #[serde(default)]
+    pub quiet: bool,
     /// How many are in it, as Discord counts them: up to 50.
     #[serde(default)]
     pub members: u32,
@@ -341,6 +353,24 @@ impl Thread {
         };
         self.last_message = recent.id;
         self.recent = Some(Arc::new(recent));
+    }
+
+    /// When the thread `id` goes quiet, in Unix milliseconds: its
+    /// [`Thread::archive_after`] after its newest message, its start or its
+    /// last archiving or opening, whichever came last. Discord's client
+    /// stops listing a thread under its channel then, unless it's unread,
+    /// mentions this account or is on screen, rather than wait for Discord
+    /// to archive it. Never for a thread without an archive duration.
+    pub fn quiet_at(&self, id: &str) -> u64 {
+        if self.archive_after == 0 {
+            return u64::MAX;
+        }
+        let newest = match self.last_message {
+            0 => snowflake(id),
+            last => last,
+        };
+        let newest = (newest >> 22) + crate::message::DISCORD_EPOCH_MS;
+        newest.max(self.archive_changed) + u64::from(self.archive_after) * 60_000
     }
 }
 
@@ -599,6 +629,12 @@ impl Server {
             }
             if details.member_preview.is_empty() {
                 details.member_preview = was.member_preview;
+            }
+            if details.archive_after == 0 {
+                details.archive_after = was.archive_after;
+            }
+            if details.archive_changed == 0 {
+                details.archive_changed = was.archive_changed;
             }
         }
         // The newest first: a later thread has a larger snowflake.
@@ -1038,6 +1074,14 @@ pub fn parse_thread(value: &Value) -> Option<Channel> {
         locked: metadata["locked"].as_bool().unwrap_or(false),
         messages: value["message_count"].as_u64().unwrap_or_default(),
         last_message: value["last_message_id"].as_str().map_or(0, snowflake),
+        archive_after: metadata["auto_archive_duration"]
+            .as_u64()
+            .and_then(|minutes| u16::try_from(minutes).ok())
+            .unwrap_or_default(),
+        archive_changed: metadata["archive_timestamp"]
+            .as_str()
+            .and_then(crate::message::iso_ms)
+            .unwrap_or_default(),
         members: value["member_count"]
             .as_u64()
             .and_then(|count| u32::try_from(count).ok())
@@ -1451,5 +1495,34 @@ mod tests {
             display_name(&json!({"username": "ann", "global_name": null})),
             Some("ann")
         );
+    }
+
+    #[test]
+    fn a_thread_goes_quiet_its_archive_duration_after_its_last_activity() {
+        let at = |ms: u64| crate::message::snowflake_at(ms).to_string();
+        let day = 86_400_000;
+        let start = 1_760_000_000_000;
+        let thread = parse_thread(&json!({
+            "id": at(start), "type": 11, "name": "Plans", "parent_id": "11",
+            "thread_metadata": {"archived": false, "auto_archive_duration": 1440,
+                "archive_timestamp": "2025-10-09T08:53:20+00:00"},
+        }))
+        .unwrap();
+        let details = thread.thread.as_deref().unwrap();
+        assert_eq!(
+            (details.archive_after, details.archive_changed),
+            (1440, start)
+        );
+        // A day after it started, or after its newest message.
+        assert_eq!(details.quiet_at(&thread.id), start + day);
+        let mut later = details.clone();
+        later.last_message = at(start + 2 * day).parse().unwrap();
+        assert_eq!(later.quiet_at(&thread.id), start + 3 * day);
+        // Opened again after its newest message, a day after that.
+        later.archive_changed = start + 4 * day;
+        assert_eq!(later.quiet_at(&thread.id), start + 5 * day);
+        // Without a duration, never.
+        later.archive_after = 0;
+        assert_eq!(later.quiet_at(&thread.id), u64::MAX);
     }
 }

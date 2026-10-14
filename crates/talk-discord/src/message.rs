@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Discord counts from the first second of 2015.
-const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+pub(crate) const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
 
 const DEFAULT: u64 = 0;
 const CALL: u64 = 3;

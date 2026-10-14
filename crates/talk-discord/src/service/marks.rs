@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::{
     notifications::Notifications,
-    ready::{Access, Server},
+    ready::{Access, Channel, Server},
     unread::Unreads,
 };
 
@@ -41,10 +41,26 @@ struct ChannelMarks {
     unread: bool,
     mentions: u64,
     last_read: u64,
+    /// A thread gone quiet; see [`crate::ready::Thread::quiet_at`].
+    quiet: bool,
+}
+
+/// Whether `channel` is a thread gone quiet at `now`, in Unix milliseconds.
+fn quiet(channel: &Channel, now: u64) -> bool {
+    channel
+        .thread
+        .as_deref()
+        .is_some_and(|thread| thread.quiet_at(&channel.id) <= now)
 }
 
 impl Marks {
-    pub(super) fn new(server: &Server, me: &str, roles: &[String], unreads: &Unreads) -> Self {
+    pub(super) fn new(
+        server: &Server,
+        me: &str,
+        roles: &[String],
+        unreads: &Unreads,
+        now: u64,
+    ) -> Self {
         let mut channels = Vec::with_capacity(
             server.text_channels.len() + server.voice_channels.len() + server.threads.len(),
         );
@@ -58,6 +74,7 @@ impl Marks {
                 unread,
                 mentions,
                 last_read: unreads.last_read(&server.id, &channel.id),
+                quiet: false,
             });
         }
         for channel in &server.voice_channels {
@@ -68,6 +85,7 @@ impl Marks {
                 unread: channel.unread,
                 mentions: channel.mentions,
                 last_read: channel.last_read,
+                quiet: false,
             });
         }
         for thread in &server.threads {
@@ -80,6 +98,7 @@ impl Marks {
                 unread,
                 mentions,
                 last_read: unreads.last_read(&server.id, &thread.id),
+                quiet: quiet(thread, now),
             });
         }
         Self {
@@ -92,8 +111,9 @@ impl Marks {
     }
 
     /// These marks, made from `server`, with the unread state of its text
-    /// channels and threads as it is now.
-    pub(super) fn unread(&self, server: &Server, unreads: &Unreads) -> Self {
+    /// channels and threads, and which threads are quiet, as they are at
+    /// `now`.
+    pub(super) fn unread(&self, server: &Server, unreads: &Unreads, now: u64) -> Self {
         let mut channels = self.channels.clone();
         // Text channels come first, and threads after the voice channels.
         let (text, rest) = channels.split_at_mut(server.text_channels.len());
@@ -107,6 +127,7 @@ impl Marks {
             (marks.muted, marks.unread, marks.mentions) =
                 unreads.channel(&server.id, channel, marks.access);
             marks.last_read = unreads.last_read(&server.id, &channel.id);
+            marks.quiet = quiet(channel, now);
         }
         Self {
             muted: unreads.server_muted(&server.id),
@@ -136,6 +157,9 @@ impl Marks {
             channel.unread = marks.unread;
             channel.mentions = marks.mentions;
             channel.last_read = marks.last_read;
+            if let Some(thread) = channel.thread.as_deref_mut() {
+                thread.quiet = marks.quiet;
+            }
         }
         marked
     }
@@ -153,7 +177,7 @@ fn settings(server: &Server, unreads: &Unreads) -> Arc<Notifications> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ready::{Channel, Emoji, Overwrite};
+    use crate::ready::{Emoji, Overwrite};
 
     #[test]
     fn a_marked_server_shares_its_roles_emoji_and_overwrites() {
@@ -179,7 +203,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let marks = Marks::new(&server, "1", &[], &Unreads::default());
+        let marks = Marks::new(&server, "1", &[], &Unreads::default(), 0);
         let marked = marks.apply(&server);
         assert!(Arc::ptr_eq(&marked.roles, &server.roles));
         assert!(Arc::ptr_eq(&marked.role_names, &server.role_names));

@@ -1020,6 +1020,9 @@ post(REQUEST_ERIN, strangers.erin!, "Hi Alice, Bob gave me your name. Can I ask 
 type Thread = {
   id: string; parent: string; name: string; owner: User; type: 10 | 11 | 12;
   archived: boolean; locked: boolean; created: number;
+  /** Minutes of quiet that archive it, and when it was last archived or
+   *  opened again, in Unix milliseconds. */
+  autoArchive: number; archiveChanged: number;
   /** Who is in it, and since when, in Unix milliseconds. */
   members: Map<string, number>;
 };
@@ -1045,7 +1048,7 @@ function wireThread(thread: Thread) {
     message_count: count, total_message_sent: count, member_count: thread.members.size,
     member_ids_preview: [...thread.members.keys()].slice(0, 5),
     thread_metadata: {
-      archived: thread.archived, auto_archive_duration: 4320, archive_timestamp: iso(thread.created),
+      archived: thread.archived, auto_archive_duration: thread.autoArchive, archive_timestamp: iso(thread.archiveChanged),
       locked: thread.locked, create_timestamp: iso(thread.created),
     },
     ...(thread.members.has(ALICE) ? { member: wireThreadMember(thread) } : {}),
@@ -1058,6 +1061,7 @@ function makeThread(
 ): Thread {
   const thread: Thread = {
     id, parent: GENERAL, name, owner, type: 11, archived: false, locked: false, created,
+    autoArchive: 4320, archiveChanged: created,
     members: new Map(members.map((user) => [user, created])),
     ...extra,
   };
@@ -1079,7 +1083,9 @@ function joinThread(thread: Thread) {
 }
 
 // "Plans", from Bob's welcome: its first message points back at it.
-const plans = makeThread(welcome.id, "Plans", users.bob, HISTORY_START + 20_000, [users.bob.id, users.carol.id, ALICE]);
+// It was opened again as the fake started, so it lists under #general for
+// its three days, as a thread this quiet otherwise wouldn't.
+const plans = makeThread(welcome.id, "Plans", users.bob, HISTORY_START + 20_000, [users.bob.id, users.carol.id, ALICE], { archiveChanged: Date.now() });
 post(plans.id, users.bob, "", HISTORY_START + 20_000, { type: 21, starter: welcome.id });
 post(plans.id, users.bob, "Saturday works for me", HISTORY_START + 40_000);
 const plansRead = post(plans.id, users.carol, "Count me in", HISTORY_START + 50_000);
@@ -3028,6 +3034,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         // Writing opens an archived thread again.
         if (thread.archived) {
           thread.archived = false;
+          thread.archiveChanged = Date.now();
           dispatch("THREAD_UPDATE", wireThread(thread));
         }
       }
@@ -3189,7 +3196,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     if (invalid) return invalid;
     if (threads.has(id)) return json({ message: "A thread has already been created for this message", code: 160004 }, 400);
     const now = Date.now();
-    const thread = makeThread(id, body.name.trim(), users.alice, now, [ALICE], { parent });
+    const thread = makeThread(id, body.name.trim(), users.alice, now, [ALICE], { parent, autoArchive: body.auto_archive_duration ?? 4320 });
     post(thread.id, users.alice, "", now, { type: 21, starter: id });
     announceThread(thread);
     dispatch("MESSAGE_UPDATE", dispatched(original, origin));
@@ -3210,7 +3217,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       return json({ message: "Invalid Form Body", code: 50035, errors: { type: { _errors: [{ code: "BASE_TYPE_CHOICES", message: "Value must be one of {11, 12}." }] } } }, 400);
     }
     const now = Date.now();
-    const thread = makeThread(nextId(now), body.name.trim(), users.alice, now, [ALICE], { parent, type: body.type });
+    const thread = makeThread(nextId(now), body.name.trim(), users.alice, now, [ALICE], { parent, type: body.type, autoArchive: body.auto_archive_duration ?? 4320 });
     announceThread(thread);
     if (thread.type !== 12) noticeThread(thread, origin);
     return json(wireThread(thread), 201);
@@ -4336,6 +4343,17 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "POST" && path === "/_control/thread-archive") {
       plans.archived = !url.searchParams.has("open");
+      plans.archiveChanged = Date.now();
+      dispatch("THREAD_UPDATE", wireThread(plans));
+      return new Response("ok\n");
+    }
+    // Plans goes quiet in ?in milliseconds, as if opened again an hour ago
+    // with an hour's archive duration, though Discord doesn't archive it;
+    // ?reset opens it again for its three days.
+    if (req.method === "POST" && path === "/_control/thread-quiet") {
+      const reset = url.searchParams.has("reset");
+      plans.autoArchive = reset ? 4320 : 60;
+      plans.archiveChanged = reset ? Date.now() : Date.now() - 3_600_000 + Number(url.searchParams.get("in") ?? 0);
       dispatch("THREAD_UPDATE", wireThread(plans));
       return new Response("ok\n");
     }
