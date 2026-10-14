@@ -34,6 +34,9 @@ directories.workspace = true
 futures-util.workspace = true
 # Decode received images with bounded dimensions before the UI sees them.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# An animated GIF's frame timings, read without decoding its pictures; the
+# version the image crate decodes with.
+gif = "0.14"
 keyring = { workspace = true, optional = true }
 livekit.workspace = true
 # libDF's frames, at the version it uses.
@@ -101,3 +104,7 @@ windows = { version = "0.62", features = [
 ] }
 # What `#[implement]` expands to names it.
 windows-core = "0.62"
+
+[dev-dependencies]
+# Animated PNGs to read frame timings from, the version the image crate uses.
+png = "0.18"

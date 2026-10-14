@@ -2042,7 +2042,10 @@ pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
 }
 
 /// An animated GIF, PNG or WebP, shrunk to fit `width` by `height`; none for
-/// a still picture, or when a frame fails.
+/// a still picture, or when its first frame fails. Only the first frame is
+/// decoded: the others' timings come from their headers, so a long GIF opens
+/// as fast as a short one, and a frame that fails later leaves the one
+/// before it showing.
 fn decode_animation(
     data: &[u8],
     format: image::ImageFormat,
@@ -2056,31 +2059,113 @@ fn decode_animation(
         ImageFormat::WebP => AnimationFormat::WebP,
         _ => return None,
     };
-    let ((full_width, full_height), frames) = image_frames(std::io::Cursor::new(data), format)?;
-    let (width, height) = fit(full_width, full_height, width, height);
-    let mut first = None;
-    let mut delays = Vec::new();
-    for frame in frames {
-        let frame = frame.ok()?;
-        let (numerator, denominator) = frame.delay().numer_denom_ms();
-        // Browsers show frames meant for under 20 ms for 100 ms.
-        let delay = numerator / denominator.max(1);
-        delays.push(if delay < 20 { 100 } else { delay });
-        if first.is_none() {
-            first = Some(shrink(frame.into_buffer(), width, height));
-        }
-    }
+    let delays = frame_delays(data, format)?;
     (delays.len() > 1).then_some(())?;
+    let ((full_width, full_height), mut frames) = image_frames(std::io::Cursor::new(data), format)?;
+    let (width, height) = fit(full_width, full_height, width, height);
+    let first = shrink(frames.next()?.ok()?.into_buffer(), width, height);
     Some(Picture {
         width,
         height,
-        rgba: Pixels::new(width, height, first?),
+        rgba: Pixels::new(width, height, first),
         animation: Some(Animation {
             delays,
             file: AnimationFile::Memory(Arc::from(data)),
             format,
         }),
     })
+}
+
+/// How long each frame of a GIF, an animated PNG or a WebP shows, in
+/// milliseconds, read from the frames' headers without decoding a picture,
+/// as the image crate gives them.
+fn frame_delays(data: &[u8], format: AnimationFormat) -> Option<Vec<u32>> {
+    let delays = match format {
+        AnimationFormat::Gif => gif_delays(data),
+        AnimationFormat::Png => apng_delays(data)?,
+        AnimationFormat::WebP => webp_delays(data)?,
+        #[cfg(feature = "discord")]
+        AnimationFormat::Video => return None,
+    };
+    // Browsers show frames meant for under 20 ms for 100 ms.
+    Some(
+        delays
+            .into_iter()
+            .map(|delay| if delay < 20 { 100 } else { delay })
+            .collect(),
+    )
+}
+
+/// A GIF's frames' delays, which it gives in hundredths of a second, up to
+/// the first that fails.
+fn gif_delays(data: &[u8]) -> Vec<u32> {
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::Indexed);
+    options.skip_frame_decoding(true);
+    let Ok(mut decoder) = options.read_info(data) else {
+        return vec![];
+    };
+    let mut delays = Vec::new();
+    while let Ok(Some(frame)) = decoder.read_next_frame() {
+        delays.push(u32::from(frame.delay) * 10);
+    }
+    delays
+}
+
+/// An animated PNG's frames' delays, from their `fcTL` chunks, as fractions
+/// of a second; as many as its `acTL` says it has.
+fn apng_delays(data: &[u8]) -> Option<Vec<u32>> {
+    (data.get(..8)? == b"\x89PNG\r\n\x1a\n").then_some(())?;
+    let number = |bytes: &[u8]| u16::from_be_bytes([bytes[0], bytes[1]]);
+    let mut count = None;
+    let mut delays = Vec::new();
+    let mut at = 8usize;
+    while let Some(header) = data.get(at..at + 8) {
+        let size = u32::from_be_bytes(header[..4].try_into().ok()?) as usize;
+        let body = data.get(at + 8..(at + 8).checked_add(size)?)?;
+        match &header[4..] {
+            b"acTL" => count = Some(u32::from_be_bytes(body.get(..4)?.try_into().ok()?)),
+            b"fcTL" => {
+                let numerator = u32::from(number(body.get(20..22)?));
+                let denominator = match number(body.get(22..24)?) {
+                    // As the standard says.
+                    0 => 100,
+                    denominator => u32::from(denominator),
+                };
+                delays.push(numerator * 1000 / denominator);
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        // Then the chunk's checksum.
+        at += 12 + size;
+    }
+    delays.truncate(usize::try_from(count?).ok()?);
+    Some(delays)
+}
+
+/// An animated WebP's frames' durations, in milliseconds, from their `ANMF`
+/// chunks.
+fn webp_delays(data: &[u8]) -> Option<Vec<u32>> {
+    (data.get(..4)? == b"RIFF" && data.get(8..12)? == b"WEBP").then_some(())?;
+    let mut delays = Vec::new();
+    let mut at = 12usize;
+    while let Some(header) = data.get(at..at + 8) {
+        let size = u32::from_le_bytes(header[4..].try_into().ok()?) as usize;
+        if &header[..4] == b"ANMF" {
+            // After the frame's offset and size, three bytes each.
+            let duration = data.get(at + 20..at + 23)?;
+            delays.push(u32::from_le_bytes([
+                duration[0],
+                duration[1],
+                duration[2],
+                0,
+            ]));
+        }
+        // Chunks are padded to an even size.
+        at = at.checked_add(8 + size + size % 2)?;
+    }
+    Some(delays)
 }
 
 /// An animated GIF, PNG or WebP's size and frames, which decode as they're
@@ -2598,6 +2683,68 @@ mod tests {
         // A still picture has no frames.
         let still = decode_picture(&gif(8, 1), 360, 270).unwrap();
         assert!(still.animation.is_none() && still.frames().next().is_none());
+    }
+
+    #[test]
+    fn reads_frame_timings_as_the_decoders_give_them() {
+        let decoded = |data: &[u8], format: AnimationFormat| -> Vec<u32> {
+            let (_, frames) = image_frames(std::io::Cursor::new(data), format).unwrap();
+            frames
+                .map(|frame| {
+                    let (numerator, denominator) = frame.unwrap().delay().numer_denom_ms();
+                    let delay = numerator / denominator;
+                    if delay < 20 { 100 } else { delay }
+                })
+                .collect()
+        };
+        // A GIF's, some too short to be meant.
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            for (index, delay) in [0u32, 30, 70, 10, 1000].into_iter().enumerate() {
+                let shade = image::Rgba([index as u8 * 40, 0, 0, 255]);
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(8, 6, shade),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(delay, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let delays = frame_delays(&gif, AnimationFormat::Gif).unwrap();
+        assert_eq!(delays, [100, 30, 70, 100, 1000]);
+        assert_eq!(delays, decoded(&gif, AnimationFormat::Gif));
+        // An animated PNG's, as fractions of a second.
+        let mut apng = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut apng, 4, 4);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_animated(3, 0).unwrap();
+            let mut writer = encoder.write_header().unwrap();
+            for (numerator, denominator) in [(1, 3), (7, 0), (1, 100)] {
+                writer.set_frame_delay(numerator, denominator).unwrap();
+                writer.write_image_data(&[90; 4 * 4 * 4]).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let delays = frame_delays(&apng, AnimationFormat::Png).unwrap();
+        assert_eq!(delays, [333, 70, 100]);
+        assert_eq!(delays, decoded(&apng, AnimationFormat::Png));
+        // A WebP's, from the fake's GIFs.
+        let webp = include_bytes!("../../../testing/fixtures/gifs/wave.webp");
+        let delays = frame_delays(webp, AnimationFormat::WebP).unwrap();
+        assert_eq!(delays.len(), 8);
+        assert_eq!(delays, decoded(webp, AnimationFormat::WebP));
+        // Something else has none.
+        assert!(frame_delays(b"RIFF", AnimationFormat::WebP).is_none());
+        assert!(frame_delays(&gif, AnimationFormat::Png).is_none());
+        assert!(
+            frame_delays(b"GIF89a", AnimationFormat::Gif)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
