@@ -101,7 +101,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::UnmuteServer
                 | MenuChoice::ServerNotifications
                 | MenuChoice::HideMuted => 2,
-                MenuChoice::CopyLink | MenuChoice::CopyId | MenuChoice::Invite => 3,
+                MenuChoice::CopyLink
+                | MenuChoice::CopyId
+                | MenuChoice::Invite
+                | MenuChoice::PinChannel
+                | MenuChoice::UnpinChannel => 3,
                 MenuChoice::Roles => 4,
                 MenuChoice::Timeout
                 | MenuChoice::RemoveTimeout
@@ -225,6 +229,8 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::HideMuted => ("Hide muted channels", &icons.ignore),
         // A server's says so above.
         MenuChoice::Invite => ("Invite to channel", &icons.befriend),
+        MenuChoice::PinChannel => ("Pin channel to top", &icons.pin),
+        MenuChoice::UnpinChannel => ("Unpin channel", &icons.unpin),
         // A server's and a voice channel's say so above.
         MenuChoice::CreateChannel => ("Create text channel", &icons.create),
         MenuChoice::CreateCategory => ("Create category", &icons.create_category),
@@ -690,6 +696,10 @@ pub(super) fn choose(
         // Notify's choices, above.
         MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
         MenuChoice::Invite => Some(Action::OpenInvite(target)),
+        MenuChoice::PinChannel | MenuChoice::UnpinChannel => Some(Action::PinChannel {
+            room: target,
+            pinned: choice == MenuChoice::PinChannel,
+        }),
         MenuChoice::CreateChannel => Some(Action::NewChannel {
             place: target,
             kind: ChannelKind::Text,
@@ -762,7 +772,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 45] = [
+const CHOICES: [MenuChoice; 47] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -801,6 +811,8 @@ const CHOICES: [MenuChoice; 45] = [
     MenuChoice::ServerNotifications,
     MenuChoice::HideMuted,
     MenuChoice::Invite,
+    MenuChoice::PinChannel,
+    MenuChoice::UnpinChannel,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::EditChannel,
@@ -850,6 +862,8 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::ServerNotifications => "server-notifications",
         MenuChoice::HideMuted => "hide-muted",
         MenuChoice::Invite => "invite",
+        MenuChoice::PinChannel => "pin-channel",
+        MenuChoice::UnpinChannel => "unpin-channel",
         MenuChoice::CreateChannel => "create-channel",
         MenuChoice::CreateCategory => "create-category",
         MenuChoice::EditChannel => "edit-channel",

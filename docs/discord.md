@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio and cameras on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and channel menus, invites, making and changing channels, threads, leaving servers | Starting threads, forums, pinning, forwarding, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), pinning channels to the top, invites, making and changing channels, threads, leaving servers | Starting threads, forums, pinning messages, forwarding, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1229,6 +1229,53 @@ name, so the sidebar rebuilds that server's rows and keeps the others.
 Names are 1 to 100 characters and topics up to 1024, checked before
 asking. The fake lets Alice's Crew role manage "Server"'s channels and
 sends each event.
+
+### A channel's menu
+
+Right-clicking a server's channel offers, in order: Mark as read when it
+has unread messages, Join voice for a voice channel, Mute channel and
+Notification settings for a text channel, then Invite to channel, Pin
+channel to top or Unpin channel, and Copy link, then Edit channel,
+Duplicate channel, Create channel and Delete channel where the account may
+manage channels, and Copy ID. A thread's menu has none of inviting,
+pinning or managing. Discord's own menu puts the group of inviting,
+pinning and the link above notifications; Talk keeps notifications first,
+as it had them.
+
+#### Pinning a channel
+
+Pin channel to top, as Discord's client has it, moves a text or voice
+channel out of its category into a section at the top of the server's
+channel list, headed "Pinned channels", above every category and the
+channels outside any. The channel shows only there, with its threads under
+it. Pinned channels list by their own `position`, voice channels after
+text ones, not in the order they were pinned. The section has no menu and
+doesn't fold, and a line ends it. Once a channel is pinned its menu says
+Unpin channel. Discord's client sets no limit on how many, and offers it
+for every channel but threads and categories.
+
+The pin belongs to the account, so it follows it to every client: it's
+the `FAVORITED` flag, `1 << 11`, of the channel's override in the user
+guild settings, the same `channel_overrides` that hold its mute and level
+(see [Notification settings](#notification-settings)). Discord's client
+pins with `PATCH /users/@me/guilds/settings` and a body of
+`{"guilds": {"<guild>": {"channel_overrides": {"<channel>": {"flags":
+6144}}}}}`: the override's flags with `FAVORITED` set, and with
+`OPT_IN_ENABLED`, `1 << 12`, too if it wasn't. Unpinning sends the flags
+with `FAVORITED` cleared and the rest as they were. Discord answers with
+each server's settings, and USER_GUILD_SETTINGS_UPDATE tells every session.
+`talk_discord::notifications` reads the flags with each override and
+writes the body (`Override::pin_flags`, `flags_body`); Talk changes the
+list when the update comes, as it does for a mute.
+
+Talk works out the pinned channels when it lists a server's rooms, which
+happens only when the server's snapshot changes, and keeps them in the
+server's `ChatServer::pinned`; the sidebar rebuilds only when the servers
+it hashes change. Discord's "Move to…", which reorders the server's
+channels for everyone, and its Favorites server, kept in the settings
+protobuf, are different features; Discord's client only hides "Move to…"
+and dragging for a pinned channel, which Talk has neither of. The fake
+keeps each override's flags and answers the bulk endpoint as Discord does.
 
 ### Threads
 

@@ -91,7 +91,9 @@
 // read and write Alice's note on someone, DELETE /channels/{id} closes a DM,
 // and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs. PATCH
 // /users/@me/guilds/{id}/settings changes her notification settings for a
-// server and its channels, and USER_GUILD_SETTINGS_UPDATE says so. POST
+// server and its channels, and USER_GUILD_SETTINGS_UPDATE says so; PATCH
+// /users/@me/guilds/settings changes several servers' at once, as Discord's
+// client pins a channel to the top with its override's flags. POST
 // /channels/{id}/invites makes an invite to a channel of "Server" or of a
 // `--servers` filler, which @everyone may, as on Discord, and GET
 // /_control/invites lists them, each with the location its
@@ -226,9 +228,11 @@ const wireRelationship = (id: string, type: number) => ({
 // Alice's notification settings by server, "@me" for her DMs, as Discord
 // keeps her user guild settings: the server's mute and level, which
 // mentions call on her, whether muted channels hide, and each channel's and
-// category's override. PATCH /users/@me/guilds/{id}/settings changes them.
+// category's override, whose flags pin a channel to the top of her list
+// (FAVORITED, 1 << 11). PATCH /users/@me/guilds/{id}/settings changes them,
+// or PATCH /users/@me/guilds/settings several servers' at once.
 type MuteConfig = { end_time: string | null; selected_time_window: number };
-type ChannelOverride = { muted: boolean; mute_config: MuteConfig | null; message_notifications: number; collapsed: boolean };
+type ChannelOverride = { muted: boolean; mute_config: MuteConfig | null; message_notifications: number; collapsed: boolean; flags: number };
 type GuildSettings = {
   muted: boolean;
   mute_config: MuteConfig | null;
@@ -3253,12 +3257,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
 
   // Alice's notification settings for a server or her DMs: what the body
   // gives changes, and the rest stays. Channels' overrides come by id.
-  if (method === "PATCH" && (m = path.match(/^\/users\/@me\/guilds\/(\d+|@me)\/settings$/))) {
-    const guild = m[1]!;
-    if (guild !== "@me" && guild !== GUILD && !fillers.some((filler) => filler.id === guild)) {
-      return notFound("Unknown Guild", 10004);
-    }
-    const body: any = await req.json().catch(() => ({}));
+  const knownGuild = (guild: string) => guild === GUILD || fillers.some((filler) => filler.id === guild);
+  const changeGuildSettings = (guild: string, body: any) => {
     const settings = settingsOf(guild);
     for (const key of ["muted", "message_notifications", "suppress_everyone", "suppress_roles", "hide_muted_channels"] as const) {
       if (key in body) (settings as any)[key] = body[key];
@@ -3266,8 +3266,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     if ("mute_config" in body) settings.mute_config = body.mute_config;
     if (!settings.muted) settings.mute_config = null;
     for (const [channel, change] of Object.entries<any>(body.channel_overrides ?? {})) {
-      const override = settings.overrides.get(channel) ?? { muted: false, mute_config: null, message_notifications: 3, collapsed: false };
-      for (const key of ["muted", "mute_config", "message_notifications", "collapsed"] as const) {
+      const override = settings.overrides.get(channel) ?? { muted: false, mute_config: null, message_notifications: 3, collapsed: false, flags: 0 };
+      for (const key of ["muted", "mute_config", "message_notifications", "collapsed", "flags"] as const) {
         if (key in change) (override as any)[key] = change[key];
       }
       if (!override.muted) override.mute_config = null;
@@ -3275,7 +3275,23 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
     const wire = wireGuildSettings(guild);
     dispatch("USER_GUILD_SETTINGS_UPDATE", wire);
-    return json(wire);
+    return wire;
+  };
+  if (method === "PATCH" && (m = path.match(/^\/users\/@me\/guilds\/(\d+|@me)\/settings$/))) {
+    const guild = m[1]!;
+    if (guild !== "@me" && !knownGuild(guild)) return notFound("Unknown Guild", 10004);
+    const body: any = await req.json().catch(() => ({}));
+    return json(changeGuildSettings(guild, body));
+  }
+  // Several servers' at once, never her DMs': a list of each one's
+  // settings, and an update for each.
+  if (method === "PATCH" && path === "/users/@me/guilds/settings") {
+    const body: any = await req.json().catch(() => ({}));
+    const guilds = Object.entries<any>(body.guilds ?? {});
+    if (guilds.length === 0 || guilds.some(([guild]) => !knownGuild(guild))) {
+      return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    }
+    return json(guilds.map(([guild, change]) => changeGuildSettings(guild, change)));
   }
 
   // A member's menu in "Server": nicknames, roles, timeouts, kicks and

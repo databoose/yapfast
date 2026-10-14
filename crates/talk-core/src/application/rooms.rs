@@ -70,6 +70,10 @@ pub enum MenuChoice {
     HideMuted,
     /// Make an invite link to a Discord server or channel.
     Invite,
+    /// Pin a Discord server's channel to the top of its channel list, for
+    /// this account wherever it signs in, or unpin it.
+    PinChannel,
+    UnpinChannel,
     /// Make a channel in a Discord server, or one like a channel in its
     /// category; make a category.
     CreateChannel,

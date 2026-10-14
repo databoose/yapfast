@@ -24,6 +24,7 @@ impl Application {
                 icon: None,
                 folder: None,
                 hide_muted: false,
+                pinned: Vec::new(),
             },
             ChatServer {
                 id: "coop".into(),
@@ -39,6 +40,7 @@ impl Application {
                 icon: None,
                 folder: None,
                 hide_muted: false,
+                pinned: Vec::new(),
             },
         ];
         self.state.navigation = Navigation::Server("friends".into());

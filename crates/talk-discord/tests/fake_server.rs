@@ -1823,6 +1823,30 @@ async fn talks_to_the_fake_server() {
     })
     .await;
 
+    // Pinning #general to the top sets its override's flags, through the
+    // settings of several servers at once, and keeps its level; unpinning
+    // leaves the opt-in flag that pinning set.
+    change(here, Change::Level(Some(Level::All))).await;
+    let flags = ours(&discord.snapshots().borrow())
+        .notifications
+        .of(&general)
+        .pin_flags(true);
+    assert_eq!(flags, 6144);
+    discord.pin_channel(&guild, &general, flags).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        let own = ours(snapshot).notifications.of(&general);
+        own.pinned() && own.level == Some(Level::All)
+    })
+    .await;
+    discord.pin_channel(&guild, &general, 4096).await.unwrap();
+    change(here, Change::Level(None)).await;
+    let unpinned = snapshot_where(&discord, |snapshot| {
+        let own = ours(snapshot).notifications.of(&general);
+        !own.pinned() && own.level.is_none()
+    })
+    .await;
+    assert_eq!(ours(&unpinned).notifications.of(&general).flags, 4096);
+
     // A category mutes as a channel does, and its channels show muted.
     let category = ours(&discord.snapshots().borrow())
         .text_channels

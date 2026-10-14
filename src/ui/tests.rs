@@ -2315,6 +2315,7 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
             icon: Some(format!("{id}.png")),
             folder: folder.cloned(),
             hide_muted: false,
+            pinned: Vec::new(),
         };
     let mut state = AppState::default();
     state.servers = vec![
@@ -2459,6 +2460,7 @@ fn discord_server_adapter(
                     until: None,
                 },
                 level: Some(Level::Nothing),
+                flags: 0,
             },
         )]
         .into(),
@@ -2645,6 +2647,15 @@ fn discord_server_window() -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempD
 fn discord_server_window_granting(
     extra: u64,
 ) -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
+    discord_server_window_changed(extra, |_| {})
+}
+
+/// [`discord_server_window_granting`], with `change` made to the server.
+#[cfg(feature = "discord")]
+fn discord_server_window_changed(
+    extra: u64,
+    change: impl FnOnce(&mut talk_core::talk_discord::ready::Server),
+) -> (TalkWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
     use talk_core::talk_discord::{
         notifications::Notifications,
         ready::{self, permission},
@@ -2683,6 +2694,7 @@ fn discord_server_window_granting(
         ..Default::default()
     });
     server.text_channels[0].mentions = 1;
+    change(&mut server);
     adapter
         .borrow_mut()
         .app
@@ -2829,6 +2841,71 @@ fn discord_categories_head_their_channels_and_open_their_menus() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn pinned_channels_leave_their_categories_for_the_top() {
+    use talk_core::talk_discord::notifications::{Notifications, Override};
+    let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
+        let mut settings = Notifications::clone(&server.notifications);
+        settings.overrides.insert(
+            "11".into(),
+            Override {
+                flags: 6144,
+                ..Default::default()
+            },
+        );
+        server.notifications = Arc::new(settings);
+    });
+    {
+        // A category of that name folding doesn't fold the pinned ones.
+        adapter
+            .borrow_mut()
+            .layout
+            .collapsed
+            .entry("discord:10".into())
+            .or_default()
+            .insert("PINNED CHANNELS".into());
+    }
+    window.invoke_navigate_server("discord:10".into());
+    let rows: Vec<RoomRow> = adapter.borrow().models.rooms.iter().collect();
+    let shown: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.heading.as_str(),
+                row.name.as_str(),
+                row.pinned,
+                row.collapsed,
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("PINNED CHANNELS", "general", true, false),
+            ("TALK", "Lounge", false, false),
+            ("LATER", "", false, false),
+        ]
+    );
+    window.invoke_prepare_menu("discord:10:11".into(), false);
+    let texts: Vec<String> = window
+        .get_menu_rows()
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Mark as read",
+            "Mute channel",
+            "Notification settings",
+            "Unpin channel",
+            "Copy link",
+            "Copy ID"
+        ]
+    );
+}
+
+#[test]
 fn empty_categories_go_where_discords_order_puts_them() {
     let category = |id: &str, empty: bool| ListedCategory {
         id: id.into(),
@@ -2938,6 +3015,7 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         texts(rows.clone()),
         [
             "Join voice",
+            "Pin channel to top",
             "Copy link",
             "Edit channel",
             "Duplicate channel",
@@ -2946,7 +3024,7 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
             "Copy ID"
         ]
     );
-    let delete = rows.row_data(5).unwrap();
+    let delete = rows.row_data(6).unwrap();
     assert!(delete.danger && delete.separated);
     window.invoke_prepare_menu("discord:10:4".into(), false);
     assert_eq!(

@@ -499,11 +499,38 @@ impl Adapter {
                     .unwrap_or(usize::MAX)
             });
         }
+        // A Discord server's pinned channels come first, each with its
+        // threads, under a heading of their own; as in Discord, they leave
+        // their categories rather than show twice.
+        let pinned = match &state.navigation {
+            Navigation::Server(id) => state
+                .servers
+                .iter()
+                .find(|server| &server.id == id)
+                .map_or(&[][..], |server| server.pinned.as_slice()),
+            Navigation::DirectMessages => &[],
+        };
+        let pinned_at = |room: &talk_core::chat::ChatRoom| {
+            pinned
+                .iter()
+                .position(|id| *id == room.id || room.parent.as_ref() == Some(id))
+        };
+        let mut in_pinned = 0;
+        if !pinned.is_empty() {
+            listed.sort_by_key(|room| pinned_at(room).unwrap_or(usize::MAX));
+            in_pinned = listed
+                .iter()
+                .take_while(|room| pinned_at(room).is_some())
+                .count();
+        }
         let mut rows: Vec<_> = listed
             .into_iter()
-            .map(|room| {
+            .enumerate()
+            .map(|(index, room)| {
                 let heading = if direct {
                     String::new()
+                } else if index < in_pinned {
+                    if index == 0 { "PINNED CHANNELS" } else { "" }.into()
                 } else if room.capabilities.categories {
                     // Discord channels sit under their categories, as in Discord.
                     if category.replace(&room.category) != Some(&room.category) {
@@ -545,7 +572,11 @@ impl Adapter {
                     discord: room.direct && room.network == Network::Discord,
                     locked: room.locked,
                     person: room.person.is_some(),
-                    pinned: room.direct && state.pinned.contains(&room.id),
+                    pinned: if room.direct {
+                        state.pinned.contains(&room.id)
+                    } else {
+                        index < in_pinned
+                    },
                     muted: room.muted,
                     people: if room.people.is_empty() {
                         ModelRc::default()
@@ -595,20 +626,24 @@ impl Adapter {
             }
         }
         // Categories fold as their server last left them, except while
-        // filtering; one without channels shows as its heading alone.
+        // filtering; one without channels shows as its heading alone. The
+        // pinned channels above them don't fold.
         let rows = match &state.navigation {
             Navigation::Server(server) if query.is_empty() => {
-                let rows = with_empty_categories(rows, &self.app.categories(server), |room| {
+                let mut rows = rows;
+                let rest = rows.split_off(in_pinned);
+                let rest = with_empty_categories(rest, &self.app.categories(server), |room| {
                     self.app.category_of(room)
                 });
-                match self.layout.collapsed.get(server) {
+                rows.extend(match self.layout.collapsed.get(server) {
                     Some(collapsed) => fold_collapsed(
-                        rows,
+                        rest,
                         collapsed,
                         state.voice.room.as_deref().filter(|_| state.voice.active()),
                     ),
-                    None => rows,
-                }
+                    None => rest,
+                });
+                rows
             }
             _ => rows,
         };

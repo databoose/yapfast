@@ -254,6 +254,9 @@ pub struct ChatServer {
     /// Its muted channels stay out of the channel list, as this account's
     /// Discord notification settings for it say.
     pub hide_muted: bool,
+    /// The room ids of the channels this account pinned to the top of its
+    /// channel list, a Discord server's, in the order they show there.
+    pub pinned: Vec<String>,
 }
 
 /// A Discord server's role, as a roles menu lists it.
@@ -1253,6 +1256,14 @@ pub enum DiscordCommand {
     Notifications {
         place: String,
         change: NotificationChange,
+    },
+    /// Set the flags of this account's override for a Discord server's
+    /// channel, by its room id, which pins it to the top of the channel
+    /// list or unpins it; snapshots show it once Discord confirms it, and a
+    /// failure comes back as [`Event::Error`].
+    PinChannel {
+        room: String,
+        flags: u64,
     },
     /// Make an invite to a Discord server's channel, by its room id, that
     /// lasts `max_age` seconds, 0 for good, and works `max_uses` times, 0

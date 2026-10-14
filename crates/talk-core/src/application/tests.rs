@@ -54,6 +54,7 @@ fn connected() -> Application {
             icon: None,
             folder: None,
             hide_muted: false,
+            pinned: Vec::new(),
         }],
     }));
     app.apply(Event::Timeline {
@@ -125,6 +126,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
             icon: None,
             folder: None,
             hide_muted: false,
+            pinned: Vec::new(),
         }],
     }));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
@@ -3804,6 +3806,7 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
             icon: None,
             folder: None,
             hide_muted: false,
+            pinned: Vec::new(),
         }],
     }));
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
@@ -4102,6 +4105,7 @@ fn discord_server() -> Application {
                 Override {
                     mute: Mute::default(),
                     level: Some(Level::All),
+                    flags: 0,
                 },
             ),
             (
@@ -4112,6 +4116,7 @@ fn discord_server() -> Application {
                         until: Some(soon),
                     },
                     level: Some(Level::Nothing),
+                    flags: 0,
                 },
             ),
         ]
@@ -4500,6 +4505,91 @@ fn change_server(app: &mut Application, change: impl FnOnce(&mut talk_discord::r
 
 #[test]
 #[cfg(feature = "discord")]
+fn server_channels_pin_to_the_top_as_discords_client_pins_them() {
+    use MenuChoice::*;
+    use talk_discord::notifications::Override;
+    let mut app = discord_server();
+    assert_eq!(
+        app.menu_choices("discord:10:11"),
+        [
+            ChannelMute,
+            ChannelNotifications,
+            PinChannel,
+            CopyLink,
+            CopyId
+        ],
+        "pinning comes before the link"
+    );
+    assert!(
+        app.menu_choices("discord:10:14").contains(&PinChannel),
+        "a voice channel"
+    );
+    assert!(
+        !app.menu_choices("discord:10:4").contains(&PinChannel),
+        "a category"
+    );
+    assert!(
+        app.dispatch(Action::PinChannel {
+            room: "discord:10:11".into(),
+            pinned: false,
+        })
+        .is_empty(),
+        "it isn't pinned"
+    );
+
+    // A channel without an override pins with the opt-in flag too; one with
+    // keeps its other flags.
+    let pin = |app: &mut Application, room: &str, pinned| {
+        let effects = app.dispatch(Action::PinChannel {
+            room: room.into(),
+            pinned,
+        });
+        match effects.as_slice() {
+            [
+                Effect::Backend(Command::Discord(DiscordCommand::PinChannel { room: sent, flags })),
+            ] if sent == room => *flags,
+            other => panic!("{} effects", other.len()),
+        }
+    };
+    assert_eq!(pin(&mut app, "discord:10:13", true), 6144);
+    assert!(
+        !app.channel_pinned("discord:10:13"),
+        "not before Discord says so"
+    );
+
+    // Discord's word: Lounge, a voice channel, lists after #memes and
+    // #news, by position, though it came first.
+    change_server(&mut app, |server| {
+        let mut settings = talk_discord::notifications::Notifications::clone(&server.notifications);
+        for (channel, flags) in [("14", 6144), ("13", 6144), ("12", 2048 | 1024)] {
+            let known = settings.overrides.entry(channel.into()).or_default();
+            *known = Override { flags, ..*known };
+        }
+        server.notifications = Arc::new(settings);
+    });
+    assert_eq!(
+        app.state.servers[0].pinned,
+        ["discord:10:12", "discord:10:13", "discord:10:14"]
+    );
+    assert!(app.menu_choices("discord:10:13").contains(&UnpinChannel));
+    assert_eq!(pin(&mut app, "discord:10:13", false), 4096);
+    assert_eq!(
+        pin(&mut app, "discord:10:12", false),
+        1024,
+        "its other flags stay"
+    );
+    assert!(
+        app.dispatch(Action::PinChannel {
+            room: "discord:10:13".into(),
+            pinned: true,
+        })
+        .is_empty(),
+        "already pinned"
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn a_discord_servers_menu_and_header_offer_its_notifications() {
     use MenuChoice::*;
     let mut app = discord_server();
@@ -4521,10 +4611,12 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
         "the header's dropdown lists the menu's choices in its own order"
     );
     assert!(app.header_choices("discord:10:11").is_empty());
+    let mut listed = app.state.menu_choices("discord:10:11");
+    listed.insert(listed.len() - 2, PinChannel);
     assert_eq!(
         app.menu_choices("discord:10:11"),
-        app.state.menu_choices("discord:10:11"),
-        "a channel's menu is a conversation's"
+        listed,
+        "a channel's menu is a conversation's, with pinning it"
     );
 
     change_server(&mut app, |server| {
@@ -4610,8 +4702,15 @@ fn discord_invites_go_to_a_channel_this_account_may_invite_to() {
     assert_eq!(app.header_choices("discord:10")[0], Invite);
     assert_eq!(
         app.menu_choices("discord:10:11"),
-        [ChannelMute, ChannelNotifications, Invite, CopyLink, CopyId],
-        "inviting to a channel comes before its link"
+        [
+            ChannelMute,
+            ChannelNotifications,
+            Invite,
+            PinChannel,
+            CopyLink,
+            CopyId
+        ],
+        "inviting to a channel comes before pinning it and its link"
     );
     assert!(
         !app.menu_choices("discord:10:4").contains(&Invite),
@@ -4752,6 +4851,7 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
         [
             ChannelMute,
             ChannelNotifications,
+            PinChannel,
             CopyLink,
             EditChannel,
             DuplicateChannel,
