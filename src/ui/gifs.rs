@@ -338,7 +338,7 @@ fn masonry_height(width: u32, height: u32) -> f32 {
 
 pub(super) fn bind(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     macro_rules! act {
-        ($callback:ident, |$($arg:ident),*| $action:expr) => {{
+        ($callback:ident($($arg:ident),*) => $action:expr) => {{
             let state = adapter.clone();
             let weak = window.as_weak();
             window.$callback(move |$($arg),*| {
@@ -348,23 +348,23 @@ pub(super) fn bind(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
             });
         }};
     }
-    act!(on_open_gifs, || Action::OpenGifs);
-    act!(on_close_gifs, || Action::CloseGifs);
-    act!(on_gif_search, |text| Action::SearchGifs(text.into()));
-    act!(on_gif_view_chosen, |view| Action::ShowGifs(match view {
+    act!(on_open_gifs() => Action::OpenGifs);
+    act!(on_close_gifs() => Action::CloseGifs);
+    act!(on_gif_search(text) => Action::SearchGifs(text.into()));
+    act!(on_gif_view_chosen(view) => Action::ShowGifs(match view {
         1 => GifView::Trending,
         2 => GifView::Favorites,
         3 => GifView::Search,
         _ => GifView::Home,
     }));
-    act!(on_gif_category, |name| Action::SearchGifCategory(
+    act!(on_gif_category(name) => Action::SearchGifCategory(
         name.into()
     ));
-    act!(on_gif_pick, |url, insert| Action::PickGif {
+    act!(on_gif_pick(url, insert) => Action::PickGif {
         url: url.into(),
         insert,
     });
-    act!(on_gif_favorite, |url| Action::FavoriteGif(url.into()));
+    act!(on_gif_favorite(url) => Action::FavoriteGif(url.into()));
     let favorites = window.global::<GifFavorites>();
     favorites.on_is_favorite(|url, _| FAVORITES.with_borrow(|set| set.contains(url.as_str())));
     let state = adapter.clone();
