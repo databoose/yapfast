@@ -25,7 +25,7 @@ import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGri
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
-import { SettingsScreen, AccountSettings, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
@@ -667,6 +667,11 @@ export component TalkWindow inherits Window {
     in property <bool> gpu-running;
     callback restart();
     callback preferences-changed();
+    /// The built-in themes, and the one shown by its id; choose-theme shows
+    /// and keeps another.
+    in property <[ThemeCard]> themes;
+    in property <string> theme-id;
+    callback choose-theme(string);
     out property <length> message-font-size: root.text-size == 0 ? 14px : root.text-size == 2 ? 18px : 16px;
     // The sidebar keeps 180 to 380px. Dragging also leaves the conversation 420px;
     // the window width cannot enter this binding, because it depends on the layout.
@@ -2323,6 +2328,10 @@ export component TalkWindow inherits Window {
             retry-sync => { root.retry-sync(); }
             set-custom-status => { root.settings-open = false; root.open-status(); }
             sign-out => { root.settings-open = false; root.logout(); }
+        }
+        if root.settings-section == 7: AppearanceSettings {
+            themes: root.themes; theme-id: root.theme-id;
+            choose-theme(id) => { root.choose-theme(id); }
         }
         if root.settings-section == 1: VoiceSettings {
             microphones: root.microphones; microphone-index: root.microphone-index;

@@ -419,17 +419,16 @@ fn control(
                         allocator_stats();
                         Ok(())
                     }
-                    // `theme ID` shows a built-in theme.
+                    // `theme ID` chooses a built-in theme, as Appearance does.
                     command if command.starts_with("theme ") => {
-                        match theme::BUILT_IN
-                            .iter()
-                            .find(|(id, _)| *id == &command["theme ".len()..])
-                        {
-                            Some((_, theme)) => window.borrow().as_ref().map_or(Ok(()), |window| {
-                                adapter.borrow_mut().set_theme(window, theme);
+                        let id = &command["theme ".len()..];
+                        match (theme::find(id), window.borrow().as_ref()) {
+                            (None, _) => Err("no such theme".into()),
+                            (Some(_), Some(window)) => {
+                                adapter.borrow_mut().choose_theme(window, id);
                                 Ok(())
-                            }),
-                            None => Err("no such theme".into()),
+                            }
+                            (Some(_), None) => Ok(()),
                         }
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
@@ -591,6 +590,8 @@ struct Layout {
     each_sound: std::collections::BTreeMap<Sound, u8>,
     /// Talk draws with Skia GPU from its next start; see [`graphics`].
     gpu_rendering: bool,
+    /// The built-in theme chosen, by its id; Yap unless chosen.
+    theme: Option<String>,
 }
 
 /// Talk's sounds start as they're made: 12 dB under full scale at the loudest.
@@ -661,8 +662,12 @@ impl Layout {
     }
 
     fn apply(&self, window: &TalkWindow) {
-        // Yap is the only theme so far.
-        theme::YAP.apply(window);
+        // Before the first frame, which the event loop draws. A window made
+        // again, after closing to the tray, keeps the theme this way too.
+        let chosen = theme::chosen(self.theme.as_deref());
+        chosen.theme.apply(window);
+        window.set_theme_id(chosen.id.into());
+        window.set_themes(theme::cards());
         if let Some(width) = self.sidebar_width {
             window.set_sidebar_width(width);
         }
@@ -1119,12 +1124,27 @@ impl Adapter {
         self.window = window.as_weak();
     }
 
+    /// Shows the window in a built-in theme and keeps it chosen; nothing
+    /// for an id Talk doesn't know.
+    fn choose_theme(&mut self, window: &TalkWindow, id: &str) {
+        let Some(chosen) = theme::find(id) else {
+            return;
+        };
+        window.set_theme_id(chosen.id.into());
+        self.set_theme(window, &chosen.theme);
+        self.layout.theme = Some(chosen.id.to_owned());
+        self.layout.write(&self.root);
+    }
+
     /// Shows the window in another theme's colours, building again what
-    /// carries the old mention colour in its markup.
+    /// carries the old mention colour in its markup: message rows, the
+    /// topic, pins and search results.
     fn set_theme(&mut self, window: &TalkWindow, theme: &theme::Theme) {
         if theme.apply(window) {
             self.restyle = true;
             self.topic_shown = None;
+            self.models.pins.clear();
+            self.models.search_results.clear();
             self.refresh(window);
         }
     }
