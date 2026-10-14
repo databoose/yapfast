@@ -102,6 +102,11 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   used emoji and every category of the `emojis` crate up to Unicode 15.0, which
   Noto Color Emoji and Windows 11 draw; Enter picks the first match. Clicking an
   existing reaction adds or removes yours.
+- A GIF picker next to the emoji button, on Discord: a search over Klipy,
+  trending terms and favourites, as in Discord's client. A click sends a GIF,
+  Shift and a click puts it in the message, and a star keeps it among the
+  favourites; GIFs in messages have the star too. See
+  [Discord](discord.md#gifs).
 - Who reacted, as in Discord's client: half a second on a reaction shows a
   tooltip, ":tada: reacted by Ann, Bo, Cy, and 2 others", naming the first
   three by their name there, once they come (`Command::Reactors`, three at a

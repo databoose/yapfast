@@ -20,6 +20,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
+import { GifPicker, GifTile, PickerTab } from "gifs.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
@@ -45,6 +46,7 @@ export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriend
 export { FriendRequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow, ReactionPill, ReactorRow } from "dialogs.slint";
 export { FoundRow, PickRow } from "header.slint";
+export { GifTile, GifFavorites } from "gifs.slint";
 
 export component TalkWindow inherits Window {
     title: "Talk";
@@ -308,6 +310,23 @@ export component TalkWindow inherits Window {
     callback emoji-suggestion-dismissed;
     // An emoji from the picker, by its reaction key, goes in at the composer's cursor.
     callback insert-emoji(string);
+    /// The GIF picker, in the picker above the composer; see GifPicker.
+    in property <bool> can-pick-gifs;
+    in property <int> gif-view;
+    in-out property <string> gif-query;
+    in property <[GifTile]> gif-tiles;
+    in property <length> gif-grid-height;
+    in property <string> gif-note;
+    in property <[string]> gif-suggestions;
+    in property <bool> gif-has-favorites;
+    callback open-gifs;
+    callback close-gifs;
+    callback gif-search(string);
+    callback gif-view-chosen(int);
+    callback gif-category(string);
+    callback gif-pick(string, bool);
+    callback gif-favorite(string);
+    callback gifs-scrolled(length, length);
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
@@ -1241,6 +1260,72 @@ export component TalkWindow inherits Window {
             root.react(root.react-item, cell.key);
         }
         emoji-picker.close();
+        expressions.close();
+    }
+    // The picker above the composer: GIFs, and the emoji. Its GIFs let go of
+    // their pictures when it closes or shows the emoji.
+    property <int> expression-tab;
+    function open-expressions(tab: int) {
+        root.react-item = "talk:composer";
+        root.emoji-query = "";
+        root.emoji-hover = { glyph: "", name: "" };
+        root.emoji-search("");
+        root.expression-tab = tab;
+        if tab == 0 { root.open-gifs(); }
+        expressions.show();
+    }
+    function show-expression-tab(tab: int) {
+        if tab == root.expression-tab { return; }
+        root.expression-tab = tab;
+        if tab == 0 { root.open-gifs(); } else { root.close-gifs(); }
+    }
+    property <bool> expressions-open: expressions.is-open;
+    changed expressions-open => {
+        if !root.expressions-open {
+            root.close-gifs();
+            root.focus-composer();
+            root.react-item = "";
+        }
+    }
+    expressions := PopupWindow {
+        width: 498px; height: 486px;
+        x: max(8px, min(root.width - self.width - 8px, root.anchor-x + root.anchor-width - self.width));
+        y: max(8px, root.anchor-y - self.height - 8px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 10px;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            clip: true;
+            accessible-role: groupbox; accessible-label: "Expression Picker";
+            VerticalLayout {
+                padding-top: 16px; spacing: 12px;
+                HorizontalLayout {
+                    padding-left: 16px; spacing: 8px; alignment: start;
+                    PickerTab { text: "GIFs"; selected: root.expression-tab == 0; clicked => { root.show-expression-tab(0); } }
+                    PickerTab { text: "Emoji"; selected: root.expression-tab == 1; clicked => { root.show-expression-tab(1); } }
+                }
+                if root.expression-tab == 0: GifPicker {
+                    view: root.gif-view; query <=> root.gif-query; tiles: root.gif-tiles;
+                    grid-height: root.gif-grid-height; note: root.gif-note; suggestions: root.gif-suggestions;
+                    has-favorites: root.gif-has-favorites;
+                    search(text) => { root.gif-search(text); }
+                    show-view(view) => { root.gif-view-chosen(view); }
+                    category(name) => { root.gif-category(name); }
+                    pick(url, insert) => { root.gif-pick(url, insert); expressions.close(); }
+                    favorite(url) => { root.gif-favorite(url); }
+                    scrolled-to(top, height) => { root.gifs-scrolled(top, height); }
+                    close => { expressions.close(); }
+                }
+                if root.expression-tab == 1: EmojiPicker {
+                    bare: true;
+                    emoji-rows: root.emoji-rows; emoji-sections: root.emoji-sections; emoji-query <=> root.emoji-query; emoji-hover <=> root.emoji-hover;
+                    emoji-font: root.emoji-font; react-item: root.react-item;
+                    emoji-search(text) => { root.emoji-search(text); }
+                    pick(cell) => { root.pick(cell); }
+                    close-picker => { expressions.close(); }
+                }
+            }
+        }
     }
     emoji-picker := PopupWindow {
         width: 408px; height: 432px;
@@ -2180,16 +2265,42 @@ export component TalkWindow inherits Window {
                                             up-from-empty => { root.edit-last(); }
                                             up-to-messages => { root.browse-messages(); }
                                             paste => { root.paste-into-composer(); }
+                                            expressions(tab) => {
+                                                if tab == 0 && !root.can-pick-gifs { return; }
+                                                root.anchor(emoji-button.absolute-position.x, emoji-button.absolute-position.y, emoji-button.width, emoji-button.height, false);
+                                                if root.can-pick-gifs {
+                                                    root.open-expressions(tab);
+                                                } else {
+                                                    root.open-picker("talk:composer");
+                                                }
+                                            }
+                                        }
+                                        // As Discord's: the GIFs, then the emoji, in one picker.
+                                        if root.can-pick-gifs: VerticalLayout {
+                                            alignment: end; padding-bottom: 8px;
+                                            gif-button := IconButton {
+                                                icon: @image-url("icons/gif.svg"); label: "Open GIF picker";
+                                                glyph: 22px; enabled: root.composer-enabled;
+                                                tint: root.expressions-open && root.expression-tab == 0 ? Theme.text : Theme.secondary;
+                                                clicked => {
+                                                    root.anchor(emoji-button.absolute-position.x, emoji-button.absolute-position.y, emoji-button.width, emoji-button.height, false);
+                                                    root.open-expressions(0);
+                                                }
+                                            }
                                         }
                                         VerticalLayout {
                                             alignment: end; padding-bottom: 8px;
-                                            IconButton {
+                                            emoji-button := IconButton {
                                                 icon: @image-url("icons/smile.svg"); label: "Add an emoji";
                                                 glyph: 22px; enabled: root.composer-enabled;
-                                                tint: root.react-item == "talk:composer" ? Theme.text : Theme.secondary;
+                                                tint: root.react-item == "talk:composer" && (!root.expressions-open || root.expression-tab == 1) ? Theme.text : Theme.secondary;
                                                 clicked => {
                                                     root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
-                                                    root.open-picker("talk:composer");
+                                                    if root.can-pick-gifs {
+                                                        root.open-expressions(1);
+                                                    } else {
+                                                        root.open-picker("talk:composer");
+                                                    }
                                                 }
                                             }
                                         }

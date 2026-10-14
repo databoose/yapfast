@@ -908,6 +908,8 @@ pub struct Attachment {
     /// A video that plays in place of its picture, which is its poster:
     /// [`Command::PlayVideo`].
     pub video: bool,
+    /// A GIF that can be a favourite: a linked one, or an attached `.gif`.
+    pub gif: Option<Gif>,
 }
 
 /// What [`Command::Video`] tells the video playing.
@@ -1272,9 +1274,94 @@ pub enum Command {
     Logout,
 }
 
+/// A GIF Discord's picker found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gif {
+    /// The provider's id, which a pick is reported by.
+    pub id: Option<String>,
+    /// Its page, which a message sends and favourites are kept by.
+    pub url: String,
+    /// Its picture.
+    pub src: String,
+    /// The same picture as a `.gif`.
+    pub gif_src: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A trending search term in the GIF picker, with a GIF of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GifCategory {
+    pub name: String,
+    pub src: String,
+}
+
+/// A favourite GIF, as Discord's settings keep it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FavoriteGif {
+    /// Its page, by which it's kept.
+    pub url: String,
+    /// The picture shown for it.
+    pub src: String,
+    /// The picture is a video rather than an image.
+    pub video: bool,
+    pub width: u32,
+    pub height: u32,
+    /// When it was added: one more than the newest before it.
+    pub order: u32,
+}
+
+impl FavoriteGif {
+    /// `gif` as a favourite after those `kept`, as Discord's client adds
+    /// one: a video keeps its `.gif` instead, which every client shows.
+    pub fn of(gif: &Gif, kept: &[Self]) -> Self {
+        let video_src = gif.src.ends_with(".mp4") || gif.src.ends_with(".webm");
+        let src = if video_src && !gif.gif_src.is_empty() && gif.gif_src != gif.src {
+            gif.gif_src.clone()
+        } else {
+            gif.src.clone()
+        };
+        let image = [".webp", ".avif", ".gif"]
+            .iter()
+            .any(|extension| src.ends_with(extension));
+        Self {
+            url: gif.url.clone(),
+            video: !image && video_src,
+            src,
+            width: gif.width,
+            height: gif.height,
+            order: kept.iter().map(|kept| kept.order).max().unwrap_or(0) + 1,
+        }
+    }
+}
+
 /// Commands only the linked Discord account carries out.
 #[derive(Clone)]
 pub enum DiscordCommand {
+    /// The GIF picker's home: trending terms with a GIF each, and a GIF for
+    /// "Trending GIFs"; [`Event::GifCategories`] follows.
+    GifCategories,
+    /// GIFs for a search, or with `None` those trending; [`Event::Gifs`]
+    /// follows.
+    Gifs(Option<String>),
+    /// Terms to search for instead of one; [`Event::GifSuggestions`] follows.
+    GifSuggestions(String),
+    /// Tell Discord's GIF provider a search for `query` led to the GIF `id`.
+    GifPicked {
+        id: String,
+        query: String,
+    },
+    /// Fetch the account's favourite GIFs; [`Event::FavoriteGifs`] follows.
+    FavoriteGifs,
+    /// Keep these as the account's favourite GIFs, in place of the old.
+    SetFavoriteGifs(Vec<FavoriteGif>),
+    /// Download a GIF's picture and decode it to fit `width` by `height`;
+    /// [`Event::GifPicture`] follows.
+    GifPicture {
+        url: String,
+        width: u32,
+        height: u32,
+    },
     /// The members of a Discord role in the room's server, as far as they're known;
     /// [`Event::RoleMembers`] follows.
     RoleMembers {
@@ -1645,6 +1732,25 @@ impl Command {
 }
 
 pub enum Event {
+    /// The GIF picker's home, or why it couldn't load.
+    GifCategories(Result<(Vec<GifCategory>, Option<Gif>), String>),
+    /// GIFs for a search, or with `None` those trending, or why not.
+    Gifs {
+        query: Option<String>,
+        result: Result<Vec<Gif>, String>,
+    },
+    GifSuggestions {
+        query: String,
+        terms: Vec<String>,
+    },
+    /// The account's favourite GIFs, all of them, as fetched or as another
+    /// client changed them; or why they couldn't be fetched.
+    FavoriteGifs(Result<Vec<FavoriteGif>, String>),
+    /// A GIF's picture, or none when it failed.
+    GifPicture {
+        url: String,
+        picture: Option<Arc<Picture>>,
+    },
     Voice(voice::State),
     /// A profile [`DiscordCommand::Profile`] asked for, or why Discord didn't give it.
     Profile {

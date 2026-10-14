@@ -20,6 +20,7 @@ mod aside;
 mod calls;
 mod compose;
 mod discord_account;
+mod gifs;
 mod header;
 mod members;
 mod messages;
@@ -33,6 +34,7 @@ mod server_profile;
 mod session;
 mod threads;
 
+pub use gifs::{GifPicker, GifPicture, GifView};
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::{member_server, with_clubs};
@@ -441,6 +443,11 @@ pub struct AppState {
     pub hovered_reaction: Option<(String, String)>,
     pub reaction_tips: Vec<ReactionTip>,
     pub reactions: Option<ReactionsWindow>,
+    /// The GIF picker, and the account's favourite GIFs once fetched,
+    /// counting each change for the stars on messages' GIFs.
+    pub gifs: GifPicker,
+    pub favorite_gifs: Option<Vec<chat::FavoriteGif>>,
+    pub favorite_gifs_changed: u32,
     pub add_people: Option<AddPeople>,
     /// The selected Discord channel's topic, once the backend has said it.
     pub topic: Option<Arc<chat::Topic>>,
@@ -1054,6 +1061,36 @@ pub enum Action {
     /// The pointer went over a message's reaction, by item and key, or left
     /// it.
     HoverReaction(Option<(String, String)>),
+    /// Open the GIF picker, or close it.
+    OpenGifs,
+    CloseGifs,
+    /// The GIF picker's search field, after a pause in typing.
+    SearchGifs(String),
+    /// Show one of the GIF picker's views.
+    ShowGifs(GifView),
+    /// Search for a trending term from the GIF picker's home.
+    SearchGifCategory(String),
+    /// The pictures of the GIFs on screen or about to be, with the size to
+    /// decode each at, and whether the list is scrolled near its end.
+    GifsShown {
+        shown: Vec<(String, u32, u32)>,
+        near_end: bool,
+    },
+    /// Send a GIF, by its page, or with `insert` put it in the composer.
+    PickGif {
+        url: String,
+        insert: bool,
+    },
+    /// Add a GIF to the favourites, by its page, or take it out.
+    FavoriteGif(String),
+    /// The same for a message's GIF, by item and attachment.
+    FavoriteMessageGif {
+        item: String,
+        index: usize,
+    },
+    /// Load the favourite GIFs, if they haven't, as a star is about to be
+    /// used.
+    LoadFavoriteGifs,
     /// Open a message's Reactions window, by item, on the reaction `key`,
     /// or the one most reacted with.
     ShowReactions {
@@ -1878,6 +1915,16 @@ impl Application {
             Action::CloseDm(room) => self.close_dm(room),
             Action::ShowPins(shown) => self.show_pins(shown),
             Action::HoverReaction(hovered) => self.hover_reaction(hovered),
+            Action::OpenGifs => self.open_gifs(),
+            Action::CloseGifs => self.close_gifs(),
+            Action::SearchGifs(query) => self.search_gifs(query),
+            Action::ShowGifs(view) => self.show_gifs(view),
+            Action::SearchGifCategory(name) => self.search_gif_category(name),
+            Action::GifsShown { shown, near_end } => self.gifs_shown(shown, near_end),
+            Action::PickGif { url, insert } => self.pick_gif(url, insert),
+            Action::FavoriteGif(url) => self.favorite_gif(url),
+            Action::FavoriteMessageGif { item, index } => self.favorite_message_gif(item, index),
+            Action::LoadFavoriteGifs => self.load_favorite_gifs(),
             Action::ShowReactions { item, key } => self.show_reactions(item, key),
             Action::CloseReactions => self.close_reactions(),
             Action::ShowReactors(key) => self.show_reactors(key),
@@ -2270,6 +2317,11 @@ impl Application {
             }
             Event::ThreadOpened { room, result } => self.thread_opened(room, result),
             Event::Pins { room, result } => self.pins_came(room, result),
+            Event::GifCategories(result) => self.gif_categories_came(result),
+            Event::Gifs { query, result } => self.gifs_came(query, result),
+            Event::GifSuggestions { query, terms } => self.gif_suggestions_came(query, terms),
+            Event::FavoriteGifs(result) => return self.favorite_gifs_came(result),
+            Event::GifPicture { url, picture } => self.gif_picture_came(url, picture),
             Event::Reactors {
                 item,
                 key,

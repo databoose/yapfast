@@ -206,6 +206,7 @@ impl Adapter {
         self.show_server_profile(window);
         self.show_dialogs(window);
         self.show_reactions(window);
+        self.show_gifs(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
         self.show_aside(window);

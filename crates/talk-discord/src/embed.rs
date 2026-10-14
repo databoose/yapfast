@@ -77,6 +77,7 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
         view_url: scaled_url(value, VIEW_WIDTH, VIEW_HEIGHT, animated),
         still_url: None,
         video_url: None,
+        page_url: None,
         shown,
         spoiler: false,
     })
@@ -88,6 +89,7 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
 /// the video can't play. The file is the video, by its own name. Without a
 /// video the proxy has, the picture plays, if it moves.
 fn gif(picture: &mut Attachment, embed: &Value) {
+    picture.page_url = embed["url"].as_str().map(str::to_owned);
     let video = &embed["video"];
     if let Some(proxy) = video["proxy_url"].as_str() {
         picture.still_url = picture.preview_url.replace(proxy.to_owned());

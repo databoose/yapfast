@@ -154,6 +154,9 @@ pub struct Attachment {
     /// attached video, or a link's through the media proxy.
     #[serde(default)]
     pub video_url: Option<String>,
+    /// The page of a GIF linked on its own, which favourites keep it by.
+    #[serde(default)]
+    pub page_url: Option<String>,
     pub shown: Shown,
     /// Marked as a spoiler: by a name starting `SPOILER_`, or by its flags.
     pub spoiler: bool,
@@ -425,6 +428,7 @@ pub fn parse(value: &Value) -> Option<Message> {
                     .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT, true))
                     .flatten(),
                 video_url: video.then(|| url.clone()),
+                page_url: None,
                 url,
                 still_url: None,
                 shown: Shown::Message,
@@ -488,6 +492,7 @@ pub fn parse(value: &Value) -> Option<Message> {
             view_url: Some(url),
             still_url: None,
             video_url: None,
+            page_url: None,
             shown: Shown::Sticker,
             spoiler: false,
         });

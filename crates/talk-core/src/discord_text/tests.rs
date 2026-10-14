@@ -236,6 +236,7 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
             still_url: None,
             video_url: None,
             shown: Shown::Message,
+            page_url: None,
             spoiler: false,
         }],
         ..message(&id.to_string(), None)
@@ -283,6 +284,7 @@ fn changes_render_again_only_the_messages_they_change() {
             still_url: None,
             video_url: None,
             shown: Shown::Message,
+            page_url: None,
             spoiler: false,
         }],
         ..message("9", None)
@@ -1004,6 +1006,7 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
                     still_url: None,
                     video_url: None,
                     shown: Shown::Message,
+                    page_url: None,
                     spoiler: false,
                 }],
                 ..message("1", None)
@@ -1064,6 +1067,7 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
             still_url: None,
             video_url: None,
             shown: Shown::Message,
+            page_url: None,
             spoiler: false,
         }],
         ..message(id, None)

@@ -19,7 +19,8 @@ The display is the window's size, so coordinates are window coordinates.
 which Talk's tray icon registers with; without it there is no tray.
 
 do commands, run in order; the first error stops the rest:
-  click X Y | rightclick X Y | move X Y | drag X Y TO_X TO_Y (left button)
+  click X Y [MODIFIERS] | rightclick X Y | move X Y | drag X Y TO_X TO_Y (left
+      button); click's modifiers are held through it, as shift or ctrl+shift
   press X Y | release   hold the left button down, for what happens meanwhile
   scroll PIXELS (negative scrolls up)
   key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace

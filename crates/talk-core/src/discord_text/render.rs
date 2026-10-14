@@ -105,6 +105,7 @@ pub(super) fn found(
                 placement: Placement::Message,
                 spoiler: attachment.spoiler,
                 video: attachment.video_url.is_some(),
+                gif: super::gifs::favorite_gif(attachment),
             })
             .collect(),
         mentions: mentions(discord, server, &message.content),

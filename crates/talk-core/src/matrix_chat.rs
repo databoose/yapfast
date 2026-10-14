@@ -1857,6 +1857,7 @@ async fn publish_timeline(
                             dimensions,
                             preview_failed: matches!(cached, Some(None)),
                             placement: Placement::Message,
+                            gif: None,
                             spoiler: false,
                             video: false,
                             preview: cached.flatten(),
@@ -1876,6 +1877,7 @@ async fn publish_timeline(
                             preview: None,
                             preview_failed: false,
                             placement: Placement::Message,
+                            gif: None,
                             spoiler: false,
                             video: false,
                         }];
@@ -1894,6 +1896,7 @@ async fn publish_timeline(
                             preview: None,
                             preview_failed: false,
                             placement: Placement::Message,
+                            gif: None,
                             spoiler: false,
                             video: false,
                         }];
@@ -1912,6 +1915,7 @@ async fn publish_timeline(
                             preview: None,
                             preview_failed: false,
                             placement: Placement::Message,
+                            gif: None,
                             spoiler: false,
                             video: false,
                         }];

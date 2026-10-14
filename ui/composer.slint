@@ -75,6 +75,8 @@ export component Composer inherits Rectangle {
     // Ctrl+V: the clipboard may hold files or a picture rather than text, so the
     // application looks first and, finding text, pastes it with paste-text.
     callback paste;
+    // Ctrl+G and Ctrl+E, as Discord's: open the GIFs, 0, or the emoji, 1.
+    callback expressions(int);
     public function paste-text() { input.paste(); }
     public function focus-input() { input.focus(); }
     public function place-caret(offset: int) { input.set-selection-offsets(offset, offset); }
@@ -108,6 +110,11 @@ export component Composer inherits Rectangle {
             }
             if (event.text == "v" || event.text == "V") && event.modifiers.control && !event.modifiers.alt && root.enabled {
                 root.paste();
+                return accept;
+            }
+            if (event.text == "g" || event.text == "G" || event.text == "e" || event.text == "E")
+                && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && root.enabled {
+                root.expressions(event.text == "g" || event.text == "G" ? 0 : 1);
                 return accept;
             }
             return reject;

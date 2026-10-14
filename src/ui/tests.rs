@@ -545,6 +545,7 @@ fn pictures_on_their_way_hold_their_place_as_skeletons() {
         preview: None,
         preview_failed,
         placement: Placement::Message,
+        gif: None,
         spoiler: false,
         video: false,
     };
@@ -586,6 +587,7 @@ fn a_selection_copies_the_pictures_it_runs_through() {
                 preview: Some(picture),
                 preview_failed: false,
                 placement: Placement::Message,
+                gif: None,
                 spoiler: false,
                 video: false,
             }],
@@ -2456,6 +2458,7 @@ fn closing_the_viewer_lets_go_of_its_picture() {
             })),
             preview_failed: false,
             placement: talk_core::chat::Placement::Message,
+            gif: None,
             spoiler: false,
             video: false,
         }],

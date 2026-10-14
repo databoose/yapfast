@@ -578,6 +578,73 @@ impl Api {
         .map(drop)
     }
 
+    /// The GIF picker's home: trending terms, each with a GIF, and trending GIFs.
+    pub async fn gifs_trending(&self) -> Result<Value> {
+        let path = format!(
+            "/gifs/trending?media_format={}&locale={}",
+            crate::gifs::MEDIA_FORMAT,
+            crate::gifs::LOCALE
+        );
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// The GIFs trending now, for the picker's "Trending GIFs".
+    pub async fn gifs_trending_gifs(&self) -> Result<Value> {
+        let path = format!(
+            "/gifs/trending-gifs?media_format={}&locale={}",
+            crate::gifs::MEDIA_FORMAT,
+            crate::gifs::LOCALE
+        );
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// GIFs for `query`, as many as Discord gives at once.
+    pub async fn gifs_search(&self, query: &str) -> Result<Value> {
+        let path = format!(
+            "/gifs/search?q={}&media_format={}&locale={}",
+            encode(query),
+            crate::gifs::MEDIA_FORMAT,
+            crate::gifs::LOCALE
+        );
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Terms like `query` to search for instead.
+    pub async fn gifs_suggest(&self, query: &str, limit: u32) -> Result<Value> {
+        let path = format!(
+            "/gifs/suggest?q={}&limit={limit}&locale={}",
+            encode(query),
+            crate::gifs::LOCALE
+        );
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Tells the provider which GIF a search for `query` led to.
+    pub async fn gif_select(&self, id: &str, query: &str) -> Result<()> {
+        let body = json!({"id": id, "q": query});
+        self.empty(with_json(self.request(Method::POST, "/gifs/select"), &body))
+            .await
+    }
+
+    /// The account's second settings, `FrecencyUserSettings`, in base64.
+    pub async fn frecency_settings(&self) -> Result<String> {
+        let answer = self
+            .json(self.request(Method::GET, "/users/@me/settings-proto/2"))
+            .await?;
+        Ok(answer["settings"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Replaces the fields `settings`, base64 `FrecencyUserSettings`, holds.
+    pub async fn set_frecency_settings(&self, settings: &str) -> Result<()> {
+        let body = json!({"settings": settings});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/2"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// Sets the status: `online`, `idle`, `dnd` or `invisible`.
     pub async fn set_status(&self, status: &str) -> Result<()> {
         let body = json!({"settings": settings::write_status(status)});
@@ -883,7 +950,7 @@ impl Api {
         let test_file = client::test_server()
             .and_then(|server| url.strip_prefix(server))
             .is_some_and(|path| path.starts_with('/'));
-        if !discord_file(url) && !test_file {
+        if !discord_file(url) && !test_file && !crate::gifs::provider_media(url) {
             bail!("not a Discord file");
         }
         let _turn = self.downloads.acquire().await?;
@@ -918,7 +985,7 @@ impl Api {
         let test_file = client::test_server()
             .and_then(|server| url.strip_prefix(server))
             .is_some_and(|path| path.starts_with('/'));
-        if !discord_file(url) && !test_file {
+        if !discord_file(url) && !test_file && !crate::gifs::provider_media(url) {
             bail!("not a Discord file");
         }
         let mut response = self

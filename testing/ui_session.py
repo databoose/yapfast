@@ -220,7 +220,13 @@ def perform(command):
     if talk.poll() is not None:
         raise RuntimeError(f'Talk exited with {talk.returncode}; see {state / "talk.log"}, or relaunch')
     if verb == 'click':
-        INPUT['click'](*map(float, values))
+        # A third word holds modifiers down for the click, as shift or ctrl+shift.
+        codes = [KEYS[modifier] for modifier in values[2].split('+')] if len(values) > 2 else []
+        for code in codes:
+            INPUT['send'](f'key {code} 1')
+        INPUT['click'](*map(float, values[:2]))
+        for code in reversed(codes):
+            INPUT['send'](f'key {code} 0')
         time.sleep(.3)
     elif verb == 'rightclick':
         INPUT['send'](f'move {values[0]} {values[1]}')

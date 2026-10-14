@@ -39,6 +39,7 @@ use crate::{
 mod account;
 mod channels;
 mod commands;
+mod gifs;
 mod open_channel;
 mod render;
 mod server_profile;

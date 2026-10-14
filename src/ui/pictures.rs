@@ -527,6 +527,11 @@ pub(super) fn gallery(
                 frames,
                 delays,
                 video: attachment.video,
+                gif: attachment
+                    .gif
+                    .as_ref()
+                    .map(|gif| gif.url.as_str().into())
+                    .unwrap_or_default(),
                 ..Default::default()
             }
         };
@@ -592,6 +597,7 @@ mod tests {
                 })),
                 preview_failed: false,
                 placement: Placement::Message,
+                gif: None,
                 spoiler: false,
                 video: false,
             })

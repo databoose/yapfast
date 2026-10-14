@@ -1012,6 +1012,40 @@ an error.
   connected, whenever the settings change, and clears it when it ends. A
   custom emoji in a status needs Nitro.
 
+### GIFs
+
+The GIF button left of the emoji button, or Ctrl+G, opens a picker with two
+tabs, GIFs and Emoji, as Discord's does; Ctrl+E opens it on Emoji. Discord
+finds GIFs through Klipy, and Talk asks Discord as its desktop client does:
+
+- The home is `GET /gifs/trending?media_format=tinywebp&locale=en-US`:
+  trending terms, each with a picture, and one trending GIF. It shows a
+  Favorites tile, a "Trending GIFs" tile and the terms, 110px tall, two to a
+  row. A term searches for itself; Trending GIFs lists `GET
+  /gifs/trending-gifs`.
+- Typing searches with `GET /gifs/search?q=` a quarter second after the last
+  key, as Discord's does. Results come in Discord's masonry: columns at
+  least 200px wide with 12px gutters, each GIF going to the shortest. Within
+  1180px of the end, `GET /gifs/suggest?q=&limit=5` offers other terms, as
+  buttons under the results ("Your perfect GIF is in another castle").
+- A click sends the GIF's page URL as a message, keeping a reply that was
+  being written, and a search's pick is reported with `POST /gifs/select`
+  `{id, q}`. Discord unfurls the URL into a gifv embed, whose picture Talk
+  plays. Shift and a click puts the URL in the message instead.
+- Only the GIFs in sight, and a screen either side, load and play; they come
+  from Klipy's or Tenor's media hosts, at the size they show, and go when the
+  picker closes.
+- Favourites are kept as Discord's are, in the second settings protobuf
+  (`FrecencyUserSettings`, field 2): a map from each GIF's page to its
+  picture, size, format and order. `GET /users/@me/settings-proto/2` reads
+  them, the first time the picker opens or a star is pointed at, and `PATCH`
+  writes all of them back; USER_SETTINGS_PROTO_UPDATE with type 2 brings
+  changes made elsewhere. A star at a tile's top right, or at the top left of
+  a GIF in a message, adds or takes one out; a new one gets the highest
+  order, and the Favorites view lists the newest first, searchable by name.
+  A message's GIF is its gifv embed's page, or an attached `.gif` without
+  the CDN's signature.
+
 ### Jumping to a message
 
 A reply's quote, a pin, a search result and the bar over the "New" divider

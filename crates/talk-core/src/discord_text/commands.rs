@@ -61,6 +61,9 @@ pub fn command(
     let Some(command) = server_profile::command(command, discord, events) else {
         return;
     };
+    let Some(command) = gifs::command(command, discord, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }
@@ -520,6 +523,10 @@ pub fn live(
     done: &UnboundedSender<Done>,
     events: &UnboundedSender<Event>,
 ) {
+    if let Ok(Live::FavoriteGifs(favorites)) = &event {
+        let _ = events.send(Event::FavoriteGifs(Ok(gifs::favorites(favorites))));
+        return;
+    }
     if let Ok(Live::Notify { guild, message }) = &event {
         let _ = events.send(Event::Notify(notification(
             discord,

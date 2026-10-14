@@ -83,6 +83,12 @@
 // emoji and sticker take that long, as a round trip to the real CDN does. POST /_control/showcase makes
 // Bob post a spoiler, custom emoji, stickers, a GIF, a spoilered picture and a reply
 // to the start of #general's history, and Alice block Dave, who then posts.
+// /gifs/trending, /gifs/trending-gifs, /gifs/search and /gifs/suggest find
+// ten GIFs, made by testing/make-gif-fixtures and served from /_gifs/; a
+// search for "nothing" finds none. GET /_control/gif-selects lists what POST
+// /gifs/select reported. Alice's favourite GIFs, one to start with, are in
+// /users/@me/settings-proto/2, and a sent GIF's page unfurls into a gifv
+// embed a moment later.
 // Alice's custom status, "Testing Talk", is in her settings; PATCH
 // /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
@@ -2950,6 +2956,60 @@ const invites: Record<string, unknown>[] = [];
 const uploads = new Map<string, { filename: string; data?: Uint8Array }>();
 let uploadCount = 0;
 
+// GIFs for the picker, as Discord's /gifs endpoints give them from its
+// provider: testing/fixtures/gifs' pictures, each found by the terms it has.
+// Searching "nothing" finds none. The provider's pages are Klipy's; the
+// pictures come from the fake, as /_gifs/NAME.webp.
+const gifCatalog: { name: string; terms: string[]; width: number; height: number }[] = [
+  { name: "cat", terms: ["cat", "happy", "cute"], width: 220, height: 124 },
+  { name: "dog", terms: ["dog", "happy", "cute"], width: 220, height: 220 },
+  { name: "dance", terms: ["dance", "party", "happy"], width: 220, height: 293 },
+  { name: "wave", terms: ["wave", "hello", "hi"], width: 220, height: 165 },
+  { name: "party", terms: ["party", "dance", "celebrate"], width: 220, height: 124 },
+  { name: "wow", terms: ["wow", "surprised", "omg"], width: 220, height: 220 },
+  { name: "sad", terms: ["sad", "cry"], width: 220, height: 165 },
+  { name: "laugh", terms: ["laugh", "lol", "happy"], width: 220, height: 293 },
+  { name: "thumbs", terms: ["thumbs up", "yes", "ok"], width: 220, height: 124 },
+  { name: "spin", terms: ["spin", "dance", "wow"], width: 220, height: 220 },
+];
+/** The trending terms the picker's home shows, each as a category. */
+const gifCategories = ["happy", "dance", "wow", "sad", "cute", "party"];
+/** What POST /gifs/select reported, for GET /_control/gif-selects. */
+const gifSelects: { id: string; q: string }[] = [];
+
+function wireGif(gif: (typeof gifCatalog)[number], origin: string) {
+  const index = gifCatalog.indexOf(gif);
+  return {
+    id: String(9100 + index), title: "", url: `https://klipy.com/gifs/${gif.name}-${9100 + index}`,
+    src: `${origin}/_gifs/${gif.name}.webp`, gif_src: `${origin}/_gifs/${gif.name}.webp`,
+    preview: `${origin}/_gifs/${gif.name}.webp`, width: gif.width, height: gif.height,
+  };
+}
+
+function gifsFor(query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q || q === "nothing") return [];
+  return gifCatalog.filter((gif) => gif.name.startsWith(q) || gif.terms.some((term) => term.startsWith(q)));
+}
+
+// Alice's second settings, FrecencyUserSettings: her favourite GIFs, one
+// added on another client, whose picture is a .gif. PATCH replaces them.
+function protoNumber(field: number, value: number): Uint8Array {
+  const out = [field << 3];
+  for (; ; value >>= 7) {
+    if (value < 0x80) { out.push(value); break; }
+    out.push(value & 0x7f | 0x80);
+  }
+  return new Uint8Array(out);
+}
+function favoriteGifs(origin: string): string {
+  const gif = new Uint8Array([...protoNumber(1, 1), ...protoBytes(2, text(`${origin}/_gifs/hello.gif`)),
+    ...protoNumber(3, 220), ...protoNumber(4, 165), ...protoNumber(5, 1)]);
+  const entry = new Uint8Array([...protoBytes(1, text("https://klipy.com/gifs/hello-9000")), ...protoBytes(2, gif)]);
+  return Buffer.from(protoBytes(2, protoBytes(1, entry))).toString("base64");
+}
+let frecencySettings: string | null = null;
+
 async function api(req: Request, path: string, origin: string): Promise<Response> {
   // A confirmed remote login's ticket, traded for the login without one.
   if (req.method === "POST" && path === "/users/@me/remote-auth/login") {
@@ -3080,6 +3140,19 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       });
       readStates.set(m[1]!, { last: message.id, mentions: 0 });
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      // A GIF the picker sent gets its embed a moment later, as Discord's
+      // embeds come: the provider's picture, without a video here.
+      const sentGif = gifCatalog.find((gif) => wireGif(gif, origin).url === message.content.trim());
+      if (sentGif) {
+        setTimeout(() => {
+          const wired = wireGif(sentGif, origin);
+          message.embeds = () => [{
+            type: "gifv", url: wired.url, provider: { name: "Klipy", url: "https://klipy.com" },
+            thumbnail: { url: `https://static.klipy.com/${sentGif.name}.webp`, proxy_url: wired.src, width: sentGif.width, height: sentGif.height, content_type: "image/webp" },
+          }];
+          dispatch("MESSAGE_UPDATE", dispatched(message, origin));
+        }, 300);
+      }
       return json(wireMessage(message, origin));
     }
   }
@@ -3383,6 +3456,43 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     settings = body.settings;
     dispatch("USER_SETTINGS_PROTO_UPDATE", { settings: { type: 1, proto: settings }, partial: true });
     return json({ settings });
+  }
+
+  // The second settings: favourite GIFs.
+  if (method === "GET" && path === "/users/@me/settings-proto/2") {
+    return json({ settings: frecencySettings ??= favoriteGifs(origin) });
+  }
+  if (method === "PATCH" && path === "/users/@me/settings-proto/2") {
+    const body: any = await req.json().catch(() => ({}));
+    if (typeof body.settings !== "string") return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    frecencySettings = body.settings;
+    dispatch("USER_SETTINGS_PROTO_UPDATE", { settings: { type: 2, proto: frecencySettings }, partial: true });
+    return json({ settings: frecencySettings });
+  }
+
+  // The GIF picker's searches.
+  if (method === "GET" && path === "/gifs/trending") {
+    return json({
+      categories: gifCategories.map((name) => ({ name, src: wireGif(gifsFor(name)[0]!, origin).src })),
+      gifs: [wireGif(gifCatalog[5]!, origin)],
+    });
+  }
+  if (method === "GET" && path === "/gifs/trending-gifs") {
+    return json(gifCatalog.map((gif) => wireGif(gif, origin)));
+  }
+  if (method === "GET" && path === "/gifs/search") {
+    return json(gifsFor(url.searchParams.get("q") ?? "").map((gif) => wireGif(gif, origin)));
+  }
+  if (method === "GET" && path === "/gifs/suggest") {
+    const q = (url.searchParams.get("q") ?? "").toLowerCase();
+    const limit = Number(url.searchParams.get("limit") ?? 20);
+    const terms = [...new Set(gifCatalog.flatMap((gif) => gif.terms))];
+    return json(terms.filter((term) => term !== q).slice(0, limit));
+  }
+  if (method === "POST" && path === "/gifs/select") {
+    const body: any = await req.json().catch(() => ({}));
+    gifSelects.push({ id: String(body.id), q: String(body.q ?? "") });
+    return new Response(null, { status: 204 });
   }
 
   // Friend requests: sending one, or accepting one, from where Discord's
@@ -4111,6 +4221,14 @@ const server = Bun.serve<SocketData>({
     if (req.method === "GET" && path.startsWith("/attachments/")) {
       return serveFile(path.slice("/attachments/".length), url);
     }
+    // The GIF provider's pictures.
+    const gif = req.method === "GET" ? path.match(/^\/_gifs\/([a-z]+)\.(webp|gif)$/) : null;
+    if (gif) {
+      const file = Bun.file(new URL(`gifs/${gif[1]}.${gif[2]}`, fixtures));
+      if (!(await file.exists())) return notFound();
+      return new Response(file, { headers: { "content-type": `image/${gif[2]}` } });
+    }
+    if (path === "/_control/gif-selects") return Response.json(gifSelects);
     if (req.method === "GET" && path.startsWith("/media/attachments/")) {
       return serveFile(path.slice("/media/attachments/".length), url);
     }

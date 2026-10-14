@@ -1136,6 +1136,7 @@ impl OpenChannel {
                         preview: None,
                         preview_failed: false,
                         placement: Placement::Message,
+                        gif: None,
                         spoiler: file.spoiler,
                         video: false,
                     })
@@ -1216,6 +1217,7 @@ impl OpenChannel {
                     },
                     spoiler: attachment.spoiler,
                     video: attachment.video_url.is_some(),
+                    gif: super::gifs::favorite_gif(attachment),
                 }
             })
             .collect();

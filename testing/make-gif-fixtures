@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Makes the GIFs testing/fake_discord.ts serves to the GIF picker: small
+# animated WebP in a few shapes, as Discord's tinywebp, and one GIF, which
+# favourites from other clients keep. Each is a coloured ground with its
+# name and a dot that crosses it in eight frames.
+# Usage: testing/make-gif-fixtures (needs ImageMagick's magick)
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/fixtures/gifs"
+
+make() {
+  local name=$1 size=$2 color=$3 extension=${4:-webp}
+  local width=${size%x*} height=${size#*x}
+  local frames=()
+  for step in 0 1 2 3 4 5 6 7; do
+    local x=$((20 + step * (width - 40) / 7))
+    frames+=(\( -size "$size" "xc:$color" -fill '#ffffffd0' -draw "circle $x,$((height - 24)) $((x + 10)),$((height - 24))"
+      -fill white -font DejaVu-Sans-Bold -pointsize 26 -gravity center -annotate +0-8 "$name" \))
+  done
+  magick -delay 12 "${frames[@]}" -loop 0 -define webp:lossless=true "$name.$extension"
+}
+
+make cat 220x124 '#d9822b'
+make dog 220x220 '#3a7bd5'
+make dance 220x293 '#a845c9'
+make wave 220x165 '#2f9e6e'
+make party 220x124 '#e0457b'
+make wow 220x220 '#c9a227'
+make sad 220x165 '#4a5a8c'
+make laugh 220x293 '#d35d3a'
+make thumbs 220x124 '#3aa3a3'
+make spin 220x220 '#7a5cd6'
+make hello 220x165 '#5b8c3a' gif

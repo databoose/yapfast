@@ -1,0 +1,422 @@
+//! The GIF picker, as Discord's client has it beside the emoji: a home of
+//! trending terms, a search, the trending GIFs and the account's favourites.
+//! A click sends a GIF's page as a message; Shift puts it in the composer.
+//! The picker keeps pictures only for the GIFs on screen, or about to be,
+//! and none once it closes.
+
+use super::*;
+use crate::chat::{FavoriteGif, Gif, GifCategory};
+
+/// What the picker shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GifView {
+    /// The Favorites tile, "Trending GIFs" and the trending terms.
+    #[default]
+    Home,
+    Trending,
+    Favorites,
+    /// What the search field finds.
+    Search,
+}
+
+/// A picture the picker shows, by its address.
+#[derive(Clone, Debug)]
+pub enum GifPicture {
+    Loading,
+    Shown(Arc<Picture>),
+    Failed,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GifPicker {
+    pub open: bool,
+    pub view: GifView,
+    /// The search field: a search, or in Favorites a filter. It stays as it
+    /// was when the picker opens again, as Discord's does.
+    pub query: String,
+    /// The home's trending terms, kept once they came, and a GIF for its
+    /// "Trending GIFs" tile.
+    pub categories: Vec<GifCategory>,
+    pub trending_preview: Option<Gif>,
+    pub home_loading: bool,
+    pub home_error: Option<String>,
+    /// The GIFs found: a search's, or those trending.
+    pub results: Vec<Gif>,
+    /// What they're for: a search, or `None` for those trending; `None`
+    /// outside while nothing was asked.
+    results_for: Option<Option<String>>,
+    pub loading: bool,
+    pub error: Option<String>,
+    /// Terms to try instead, for the search shown.
+    pub suggestions: Vec<String>,
+    suggested: Option<String>,
+    pub pictures: HashMap<String, GifPicture>,
+    /// The favourites were asked for, and a star used before they came,
+    /// which takes effect once they do.
+    favorites_asked: bool,
+    starred: Option<Gif>,
+}
+
+impl GifPicker {
+    /// The search the results are for, once they're a search's.
+    fn searched(&self) -> Option<&str> {
+        self.results_for.as_ref()?.as_deref()
+    }
+}
+
+impl AppState {
+    /// The favourites the picker lists: the newest first, those whose page
+    /// has the filter's letters when there is one, as Discord's client
+    /// filters them.
+    pub fn shown_favorite_gifs(&self) -> Vec<&FavoriteGif> {
+        let squash = |text: &str| -> String {
+            text.chars()
+                .filter(|c| !matches!(c, '-' | '_' | ' '))
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        let filter = squash(&self.gifs.query);
+        let mut favorites: Vec<&FavoriteGif> = self
+            .favorite_gifs
+            .iter()
+            .flatten()
+            .filter(|favorite| filter.is_empty() || squash(&favorite.url).contains(&filter))
+            .collect();
+        favorites.sort_by_key(|favorite| std::cmp::Reverse(favorite.order));
+        favorites
+    }
+
+    pub fn is_favorite_gif(&self, url: &str) -> bool {
+        self.favorite_gifs
+            .iter()
+            .flatten()
+            .any(|favorite| favorite.url == url)
+    }
+
+    /// The GIF picker is offered: in a Discord room this account can write in.
+    pub fn can_pick_gifs(&self) -> bool {
+        !self.preview
+            && self.selected.as_deref().is_some_and(|room| {
+                Network::of(room) == Network::Discord && self.can_write_in(room)
+            })
+    }
+}
+
+impl Application {
+    pub(super) fn open_gifs(&mut self) -> Vec<Effect> {
+        if !self.state.can_pick_gifs() {
+            return vec![];
+        }
+        let picker = &mut self.state.gifs;
+        picker.open = true;
+        let mut effects = vec![];
+        if picker.categories.is_empty() && !picker.home_loading {
+            picker.home_loading = true;
+            picker.home_error = None;
+            effects.push(Effect::Backend(Command::Discord(
+                DiscordCommand::GifCategories,
+            )));
+        }
+        // A search that failed tries again.
+        if picker.error.is_some()
+            && let Some(asked) = picker.results_for.clone()
+        {
+            effects.extend(self.ask_gifs(asked));
+        }
+        effects.extend(self.load_favorite_gifs());
+        effects
+    }
+
+    /// Asks for the favourites once, as opening the picker or pointing at a
+    /// GIF's star does first.
+    pub(super) fn load_favorite_gifs(&mut self) -> Vec<Effect> {
+        if self.state.favorite_gifs.is_some()
+            || self.state.gifs.favorites_asked
+            || self.state.preview
+        {
+            return vec![];
+        }
+        self.state.gifs.favorites_asked = true;
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::FavoriteGifs,
+        ))]
+    }
+
+    /// Closes the picker, letting go of its pictures.
+    pub(super) fn close_gifs(&mut self) -> Vec<Effect> {
+        self.state.gifs.open = false;
+        self.state.gifs.pictures = HashMap::new();
+        vec![]
+    }
+
+    /// The search field changed, after a pause in typing: search for it,
+    /// or in Favorites filter them.
+    pub(super) fn search_gifs(&mut self, query: String) -> Vec<Effect> {
+        let picker = &mut self.state.gifs;
+        picker.query = query.clone();
+        if picker.view == GifView::Favorites {
+            return vec![];
+        }
+        let query = query.trim().to_owned();
+        if query.is_empty() {
+            picker.view = GifView::Home;
+            return vec![];
+        }
+        picker.view = GifView::Search;
+        if picker.searched() == Some(query.as_str()) && picker.error.is_none() {
+            return vec![];
+        }
+        self.ask_gifs(Some(query))
+    }
+
+    /// Shows one of the picker's views; the home empties the search.
+    pub(super) fn show_gifs(&mut self, view: GifView) -> Vec<Effect> {
+        let picker = &mut self.state.gifs;
+        picker.view = view;
+        match view {
+            GifView::Home | GifView::Favorites => {
+                picker.query.clear();
+                vec![]
+            }
+            GifView::Trending => {
+                picker.query.clear();
+                if picker.results_for == Some(None) && picker.error.is_none() {
+                    vec![]
+                } else {
+                    self.ask_gifs(None)
+                }
+            }
+            GifView::Search => vec![],
+        }
+    }
+
+    /// A trending term's tile: search for it at once.
+    pub(super) fn search_gif_category(&mut self, name: String) -> Vec<Effect> {
+        let picker = &mut self.state.gifs;
+        picker.view = GifView::Search;
+        picker.query = name.clone();
+        if picker.searched() == Some(name.as_str()) && picker.error.is_none() {
+            return vec![];
+        }
+        self.ask_gifs(Some(name))
+    }
+
+    fn ask_gifs(&mut self, query: Option<String>) -> Vec<Effect> {
+        let picker = &mut self.state.gifs;
+        picker.results.clear();
+        picker.results_for = Some(query.clone());
+        picker.loading = true;
+        picker.error = None;
+        picker.suggestions.clear();
+        picker.suggested = None;
+        vec![Effect::Backend(Command::Discord(DiscordCommand::Gifs(
+            query,
+        )))]
+    }
+
+    /// The pictures of the GIFs on screen or about to be, each with the size
+    /// to decode it at; the rest are let go. `near_end` says the list is
+    /// scrolled near its end, where a search suggests other terms.
+    pub(super) fn gifs_shown(
+        &mut self,
+        shown: Vec<(String, u32, u32)>,
+        near_end: bool,
+    ) -> Vec<Effect> {
+        let picker = &mut self.state.gifs;
+        if !picker.open {
+            return vec![];
+        }
+        picker
+            .pictures
+            .retain(|url, _| shown.iter().any(|(shown, _, _)| shown == url));
+        let mut effects = vec![];
+        for (url, width, height) in shown {
+            if url.is_empty() || picker.pictures.contains_key(&url) {
+                continue;
+            }
+            picker.pictures.insert(url.clone(), GifPicture::Loading);
+            effects.push(Effect::Backend(Command::Discord(
+                DiscordCommand::GifPicture { url, width, height },
+            )));
+        }
+        if near_end
+            && picker.view == GifView::Search
+            && !picker.loading
+            && let Some(query) = picker.searched().map(str::to_owned)
+            && picker.suggested.as_deref() != Some(query.as_str())
+        {
+            picker.suggested = Some(query.clone());
+            effects.push(Effect::Backend(Command::Discord(
+                DiscordCommand::GifSuggestions(query),
+            )));
+        }
+        effects
+    }
+
+    /// A GIF clicked, by its page: sends it as a message on its own, keeping
+    /// a reply, or with `insert` puts it in the composer. The picker closes.
+    pub(super) fn pick_gif(&mut self, url: String, insert: bool) -> Vec<Effect> {
+        let Some(room) = self.state.selected.clone() else {
+            return vec![];
+        };
+        if !self.state.can_pick_gifs() {
+            return vec![];
+        }
+        let picked = self
+            .state
+            .gifs
+            .results
+            .iter()
+            .find(|gif| gif.url == url)
+            .and_then(|gif| gif.id.clone());
+        let query = (self.state.gifs.view == GifView::Search)
+            .then(|| self.state.gifs.searched().map(str::to_owned))
+            .flatten();
+        let mut effects = self.close_gifs();
+        if insert {
+            let draft = self.state.draft();
+            let space = if draft.is_empty() || draft.ends_with(' ') {
+                ""
+            } else {
+                " "
+            };
+            let body = format!("{draft}{space}{url}");
+            effects.extend(self.set_draft(body));
+            return effects;
+        }
+        let reply = match self.state.compose.get(&room) {
+            Some(Compose::Reply { item, .. }) => Some(item.clone()),
+            _ => None,
+        };
+        effects.extend(self.jump_to_present());
+        effects.push(Effect::Backend(Command::Send {
+            room,
+            body: url,
+            reply,
+            files: vec![],
+        }));
+        if let (Some(id), Some(query)) = (picked, query) {
+            effects.push(Effect::Backend(Command::Discord(
+                DiscordCommand::GifPicked { id, query },
+            )));
+        }
+        effects
+    }
+
+    /// Adds a GIF in the picker to the favourites, by its page, or takes
+    /// it out.
+    pub(super) fn favorite_gif(&mut self, url: String) -> Vec<Effect> {
+        let gif = self
+            .state
+            .gifs
+            .results
+            .iter()
+            .find(|gif| gif.url == url)
+            .cloned()
+            .unwrap_or(Gif {
+                url,
+                ..Default::default()
+            });
+        self.star_gif(gif)
+    }
+
+    /// The same for a message's GIF, by item and attachment.
+    pub(super) fn favorite_message_gif(&mut self, item: String, index: usize) -> Vec<Effect> {
+        let Some(gif) = self
+            .state
+            .message(&item)
+            .and_then(|message| message.attachments.get(index))
+            .and_then(|attachment| attachment.gif.clone())
+        else {
+            return vec![];
+        };
+        self.star_gif(gif)
+    }
+
+    /// Adds a GIF to the favourites or takes it out, keeping them all on
+    /// Discord; before they've come, once they do.
+    fn star_gif(&mut self, gif: Gif) -> Vec<Effect> {
+        let Some(favorites) = &mut self.state.favorite_gifs else {
+            self.state.gifs.starred = Some(gif);
+            return self.load_favorite_gifs();
+        };
+        if let Some(at) = favorites
+            .iter()
+            .position(|favorite| favorite.url == gif.url)
+        {
+            favorites.remove(at);
+        } else if !gif.src.is_empty() {
+            let added = FavoriteGif::of(&gif, favorites);
+            favorites.push(added);
+        } else {
+            return vec![];
+        }
+        let effect = Effect::Backend(Command::Discord(DiscordCommand::SetFavoriteGifs(
+            favorites.clone(),
+        )));
+        self.state.favorite_gifs_changed += 1;
+        vec![effect]
+    }
+
+    pub(super) fn gif_categories_came(
+        &mut self,
+        result: Result<(Vec<GifCategory>, Option<Gif>), String>,
+    ) {
+        let picker = &mut self.state.gifs;
+        picker.home_loading = false;
+        match result {
+            Ok((categories, preview)) => {
+                picker.categories = categories;
+                picker.trending_preview = preview;
+            }
+            Err(error) => picker.home_error = Some(error),
+        }
+    }
+
+    pub(super) fn gifs_came(&mut self, query: Option<String>, result: Result<Vec<Gif>, String>) {
+        let picker = &mut self.state.gifs;
+        if picker.results_for.as_ref() != Some(&query) {
+            return;
+        }
+        picker.loading = false;
+        match result {
+            Ok(gifs) => picker.results = gifs,
+            Err(error) => picker.error = Some(error),
+        }
+    }
+
+    pub(super) fn gif_suggestions_came(&mut self, query: String, terms: Vec<String>) {
+        let picker = &mut self.state.gifs;
+        if picker.searched() == Some(query.as_str()) {
+            picker.suggestions = terms;
+        }
+    }
+
+    pub(super) fn favorite_gifs_came(
+        &mut self,
+        result: Result<Vec<FavoriteGif>, String>,
+    ) -> Vec<Effect> {
+        self.state.gifs.favorites_asked = false;
+        match result {
+            Ok(favorites) => {
+                self.state.favorite_gifs = Some(favorites);
+                self.state.favorite_gifs_changed += 1;
+                match self.state.gifs.starred.take() {
+                    Some(gif) => self.star_gif(gif),
+                    None => vec![],
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not load the favourite GIFs");
+                self.state.gifs.starred = None;
+                vec![]
+            }
+        }
+    }
+
+    pub(super) fn gif_picture_came(&mut self, url: String, picture: Option<Arc<Picture>>) {
+        if let Some(shown) = self.state.gifs.pictures.get_mut(&url) {
+            *shown = picture.map_or(GifPicture::Failed, GifPicture::Shown);
+        }
+    }
+}

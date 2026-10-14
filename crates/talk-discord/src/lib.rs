@@ -12,6 +12,7 @@ mod dave;
 pub mod embed;
 pub mod event;
 pub mod gateway;
+pub mod gifs;
 pub mod limits;
 pub mod member_list;
 pub mod message;

@@ -36,6 +36,7 @@ use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
 mod callbacks;
+mod gifs;
 mod menus;
 mod messages;
 #[cfg(windows)]
@@ -782,6 +783,8 @@ struct Models {
     emoji_suggestions: Rc<VecModel<EmojiCell>>,
     forward_targets: Rc<VecModel<ForwardRow>>,
     participants: Rc<VecModel<PersonRow>>,
+    /// The GIF picker's tiles.
+    gif_tiles: Rc<VecModel<GifTile>>,
     /// Who watches this account's stream, and the one it watches, as rows of
     /// `participants`.
     share_viewers: Rc<VecModel<PersonRow>>,
@@ -825,6 +828,7 @@ impl Models {
         window.set_emoji_suggestions(ModelRc::from(self.emoji_suggestions.clone()));
         window.set_forward_targets(ModelRc::from(self.forward_targets.clone()));
         window.set_participants(ModelRc::from(self.participants.clone()));
+        window.set_gif_tiles(ModelRc::from(self.gif_tiles.clone()));
         window.set_share_viewers(ModelRc::from(self.share_viewers.clone()));
         window.set_watch_viewers(ModelRc::from(self.watch_viewers.clone()));
         window.set_participant_frames(ModelRc::from(self.participant_frames.clone()));
@@ -990,6 +994,8 @@ struct Adapter {
     /// The code shown for linking, by the address it carries.
     #[cfg(feature = "discord")]
     link_code: Option<(String, slint::Image)>,
+    /// What the GIF picker's grid shows.
+    gifs: gifs::Shown,
 }
 
 impl Adapter {
@@ -1118,6 +1124,7 @@ impl Adapter {
                 link_run: 0,
                 #[cfg(feature = "discord")]
                 link_code: None,
+                gifs: gifs::Shown::default(),
             })
         }))
     }

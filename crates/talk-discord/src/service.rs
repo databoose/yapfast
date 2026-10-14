@@ -311,6 +311,9 @@ pub enum Live {
         channel: String,
         members: Vec<ListedMember>,
     },
+    /// The account's favourite GIFs, all of them, as another client or this
+    /// one changed them.
+    FavoriteGifs(Vec<crate::gifs::Favorite>),
     /// Who watches a stream this account is in, and whether it's paused.
     StreamUpdated {
         stream_key: String,
@@ -1018,6 +1021,54 @@ impl Discord {
         self.api.set_status(status).await?;
         let _ = self.requests.send(Request::Status(status.to_owned()));
         Ok(())
+    }
+
+    /// The GIF picker's home: trending terms with a GIF each.
+    pub async fn gifs_trending(&self) -> Result<crate::gifs::Trending> {
+        Ok(crate::gifs::Trending::parse(
+            &self.api.gifs_trending().await?,
+        ))
+    }
+
+    /// The GIFs trending now.
+    pub async fn gifs_trending_gifs(&self) -> Result<Vec<crate::gifs::Gif>> {
+        Ok(crate::gifs::parse_list(
+            &self.api.gifs_trending_gifs().await?,
+        ))
+    }
+
+    /// GIFs for `query`.
+    pub async fn gifs_search(&self, query: &str) -> Result<Vec<crate::gifs::Gif>> {
+        Ok(crate::gifs::parse_list(&self.api.gifs_search(query).await?))
+    }
+
+    /// Up to `limit` terms to try instead of `query`.
+    pub async fn gifs_suggest(&self, query: &str, limit: u32) -> Result<Vec<String>> {
+        let terms = self.api.gifs_suggest(query, limit).await?;
+        Ok(terms
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|term| term.as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// Tells the provider a search for `query` led to the GIF `id`.
+    pub async fn gif_select(&self, id: &str, query: &str) -> Result<()> {
+        self.api.gif_select(id, query).await
+    }
+
+    /// The account's favourite GIFs.
+    pub async fn favorite_gifs(&self) -> Result<Vec<crate::gifs::Favorite>> {
+        let settings = self.api.frecency_settings().await?;
+        Ok(crate::gifs::read_favorites(&settings).unwrap_or_default())
+    }
+
+    /// Keeps `favorites` as the account's favourite GIFs, in place of the old.
+    pub async fn set_favorite_gifs(&self, favorites: &[crate::gifs::Favorite]) -> Result<()> {
+        self.api
+            .set_frecency_settings(&crate::gifs::write_favorites(favorites))
+            .await
     }
 
     /// Sends someone a friend request from their profile, or accepts theirs.

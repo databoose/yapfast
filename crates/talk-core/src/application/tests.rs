@@ -1981,6 +1981,7 @@ fn videos_play_in_the_open_room_until_it_closes() {
         preview: None,
         preview_failed: false,
         placement: chat::Placement::Message,
+        gif: None,
         spoiler: false,
         video,
     };
@@ -2046,6 +2047,7 @@ fn the_viewer_steps_through_a_messages_images() {
         preview: None,
         preview_failed: false,
         placement: chat::Placement::Message,
+        gif: None,
         spoiler: false,
         video: false,
     };
@@ -3778,6 +3780,7 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
             preview: Some(picture.clone()),
             preview_failed: false,
             placement: crate::chat::Placement::Message,
+            gif: None,
             spoiler: false,
             video: false,
         }],
@@ -6252,4 +6255,259 @@ fn a_reactions_tooltip_and_window_ask_for_who_reacted() {
     assert!(app.state.reactions.as_ref().unwrap().people.is_empty());
     app.dispatch(Action::CloseReactions);
     assert!(app.state.reactions.is_none());
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn a_messages_gif_is_starred_once_the_favourites_come() {
+    use crate::chat::{FavoriteGif, Gif};
+    let mut app = connected();
+    let gif = Gif {
+        url: "https://klipy.com/gifs/cat-9100".into(),
+        src: "https://static.klipy.com/cat.webp".into(),
+        width: 200,
+        height: 100,
+        ..Default::default()
+    };
+    let with_gif = ChatMessage {
+        attachments: vec![crate::chat::Attachment {
+            name: "cat.webp".into(),
+            size: None,
+            image: true,
+            dimensions: Some((200, 100)),
+            preview: None,
+            preview_failed: false,
+            placement: crate::chat::Placement::Message,
+            gif: Some(gif.clone()),
+            spoiler: false,
+            video: false,
+        }],
+        ..message("e:$1", false)
+    };
+    app.apply(discord_event(talk_discord::service::Snapshot {
+        status: talk_discord::service::Status::Online,
+        servers: vec![Arc::new(talk_discord::ready::Server {
+            id: "10".into(),
+            name: "Test".into(),
+            text_channels: vec![talk_discord::ready::Channel {
+                id: "21".into(),
+                name: "general".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })],
+        ..Default::default()
+    }));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:21".into()));
+    app.apply(Event::Timeline {
+        room: "discord:10:21".into(),
+        messages: timeline(vec![with_gif]),
+    });
+    assert!(app.state.message("e:$1").is_some());
+    let backend = |effects: Vec<Effect>| -> Vec<Command> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Backend(command) => Some(command),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Pointing at the star asks for the favourites, once; a click before
+    // they come waits for them.
+    let asked = backend(app.dispatch(Action::LoadFavoriteGifs));
+    assert!(matches!(
+        asked.as_slice(),
+        [Command::Discord(DiscordCommand::FavoriteGifs)]
+    ));
+    let star = || Action::FavoriteMessageGif {
+        item: "e:$1".into(),
+        index: 0,
+    };
+    assert!(backend(app.dispatch(star())).is_empty());
+    let changed = app.state.favorite_gifs_changed;
+    let saved = backend(app.apply(Event::FavoriteGifs(Ok(vec![]))));
+    assert!(matches!(
+        saved.as_slice(),
+        [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))]
+            if favorites == &[FavoriteGif::of(&gif, &[])]
+    ));
+    assert!(app.state.is_favorite_gif(&gif.url));
+    assert!(app.state.favorite_gifs_changed > changed);
+
+    // Its star again takes it out.
+    let saved = backend(app.dispatch(star()));
+    assert!(matches!(
+        saved.as_slice(),
+        [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))] if favorites.is_empty()
+    ));
+    assert!(backend(app.dispatch(Action::LoadFavoriteGifs)).is_empty());
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn the_gif_picker_searches_sends_and_keeps_favorites() {
+    use crate::chat::{FavoriteGif, Gif, GifCategory};
+    use talk_discord::ready::{Channel, Server};
+    let mut app = connected();
+    app.apply(discord_event(talk_discord::service::Snapshot {
+        status: talk_discord::service::Status::Online,
+        servers: vec![Arc::new(Server {
+            id: "10".into(),
+            name: "Test".into(),
+            text_channels: vec![Channel {
+                id: "21".into(),
+                name: "general".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })],
+        ..Default::default()
+    }));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:21".into()));
+    app.apply(Event::Timeline {
+        room: "discord:10:21".into(),
+        messages: timeline(vec![]),
+    });
+    assert!(app.state.can_pick_gifs());
+    let gif = |name: &str| Gif {
+        id: Some(format!("id-{name}")),
+        url: format!("https://klipy.com/gifs/{name}"),
+        src: format!("https://static.klipy.com/{name}.webp"),
+        width: 200,
+        height: 100,
+        ..Default::default()
+    };
+    let backend = |effects: Vec<Effect>| -> Vec<Command> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Backend(command) => Some(command),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Opening asks for the home and the favourites, once.
+    let asked = backend(app.dispatch(Action::OpenGifs));
+    assert!(matches!(
+        asked.as_slice(),
+        [
+            Command::Discord(DiscordCommand::GifCategories),
+            Command::Discord(DiscordCommand::FavoriteGifs)
+        ]
+    ));
+    app.apply(Event::GifCategories(Ok((
+        vec![GifCategory {
+            name: "happy".into(),
+            src: "https://static.klipy.com/happy.webp".into(),
+        }],
+        Some(gif("trend")),
+    ))));
+    app.apply(Event::FavoriteGifs(Ok(vec![])));
+    app.dispatch(Action::CloseGifs);
+    assert!(backend(app.dispatch(Action::OpenGifs)).is_empty());
+
+    // A term's tile searches for it; the results show, their pictures load
+    // only while in sight, and a short list suggests other terms.
+    let asked = backend(app.dispatch(Action::SearchGifCategory("happy".into())));
+    assert!(matches!(
+        asked.as_slice(),
+        [Command::Discord(DiscordCommand::Gifs(Some(query)))] if query == "happy"
+    ));
+    assert_eq!(app.state.gifs.view, GifView::Search);
+    app.apply(Event::Gifs {
+        query: Some("happy".into()),
+        result: Ok(vec![gif("cat"), gif("dog")]),
+    });
+    let shown = |names: &[&str]| -> Vec<(String, u32, u32)> {
+        names
+            .iter()
+            .map(|name| (format!("https://static.klipy.com/{name}.webp"), 231, 115))
+            .collect()
+    };
+    let asked = backend(app.dispatch(Action::GifsShown {
+        shown: shown(&["cat", "dog"]),
+        near_end: true,
+    }));
+    assert!(matches!(
+        asked.as_slice(),
+        [
+            Command::Discord(DiscordCommand::GifPicture { .. }),
+            Command::Discord(DiscordCommand::GifPicture { .. }),
+            Command::Discord(DiscordCommand::GifSuggestions(query)),
+        ] if query == "happy"
+    ));
+    assert!(
+        backend(app.dispatch(Action::GifsShown {
+            shown: shown(&["dog"]),
+            near_end: true,
+        }))
+        .is_empty()
+    );
+    assert_eq!(app.state.gifs.pictures.len(), 1, "cat's picture goes");
+
+    // Starring keeps the GIF among the favourites on Discord, the newest
+    // first.
+    let saved = backend(app.dispatch(Action::FavoriteGif(gif("dog").url)));
+    assert!(matches!(
+        saved.as_slice(),
+        [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))]
+            if favorites == &[FavoriteGif::of(&gif("dog"), &[])]
+    ));
+    assert!(app.state.is_favorite_gif(&gif("dog").url));
+
+    // A click sends the page as its own message and reports the pick; the
+    // picker closes, letting go of its pictures.
+    let sent = backend(app.dispatch(Action::PickGif {
+        url: gif("cat").url,
+        insert: false,
+    }));
+    assert!(matches!(
+        sent.as_slice(),
+        [
+            ..,
+            Command::Send { room, body, reply: None, files },
+            Command::Discord(DiscordCommand::GifPicked { id, query }),
+        ] if room == "discord:10:21" && body == &gif("cat").url && files.is_empty()
+            && id == "id-cat" && query == "happy"
+    ));
+    assert!(!app.state.gifs.open && app.state.gifs.pictures.is_empty());
+    // The search stays for next time.
+    assert_eq!(app.state.gifs.query, "happy");
+
+    // Shift and a click puts the page in the message instead.
+    app.dispatch(Action::SetDraft("Look".into()));
+    app.dispatch(Action::OpenGifs);
+    app.dispatch(Action::PickGif {
+        url: gif("dog").url,
+        insert: true,
+    });
+    assert_eq!(app.state.draft(), "Look https://klipy.com/gifs/dog");
+
+    // Favourites changed elsewhere replace these; starring one again takes
+    // it out.
+    app.apply(Event::FavoriteGifs(Ok(vec![
+        FavoriteGif::of(&gif("dog"), &[]),
+        FavoriteGif {
+            order: 7,
+            ..FavoriteGif::of(&gif("wave"), &[])
+        },
+    ])));
+    app.dispatch(Action::ShowGifs(GifView::Favorites));
+    let shown: Vec<&str> = app
+        .state
+        .shown_favorite_gifs()
+        .iter()
+        .map(|favorite| favorite.url.as_str())
+        .collect();
+    assert_eq!(shown, [gif("wave").url, gif("dog").url]);
+    let saved = backend(app.dispatch(Action::FavoriteGif(gif("wave").url)));
+    assert!(matches!(
+        saved.as_slice(),
+        [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))] if favorites.len() == 1
+    ));
 }

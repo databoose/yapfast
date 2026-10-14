@@ -35,7 +35,7 @@ const FOLDER_ID: u64 = 2;
 const FOLDER_NAME: u64 = 3;
 const FOLDER_COLOR: u64 = 4;
 
-const VARINT: u64 = 0;
+pub(crate) const VARINT: u64 = 0;
 const FIXED64: u64 = 1;
 const BYTES: u64 = 2;
 const FIXED32: u64 = 5;
@@ -342,7 +342,7 @@ pub fn presence(status: &str, custom: Option<&CustomStatus>, now_ms: u64) -> Val
     })
 }
 
-enum Field<'a> {
+pub(crate) enum Field<'a> {
     Varint(u64),
     Fixed64(u64),
     Bytes(&'a [u8]),
@@ -350,7 +350,7 @@ enum Field<'a> {
 }
 
 /// A protobuf message's fields, as far as they parse.
-fn fields(mut data: &[u8]) -> impl Iterator<Item = (u64, Field<'_>)> {
+pub(crate) fn fields(mut data: &[u8]) -> impl Iterator<Item = (u64, Field<'_>)> {
     std::iter::from_fn(move || {
         let key = varint(&mut data)?;
         let value = match key & 7 {
@@ -389,7 +389,7 @@ fn varint(data: &mut &[u8]) -> Option<u64> {
     None
 }
 
-fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+pub(crate) fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
@@ -401,7 +401,7 @@ fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     }
 }
 
-fn put_bytes(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
+pub(crate) fn put_bytes(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
     put_varint(out, number << 3 | BYTES);
     put_varint(out, bytes.len() as u64);
     out.extend_from_slice(bytes);
