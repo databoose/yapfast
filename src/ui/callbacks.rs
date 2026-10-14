@@ -110,21 +110,6 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             },
         );
     });
-    let state = Rc::downgrade(adapter);
-    let weak = window.as_weak();
-    OPEN.with(|open| {
-        *open.borrow_mut() = Some(Box::new(move |room| {
-            let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
-                return;
-            };
-            let _ = window.show();
-            window
-                .window()
-                .with_winit_window(|winit| winit.focus_window());
-            window.set_settings_open(false);
-            adapter.borrow_mut().action(&window, Action::Open(room));
-        }));
-    });
     macro_rules! bind {
         ($callback:ident, $action:expr) => {{
             let adapter = adapter.clone();
@@ -931,6 +916,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.sound_volume = Some(window.get_sound_volume().clamp(0, 200) as u8);
         layout.adjust_each_sound = window.get_adjust_each_sound();
         layout.gpu_rendering = window.get_gpu_rendering();
+        layout.close_to_tray = Some(window.get_close_to_tray());
         adapter.layout.write(&adapter.root);
         adapter.restyle = true;
         adapter.refresh(&window);

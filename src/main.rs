@@ -14,6 +14,8 @@ mod notify;
 #[cfg(feature = "desktop")]
 mod paste;
 #[cfg(feature = "desktop")]
+mod tray;
+#[cfg(feature = "desktop")]
 mod ui;
 #[cfg(feature = "desktop")]
 mod zoom;

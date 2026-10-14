@@ -765,3 +765,44 @@ Reproduce: start each build's binary with `scripts/ui-session start
 `.local/ui-session/window-control`, and read the in-use bytes from
 `.local/ui-session/talk.log`; for this change, open the list, scroll it to
 its end and read again, then close it and read again.
+
+## 2026-10-14: Closing the window to the tray
+
+The [record](2026-10-14-linux-close-to-tray.json) measures the Discord-only
+`fast` build on the fake Discord with five servers, 20 more DMs and pictures
+in #general (`--servers 4 --dms 20 --images 4`), through
+`testing/measure_tray.py`: #general open and idle, then the window closed to
+the [tray](../tray.md), which drops it and trims the heap, sampled for a
+minute, then opened again from the tray; then the same in the Lounge call.
+Memory is anonymous memory plus swap, which is what Talk itself holds and
+close to the private bytes Windows reports. Heap in use is glibc's. Skia
+Software, the default renderer, is the mean of three runs (the range in
+brackets); Skia GPU is one run.
+
+| State | Software memory | Software heap in use | GPU memory | GPU heap in use |
+| --- | --- | --- | --- | --- |
+| #general, window open | 18.6 MiB (18.4–19.0) | 10.2 MiB | 86.6 MiB | 73.1 MiB |
+| #general, closed to the tray | 16.3 MiB (16.1–16.5) | 9.1 MiB | 62.9 MiB | 48.8 MiB |
+| #general, opened again | 17.1 MiB (17.0–17.4) | 10.1 MiB | 65.5 MiB | 53.8 MiB |
+| Lounge call, window open | 17.7 MiB (17.4–18.0) | 10.4 MiB | 71.1 MiB | 54.2 MiB |
+| Lounge call, closed to the tray | 16.8 MiB (16.6–17.0) | 9.7 MiB | 68.4 MiB | 49.2 MiB |
+| Lounge call, opened again | 16.9 MiB (16.8–17.1) | 10.4 MiB | 70.8 MiB | 53.9 MiB |
+
+With Skia Software closing saves 2.3 MiB (12%) the first time and 0.9 MiB in
+the call, and a window opened again holds under 1 MiB more than none. The
+rest is the session and what the next window reuses, such as the models,
+which this didn't break down further. Releasing the
+timeline's rows, the window's picture copies and Skia's caches too saved
+0.25 MiB of heap and no anonymous memory, so they stay. With the GPU, the
+first close saves 24 MiB, a quarter: the first window's GPU state held heap
+that a window made again doesn't, so after that a window costs about
+2.5 MiB here as well. CPU while closed was 0–0.02% of one core idle and
+0.25% in the call, against 0.2–0.4% open. PSS fell by 6 MiB (Software) and
+24 MiB (GPU) on the first close.
+
+Real Windows is unmeasured: there Talk compacts the heap and empties the
+working set, which Task Manager's Memory column, the private working set,
+shows at once.
+
+Reproduce: `python3 testing/measure_tray.py --output .local/measure-tray`,
+and with `--runs 1 --renderer gpu` for the GPU column.

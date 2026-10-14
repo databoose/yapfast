@@ -275,8 +275,9 @@ The controller shows reconnecting and allows up to 60 seconds before ending a
 degraded connection. A joining request has a 35-second deadline. Leave cancels a pending join
 immediately and waits up to ten seconds for membership cleanup; normal leaving
 has the same cleanup deadline. Crash membership expiry uses a five-minute sticky lifetime.
-Ringing DM/group calls, video, screenshare, push-to-talk, input and output
-volume, and tray behavior are later slices.
+Ringing DM/group calls, video, screenshare, push-to-talk, and input and output
+volume are later slices. A call goes on with the window closed to the
+[tray](tray.md), whose menu can disconnect it.
 
 ## Reliability
 

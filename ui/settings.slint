@@ -789,10 +789,20 @@ export component SoundSettings inherits VerticalLayout {
 export component AdvancedSettings inherits VerticalLayout {
     in-out property <bool> gpu-rendering;
     in property <bool> gpu-running;
+    in-out property <bool> close-to-tray;
+    in property <bool> tray-available;
     callback preferences-changed;
     callback restart;
     spacing: 16px;
     SettingsTitle { text: "Advanced"; }
+    SettingsSwitch {
+        text: "Close to tray";
+        description: root.tray-available
+            ? "Closing the window keeps Talk running in the system tray, with any call. Quit from the tray icon's menu."
+            : "No system tray is running, so closing the window quits Talk.";
+        checked <=> root.close-to-tray;
+        toggled => { root.preferences-changed(); }
+    }
     SettingsSwitch {
         text: "Render with the GPU";
         description: "Hardware acceleration. Off, Talk draws on the processor, which uses about half the memory.";

@@ -16,7 +16,7 @@ default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["talk-core/matrix"]
 discord = ["talk-core/discord", "dep:qrcode"]
-desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs"]
+desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:ksni", "dep:windows-sys"]
 
 [dependencies]
 anyhow.workspace = true
@@ -53,6 +53,19 @@ qrcode = { version = "0.14", default-features = false, optional = true }
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"], optional = true }
 # Pasted pictures as their copied bytes, through Wayland's data-control protocol.
 wl-clipboard-rs = { version = "0.9.4", optional = true }
+# The tray icon, as a StatusNotifierItem on the same bus; pure Rust, on the zbus above.
+ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"], optional = true }
+
+# The tray icon and giving memory back while the window is closed. Already in the tree
+# through winit.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"], optional = true }
+
+# A stand-in tray on the private test bus; see testing/tray_host.rs.
+[[example]]
+name = "tray_host"
+path = "testing/tray_host.rs"
+required-features = ["desktop"]
 
 [dev-dependencies]
 i-slint-backend-testing = "=1.18.1"

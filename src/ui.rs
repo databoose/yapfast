@@ -41,6 +41,7 @@ mod messages;
 mod pictures;
 mod profile;
 mod refresh;
+mod shell;
 mod theme;
 mod tiles;
 
@@ -129,46 +130,41 @@ pub fn run(
     let notice = SharedString::from(plan.notice.unwrap_or_default());
     window.set_graphics_notice(notice.clone());
     window.set_gpu_running(gpu);
-    let restart = Rc::new(Cell::new(false));
-    window.on_restart({
-        let restart = restart.clone();
-        move || {
-            restart.set(true);
-            let _ = slint::quit_event_loop();
-        }
-    });
     // Slint 1.18 keeps its event loop running when it creates a window late and
     // the GPU surface fails, leaving no window. Check for the native window.
     let missing_window = Rc::new(Cell::new(false));
     if gpu {
         let missing_window = missing_window.clone();
         let weak = window.as_weak();
+        // A window already closed to the tray had appeared.
         slint::Timer::single_shot(GPU_START_CONFIRMATION, move || {
-            if !weak
+            if weak
                 .upgrade()
-                .is_some_and(|window| window.window().has_winit_window())
+                .is_some_and(|window| !window.window().has_winit_window())
             {
                 missing_window.set(true);
                 let _ = slint::quit_event_loop();
             }
         });
     }
+    let shell = shell::Shell::new(window, adapter.clone(), notice, gpu);
     tracing::info!(renderer, "starting the Slint desktop window");
-    let result = match test_control() {
-        Some(path) => {
-            let _control = control(path, window, adapter.clone(), notice);
-            slint::run_event_loop_until_quit()
-        }
-        None => window.run(),
-    };
-    adapter.borrow_mut().stop_backend();
+    let _control = test_control().map(|path| control(path, shell.clone()));
+    // Until quit: closing the window to the tray doesn't end Talk.
+    let result = slint::run_event_loop_until_quit();
+    let restart = shell.restarting();
+    drop(shell);
+    let mut adapter = adapter.borrow_mut();
+    // The icon goes before Talk does, not when Windows next looks at it.
+    adapter.tray = None;
+    adapter.stop_backend();
     match result {
         Err(error) => failed(error, "Slint's desktop event loop failed"),
         Ok(()) if missing_window.get() => failed(
             "the window did not appear".into(),
             "Talk's window did not appear",
         ),
-        Ok(()) if restart.get() => Ok(Exit::Restart),
+        Ok(()) if restart => Ok(Exit::Restart),
         Ok(()) => Ok(Exit::Closed),
     }
 }
@@ -358,9 +354,10 @@ fn message_text(row: &MessageRow) -> String {
 }
 
 /// A command file through which the private test compositor can hide, destroy
-/// and recreate the window while Talk keeps running, as a tray would, and add
-/// a file to the next message with `stage PATH`, as a paste would: the private
-/// display has no clipboard or file chooser to do it with.
+/// and recreate the window while Talk keeps running, close it as its close
+/// button does and open it as the tray does, and add a file to the next
+/// message with `stage PATH`, as a paste would: the private display has no
+/// clipboard, file chooser or window decorations to do it with.
 fn test_control() -> Option<PathBuf> {
     isolated_display()
         .then(|| std::env::var_os("TALK_UI_TEST_CONTROL"))
@@ -368,15 +365,8 @@ fn test_control() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Run each new line of the command file. The event loop then runs until quit,
-/// so a hidden or destroyed window does not end Talk.
-fn control(
-    path: PathBuf,
-    window: TalkWindow,
-    adapter: Rc<RefCell<Adapter>>,
-    notice: SharedString,
-) -> slint::Timer {
-    let window = RefCell::new(Some(window));
+/// Run each new line of the command file.
+fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
     let handled = Cell::new(0);
     let timer = slint::Timer::default();
     timer.start(
@@ -389,28 +379,29 @@ fn control(
             for command in text.lines().skip(handled.get()) {
                 handled.set(handled.get() + 1);
                 tracing::info!(command, "test window control");
+                let window = shell.window();
+                let adapter = &shell.adapter;
                 let result = match command {
-                    "hide" => window
-                        .borrow()
-                        .as_ref()
-                        .map_or(Ok(()), |window| window.hide()),
-                    "show" => window
-                        .borrow()
-                        .as_ref()
-                        .map_or(Ok(()), |window| window.show()),
-                    // A shown window keeps itself alive; hide it, then drop the last handle.
-                    "destroy" => window.take().map_or(Ok(()), |window| {
-                        let weak = window.as_weak();
-                        let result = window.hide();
+                    "hide" => window.map_or(Ok(()), |window| window.hide()),
+                    "show" => window.map_or(Ok(()), |window| window.show()),
+                    // Drops the window without giving the memory back, which
+                    // `trim` then does.
+                    "destroy" => {
                         drop(window);
-                        tracing::info!(
-                            released = weak.upgrade().is_none(),
-                            "test window destroyed"
-                        );
-                        result
-                    }),
-                    "create" if window.borrow().is_none() => {
-                        recreate(&adapter, &notice).map(|new| *window.borrow_mut() = Some(new))
+                        shell.drop_window();
+                        Ok(())
+                    }
+                    // As the window's close button: to the tray, or quit.
+                    "close" => {
+                        drop(window);
+                        shell.close();
+                        Ok(())
+                    }
+                    // As the tray's Open Talk.
+                    "create" | "open" => {
+                        drop(window);
+                        shell.open();
+                        Ok(())
                     }
                     "trim" => {
                         trim();
@@ -423,8 +414,8 @@ fn control(
                     // `theme ID` chooses a theme, built in or custom, as Appearance does.
                     command if command.starts_with("theme ") => {
                         let id = &command["theme ".len()..];
-                        match window.borrow().as_ref() {
-                            Some(window) if !adapter.borrow_mut().choose_theme(window, id) => {
+                        match window {
+                            Some(window) if !adapter.borrow_mut().choose_theme(&window, id) => {
                                 Err("no such theme".into())
                             }
                             _ => Ok(()),
@@ -441,9 +432,9 @@ fn control(
                         } else {
                             ProfilePicture::Avatar
                         };
-                        if let Some(window) = window.borrow().as_ref() {
+                        if let Some(window) = window {
                             adapter.borrow_mut().action(
-                                window,
+                                &window,
                                 Action::PickProfilePicture {
                                     kind,
                                     path: PathBuf::from(path),
@@ -453,11 +444,11 @@ fn control(
                         Ok(())
                     }
                     command if command.starts_with("stage ") => {
-                        if let Some(window) = window.borrow().as_ref() {
+                        if let Some(window) = window {
                             let path = PathBuf::from(&command["stage ".len()..]);
                             adapter
                                 .borrow_mut()
-                                .action(window, Action::Stage(vec![path]));
+                                .action(&window, Action::Stage(vec![path]));
                         }
                         Ok(())
                     }
@@ -470,20 +461,6 @@ fn control(
         },
     );
     timer
-}
-
-fn recreate(
-    adapter: &Rc<RefCell<Adapter>>,
-    notice: &SharedString,
-) -> Result<TalkWindow, slint::PlatformError> {
-    let window = TalkWindow::new()?;
-    window.show()?;
-    prepare(&window);
-    window.set_graphics_notice(notice.clone());
-    adapter.borrow_mut().attach(&window);
-    bind_callbacks(&window, adapter);
-    adapter.borrow_mut().refresh(&window);
-    Ok(window)
 }
 
 /// Return freed heap pages to the system, to separate memory still in use from
@@ -593,6 +570,8 @@ struct Layout {
     theme: Option<String>,
     /// The person's own themes, in the order Appearance shows them.
     custom_themes: Vec<theme::Custom>,
+    /// Closing the window leaves Talk in the system tray; on unless turned off.
+    close_to_tray: Option<bool>,
 }
 
 /// Talk's sounds start as they're made: 12 dB under full scale at the loudest.
@@ -707,6 +686,7 @@ impl Layout {
         window.set_sound_volume(self.sound_volume.unwrap_or(DEFAULT_SOUND_VOLUME).into());
         window.set_adjust_each_sound(self.adjust_each_sound);
         window.set_gpu_rendering(self.gpu_rendering);
+        window.set_close_to_tray(self.close_to_tray.unwrap_or(true));
         let each: Vec<i32> = Sound::ALL
             .iter()
             .map(|sound| self.each_sound.get(sound).copied().unwrap_or(100).into())
@@ -982,6 +962,8 @@ struct Adapter {
     /// Ringing for a DM call that rings this account.
     #[cfg(feature = "discord")]
     ringer: Option<talk_core::ring::Ringer>,
+    /// Talk's icon in the system tray, where the window can close to.
+    tray: Option<crate::tray::Tray>,
     /// Linking a Discord account by QR code; dropping it stops the linking.
     #[cfg(feature = "discord")]
     linking: Option<talk_core::runtime::BackgroundTask<()>>,
@@ -1112,6 +1094,7 @@ impl Adapter {
                 pasted: None,
                 #[cfg(feature = "discord")]
                 ringer: None,
+                tray: None,
                 #[cfg(feature = "discord")]
                 linking: None,
                 #[cfg(feature = "discord")]
@@ -1245,9 +1228,13 @@ impl Adapter {
                                     Err(_) => break,
                                 }
                             }
-                            if let Some(window) = window {
-                                adapter.show(&window, reach);
+                            // Without a window, a call still rings, and the tray shows
+                            // what's unread and offers Disconnect in a call.
+                            match window {
+                                Some(window) => adapter.show(&window, reach),
+                                None => adapter.ring(),
                             }
+                            adapter.show_tray();
                         }
                         if let Some(adapter) = weak.upgrade() {
                             let window = adapter.borrow().window.upgrade();
@@ -1474,23 +1461,26 @@ impl Drop for Adapter {
     }
 }
 
+/// The DM calls ringing this account: those it isn't in already.
+fn ringing(
+    state: &talk_core::application::AppState,
+) -> impl Iterator<Item = &talk_core::chat::ChatRoom> {
+    let voice = &state.voice;
+    state
+        .rooms
+        .iter()
+        .filter(|room| room.incoming && !(voice.active() && voice.room.as_ref() == Some(&room.id)))
+}
+
 /// Shows a DM call ringing this account in another conversation over
-/// everything. Returns whether any call rings it, which Talk rings for.
+/// everything.
 fn show_incoming(
     window: &TalkWindow,
     state: &talk_core::application::AppState,
     pictures: &mut HashMap<String, slint::Image>,
-) -> bool {
-    let voice = &state.voice;
-    let ringing: Vec<_> = state
-        .rooms
-        .iter()
-        .filter(|room| room.incoming && !(voice.active() && voice.room.as_ref() == Some(&room.id)))
-        .collect();
+) {
     // The open DM's own call answers in its panel.
-    let shown = ringing
-        .iter()
-        .find(|room| state.selected.as_ref() != Some(&room.id));
+    let shown = ringing(state).find(|room| state.selected.as_ref() != Some(&room.id));
     window.set_incoming_open(shown.is_some());
     if let Some(room) = shown {
         window.set_incoming_room(room.id.as_str().into());
@@ -1507,7 +1497,6 @@ fn show_incoming(
         window.set_incoming_tint(tint(&room.id));
         window.set_incoming_picture(cached_picture(pictures, state, room.avatar.as_deref()));
     }
-    !ringing.is_empty()
 }
 
 fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {

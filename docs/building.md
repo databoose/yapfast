@@ -194,7 +194,8 @@ scripts/ui-session stop
 ```
 
 Screenshots go to `.local/ui-session/shots/`, and `scripts/ui-session --help`
-lists every option and command. The scripted probes are in
+lists every option and command. `start --tray` adds a stand-in tray on the
+session's bus; see [the tray](tray.md#testing). The scripted probes are in
 [the Slint client's validation notes](slint-client.md#validation-and-limits).
 
 ## Networks

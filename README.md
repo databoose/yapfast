@@ -105,7 +105,9 @@ Text channels and group DMs list their members on the right, grouped into admins
 moderators and members; the header's member count shows or hides the list.
 Only joined channels appear; standalone rooms outside Spaces
 are not shown in this navigation yet. Preview messages disappear
-when you leave the preview, and closing the window quits Talk.
+when you leave the preview. Closing the window leaves Talk running in the
+system tray, with any call, where its icon opens it again or quits; without a
+tray it quits Talk ([the tray](docs/tray.md)).
 
 `path:./nix` also works before files are tracked and keeps Cargo output out of
 the Nix source snapshot. The shell provides Clang 21, Protobuf, desktop libraries,

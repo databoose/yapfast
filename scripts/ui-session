@@ -2,7 +2,7 @@
 """Run Talk on a private Weston display and drive it, for screenshots and UI checks.
 
   scripts/ui-session start [--discord [--fake-args '--servers 3 --dms 50']]
-                           [--size 1120x760] [--renderer software|gpu]
+                           [--size 1120x760] [--renderer software|gpu] [--tray]
                            [--bin PATH | --no-build] [-- TALK_ARGS...]
   scripts/ui-session do 'click X Y' 'type Hello' 'key enter' 'shot NAME' ...
   scripts/ui-session relaunch     rebuild, then restart Talk on the same display
@@ -15,6 +15,8 @@ build with --preview) and runs a copy of it, so later builds don't disturb it.
 After a --discord build, target/fast/talk is the Discord-only build until the
 next default build.
 The display is the window's size, so coordinates are window coordinates.
+--tray also runs testing/tray_host.rs, a stand-in tray on the session's bus,
+which Talk's tray icon registers with; without it there is no tray.
 
 do commands, run in order; the first error stops the rest:
   click X Y | rightclick X Y | move X Y | drag X Y TO_X TO_Y (left button)
@@ -31,6 +33,12 @@ do commands, run in order; the first error stops the rest:
       PATH is relative to the repository, outside .local/ui-session, which
       start empties
   theme ID   chooses a theme, such as yap, sakura or custom:1, as Appearance does
+  window close|open|destroy|create|hide|show|trim|stats   acts on the window:
+      close as its close button does (to the tray, or quit without one),
+      open as the tray's Open Talk; stats writes glibc's heap to talk.log
+  tray activate | menu | click LABEL | icon NAME | off | on   with --tray:
+      clicks the icon, prints or chooses its menu's items, saves its picture
+      to shots/NAME.png, or stops and starts the stand-in tray
   control NAME | get NAME   POST or GET /_control/NAME on the fake Discord
 Without arguments, do reads one command per line from standard input.
 
@@ -70,9 +78,11 @@ def tail(path, lines=20):
         print('\n'.join(path.read_text(errors='replace').splitlines()[-lines:]), file=sys.stderr)
 
 
-def build(discord):
+def build(discord, talk=True, tray=False):
     features = ['--no-default-features', '--features', 'desktop,discord'] if discord else []
-    command = ['nix', 'develop', 'path:./nix', '--command', 'cargo', 'build', '--locked', '--profile', 'fast', *features]
+    targets = [*(['--bin', 'talk'] if talk else []), *(['--example', 'tray_host'] if tray else [])]
+    command = ['nix', 'develop', 'path:./nix', '--command', 'cargo', 'build', '--locked', '--profile', 'fast',
+               *features, *targets]
     print('Building:', shlex.join(command[4:]), flush=True)
     log = STATE / 'build.log'
     result = subprocess.run(command, cwd=ROOT, stdout=log.open('wb'), stderr=subprocess.STDOUT)
@@ -80,9 +90,12 @@ def build(discord):
         tail(log, 40)
         raise SystemExit(f'The build failed; see {log.relative_to(ROOT)}')
     # Replace, never overwrite, so a running copy keeps its file.
-    copy = STATE / 'talk.new'
-    shutil.copy2(ROOT / 'target/fast/talk', copy)
-    os.replace(copy, STATE / 'talk')
+    built = [('talk', 'target/fast/talk')] if talk else []
+    built += [('tray-host', 'target/fast/examples/tray_host')] if tray else []
+    for name, path in built:
+        copy = STATE / f'{name}.new'
+        shutil.copy2(ROOT / path, copy)
+        os.replace(copy, STATE / name)
 
 
 def send(commands, timeout=60):
@@ -121,13 +134,15 @@ def start(args):
     width, height = map(int, args.size.split('x'))
     if STATE.exists():
         for entry in STATE.iterdir():
-            if entry.name not in ('talk', 'build.log'):
+            if entry.name not in ('talk', 'tray-host', 'build.log'):
                 shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
     STATE.mkdir(parents=True, exist_ok=True)
     if args.bin:
         shutil.copy2(args.bin, STATE / 'talk')
-    elif not args.no_build:
-        build(args.discord)
+    if not (args.bin or args.no_build):
+        build(args.discord, tray=args.tray)
+    elif args.tray and not (args.no_build and (STATE / 'tray-host').exists()):
+        build(args.discord, talk=False, tray=True)
     if not (STATE / 'talk').exists():
         raise SystemExit('No Talk binary yet; start without --no-build.')
     talk_args = args.talk_args[1:] if args.talk_args[:1] == ['--'] else args.talk_args
@@ -136,7 +151,8 @@ def start(args):
     SETTINGS.write_text(json.dumps({'discord': args.discord, 'build': not (args.bin or args.no_build)}))
     driver = ['python3', 'testing/ui_session.py', '--state', str(STATE), '--bin', str(STATE / 'talk'),
               '--size', args.size, '--renderer', args.renderer,
-              *(['--discord', '--fake-args', args.fake_args] if args.discord else []), '--', *talk_args]
+              *(['--discord', '--fake-args', args.fake_args] if args.discord else []),
+              *(['--tray', str(STATE / 'tray-host')] if args.tray else []), '--', *talk_args]
     display = (f'scripts/run-framework-isolated --audio --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" '
                f'--no-services --kiosk --width {width} --height {height} '
                f'--compositor-log {shlex.quote(str(STATE / "weston.log"))} -- {shlex.join(driver)}')
@@ -191,6 +207,7 @@ starting.add_argument('--discord', action='store_true', help='Discord-only build
 starting.add_argument('--fake-args', default='', help="arguments for testing/fake_discord.ts, such as '--dms 50'")
 starting.add_argument('--size', default='1120x760')
 starting.add_argument('--renderer', choices=['software', 'gpu'], default='software')
+starting.add_argument('--tray', action='store_true', help='run a stand-in tray on the private bus')
 binary = starting.add_mutually_exclusive_group()
 binary.add_argument('--bin', type=Path, help='run this Talk binary instead of building')
 binary.add_argument('--no-build', action='store_true', help='run the copy from the last start')
