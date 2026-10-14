@@ -65,6 +65,8 @@ pub struct Sharing {
     pub phase: SharePhase,
     /// What's being shared, as the UI previews it.
     pub frames: Arc<crate::frames::Frames>,
+    /// Who watches it, by user id, as Discord lists them.
+    pub viewers: Vec<String>,
 }
 
 /// Watching someone's stream in the call.
@@ -77,6 +79,9 @@ pub struct Watching {
     pub opening: bool,
     /// Their stream's pictures, once the worker has started.
     pub frames: Option<Arc<crate::frames::Frames>>,
+    /// Who watches it, this account included, by user id, as Discord lists
+    /// them.
+    pub viewers: Vec<String>,
 }
 
 /// How large a shared screen is sent, as Discord's client offers.

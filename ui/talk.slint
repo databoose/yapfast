@@ -488,6 +488,12 @@ export component TalkWindow inherits Window {
     in property <string> share-status;
     /// The newest preview of what's shared, refreshed by stream-tick while sharing.
     in-out property <image> share-frame;
+    /// Who watches this account's stream, and the stream it watches, with
+    /// "Watching: " and their names for a tooltip.
+    in property <[PersonRow]> share-viewers;
+    in property <string> share-viewer-names;
+    in property <[PersonRow]> watch-viewers;
+    in property <string> watch-viewer-names;
     /// Watching someone's stream in the call.
     in property <bool> watching;
     in property <string> watch-title;
@@ -1387,6 +1393,7 @@ export component TalkWindow inherits Window {
                     voice-active: root.voice-active; voice-ready: root.voice-ready; voice-leaving: root.voice-leaving;
                     voice-warning: root.voice-warning; voice-error: root.voice-error;
                     can-share: root.can-share; sharing: root.sharing; share-live: root.share-live; share-status: root.share-status;
+                    share-watchers: root.share-viewers.length;
                     can-film: root.can-film; camera-on: root.camera-on;
                     leave-voice => { root.leave-voice(); }
                     dismiss-voice-error => { root.dismiss-voice-error(); }
@@ -1721,17 +1728,20 @@ export component TalkWindow inherits Window {
                                 }
                                 if root.watching: StreamView {
                                     watch-title: root.watch-title; watch-status: root.watch-status; watch-frame: root.watch-frame;
+                                    viewers: root.watch-viewers; viewer-names: root.watch-viewer-names;
                                     stop-watching => { root.stop-watching(); }
                                 }
                                 if !root.watching && root.own-stream-shown: StreamView {
                                     watch-title: "Your screen"; watch-status: root.share-status; watch-frame: root.share-frame;
                                     live: root.share-live; stop-label: "Back to the call";
+                                    viewers: root.share-viewers; viewer-names: root.share-viewer-names;
                                     stop-watching => { root.own-stream-shown = false; }
                                 }
                                 if !root.watching && !root.own-stream-shown: ParticipantGrid {
                                     participants: root.participants; frames: root.participant-frames;
                                     sharing: root.sharing; share-live: root.share-live;
                                     share-status: root.share-status; share-frame: root.share-frame;
+                                    share-viewers: root.share-viewers; share-viewer-names: root.share-viewer-names;
                                     watch-stream(id) => { root.watch-stream(id); }
                                     show-own-stream => { root.own-stream-shown = true; }
                                     open-volume(person, x, y) => { root.open-volume(person, x, y); }
@@ -2360,6 +2370,8 @@ export component TalkWindow inherits Window {
         live: !root.watching && root.share-live;
         stop-icon: root.watching ? @image-url("icons/x.svg") : @image-url("icons/screen-share-off.svg");
         stop-label: root.watching ? "Stop watching" : "Stop sharing";
+        viewers: root.watching ? root.watch-viewers : root.share-viewers;
+        viewer-names: root.watching ? root.watch-viewer-names : root.share-viewer-names;
         open-call => {
             if !root.watching { root.own-stream-shown = true; }
             root.open-conversation(root.voice-channel);

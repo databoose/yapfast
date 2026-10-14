@@ -17,23 +17,75 @@ pub(super) fn call_sounds(before: &voice::State, after: &voice::State) -> Vec<Ef
             .map(|person| person.id.clone())
             .collect()
     };
-    let sound = if after.phase == Phase::Connected && (!here(before) || before.room != after.room) {
-        Some(Sound::Join)
-    } else if here(before) && !here(after) {
-        Some(Sound::Leave)
-    } else if before.phase == Phase::Connected && after.phase == Phase::Connected {
-        let (before, after) = (others(before), others(after));
-        if !after.is_subset(&before) {
+    let sound =
+        if after.phase == Phase::Connected && (!here(before) || before.room != after.room) {
             Some(Sound::Join)
-        } else if !before.is_subset(&after) {
+        } else if here(before) && !here(after) {
             Some(Sound::Leave)
+        } else if before.phase == Phase::Connected && after.phase == Phase::Connected {
+            let (before, after) = (others(before), others(after));
+            if !after.is_subset(&before) {
+                Some(Sound::Join)
+            } else if !before.is_subset(&after) {
+                Some(Sound::Leave)
+            } else {
+                None
+            }
         } else {
             None
         }
+        .or_else(|| viewer_sound(before, after));
+    sound.map(Effect::Sound).into_iter().collect()
+}
+
+/// Someone else starting or stopping watching this account's stream, or the
+/// one it watches, while that stream goes on.
+fn viewer_sound(before: &voice::State, after: &voice::State) -> Option<Sound> {
+    let me = after
+        .participants
+        .iter()
+        .find(|person| person.local)
+        .map(|person| person.id.as_str());
+    // Each viewer by the stream they watch: this account's, as none, or the
+    // streamer's id.
+    let viewers = |state: &voice::State| -> HashSet<(Option<String>, String)> {
+        let mine = state
+            .sharing
+            .iter()
+            .flat_map(|sharing| sharing.viewers.iter().map(|viewer| (None, viewer)));
+        let watched = state.watching.iter().flat_map(|watching| {
+            watching
+                .viewers
+                .iter()
+                .map(|viewer| (Some(watching.user.clone()), viewer))
+        });
+        mine.chain(watched)
+            .filter(|(_, viewer)| Some(viewer.as_str()) != me)
+            .map(|(stream, viewer)| (stream, viewer.clone()))
+            .collect()
+    };
+    let streams = |state: &voice::State| -> HashSet<Option<String>> {
+        let mine = state.sharing.as_ref().map(|_| None);
+        let watched = state
+            .watching
+            .as_ref()
+            .map(|watching| Some(watching.user.clone()));
+        mine.into_iter().chain(watched).collect()
+    };
+    let lasting = streams(before);
+    let lasting: HashSet<_> = lasting.intersection(&streams(after)).cloned().collect();
+    let (before, after) = (viewers(before), viewers(after));
+    let changed = |from: &HashSet<(Option<String>, String)>, to: &HashSet<_>| {
+        from.difference(to)
+            .any(|(stream, _)| lasting.contains(stream))
+    };
+    if changed(&after, &before) {
+        Some(Sound::ViewerJoin)
+    } else if changed(&before, &after) {
+        Some(Sound::ViewerLeave)
     } else {
         None
-    };
-    sound.map(Effect::Sound).into_iter().collect()
+    }
 }
 
 impl Application {

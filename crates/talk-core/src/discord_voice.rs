@@ -48,6 +48,7 @@ impl Share {
         state.sharing = Some(Sharing {
             phase: SharePhase::Choosing,
             frames: Arc::new(frames),
+            viewers: vec![],
         });
         Ok(Self {
             worker,
@@ -198,6 +199,7 @@ impl Watch {
             name,
             opening: true,
             frames: None,
+            viewers: vec![],
         }));
         let (discord, asked) = (discord.clone(), key.clone());
         Self {
@@ -663,6 +665,22 @@ pub(crate) async fn call(
                     snapshots.send_replace(state.clone());
                 }
                 Ok(event) = live.recv() => match event {
+                    // Who watches this account's stream, or the one it watches.
+                    Live::StreamUpdated { stream_key, viewers, .. } => {
+                        let shown = if share.as_ref().is_some_and(|share| share.key.as_ref() == Some(&stream_key)) {
+                            state.sharing.as_mut().map(|sharing| &mut sharing.viewers)
+                        } else if watch.as_ref().is_some_and(|watch| watch.key == stream_key) {
+                            state.watching.as_mut().map(|watching| &mut watching.viewers)
+                        } else {
+                            None
+                        };
+                        if let Some(shown) = shown
+                            && *shown != viewers
+                        {
+                            *shown = viewers;
+                            snapshots.send_replace(state.clone());
+                        }
+                    }
                     Live::StreamEnded { stream_key, reason } => {
                         // The streamer stopped, or Discord ended watching.
                         if watch.as_ref().is_some_and(|watch| watch.key == stream_key)

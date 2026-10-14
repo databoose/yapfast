@@ -32,6 +32,46 @@ export component LivePill inherits Rectangle {
     }
 }
 
+// Who watches a stream, over its top right as Discord shows them: an eye and
+// how many, then the first three's avatars overlapping and how many more.
+// Hovering names them all.
+export component ViewerStack inherits Rectangle {
+    in property <[PersonRow]> viewers;
+    /// "Watching: " and their names, for the tooltip.
+    in property <string> names;
+    property <int> faces: min(3, root.viewers.length);
+    property <length> pictures: root.faces > 0 ? 22px + (root.faces - 1) * 15px : 0px;
+    visible: root.viewers.length > 0;
+    width: 8px + 16px + 4px + count.preferred-width + 6px + root.pictures + (root.viewers.length > 3 ? 4px + more.preferred-width : 0px) + 6px;
+    height: 30px; border-radius: 15px; background: #000000a6;
+    accessible-role: text; accessible-label: root.names;
+    Image { x: 8px; width: 16px; height: 16px; source: @image-url("icons/eye.svg"); colorize: #ffffff; }
+    count := Text {
+        x: 28px; text: root.viewers.length; color: #ffffff; font-size: 13px; font-weight: 700;
+    }
+    for viewer[index] in root.viewers: Rectangle {
+        visible: index < 3;
+        x: 28px + count.preferred-width + 6px + index * 15px;
+        width: 26px; height: 26px; border-radius: 13px; background: #000000;
+        Avatar { size: 22px; initial: viewer.initial; tint: viewer.tint; picture: viewer.picture; }
+    }
+    more := Text {
+        visible: root.viewers.length > 3;
+        x: 28px + count.preferred-width + 6px + root.pictures + 4px;
+        text: "+" + (root.viewers.length - 3); color: #ffffff; font-size: 13px; font-weight: 700;
+    }
+    TouchArea {
+        changed has-hover => {
+            if self.has-hover {
+                Tip.text = root.names; Tip.side = 2;
+                Tip.x = root.absolute-position.x + root.width / 2; Tip.y = root.absolute-position.y + root.height;
+            } else if Tip.text == root.names {
+                Tip.text = "";
+            }
+        }
+    }
+}
+
 // One of the voice panel's wide buttons under the status, as Discord's panel
 // has for the camera and the screen: lit while what it starts is on.
 component DockButton inherits Rectangle {
@@ -81,6 +121,8 @@ export component VoiceDock inherits Rectangle {
     in property <bool> sharing;
     in property <bool> share-live;
     in property <string> share-status;
+    /// How many watch this account's stream.
+    in property <int> share-watchers;
     in property <bool> can-film;
     in property <bool> camera-on;
     callback leave-voice;
@@ -126,7 +168,9 @@ export component VoiceDock inherits Rectangle {
                 alignment: center; horizontal-stretch: 1;
                 Text { text: "Your screen"; color: Theme.text; font-size: 14px; font-weight: 700; overflow: elide; }
                 Text {
-                    text: root.share-live ? "Streaming to " + root.voice-name : root.share-status;
+                    text: !root.share-live ? root.share-status
+                        : root.share-watchers > 0 ? "Streaming to " + root.voice-name + " · " + root.share-watchers + " watching"
+                        : "Streaming to " + root.voice-name;
                     color: Theme.muted; font-size: 13px; overflow: elide;
                 }
             }
@@ -239,6 +283,8 @@ export component StreamView inherits Rectangle {
     /// The stream is live: this account's own isn't until Discord has started it.
     in property <bool> live: true;
     in property <string> stop-label: "Stop watching";
+    in property <[PersonRow]> viewers;
+    in property <string> viewer-names;
     callback stop-watching;
     vertical-stretch: 1;
     Rectangle {
@@ -262,6 +308,10 @@ export component StreamView inherits Rectangle {
                 if root.live: Middle { LivePill { } }
             }
         }
+        ViewerStack {
+            x: parent.width - self.width - 50px; y: 11px;
+            viewers: root.viewers; names: root.viewer-names;
+        }
         IconButton {
             x: parent.width - self.width - 10px; y: 10px; height: self.size;
             icon: @image-url("icons/x.svg"); label: root.stop-label; tint: #ffffff;
@@ -282,6 +332,8 @@ export component StreamPip inherits Rectangle {
     in property <bool> live;
     in property <image> stop-icon;
     in property <string> stop-label;
+    in property <[PersonRow]> viewers;
+    in property <string> viewer-names;
     /// How far the pointer has dragged it from its corner.
     in-out property <length> drag-x;
     in-out property <length> drag-y;
@@ -338,6 +390,10 @@ export component StreamPip inherits Rectangle {
                 clicked => { root.stop(); }
             }
         }
+        ViewerStack {
+            x: parent.width - self.width - 8px; y: 8px;
+            viewers: root.viewers; names: root.viewer-names;
+        }
     }
 }
 
@@ -350,6 +406,8 @@ export component ParticipantGrid inherits Flickable {
     in property <bool> share-live;
     in property <string> share-status;
     in property <image> share-frame;
+    in property <[PersonRow]> share-viewers;
+    in property <string> share-viewer-names;
     callback watch-stream(string);
     /// A click on this account's own screen, or on itself while it shares:
     /// show the screen large, as a watched stream shows.
@@ -430,6 +488,10 @@ export component ParticipantGrid inherits Flickable {
             }
         }
         TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.show-own-stream(); } }
+        ViewerStack {
+            x: parent.width - self.width - 10px; y: 10px;
+            viewers: root.share-viewers; names: root.share-viewer-names;
+        }
     }
     for person[position] in root.participants: tile := Rectangle {
         property <int> index: position + root.extra;

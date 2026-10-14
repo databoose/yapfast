@@ -1,5 +1,6 @@
 //! Talk's own short sounds for calls and messages: joining and leaving, mute and
-//! deafen, and a new message or mention. They come in four sets with one
+//! deafen, a new message or mention, and someone starting or stopping
+//! watching a stream. They come in four sets with one
 //! character each, all in F major pentatonic so any two sound well together.
 //! Each is made when it plays, so nothing is stored or bundled.
 
@@ -46,10 +47,15 @@ pub enum Sound {
     Message,
     /// A message that mentions this account.
     Mention,
+    /// Someone else started watching this account's stream, or the one it
+    /// watches.
+    ViewerJoin,
+    /// Someone else stopped watching it.
+    ViewerLeave,
 }
 
 impl Sound {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Join,
         Self::Leave,
         Self::Mute,
@@ -58,6 +64,8 @@ impl Sound {
         Self::Undeafen,
         Self::Message,
         Self::Mention,
+        Self::ViewerJoin,
+        Self::ViewerLeave,
     ];
 }
 
@@ -66,6 +74,8 @@ const F3: f32 = 53.0;
 const C4: f32 = 60.0;
 const F4: f32 = 65.0;
 const A4: f32 = 69.0;
+const C5: f32 = 72.0;
+const F5: f32 = 77.0;
 
 /// A sound's notes (start in seconds, MIDI note, velocity), how much faster
 /// than usual they fade, and its loudness against the others in dB.
@@ -86,6 +96,10 @@ fn score(sound: Sound) -> (&'static [(f32, f32, f32)], f32, f32) {
             0.9,
             0.0,
         ),
+        // Join and Leave an octave up, quicker and quieter: a viewer comes
+        // and goes more lightly than someone joining the call.
+        Sound::ViewerJoin => (&[(0.0, C5, 0.7), (0.1, F5, 0.85)], 0.7, -4.0),
+        Sound::ViewerLeave => (&[(0.0, F5, 0.75), (0.11, C5, 0.65)], 0.7, -5.0),
     }
 }
 

@@ -1661,6 +1661,71 @@ fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
 }
 
 #[test]
+fn streams_sound_as_others_start_and_stop_watching() {
+    let mut app = connected();
+    let person = |id: &str, local: bool| voice::Participant {
+        id: id.into(),
+        user: id.into(),
+        person: id.into(),
+        local,
+        muted: false,
+        deafened: false,
+        speaking: false,
+        connected: true,
+        problem: None,
+        streaming: false,
+        video: None,
+        avatar: None,
+    };
+    let frames = std::sync::Arc::new(crate::frames::Frames::create(2, 2).unwrap());
+    let call = |sharing: Option<&[&str]>, watching: Option<&[&str]>| voice::State {
+        phase: Phase::Connected,
+        room: Some("lounge".into()),
+        name: "Lounge".into(),
+        participants: vec![
+            person("me", true),
+            person("sam", false),
+            person("kim", false),
+        ],
+        sharing: sharing.map(|viewers| voice::Sharing {
+            phase: voice::SharePhase::Live,
+            frames: frames.clone(),
+            viewers: viewers.iter().map(|&viewer| viewer.into()).collect(),
+        }),
+        watching: watching.map(|viewers| {
+            Box::new(voice::Watching {
+                user: "sam".into(),
+                name: "sam".into(),
+                opening: false,
+                frames: None,
+                viewers: viewers.iter().map(|&viewer| viewer.into()).collect(),
+            })
+        }),
+        ..Default::default()
+    };
+    let mut heard = |state: voice::State| sounds(&app.apply(Event::Voice(state)));
+    assert_eq!(heard(call(None, None)), [Sound::Join]);
+    // Going live, with no one watching yet, and someone starting.
+    assert_eq!(heard(call(Some(&[]), None)), []);
+    assert_eq!(heard(call(Some(&["sam"]), None)), [Sound::ViewerJoin]);
+    assert_eq!(heard(call(Some(&["sam"]), None)), []);
+    assert_eq!(heard(call(Some(&[]), None)), [Sound::ViewerLeave]);
+    // Watching Sam's stream: this account among its viewers makes no sound,
+    // and nor do those already watching; others coming and going do.
+    assert_eq!(heard(call(Some(&[]), Some(&["me", "kim"]))), []);
+    assert_eq!(
+        heard(call(Some(&["kim"]), Some(&["me", "kim"]))),
+        [Sound::ViewerJoin]
+    );
+    assert_eq!(
+        heard(call(Some(&["kim"]), Some(&["me"]))),
+        [Sound::ViewerLeave]
+    );
+    // A stream ending makes no viewer sound.
+    assert_eq!(heard(call(None, Some(&["me"]))), []);
+}
+
+#[test]
 fn calls_sound_as_people_come_and_go_but_not_while_reconnecting_or_ringing() {
     let mut app = connected();
     let person = |id: &str, local: bool, connected: bool| voice::Participant {

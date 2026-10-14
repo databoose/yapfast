@@ -37,7 +37,9 @@
 // server, and GET /_control/voice-identifies lists the tokens voice
 // connections identified with. Joining "Create Room" has a bot move Alice to
 // "Alice's room", made the first time, on another voice server; POST /_control/stream-move with a stream key
-// moves that stream to another server. Watching
+// moves that stream to another server, and POST
+// /_control/stream-viewer?user=bob has Bob watch Alice's stream (&of=carol
+// Carol's instead; &stop stops him), as STREAM_UPDATE's viewer_ids tell. Watching
 // Bob's stream gets testing/fixtures' recording once the viewer asks for video
 // with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
@@ -4201,6 +4203,20 @@ const server = Bun.serve<SocketData>({
         send(ws, 0, { guild_id: GUILD, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
       }
       return new Response("moved Alice's call\n");
+    }
+    if (req.method === "POST" && path === "/_control/stream-viewer") {
+      // Someone starts watching, or with ?stop stops watching, a stream:
+      // ?user=bob watches Alice's, or with &of=bob, Bob's.
+      const viewer = users[url.searchParams.get("user") ?? ""];
+      const streamer = users[url.searchParams.get("of") ?? "alice"];
+      if (!viewer || !streamer) return new Response("name a user and a streamer\n", { status: 400 });
+      const found = [...streams.entries()].find(([key]) => key.endsWith(`:${streamer.id}`));
+      if (!found) return new Response("no such stream\n", { status: 409 });
+      const [key, stream] = found;
+      if (url.searchParams.has("stop")) stream.viewers.delete(viewer.id);
+      else stream.viewers.add(viewer.id);
+      dispatch("STREAM_UPDATE", wireStream(key, stream));
+      return new Response(`${[...stream.viewers].length} watching ${key}\n`);
     }
     if (req.method === "POST" && path === "/_control/stream-move") {
       // Discord moves a stream Alice is in to another server, named by a new

@@ -2454,6 +2454,41 @@ impl Adapter {
                 vec![]
             },
         );
+        // Viewers in the call's order, as their rows show them.
+        let viewers = |ids: &[String], streamer: Option<&str>| -> Vec<PersonRow> {
+            self.models
+                .participants
+                .iter()
+                .filter(|row| {
+                    Some(row.id.as_str()) != streamer && ids.iter().any(|id| row.id == id.as_str())
+                })
+                .collect()
+        };
+        update_model(
+            &self.models.share_viewers,
+            voice
+                .sharing
+                .as_ref()
+                .map(|sharing| viewers(&sharing.viewers, None))
+                .unwrap_or_default(),
+        );
+        update_model(
+            &self.models.watch_viewers,
+            voice
+                .watching
+                .as_ref()
+                .map(|watching| viewers(&watching.viewers, Some(&watching.user)))
+                .unwrap_or_default(),
+        );
+        let names = |model: &VecModel<PersonRow>| -> SharedString {
+            if model.row_count() == 0 {
+                return SharedString::new();
+            }
+            let names: Vec<String> = model.iter().map(|row| row.name.to_string()).collect();
+            format!("Watching: {}", names.join(", ")).into()
+        };
+        window.set_share_viewer_names(names(&self.models.share_viewers));
+        window.set_watch_viewer_names(names(&self.models.watch_viewers));
         // A picture per participant, kept while their camera stays on and
         // they stay in that place.
         let frames = &self.models.participant_frames;

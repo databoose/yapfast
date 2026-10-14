@@ -782,6 +782,10 @@ struct Models {
     emoji_suggestions: Rc<VecModel<EmojiCell>>,
     forward_targets: Rc<VecModel<ForwardRow>>,
     participants: Rc<VecModel<PersonRow>>,
+    /// Who watches this account's stream, and the one it watches, as rows of
+    /// `participants`.
+    share_viewers: Rc<VecModel<PersonRow>>,
+    watch_viewers: Rc<VecModel<PersonRow>>,
     /// Each participant's newest camera picture, in the same order.
     participant_frames: Rc<VecModel<slint::Image>>,
     /// Who is in the open DM's call, shown above its messages.
@@ -821,6 +825,8 @@ impl Models {
         window.set_emoji_suggestions(ModelRc::from(self.emoji_suggestions.clone()));
         window.set_forward_targets(ModelRc::from(self.forward_targets.clone()));
         window.set_participants(ModelRc::from(self.participants.clone()));
+        window.set_share_viewers(ModelRc::from(self.share_viewers.clone()));
+        window.set_watch_viewers(ModelRc::from(self.watch_viewers.clone()));
         window.set_participant_frames(ModelRc::from(self.participant_frames.clone()));
         window.set_call_people(ModelRc::from(self.call_people.clone()));
         window.set_friend_requests(ModelRc::from(self.friend_requests.clone()));

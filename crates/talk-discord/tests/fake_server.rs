@@ -1282,6 +1282,27 @@ async fn talks_to_the_fake_server() {
         _ => None,
     })
     .await;
+    // Someone starting and stopping watching shows in the stream's viewers.
+    post_control(server, "/_control/stream-viewer?user=bob", "");
+    live_where(&mut live, |event| match event {
+        Live::StreamUpdated {
+            stream_key,
+            viewers,
+            ..
+        } if stream_key == mine.stream_key && viewers == ["1400000000000000002"] => Some(()),
+        _ => None,
+    })
+    .await;
+    post_control(server, "/_control/stream-viewer?user=bob&stop", "");
+    live_where(&mut live, |event| match event {
+        Live::StreamUpdated {
+            stream_key,
+            viewers,
+            ..
+        } if stream_key == mine.stream_key && viewers.is_empty() => Some(()),
+        _ => None,
+    })
+    .await;
     // Discord moves the stream to another server, which Talk hears of.
     post_control(server, "/_control/stream-move", &mine.stream_key);
     let moved = live_where(&mut live, |event| match event {

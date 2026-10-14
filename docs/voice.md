@@ -133,7 +133,10 @@ it's asked for, rather than once the call confirms it. Turning the microphone
 on as a call connects, for the unmute-on-join preference, makes no sound, since
 joining already did. While deafened, only deafening's own sounds play. A message
 in the conversation in front of you makes no sound, and nor does any on Do Not
-Disturb.
+Disturb. Someone else starting or stopping watching this account's stream, or
+the one it watches, plays the call's join or leave an octave higher, quicker
+and quieter, as Discord's client sounds a stream's viewers; a call sound at the
+same moment wins, and a stream starting or ending makes no viewer sound.
 
 `sounds.rs` makes each sound as it plays, so nothing is bundled. The four sets
 are Felt piano, Soft marimba, Mellow Rhodes and Glow, all in F major pentatonic
