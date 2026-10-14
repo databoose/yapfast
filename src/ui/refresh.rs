@@ -201,6 +201,7 @@ impl Adapter {
         self.show_invite(window);
         self.show_channel_dialog(window);
         self.show_leave(window);
+        self.show_server_profile(window);
         self.show_dialogs(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
@@ -1189,6 +1190,112 @@ impl Adapter {
             loading: dialog.settings.is_none() && dialog.error.is_none(),
             saving: dialog.saving,
             error: dialog.error.as_deref().unwrap_or_default().into(),
+        });
+    }
+
+    /// The editor of this account's profile in a Discord server, with a
+    /// preview of its profile card there.
+    pub(super) fn show_server_profile(&mut self, window: &TalkWindow) {
+        use talk_core::application::{BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT};
+        let editor = self.app.state.server_profile.as_ref();
+        // Its fields start from what Discord has, once that's here.
+        if let Some(editor) = editor
+            && (!window.get_server_profile_open() || window.get_server_profile_prompt().loading)
+        {
+            window.set_server_profile_nick(editor.nick.as_str().into());
+            window.set_server_profile_pronouns(editor.pronouns.as_str().into());
+            window.set_server_profile_bio(editor.bio.as_str().into());
+        }
+        let Some(editor) = editor else {
+            // Its pictures go with it.
+            if window.get_server_profile_open() {
+                window.set_server_profile_open(false);
+                window.set_server_profile_prompt(ServerProfilePrompt::default());
+            }
+            return;
+        };
+        window.set_server_profile_open(true);
+        let main = editor.profile.as_ref().map(|profile| &profile.main);
+        let main_text = |text: Option<&String>| text.cloned().unwrap_or_default();
+        let (avatar, new_avatar) = editor.picture(ProfilePicture::Avatar);
+        let (banner, new_banner) = editor.picture(ProfilePicture::Banner);
+        let written = |text: &str, main: Option<&String>| {
+            let text = text.trim();
+            if text.is_empty() {
+                main_text(main)
+            } else {
+                text.to_owned()
+            }
+        };
+        // The bio as written is Markdown, where the main one was rendered.
+        let view = ProfileView {
+            profile: talk_core::chat::Profile {
+                id: main.map(|main| main.id.clone()).unwrap_or_default(),
+                name: written(&editor.nick, main.map(|main| &main.name)),
+                handle: main_text(main.map(|main| &main.handle)),
+                avatar: avatar
+                    .map(str::to_owned)
+                    .or_else(|| main.and_then(|main| main.avatar.clone())),
+                banner: banner
+                    .map(str::to_owned)
+                    .or_else(|| main.and_then(|main| main.banner.clone())),
+                accent: main.and_then(|main| main.accent),
+                pronouns: written(&editor.pronouns, main.map(|main| &main.pronouns)),
+                bio: written(&editor.bio, main.map(|main| &main.bio)),
+                ..Default::default()
+            },
+            large: false,
+            loading: false,
+            note: None,
+        };
+        let mut preview = profile_data(&mut self.pictures, &self.app.state, &view);
+        // Someone's own card offers them nothing.
+        preview.friend = 0;
+        if let Some(picture) = new_avatar {
+            preview.picture = slint_image(picture);
+        }
+        if let Some(picture) = new_banner {
+            preview.banner = slint_image(picture);
+        }
+        let reading = match editor.reading.as_ref().map(|(kind, _)| *kind) {
+            Some(ProfilePicture::Avatar) => "avatar",
+            Some(ProfilePicture::Banner) => "banner",
+            None => "",
+        };
+        let too_long = if editor.nick.chars().count() > NICK_LIMIT {
+            format!("A nickname can be up to {NICK_LIMIT} characters.")
+        } else if editor.pronouns.chars().count() > PRONOUNS_LIMIT {
+            format!("Pronouns can be up to {PRONOUNS_LIMIT} characters.")
+        } else {
+            String::new()
+        };
+        let left = BIO_LIMIT as i64 - editor.bio.chars().count() as i64;
+        window.set_server_profile_prompt(ServerProfilePrompt {
+            detail: format!(
+                "How you show in {}. An empty field shows your main profile's.",
+                editor.server_name
+            )
+            .into(),
+            nick_placeholder: main_text(main.map(|main| &main.handle)).into(),
+            pronouns_placeholder: main
+                .map(|main| main.pronouns.as_str())
+                .filter(|pronouns| !pronouns.is_empty())
+                .unwrap_or("Add your pronouns")
+                .into(),
+            bio_placeholder: "Tell this server a bit about yourself".into(),
+            loading: editor.loading(),
+            saving: editor.saving,
+            error: editor.error.as_deref().unwrap_or_default().into(),
+            may_rename: editor.may_rename,
+            nitro: editor.nitro,
+            upgrade: editor.upgrade,
+            avatar_reset: editor.resettable(ProfilePicture::Avatar),
+            banner_reset: editor.resettable(ProfilePicture::Banner),
+            reading: reading.into(),
+            bio_left: i32::try_from(left).unwrap_or(i32::MIN),
+            too_long: too_long.into(),
+            changed: editor.change().is_some(),
+            preview,
         });
     }
 

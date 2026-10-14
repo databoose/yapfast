@@ -611,6 +611,23 @@ impl Api {
             .await
     }
 
+    /// Changes this account's member object in a server: its nickname and
+    /// server avatar, as Discord's per-server profile editor sends them.
+    /// Discord answers with the member, and GUILD_MEMBER_UPDATE.
+    pub async fn modify_member_me(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/members/@me");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    /// Changes this account's profile in a server: its banner, bio and
+    /// pronouns. Discord answers with the profile, and no gateway event.
+    pub async fn modify_guild_profile(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/profile/@me");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
     /// Gives a member a role, or with `add` false takes it away.
     pub async fn member_role(&self, guild: &str, user: &str, role: &str, add: bool) -> Result<()> {
         let path = format!("/guilds/{guild}/members/{user}/roles/{role}");

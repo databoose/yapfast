@@ -1,7 +1,9 @@
 // Dialogs a Discord server's, category's or channel's menu opens.
-import { Theme, Label } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Label, Middle } from "theme.slint";
 import { ActionButton, IconButton, TextField } from "controls.slint";
 import { Choices, SettingsSwitch } from "settings.slint";
+import { ProfileData, ProfileCard } from "people.slint";
 
 // What an invite dialog shows: whom it invites where, and the link once
 // Discord made it.
@@ -213,6 +215,212 @@ export component ChannelDialog inherits Rectangle {
                     ActionButton {
                         text: root.prompt.confirm; primary: !root.prompt.danger; danger: root.prompt.danger;
                         enabled: root.ready;
+                        clicked => { root.save(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// What the per-server profile editor shows besides what's written in it.
+export struct ServerProfilePrompt {
+    /// "Your profile in Server", and what each empty field goes by.
+    detail: string,
+    nick-placeholder: string,
+    pronouns-placeholder: string,
+    bio-placeholder: string,
+    /// Discord sends the profile; Discord takes the change.
+    loading: bool,
+    saving: bool,
+    error: string,
+    /// Whether this account may change its nickname here.
+    may-rename: bool,
+    /// Whether it has the Nitro the avatar, banner and bio take, else
+    /// whether a lesser Nitro, which Discord asks it to upgrade.
+    nitro: bool,
+    upgrade: bool,
+    /// Whether the server has an avatar or banner of its own to reset.
+    avatar-reset: bool,
+    banner-reset: bool,
+    /// A chosen picture is being read: "avatar", "banner" or "".
+    reading: string,
+    /// How many characters the bio has left; below 0, too many.
+    bio-left: int,
+    /// The nickname or pronouns are longer than Discord takes.
+    too-long: string,
+    /// Saving would change something.
+    changed: bool,
+    /// The profile card as the server would show it.
+    preview: ProfileData,
+}
+
+// A heading of the editor's, in Discord's words.
+component FieldHeading inherits Text {
+    color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+}
+
+// This account's profile in a Discord server, as Discord's per-server
+// profile editor has it: the nickname and pronouns, then the avatar, banner
+// and bio, which take Nitro and show greyed under its offer without it,
+// with a preview of the profile card beside them.
+export component ServerProfileDialog inherits Rectangle {
+    in property <ServerProfilePrompt> prompt;
+    in-out property <string> nick;
+    in-out property <string> pronouns;
+    in-out property <string> bio;
+    /// A text changed: 0 the nickname, 1 the pronouns, 2 the bio.
+    callback write(int, string);
+    /// Choose a picture, or go back to the main profile's: 0 the avatar, 1
+    /// the banner.
+    callback pick(int);
+    callback reset(int);
+    callback unlock-nitro;
+    callback save;
+    callback close;
+    property <bool> ready: !root.prompt.loading && !root.prompt.saving;
+    property <bool> premium: root.ready && root.prompt.nitro;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(760px, root.width - 48px); height: min(profile-content.preferred-height, root.height - 48px);
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Edit server profile";
+        TouchArea { }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                return reject;
+            }
+            profile-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "Edit server profile"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
+                }
+                if root.prompt.detail != "": Label { text: root.prompt.detail; }
+                HorizontalLayout {
+                    spacing: 20px;
+                    ScrollView {
+                        horizontal-stretch: 1;
+                        min-height: min(fields.preferred-height, 200px);
+                        preferred-height: fields.preferred-height;
+                        content-height: fields.preferred-height;
+                        fields := VerticalLayout {
+                            padding-right: 8px; spacing: 8px;
+                            FieldHeading { text: "SERVER NICKNAME"; }
+                            TextField {
+                                enabled: root.ready && root.prompt.may-rename;
+                                min-height: 36px; text-size: 15px; pad: 10px;
+                                placeholder: root.prompt.loading ? "Loading..." : root.prompt.nick-placeholder; label: "Server nickname";
+                                text <=> root.nick;
+                                edited(text) => { root.write(0, text); }
+                            }
+                            if !root.prompt.loading && !root.prompt.may-rename: Label { text: "You don't have permission to change your nickname in this server."; }
+                            FieldHeading { text: "PRONOUNS"; }
+                            TextField {
+                                enabled: root.ready;
+                                min-height: 36px; text-size: 15px; pad: 10px;
+                                placeholder: root.prompt.pronouns-placeholder; label: "Pronouns";
+                                text <=> root.pronouns;
+                                edited(text) => { root.write(1, text); }
+                            }
+                            if root.prompt.too-long != "": Text { text: root.prompt.too-long; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                            // Discord's offer, over what Nitro unlocks.
+                            if !root.prompt.nitro: Rectangle {
+                                border-radius: 8px; background: Theme.sunken;
+                                height: offer.preferred-height;
+                                offer := HorizontalLayout {
+                                    padding: 12px; spacing: 12px;
+                                    Middle { Image { source: @image-url("icons/lock.svg"); width: 20px; height: 20px; colorize: Theme.accent; } }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1; spacing: 2px; alignment: center;
+                                        Text { text: "Make unique profiles for each server"; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
+                                        Label { text: "Customize your profile for every server, from avatar decorations to bios. Only with Nitro."; }
+                                    }
+                                    Middle {
+                                        ActionButton {
+                                            small: true; primary: true;
+                                            text: root.prompt.upgrade ? "Upgrade Nitro" : "Unlock with Nitro";
+                                            clicked => { root.unlock-nitro(); }
+                                        }
+                                    }
+                                }
+                            }
+                            FieldHeading { text: "AVATAR"; }
+                            HorizontalLayout {
+                                spacing: 8px; alignment: start;
+                                ActionButton {
+                                    small: true; enabled: root.premium && root.prompt.reading == "";
+                                    text: root.prompt.reading == "avatar" ? "Reading..." : "Change Avatar";
+                                    clicked => { root.pick(0); }
+                                }
+                                if root.prompt.avatar-reset: ActionButton {
+                                    small: true; ghost: true; enabled: root.premium; text: "Reset Avatar";
+                                    clicked => { root.reset(0); }
+                                }
+                            }
+                            FieldHeading { text: "PROFILE BANNER"; }
+                            HorizontalLayout {
+                                spacing: 8px; alignment: start;
+                                ActionButton {
+                                    small: true; enabled: root.premium && root.prompt.reading == "";
+                                    text: root.prompt.reading == "banner" ? "Reading..." : "Change Banner";
+                                    clicked => { root.pick(1); }
+                                }
+                                if root.prompt.banner-reset: ActionButton {
+                                    small: true; ghost: true; enabled: root.premium; text: "Reset Banner";
+                                    clicked => { root.reset(1); }
+                                }
+                            }
+                            Label { text: "Upload a PNG, JPG, or GIF under 10MB. Images should be at least 680x240."; }
+                            FieldHeading { text: "BIO"; }
+                            Label { text: "You can use markdown and links if you'd like."; }
+                            Rectangle {
+                                height: 96px; border-radius: 6px; background: Theme.sunken;
+                                border-width: bio-input.has-focus ? 1px : 0px; border-color: Theme.accent.with-alpha(0.8);
+                                Text {
+                                    x: 10px; y: 8px; width: parent.width - 20px;
+                                    visible: root.bio == "";
+                                    text: root.prompt.bio-placeholder; color: root.premium ? Theme.muted : Theme.faint; font-size: 15px;
+                                    wrap: word-wrap; overflow: elide;
+                                }
+                                bio-input := TextInput {
+                                    x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
+                                    text <=> root.bio;
+                                    enabled: root.premium;
+                                    single-line: false; wrap: word-wrap;
+                                    font-size: 15px;
+                                    color: root.premium ? Theme.text : Theme.muted;
+                                    selection-background-color: Theme.accent.with-alpha(0.35);
+                                    selection-foreground-color: Theme.text;
+                                    accessible-label: "Bio";
+                                    edited => { root.write(2, self.text); }
+                                }
+                            }
+                            Text {
+                                text: root.prompt.bio-left < 0 ? "Too long by " + (-root.prompt.bio-left) : root.prompt.bio-left + " left";
+                                color: root.prompt.bio-left < 0 ? Theme.danger : Theme.muted; font-size: 12px;
+                                horizontal-alignment: right;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        width: 300px; spacing: 8px; alignment: start;
+                        FieldHeading { text: "PREVIEW"; }
+                        ProfileCard { preview: true; data: root.prompt.preview; limit: root.height - 220px; }
+                    }
+                }
+                if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px; padding-top: 4px;
+                    ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
+                    ActionButton {
+                        text: root.prompt.saving ? "Saving..." : "Save Changes"; primary: true;
+                        enabled: root.ready && root.prompt.changed && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0;
                         clicked => { root.save(); }
                     }
                 }

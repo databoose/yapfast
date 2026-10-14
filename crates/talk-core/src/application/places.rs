@@ -189,12 +189,8 @@ impl Application {
             });
             choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
         }
-        // One's own nickname, as the member menu changes it.
-        if self.state.discord_online
-            && self.state.discord_user.is_some()
-            && (self.may(id, Permission::ChangeNickname)
-                || self.may(id, Permission::ManageNicknames))
-        {
+        // One's own profile there, which anyone may change something of.
+        if self.state.discord_online && self.state.discord_user.is_some() {
             choices.push(MenuChoice::EditServerProfile);
         }
         if self.manages(id) {

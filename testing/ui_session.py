@@ -209,6 +209,14 @@ def perform(command):
         time.sleep(.2)
     elif verb == 'shot':
         return shot(*values)
+    elif verb == 'pick':
+        kind, _, rest = rest.partition(' ')
+        path = (ROOT / rest).resolve()
+        if kind not in ('avatar', 'banner') or not path.is_file():
+            raise ValueError(f'pick avatar|banner PATH, with a file at {path}')
+        with window_control.open('a') as window:
+            window.write(f'pick {kind} {path}\n')
+        time.sleep(.8)
     elif verb == 'stage':
         path = (ROOT / rest).resolve()
         if not path.is_file():

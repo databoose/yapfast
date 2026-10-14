@@ -267,6 +267,9 @@ export component ProfileCard inherits Rectangle {
     in property <ProfileData> data;
     in property <bool> large;
     in property <bool> docked;
+    /// A preview of one's own, as the server profile editor shows it, which
+    /// opens nothing.
+    in property <bool> preview;
     /// It shows everything: the bio in full, and mutual servers and friends.
     property <bool> full: root.large || root.docked;
     /// The tallest the card may be.
@@ -316,7 +319,7 @@ export component ProfileCard inherits Rectangle {
                             x: parent.width - self.width - (root.large ? 14px : 10px); y: parent.height - self.height - (root.large ? 14px : 10px);
                             presence: root.data.presence; ring: Theme.sidebar;
                         }
-                        if !root.large: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
+                        if !root.large && !root.preview: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
                     }
                 }
                 VerticalLayout {
@@ -326,7 +329,7 @@ export component ProfileCard inherits Rectangle {
                         Text {
                             text: root.data.name; color: Theme.text; font-size: root.large ? 26px : 20px; font-weight: 700;
                             overflow: elide;
-                            if !root.large: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
+                            if !root.large && !root.preview: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
                         }
                         if root.data.handle != "": Text { text: root.data.handle; color: Theme.secondary; font-size: 14px; font-weight: 500; overflow: elide; }
                         if root.data.activity != "": Text {
@@ -415,7 +418,7 @@ export component ProfileCard inherits Rectangle {
                         }
                     }
                     if root.data.note != "": Text { text: root.data.note; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
-                    if !root.large: ActionButton { text: "View full profile"; small: true; clicked => { root.enlarge(); } }
+                    if !root.large && !root.preview: ActionButton { text: "View full profile"; small: true; clicked => { root.enlarge(); } }
                 }
             }
         }

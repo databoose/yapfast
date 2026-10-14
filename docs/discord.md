@@ -1114,12 +1114,11 @@ copying them.
   Talk has no DM with, it starts the DM first and calls once it opens.
 - Add note works for any member, and the friend nickname for friends, without
   a DM.
-- Change nickname: one's own needs Change Nickname and is `PATCH
-  /guilds/{id}/members/@me` with `{"nick": ...}`; another's needs Manage
-  Nicknames and outranking them, and is `PATCH /guilds/{id}/members/{user}`.
-  Empty resets it. `Action::AskMember` with `PersonAsk::ServerNickname` and
-  this account's own id opens the same dialog from anywhere, by the server's
-  id, as a server menu's "Edit server profile" can.
+- Change nickname: another's needs Manage Nicknames and outranking them,
+  and is `PATCH /guilds/{id}/members/{user}` with `{"nick": ...}`; empty
+  resets it. One's own entry offers Edit server profile in its place, as
+  Discord's menu does, which opens the [per-server profile
+  editor](#editing-ones-server-profile).
 - Roles needs Manage Roles. Its submenu lists every role but @everyone,
   highest first, ticked where they hold it. Roles at or above this account's
   highest, and those an integration manages, show greyed, as Discord shows
@@ -1316,14 +1315,85 @@ it, start "Movie night" and archive "Plans".
 
 ### Editing one's server profile
 
-Edit server profile, in a server's menu and its header's dropdown, where
-the account may change its nickname (Change Nickname, or Manage
-Nicknames), opens the member menu's nickname dialog for the account's own
-id (`Action::AskMember` with `PersonAsk::ServerNickname`), which sends
-`PATCH /guilds/{id}/members/@me` with `{"nick": ...}` and learns the
-result from GUILD_MEMBER_UPDATE. Discord's per-server profile also has an
-avatar, a banner and a bio, mostly for Nitro; Talk changes only the
-nickname.
+Edit server profile, in a server's menu, its header's dropdown and one's
+own entry in its member list, opens Talk's version of Discord's "Per-server
+Profiles" settings page (`application/server_profile.rs`, the dialog in
+`ui/server.slint`). Discord's client offers it to everyone; it reads the
+profile with `GET /users/@me/profile?guild_id=...` and shows, in its
+order:
+
+- Server Nickname, up to 32 characters, greyed with "You don't have
+  permission to change your nickname in this server." without Change
+  Nickname or Manage Nicknames.
+- Pronouns, up to 40.
+- Avatar, with Change Avatar and Reset Avatar.
+- Profile Banner, with Change Banner and Reset Banner, and Discord's hint:
+  "Upload a PNG, JPG, or GIF under 10MB. Images should be at least
+  680x240."
+- Bio, Markdown up to 190 characters, with what's left counted under it.
+
+A profile card beside them previews the profile as the server will show
+it, the main profile's name, pronouns, bio, avatar and banner standing in
+for each field left empty, as Discord merges them: an empty text and a
+missing picture both go by the main profile. A Reset button shows only
+when the server has a picture of its own, as it stands or newly chosen.
+
+The nickname and pronouns are free. The avatar, banner and bio take
+Discord's full Nitro: the client checks `canUsePremiumProfileCustomization`,
+a feature of the Nitro SKU alone, so `premium_type` 2 and not Basic (3) or
+Classic (1). Without it Discord still shows them, greyed, under an offer:
+"Make unique profiles for each server", "Customize your profile for every
+server, from avatar decorations to bios. Only with Nitro.", and "Unlock
+with Nitro", or "Upgrade Nitro" with a lesser Nitro, which opens
+`https://discord.com/nitro`. Talk shows them the same way.
+
+Change Avatar and Change Banner use the file chooser attachments use. Talk
+reads the picture off the UI thread, as Discord's cropper sends it: the
+middle square of an avatar, at most 1024 pixels, and the middle 17 by 6 of
+a banner, at most 2400 by 848, from a PNG, JPG, GIF or WebP under 10 MB.
+It keeps only that file, a PNG where the picture has transparency and
+otherwise a JPEG, and a preview at the card's size, twice over; an
+animated GIF goes as it is, so it stays animated. The full decoded picture
+is dropped at once, and closing the editor drops the rest. With two
+4000 by 3000 photos chosen, the heap in use (window-control `stats`) went
+from 11.26 to 12.97 MiB and back to 11.28 once the editor closed.
+
+Save Changes sends what changed, as the client does, in up to two
+requests, each only with fields to send:
+
+1. `PATCH /guilds/{id}/members/@me` with `nick` and `avatar`. Discord
+   answers with the member and sends GUILD_MEMBER_UPDATE, which Talk's
+   names already take in, so the nickname and server avatar show in the
+   member list and on messages.
+2. `PATCH /guilds/{id}/profile/@me` with `banner`, `bio` and `pronouns`.
+   No gateway event follows; the client reads its answer.
+
+A picture goes as a data URI, `data:image/png;base64,...`, or `null` to go
+back to the main profile's; a cleared text goes as `""`. Discord's docs
+say the member endpoint also takes `bio`, `banner` and `pronouns`, but the
+client never sends them there.
+
+Discord's editor also has a profile theme, an avatar decoration, display
+name styles, a nameplate, a profile effect and a frame, all Nitro and most
+bought from its shop. Talk leaves them out, as it shows none of them.
+
+A member's server profile shows wherever Talk shows them in that server:
+their server avatar in the member list and on their messages, from their
+member object, and their server banner, bio and pronouns on their profile
+card, from `GET /users/{id}/profile?guild_id=...`, whose
+`guild_member_profile` wins over their own where it isn't empty. Talk
+keeps a fetched profile for five minutes, but fetches it again once
+GUILD_MEMBER_UPDATE changes their nickname or server avatar, and after
+this account saves its own.
+
+The fake keeps a server profile for each member of "Server": Carol has a
+server avatar and Bob a server bio. It takes both requests, refuses the
+avatar, banner and bio with Discord's `PREMIUM_REQUIRED` error unless
+Alice has Nitro (`--nitro`, or `POST /_control/nitro`, with `?off` to take
+it away, which USER_UPDATE tells her session), serves an uploaded picture
+from its CDN as it came, and shows hers at `GET /_control/server-profile`.
+`scripts/ui-session do 'pick avatar PATH'` chooses a picture in the editor,
+as its file chooser would.
 
 ### Leaving a server
 

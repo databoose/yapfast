@@ -712,18 +712,13 @@ pub(super) fn choose(
         MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
         MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
         MenuChoice::LeaveServer => Some(Action::AskLeaveServer(target)),
-        // One's own nickname, in the member menu's dialog.
+        // From a server's menu, or one's own in its member list.
         MenuChoice::EditServerProfile => {
-            adapter
-                .app
-                .state
-                .discord_user
-                .clone()
-                .map(|user| Action::AskMember {
-                    place: target,
-                    user,
-                    ask: PersonAsk::ServerNickname,
-                })
+            if person {
+                place.clone().map(Action::EditServerProfile)
+            } else {
+                Some(Action::EditServerProfile(target))
+            }
         }
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer

@@ -2295,6 +2295,90 @@ async fn talks_to_the_fake_server() {
     live_where(&mut members, |live| listed(live, &|dave| dave.is_some())).await;
     assert_eq!(discord.name(&guild, &me).as_deref(), Some("Alice"));
 
+    // Her per-server profile: a nickname and pronouns anyone may set, the
+    // rest only with Nitro. Her server avatar comes back with
+    // GUILD_MEMBER_UPDATE; her banner, bio and pronouns with her profile.
+    let own = discord.server_profile(&guild).await.unwrap();
+    assert_eq!(
+        (own.nick.as_str(), own.avatar.as_deref(), own.bio.as_str()),
+        ("", None, "")
+    );
+    assert_eq!(own.main.name, "Alice");
+    let none = serde_json::json!({});
+    discord
+        .save_server_profile(
+            &guild,
+            &serde_json::json!({"nick": "Ally"}),
+            &serde_json::json!({"pronouns": "she/her"}),
+        )
+        .await
+        .unwrap();
+    let bio = serde_json::json!({"bio": "Here for #general."});
+    assert!(
+        discord
+            .save_server_profile(&guild, &none, &bio)
+            .await
+            .is_err(),
+        "a server bio takes Nitro"
+    );
+    post_control(server, "/_control/nitro", "");
+    snapshot_where(&discord, |snapshot| {
+        snapshot
+            .account
+            .as_ref()
+            .is_some_and(|account| account.premium_type == 2)
+    })
+    .await;
+    let dot = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    discord
+        .save_server_profile(
+            &guild,
+            &serde_json::json!({"avatar": dot}),
+            &serde_json::json!({"banner": dot, "bio": "Here for #general."}),
+        )
+        .await
+        .unwrap();
+    until("her server avatar shows", || {
+        discord
+            .avatar(Some(&guild), &me)
+            .contains(&format!("/guilds/{guild}/users/{me}/avatars/"))
+    })
+    .await;
+    let own = discord.server_profile(&guild).await.unwrap();
+    assert_eq!(own.nick, "Ally");
+    assert_eq!(own.pronouns, "she/her");
+    assert_eq!(own.bio, "Here for #general.");
+    assert!(
+        own.banner
+            .as_deref()
+            .is_some_and(|banner| banner.contains("/banners/"))
+    );
+    let card = discord.profile(&guild, &me).await.unwrap();
+    assert_eq!(card.bio.as_deref(), Some("Here for #general."));
+    assert_eq!(card.pronouns.as_deref(), Some("she/her"));
+    // Empty texts and no pictures go by her main profile again.
+    discord
+        .save_server_profile(
+            &guild,
+            &serde_json::json!({"nick": "", "avatar": null}),
+            &serde_json::json!({"banner": null, "bio": "", "pronouns": ""}),
+        )
+        .await
+        .unwrap();
+    let own = discord.server_profile(&guild).await.unwrap();
+    assert_eq!(
+        (own.nick, own.pronouns, own.bio, own.avatar, own.banner),
+        (String::new(), String::new(), String::new(), None, None)
+    );
+    post_control(server, "/_control/nitro?off", "");
+    snapshot_where(&discord, |snapshot| {
+        snapshot
+            .account
+            .as_ref()
+            .is_some_and(|account| account.premium_type == 0)
+    })
+    .await;
+
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
     discord.leave_server(&guild).await.unwrap();

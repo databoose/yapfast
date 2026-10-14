@@ -163,6 +163,9 @@ const { values: args } = parseArgs({
 });
 
 const TOKEN = "talk-test-token";
+/** Whether Alice has Nitro: `--nitro`, or POST /_control/nitro, with ?off
+ *  to take it away again, which tells her session with USER_UPDATE. */
+let nitro = args.nitro;
 const DISCORD_EPOCH = 1_420_070_400_000n;
 const HEARTBEAT_INTERVAL = 41_250;
 const CHAT_INTERVAL = 2_000;
@@ -340,8 +343,29 @@ function wireUser(user: User) {
 // GUILD_MEMBER_UPDATE, or GUILD_MEMBER_REMOVE and GUILD_BAN_ADD, and the
 // member list's operations. GET /_control/audit-log lists the reasons given,
 // and POST /_control/members-reset puts everyone back but keeps the log.
+// Members have server profiles too: Carol a server avatar, Bob a server
+// bio. Alice changes hers as Discord's per-server profile editor does: her
+// nickname and server avatar with PATCH /guilds/{id}/members/@me, which
+// answers with GUILD_MEMBER_UPDATE, and her banner, bio and pronouns with
+// PATCH /guilds/{id}/profile/@me, which has no gateway event. An empty
+// value or null goes back to her main profile. A picture, a data URI, is
+// served back from the CDN as it came; the avatar, banner and bio need
+// Nitro, as on Discord: `--nitro`, or POST /_control/nitro (see below).
+// GET /_control/server-profile shows hers.
 const memberRoles = new Map<string, string[]>();
 const memberNicks = new Map<string, string>();
+/** Server profiles by user: avatar and banner hashes, bio and pronouns. */
+const serverProfiles = new Map<string, { avatar: string | null; banner: string | null; bio: string; pronouns: string }>();
+/** Pictures uploaded as avatars and banners, by hash, served from the CDN. */
+const uploadedPictures = new Map<string, { type: string; data: Uint8Array }>();
+function serverProfile(id: string) {
+  let profile = serverProfiles.get(id);
+  if (!profile) {
+    profile = { avatar: null, banner: null, bio: "", pronouns: "" };
+    serverProfiles.set(id, profile);
+  }
+  return profile;
+}
 const timeouts = new Map<string, string>();
 const removed = new Set<string>();
 const auditLog: { action: string; user: string; reason: string | null }[] = [];
@@ -351,6 +375,9 @@ function resetMembers() {
   memberRoles.set(users.bob.id, [MODS]);
   memberRoles.set(users.carol.id, [LEADS]);
   memberNicks.clear();
+  serverProfiles.clear();
+  serverProfile(users.carol.id).avatar = "carol-server";
+  serverProfile(users.bob.id).bio = "Keeps #general tidy.";
   timeouts.clear();
   removed.clear();
 }
@@ -363,7 +390,8 @@ function member(user: User, roles: string[] = memberRoles.get(user.id) ?? []) {
     roles,
     nick: memberNicks.get(user.id) ?? null,
     communication_disabled_until: timeouts.get(user.id) ?? null,
-    avatar: user.id === users.carol.id ? "carol-server" : null,
+    avatar: serverProfiles.get(user.id)?.avatar ?? null,
+    banner: serverProfiles.get(user.id)?.banner ?? null,
     joined_at: JOINED_AT,
     premium_since: null,
     deaf: false,
@@ -422,6 +450,7 @@ function wireProfile(user: User, guild: string | null) {
   const bob = user.id === users.bob.id;
   const carol = user.id === users.carol.id;
   const inServer = Object.values(users).includes(user) && user.id !== ALICE;
+  const isMember = Object.values(users).includes(user);
   const profile = {
     bio: bob ? "Plays bass in a **ska** band. Ask me about https://example.com/gigs" : "",
     pronouns: bob ? "he/him" : "",
@@ -431,10 +460,10 @@ function wireProfile(user: User, guild: string | null) {
   return {
     user: { ...wireUser(user), banner: profile.banner, accent_color: profile.accent_color, bio: profile.bio },
     user_profile: profile,
-    ...(guild === GUILD && inServer
+    ...(guild === GUILD && isMember
       ? {
-          guild_member_profile: { guild_id: GUILD, bio: bob ? "Keeps #general tidy." : "", pronouns: "", banner: null, accent_color: null },
-          guild_member: member(user),
+          guild_member_profile: guildMemberProfile(user.id),
+          guild_member: { ...member(user), bio: serverProfile(user.id).bio },
         }
       : {}),
     mutual_guilds: inServer ? [{ id: GUILD, nick: null }] : [],
@@ -442,6 +471,58 @@ function wireProfile(user: User, guild: string | null) {
     badges: [],
     premium_type: null,
   };
+}
+
+/** A server profile as GET /users/{id}/profile and PATCH
+ *  /guilds/{id}/profile/@me give it. */
+function guildMemberProfile(id: string) {
+  const profile = serverProfile(id);
+  return {
+    guild_id: GUILD,
+    pronouns: profile.pronouns,
+    bio: profile.bio,
+    banner: profile.banner,
+    accent_color: null,
+    theme_colors: null,
+    popout_animation_particle_type: null,
+    emoji: null,
+    profile_effect: null,
+  };
+}
+
+/** A picture sent as a data URI, kept for the CDN; its hash, or an error. */
+function keepPicture(uri: unknown): { hash: string } | { error: string } {
+  const found = typeof uri === "string" && uri.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/);
+  if (!found) return { error: "Invalid image data" };
+  const data = Uint8Array.from(Buffer.from(found[2]!, "base64"));
+  if (data.length > 10 * 1024 * 1024) return { error: "File cannot be larger than 10240.0 kb." };
+  const hash = (found[1] === "image/gif" ? "a_" : "") + crc32(data).toString(16).padStart(8, "0") + data.length.toString(16);
+  uploadedPictures.set(hash, { type: found[1]!, data });
+  return { hash };
+}
+
+/** Discord's answer to a field only Nitro may set. */
+function premiumRequired(field: string) {
+  return json(
+    {
+      message: "Invalid Form Body",
+      code: 50035,
+      errors: { [field]: { _errors: [{ code: "PREMIUM_REQUIRED", message: "You must be a Nitro subscriber to do that." }] } },
+    },
+    400,
+  );
+}
+
+/** Discord's answer to a text longer than it takes. */
+function tooLong(field: string, limit: number) {
+  return json(
+    {
+      message: "Invalid Form Body",
+      code: 50035,
+      errors: { [field]: { _errors: [{ code: "BASE_TYPE_MAX_LENGTH", message: `Must be ${limit} or fewer in length.` }] } },
+    },
+    400,
+  );
 }
 
 function png(width: number, height: number, pixel: (x: number, y: number) => number[]): Uint8Array {
@@ -1345,7 +1426,7 @@ function ready(ws: Socket) {
       email: "alice@example.org",
       verified: true,
       mfa_enabled: false,
-      premium_type: args.nitro ? 2 : 0,
+      premium_type: nitro ? 2 : 0,
       flags: 0,
       bot: false,
       phone: null,
@@ -2786,8 +2867,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return new Response(null, { status: 204 });
   }
 
-  if (method === "GET" && (m = path.match(/^\/users\/(\d+)\/profile$/))) {
-    const user = userById.get(m[1]!);
+  if (method === "GET" && (m = path.match(/^\/users\/(\d+|@me)\/profile$/))) {
+    const user = userById.get(m[1] === "@me" ? ALICE : m[1]!);
     if (!user) return notFound("Unknown User", 10013);
     return json(wireProfile(user, url.searchParams.get("guild_id")));
   }
@@ -3294,6 +3375,28 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(guilds.map(([guild, change]) => changeGuildSettings(guild, change)));
   }
 
+  // Alice's own profile in "Server": banner, bio and pronouns, as the
+  // per-server profile editor sends them; see "Server members" above.
+  if (method === "PATCH" && (m = path.match(/^\/guilds\/(\d+)\/profile\/@me$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    const body: any = await req.json().catch(() => ({}));
+    const profile = serverProfile(ALICE);
+    if (typeof body.pronouns === "string" && body.pronouns.length > 40) return tooLong("pronouns", 40);
+    if (typeof body.bio === "string" && body.bio.length > 190) return tooLong("bio", 190);
+    if (body.bio && !nitro) return premiumRequired("bio");
+    if (body.banner && !nitro) return premiumRequired("banner");
+    let banner: string | null | undefined;
+    if ("banner" in body) {
+      const kept = body.banner === null ? { hash: null } : keepPicture(body.banner);
+      if ("error" in kept) return json({ message: "Invalid Form Body", code: 50035, errors: { banner: { _errors: [{ code: "IMAGE_INVALID", message: kept.error }] } } }, 400);
+      banner = kept.hash;
+    }
+    if (typeof body.pronouns === "string" || body.pronouns === null) profile.pronouns = body.pronouns ?? "";
+    if (typeof body.bio === "string" || body.bio === null) profile.bio = body.bio ?? "";
+    if (banner !== undefined) profile.banner = banner;
+    return json(guildMemberProfile(ALICE));
+  }
+
   // A member's menu in "Server": nicknames, roles, timeouts, kicks and
   // bans, as far as Alice's roles allow; see "Server members" above.
   if ((m = path.match(/^\/guilds\/(\d+)\/(members|bans)\/(\d+|@me)(?:\/roles\/(\d+))?$/))) {
@@ -3320,6 +3423,14 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     if (kind === "members" && role === undefined && method === "PATCH") {
       const body: any = await req.json().catch(() => ({}));
       if ("nick" in body && !(who === "@me" ? aliceMay(26) : aliceMay(27, user.id))) return refused();
+      if ("nick" in body && (body.nick ?? "").length > 32) return tooLong("nick", 32);
+      let avatar: string | null | undefined;
+      if (who === "@me" && "avatar" in body) {
+        if (body.avatar !== null && !nitro) return premiumRequired("avatar");
+        const kept = body.avatar === null ? { hash: null } : keepPicture(body.avatar);
+        if ("error" in kept) return json({ message: "Invalid Form Body", code: 50035, errors: { avatar: { _errors: [{ code: "IMAGE_INVALID", message: kept.error }] } } }, 400);
+        avatar = kept.hash;
+      }
       if ("communication_disabled_until" in body) {
         const until = body.communication_disabled_until;
         const admin = (serverPermissions(user.id) & (1n << 3n)) !== 0n;
@@ -3333,6 +3444,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
           if (body.nick) memberNicks.set(user.id, body.nick);
           else memberNicks.delete(user.id);
         }
+        if (avatar !== undefined) serverProfile(user.id).avatar = avatar;
         if ("communication_disabled_until" in body) {
           const until = body.communication_disabled_until;
           if (until === null) timeouts.delete(user.id);
@@ -3770,9 +3882,20 @@ const server = Bun.serve<SocketData>({
     if (req.method === "GET" && path.startsWith("/media/attachments/")) {
       return serveFile(path.slice("/media/attachments/".length), url);
     }
-    // Discord's CDN: server icons, avatars and banners.
+    // Discord's CDN: server icons, avatars and banners, and those uploaded
+    // as they came.
     if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
+      const uploaded = uploadedPictures.get(path.slice(path.lastIndexOf("/") + 1, -".png".length));
+      if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
+    }
+    if (req.method === "POST" && path === "/_control/nitro") {
+      nitro = !url.searchParams.has("off");
+      dispatch("USER_UPDATE", { ...wireUser(users.alice), premium_type: nitro ? 2 : 0 });
+      return new Response(nitro ? "Alice has Nitro\n" : "Alice has no Nitro\n");
+    }
+    if (path === "/_control/server-profile") {
+      return Response.json({ nick: memberNicks.get(ALICE) ?? null, ...serverProfile(ALICE) });
     }
     if (req.method === "PUT" && path.startsWith("/_upload/")) {
       const upload = uploads.get(decodeURIComponent(path.slice("/_upload/".length)));

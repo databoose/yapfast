@@ -416,6 +416,73 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         });
     }
     bind!(on_close_channel, Action::CloseChannelDialog);
+    bind!(on_save_server_profile, Action::SaveServerProfile);
+    bind!(on_close_server_profile, Action::CloseServerProfile);
+    bind!(on_unlock_nitro, Action::UnlockNitro);
+    let profile_picture = |kind: i32| {
+        if kind == 1 {
+            ProfilePicture::Banner
+        } else {
+            ProfilePicture::Avatar
+        }
+    };
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_write_server_profile(move |field, text| {
+            let field = match field {
+                0 => ProfileText::Nick,
+                1 => ProfileText::Pronouns,
+                _ => ProfileText::Bio,
+            };
+            if let Some(window) = weak.upgrade() {
+                adapter.borrow_mut().action(
+                    &window,
+                    Action::WriteServerProfile {
+                        field,
+                        text: text.into(),
+                    },
+                );
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_reset_profile_picture(move |kind| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::ResetProfilePicture(profile_picture(kind)));
+            }
+        });
+    }
+    {
+        let state = adapter.clone();
+        window.on_pick_profile_picture(move |kind| {
+            let kind = profile_picture(kind);
+            let weak = Rc::downgrade(&state);
+            state.borrow_mut().dialog(async move {
+                let file = rfd::AsyncFileDialog::new()
+                    .set_title(match kind {
+                        ProfilePicture::Avatar => "Change Avatar",
+                        ProfilePicture::Banner => "Change Banner",
+                    })
+                    .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"])
+                    .pick_file()
+                    .await;
+                if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {
+                    let window = adapter.borrow().window.upgrade();
+                    if let Some(window) = window {
+                        let path = file.path().to_owned();
+                        adapter
+                            .borrow_mut()
+                            .action(&window, Action::PickProfilePicture { kind, path });
+                    }
+                }
+            });
+        });
+    }
     bind!(on_leave_server, Action::LeaveServer);
     bind!(on_close_leave, Action::CloseLeaveServer);
     {

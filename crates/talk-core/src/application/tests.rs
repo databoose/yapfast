@@ -4600,6 +4600,7 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
             MuteServer,
             ServerNotifications,
             HideMuted,
+            EditServerProfile,
             LeaveServer,
             CopyLink,
             CopyId
@@ -4607,7 +4608,12 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
     );
     assert_eq!(
         app.header_choices("discord:10"),
-        [ServerNotifications, HideMuted, LeaveServer],
+        [
+            ServerNotifications,
+            EditServerProfile,
+            HideMuted,
+            LeaveServer
+        ],
         "the header's dropdown lists the menu's choices in its own order"
     );
     assert!(app.header_choices("discord:10:11").is_empty());
@@ -4842,7 +4848,7 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
         );
     });
     assert_eq!(
-        app.menu_choices("discord:10")[4..],
+        app.menu_choices("discord:10")[5..],
         [CreateChannel, CreateCategory, LeaveServer, CopyLink, CopyId]
     );
     assert_eq!(
@@ -4851,6 +4857,7 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
             CreateChannel,
             CreateCategory,
             ServerNotifications,
+            EditServerProfile,
             HideMuted,
             LeaveServer
         ]
@@ -5141,25 +5148,16 @@ fn leaving_a_discord_server_asks_first_and_is_not_for_its_owner() {
 
 #[test]
 #[cfg(feature = "discord")]
-fn editing_a_server_profile_changes_ones_own_nickname_in_the_member_dialog() {
+fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     use MenuChoice::*;
-    use talk_discord::ready::permission;
+    use chat::{PickedPicture, ProfilePicture, ServerProfile};
     let mut app = discord_server();
-    assert!(
-        !app.menu_choices("discord:10").contains(&EditServerProfile),
-        "she may not change her nickname"
-    );
-    change_server(&mut app, |server| {
-        let bits =
-            permission::VIEW_CHANNEL | permission::SEND_MESSAGES | permission::CHANGE_NICKNAME;
-        server.put_role(
-            &serde_json::json!({"id": "10", "name": "@everyone", "position": 0,
-                                            "permissions": bits.to_string()}),
-        );
-    });
     let choices = app.menu_choices("discord:10");
     let at = |choice| choices.iter().position(|known| *known == choice);
-    assert!(at(HideMuted) < at(EditServerProfile) && at(EditServerProfile) < at(LeaveServer));
+    assert!(
+        at(HideMuted) < at(EditServerProfile) && at(EditServerProfile) < at(CopyLink),
+        "anyone may, though she may not change her nickname"
+    );
     assert_eq!(
         app.header_choices("discord:10"),
         [
@@ -5170,12 +5168,188 @@ fn editing_a_server_profile_changes_ones_own_nickname_in_the_member_dialog() {
         ],
         "as Discord's dropdown orders them"
     );
-    app.dispatch(Action::AskMember {
-        place: "discord:10".into(),
-        user: "1".into(),
-        ask: PersonAsk::ServerNickname,
+
+    // Opening it asks Discord for her profile there.
+    assert!(matches!(
+        app.dispatch(Action::EditServerProfile("discord:10:11".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ServerProfile { server }))]
+            if server == "discord:10"
+    ));
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert!(editor.loading() && !editor.may_rename && !editor.nitro);
+    assert_eq!(editor.server_name, "Test");
+    let profile = ServerProfile {
+        nick: String::new(),
+        pronouns: "she/her".into(),
+        bio: String::new(),
+        avatar: Some("server-avatar.png".into()),
+        banner: None,
+        main: chat::Profile {
+            name: "Alice".into(),
+            avatar: Some("alice.png".into()),
+            ..Default::default()
+        },
+    };
+    let pictures = |app: &mut Application| {
+        app.apply(Event::ServerProfile {
+            server: "discord:10".into(),
+            result: Ok(profile.clone()),
+        })
+        .into_iter()
+        .flat_map(|effect| match effect {
+            Effect::Backend(Command::Discord(DiscordCommand::Pictures(urls))) => urls,
+            _ => vec![],
+        })
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        pictures(&mut app),
+        ["server-avatar.png", "alice.png"],
+        "the server's avatar and the main profile's, through the picture cache"
+    );
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert_eq!(editor.pronouns, "she/her");
+    assert!(editor.change().is_none());
+
+    // Without Nitro, she changes her pronouns, not her bio or pictures.
+    for (field, text) in [
+        (ProfileText::Nick, "Ally"),
+        (ProfileText::Pronouns, "they/them "),
+        (ProfileText::Bio, "Hi"),
+    ] {
+        app.dispatch(Action::WriteServerProfile {
+            field,
+            text: text.into(),
+        });
+    }
+    assert!(
+        app.dispatch(Action::PickProfilePicture {
+            kind: ProfilePicture::Avatar,
+            path: "cat.png".into(),
+        })
+        .is_empty()
+    );
+    let saved = |effects: Vec<Effect>| match effects.as_slice() {
+        [
+            Effect::Backend(Command::Discord(DiscordCommand::SaveServerProfile { server, change })),
+        ] => {
+            assert_eq!(server, "discord:10");
+            change.clone()
+        }
+        other => panic!("{} effects", other.len()),
+    };
+    let change = saved(app.dispatch(Action::SaveServerProfile));
+    assert_eq!(change.pronouns.as_deref(), Some("they/them"));
+    assert!(change.nick.is_none() && change.bio.is_none() && change.avatar.is_none());
+    assert!(app.dispatch(Action::SaveServerProfile).is_empty(), "once");
+    app.apply(Event::ServerProfileSaved {
+        server: "discord:10".into(),
+        result: Err("Discord said no".into()),
     });
-    let dialog = app.state.person_dialog.clone().unwrap();
-    assert_eq!(dialog.ask, PersonAsk::ServerNickname);
-    assert_eq!(dialog.server.as_deref(), Some("discord:10"));
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert!(!editor.saving && editor.error.as_deref() == Some("Discord said no"));
+    app.dispatch(Action::CloseServerProfile);
+    assert!(app.state.server_profile.is_none());
+
+    // With Nitro and Change Nickname, everything; a new avatar, then the
+    // banner left to the main profile's.
+    change_server(&mut app, |server| {
+        use talk_discord::ready::permission;
+        let bits =
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES | permission::CHANGE_NICKNAME;
+        server.put_role(
+            &serde_json::json!({"id": "10", "name": "@everyone", "position": 0,
+                                            "permissions": bits.to_string()}),
+        );
+    });
+    let mut snapshot = talk_discord::service::Snapshot::clone(app.discord.as_ref().unwrap());
+    snapshot.account = Some(talk_discord::service::Account {
+        name: "Alice".into(),
+        avatar: "alice.png".into(),
+        premium_type: 2,
+    });
+    app.apply(discord_event(snapshot));
+    app.dispatch(Action::EditServerProfile("discord:10".into()));
+    pictures(&mut app);
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert!(editor.may_rename && editor.nitro && !editor.upgrade);
+    app.dispatch(Action::WriteServerProfile {
+        field: ProfileText::Nick,
+        text: "Ally".into(),
+    });
+    app.dispatch(Action::WriteServerProfile {
+        field: ProfileText::Bio,
+        text: "x".repeat(BIO_LIMIT + 1),
+    });
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert_eq!(editor.too_long(), Some(ProfileText::Bio));
+    assert!(
+        app.dispatch(Action::SaveServerProfile).is_empty(),
+        "too long"
+    );
+    app.dispatch(Action::WriteServerProfile {
+        field: ProfileText::Bio,
+        text: "Here for #general.".into(),
+    });
+    assert!(matches!(
+        app.dispatch(Action::PickProfilePicture {
+            kind: ProfilePicture::Avatar,
+            path: "cat.png".into(),
+        })
+        .as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::ProfilePicture {
+                kind: ProfilePicture::Avatar,
+                ..
+            }
+        ))]
+    ));
+    assert!(
+        app.dispatch(Action::SaveServerProfile).is_empty(),
+        "while it reads"
+    );
+    let picked = PickedPicture {
+        mime: "image/png",
+        data: Arc::from(&b"png"[..]),
+        preview: Arc::default(),
+    };
+    app.apply(Event::ProfilePicture {
+        kind: ProfilePicture::Avatar,
+        path: "cat.png".into(),
+        result: Ok(picked),
+    });
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert!(editor.picture(ProfilePicture::Avatar).1.is_some());
+    assert!(editor.resettable(ProfilePicture::Avatar));
+    assert!(
+        !editor.resettable(ProfilePicture::Banner),
+        "it has none of its own"
+    );
+    app.dispatch(Action::ResetProfilePicture(ProfilePicture::Banner));
+    let change = saved(app.dispatch(Action::SaveServerProfile));
+    assert_eq!(change.nick.as_deref(), Some("Ally"));
+    assert_eq!(change.bio.as_deref(), Some("Here for #general."));
+    assert!(matches!(&change.avatar, Some(Some(picked)) if &*picked.data == b"png"));
+    assert!(change.banner.is_none(), "nothing to reset");
+    app.apply(Event::ServerProfileSaved {
+        server: "discord:10".into(),
+        result: Ok(()),
+    });
+    assert!(
+        app.state.server_profile.is_none(),
+        "its pictures go with it"
+    );
+
+    // Resetting the server avatar sends none, so the main one shows.
+    app.dispatch(Action::EditServerProfile("discord:10".into()));
+    pictures(&mut app);
+    app.dispatch(Action::ResetProfilePicture(ProfilePicture::Avatar));
+    let editor = app.state.server_profile.as_ref().unwrap();
+    assert_eq!(editor.picture(ProfilePicture::Avatar), (None, None));
+    let change = saved(app.dispatch(Action::SaveServerProfile));
+    assert!(matches!(change.avatar, Some(None)));
+    assert!(matches!(
+        app.dispatch(Action::UnlockNitro).as_slice(),
+        [Effect::OpenPage(page)] if page == "https://discord.com/nitro"
+    ));
 }

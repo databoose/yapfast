@@ -28,6 +28,7 @@ mod preview;
 mod profiles;
 mod rooms;
 mod server;
+mod server_profile;
 mod session;
 
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
@@ -38,6 +39,9 @@ pub use places::{
     SLOWMODES,
 };
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
+pub use server_profile::{
+    BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT, PictureEdit, ProfileText, ServerProfileEditor,
+};
 
 use calls::call_sounds;
 use compose::has_markdown;
@@ -307,6 +311,9 @@ pub struct AppState {
     pub channel_dialog: Option<ChannelDialog>,
     /// Asks before leaving a Discord server, while it's open.
     pub leave: Option<LeaveDialog>,
+    /// The editor of this account's profile in a Discord server, while it's
+    /// open; its pictures go when it closes.
+    pub server_profile: Option<ServerProfileEditor>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -1085,6 +1092,24 @@ pub enum Action {
     AskLeaveServer(String),
     LeaveServer,
     CloseLeaveServer,
+    /// Open the editor of this account's profile in a Discord server, by
+    /// its server id or one of its channels' room ids; change a text in it;
+    /// read a picture chosen for its avatar or banner; go back to the main
+    /// profile's; save what changed; open Discord's Nitro page, which the
+    /// avatar, banner and bio take; or close it.
+    EditServerProfile(String),
+    WriteServerProfile {
+        field: ProfileText,
+        text: String,
+    },
+    PickProfilePicture {
+        kind: chat::ProfilePicture,
+        path: PathBuf,
+    },
+    ResetProfilePicture(chat::ProfilePicture),
+    SaveServerProfile,
+    UnlockNitro,
+    CloseServerProfile,
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
     ChangeRelationship {
@@ -1337,6 +1362,20 @@ fn pictures_on_screen<'a>(
                 .filter(|_| state.dm_screen == Some(DmScreen::Friends))
                 .filter_map(|friend| friend.avatar.as_deref()),
         )
+        .chain(state.server_profile.iter().flat_map(|editor| {
+            // The server's pictures and the main profile's, which show where
+            // the server's are reset.
+            editor.profile.iter().flat_map(|profile| {
+                [
+                    &profile.avatar,
+                    &profile.banner,
+                    &profile.main.avatar,
+                    &profile.main.banner,
+                ]
+                .into_iter()
+                .filter_map(Option::as_deref)
+            })
+        }))
         .chain(
             state
                 .profile
@@ -1798,6 +1837,22 @@ impl Application {
                 self.state.leave = None;
                 vec![]
             }
+            Action::EditServerProfile(place) => self.edit_server_profile(place),
+            Action::WriteServerProfile { field, text } => {
+                self.write_server_profile(field, text);
+                vec![]
+            }
+            Action::PickProfilePicture { kind, path } => self.pick_profile_picture(kind, path),
+            Action::ResetProfilePicture(kind) => {
+                self.reset_profile_picture(kind);
+                vec![]
+            }
+            Action::SaveServerProfile => self.save_server_profile(),
+            Action::UnlockNitro => self.unlock_nitro(),
+            Action::CloseServerProfile => {
+                self.state.server_profile = None;
+                vec![]
+            }
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),
@@ -2108,6 +2163,13 @@ impl Application {
             Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
             Event::ChannelSaved(result) => self.channel_saved(result),
             Event::LeftServer { server, result } => self.left_server(server, result),
+            Event::ServerProfile { server, result } => self.server_profile_loaded(server, result),
+            Event::ProfilePicture { kind, path, result } => {
+                self.profile_picture_read(kind, path, result);
+            }
+            Event::ServerProfileSaved { server, result } => {
+                self.server_profile_saved(server, result);
+            }
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;

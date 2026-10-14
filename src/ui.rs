@@ -16,12 +16,12 @@ use talk_core::{
     application::{
         Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ClearAfter, Compose,
         DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm,
-        PersonAsk, ProfileView, Relation, SLOWMODES, Search, TIMEOUT_TIMES,
+        PersonAsk, ProfileText, ProfileView, Relation, SLOWMODES, Search, TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{
         ChannelKind, ChannelSettings, ChatMessage, Command, Delivery, EmbedField, Event, Picture,
-        Placement, Presence, ProfileRole, Role, VideoCommand,
+        Placement, Presence, ProfilePicture, ProfileRole, Role, VideoCommand,
     },
     discord, links, mention,
     meter::{self, InputMeter},
@@ -419,6 +419,27 @@ fn control(
                         Ok(())
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
+                    // `pick avatar PATH` or `pick banner PATH` chooses a
+                    // picture in the server profile editor.
+                    command if command.starts_with("pick ") => {
+                        let (kind, path) =
+                            command["pick ".len()..].split_once(' ').unwrap_or_default();
+                        let kind = if kind == "banner" {
+                            ProfilePicture::Banner
+                        } else {
+                            ProfilePicture::Avatar
+                        };
+                        if let Some(window) = window.borrow().as_ref() {
+                            adapter.borrow_mut().action(
+                                window,
+                                Action::PickProfilePicture {
+                                    kind,
+                                    path: PathBuf::from(path),
+                                },
+                            );
+                        }
+                        Ok(())
+                    }
                     command if command.starts_with("stage ") => {
                         if let Some(window) = window.borrow().as_ref() {
                             let path = PathBuf::from(&command["stage ".len()..]);
@@ -1364,13 +1385,17 @@ impl Adapter {
     }
 
     fn action(&mut self, window: &TalkWindow, action: Action) {
-        // A keystroke in the composer changes only the composer; the rest of
-        // the window stays as it is.
+        // A keystroke in the composer changes only the composer, and one in
+        // the server profile editor only the editor; the rest of the window
+        // stays as it is.
         let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
+        let profiling = matches!(action, Action::WriteServerProfile { .. });
         let effects = self.app.dispatch(action);
         self.execute(effects);
         if composing {
             self.show_composer(window);
+        } else if profiling {
+            self.show_server_profile(window);
         } else {
             self.refresh(window);
         }

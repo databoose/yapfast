@@ -41,6 +41,7 @@ mod channels;
 mod commands;
 mod open_channel;
 mod render;
+mod server_profile;
 
 pub use channels::Channels;
 pub use commands::{command, finished, live};
