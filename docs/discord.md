@@ -665,7 +665,9 @@ loses one packet of each stream it sends a viewer and delivers another late,
 and resends what's asked for. The worker decodes with
 libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
 (`native/decode.c`) and writes RGBA at up to 1080p into the shared frames.
-Watching is possible only in the call you're in. The stream's sound, Opus on
+Watching is possible only in the call you're in, so clicking someone sharing
+in another channel joins it first, once asked, and watches once the call is
+connected; Discord drops a watch sent before. The stream's sound, Opus on
 the streamer's audio SSRC, is DAVE-decrypted as audio and played by the worker
 through `audio_io.rs` on the call's speakers (`stream_audio::Player`), about 100
 ms queued; being deafened silences it, which Talk tells the worker with a

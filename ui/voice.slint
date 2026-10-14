@@ -436,13 +436,16 @@ export component IncomingCall inherits Rectangle {
     }
 }
 
-// Switching voice channels asks first, over everything else. Clicking
+// Switching voice channels asks first, over everything else, and so does
+// joining one to watch a stream. Clicking
 // outside or Escape cancels; Enter switches. The dialog stays in the tree
 // so it can fade out, keeping its text while it goes.
 export component SwitchDialog inherits Rectangle {
     /// It asks; false while it fades out.
     in property <bool> switching;
     in property <string> switch-text;
+    /// It joins a call from none, to watch someone's stream.
+    in property <bool> joins;
     callback cancel-switch;
     callback confirm-switch;
     /// It takes the keyboard while it asks, and lets it go after.
@@ -461,7 +464,7 @@ export component SwitchDialog inherits Rectangle {
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
         accessible-role: groupbox;
-        accessible-label: "Switch voice channel?";
+        accessible-label: root.joins ? "Watch stream?" : "Switch voice channel?";
         // Clicks on the dialog itself never reach the backdrop.
         TouchArea { enabled: root.switching; }
         switch-keys := FocusScope {
@@ -484,7 +487,7 @@ export component SwitchDialog inherits Rectangle {
                     }
                     VerticalLayout {
                         spacing: 6px; horizontal-stretch: 1;
-                        Text { text: "Switch voice channel?"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                        Text { text: root.joins ? "Watch stream?" : "Switch voice channel?"; color: Theme.text; font-size: 18px; font-weight: 700; }
                         Text { text: root.switch-text; color: Theme.secondary; font-size: 15px; wrap: word-wrap; }
                     }
                 }
@@ -492,7 +495,7 @@ export component SwitchDialog inherits Rectangle {
                     alignment: end; spacing: 8px;
                     // A fading dialog no longer acts.
                     ActionButton { text: "Cancel"; ghost: true; clicked => { if root.switching { root.cancel-switch(); } } }
-                    ActionButton { text: "Switch channel"; primary: true; clicked => { if root.switching { root.confirm-switch(); } } }
+                    ActionButton { text: root.joins ? "Join" : "Switch channel"; primary: true; clicked => { if root.switching { root.confirm-switch(); } } }
                 }
             }
         }

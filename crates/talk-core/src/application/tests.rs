@@ -1056,6 +1056,185 @@ fn security_gates_are_shared_by_every_ui_adapter() {
     ));
 }
 
+/// The streams effects watch, by user id.
+fn watches(effects: &[Effect]) -> Vec<&str> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Backend(Command::Voice(voice::Command::Watch(user))) => Some(user.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn in_call(id: &str, local: bool, streaming: bool) -> voice::Participant {
+    voice::Participant {
+        id: id.into(),
+        user: id.into(),
+        person: id.into(),
+        local,
+        muted: false,
+        deafened: false,
+        speaking: false,
+        connected: true,
+        problem: None,
+        streaming,
+        video: None,
+        avatar: None,
+    }
+}
+
+fn call(phase: Phase, room: &str, participants: Vec<voice::Participant>) -> Event {
+    Event::Voice(voice::State {
+        phase,
+        room: Some(room.into()),
+        participants,
+        ..Default::default()
+    })
+}
+
+/// `connected()`, with Bob sharing his screen in the Lounge.
+fn bob_live_in_lounge() -> Application {
+    let mut app = connected();
+    let lounge = app
+        .state
+        .rooms
+        .iter_mut()
+        .find(|room| room.id == "lounge")
+        .unwrap();
+    lounge.people = vec![chat::VoicePerson {
+        id: "@bob:test".into(),
+        name: "Bob".into(),
+        streaming: true,
+        ..Default::default()
+    }];
+    app
+}
+
+fn show_bob(app: &mut Application) -> Vec<Effect> {
+    app.dispatch(Action::ShowVoicePerson {
+        room: "lounge".into(),
+        user: "@bob:test".into(),
+    })
+}
+
+#[test]
+fn clicking_someone_sharing_from_outside_a_call_asks_then_watches_once_connected() {
+    let mut app = bob_live_in_lounge();
+    assert!(watches(&show_bob(&mut app)).is_empty());
+    assert_eq!(app.state.selected.as_deref(), Some("lounge"));
+    assert_eq!(app.state.switch_voice.as_deref(), Some("lounge"));
+    assert!(app.state.pending_watch.is_some());
+    // Cancelling keeps the channel shown and forgets the stream.
+    app.dispatch(Action::CancelVoiceSwitch);
+    assert!(app.state.pending_watch.is_none() && app.state.switch_voice.is_none());
+    assert_eq!(app.state.selected.as_deref(), Some("lounge"));
+
+    show_bob(&mut app);
+    // Not in a call, joining leaves none.
+    assert!(matches!(
+        app.dispatch(Action::ConfirmVoiceSwitch).as_slice(),
+        [Effect::Backend(Command::Voice(voice::Command::Join(room)))] if room == "lounge"
+    ));
+    let me = || in_call("@alice:test", true, false);
+    assert!(watches(&app.apply(call(Phase::Joining, "lounge", vec![me()]))).is_empty());
+    // Discord drops a watch before the call connects, and Bob may show
+    // sharing only after.
+    assert!(watches(&app.apply(call(Phase::Connected, "lounge", vec![me()]))).is_empty());
+    let bob = in_call("@bob:test", false, true);
+    assert_eq!(
+        watches(&app.apply(call(Phase::Connected, "lounge", vec![me(), bob.clone()]))),
+        ["@bob:test"]
+    );
+    assert!(app.state.pending_watch.is_none());
+    // Watched once.
+    assert!(watches(&app.apply(call(Phase::Connected, "lounge", vec![me(), bob]))).is_empty());
+}
+
+#[test]
+fn clicking_someone_sharing_from_another_call_switches_and_forgets_a_failed_join() {
+    let mut app = bob_live_in_lounge();
+    let me = || in_call("@alice:test", true, false);
+    app.apply(call(Phase::Connected, "party-voice", vec![me()]));
+    show_bob(&mut app);
+    assert_eq!(app.state.switch_voice.as_deref(), Some("lounge"));
+    assert!(matches!(
+        app.dispatch(Action::ConfirmVoiceSwitch).as_slice(),
+        [
+            Effect::Backend(Command::Voice(voice::Command::Leave)),
+            Effect::Backend(Command::Voice(voice::Command::Join(room))),
+        ] if room == "lounge"
+    ));
+    // Leaving the other call keeps the stream to watch.
+    app.apply(Event::Voice(voice::State::default()));
+    app.apply(call(Phase::Joining, "lounge", vec![]));
+    assert!(app.state.pending_watch.is_some());
+    // Joining failed.
+    app.apply(Event::Voice(voice::State {
+        error: Some("Discord voice took too long to connect. Try again.".into()),
+        ..Default::default()
+    }));
+    assert!(app.state.pending_watch.is_none());
+    let bob = in_call("@bob:test", false, true);
+    assert!(watches(&app.apply(call(Phase::Connected, "lounge", vec![me(), bob]))).is_empty());
+}
+
+#[test]
+fn clicking_someone_in_the_call_shows_it_and_watches_at_once() {
+    let mut app = bob_live_in_lounge();
+    let me = |streaming| in_call("@alice:test", true, streaming);
+    let bob = in_call("@bob:test", false, true);
+    app.apply(call(Phase::Connected, "lounge", vec![me(true), bob]));
+    assert_eq!(watches(&show_bob(&mut app)), ["@bob:test"]);
+    assert_eq!(app.state.selected.as_deref(), Some("lounge"));
+    assert!(app.state.switch_voice.is_none() && app.state.pending_watch.is_none());
+    // Not one's own stream.
+    app.dispatch(Action::Open("general".into()));
+    let effects = app.dispatch(Action::ShowVoicePerson {
+        room: "lounge".into(),
+        user: "@alice:test".into(),
+    });
+    assert!(watches(&effects).is_empty() && app.state.pending_watch.is_none());
+    assert_eq!(app.state.selected.as_deref(), Some("lounge"));
+
+    // Until Bob shows sharing in the call, it waits; another room or
+    // leaving forgets it.
+    app.apply(call(Phase::Connected, "lounge", vec![me(false)]));
+    assert!(watches(&show_bob(&mut app)).is_empty());
+    assert!(app.state.pending_watch.is_some());
+    app.dispatch(Action::Open("general".into()));
+    assert!(app.state.pending_watch.is_none());
+    show_bob(&mut app);
+    app.dispatch(Action::Voice(voice::Command::Leave));
+    assert!(app.state.pending_watch.is_none());
+}
+
+#[test]
+fn clicking_someone_with_only_a_camera_shows_the_channel_without_joining() {
+    let mut app = connected();
+    let lounge = app
+        .state
+        .rooms
+        .iter_mut()
+        .find(|room| room.id == "lounge")
+        .unwrap();
+    lounge.people = vec![chat::VoicePerson {
+        id: "@bob:test".into(),
+        name: "Bob".into(),
+        video: true,
+        ..Default::default()
+    }];
+    let effects = show_bob(&mut app);
+    assert_eq!(app.state.selected.as_deref(), Some("lounge"));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::Voice(_))))
+    );
+    assert!(app.state.switch_voice.is_none() && app.state.pending_watch.is_none());
+    assert!(!app.state.voice.active());
+}
+
 #[test]
 fn clicking_a_voice_channel_joins_it_and_asks_before_leaving_another() {
     let mut app = Application::default();

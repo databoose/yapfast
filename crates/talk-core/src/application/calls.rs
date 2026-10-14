@@ -70,11 +70,77 @@ impl Application {
             return vec![];
         };
         if !self.state.can_join_voice(&id) {
+            self.state.pending_watch = None;
             return vec![];
         }
-        let mut effects = self.voice_command(voice::Command::Leave);
+        // Leaving the call it's in keeps the stream it switches to watch.
+        let watch = self.state.pending_watch.take();
+        let mut effects = if self.state.voice.active() {
+            self.voice_command(voice::Command::Leave)
+        } else {
+            vec![]
+        };
+        self.state.pending_watch = watch;
         effects.extend(self.voice_command(voice::Command::Join(id)));
+        effects.extend(self.watch_when_connected());
         effects
+    }
+
+    /// Someone in a voice channel's list was clicked: shows the channel,
+    /// and watches them if they share their screen. Watching from outside
+    /// the call joins it once asked, as [`AppState::switch_voice`] does, and
+    /// [`Self::watch_when_connected`] then watches.
+    pub(super) fn show_voice_person(&mut self, room: String, user: String) -> Vec<Effect> {
+        let voice = &self.state.voice;
+        let here = voice.active() && voice.room.as_ref() == Some(&room);
+        let call = voice
+            .participants
+            .iter()
+            .find(|person| here && person.id == user);
+        let listed = self
+            .state
+            .rooms
+            .iter()
+            .find(|listed| listed.id == room)
+            .and_then(|listed| listed.people.iter().find(|person| person.id == user));
+        let me = call.is_some_and(|person| person.local)
+            || self.state.discord_user.as_ref() == Some(&user);
+        let streaming = call.is_some_and(|person| person.streaming)
+            || listed.is_some_and(|person| person.streaming);
+        let mut effects = self.dispatch(Action::Open(room.clone()));
+        if me || !streaming || self.state.selected.as_ref() != Some(&room) {
+            return effects;
+        }
+        if here {
+            self.state.pending_watch = Some((room, user));
+            effects.extend(self.watch_when_connected());
+        } else if self.state.can_join_voice(&room) {
+            self.state.switch_voice = Some(room.clone());
+            self.state.pending_watch = Some((room, user));
+        }
+        effects
+    }
+
+    /// Watches the stream [`AppState::pending_watch`] waits for, once its
+    /// call is connected and they show sharing in it.
+    pub(super) fn watch_when_connected(&mut self) -> Vec<Effect> {
+        let voice = &self.state.voice;
+        let ready = self
+            .state
+            .pending_watch
+            .as_ref()
+            .is_some_and(|(room, user)| {
+                voice.phase == Phase::Connected
+                    && voice.room.as_ref() == Some(room)
+                    && voice
+                        .participants
+                        .iter()
+                        .any(|person| &person.id == user && person.streaming)
+            });
+        match self.state.pending_watch.take_if(|_| ready) {
+            Some((_, user)) => self.voice_command(voice::Command::Watch(user)),
+            None => vec![],
+        }
     }
 
     /// A call command, with the sound of muting or deafening in a call.
@@ -101,6 +167,7 @@ impl Application {
     pub(super) fn voice_command_quietly(&mut self, command: voice::Command) -> Vec<Effect> {
         if matches!(command, voice::Command::Leave) {
             self.state.switch_voice = None;
+            self.state.pending_watch = None;
         }
         if !self.state.preview {
             return vec![Effect::Backend(Command::Voice(command))];

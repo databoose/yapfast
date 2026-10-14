@@ -1398,6 +1398,19 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_show_voice_person(move |room, user| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(
+                &window,
+                Action::ShowVoicePerson {
+                    room: room.into(),
+                    user: user.into(),
+                },
+            );
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_watch_stream(move |id| {
         if let Some(window) = weak.upgrade() {
             state

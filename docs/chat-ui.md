@@ -216,8 +216,15 @@ The window follows Discord's arrangement:
   names its first channel, or an empty category's own id, and Talk finds
   the category from that.
   DMs show the person's avatar. Participants of the call you are in appear under
-  its voice channel, with a green ring while they speak and a muted icon. Talk
-  knows only its own call's participants. A right click on a conversation, or
+  its voice channel, with a green ring while they speak and a muted icon; for
+  Discord, who is in every other voice channel shows too, with a LIVE tag for a
+  screen share and a camera icon. Clicking someone sharing their screen opens
+  their channel's call and watches them. Outside that call it asks first, "Join
+  <channel> to watch <name>'s stream?", or in another call the switch prompt
+  asks, and the stream opens once the call connects and shows them sharing.
+  Cancelling, leaving, a failed join or opening another room forgets it.
+  Clicking someone with only a camera on opens the call's view, which offers
+  Join if you aren't in it. A right click on a conversation, or
   the Menu key or Shift+F10 on a focused one, opens its menu: Mark as read when
   it's unread, Join voice for a voice channel you aren't in, Profile for a
   one-to-one DM, Pin or Unpin and Start call for a DM, then Copy link and Copy
