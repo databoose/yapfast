@@ -2093,8 +2093,8 @@ fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
             .as_secs(),
         ..Default::default()
     };
-    assert!(message_row_plain(&message(false, true)).mentions_me);
-    assert!(!message_row_plain(&message(false, false)).mentions_me);
+    assert!(message_row_plain(&message(false, true)).highlighted);
+    assert!(!message_row_plain(&message(false, false)).highlighted);
     let unread = [
         message(false, true),
         message(true, false),

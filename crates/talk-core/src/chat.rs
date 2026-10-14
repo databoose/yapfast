@@ -1009,9 +1009,12 @@ pub struct ChatMessage {
     pub deleted: bool,
     /// From someone this account blocked: it shows collapsed until asked for.
     pub blocked: bool,
-    /// Calls on this account: it mentions it or a group it's in, or replies
-    /// to its message. The timeline highlights it.
+    /// Mentions this account or a group it's in, other than as a reply to
+    /// its message. The timeline highlights it.
     pub mentions_me: bool,
+    /// Replies to this account's message, which the timeline highlights
+    /// while it's new; see [`Self::highlighted`].
+    pub replies_to_me: bool,
     pub delivery: Delivery,
     pub reply: Option<Reply>,
     pub reactions: Vec<Reaction>,
@@ -1031,6 +1034,35 @@ pub struct ChatMessage {
     pub can_forward: bool,
     /// The Discord thread it started, or that it tells of.
     pub thread: Option<ThreadLink>,
+}
+
+impl ChatMessage {
+    /// Whether the timeline highlights it: a mention always, as Discord's
+    /// client does, and a reply to this account's message while it's `new`.
+    pub fn highlighted(&self, new: bool) -> bool {
+        self.mentions_me || (self.replies_to_me && new)
+    }
+}
+
+/// Where a timeline's new messages start: the index of the first after
+/// `seen`, the message last read when it opened or its newest then. A
+/// Discord message is after it by its snowflake, which holds even when
+/// `seen` isn't loaded, and a Matrix one by its place. It's past the end
+/// while `seen` isn't known, or the timeline doesn't have it.
+pub fn first_new(messages: &[Arc<ChatMessage>], seen: Option<&str>) -> usize {
+    let Some(seen) = seen else {
+        return messages.len();
+    };
+    match crate::discord::item_order(seen) {
+        Some(seen) => messages.iter().position(|message| {
+            crate::discord::item_order(&message.item).is_some_and(|order| order > seen)
+        }),
+        None => messages
+            .iter()
+            .position(|message| message.item == seen)
+            .map(|at| at + 1),
+    }
+    .unwrap_or(messages.len())
 }
 
 /// How loading history ended.

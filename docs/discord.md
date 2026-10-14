@@ -746,7 +746,10 @@ Discord: one that mentions it, one of its roles in the server, or @everyone
 or @here, from a message's `mentions`, `mention_roles` and
 `mention_everyone`, which count only what the author may mention. The
 account's settings for the server can suppress @everyone and @here, and
-roles. A reply to its message is highlighted too, whether it pings or not.
+roles. A reply to its message is highlighted too, whether it pings or not,
+but only while it's new: after the last message read when the channel or
+thread opened, by snowflake. A ping reply puts the account in `mentions`,
+so it's a mention only when its `content` names it, `<@id>` or `<@!id>`.
 Each server in the rail shows its mentions as a count, and the DM button
 counts DM mentions and the friend requests waiting for an answer.
 Showing an unread channel marks it read, and with the "Mark messages read on

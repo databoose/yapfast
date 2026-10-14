@@ -483,6 +483,29 @@ impl Application {
         vec![]
     }
 
+    /// Settles where the selected room's new messages start, once its
+    /// newest messages came: after the last one read when it opened, as
+    /// Discord orders them even unloaded, else after the newest it has, so
+    /// that only those coming while it's open are new. A room opened with
+    /// nothing unread has no divider, but its replies are new the same way.
+    fn place_seen(&mut self) {
+        if !self.placing_seen || !self.state.room_ready || self.focusing || self.state.detached {
+            return;
+        }
+        let messages = &self.state.messages;
+        let Some(newest) = messages.last() else {
+            return;
+        };
+        self.placing_seen = false;
+        let known = self.state.seen.as_deref().is_some_and(|seen| {
+            discord::item_order(seen).is_some()
+                || messages.iter().any(|message| message.item == seen)
+        });
+        if !known {
+            self.state.seen = Some(newest.item.clone());
+        }
+    }
+
     /// Puts the "New" divider above the first message after the one last
     /// read when the room was opened, once the timeline has it. Discord's
     /// messages are ordered by their snowflakes, so the divider goes in even
@@ -492,6 +515,7 @@ impl Application {
     /// for the message its read receipt is on. The timeline then shows the
     /// divider at its top, once.
     pub(super) fn place_unread(&mut self) -> Vec<Effect> {
+        self.place_seen();
         let Some((marker, asked)) = self.read_marker.take() else {
             return vec![];
         };

@@ -1635,6 +1635,27 @@ fn display_name(
     }
 }
 
+/// Whether a message calls on `own` other than by replying: with @room,
+/// or by its user ID in the text or a link to it in the formatted text, as
+/// a mention pill is. A reply lists whom it answers in its mentions, so
+/// those alone don't tell.
+fn calls_by_name(text: &matrix_sdk_ui::timeline::Message, own: &UserId) -> bool {
+    let formatted = match text.msgtype() {
+        MessageType::Text(content) => content.formatted.as_ref(),
+        MessageType::Notice(content) => content.formatted.as_ref(),
+        MessageType::Emote(content) => content.formatted.as_ref(),
+        _ => None,
+    };
+    let own = own.as_str();
+    // A matrix.to link may escape the ID's `@` and `:`.
+    let escaped = own.replace('@', "%40").replace(':', "%3A");
+    text.mentions().is_some_and(|mentions| mentions.room)
+        || text.body().contains(own)
+        || formatted.is_some_and(|formatted| {
+            formatted.body.contains(own) || formatted.body.contains(&escaped)
+        })
+}
+
 fn summary(content: &TimelineItemContent) -> String {
     match content {
         TimelineItemContent::MsgLike(content) => match &content.kind {
@@ -1836,8 +1857,15 @@ async fn publish_timeline(
             let item = Some(format!("e:{}", reply.event_id));
             message.reply = Some(match &reply.event {
                 TimelineDetails::Ready(embedded) => {
-                    message.mentions_me |=
+                    message.replies_to_me =
                         !message.own && own.as_deref() == Some(&*embedded.sender);
+                    // A reply names whom it answers in its mentions, which
+                    // highlights it; it stays a mention only when its text
+                    // names them too.
+                    if message.replies_to_me && message.mentions_me {
+                        message.mentions_me = matches!(&content.kind,
+                            MsgLikeKind::Message(text) if own.as_deref().is_some_and(|own| calls_by_name(text, own)));
+                    }
                     Reply {
                         author: display_name(&embedded.sender, &embedded.sender_profile),
                         avatar: None,

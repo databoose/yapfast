@@ -87,7 +87,8 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Mention someone by typing `@` and picking from the room's members. The
   message links to them (`[Name](https://matrix.to/#/@user:server)`) and lists
   them in `m.mentions`, so their client notifies them. Who else is typing
-  shows just above the composer, gently pulsing, and Talk tells the room while you type unless a
+  shows just above the composer, gently pulsing, after three dots under the
+  avatars that rise in turn, and Talk tells the room while you type unless a
   setting turns it off.
 - Hover or click a message for its toolbar: your three most used reactions,
   Add reaction, Edit on your own message or Reply on someone else's, and More.
@@ -154,11 +155,17 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   bar counts those loaded with a plus ("50+ new messages"). A Matrix room
   places it after the event its read receipt is on, once that event is in
   the loaded timeline.
-- Highlight messages that call on the user with a faint red tint and a red
-  edge on the left, as Discord does: a mention of them, of a Discord role
-  they have, or @everyone or @here where those reach them, and a reply to
-  their message. Matrix's push rules decide which messages mention the user.
-  Their own messages are never highlighted. Talk counts unread messages on this device; for a room that isn't open,
+- Highlight messages that call on the user with a faint marigold tint and a
+  marigold edge on the left, as Discord does: a mention of them, of a Discord
+  role they have, or @everyone or @here where those reach them, always, and a
+  reply to their message while it's new. New is from the "New" divider down,
+  and what comes while the conversation is open; a conversation opened with
+  nothing unread counts from its newest message, and the thread beside a
+  channel from its own last read message. A reply that pings only lists
+  them as mentioned, so it counts as a mention only when its text names
+  them. Matrix's push rules decide which messages mention the user; a reply
+  stays a mention when its text has their user ID or a link to it, or
+  @room. Their own messages are never highlighted. Talk counts unread messages on this device; for a room that isn't open,
   sync often delivers only the newest event, so Talk shows that something is
   unread rather than how much.
 - Show sync status in the account panel. Reconnect appears there when offline;

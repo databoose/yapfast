@@ -408,6 +408,11 @@ pub struct AppState {
     /// room, which the timeline draws the "New" divider above. It stays put
     /// while the room is open, as newer messages are read as they come.
     pub first_unread: Option<String>,
+    /// The selected room's message that its new ones follow, as
+    /// [`chat::first_new`] takes it: the last read on opening the room, or
+    /// once its timeline came without that one, the newest it had. A reply
+    /// to this account's message is highlighted only while it's new.
+    pub seen: Option<String>,
     /// Changes each time the timeline should bring [`Self::first_unread`]
     /// to its top: once when it's found, and on [`Action::JumpToUnread`].
     pub unread_jump: u64,
@@ -1328,6 +1333,9 @@ pub struct Application {
     /// the first message after it is still to be found, and whether the
     /// messages around it were asked for.
     read_marker: Option<(String, bool)>,
+    /// [`AppState::seen`] is still to be checked against the selected room's
+    /// timeline, once it comes.
+    placing_seen: bool,
     /// Discord channels shown lately, newest last: their timeline and
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.

@@ -340,7 +340,8 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         first: true,
         day: SharedString::default(),
         unread_start: false,
-        mentions_me: message.mentions_me,
+        // A reply to this account's is highlighted too while it's new; refresh knows.
+        highlighted: message.mentions_me,
         jumbo,
         styled,
         author_styled: bold(&message.author),

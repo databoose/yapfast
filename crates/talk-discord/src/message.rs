@@ -191,11 +191,21 @@ impl Message {
     /// @here, unless its notification settings there suppress those; or as
     /// a reply to its message. Its own messages never do.
     pub fn mentions_me(&self, me: &str, server: Option<&ready::Server>) -> bool {
+        self.names_me(me, server) || self.replies_to(me)
+    }
+
+    /// Whether it calls on `me` other than by replying: by name, a role or
+    /// @everyone, as [`Self::mentions_me`] says. A reply that pings puts
+    /// the author it replies to in `mentions` too, so for them only their
+    /// name in its text counts.
+    pub fn names_me(&self, me: &str, server: Option<&ready::Server>) -> bool {
         if self.author_id == me {
             return false;
         }
-        let replied =
-            matches!(&self.reply, Some(Reply::Message { author_id, .. }) if author_id == me);
+        let named = self.mentions.iter().any(|user| user == me)
+            && (!self.replies_to(me)
+                || self.content.contains(&format!("<@{me}>"))
+                || self.content.contains(&format!("<@!{me}>")));
         let everyone =
             self.mention_everyone && server.is_some_and(|server| !server.suppress_everyone);
         let role = server.is_some_and(|server| {
@@ -205,7 +215,13 @@ impl Message {
                     .iter()
                     .any(|role| server.my_roles.contains(role))
         });
-        self.mentions.iter().any(|user| user == me) || replied || everyone || role
+        named || everyone || role
+    }
+
+    /// Whether it replies to a message of `me`'s, not being its own.
+    pub fn replies_to(&self, me: &str) -> bool {
+        self.author_id != me
+            && matches!(&self.reply, Some(Reply::Message { author_id, .. }) if author_id == me)
     }
 
     /// Seconds since the Unix epoch, from the message's snowflake.
@@ -1617,6 +1633,24 @@ mod tests {
         };
         assert!(pings(reply("1")), "a reply to Alice, pinging her or not");
         assert!(!pings(reply("3")));
+        // A reply to her names her only when its text does: a ping lists
+        // her in `mentions` all the same.
+        let names = |extra: Value| message(extra).names_me(me, Some(&server));
+        let ping = |content: &str| {
+            let mut value = reply("1");
+            value["mentions"] = json!([{"id": "1", "username": "alice"}]);
+            value["content"] = json!(content);
+            value
+        };
+        assert!(!names(reply("1")));
+        assert!(!names(ping("sure")), "a ping reply");
+        assert!(names(ping("sure <@1>")));
+        assert!(names(ping("sure <@!1>")));
+        assert!(names(
+            json!({"mentions": [{"id": "1", "username": "alice"}]})
+        ));
+        assert!(message(ping("sure")).replies_to(me));
+        assert!(!message(reply("3")).replies_to(me));
 
         // Her settings can quiet @everyone and roles, but not her name.
         let quiet = Server {

@@ -1785,10 +1785,11 @@ export component TalkWindow inherits Window {
                                             animate background { duration: 400ms; }
                                         }
                                         // A message that calls on this account is tinted marigold with a
-                                        // marigold edge, below the history notice and the dividers above it.
+                                        // marigold edge, below the history notice and the dividers above it:
+                                        // a mention always, a reply to its message while it's new.
                                         property <length> head: (index == 0 && root.room-ready ? 42px : 0px)
                                             + (message.day != "" || message.unread-start ? 26px : 0px);
-                                        if message.mentions-me: Rectangle {
+                                        if message.highlighted: Rectangle {
                                             y: parent.top + (parent.head > 0 ? col.padding-top + parent.head : 0px);
                                             height: parent.height - self.y - (index == root.messages.length - 1 && root.detached ? 74px : 0px);
                                             background: Theme.accent.transparentize(0.9);
@@ -1827,12 +1828,13 @@ export component TalkWindow inherits Window {
                                                     earlier => { root.earlier(); }
                                                 }
                                                 // A new day's date, and the "New" divider in marigold above
-                                                // the first unread message, on one line when both are here.
+                                                // the first unread message, in the middle of one line, the
+                                                // date and "New" together when both are here.
                                                 if message.day != "" || message.unread-start: HorizontalLayout {
                                                     padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;
                                                     Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
                                                     if message.day != "": Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                                    if message.day != "": Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
+                                                    if message.day != "" && message.unread-start: Text { text: "·"; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                                                     if message.unread-start: Rectangle {
                                                         width: new-text.preferred-width + 10px;
                                                         accessible-role: text; accessible-label: "New messages start here";
@@ -1844,6 +1846,7 @@ export component TalkWindow inherits Window {
                                                             }
                                                         }
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
                                                 }
                                                 MessageContent {
                                                     message: message; active-item: root.active-item; preview: root.preview; composer-enabled: root.composer-enabled;
@@ -1983,6 +1986,19 @@ export component TalkWindow inherits Window {
                                     text: root.typing; color: Theme.text; font-size: 13px; font-weight: 500;
                                     vertical-alignment: center; overflow: elide;
                                     opacity: 0.75 + 0.25 * sin(animation-tick() / 1ms * 0.25deg);
+                                }
+                            }
+                            // Under the avatars, three dots rise and brighten in turn.
+                            if root.typing != "" && root.room-selected && !root.voice-room: Rectangle {
+                                x: 36px - self.width / 2; y: parent.height - self.height;
+                                width: 32px; height: 20px;
+                                background: Theme.chat;
+                                for dot in 3: Rectangle {
+                                    property <float> wave: sin(animation-tick() / 1ms * 0.3deg - dot * 70deg);
+                                    x: 4px + dot * 9px; y: (parent.height - self.height) / 2 - 1.5px * self.wave;
+                                    width: 6px; height: 6px; border-radius: 3px;
+                                    background: Theme.muted;
+                                    opacity: 0.6 + 0.4 * self.wave;
                                 }
                             }
                         }
