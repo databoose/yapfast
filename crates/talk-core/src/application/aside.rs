@@ -17,6 +17,10 @@ pub struct Aside {
     /// Its first message is loaded.
     pub history_start: bool,
     pub history_failed: bool,
+    /// The message its new ones follow, as [`AppState::seen`] is the
+    /// selected room's: the last read when it showed, or the newest its
+    /// first messages had.
+    pub seen: Option<String>,
 }
 
 impl AppState {
@@ -103,8 +107,15 @@ impl Application {
 
     pub(super) fn show_aside(&mut self, room: String) -> Vec<Effect> {
         self.state.new_thread = None;
+        let seen = self
+            .state
+            .rooms
+            .iter()
+            .find(|listed| listed.id == room)
+            .and_then(|listed| listed.last_read.clone());
         self.state.aside = Some(Aside {
             room: room.clone(),
+            seen,
             ..Default::default()
         });
         self.aside_visible.clear();
@@ -156,6 +167,11 @@ impl Application {
             aside.history_start = false;
         }
         aside.ready = true;
+        // A thread is Discord's, ordered by snowflakes, so only one never
+        // read needs its newest.
+        if aside.seen.is_none() {
+            aside.seen = messages.last().map(|newest| newest.item.clone());
+        }
         aside.messages = Arc::new(messages);
         let room = aside.room.clone();
         let mut effects = self.mark_aside_read();

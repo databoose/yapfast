@@ -1785,10 +1785,11 @@ export component TalkWindow inherits Window {
                                             animate background { duration: 400ms; }
                                         }
                                         // A message that calls on this account is tinted marigold with a
-                                        // marigold edge, below the history notice and the dividers above it.
+                                        // marigold edge, below the history notice and the dividers above it:
+                                        // a mention always, a reply to its message while it's new.
                                         property <length> head: (index == 0 && root.room-ready ? 42px : 0px)
                                             + (message.day != "" || message.unread-start ? 26px : 0px);
-                                        if message.mentions-me: Rectangle {
+                                        if message.highlighted: Rectangle {
                                             y: parent.top + (parent.head > 0 ? col.padding-top + parent.head : 0px);
                                             height: parent.height - self.y - (index == root.messages.length - 1 && root.detached ? 74px : 0px);
                                             background: Theme.accent.transparentize(0.9);

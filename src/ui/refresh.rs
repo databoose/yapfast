@@ -1757,10 +1757,12 @@ impl Adapter {
             .collect();
         let mut previous = std::mem::take(&mut self.aside_rows);
         let mut before: Option<&ChatMessage> = None;
+        let first_new = talk_core::chat::first_new(&aside.messages, aside.seen.as_deref());
         let rows: Vec<MessageRow> = aside
             .messages
             .iter()
-            .map(|message| {
+            .enumerate()
+            .map(|(index, message)| {
                 let unchanged = shown
                     .get(message.id.as_str())
                     .is_some_and(|shown| Arc::ptr_eq(shown, message) || shown == &message);
@@ -1793,6 +1795,7 @@ impl Adapter {
                 } else {
                     SharedString::default()
                 };
+                row.highlighted = message.highlighted(index >= first_new);
                 before = Some(message);
                 row
             })
@@ -2030,10 +2033,12 @@ impl Adapter {
                 .collect();
             let mut previous = std::mem::take(&mut self.rows);
             let mut before: Option<&ChatMessage> = None;
+            let first_new = talk_core::chat::first_new(&state.messages, state.seen.as_deref());
             let rows: Vec<MessageRow> = state
                 .messages
                 .iter()
-                .map(|message| {
+                .enumerate()
+                .map(|(index, message)| {
                     // A row the backend sent again is the same one.
                     let unchanged = !restyle
                         && shown
@@ -2071,6 +2076,7 @@ impl Adapter {
                     // The author shows again below the "New" divider.
                     row.unread_start = state.first_unread.as_ref() == Some(&message.item);
                     row.first |= row.unread_start;
+                    row.highlighted = message.highlighted(index >= first_new);
                     before = Some(message);
                     row
                 })

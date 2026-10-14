@@ -584,6 +584,8 @@ impl Application {
         let read_marker = (room.unread > 0 || room.mentions > 0)
             .then(|| room.last_read.clone())
             .flatten();
+        // Messages after the last one read are new.
+        let seen = room.last_read.clone();
         self.remember_view();
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
@@ -607,6 +609,8 @@ impl Application {
         self.focusing = false;
         self.state.first_unread = None;
         self.read_marker = read_marker.map(|marker| (marker, false));
+        self.state.seen = seen;
+        self.placing_seen = true;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.visible_messages.clear();
@@ -701,6 +705,8 @@ impl Application {
         self.focusing = false;
         self.state.first_unread = None;
         self.read_marker = None;
+        self.state.seen = None;
+        self.placing_seen = false;
         self.state.notice = None;
         self.state.messages = Arc::new(vec![]);
         self.visible_messages.clear();

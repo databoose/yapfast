@@ -3828,6 +3828,181 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
     assert_eq!(app.state.unread_jump, 1);
 }
 
+/// Which of the selected room's or `aside`'s messages the timeline
+/// highlights, by item.
+fn highlighted(app: &Application, aside: bool) -> Vec<String> {
+    let (messages, seen) = match (&app.state.aside, aside) {
+        (Some(aside), true) => (&aside.messages, aside.seen.as_deref()),
+        _ => (&app.state.messages, app.state.seen.as_deref()),
+    };
+    let first_new = chat::first_new(messages, seen);
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| message.highlighted(*index >= first_new))
+        .map(|(_, message)| message.item.clone())
+        .collect()
+}
+
+/// Bob's messages with these items, replying to Alice's where `replies`
+/// says and mentioning her where `mentions` does.
+fn calling(items: &[&str], replies: &[&str], mentions: &[&str]) -> Vec<Arc<ChatMessage>> {
+    timeline(
+        items
+            .iter()
+            .map(|item| ChatMessage {
+                replies_to_me: replies.contains(item),
+                mentions_me: mentions.contains(item),
+                ..message(item, false)
+            })
+            .collect(),
+    )
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn replies_to_this_account_are_highlighted_while_new_and_mentions_always() {
+    let general = "discord:10:21";
+    let replies = ["d:100", "d:106", "d:111"];
+    let mentions = ["d:99"];
+    let show = |app: &mut Application, last: &str| {
+        let items: Vec<String> = (95..=last.parse().unwrap())
+            .map(|id| format!("d:{id}"))
+            .collect();
+        let items: Vec<&str> = items.iter().map(String::as_str).collect();
+        app.apply(Event::Timeline {
+            room: general.into(),
+            messages: calling(&items, &replies, &mentions),
+        });
+    };
+    let mut app = connected();
+    app.apply(unread_channel(true, 103));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom(general.into()));
+    show(&mut app, "110");
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:104"));
+    // A reply from the "New" divider down is highlighted, an older one
+    // isn't, and a mention is however old.
+    assert_eq!(highlighted(&app, false), ["d:99", "d:106"]);
+    // One arriving while the channel is open is new too, even once read.
+    app.apply(unread_channel(false, 110));
+    show(&mut app, "111");
+    assert_eq!(highlighted(&app, false), ["d:99", "d:106", "d:111"]);
+
+    // Opened again with nothing unread, only what comes after is new.
+    app.dispatch(Action::SelectRoom("discord:10:22".into()));
+    app.apply(unread_channel(false, 111));
+    app.dispatch(Action::SelectRoom(general.into()));
+    show(&mut app, "111");
+    assert_eq!(app.state.first_unread, None);
+    assert_eq!(highlighted(&app, false), ["d:99"]);
+    let mut replies = replies.to_vec();
+    replies.push("d:112");
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: calling(&["d:110", "d:111", "d:112"], &replies, &mentions),
+    });
+    assert_eq!(highlighted(&app, false), ["d:112"]);
+}
+
+#[test]
+fn a_matrix_rooms_new_replies_follow_its_receipt_or_its_newest_message() {
+    let mut app = connected();
+    let rooms = |last_read: &str| {
+        Event::Rooms(RoomIndex {
+            rooms: vec![
+                ChatRoom {
+                    last_read: Some(last_read.into()),
+                    ..preview_room("dm", "DM", true, 2)
+                },
+                preview_room("other", "Other", true, 2),
+            ],
+            servers: vec![],
+        })
+    };
+    let show = |app: &mut Application, items: &[&str]| {
+        app.apply(Event::Timeline {
+            room: "dm".into(),
+            messages: calling(items, &["e:1", "e:3", "e:5"], &[]),
+        });
+    };
+    // Its receipt is on the second message: the third is new.
+    app.apply(rooms("e:2"));
+    app.dispatch(Action::SelectRoom("dm".into()));
+    show(&mut app, &["e:1", "e:2", "e:3"]);
+    assert_eq!(highlighted(&app, false), ["e:3"]);
+
+    // A receipt the timeline doesn't have, as on an event it leaves out,
+    // makes what's newest when it opens the last message seen.
+    app.dispatch(Action::SelectRoom("other".into()));
+    app.apply(rooms("e:0"));
+    app.dispatch(Action::SelectRoom("dm".into()));
+    show(&mut app, &["e:1", "e:2", "e:3"]);
+    assert!(highlighted(&app, false).is_empty());
+    show(&mut app, &["e:1", "e:2", "e:3", "e:4", "e:5"]);
+    assert_eq!(highlighted(&app, false), ["e:5"]);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_thread_beside_highlights_new_replies_from_its_own_read_point() {
+    use talk_discord::{
+        ready::{Channel, Server, Thread},
+        service::{Snapshot, Status},
+    };
+    let snapshot = |last_read: u64| {
+        discord_event(Snapshot {
+            status: Status::Online,
+            servers: vec![Arc::new(Server {
+                id: "10".into(),
+                name: "Test".into(),
+                text_channels: vec![Channel {
+                    id: "21".into(),
+                    name: "general".into(),
+                    ..Default::default()
+                }],
+                threads: vec![Channel {
+                    id: "30".into(),
+                    name: "Plans".into(),
+                    parent: Some("21".into()),
+                    last_read,
+                    thread: Some(Box::new(Thread {
+                        joined: true,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })],
+            ..Default::default()
+        })
+    };
+    let show = |app: &mut Application, items: &[&str]| {
+        app.apply(Event::Timeline {
+            room: "discord:10:30".into(),
+            messages: calling(items, &["d:5", "d:7", "d:9"], &["d:4"]),
+        });
+    };
+    let mut app = connected();
+    app.apply(snapshot(6));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:21".into()));
+    app.dispatch(Action::OpenAside("discord:10:30".into()));
+    show(&mut app, &["d:4", "d:5", "d:6", "d:7"]);
+    assert_eq!(highlighted(&app, true), ["d:4", "d:7"]);
+    show(&mut app, &["d:4", "d:5", "d:6", "d:7", "d:8", "d:9"]);
+    assert_eq!(highlighted(&app, true), ["d:4", "d:7", "d:9"]);
+
+    // Never read, it has its newest message as its read point.
+    app.dispatch(Action::CloseAside);
+    app.apply(snapshot(0));
+    app.dispatch(Action::OpenAside("discord:10:30".into()));
+    show(&mut app, &["d:4", "d:5", "d:6", "d:7"]);
+    assert_eq!(highlighted(&app, true), ["d:4"]);
+    show(&mut app, &["d:4", "d:5", "d:6", "d:7", "d:8", "d:9"]);
+    assert_eq!(highlighted(&app, true), ["d:4", "d:9"]);
+}
+
 /// Alice's Discord DMs: one with Annie, and a group with Annie and Ben. Her
 /// friends are Annie, Ben and Cara.
 #[cfg(feature = "discord")]
