@@ -16,6 +16,10 @@ const API: &str = "https://discord.com/api/v9";
 /// The most messages one history request returns.
 pub const PAGE: usize = 50;
 
+/// How many archived threads a page of a channel's list of threads holds,
+/// as Discord's client asks for them.
+pub const THREAD_PAGE: u32 = 25;
+
 /// Which of a channel's messages a page holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Span<'a> {
@@ -452,6 +456,29 @@ impl Api {
         let path = match guild {
             Some(guild) => format!("/guilds/{guild}/messages/search?{query}"),
             None => format!("/channels/{channel}/messages/search?{query}"),
+        };
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Discord's answer to a search of a channel's threads, as its client's
+    /// list of threads asks: the archived ones, the newest message first,
+    /// [`THREAD_PAGE`] from the `offset`th; or with a `name`, those of
+    /// either kind it matches.
+    pub async fn search_threads(
+        &self,
+        channel: &str,
+        name: Option<&str>,
+        offset: u32,
+    ) -> Result<Value> {
+        let path = match name {
+            Some(name) => format!(
+                "/channels/{channel}/threads/search?name={}&tag_setting=match_some",
+                encode(name)
+            ),
+            None => format!(
+                "/channels/{channel}/threads/search?archived=true&sort_by=last_message_time\
+                 &sort_order=desc&limit={THREAD_PAGE}&tag_setting=match_some&offset={offset}"
+            ),
         };
         self.json(self.request(Method::GET, &path)).await
     }

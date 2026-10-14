@@ -3205,3 +3205,16 @@ fn edit_server_profile_opens_the_per_server_profile_editor() {
     assert!(!window.get_server_profile_open());
     assert_eq!(window.get_server_profile_prompt().preview.name, "");
 }
+
+#[test]
+fn a_threads_activity_reads_as_discords_list_of_threads_says_it() {
+    let now = 100 * 86_400_000;
+    let said = |ago: u64| refresh::ago(now - ago, now);
+    assert_eq!(said(5_000), "5s ago");
+    assert_eq!(said(5 * 60_000), "5m ago");
+    assert_eq!(said(3 * 3_600_000), "3h ago");
+    assert_eq!(said(30 * 86_400_000), "30d ago");
+    assert_eq!(said(31 * 86_400_000), ">30d ago");
+    assert_eq!(refresh::ago(0, 400 * 86_400_000), ">1y ago");
+    assert_eq!(refresh::ago(now + 1_000, now), "0s ago", "a clock behind");
+}

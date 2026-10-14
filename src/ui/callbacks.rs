@@ -554,6 +554,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_close_add_people, Action::CloseAddPeople);
     bind_item!(on_choose_person, Action::ChoosePerson);
     bind_item!(on_search, Action::Search);
+    bind_item!(on_search_threads, Action::SearchThreads);
+    bind!(on_more_threads, Action::MoreThreads);
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();
@@ -562,6 +564,30 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 adapter
                     .borrow_mut()
                     .action(&window, Action::ShowPins(shown));
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_show_threads(move |shown| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::ShowThreads(shown));
+            }
+        });
+    }
+    {
+        // As Discord's: a click shows the thread in place of its channel,
+        // and Shift-click beside it.
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_open_listed_thread(move |room, beside| {
+            if let Some(window) = weak.upgrade() {
+                let action = match beside {
+                    true => Action::OpenAside(room.into()),
+                    false => Action::Open(room.into()),
+                };
+                adapter.borrow_mut().action(&window, action);
             }
         });
     }

@@ -5353,3 +5353,175 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         [Effect::OpenPage(page)] if page == "https://discord.com/nitro"
     ));
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_channels_threads_list_as_discords_client_lists_them() {
+    use chat::ListedThread;
+    use talk_discord::{
+        ready::{self, Access, permission},
+        service::{Snapshot, Status},
+    };
+    let bits = |bits: u64| bits.to_string();
+    let thread = |id: &str, name: &str, parent: &str, last: &str, archived: bool, joined: bool| {
+        let mut thread = serde_json::json!({
+            "id": id, "type": 11, "name": name, "parent_id": parent, "guild_id": "10",
+            "last_message_id": last, "member_count": 3, "member_ids_preview": ["2", "3"],
+            "thread_metadata": {"archived": archived, "locked": false},
+        });
+        if joined {
+            thread["member"] = serde_json::json!({"id": id, "user_id": "1", "flags": 1});
+        }
+        thread
+    };
+    let mut server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99", "properties": {"name": "Test"},
+        "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": bits(
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES
+                | permission::READ_MESSAGE_HISTORY | permission::SEND_MESSAGES_IN_THREADS)}],
+        "channels": [
+            {"id": "11", "type": 0, "name": "general", "position": 0},
+            {"id": "12", "type": 5, "name": "news", "position": 1,
+             "permission_overwrites": [{"id": "10", "type": 0, "allow": "0",
+                                        "deny": bits(permission::READ_MESSAGE_HISTORY)}]},
+            {"id": "13", "type": 2, "name": "Lounge", "position": 2},
+        ],
+        "threads": [
+            thread("30", "Plans", "11", "300", false, true),
+            thread("31", "Book club", "11", "310", false, false),
+            thread("32", "Old", "11", "200", true, false),
+            thread("33", "Secret", "11", "320", false, false),
+            thread("34", "Elsewhere", "12", "330", false, false),
+        ],
+    }))
+    .unwrap();
+    // READY lists only those she's in; the rest came with THREAD_LIST_SYNC.
+    // As the service publishes them, a private one she isn't in is hidden.
+    for channel in &mut server.threads {
+        channel.thread.as_mut().unwrap().joined = channel.id == "30";
+        if channel.id == "33" {
+            channel.access = Access::Hidden;
+        }
+    }
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        servers: vec![Arc::new(server)],
+        ..Default::default()
+    }));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let general = "discord:10:11".to_owned();
+    app.dispatch(Action::SelectRoom(general.clone()));
+    assert_eq!(app.state.threads_channel(), Some(general.as_str()));
+
+    // Opening it asks for the first page of archived threads, and only that.
+    assert!(matches!(
+        app.dispatch(Action::ShowThreads(true)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Threads { room, query: None, offset: 0 }))]
+            if *room == general
+    ));
+    let rooms = |threads: &[ListedThread]| {
+        threads
+            .iter()
+            .map(|thread| {
+                thread
+                    .room
+                    .as_str()
+                    .trim_start_matches("discord:10:")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let listed = |id: &str, last: u64| ListedThread {
+        room: format!("discord:10:{id}"),
+        name: format!("Thread {id}"),
+        archived: true,
+        last,
+        ..Default::default()
+    };
+    app.apply(Event::Threads {
+        room: general.clone(),
+        query: None,
+        offset: 0,
+        result: Ok((vec![listed("40", 250), listed("41", 150)], true)),
+    });
+    let sections = app.thread_sections().unwrap();
+    assert_eq!(rooms(&sections.joined), ["30"]);
+    assert_eq!(rooms(&sections.other), ["31"], "the hidden one stays out");
+    // Those the server knows were archived join the pages they fall within.
+    assert_eq!(rooms(&sections.older), ["40", "32", "41"]);
+    let plans = &sections.joined[0];
+    assert_eq!((plans.last, plans.members), (300, 3));
+    assert_eq!(plans.member_avatars.len(), 2);
+
+    // The next page loads once, from where the last ended.
+    assert!(matches!(
+        app.dispatch(Action::MoreThreads).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Threads {
+            query: None,
+            offset: 25,
+            ..
+        }))]
+    ));
+    assert!(app.dispatch(Action::MoreThreads).is_empty());
+    app.apply(Event::Threads {
+        room: general.clone(),
+        query: None,
+        offset: 25,
+        result: Ok((vec![listed("42", 100)], false)),
+    });
+    assert_eq!(
+        rooms(&app.thread_sections().unwrap().older),
+        ["40", "32", "41", "42"]
+    );
+    assert!(app.dispatch(Action::MoreThreads).is_empty(), "none left");
+
+    // A search stands in for the list until it's cleared.
+    assert!(matches!(
+        app.dispatch(Action::SearchThreads(" book ".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Threads { query: Some(query), offset: 0, .. }))]
+            if query == "book"
+    ));
+    app.apply(Event::Threads {
+        room: general.clone(),
+        query: Some("book".into()),
+        offset: 0,
+        result: Ok((vec![listed("31", 310)], false)),
+    });
+    let search = app.state.thread_list().unwrap().search.as_ref().unwrap();
+    assert!(matches!(&search.found, Some(Ok(found)) if found.len() == 1));
+    assert!(
+        app.dispatch(Action::SearchThreads(String::new()))
+            .is_empty()
+    );
+    assert!(app.state.thread_list().unwrap().search.is_none());
+
+    // Closing it, or opening another room, forgets what it found.
+    assert!(matches!(
+        app.dispatch(Action::ShowThreads(false)).as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::CloseThreads
+        ))]
+    ));
+    assert!(app.state.threads.is_none());
+    app.dispatch(Action::ShowThreads(true));
+    let effects = app.dispatch(Action::SelectRoom("discord:10:30".into()));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Discord(DiscordCommand::CloseThreads))
+    )));
+    assert!(app.state.threads.is_none());
+    // A thread lists its channel's threads.
+    assert_eq!(app.state.threads_channel(), Some(general.as_str()));
+
+    // Without its history, a channel lists only its active threads, as
+    // Discord's client does.
+    app.dispatch(Action::SelectRoom("discord:10:12".into()));
+    assert!(app.dispatch(Action::ShowThreads(true)).is_empty());
+    let sections = app.thread_sections().unwrap();
+    assert_eq!(rooms(&sections.other), ["34"]);
+    // A voice channel has none.
+    app.dispatch(Action::SelectRoom("discord:10:13".into()));
+    assert_eq!(app.state.threads_channel(), None);
+}

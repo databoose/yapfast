@@ -30,6 +30,7 @@ mod rooms;
 mod server;
 mod server_profile;
 mod session;
+mod threads;
 
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
@@ -42,6 +43,7 @@ pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_profile::{
     BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT, PictureEdit, ProfileText, ServerProfileEditor,
 };
+pub use threads::{ThreadList, ThreadSearch, ThreadSections};
 
 use calls::call_sounds;
 use compose::has_markdown;
@@ -416,6 +418,8 @@ pub struct AppState {
     /// to it, each while it's open.
     pub pins: Option<Pins>,
     pub search: Option<Search>,
+    /// The open Discord channel's list of its threads.
+    pub threads: Option<ThreadList>,
     pub add_people: Option<AddPeople>,
     /// The selected Discord channel's topic, once the backend has said it.
     pub topic: Option<Arc<chat::Topic>>,
@@ -1026,6 +1030,12 @@ pub enum Action {
     CloseDm(String),
     /// Show the selected DM's pinned messages, or stop.
     ShowPins(bool),
+    /// Show the open Discord channel's list of its threads, or close it.
+    ShowThreads(bool),
+    /// Search the list's threads by name; an empty query shows the list.
+    SearchThreads(String),
+    /// Load the list's next page of archived threads.
+    MoreThreads,
     /// Search the selected DM's messages, or a server channel's server;
     /// an empty query ends the search.
     Search(String),
@@ -1797,6 +1807,9 @@ impl Application {
             }
             Action::CloseDm(room) => self.close_dm(room),
             Action::ShowPins(shown) => self.show_pins(shown),
+            Action::ShowThreads(shown) => self.show_threads(shown),
+            Action::SearchThreads(query) => self.search_threads(query),
+            Action::MoreThreads => self.more_threads(),
             Action::Search(query) => self.search(query),
             Action::MoreResults => self.more_results(),
             Action::OpenAddPeople => self.open_add_people(),
@@ -2146,6 +2159,12 @@ impl Application {
             }
             Event::ThreadOpened { room, result } => self.thread_opened(room, result),
             Event::Pins { room, result } => self.pins_came(room, result),
+            Event::Threads {
+                room,
+                query,
+                offset,
+                result,
+            } => self.threads_came(room, query, offset, result),
             Event::Found {
                 place,
                 query,

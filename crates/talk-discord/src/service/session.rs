@@ -298,18 +298,19 @@ impl Session<'_> {
             // It opens once it lists, so it lists as on screen already.
             Request::OpenThread {
                 guild,
+                id,
                 thread,
                 beside,
             } => {
-                self.tracker.put_thread(&guild, &thread);
-                if let Some(id) = thread["id"].as_str() {
-                    if beside {
-                        self.tracker.beside(Some(id));
-                        self.shared.beside = Some((guild, id.to_owned()));
-                    } else {
-                        self.tracker.view(&guild, Some(id));
-                        self.shared.viewing = Some((guild, id.to_owned()));
-                    }
+                if let Some(thread) = &thread {
+                    self.tracker.put_thread(&guild, thread);
+                }
+                if beside {
+                    self.tracker.beside(Some(&id));
+                    self.shared.beside = Some((guild, id));
+                } else {
+                    self.tracker.view(&guild, Some(&id));
+                    self.shared.viewing = Some((guild, id));
                 }
                 self.publisher.changed();
                 Ok(())

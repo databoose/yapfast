@@ -757,6 +757,8 @@ struct Models {
     /// The open DM's pinned messages, what its search found, and the
     /// friends its picker offers.
     pins: Rc<VecModel<FoundRow>>,
+    /// The open channel's list of its threads.
+    thread_rows: Rc<VecModel<ThreadRow>>,
     search_results: Rc<VecModel<FoundRow>>,
     add_people: Rc<VecModel<PickRow>>,
     role_members: Rc<VecModel<MemberRow>>,
@@ -794,6 +796,7 @@ impl Models {
         window.set_mentions(ModelRc::from(self.mentions.clone()));
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
         window.set_pins(ModelRc::from(self.pins.clone()));
+        window.set_thread_rows(ModelRc::from(self.thread_rows.clone()));
         window.set_search_results(ModelRc::from(self.search_results.clone()));
         window.set_add_people(ModelRc::from(self.add_people.clone()));
         window.set_role_members(ModelRc::from(self.role_members.clone()));
@@ -882,6 +885,9 @@ struct Adapter {
     /// A hash of what the friends picker's rows were built from, so they're
     /// built again only once that changes.
     picker_shown: Option<u64>,
+    /// The same for the list of threads, and the minute it was built in,
+    /// as its rows say how long ago each was active.
+    threads_shown: Option<u64>,
     /// The topic the header shows, so it's styled again only once it changes.
     topic_shown: Option<Arc<talk_core::chat::Topic>>,
     /// Shows pictures that arrived, together with those that follow them closely.
@@ -1046,6 +1052,7 @@ impl Adapter {
                 rows: HashMap::new(),
                 sidebar: None,
                 picker_shown: None,
+                threads_shown: None,
                 topic_shown: None,
                 pictures_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),

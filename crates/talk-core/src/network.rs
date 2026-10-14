@@ -33,6 +33,7 @@ impl Network {
                 pins: false,
                 search: false,
                 group_dms: false,
+                threads: false,
             },
             Self::Discord => Capabilities {
                 // Discord turns down forwarding from or to its channels.
@@ -43,6 +44,7 @@ impl Network {
                 pins: true,
                 search: true,
                 group_dms: true,
+                threads: true,
             },
         }
     }
@@ -67,6 +69,8 @@ pub struct Capabilities {
     /// Friends can be added to a DM, which makes a group of it, or to a
     /// group DM.
     pub group_dms: bool,
+    /// A server text channel lists its threads, and threads start in it.
+    pub threads: bool,
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, 
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
-import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
+import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel } from "thread.slint";
 
 // Rust sees these, besides TalkWindow.
@@ -523,6 +523,21 @@ export component TalkWindow inherits Window {
     in property <[FoundRow]> pins;
     in property <string> pins-note;
     callback show-pins(bool);
+    // The open channel's list of its threads; see ThreadsPopover.
+    in property <bool> can-list-threads;
+    in property <bool> threads-open;
+    in property <[ThreadRow]> thread-rows;
+    in property <string> threads-note;
+    in property <bool> threads-empty;
+    in property <bool> threads-searchable;
+    in-out property <string> threads-query;
+    in property <bool> threads-more;
+    in property <bool> threads-loading;
+    callback show-threads(bool);
+    callback search-threads(string);
+    callback more-threads;
+    /// Open a thread from the list: in place of the channel, or beside it.
+    callback open-listed-thread(string, bool);
     /// The header's search, and what it found, beside the conversation. An
     /// empty search ends it. A server channel's searches its whole server,
     /// and the box says so.
@@ -1437,6 +1452,18 @@ export component TalkWindow inherits Window {
                                 clicked => { root.start-call(); }
                             }
                         }
+                        if root.can-list-threads: Middle {
+                            IconButton {
+                                icon: @image-url("icons/messages-square.svg"); label: "Threads";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                tint: root.threads-open ? Theme.text : Theme.secondary;
+                                clicked => {
+                                    root.popover-x = self.absolute-position.x + self.width;
+                                    root.popover-y = self.absolute-position.y + self.height;
+                                    root.show-threads(!root.threads-open);
+                                }
+                            }
+                        }
                         if root.can-notify: Middle {
                             IconButton {
                                 icon: root.room-muted ? @image-url("icons/bell-off.svg") : @image-url("icons/bell.svg");
@@ -2272,6 +2299,31 @@ export component TalkWindow inherits Window {
             jump(item) => { root.show-pins(false); root.jump-to(item); }
             open-link(link) => { root.open-link(link); }
             close => { root.show-pins(false); }
+        }
+    }
+    // The open channel's threads, under the Threads button. Opening one
+    // closes them, as does Escape or a click outside.
+    if root.threads-open: Rectangle {
+        TouchArea { clicked => { root.show-threads(false); } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.show-threads(false); return accept; }
+                return reject;
+            }
+            ThreadsPopover {
+                x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
+                y: root.popover-y + 6px;
+                height: min(600px, root.height - self.y - 16px);
+                rows: root.thread-rows; note: root.threads-note; empty: root.threads-empty;
+                searchable: root.threads-searchable; query <=> root.threads-query;
+                more: root.threads-more; loading: root.threads-loading;
+                search(text) => { root.search-threads(text); }
+                // Opening first, as it may use what the list found.
+                open(room, beside) => { root.open-listed-thread(room, beside); root.show-threads(false); }
+                more-threads => { root.more-threads(); }
+                close => { root.show-threads(false); }
+            }
         }
     }
     // Friends to add to the open DM, under the add button.

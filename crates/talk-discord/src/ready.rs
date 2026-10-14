@@ -219,6 +219,77 @@ pub struct Thread {
     pub level: Option<Level>,
     /// Its messages after the first, as Discord counts them.
     pub messages: u64,
+    /// The snowflake of its newest message, or 0 before it has one.
+    #[serde(default)]
+    pub last_message: u64,
+    /// How many are in it, as Discord counts them: up to 50.
+    #[serde(default)]
+    pub members: u32,
+    /// A few of those in it, by user id, as Discord picks them: the first
+    /// [`MEMBER_PREVIEW`], which a list of threads shows.
+    #[serde(default)]
+    pub member_preview: Vec<String>,
+    /// Its newest message, as a list of threads shows it, while Talk knows
+    /// it: Discord sends it with a server's active threads, and Talk follows
+    /// the messages that come after.
+    #[serde(skip)]
+    pub recent: Option<Arc<Recent>>,
+}
+
+/// A thread's newest message, as a list of threads shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recent {
+    /// Its snowflake.
+    pub id: u64,
+    /// Its author, by user id.
+    pub author: String,
+    /// Its text in Discord's markup, cut to [`RECENT_TEXT`] bytes.
+    pub content: String,
+}
+
+/// How much of a thread's newest message Talk keeps: more than a list's
+/// row shows on one line.
+pub const RECENT_TEXT: usize = 200;
+
+/// How many of a thread's members Talk keeps, as a list of threads shows
+/// their avatars.
+pub const MEMBER_PREVIEW: usize = 3;
+
+/// The first [`MEMBER_PREVIEW`] ids of a `member_ids_preview`.
+pub fn member_preview(ids: &Value) -> Option<Vec<String>> {
+    Some(
+        ids.as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .take(MEMBER_PREVIEW)
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+impl Recent {
+    /// A message object as a thread's newest message; none for one without
+    /// an author.
+    pub fn of(message: &Value) -> Option<Self> {
+        let mut content = message["content"].as_str().unwrap_or_default().to_owned();
+        if content.len() > RECENT_TEXT {
+            let mut end = RECENT_TEXT;
+            while !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            content.truncate(end);
+        }
+        Some(Self {
+            id: snowflake(message["id"].as_str()?),
+            author: message["author"]["id"].as_str()?.to_owned(),
+            content,
+        })
+    }
+}
+
+/// A snowflake as a number; 0 for none.
+fn snowflake(id: &str) -> u64 {
+    id.parse().unwrap_or_default()
 }
 
 /// Thread member flags that choose its notifications.
@@ -249,6 +320,16 @@ impl Thread {
         self.joined = false;
         self.mute = Mute::default();
         self.level = None;
+    }
+
+    /// Takes in a message sent in it, which is its newest.
+    pub fn sent(&mut self, message: &Value) {
+        let Some(recent) = Recent::of(message).filter(|recent| recent.id >= self.last_message)
+        else {
+            return;
+        };
+        self.last_message = recent.id;
+        self.recent = Some(Arc::new(recent));
     }
 }
 
@@ -486,32 +567,29 @@ impl Server {
     /// this account's thread member keeps whether it's in it, as
     /// THREAD_UPDATE leaves the member out.
     pub fn put_thread(&mut self, value: &Value) {
-        let Some(mut thread) = parse_channel(value) else {
+        let Some(mut thread) = parse_thread(value) else {
             return;
-        };
-        let metadata = &value["thread_metadata"];
-        let mut details = Thread {
-            owner: value["owner_id"].as_str().map(str::to_owned),
-            private: value["type"].as_u64() == Some(PRIVATE_THREAD),
-            archived: metadata["archived"].as_bool().unwrap_or(false),
-            locked: metadata["locked"].as_bool().unwrap_or(false),
-            messages: value["message_count"].as_u64().unwrap_or_default(),
-            ..Default::default()
         };
         let known = self.threads.iter().position(|known| known.id == thread.id);
         if let Some(known) = known.map(|at| self.threads.remove(at))
             && let Some(was) = known.thread
+            && let Some(details) = thread.thread.as_deref_mut()
         {
-            details.joined = was.joined;
-            details.mute = was.mute;
-            details.level = was.level;
+            if !details.joined {
+                details.joined = was.joined;
+                details.mute = was.mute;
+                details.level = was.level;
+            }
             // An update from an older payload doesn't count backwards.
             details.messages = details.messages.max(was.messages);
+            if was.last_message >= details.last_message {
+                details.last_message = was.last_message;
+                details.recent = was.recent;
+            }
+            if details.member_preview.is_empty() {
+                details.member_preview = was.member_preview;
+            }
         }
-        if value["member"].is_object() {
-            details.join(&value["member"]);
-        }
-        thread.thread = Some(Box::new(details));
         // The newest first: a later thread has a larger snowflake.
         let order = |channel: &Channel| std::cmp::Reverse(channel.id.parse::<u64>().unwrap_or(0));
         let at = self
@@ -932,6 +1010,35 @@ fn overwrites(channel: &Value) -> Vec<Overwrite> {
             })
         })
         .collect()
+}
+
+/// A thread from its channel object, with this account's thread member
+/// when it carries one; none for anything but a thread.
+pub fn parse_thread(value: &Value) -> Option<Channel> {
+    if !is_thread(value) {
+        return None;
+    }
+    let mut thread = parse_channel(value)?;
+    let metadata = &value["thread_metadata"];
+    let mut details = Thread {
+        owner: value["owner_id"].as_str().map(str::to_owned),
+        private: value["type"].as_u64() == Some(PRIVATE_THREAD),
+        archived: metadata["archived"].as_bool().unwrap_or(false),
+        locked: metadata["locked"].as_bool().unwrap_or(false),
+        messages: value["message_count"].as_u64().unwrap_or_default(),
+        last_message: value["last_message_id"].as_str().map_or(0, snowflake),
+        members: value["member_count"]
+            .as_u64()
+            .and_then(|count| u32::try_from(count).ok())
+            .unwrap_or_default(),
+        member_preview: member_preview(&value["member_ids_preview"]).unwrap_or_default(),
+        ..Default::default()
+    };
+    if value["member"].is_object() {
+        details.join(&value["member"]);
+    }
+    thread.thread = Some(Box::new(details));
+    Some(thread)
 }
 
 fn parse_channel(channel: &Value) -> Option<Channel> {
