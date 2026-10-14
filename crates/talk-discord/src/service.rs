@@ -446,6 +446,10 @@ struct Kept {
     user: String,
     guild: String,
     at: Instant,
+    /// Their server nickname and avatar when it was fetched: once
+    /// GUILD_MEMBER_UPDATE changes either, it's fetched again, with the
+    /// rest of what they changed in their server profile.
+    member: (Option<String>, String),
     profile: Profile,
 }
 
@@ -773,11 +777,12 @@ impl Discord {
     /// fetched in the last few minutes is given again.
     pub async fn profile(&self, guild: &str, user: &str) -> Result<Profile> {
         let kept = |kept: &&Kept| kept.user == user && kept.guild == guild;
+        let member = self.member_face(guild, user);
         if let Some(fresh) = self
             .lock_profiles()
             .iter()
             .filter(kept)
-            .find(|fresh| fresh.at.elapsed() < PROFILE_AGE)
+            .find(|fresh| fresh.at.elapsed() < PROFILE_AGE && fresh.member == member)
         {
             return Ok(fresh.profile.clone());
         }
@@ -791,12 +796,56 @@ impl Discord {
             user: user.to_owned(),
             guild: guild.to_owned(),
             at: Instant::now(),
+            member: self.member_face(guild, user),
             profile: profile.clone(),
         });
         if profiles.len() > PROFILES {
             profiles.remove(0);
         }
         Ok(profile)
+    }
+
+    /// A member's nickname and avatar in a server, as Names knows them.
+    fn member_face(&self, guild: &str, user: &str) -> (Option<String>, String) {
+        let names = self.read_names();
+        (
+            names.nickname(guild, user).map(str::to_owned),
+            names.avatar(server(guild), user),
+        )
+    }
+
+    /// This account's own profile in a server, for its per-server profile
+    /// editor, fetched afresh.
+    pub async fn server_profile(&self, guild: &str) -> Result<profile::ServerProfile> {
+        let me = self.snapshots.borrow().user_id.clone();
+        let me = me.ok_or_else(|| anyhow!("Discord hasn't said who this account is yet"))?;
+        let value = self.api.profile(&me, Some(guild)).await?;
+        profile::parse_server(&value, guild)
+            .ok_or_else(|| anyhow!("could not understand Discord's answer"))
+    }
+
+    /// Changes this account's profile in a server as Discord's client
+    /// does: `member`'s fields, its nickname and avatar, go to its member
+    /// object, then `profile`'s, its banner, bio and pronouns, to its
+    /// server profile, each only when it has any. GUILD_MEMBER_UPDATE
+    /// brings the member's change back; the rest has no gateway event.
+    pub async fn save_server_profile(
+        &self,
+        guild: &str,
+        member: &Value,
+        profile: &Value,
+    ) -> Result<()> {
+        let some = |body: &Value| body.as_object().is_some_and(|fields| !fields.is_empty());
+        if some(member) {
+            self.api.modify_member_me(guild, member).await?;
+        }
+        if some(profile) {
+            self.api.modify_guild_profile(guild, profile).await?;
+        }
+        let me = self.snapshots.borrow().user_id.clone();
+        self.lock_profiles()
+            .retain(|kept| kept.guild != guild || Some(&kept.user) != me.as_ref());
+        Ok(())
     }
 
     fn lock_profiles(&self) -> std::sync::MutexGuard<'_, Vec<Kept>> {

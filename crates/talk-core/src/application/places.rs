@@ -189,12 +189,8 @@ impl Application {
             });
             choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
         }
-        // One's own nickname, as the member menu changes it.
-        if self.state.discord_online
-            && self.state.discord_user.is_some()
-            && (self.may(id, Permission::ChangeNickname)
-                || self.may(id, Permission::ManageNicknames))
-        {
+        // One's own profile there, which anyone may change something of.
+        if self.state.discord_online && self.state.discord_user.is_some() {
             choices.push(MenuChoice::EditServerProfile);
         }
         if self.manages(id) {
@@ -281,8 +277,9 @@ impl Application {
         self.state.discord_online && self.may(place, Permission::ManageChannels)
     }
 
-    /// A Discord channel's menu: a conversation's, with inviting to it
-    /// before its link.
+    /// A Discord channel's menu: a conversation's, with inviting to it and
+    /// pinning it before its link, and its notifications after, as in
+    /// Discord's menu.
     fn discord_channel_choices(&self, id: &str, listed: &[MenuChoice]) -> Vec<MenuChoice> {
         let mut choices = listed.to_vec();
         // A thread is neither invited to nor managed as a channel is.
@@ -318,7 +315,20 @@ impl Application {
                 },
             );
         }
-        // Managing it goes after its link, before its id.
+        let notifying: Vec<MenuChoice> = choices
+            .extract_if(.., |choice| {
+                matches!(
+                    choice,
+                    MenuChoice::ChannelMute | MenuChoice::ChannelNotifications
+                )
+            })
+            .collect();
+        let at = choices
+            .iter()
+            .position(|choice| *choice == MenuChoice::CopyLink)
+            .map_or(choices.len(), |at| at + 1);
+        choices.splice(at..at, notifying);
+        // Managing it goes after its notifications, before its id.
         let mut managing = vec![];
         if self.manages(id) {
             managing.extend([MenuChoice::EditChannel, MenuChoice::DuplicateChannel]);

@@ -112,7 +112,13 @@ impl Application {
                 None => {}
             }
         }
-        if self.may_rename(place, user) {
+        // One's own, as Discord's menu has it, opens the per-server profile
+        // editor, of which the nickname is a part.
+        if me {
+            if state.discord_online {
+                choices.push(MenuChoice::EditServerProfile);
+            }
+        } else if self.may_rename(place, user) {
             choices.push(MenuChoice::ServerNickname);
         }
         if !me {

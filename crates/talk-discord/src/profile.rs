@@ -52,6 +52,47 @@ pub struct MutualFriend {
     pub avatar: String,
 }
 
+/// This account's own profile in a server, as Discord's per-server profile
+/// editor changes it: what it set there, and the main profile it goes by
+/// where it set nothing. An empty text or no picture goes by the main one,
+/// as Discord's client shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerProfile {
+    pub nick: String,
+    pub pronouns: String,
+    pub bio: String,
+    /// The addresses of the server avatar and banner, when set.
+    pub avatar: Option<String>,
+    pub banner: Option<String>,
+    /// Its profile outside any server.
+    pub main: Profile,
+}
+
+/// The largest picture Discord's client uploads as an avatar or banner.
+pub const PICTURE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// This account's profile in `guild`, from the profile endpoint's answer
+/// for its own id with `guild_id`.
+pub fn parse_server(value: &Value, guild: &str) -> Option<ServerProfile> {
+    let main = parse(value, None)?;
+    let (server, member) = (&value["guild_member_profile"], &value["guild_member"]);
+    let owned = |value: &Value| text(value).map(str::to_owned).unwrap_or_default();
+    Some(ServerProfile {
+        nick: owned(&member["nick"]),
+        pronouns: owned(&server["pronouns"]),
+        bio: text(&server["bio"])
+            .or_else(|| text(&member["bio"]))
+            .map(str::to_owned)
+            .unwrap_or_default(),
+        avatar: text(&member["avatar"])
+            .map(|hash| ready::member_avatar(guild, &main.user_id, hash)),
+        banner: text(&server["banner"])
+            .or_else(|| text(&member["banner"]))
+            .map(|hash| ready::member_banner(guild, &main.user_id, hash)),
+        main,
+    })
+}
+
 /// A text field that may be missing, null or empty.
 fn text(value: &Value) -> Option<&str> {
     value.as_str().filter(|text| !text.trim().is_empty())
@@ -194,6 +235,20 @@ mod tests {
         assert_eq!(profile.mutual_friends[0].id, "3");
         assert_eq!(profile.mutual_friends[0].name, "Bob");
         assert!(profile.mutual_friends[0].avatar.contains("/embed/avatars/"));
+
+        let own = parse_server(&answer, "10").unwrap();
+        assert_eq!(own.nick, "Annie");
+        assert_eq!(own.pronouns, "", "the main profile's shows instead");
+        assert_eq!(own.bio, "");
+        assert_eq!(own.avatar, None);
+        assert!(
+            own.banner
+                .as_deref()
+                .unwrap()
+                .ends_with("/guilds/10/users/1400000000000000200/banners/ghi.png?size=600")
+        );
+        assert_eq!(own.main.name, "Ann");
+        assert_eq!(own.main.pronouns.as_deref(), Some("she/her"));
 
         // Outside a server: their own banner and name.
         let profile = parse(&answer, None).unwrap();

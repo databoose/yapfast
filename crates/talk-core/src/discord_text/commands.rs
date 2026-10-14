@@ -58,6 +58,9 @@ pub fn command(
     let Some(command) = account::command(command, discord, &channels.searches, events) else {
         return;
     };
+    let Some(command) = server_profile::command(command, discord, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }

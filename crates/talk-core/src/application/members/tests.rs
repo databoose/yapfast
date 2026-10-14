@@ -69,14 +69,16 @@ fn administrators_are_never_timed_out_and_a_timeout_can_end() {
 
 #[test]
 fn ones_own_entry_has_no_friend_or_moderation_choices() {
+    // Her own nickname is in her per-server profile, as Discord's menu
+    // has it, whether or not she may change it.
     assert_eq!(
         staff().person_choices("1"),
-        [Profile, ServerNickname, Roles, CopyId]
+        [Profile, EditServerProfile, Roles, CopyId]
     );
-    // Without Manage Roles, and with Change Nickname from @everyone.
+    // Without Manage Roles.
     assert_eq!(
         server(&["20"]).person_choices("1"),
-        [Profile, ServerNickname, CopyId]
+        [Profile, EditServerProfile, CopyId]
     );
 }
 

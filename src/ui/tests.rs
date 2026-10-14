@@ -2724,6 +2724,7 @@ fn a_discord_servers_menus_show_and_change_its_notifications() {
             "Mute server",
             "Notification settings",
             "Hide muted channels",
+            "Edit server profile",
             "Leave server",
             "Copy link",
             "Copy ID"
@@ -2762,6 +2763,7 @@ fn a_discord_servers_menus_show_and_change_its_notifications() {
         texts(window.get_menu_rows()),
         [
             "Notification settings",
+            "Edit server profile",
             "Hide muted channels",
             "Leave server"
         ]
@@ -2896,10 +2898,10 @@ fn pinned_channels_leave_their_categories_for_the_top() {
         texts,
         [
             "Mark as read",
-            "Mute channel",
-            "Notification settings",
             "Unpin channel",
             "Copy link",
+            "Mute channel",
+            "Notification settings",
             "Copy ID"
         ]
     );
@@ -3141,7 +3143,7 @@ fn leaving_a_server_asks_first_in_red() {
 
 #[test]
 #[cfg(feature = "discord")]
-fn edit_server_profile_opens_the_nickname_dialog() {
+fn edit_server_profile_opens_the_per_server_profile_editor() {
     use talk_core::talk_discord::ready::permission;
     let (window, adapter, _directory) = discord_server_window_granting(permission::CHANGE_NICKNAME);
     window.invoke_prepare_menu("header:discord:10".into(), false);
@@ -3159,8 +3161,47 @@ fn edit_server_profile_opens_the_nickname_dialog() {
         false,
         "edit-server-profile".into(),
     );
-    let dialog = adapter.borrow().app.state.person_dialog.clone().unwrap();
-    assert_eq!(dialog.user, "1");
-    assert_eq!(dialog.ask, PersonAsk::ServerNickname);
-    assert!(window.get_person_open());
+    assert!(window.get_server_profile_open());
+    assert!(window.get_server_profile_prompt().loading);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerProfile {
+            server: "discord:10".into(),
+            result: Ok(talk_core::chat::ServerProfile {
+                pronouns: "she/her".into(),
+                main: talk_core::chat::Profile {
+                    name: "Alice".into(),
+                    handle: "alice".into(),
+                    bio: "Main bio".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_profile_prompt();
+    assert!(!prompt.loading && prompt.may_rename && !prompt.nitro && !prompt.changed);
+    assert_eq!(window.get_server_profile_pronouns(), "she/her");
+    assert_eq!(prompt.nick_placeholder, "alice");
+    assert_eq!(prompt.preview.name, "Alice", "the main profile's name");
+    assert_eq!(prompt.preview.handle, "alice · she/her");
+    assert!(prompt.preview.has_bio, "the main profile's bio");
+    assert_eq!(prompt.bio_left, 190);
+
+    // Typing changes the preview and nothing else.
+    window.set_server_profile_nick("Ally".into());
+    window.invoke_write_server_profile(0, "Ally".into());
+    let prompt = window.get_server_profile_prompt();
+    assert_eq!(prompt.preview.name, "Ally");
+    assert!(prompt.changed);
+    window.invoke_write_server_profile(0, "x".repeat(33).into());
+    assert_eq!(
+        window.get_server_profile_prompt().too_long,
+        "A nickname can be up to 32 characters."
+    );
+
+    window.invoke_close_server_profile();
+    assert!(!window.get_server_profile_open());
+    assert_eq!(window.get_server_profile_prompt().preview.name, "");
 }

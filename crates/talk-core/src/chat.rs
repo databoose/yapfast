@@ -1340,6 +1340,67 @@ pub enum DiscordCommand {
     /// Download server icons and avatars by address. Each that arrives comes
     /// back as [`Event::Picture`]; one that fails doesn't.
     Pictures(Vec<String>),
+    /// This account's profile in a Discord server, by its server id, for
+    /// its editor; [`Event::ServerProfile`] follows.
+    ServerProfile {
+        server: String,
+    },
+    /// Read the picture at `path` for a profile, as Discord takes it, with
+    /// a preview; [`Event::ProfilePicture`] follows.
+    ProfilePicture {
+        kind: ProfilePicture,
+        path: PathBuf,
+    },
+    /// Change this account's profile in a Discord server, by its server
+    /// id; [`Event::ServerProfileSaved`] follows.
+    SaveServerProfile {
+        server: String,
+        change: Box<ServerProfileChange>,
+    },
+}
+
+/// This account's profile in a Discord server, as its editor shows it:
+/// what it set there, each empty where it goes by its main profile.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerProfile {
+    pub nick: String,
+    pub pronouns: String,
+    pub bio: String,
+    /// The addresses of its server avatar and banner, when set; see
+    /// [`DiscordCommand::Pictures`].
+    pub avatar: Option<String>,
+    pub banner: Option<String>,
+    /// Its main profile, whose name, pronouns, bio, avatar and banner show
+    /// where the server's are empty.
+    pub main: Profile,
+}
+
+/// A picture of a profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfilePicture {
+    Avatar,
+    Banner,
+}
+
+/// A picture chosen for a profile: the file Discord takes, by its type and
+/// bytes, and a preview at the size the editor shows it.
+#[derive(Clone, Debug)]
+pub struct PickedPicture {
+    pub mime: &'static str,
+    pub data: Arc<[u8]>,
+    pub preview: Arc<Picture>,
+}
+
+/// What changes in a profile in a Discord server: each field that does,
+/// a picture to `None` to go by the main profile's again, as an empty text
+/// does.
+#[derive(Clone, Debug, Default)]
+pub struct ServerProfileChange {
+    pub nick: Option<String>,
+    pub pronouns: Option<String>,
+    pub bio: Option<String>,
+    pub avatar: Option<Option<PickedPicture>>,
+    pub banner: Option<Option<PickedPicture>>,
 }
 
 /// A change to how the Discord account stands with someone.
@@ -1537,6 +1598,24 @@ pub enum Event {
     /// Whether Discord made, changed or deleted the channel a dialog asked
     /// it to: the room id of one it made, or why it didn't.
     ChannelSaved(Result<Option<String>, String>),
+    /// This account's profile in a Discord server, by its server id, as
+    /// [`DiscordCommand::ServerProfile`] asked, or why Discord didn't give it.
+    ServerProfile {
+        server: String,
+        result: Result<ServerProfile, String>,
+    },
+    /// The picture [`DiscordCommand::ProfilePicture`] read, from `path`, or
+    /// why it can't be one.
+    ProfilePicture {
+        kind: ProfilePicture,
+        path: PathBuf,
+        result: Result<PickedPicture, String>,
+    },
+    /// Whether Discord took the change to a profile in a server, or why not.
+    ServerProfileSaved {
+        server: String,
+        result: Result<(), String>,
+    },
     /// Whether this account left a Discord server, by its server id, or why
     /// not.
     LeftServer {
