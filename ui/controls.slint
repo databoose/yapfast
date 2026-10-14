@@ -532,6 +532,10 @@ component MenuRows inherits VerticalLayout {
 // closes the submenu, then the menu. A checkbox row reports `toggled`
 // rather than `chose`, and the menu stays open; a disabled row reports
 // neither. A menu or submenu taller than `tallest` scrolls.
+//
+// The menu stays where it opens. A submenu lines up with its row and moves
+// up to stay within `room-below`, past the menu's top if it must, and
+// `lift` says how far: the component's top is that far above the menu's.
 export component ContextMenu inherits Rectangle {
     in property <[MenuRow]> rows;
     /// Each row's submenu, by the row's index: empty for a row without one,
@@ -541,6 +545,8 @@ export component ContextMenu inherits Rectangle {
     /// there open on its left.
     in property <length> room: 100000px;
     in property <length> tallest: 100000px;
+    /// The room below the menu's top; the rest of `tallest` is above it.
+    in property <length> room-below: 100000px;
     // A menu and a submenu are as wide as their rows, within these.
     property <length> narrowest: 188px;
     property <length> widest: 320px;
@@ -551,10 +557,12 @@ export component ContextMenu inherits Rectangle {
     // beside it, so a submenu opening moves nothing.
     out property <length> content-width: root.menu-width + (root.has-submenus ? 4px + root.widest : 0px);
     out property <bool> flip: root.has-submenus && root.content-width > root.room;
-    property <length> main-height: min(main.preferred-height, root.tallest);
+    out property <length> main-height: min(main.preferred-height, root.tallest);
     property <length> sub-height: min(sub.preferred-height, root.tallest);
-    // The submenu stays within the menu's height, so opening it moves nothing.
-    out property <length> content-height: max(root.main-height, root.sub-open ? root.sub-height : 0px);
+    // Where the submenu's top is, from the menu's.
+    property <length> sub-top: max(root.room-below - root.tallest, min(root.sub-y, root.room-below - root.sub-height));
+    out property <length> lift: root.sub-open ? max(0px, -root.sub-top) : 0px;
+    out property <length> content-height: root.lift + max(root.main-height, root.sub-open ? root.sub-top + root.sub-height : 0px);
     callback chose(string);
     callback toggled(string);
     callback close;
@@ -567,7 +575,7 @@ export component ContextMenu inherits Rectangle {
     // The row whose submenu shows, and its rows.
     property <int> sub-row: -1;
     property <[MenuRow]> subrows: root.sub-row >= 0 ? root.submenus[root.sub-row] : [];
-    // The row last made current, and how far down the menu it is.
+    // The row last made current, and how far below the menu's top it is.
     property <int> lit-row: -1;
     property <length> lit-y;
     function step(by: int) {
@@ -636,8 +644,8 @@ export component ContextMenu inherits Rectangle {
             }
             return accept;
         }
-        Rectangle {
-            x: root.flip ? root.content-width - root.menu-width : 0px; y: 0px;
+        main-panel := Rectangle {
+            x: root.flip ? root.content-width - root.menu-width : 0px; y: root.lift;
             width: root.menu-width; height: root.main-height;
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
@@ -670,7 +678,7 @@ export component ContextMenu inherits Rectangle {
                     let before = main-flick.content-y;
                     main-flick.content-y = root.reveal(main-flick.height, main-flick.content-height, main-flick.content-y, y - main-flick.absolute-position.y, height);
                     root.lit-row = index;
-                    root.lit-y = max(0px, y + main-flick.content-y - before - root.absolute-position.y - 6px);
+                    root.lit-y = max(0px, y + main-flick.content-y - before - main-panel.absolute-position.y - 6px);
                     if root.sub-row == index { root.sub-y = root.lit-y; }
                 }
             }
@@ -679,7 +687,7 @@ export component ContextMenu inherits Rectangle {
         Rectangle {
             visible: root.sub-open;
             x: root.flip ? root.widest - root.submenu-width : root.menu-width + 4px;
-            y: max(0px, min(root.sub-y, root.content-height - self.height));
+            y: root.lift + root.sub-top;
             width: root.submenu-width; height: root.sub-height;
             background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
