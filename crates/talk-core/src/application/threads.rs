@@ -307,10 +307,12 @@ impl Application {
         let mut sections = ThreadSections::default();
         let known = self.known_threads(&list.room);
         // Loaded pages reach back to the oldest of them; those the server
-        // knows were archived after it join them.
-        let reach = match list.more {
-            true => list.archived.iter().map(|thread| thread.last).min(),
-            false => Some(0),
+        // knows were archived after it join them. Until the first page
+        // answers, none do, so they don't show and vanish again.
+        let reach = match (list.next, list.more) {
+            (0, _) => None,
+            (_, true) => list.archived.iter().map(|thread| thread.last).min(),
+            (_, false) => Some(0),
         };
         for thread in &known {
             let section = match (thread.archived, thread.joined) {
