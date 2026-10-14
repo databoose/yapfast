@@ -525,6 +525,11 @@ if this account's voice state arrives after both answers. `talk_discord::stream`
 streams by key (`guild:{server}:{channel}:{user}`) and
 `Discord::{go_live, watch, end_stream, pause_stream}` run the signalling. Voice
 states carry `self_stream`, which shows as a LIVE badge beside the person.
+Sharing starts from the call's controls or from the voice panel's Share
+button, which works wherever the window is; the panel says when the stream
+is live and stops it. While the call is off screen, the stream being watched,
+or else this account's own, shows in a corner (`StreamPip`), as Discord's
+picture in picture does; a click on it returns to the call.
 
 Capture runs in a worker process, `talk --stream-worker`, so its buffers take
 memory only while sharing; the process exits when sharing stops. Playing a

@@ -21,7 +21,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
-import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
+import { PersonRow, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
@@ -1377,11 +1377,17 @@ export component TalkWindow inherits Window {
                 // The dock spans the rail and the sidebar. Its avatar and voice icon sit on the
                 // rail's axis, 36px from the left; names and status start at 64px.
                 if root.voice-visible: VoiceDock {
-                    voice-status: root.voice-status; voice-detail: root.voice-detail; voice-color: root.voice-color;
-                    voice-active: root.voice-active; voice-leaving: root.voice-leaving;
+                    voice-status: root.voice-status; voice-detail: root.voice-detail; voice-name: root.voice-name;
+                    voice-color: root.voice-color;
+                    voice-active: root.voice-active; voice-ready: root.voice-ready; voice-leaving: root.voice-leaving;
                     voice-warning: root.voice-warning; voice-error: root.voice-error;
+                    can-share: root.can-share; sharing: root.sharing; share-live: root.share-live; share-status: root.share-status;
+                    can-film: root.can-film; camera-on: root.camera-on;
                     leave-voice => { root.leave-voice(); }
                     dismiss-voice-error => { root.dismiss-voice-error(); }
+                    toggle-camera => { root.toggle-camera(); }
+                    toggle-share => { root.toggle-share(); }
+                    open-share-menu(x, y) => { root.open-share-menu(x, y); }
                 }
                 // Account panel.
                 account-panel := Rectangle {
@@ -2320,6 +2326,36 @@ export component TalkWindow inherits Window {
             background: parent.pressed ? Theme.faint : Theme.line;
             opacity: parent.has-hover || parent.pressed ? 1 : 0;
             animate opacity { duration: 120ms; }
+        }
+    }
+
+    // The stream being watched, or this account's own, in a corner while the call
+    // is off screen; see StreamPip. It starts at the top right of the conversation
+    // and stays in the corner it's dragged nearest.
+    property <bool> call-on-screen: root.voice-here && (root.voice-room || root.call-shown) && !root.settings-open;
+    property <bool> pip-left;
+    property <bool> pip-bottom;
+    if root.workspace && root.voice-active && (root.watching || root.sharing) && !root.call-on-screen && !root.settings-open: StreamPip {
+        property <length> left: 72px + root.sidebar-shown + 16px;
+        property <length> right: root.width - self.width - 16px;
+        property <length> top: 48px + 16px;
+        property <length> bottom: root.height - self.height - 16px;
+        x: (root.pip-left ? self.left : self.right) + self.drag-x;
+        y: (root.pip-bottom ? self.bottom : self.top) + self.drag-y;
+        animate x, y { duration: self.dragging ? 0ms : 180ms; easing: ease-out; }
+        title: root.watching ? root.watch-title : "Your screen";
+        status: root.watching ? root.watch-status : root.share-status;
+        frame: root.watching ? root.watch-frame : root.share-frame;
+        live: !root.watching && root.share-live;
+        stop-icon: root.watching ? @image-url("icons/x.svg") : @image-url("icons/screen-share-off.svg");
+        stop-label: root.watching ? "Stop watching" : "Stop sharing";
+        open-call => { root.open-conversation(root.voice-channel); }
+        stop => { if root.watching { root.stop-watching(); } else { root.toggle-share(); } }
+        dropped => {
+            root.pip-left = self.x + self.width / 2 < (self.left + self.right + self.width) / 2;
+            root.pip-bottom = self.y + self.height / 2 >= (self.top + self.bottom + self.height) / 2;
+            self.drag-x = 0px;
+            self.drag-y = 0px;
         }
     }
 
