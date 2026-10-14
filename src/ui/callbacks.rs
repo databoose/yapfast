@@ -847,6 +847,64 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_new_theme(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().new_theme(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_edit_theme(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().edit_theme(&window, &id);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_theme_start_chosen(move |index| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().theme_start_chosen(&window, index);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_theme_colour_edited(move |index, text| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .theme_colour_edited(&window, index, &text);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_theme_dark_toggled(move |dark| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().theme_dark_toggled(&window, dark);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_save_theme(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().save_theme(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_cancel_theme(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().cancel_theme(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_delete_theme(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().delete_theme(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_preferences_changed(move || {
         let Some(window) = weak.upgrade() else { return };
         let mut adapter = state.borrow_mut();

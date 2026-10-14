@@ -25,7 +25,7 @@ import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGri
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
-import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
@@ -630,6 +630,7 @@ export component TalkWindow inherits Window {
     changed settings-open => {
         if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); }
         if !self.settings-open { self.camera-testing = false; }
+        if !self.settings-open && self.theme-editor { self.cancel-theme(); }
     }
     in-out property <int> settings-section;
     /// Preferences people set in the settings; preferences-changed reports any change.
@@ -672,6 +673,25 @@ export component TalkWindow inherits Window {
     in property <[ThemeCard]> themes;
     in property <string> theme-id;
     callback choose-theme(string);
+    /// Appearance's theme editor; see AppearanceSettings. Leaving Appearance
+    /// or settings cancels it.
+    in property <bool> theme-editor;
+    in property <[ThemeColour]> theme-colours;
+    in-out property <string> theme-name;
+    in-out property <bool> theme-dark;
+    in property <bool> theme-editing-saved;
+    in property <[string]> theme-starts;
+    in property <int> theme-start;
+    in property <bool> theme-can-save;
+    callback new-theme();
+    callback edit-theme(string);
+    callback theme-start-chosen(int);
+    callback theme-colour-edited(int, string);
+    callback theme-dark-toggled(bool);
+    callback save-theme();
+    callback cancel-theme();
+    callback delete-theme();
+    changed settings-section => { if root.theme-editor && root.settings-section != 7 { root.cancel-theme(); } }
     out property <length> message-font-size: root.text-size == 0 ? 14px : root.text-size == 2 ? 18px : 16px;
     // The sidebar keeps 180 to 380px. Dragging also leaves the conversation 420px;
     // the window width cannot enter this binding, because it depends on the layout.
@@ -2331,7 +2351,19 @@ export component TalkWindow inherits Window {
         }
         if root.settings-section == 7: AppearanceSettings {
             themes: root.themes; theme-id: root.theme-id;
+            editor: root.theme-editor; colours: root.theme-colours;
+            theme-name <=> root.theme-name; theme-dark <=> root.theme-dark;
+            editing-saved: root.theme-editing-saved; starts: root.theme-starts; start-index: root.theme-start;
+            can-save: root.theme-can-save;
             choose-theme(id) => { root.choose-theme(id); }
+            new-theme => { root.new-theme(); }
+            edit-theme(id) => { root.edit-theme(id); }
+            start-chosen(index) => { root.theme-start-chosen(index); }
+            colour-edited(index, text) => { root.theme-colour-edited(index, text); }
+            dark-toggled(dark) => { root.theme-dark-toggled(dark); }
+            save-theme => { root.save-theme(); }
+            cancel-theme => { root.cancel-theme(); }
+            delete-theme => { root.delete-theme(); }
         }
         if root.settings-section == 1: VoiceSettings {
             microphones: root.microphones; microphone-index: root.microphone-index;

@@ -3308,3 +3308,262 @@ fn built_in_themes_have_their_own_ids_and_say_whether_they_are_dark() {
     }
     assert_eq!(theme::BUILT_IN[0].theme, theme::YAP, "Yap comes first");
 }
+
+#[test]
+fn a_colour_is_written_as_slint_writes_one() {
+    let parse = |text| theme::parse(text).map(theme::hex);
+    assert_eq!(parse("#abc").as_deref(), Some("#aabbcc"));
+    assert_eq!(parse(" #A0B1C2 ").as_deref(), Some("#a0b1c2"));
+    assert_eq!(parse("#ffbf4726").as_deref(), Some("#ffbf4726"));
+    assert_eq!(parse("#123456ff").as_deref(), Some("#123456"));
+    for wrong in [
+        "", "#", "abc", "a0b1c2", "#ab", "#abcd", "#12345", "#1234567", "#ggg", "#+12", "#-12345",
+    ] {
+        assert_eq!(theme::parse(wrong), None, "{wrong:?}");
+    }
+    assert_eq!(theme::parse("#ffbf4726"), Some(theme::YAP.accent_soft));
+}
+
+#[test]
+fn a_custom_theme_keeps_its_colours_by_name_and_falls_back_to_its_base() {
+    let stored = serde_json::json!({
+        "id": "custom:1",
+        "name": "Mine",
+        "base": "nord",
+        "dark": false,
+        "colours": {
+            "chat": "#fafafa",
+            "row-hover": "#abc",
+            "link": "not a colour",
+            "a-colour-from-later": "#123456",
+        },
+    });
+    let custom: theme::Custom = serde_json::from_value(stored).unwrap();
+    let nord = theme::find("nord").unwrap().theme;
+    assert_eq!(custom.base, "nord");
+    assert!(!custom.theme.dark);
+    assert_eq!(custom.theme.chat, theme::parse("#fafafa").unwrap());
+    assert_eq!(custom.theme.row_hover, theme::parse("#aabbcc").unwrap());
+    assert_eq!(custom.theme.link, nord.link, "a wrong colour is Nord's");
+    assert_eq!(
+        custom.theme.accent, nord.accent,
+        "a missing colour is Nord's"
+    );
+
+    // It's written back with every colour, by the names ui/theme.slint has.
+    let written = serde_json::to_value(&custom).unwrap();
+    assert_eq!(written["colours"]["row-hover"], "#aabbcc");
+    assert_eq!(written["colours"]["accent-soft"], "#88c0d026");
+    assert_eq!(
+        written["colours"].as_object().unwrap().len(),
+        theme::Theme::NAMES.len()
+    );
+    assert_eq!(
+        serde_json::from_value::<theme::Custom>(written).unwrap(),
+        custom
+    );
+
+    // A base Talk doesn't know is Yap.
+    let unknown: theme::Custom =
+        serde_json::from_value(serde_json::json!({ "base": "gone" })).unwrap();
+    assert_eq!((unknown.base, unknown.theme), ("yap", theme::YAP));
+}
+
+#[test]
+fn custom_theme_ids_stay_apart_from_built_in_ones_and_each_other() {
+    for built_in in &theme::BUILT_IN {
+        assert!(!built_in.id.contains(':'), "{}", built_in.id);
+    }
+    let custom = |id: &str| theme::Custom {
+        id: id.into(),
+        name: id.into(),
+        base: "yap",
+        theme: theme::YAP,
+    };
+    let mut themes = vec![
+        custom("custom:2"),
+        custom("nord"),
+        custom("custom:2"),
+        custom(""),
+        custom("custom:x"),
+    ];
+    theme::tidy(&mut themes);
+    let ids: Vec<_> = themes.iter().map(|theme| theme.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["custom:2", "custom:3", "custom:4", "custom:5", "custom:6"]
+    );
+    assert_eq!(theme::new_id(&themes), "custom:7");
+    assert_eq!(theme::new_id(&[]), "custom:1");
+}
+
+#[test]
+fn a_custom_theme_is_made_edited_and_deleted_in_appearance() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    let nord = theme::find("nord").unwrap().theme;
+    window.invoke_choose_theme("nord".into());
+
+    // A new theme starts as a copy of the one shown, and shows each change.
+    window.invoke_new_theme();
+    assert!(window.get_theme_editor());
+    assert_eq!(window.get_theme_name(), "Nord copy");
+    assert_eq!(window.get_theme_start(), 4);
+    assert_eq!(window.get_theme_starts().row_count(), theme::BUILT_IN.len());
+    let colours = window.get_theme_colours();
+    assert_eq!(colours.row_count(), theme::Theme::NAMES.len());
+    let chat = theme::Theme::NAMES
+        .iter()
+        .position(|name| *name == "chat")
+        .unwrap();
+    assert_eq!(colours.row_data(chat).unwrap().hex, theme::hex(nord.chat));
+    window.invoke_theme_colour_edited(chat as i32, "#102030".into());
+    assert_eq!(
+        theme::Theme::shown(&window).chat,
+        theme::parse("#102030").unwrap()
+    );
+    assert!(window.get_theme_can_save());
+
+    // A field without a colour says so and holds Save back; the window keeps
+    // the last colour.
+    window.invoke_theme_colour_edited(chat as i32, "#1020".into());
+    assert!(colours.row_data(chat).unwrap().wrong);
+    assert!(!window.get_theme_can_save());
+    assert_eq!(
+        theme::Theme::shown(&window).chat,
+        theme::parse("#102030").unwrap()
+    );
+    window.invoke_save_theme();
+    assert!(window.get_theme_editor(), "Save waits for a colour");
+    window.invoke_theme_colour_edited(chat as i32, "#123".into());
+    window.invoke_theme_dark_toggled(false);
+    window.set_theme_name("  Midnight  ".into());
+    window.invoke_save_theme();
+
+    // Saved, it's chosen, listed after the built-in themes and kept.
+    assert!(!window.get_theme_editor());
+    assert_eq!(
+        window.get_theme_colours().row_count(),
+        0,
+        "rows go with the editor"
+    );
+    assert_eq!(window.get_theme_id(), "custom:1");
+    let themes = window.get_themes();
+    assert_eq!(themes.row_count(), theme::BUILT_IN.len() + 1);
+    let card = themes.row_data(theme::BUILT_IN.len()).unwrap();
+    assert_eq!(
+        (card.id.as_str(), card.name.as_str(), card.custom),
+        ("custom:1", "Midnight", true)
+    );
+    let midnight = theme::Theme {
+        dark: false,
+        chat: theme::parse("#112233").unwrap(),
+        ..nord
+    };
+    assert_eq!(theme::Theme::shown(&window), midnight);
+    let layout = Layout::read(directory.path());
+    assert_eq!(layout.theme.as_deref(), Some("custom:1"));
+    assert_eq!(layout.custom_themes.len(), 1);
+    assert_eq!(layout.custom_themes[0].theme, midnight);
+    assert_eq!(layout.custom_themes[0].base, "nord");
+
+    // A window made again starts in it.
+    let again = TalkWindow::new().unwrap();
+    bind_callbacks(&again, &adapter);
+    adapter.borrow_mut().attach(&again);
+    assert_eq!(theme::Theme::shown(&again), midnight);
+    assert_eq!(again.get_theme_id(), "custom:1");
+    let window = again;
+
+    // Cancel puts back the theme from before editing, and the name.
+    window.invoke_edit_theme("custom:1".into());
+    assert!(window.get_theme_editing_saved());
+    assert_eq!(window.get_theme_name(), "Midnight");
+    window.invoke_theme_colour_edited(chat as i32, "#ff0000".into());
+    window.set_theme_name("Red".into());
+    assert_eq!(
+        theme::Theme::shown(&window).chat,
+        theme::parse("#ff0000").unwrap()
+    );
+    window.invoke_cancel_theme();
+    assert_eq!(theme::Theme::shown(&window), midnight);
+    assert_eq!(adapter.borrow().layout.custom_themes[0].name, "Midnight");
+
+    // A new theme from another start takes its colours and name.
+    window.invoke_new_theme();
+    assert_eq!(window.get_theme_name(), "Midnight copy");
+    window.invoke_theme_start_chosen(9);
+    assert_eq!(window.get_theme_name(), "Sakura copy");
+    assert_eq!(
+        theme::Theme::shown(&window),
+        theme::find("sakura").unwrap().theme
+    );
+    window.set_theme_name("Blossom".into());
+    window.invoke_theme_start_chosen(0);
+    assert_eq!(window.get_theme_name(), "Blossom", "a name given stays");
+    window.invoke_cancel_theme();
+    assert_eq!(theme::Theme::shown(&window), midnight);
+
+    // Renamed, then deleted while chosen: Yap shows.
+    window.invoke_edit_theme("custom:1".into());
+    window.set_theme_name("Dusk".into());
+    window.invoke_save_theme();
+    assert_eq!(
+        window
+            .get_themes()
+            .row_data(theme::BUILT_IN.len())
+            .unwrap()
+            .name,
+        "Dusk"
+    );
+    window.invoke_edit_theme("custom:1".into());
+    window.invoke_delete_theme();
+    assert!(!window.get_theme_editor());
+    assert_eq!(window.get_theme_id(), "yap");
+    assert_eq!(theme::Theme::shown(&window), theme::YAP);
+    assert_eq!(window.get_themes().row_count(), theme::BUILT_IN.len());
+    let layout = Layout::read(directory.path());
+    assert_eq!(layout.theme.as_deref(), Some("yap"));
+    assert!(layout.custom_themes.is_empty());
+}
+
+#[test]
+fn a_window_made_again_while_editing_drops_the_edit() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_new_theme();
+    let link = theme::Theme::NAMES
+        .iter()
+        .position(|name| *name == "link")
+        .unwrap();
+    window.invoke_theme_colour_edited(link as i32, "#ff0000".into());
+    assert_eq!(theme::mention_color(), 0xff0000);
+
+    let again = TalkWindow::new().unwrap();
+    adapter.borrow_mut().attach(&again);
+    assert!(adapter.borrow().theme_editor.is_none());
+    assert!(
+        adapter.borrow().restyle,
+        "rows lose the edited mention colour"
+    );
+    assert!(!again.get_theme_editor());
+    assert_eq!(theme::Theme::shown(&again), theme::YAP);
+    assert_eq!(theme::mention_color(), 0x7cc4ff);
+    assert!(Layout::read(directory.path()).custom_themes.is_empty());
+}
