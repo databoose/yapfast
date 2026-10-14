@@ -4512,13 +4512,13 @@ fn server_channels_pin_to_the_top_as_discords_client_pins_them() {
     assert_eq!(
         app.menu_choices("discord:10:11"),
         [
-            ChannelMute,
-            ChannelNotifications,
             PinChannel,
             CopyLink,
+            ChannelMute,
+            ChannelNotifications,
             CopyId
         ],
-        "pinning comes before the link"
+        "pinning comes before the link, and notifications after"
     );
     assert!(
         app.menu_choices("discord:10:14").contains(&PinChannel),
@@ -4611,12 +4611,21 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
         "the header's dropdown lists the menu's choices in its own order"
     );
     assert!(app.header_choices("discord:10:11").is_empty());
-    let mut listed = app.state.menu_choices("discord:10:11");
-    listed.insert(listed.len() - 2, PinChannel);
+    assert_eq!(
+        app.state.menu_choices("discord:10:11"),
+        [ChannelMute, ChannelNotifications, CopyLink, CopyId]
+    );
     assert_eq!(
         app.menu_choices("discord:10:11"),
-        listed,
-        "a channel's menu is a conversation's, with pinning it"
+        [
+            PinChannel,
+            CopyLink,
+            ChannelMute,
+            ChannelNotifications,
+            CopyId
+        ],
+        "a channel's menu is a conversation's, with pinning it, and its \
+         notifications after its link"
     );
 
     change_server(&mut app, |server| {
@@ -4703,11 +4712,11 @@ fn discord_invites_go_to_a_channel_this_account_may_invite_to() {
     assert_eq!(
         app.menu_choices("discord:10:11"),
         [
-            ChannelMute,
-            ChannelNotifications,
             Invite,
             PinChannel,
             CopyLink,
+            ChannelMute,
+            ChannelNotifications,
             CopyId
         ],
         "inviting to a channel comes before pinning it and its link"
@@ -4849,10 +4858,10 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
     assert_eq!(
         app.menu_choices("discord:10:11"),
         [
-            ChannelMute,
-            ChannelNotifications,
             PinChannel,
             CopyLink,
+            ChannelMute,
+            ChannelNotifications,
             EditChannel,
             DuplicateChannel,
             CreateChannel,

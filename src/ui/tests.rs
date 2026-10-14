@@ -2896,10 +2896,10 @@ fn pinned_channels_leave_their_categories_for_the_top() {
         texts,
         [
             "Mark as read",
-            "Mute channel",
-            "Notification settings",
             "Unpin channel",
             "Copy link",
+            "Mute channel",
+            "Notification settings",
             "Copy ID"
         ]
     );

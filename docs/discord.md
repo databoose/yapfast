@@ -1232,15 +1232,13 @@ sends each event.
 
 ### A channel's menu
 
-Right-clicking a server's channel offers, in order: Mark as read when it
-has unread messages, Join voice for a voice channel, Mute channel and
-Notification settings for a text channel, then Invite to channel, Pin
-channel to top or Unpin channel, and Copy link, then Edit channel,
-Duplicate channel, Create channel and Delete channel where the account may
-manage channels, and Copy ID. A thread's menu has none of inviting,
-pinning or managing. Discord's own menu puts the group of inviting,
-pinning and the link above notifications; Talk keeps notifications first,
-as it had them.
+Right-clicking a server's channel offers, in order, as Discord's menu
+does: Mark as read when it has unread messages, Join voice for a voice
+channel, then Invite to channel, Pin channel to top or Unpin channel, and
+Copy link, then Mute channel and Notification settings for a text
+channel, then Edit channel, Duplicate channel, Create channel and Delete
+channel where the account may manage channels, and Copy ID. A thread's
+menu has none of inviting, pinning or managing.
 
 #### Pinning a channel
 
