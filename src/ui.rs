@@ -1132,6 +1132,15 @@ impl Adapter {
         if self.theme_editor.take().is_some() {
             self.restyle_mentions();
         }
+        // These tell what the old window already showed, which the new one
+        // doesn't: the sidebar's title and search placeholder, the topic and
+        // the linking code are set only when they change.
+        self.sidebar = None;
+        self.topic_shown = None;
+        #[cfg(feature = "discord")]
+        {
+            self.link_code = None;
+        }
         self.window = window.as_weak();
     }
 
