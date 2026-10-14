@@ -19,7 +19,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // Talk's window. Its parts live beside it, by area: theme.slint, controls.slint,
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
-import { Theme, Tip, Middle } from "theme.slint";
+import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
@@ -28,7 +28,7 @@ import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiBut
 import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
-import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
+import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
@@ -43,7 +43,7 @@ export { StagedFile, MentionRow } from "composer.slint";
 export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData } from "people.slint";
 export { FriendRequestRow, FriendRow } from "friends.slint";
-export { ContactRow, ForwardRow } from "dialogs.slint";
+export { ContactRow, ForwardRow, ReactionPill, ReactorRow } from "dialogs.slint";
 export { FoundRow, PickRow } from "header.slint";
 
 export component TalkWindow inherits Window {
@@ -355,6 +355,18 @@ export component TalkWindow inherits Window {
     in-out property <string> emoji-query;
     /// The forward dialog, open while Talk forwards a message of the open room.
     in property <bool> forward-open;
+    /// Who reacted with the reaction ReactionHover names, as its tooltip
+    /// says it, and its emoji; empty until they're known.
+    in property <string> reaction-tip-text;
+    in property <string> reaction-tip-emoji;
+    /// A message's Reactions window; see ReactionsDialog.
+    in property <bool> reactions-open;
+    in property <[ReactionPill]> reaction-pills;
+    in property <string> reactions-key;
+    in property <[ReactorRow]> reactor-rows;
+    in property <bool> reactors-loading;
+    in property <bool> reactors-more;
+    in property <string> reactors-error;
     /// The image viewer: the image, its full size in pixels, and what to say about it.
     /// The open profile card: beside the member list, or large over the window.
     in property <bool> profile-open;
@@ -808,6 +820,15 @@ export component TalkWindow inherits Window {
     callback reply(string);
     callback edit(string);
     callback react(string, string);
+    // The reaction ReactionHover names, by item and key, or none.
+    callback hover-reaction(string, string);
+    // Open a message's Reactions window, by item, on a reaction by key, or
+    // with none, the one most reacted with.
+    callback view-reactions(string, string);
+    callback select-reaction(string);
+    callback more-reactors;
+    callback remove-reactor(string);
+    callback close-reactions;
     callback request-delete(string);
     callback emoji-search(string);
     callback start-forward(string);
@@ -1248,6 +1269,7 @@ export component TalkWindow inherits Window {
             can-start-thread: root.can-start-threads && !root.menu-aside;
             start-thread(item) => { root.new-thread(item, "message"); message-menu.close(); }
             view-thread(room) => { root.open-aside(room); message-menu.close(); }
+            view-reactions(item) => { root.view-reactions(item, ""); message-menu.close(); }
             emoji-font: root.emoji-font; composer-enabled: root.composer-enabled; trusted: root.trusted; preview: root.preview;
             react(item, key) => { root.react(item, key); message-menu.close(); }
             open-picker(item) => { root.open-picker(item); message-menu.close(); }
@@ -2682,6 +2704,17 @@ export component TalkWindow inherits Window {
         start-dm(index) => { root.start-dm(index); }
         close-new-dm => { root.close-new-dm(); }
     }
+    // A message's reactions and who reacted; see ReactionsDialog.
+    if root.reactions-open: ReactionsDialog {
+        reaction-pills: root.reaction-pills; reactions-key: root.reactions-key;
+        reactor-rows: root.reactor-rows; reactors-loading: root.reactors-loading;
+        reactors-more: root.reactors-more; reactors-error: root.reactors-error;
+        emoji-font: root.emoji-font;
+        select-reaction(key) => { root.select-reaction(key); }
+        more-reactors => { root.more-reactors(); }
+        remove-reactor(id) => { root.remove-reactor(id); }
+        close-reactions => { root.close-reactions(); }
+    }
     // Forwarding a message; see ForwardDialog.
     if root.forward-open: ForwardDialog {
         forward-preview: root.forward-preview; forward-targets: root.forward-targets;
@@ -2698,6 +2731,48 @@ export component TalkWindow inherits Window {
         drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
         accessible-role: text; accessible-label: "Zoom " + root.zoom-note;
         zoom-text := Text { text: root.zoom-note; color: Theme.text; font-size: 15px; font-weight: 700; }
+    }
+    // Who reacted, over the reaction the pointer stays on: its emoji, then
+    // the names, wrapping. Clicking it opens the Reactions window there.
+    property <string> hovered-reaction: ReactionHover.item + " " + ReactionHover.key;
+    changed hovered-reaction => { root.hover-reaction(ReactionHover.item, ReactionHover.key); }
+    // It goes a moment after the pointer leaves both the chip and the tooltip.
+    Timer {
+        interval: 200ms;
+        running: ReactionHover.key != "" && !ReactionHover.on-chip && !ReactionHover.on-tip;
+        triggered => { ReactionHover.item = ""; ReactionHover.key = ""; ReactionHover.on-tip = false; }
+    }
+    reaction-measure := Text { visible: false; text: root.reaction-tip-text; font-size: 14px; font-weight: 500; }
+    if ReactionHover.key != "" && root.reaction-tip-text != "": Rectangle {
+        property <length> words-width: min(288px - 32px - 44px, reaction-measure.preferred-width);
+        property <length> w: words-width + 32px + 44px;
+        property <length> h: max(32px, reaction-words.preferred-height) + 32px;
+        x: max(8px, min(root.width - self.w - 8px, ReactionHover.x - self.w / 2));
+        y: max(4px, ReactionHover.y - self.h - 6px);
+        width: self.w; height: self.h;
+        border-radius: 6px; background: Theme.tooltip;
+        drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
+        accessible-role: button;
+        accessible-label: root.reaction-tip-text;
+        accessible-action-default => { root.view-reactions(ReactionHover.item, ReactionHover.key); }
+        Text {
+            x: 16px; y: (parent.height - 32px) / 2; width: 32px; height: 32px;
+            text: root.reaction-tip-emoji; font-family: root.emoji-font; font-size: 26px;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+        reaction-words := Text {
+            x: 60px; y: 16px; width: parent.words-width; height: parent.height - 32px;
+            text: root.reaction-tip-text; color: Theme.text; font-size: 14px; font-weight: 500;
+            wrap: word-wrap; vertical-alignment: center;
+        }
+        TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            changed has-hover => { ReactionHover.on-tip = self.has-hover; }
+            clicked => {
+                root.view-reactions(ReactionHover.item, ReactionHover.key);
+                ReactionHover.item = ""; ReactionHover.key = ""; ReactionHover.on-tip = false;
+            }
+        }
     }
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 20px;

@@ -3612,3 +3612,32 @@ fn a_window_made_again_while_editing_drops_the_edit() {
     assert_eq!(theme::mention_color(), 0x7cc4ff);
     assert!(Layout::read(directory.path()).custom_themes.is_empty());
 }
+
+#[test]
+fn a_reactions_tooltip_names_up_to_three_as_discords_client_does() {
+    let names = |list: &[&str]| {
+        list.iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let tip = |list: &[&str], count| messages::reaction_tip(":tada:", &names(list), count);
+    assert_eq!(tip(&["Ann"], 1), ":tada: reacted by Ann");
+    assert_eq!(tip(&["Ann"], 2), ":tada: reacted by Ann and 1 other");
+    assert_eq!(tip(&["Ann", "Bo"], 2), ":tada: reacted by Ann and Bo");
+    assert_eq!(
+        tip(&["Ann", "Bo"], 5),
+        ":tada: reacted by Ann, Bo, and 3 others"
+    );
+    assert_eq!(
+        tip(&["Ann", "Bo", "Cy"], 3),
+        ":tada: reacted by Ann, Bo, and Cy"
+    );
+    assert_eq!(
+        tip(&["Ann", "Bo", "Cy"], 4),
+        ":tada: reacted by Ann, Bo, Cy, and 1 other"
+    );
+    // Discord's names for emoji: a word, not `:+1:`, and a custom one's own.
+    assert_eq!(emoji::shortcode("👍"), ":thumbsup:");
+    assert_eq!(emoji::shortcode("🎉"), ":tada:");
+    assert_eq!(emoji::shortcode(":talk:"), ":talk:");
+}

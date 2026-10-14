@@ -6076,3 +6076,115 @@ fn a_threads_default_name_is_discords() {
     assert_eq!(named(""), "Thread");
     assert_eq!(named(&"x".repeat(50)), format!("{}...", "x".repeat(40)));
 }
+
+#[test]
+fn a_reactions_tooltip_and_window_ask_for_who_reacted() {
+    use crate::chat::Reactor;
+    let mut app = connected();
+    let mut reacted = message("e:$bob", false);
+    let reaction = |key: &str, count| Reaction {
+        key: key.into(),
+        count,
+        mine: false,
+    };
+    reacted.reactions = vec![reaction("👍", 2), reaction("🎉", 5)];
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![reacted]),
+    });
+    let person = |id: &str, me| Reactor {
+        id: id.into(),
+        name: id.to_uppercase(),
+        me,
+        ..Default::default()
+    };
+    let hover = |app: &mut Application, key: &str| {
+        app.dispatch(Action::HoverReaction(Some(("e:$bob".into(), key.into()))))
+    };
+
+    // Hovering asks for the first three, once.
+    assert!(matches!(
+        hover(&mut app, "🎉").as_slice(),
+        [Effect::Backend(Command::Reactors { key, after: None, limit: 3, .. })] if key == "🎉"
+    ));
+    assert!(
+        app.state.reaction_tip().is_none(),
+        "nothing shows until they come"
+    );
+    app.apply(Event::Reactors {
+        room: "dm".into(),
+        item: "e:$bob".into(),
+        key: "🎉".into(),
+        after: None,
+        limit: TIP_PEOPLE,
+        result: Ok(vec![
+            person("a", true),
+            person("b", false),
+            person("c", false),
+        ]),
+    });
+    let (tip, shown) = app.state.reaction_tip().unwrap();
+    assert_eq!(
+        tip.names.as_deref(),
+        Some(&["A".into(), "B".into(), "C".into()][..])
+    );
+    assert_eq!(shown.count, 5);
+    app.dispatch(Action::HoverReaction(None));
+    assert!(app.state.reaction_tip().is_none());
+    assert!(
+        hover(&mut app, "🎉").is_empty(),
+        "kept while its count stays"
+    );
+
+    // The window opens on the reaction most reacted with, a page at a time.
+    assert!(matches!(
+        app.dispatch(Action::ShowReactions { item: "e:$bob".into(), key: None }).as_slice(),
+        [Effect::Backend(Command::Reactors { key, after: None, limit: 100, .. })] if key == "🎉"
+    ));
+    let keys: Vec<&str> = app
+        .state
+        .window_reactions()
+        .iter()
+        .map(|reaction| reaction.key.as_str())
+        .collect();
+    assert_eq!(keys, ["🎉", "👍"]);
+    // The tooltip's page doesn't fill it.
+    app.apply(Event::Reactors {
+        room: "dm".into(),
+        item: "e:$bob".into(),
+        key: "🎉".into(),
+        after: None,
+        limit: TIP_PEOPLE,
+        result: Ok(vec![person("a", true)]),
+    });
+    assert!(app.state.reactions.as_ref().unwrap().people.is_empty());
+    app.apply(Event::Reactors {
+        room: "dm".into(),
+        item: "e:$bob".into(),
+        key: "🎉".into(),
+        after: None,
+        limit: 100,
+        result: Ok(vec![person("a", true), person("b", false)]),
+    });
+    // Fewer than a page: no one's after them, whatever the count.
+    assert!(!app.state.more_reactors());
+    assert!(app.dispatch(Action::MoreReactors).is_empty());
+
+    // Only this account's own reaction goes from a Matrix room's window.
+    assert!(app.dispatch(Action::RemoveReactor("b".into())).is_empty());
+    assert!(matches!(
+        app.dispatch(Action::RemoveReactor("a".into())).as_slice(),
+        [Effect::Backend(Command::React { key, .. })] if key == "🎉"
+    ));
+    let people = &app.state.reactions.as_ref().unwrap().people;
+    assert_eq!(people.len(), 1);
+
+    // Another reaction asks again, from the start.
+    assert!(matches!(
+        app.dispatch(Action::ShowReactors("👍".into())).as_slice(),
+        [Effect::Backend(Command::Reactors { key, after: None, .. })] if key == "👍"
+    ));
+    assert!(app.state.reactions.as_ref().unwrap().people.is_empty());
+    app.dispatch(Action::CloseReactions);
+    assert!(app.state.reactions.is_none());
+}

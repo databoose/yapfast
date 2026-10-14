@@ -75,6 +75,25 @@ pub fn cell(key: &str) -> EmojiCell {
     }
 }
 
+/// A reaction's emoji as Discord's client names it: `:name:` for a custom
+/// one, whose key is already that, and the first shortcode of a Unicode one
+/// that's a word, such as `:thumbsup:` rather than `:+1:`; the emoji itself
+/// without one.
+pub fn shortcode(key: &str) -> String {
+    if key.starts_with(':') && key.ends_with(':') && key.len() > 2 {
+        return key.to_owned();
+    }
+    let codes = || {
+        emojis::get(key)
+            .into_iter()
+            .flat_map(emojis::Emoji::shortcodes)
+    };
+    codes()
+        .find(|code| code.starts_with(|c: char| c.is_ascii_alphanumeric()))
+        .or_else(|| codes().next())
+        .map_or_else(|| key.to_owned(), |code| format!(":{code}:"))
+}
+
 /// Gives the picker's custom emoji the pictures that arrived since its rows
 /// were built, changing only those cells.
 pub fn fill_pictures(rows: &VecModel<EmojiRow>, sections: &VecModel<EmojiSection>) {

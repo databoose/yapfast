@@ -800,6 +800,105 @@ impl OpenChannel {
         });
     }
 
+    /// Removes `user`'s reaction to `item` with `key`, as a moderator.
+    pub fn remove_reactor(
+        &self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+        item: &str,
+        key: &str,
+        user: String,
+    ) {
+        let Some(message) =
+            sent_id(item).and_then(|id| self.message(id.parse().unwrap_or_default()))
+        else {
+            return;
+        };
+        let Some(emoji) = message
+            .reactions
+            .iter()
+            .find(|reaction| reaction.key == key)
+            .map(|reaction| reaction.emoji.clone())
+        else {
+            return;
+        };
+        let (discord, done) = (discord.clone(), done.clone());
+        let (room, channel, id) = (self.room.clone(), self.channel.clone(), message.id.clone());
+        tokio::spawn(async move {
+            if let Err(error) = discord.remove_reaction(&channel, &id, &emoji, &user).await {
+                let _ = done.send(Done::Failed {
+                    room,
+                    message: format!("Couldn't remove the reaction: {error}"),
+                });
+            }
+        });
+    }
+
+    /// Who reacted to `item` with `key`: a page of them, as
+    /// [`Event::Reactors`].
+    pub fn reactors(
+        &self,
+        discord: &Discord,
+        events: &UnboundedSender<Event>,
+        item: String,
+        key: String,
+        after: Option<String>,
+        limit: u32,
+    ) {
+        let emoji = sent_id(&item)
+            .and_then(|id| self.message(id.parse().unwrap_or_default()))
+            .and_then(|message| {
+                let reaction = message
+                    .reactions
+                    .iter()
+                    .find(|reaction| reaction.key == key)?;
+                Some((message.id.clone(), reaction.emoji.clone()))
+            });
+        let room = self.room.clone();
+        let Some((id, emoji)) = emoji else {
+            let _ = events.send(Event::Reactors {
+                room,
+                item,
+                key,
+                after,
+                limit,
+                result: Err("That reaction is gone.".into()),
+            });
+            return;
+        };
+        let (discord, events) = (discord.clone(), events.clone());
+        let (guild, channel) = (self.guild.clone(), self.channel.clone());
+        tokio::spawn(async move {
+            let result = discord
+                .reactors(&guild, &channel, &id, &emoji, after.as_deref(), limit)
+                .await
+                .map(|people| {
+                    people
+                        .into_iter()
+                        .map(|person| crate::chat::Reactor {
+                            id: person.id,
+                            name: person.name,
+                            username: person.username,
+                            avatar: person.avatar,
+                            me: person.me,
+                        })
+                        .collect()
+                })
+                .map_err(|error| {
+                    tracing::warn!(error = format!("{error:#}"), "could not list reactions");
+                    format!("Couldn't load who reacted: {error}")
+                });
+            let _ = events.send(Event::Reactors {
+                room,
+                item,
+                key,
+                after,
+                limit,
+                result,
+            });
+        });
+    }
+
     pub fn picture(&mut self, url: String, picture: Option<Arc<Picture>>) {
         // One that finished after the channel closed and gave it up.
         if !self.requested.contains(&url) {

@@ -900,7 +900,17 @@ for (let index = 0; index < extra; index++) {
   // The oldest of the latest page is a boost, which Talk doesn't show but
   // which still counts toward the page.
   if (index === extra - 50) post(GENERAL, users.bob, "", ms, { type: 8 });
-  else post(GENERAL, users.bob, sample(index), ms, { files });
+  else if (index < extra - 1) post(GENERAL, users.bob, sample(index), ms, { files });
+  else {
+    // The newest has reactions from everyone, more than a tooltip names.
+    const newest = post(GENERAL, users.bob, sample(index), ms, { files });
+    const everyone = [ALICE, users.bob.id, users.carol.id, users.dave.id];
+    newest.reactions.push(
+      { name: "🎉", id: null, users: new Set(everyone) },
+      { name: "😂", id: null, users: new Set([users.bob.id, users.dave.id]) },
+      { name: "❤️", id: null, users: new Set([users.carol.id]) },
+    );
+  }
 }
 
 // The channels of `--channels`, written by the people of `--authors`.
@@ -1114,6 +1124,12 @@ const visibleThread = (thread: Thread) => thread.type !== 12 || thread.members.h
 /** When a thread was last active: its newest message, else its start. */
 const threadActivity = (thread: Thread) => BigInt(messages.get(thread.id)!.at(-1)?.id ?? thread.id);
 
+/** Each page of reactors asked for, as GET /_control/reactor-pages lists them:
+ *  the message, the emoji and the query. */
+const reactorPages: string[] = [];
+/** Each reaction a moderator removed, as GET /_control/reactor-removals lists
+ *  them: the message, the emoji and the user. */
+const reactorRemovals: string[] = [];
 /** Each search of a channel's threads, as GET /_control/thread-searches lists them. */
 const threadSearches: string[] = [];
 /** Each thread Alice started: the channel, the message, if any, and the body
@@ -3088,6 +3104,44 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
   }
 
+  // A moderator removing someone's reaction: /{emoji}/{type}/{user}.
+  if (method === "DELETE" && (m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)\/reactions\/([^/]+)\/[01]\/(\d+)$/))) {
+    const message = byId.get(m[2]!);
+    if (!message || message.channel !== m[1]) return notFound("Unknown Message", 10008);
+    const [name, id = null] = decodeURIComponent(m[3]!).split(":");
+    const reaction = message.reactions.find((r) => r.name === name && r.id === id);
+    const user = m[4]!;
+    if (!reaction?.users.delete(user)) return empty();
+    if (reaction.users.size === 0) message.reactions.splice(message.reactions.indexOf(reaction), 1);
+    reactorRemovals.push(`${message.id} ${name} ${user}`);
+    dispatch("MESSAGE_REACTION_REMOVE", {
+      user_id: user, channel_id: message.channel, message_id: message.id, ...guildOf(message.channel),
+      emoji: { id, name }, burst: false, type: 0,
+    });
+    return empty();
+  }
+
+  // Who reacted with an emoji, as Discord pages them: by user id, from
+  // after ?after, up to ?limit (25 unless it says, 100 at most). Burst
+  // reactions (?type=1) are none here.
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)\/reactions\/([^/]+)$/))) {
+    const message = byId.get(m[2]!);
+    if (!message || message.channel !== m[1]) return notFound("Unknown Message", 10008);
+    const [name, id = null] = decodeURIComponent(m[3]!).split(":");
+    const reaction = message.reactions.find((r) => r.name === name && r.id === id);
+    if (!reaction) return notFound("Unknown Emoji", 10014);
+    reactorPages.push(`${m[2]} ${decodeURIComponent(m[3]!)} ${url.search}`);
+    if (url.searchParams.get("type") === "1") return json([]);
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 25)));
+    const after = BigInt(url.searchParams.get("after") ?? 0);
+    const page = [...reaction.users]
+      .map((user) => userById.get(user)!)
+      .filter((user) => BigInt(user.id) > after)
+      .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+      .slice(0, limit);
+    return json(page.map(wireUser));
+  }
+
   if ((m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)\/reactions\/([^/]+)\/@me$/))) {
     const message = byId.get(m[2]!);
     if (!message || message.channel !== m[1]) return notFound("Unknown Message", 10008);
@@ -4334,6 +4388,12 @@ const server = Bun.serve<SocketData>({
       const first = post(thread.id, users.bob, "Friday at 8?", now);
       dispatch("MESSAGE_CREATE", dispatched(first, url.origin));
       return Response.json(thread.id);
+    }
+    if (req.method === "GET" && path === "/_control/reactor-pages") {
+      return Response.json(reactorPages);
+    }
+    if (req.method === "GET" && path === "/_control/reactor-removals") {
+      return Response.json(reactorRemovals);
     }
     if (req.method === "GET" && path === "/_control/thread-searches") {
       return Response.json(threadSearches);

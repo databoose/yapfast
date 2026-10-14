@@ -297,6 +297,8 @@ pub enum Permission {
     ReadHistory,
     CreatePublicThreads,
     CreatePrivateThreads,
+    /// Remove others' reactions, among more.
+    ManageMessages,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -673,6 +675,21 @@ pub struct Reaction {
     pub key: String,
     pub count: usize,
     pub mine: bool,
+}
+
+/// Someone who reacted to a message, as a list of them shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reactor {
+    /// Their user id.
+    pub id: String,
+    /// Their name where the message is.
+    pub name: String,
+    /// Their username, or Matrix id; empty when it's their name.
+    pub username: String,
+    /// Their avatar's address; empty for none.
+    pub avatar: String,
+    /// It's this account.
+    pub me: bool,
 }
 
 /// A decoded, size-limited preview. Talk never hands undecoded media to the UI.
@@ -1140,6 +1157,22 @@ pub enum Command {
         item: String,
         key: String,
     },
+    /// Who reacted to an item with `key`: up to `limit` of them, after the
+    /// one with id `after`. [`Event::Reactors`] follows.
+    Reactors {
+        room: String,
+        item: String,
+        key: String,
+        after: Option<String>,
+        limit: u32,
+    },
+    /// Remove someone else's reaction to an item, as a Discord moderator.
+    RemoveReactor {
+        room: String,
+        item: String,
+        key: String,
+        user: String,
+    },
     Delete {
         room: String,
         item: String,
@@ -1580,6 +1613,8 @@ impl Command {
             Command::Send { room, .. }
             | Command::Edit { room, .. }
             | Command::React { room, .. }
+            | Command::Reactors { room, .. }
+            | Command::RemoveReactor { room, .. }
             | Command::Delete { room, .. }
             | Command::Retry { room, .. }
             | Command::Cancel { room, .. }
@@ -1811,6 +1846,15 @@ pub enum Event {
         room: String,
         item: String,
         result: Result<(), String>,
+    },
+    /// [`Command::Reactors`]'s page, or why it didn't come.
+    Reactors {
+        room: String,
+        item: String,
+        key: String,
+        after: Option<String>,
+        limit: u32,
+        result: Result<Vec<Reactor>, String>,
     },
     /// The send queue of `room` accepted or refused a forwarded message.
     Forwarded {

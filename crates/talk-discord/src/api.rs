@@ -384,6 +384,46 @@ impl Api {
         self.empty(self.request(method, &path)).await
     }
 
+    /// Removes `user`'s reaction to a message, which takes Manage Messages
+    /// for anyone else's; `emoji` is as [`Self::react`] takes it.
+    pub async fn remove_reaction(
+        &self,
+        channel: &str,
+        message: &str,
+        emoji: &str,
+        user: &str,
+    ) -> Result<()> {
+        let path = format!(
+            "/channels/{channel}/messages/{message}/reactions/{}/0/{user}?location=Message&burst=false",
+            encode(emoji)
+        );
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// Who reacted to a message with `emoji` (itself, or `name:id` for a
+    /// custom one), as user objects: up to `limit`, by user id, after the
+    /// user `after`. Super reactions aren't among them.
+    pub async fn reactors(
+        &self,
+        channel: &str,
+        message: &str,
+        emoji: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Value>> {
+        let mut path = format!(
+            "/channels/{channel}/messages/{message}/reactions/{}?limit={limit}&type=0",
+            encode(emoji)
+        );
+        if let Some(after) = after {
+            path.push_str(&format!("&after={after}"));
+        }
+        match self.json(self.request(Method::GET, &path)).await? {
+            Value::Array(users) => Ok(users),
+            _ => bail!("could not understand Discord's answer"),
+        }
+    }
+
     /// Opens the DM with `user`, or finds the one already open; returns its channel id.
     pub async fn open_dm(&self, user: &str) -> Result<String> {
         let body = json!({"recipients": [user]});

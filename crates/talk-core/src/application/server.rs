@@ -50,6 +50,7 @@ fn bits(permission: Permission) -> u64 {
         Permission::ReadHistory => permission::READ_MESSAGE_HISTORY,
         Permission::CreatePublicThreads => permission::CREATE_PUBLIC_THREADS,
         Permission::CreatePrivateThreads => permission::CREATE_PRIVATE_THREADS,
+        Permission::ManageMessages => permission::MANAGE_MESSAGES,
     }
 }
 

@@ -762,6 +762,9 @@ struct Models {
     pins: Rc<VecModel<FoundRow>>,
     /// The open channel's list of its threads.
     thread_rows: Rc<VecModel<ThreadRow>>,
+    /// The Reactions window's reactions, and who reacted with the chosen one.
+    reaction_pills: Rc<VecModel<ReactionPill>>,
+    reactor_rows: Rc<VecModel<ReactorRow>>,
     search_results: Rc<VecModel<FoundRow>>,
     add_people: Rc<VecModel<PickRow>>,
     role_members: Rc<VecModel<MemberRow>>,
@@ -800,6 +803,8 @@ impl Models {
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
         window.set_pins(ModelRc::from(self.pins.clone()));
         window.set_thread_rows(ModelRc::from(self.thread_rows.clone()));
+        window.set_reaction_pills(ModelRc::from(self.reaction_pills.clone()));
+        window.set_reactor_rows(ModelRc::from(self.reactor_rows.clone()));
         window.set_search_results(ModelRc::from(self.search_results.clone()));
         window.set_add_people(ModelRc::from(self.add_people.clone()));
         window.set_role_members(ModelRc::from(self.role_members.clone()));

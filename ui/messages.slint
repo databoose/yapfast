@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Tip, Middle, Label } from "theme.slint";
+import { Theme, Tip, ReactionHover, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar, Picture, Skeleton, SpoilerCover, MenuItem, TextField } from "controls.slint";
 
 /// An emoji: what shows, its name, and the reaction it adds, which for a custom
@@ -82,7 +82,10 @@ export component EmojiButton inherits Rectangle {
 }
 
 // A reaction under a message: the emoji in a color emoji font, then the count.
+// Staying on it shows who reacted, as ReactionHover says.
 export component ReactionToggle inherits Rectangle {
+    /// The message's item, which a tooltip of who reacted needs.
+    in property <string> item;
     in property <string> key;
     in property <string> label: root.key;
     in property <int> count;
@@ -103,7 +106,25 @@ export component ReactionToggle inherits Rectangle {
         Text { text: root.label; font-family: root.emoji-font; font-size: 16px; vertical-alignment: center; }
         Text { text: root.count; color: root.mine ? Theme.accent : Theme.secondary; font-size: 14px; font-weight: 700; vertical-alignment: center; }
     }
-    pointer := TouchArea { enabled: root.enabled; mouse-cursor: MouseCursor.pointer; clicked => { root.clicked(); } }
+    property <bool> tip-shown: root.item != "" && ReactionHover.item == root.item && ReactionHover.key == root.key;
+    pointer := TouchArea {
+        enabled: root.enabled; mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+        changed has-hover => { if root.tip-shown { ReactionHover.on-chip = self.has-hover; } }
+    }
+    // Discord's client waits half a second before it shows who reacted.
+    Timer {
+        interval: 500ms;
+        running: pointer.has-hover && root.item != "" && !root.tip-shown;
+        triggered => {
+            ReactionHover.item = root.item;
+            ReactionHover.key = root.key;
+            ReactionHover.x = root.absolute-position.x + root.width / 2;
+            ReactionHover.y = root.absolute-position.y;
+            ReactionHover.on-chip = true;
+            ReactionHover.on-tip = false;
+        }
+    }
 }
 
 /// A reaction: `key` names it, and `label` shows it, with a custom emoji's glyph once it has one.
@@ -518,6 +539,7 @@ export component MessageMenu inherits Rectangle {
     in property <bool> can-start-thread;
     callback start-thread(string);
     callback view-thread(string);
+    callback view-reactions(string);
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     menu-content := VerticalLayout {
@@ -532,6 +554,10 @@ export component MessageMenu inherits Rectangle {
         if root.menu-can-react: MenuItem {
             text: "Add reaction"; icon: @image-url("icons/smile-plus.svg");
             clicked => { root.open-picker(root.menu-message.item); }
+        }
+        if root.menu-message.reactions.length > 0: MenuItem {
+            text: "View Reactions"; icon: @image-url("icons/smile.svg");
+            clicked => { root.view-reactions(root.menu-message.item); }
         }
         if root.menu-message.can-edit && root.composer-enabled: MenuItem {
             text: "Edit message"; icon: @image-url("icons/pencil.svg");
@@ -1248,7 +1274,7 @@ export component MessageContent inherits VerticalLayout {
             if message.reactions.length > 0: HorizontalLayout {
                 spacing: 6px; alignment: start; padding-top: 4px;
                 for reaction in message.reactions: ReactionToggle {
-                    key: reaction.key; label: reaction.label; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
+                    item: message.item; key: reaction.key; label: reaction.label; count: reaction.count; mine: reaction.mine; emoji-font: root.emoji-font;
                     enabled: message.can-react && root.composer-enabled;
                     clicked => { root.react(message.item, reaction.key); }
                 }

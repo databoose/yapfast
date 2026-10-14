@@ -61,6 +61,19 @@ export global Tip {
     in-out property <int> side;
 }
 
+// The reaction whose tooltip shows, by message item and key, as Discord's
+// client shows it: after the pointer stays on its chip, and until it has left
+// both the chip and the tooltip for a moment. `x` and `y` are the chip's top
+// centre.
+export global ReactionHover {
+    in-out property <string> item;
+    in-out property <string> key;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <bool> on-chip;
+    in-out property <bool> on-tip;
+}
+
 // Centres a fixed-size child across a row, which Slint layouts align to the top.
 export component Middle inherits VerticalLayout {
     alignment: center;

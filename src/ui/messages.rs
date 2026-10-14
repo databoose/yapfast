@@ -445,6 +445,27 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
 
 /// What a thread's link says after its name: how many messages it has,
 /// as Discord counts them, and whether it's archived.
+/// What a reaction's tooltip says, as Discord's client words it: the
+/// emoji's name, then up to three of the `count` who reacted by name and
+/// how many more.
+pub(super) fn reaction_tip(emoji: &str, names: &[String], count: usize) -> String {
+    let others = count.saturating_sub(names.len());
+    let more = match others {
+        1 => "1 other".to_owned(),
+        others => format!("{others} others"),
+    };
+    let people = match (names, others) {
+        ([one], 0) => one.clone(),
+        ([one], _) => format!("{one} and {more}"),
+        ([one, two], 0) => format!("{one} and {two}"),
+        ([one, two], _) => format!("{one}, {two}, and {more}"),
+        ([one, two, three], 0) => format!("{one}, {two}, and {three}"),
+        ([one, two, three, ..], _) => format!("{one}, {two}, {three}, and {more}"),
+        _ => format!("{count} people"),
+    };
+    format!("{emoji} reacted by {people}")
+}
+
 fn thread_detail(thread: &talk_core::chat::ThreadLink) -> String {
     let count = match thread.messages {
         None => None,

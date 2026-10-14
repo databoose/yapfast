@@ -66,6 +66,8 @@ pub fn command(
         | Command::Send { room, .. }
         | Command::Edit { room, .. }
         | Command::React { room, .. }
+        | Command::Reactors { room, .. }
+        | Command::RemoveReactor { room, .. }
         | Command::Delete { room, .. }
         | Command::Retry { room, .. }
         | Command::Cancel { room, .. }
@@ -204,6 +206,16 @@ pub fn command(
             }
         }
         Command::React { item, key, .. } => channel.react(discord, done, &item, &key),
+        Command::Reactors {
+            item,
+            key,
+            after,
+            limit,
+            ..
+        } => channel.reactors(discord, events, item, key, after, limit),
+        Command::RemoveReactor {
+            item, key, user, ..
+        } => channel.remove_reactor(discord, done, &item, &key, user),
         Command::Delete { item, .. } => channel.delete(discord, done, &item),
         Command::Retry { item, .. } => {
             channel.retry(discord, done, &item);

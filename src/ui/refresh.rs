@@ -205,6 +205,7 @@ impl Adapter {
         self.show_leave(window);
         self.show_server_profile(window);
         self.show_dialogs(window);
+        self.show_reactions(window);
         self.show_composer(window);
         self.show_messages(window, &changes);
         self.show_aside(window);
@@ -766,6 +767,72 @@ impl Adapter {
 
     /// The open channel's list of its threads, built again only once what
     /// it shows changes, or a minute passes.
+    /// Who reacted: the tooltip over the reaction the pointer stays on, and
+    /// the Reactions window.
+    fn show_reactions(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        let emoji_of = |item: &str, key: &str| -> String {
+            state.message(item).map_or_else(
+                || key.to_owned(),
+                |message| custom_emoji::text(key, &message.emoji),
+            )
+        };
+        match state.reaction_tip() {
+            Some((tip, reaction)) => {
+                let names = tip.names.as_deref().unwrap_or_default();
+                window.set_reaction_tip_text(
+                    messages::reaction_tip(&emoji::shortcode(&tip.key), names, reaction.count)
+                        .into(),
+                );
+                window.set_reaction_tip_emoji(emoji_of(&tip.item, &tip.key).into());
+            }
+            None => {
+                window.set_reaction_tip_text(SharedString::default());
+                window.set_reaction_tip_emoji(SharedString::default());
+            }
+        }
+        let shown = state.reactions.as_ref();
+        window.set_reactions_open(shown.is_some());
+        let Some(shown) = shown else {
+            if self.models.reaction_pills.row_count() > 0
+                || self.models.reactor_rows.row_count() > 0
+            {
+                self.models.reaction_pills.set_vec(Vec::new());
+                self.models.reactor_rows.set_vec(Vec::new());
+            }
+            return;
+        };
+        window.set_reactions_key(shown.key.as_str().into());
+        window.set_reactors_loading(shown.loading);
+        window.set_reactors_more(state.more_reactors());
+        window.set_reactors_error(shown.error.clone().unwrap_or_default().into());
+        let pills = state
+            .window_reactions()
+            .into_iter()
+            .map(|reaction| ReactionPill {
+                key: reaction.key.as_str().into(),
+                label: emoji_of(&shown.item, &reaction.key).into(),
+                name: emoji::shortcode(&reaction.key).into(),
+                count: i32::try_from(reaction.count).unwrap_or(i32::MAX),
+            })
+            .collect();
+        update_model(&self.models.reaction_pills, pills);
+        let rows = shown
+            .people
+            .iter()
+            .map(|person| ReactorRow {
+                id: person.id.as_str().into(),
+                name: person.name.as_str().into(),
+                username: person.username.as_str().into(),
+                avatar: person.avatar.as_str().into(),
+                initial: initial(&person.name),
+                tint: tint(&person.name),
+                removable: person.me || shown.can_remove,
+            })
+            .collect();
+        update_model(&self.models.reactor_rows, rows);
+    }
+
     fn show_threads(&mut self, window: &TalkWindow) {
         let state = &self.app.state;
         window.set_can_list_threads(state.threads_channel().is_some());

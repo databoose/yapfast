@@ -2381,6 +2381,7 @@ async fn talks_to_the_fake_server() {
 
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
     marks_quiet_threads_as_discords_client_does(&discord, server).await;
+    lists_who_reacted_as_discords_client_does(&discord, server, &guild, &general).await;
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
@@ -2505,6 +2506,68 @@ async fn lists_a_channels_threads_as_discords_client_does(
                 .any(|thread| thread.id == id)
     })
     .await;
+}
+
+/// Who reacted to a message, a page at a time, as a reaction's tooltip and
+/// the Reactions window ask; and a moderator removing someone's reaction.
+/// Part of [`talks_to_the_fake_server`], whose session it shares.
+async fn lists_who_reacted_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+    general: &str,
+) {
+    let latest = discord.history(guild, general, Span::Latest).await.unwrap();
+    let newest = latest
+        .messages
+        .iter()
+        .find(|message| {
+            message
+                .reactions
+                .iter()
+                .any(|reaction| reaction.key == "🎉")
+        })
+        .expect("the fixture's newest message, with reactions");
+    let id = newest.id.clone();
+    let names = |people: &[talk_discord::service::Reactor]| -> Vec<(String, String, bool)> {
+        people
+            .iter()
+            .map(|person| (person.name.clone(), person.username.clone(), person.me))
+            .collect()
+    };
+    let first = discord
+        .reactors(guild, general, &id, "🎉", None, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        names(&first),
+        [
+            ("Alice".into(), "alice".into(), true),
+            ("Bob".into(), "bob".into(), false)
+        ]
+    );
+    let rest = discord
+        .reactors(guild, general, &id, "🎉", Some(&first[1].id), 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        rest.iter()
+            .map(|person| person.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Carol", "Dave"]
+    );
+    assert!(!rest[0].avatar.is_empty());
+    let pages = self::control(server, "GET", "/_control/reactor-pages", "");
+    assert!(pages.contains("limit=2&type=0"), "{pages}");
+    assert!(pages.contains(&format!("after={}", first[1].id)), "{pages}");
+
+    // A moderator removes Dave's.
+    discord
+        .remove_reaction(general, &id, "🎉", &rest[1].id)
+        .await
+        .unwrap();
+    let removed = self::control(server, "GET", "/_control/reactor-removals", "");
+    assert!(removed.contains(&format!("🎉 {}", rest[1].id)), "{removed}");
 }
 
 /// A thread this account is in goes quiet its archive duration after its

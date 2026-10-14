@@ -26,6 +26,7 @@ mod messages;
 mod places;
 mod preview;
 mod profiles;
+mod reactions;
 mod rooms;
 mod server;
 mod server_profile;
@@ -39,6 +40,7 @@ pub use places::{
     ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
     SLOWMODES,
 };
+pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_profile::{
     BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT, PictureEdit, ProfileText, ServerProfileEditor,
@@ -434,6 +436,11 @@ pub struct AppState {
     pub threads: Option<ThreadList>,
     /// The "New Thread" form beside the open Discord channel.
     pub new_thread: Option<NewThread>,
+    /// The reaction the pointer stayed over, by item and key, who the
+    /// latest reactions hovered were, and the Reactions window.
+    pub hovered_reaction: Option<(String, String)>,
+    pub reaction_tips: Vec<ReactionTip>,
+    pub reactions: Option<ReactionsWindow>,
     pub add_people: Option<AddPeople>,
     /// The selected Discord channel's topic, once the backend has said it.
     pub topic: Option<Arc<chat::Topic>>,
@@ -1044,6 +1051,23 @@ pub enum Action {
     CloseDm(String),
     /// Show the selected DM's pinned messages, or stop.
     ShowPins(bool),
+    /// The pointer went over a message's reaction, by item and key, or left
+    /// it.
+    HoverReaction(Option<(String, String)>),
+    /// Open a message's Reactions window, by item, on the reaction `key`,
+    /// or the one most reacted with.
+    ShowReactions {
+        item: String,
+        key: Option<String>,
+    },
+    CloseReactions,
+    /// Show who reacted with another of the window's reactions.
+    ShowReactors(String),
+    /// Load the window's next page of people.
+    MoreReactors,
+    /// Remove someone's reaction in the window, by user id: this
+    /// account's, or as a moderator anyone's.
+    RemoveReactor(String),
     /// Show the open Discord channel's list of its threads, or close it.
     ShowThreads(bool),
     /// Search the list's threads by name; an empty query shows the list.
@@ -1853,6 +1877,12 @@ impl Application {
             }
             Action::CloseDm(room) => self.close_dm(room),
             Action::ShowPins(shown) => self.show_pins(shown),
+            Action::HoverReaction(hovered) => self.hover_reaction(hovered),
+            Action::ShowReactions { item, key } => self.show_reactions(item, key),
+            Action::CloseReactions => self.close_reactions(),
+            Action::ShowReactors(key) => self.show_reactors(key),
+            Action::MoreReactors => self.more_reactors(),
+            Action::RemoveReactor(user) => self.remove_reactor(user),
             Action::ShowThreads(shown) => self.show_threads(shown),
             Action::SearchThreads(query) => self.search_threads(query),
             Action::MoreThreads => self.more_threads(),
@@ -2240,6 +2270,14 @@ impl Application {
             }
             Event::ThreadOpened { room, result } => self.thread_opened(room, result),
             Event::Pins { room, result } => self.pins_came(room, result),
+            Event::Reactors {
+                item,
+                key,
+                after,
+                limit,
+                result,
+                ..
+            } => self.reactors_came(item, key, after, limit, result),
             Event::Threads {
                 room,
                 query,

@@ -93,7 +93,8 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Hover or click a message for its toolbar: your three most used reactions,
   Add reaction, Edit on your own message or Reply on someone else's, and More.
   More, or a right click on the message, opens a menu with your four most used
-  reactions, Add reaction, Edit, Reply, Forward, Copy text and Delete; Edit and
+  reactions, Add reaction, View Reactions, Edit, Reply, Forward, Copy text and
+  Delete; View Reactions appears once a message has reactions, and Edit and
   Delete appear on your own messages only. Until you have reacted, the most used
   reactions are 👍, ❤️, 😂 and 🎉. Talk counts the reactions you add, not the
   ones you remove, in `layout.json` on this computer. The icons have tooltips and
@@ -101,6 +102,18 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   used emoji and every category of the `emojis` crate up to Unicode 15.0, which
   Noto Color Emoji and Windows 11 draw; Enter picks the first match. Clicking an
   existing reaction adds or removes yours.
+- Who reacted, as in Discord's client: half a second on a reaction shows a
+  tooltip, ":tada: reacted by Ann, Bo, Cy, and 2 others", naming the first
+  three by their name there, once they come (`Command::Reactors`, three at a
+  time). The tooltip stays while the pointer is on it, and clicking it opens
+  the Reactions window on that reaction. The window, from View Reactions,
+  lists the message's reactions down the left, the most first, and who
+  reacted with the chosen one, 100 at a time, the next page as the list nears
+  its end. Hovering your own row offers to remove your reaction; a Discord
+  moderator, with Manage Messages, may remove anyone's. Talk keeps the last
+  32 tooltips' names while their counts stay, and the window's people only
+  while it's open. Matrix rooms answer from the timeline, which holds every
+  reaction's senders.
 - Forward a sent message to any encrypted DM or channel from a dialog with a
   search field; each conversation can receive it once per forward. Talk sends
   the message's current content as a new message, without its reply quote. An

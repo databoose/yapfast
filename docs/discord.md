@@ -862,6 +862,14 @@ an error.
   rarely. One Discord refuses, such as a 404, isn't tried again. A server
   without an icon keeps its initials, and a person without
   an avatar gets Discord's default avatar for their account.
+- Who reacted comes as Discord's client asks for it: `GET
+  /channels/{c}/messages/{m}/reactions/{emoji}?limit=3&type=0` for a
+  reaction's tooltip, and `limit=100` with `after`, the last user id, for each
+  page of the Reactions window. Users come by id; those not known in the
+  server are asked for over the gateway first, so the names are server
+  nicknames, as Discord's client shows them. A moderator removes someone's
+  reaction with `DELETE …/reactions/{emoji}/0/{user}?location=Message&burst=false`.
+  Super reactions aren't listed apart yet.
 - Messages support text, replies, edits, deletions, reactions, mentions and
   attachments. Up to ten files go with a message, uploaded to Discord's
   storage first and then named in the message. Each file is limited as

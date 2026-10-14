@@ -713,6 +713,38 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             update_model(&adapter.models.emoji_sections, sections);
         }
     });
+    bind_item!(on_select_reaction, Action::ShowReactors);
+    bind!(on_more_reactors, Action::MoreReactors);
+    bind_item!(on_remove_reactor, Action::RemoveReactor);
+    bind!(on_close_reactions, Action::CloseReactions);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_hover_reaction(move |item, key| {
+            if let Some(window) = weak.upgrade() {
+                let hovered = (!key.is_empty()).then(|| (item.into(), key.into()));
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::HoverReaction(hovered));
+            }
+        });
+    }
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_view_reactions(move |item, key| {
+            if let Some(window) = weak.upgrade() {
+                let key = (!key.is_empty()).then(|| key.into());
+                adapter.borrow_mut().action(
+                    &window,
+                    Action::ShowReactions {
+                        item: item.into(),
+                        key,
+                    },
+                );
+            }
+        });
+    }
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_react(move |item, key| {

@@ -164,6 +164,19 @@ pub struct ThreadPage {
     pub more: bool,
 }
 
+/// Someone who reacted to a message, as a list of them shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reactor {
+    pub id: String,
+    /// Their name where the message is: a server nickname, a display name
+    /// or a username.
+    pub name: String,
+    pub username: String,
+    pub avatar: String,
+    /// It's this account.
+    pub me: bool,
+}
+
 /// Messages a search found: one page, the newest first, and how many it
 /// found in all.
 #[derive(Debug, Default)]
@@ -622,6 +635,63 @@ impl Discord {
         messages
     }
 
+    /// Who reacted to the message `id` with `emoji`, in the API's form: up
+    /// to `limit`, by user id, after the user `after`. In a server, the
+    /// nicknames and avatars of those not known there are asked for first,
+    /// waiting a while for them.
+    pub async fn reactors(
+        &self,
+        guild: &str,
+        channel: &str,
+        id: &str,
+        emoji: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Reactor>> {
+        let users = self.api.reactors(channel, id, emoji, after, limit).await?;
+        let in_server = server(guild);
+        let unknown: Vec<String> = {
+            let mut names = self.write_names();
+            for user in &users {
+                names.learn_user(user);
+            }
+            users
+                .iter()
+                .filter_map(|user| user["id"].as_str())
+                .filter(|user| in_server.is_some_and(|guild| !names.knows_member(guild, user)))
+                .map(str::to_owned)
+                .collect()
+        };
+        if !unknown.is_empty() {
+            let (reply, arrived) = oneshot::channel();
+            let _ = self.requests.send(Request::Members {
+                guild: guild.into(),
+                users: unknown,
+                reply: Some(reply),
+            });
+            let _ = tokio::time::timeout(SEARCH_TIMEOUT, arrived).await;
+        }
+        let me = self.snapshots.borrow().user_id.clone();
+        let names = self.read_names();
+        Ok(users
+            .iter()
+            .filter_map(|user| {
+                let id = user["id"].as_str()?;
+                let username = names.username(id).unwrap_or_default().to_owned();
+                Some(Reactor {
+                    id: id.to_owned(),
+                    name: in_server
+                        .and_then(|guild| names.name(guild, id))
+                        .or_else(|| names.user_name(id))
+                        .map_or_else(|| username.clone(), str::to_owned),
+                    username,
+                    avatar: names.avatar(in_server, id),
+                    me: me.as_deref() == Some(id),
+                })
+            })
+            .collect())
+    }
+
     /// A channel's pinned messages, the latest pinned first: a server's
     /// channel, or with [`PRIVATE`] a DM.
     pub async fn pins(&self, guild: &str, channel: &str) -> Result<Vec<Message>> {
@@ -880,6 +950,18 @@ impl Discord {
         } else {
             self.api.ignore_request(channel).await
         }
+    }
+
+    /// Removes someone's reaction, as a moderator; `emoji` is in the API's
+    /// form.
+    pub async fn remove_reaction(
+        &self,
+        channel: &str,
+        id: &str,
+        emoji: &str,
+        user: &str,
+    ) -> Result<()> {
+        self.api.remove_reaction(channel, id, emoji, user).await
     }
 
     /// Adds or removes this account's reaction; `emoji` is in the API's form.

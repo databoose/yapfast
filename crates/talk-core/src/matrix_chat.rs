@@ -15,7 +15,7 @@ use matrix_sdk::{
     media::{MediaFormat, MediaRequestParameters},
     room::{MessagesOptions, edit::EditedContent},
     ruma::{
-        OwnedEventId, OwnedRoomId, OwnedTransactionId, UInt, UserId,
+        OwnedEventId, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
         api::client::receipt::create_receipt::v3::ReceiptType,
         events::{
             Mentions, SyncStateEvent,
@@ -54,8 +54,8 @@ use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Delivery,
         Direction, Event, History, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification,
-        Picture, Placement, Reaction, Reply, Role, RoomIndex, Start, decode_preview, decode_view,
-        notification_text, plain_snippet, sort_members,
+        Picture, Placement, Reaction, Reactor, Reply, Role, RoomIndex, Start, decode_preview,
+        decode_view, notification_text, plain_snippet, sort_members,
     },
     network::Network,
     session::Session,
@@ -565,6 +565,30 @@ impl Matrix {
                     });
                 }
             }
+            Command::Reactors {
+                room,
+                item,
+                key,
+                after,
+                limit,
+            } => {
+                let result = match active_timeline(open.as_ref(), &room) {
+                    Some(timeline) => {
+                        Ok(reactors(timeline, &item, &key, after.as_deref(), limit).await)
+                    }
+                    None => Err("Open this conversation again, then retry.".into()),
+                };
+                let _ = events.send(Event::Reactors {
+                    room,
+                    item,
+                    key,
+                    after,
+                    limit,
+                    result,
+                });
+            }
+            // Talk removes others' Matrix reactions only as Discord's.
+            Command::RemoveReactor { .. } => {}
             Command::Delete { room, item } => {
                 let result = match (active_timeline(open.as_ref(), &room), parse_item(&item)) {
                     (Some(timeline), Some(id)) => timeline.redact(&id, None).await.map_err(|_| ()),
@@ -1202,6 +1226,57 @@ fn parse_item(key: &str) -> Option<TimelineEventItemId> {
             .filter(|id| !id.is_empty())
             .map(|id| TimelineEventItemId::TransactionId(OwnedTransactionId::from(id)))
     }
+}
+
+/// Who reacted to `item` with `key`, in the order they reacted: up to
+/// `limit` of them, after the one with id `after`. The timeline holds them
+/// all, so only their names are looked up.
+async fn reactors(
+    timeline: &Timeline,
+    item: &str,
+    key: &str,
+    after: Option<&str>,
+    limit: u32,
+) -> Vec<Reactor> {
+    let senders: Vec<OwnedUserId> = {
+        let items = timeline.items().await;
+        let Some(event) = items
+            .iter()
+            .filter_map(|item| item.as_event())
+            .find(|event| item_key(&event.identifier()) == item)
+        else {
+            return Vec::new();
+        };
+        let Some(senders) = event.reactions().get(key) else {
+            return Vec::new();
+        };
+        let start = after
+            .and_then(|after| senders.keys().position(|sender| sender.as_str() == after))
+            .map_or(0, |at| at + 1);
+        senders
+            .keys()
+            .skip(start)
+            .take(limit as usize)
+            .cloned()
+            .collect()
+    };
+    let own = timeline.room().own_user_id().to_owned();
+    let own = Some(&*own);
+    let mut people = Vec::with_capacity(senders.len());
+    for sender in senders {
+        let name = match timeline.room().get_member_no_sync(&sender).await {
+            Ok(Some(member)) => member.name().to_owned(),
+            _ => sender.localpart().to_owned(),
+        };
+        people.push(Reactor {
+            id: sender.to_string(),
+            name,
+            username: sender.to_string(),
+            avatar: String::new(),
+            me: own == Some(&*sender),
+        });
+    }
+    people
 }
 
 fn active_timeline<'a>(open: Option<&'a OpenRoom>, room: &str) -> Option<&'a Timeline> {

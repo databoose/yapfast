@@ -39,6 +39,8 @@ pub mod permission {
     pub const ADMINISTRATOR: u64 = 1 << 3;
     pub const MANAGE_CHANNELS: u64 = 1 << 4;
     pub const MANAGE_GUILD: u64 = 1 << 5;
+    /// Deleting others' messages and removing their reactions.
+    pub const MANAGE_MESSAGES: u64 = 1 << 13;
     pub const VIEW_CHANNEL: u64 = 1 << 10;
     pub const SEND_MESSAGES: u64 = 1 << 11;
     pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
