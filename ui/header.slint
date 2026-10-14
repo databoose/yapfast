@@ -237,25 +237,29 @@ export component PinsPopover inherits Rectangle {
     }
 }
 
-// A thread in a channel's list of threads: its name, then its newest
-// message, or who started an archived one, and when it was last active,
-// and on the right a few of those in it. Clicking opens it; with Shift,
-// beside the channel.
+// A thread in a channel's list of threads, as a card: its name, then its
+// newest message, or who started an archived one, and when it was last
+// active, and on the right a few of those in it. Clicking opens it; with
+// Shift, beside the channel. Sized as Discord's client sizes them: a 72px
+// card in 80px, under a heading 32px tall for the first section and 64px
+// for later ones, or 16px above the first of a search's results.
 component ThreadEntry inherits Rectangle {
     in property <ThreadRow> entry;
     in property <bool> first;
     callback open(bool);
     property <bool> shift;
-    height: (root.entry.heading != "" ? (root.first ? 32px : 56px) : 0px) + (root.entry.room != "" ? 64px : 0px);
+    height: (root.entry.heading != "" ? (root.first ? 32px : 64px) : (root.first ? 16px : 0px))
+        + (root.entry.room != "" ? 80px : 0px);
     if root.entry.heading != "": Text {
-        x: 16px; y: root.first ? 8px : 32px; height: 20px; width: root.width - 32px;
+        x: 16px; y: root.first ? 8px : 40px; height: 24px; width: root.width - 32px;
         text: root.entry.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.4px;
         vertical-alignment: center; overflow: elide;
     }
     if root.entry.room != "": Rectangle {
-        y: root.height - 64px; height: 64px; x: 8px; width: root.width - 16px;
-        border-radius: 8px;
-        background: pointer.has-hover ? Theme.hover : transparent;
+        y: root.height - 80px; height: 72px; x: 16px; width: root.width - 32px;
+        border-radius: 8px; border-width: 1px;
+        background: pointer.has-hover ? Theme.raised : Theme.hover;
+        border-color: pointer.has-hover ? Theme.active : Theme.line;
         accessible-role: button;
         accessible-label: root.entry.name + ", " + root.entry.time;
         accessible-action-default => { root.open(false); }
@@ -267,9 +271,9 @@ component ThreadEntry inherits Rectangle {
             clicked => { root.open(root.shift); }
         }
         HorizontalLayout {
-            padding-left: 12px; padding-right: 12px; spacing: 12px;
+            padding-left: 16px; padding-right: 16px; spacing: 16px;
             VerticalLayout {
-                alignment: center; spacing: 4px; horizontal-stretch: 1;
+                alignment: center; spacing: 6px; horizontal-stretch: 1;
                 HorizontalLayout {
                     spacing: 6px;
                     if root.entry.private: Middle { Image { source: @image-url("icons/lock.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
@@ -306,7 +310,7 @@ component ThreadEntry inherits Rectangle {
                         height: 20px;
                         for picture[index] in root.entry.member-pictures: Rectangle {
                             x: index * 12px; width: 20px; height: 20px; border-radius: 10px;
-                            background: Theme.sidebar;
+                            background: pointer.has-hover ? Theme.raised : Theme.hover;
                             Avatar { x: 1px; y: 1px; size: 18px; picture-url: picture; }
                         }
                     }
@@ -338,6 +342,11 @@ export component ThreadsPopover inherits Rectangle {
     in property <bool> loading;
     /// Threads can start in the channel.
     in property <bool> can-create;
+    /// How many of the rows are under a heading.
+    in property <int> headings;
+    /// How tall it would be to show every row.
+    out property <length> fit: 49px + (root.headings > 0 ? 32px + (root.headings - 1) * 64px : 16px)
+        + root.rows.length * 80px + (root.loading ? 34px : 0px);
     callback search(string);
     callback open(string, bool);
     callback more-threads;
@@ -345,13 +354,14 @@ export component ThreadsPopover inherits Rectangle {
     /// Start a thread, from the header's Create ("list") or the empty
     /// list's Create Thread ("list-empty").
     callback create(string);
-    width: 520px;
     background: Theme.sidebar;
     border-color: Theme.edge; border-width: 1px; border-radius: 10px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000066; drop-shadow-offset-y: 8px;
     clip: true;
     accessible-role: groupbox;
     accessible-label: "Threads";
+    /// The list was scrolled by hand since it opened.
+    property <bool> scrolled-by-hand;
     TouchArea { }
     VerticalLayout {
         Rectangle {
@@ -398,18 +408,21 @@ export component ThreadsPopover inherits Rectangle {
             vertical-stretch: 1;
             list := ListView {
                 width: parent.width; height: parent.height;
+                // Older threads load when a scroll ends near the end, as
+                // Discord's do; a list too short to scroll loads no more.
+                // The flag is set first, as a wheel scroll is reported
+                // before its animation moves the list.
+                scrolled => { root.scrolled-by-hand = true; }
+                changed content-y => {
+                    if root.scrolled-by-hand && root.more && !root.loading
+                        && -self.content-y + self.visible-height >= self.content-height - 200px {
+                        root.more-threads();
+                    }
+                }
                 for row[index] in root.rows: ThreadEntry {
                     entry: row; first: index == 0;
                     open(beside) => { root.open(row.room, beside); }
                 }
-            }
-            // Older threads load as the list nears its end, as Discord's do,
-            // and while a short list doesn't fill it.
-            Timer {
-                interval: 50ms;
-                running: root.more && !root.loading
-                    && -list.content-y + list.visible-height >= list.content-height - 200px;
-                triggered => { root.more-threads(); }
             }
         }
         if root.note == "" && !root.empty && root.loading: HorizontalLayout {

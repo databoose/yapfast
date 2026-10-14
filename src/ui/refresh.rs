@@ -833,6 +833,8 @@ impl Adapter {
                 push_section(&mut rows, &sections.older, "OLDER THREADS".into(), now);
             }
         }
+        let headings = rows.iter().filter(|row| !row.heading.is_empty()).count();
+        window.set_threads_headings(headings as i32);
         self.models.thread_rows.set_vec(rows);
     }
 

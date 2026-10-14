@@ -533,6 +533,7 @@ export component TalkWindow inherits Window {
     in-out property <string> threads-query;
     in property <bool> threads-more;
     in property <bool> threads-loading;
+    in property <int> threads-headings;
     callback show-threads(bool);
     callback search-threads(string);
     callback more-threads;
@@ -2420,8 +2421,12 @@ export component TalkWindow inherits Window {
             ThreadsPopover {
                 x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
                 y: root.popover-y + 6px;
-                height: min(600px, root.height - self.y - 16px);
-                rows: root.thread-rows; note: root.threads-note; empty: root.threads-empty;
+                // As Discord's: 35% of the window wide, from 480px to 600px,
+                // and as tall as its rows, from 400px to 80% of the window.
+                width: min(max(480px, root.width * 35%), 600px, root.width - 16px);
+                height: min(max(400px, self.fit), root.height * 80%, root.height - self.y - 16px);
+                rows: root.thread-rows; headings: root.threads-headings;
+                note: root.threads-note; empty: root.threads-empty;
                 searchable: root.threads-searchable; query <=> root.threads-query;
                 more: root.threads-more; loading: root.threads-loading; can-create: root.threads-can-create;
                 search(text) => { root.search-threads(text); }

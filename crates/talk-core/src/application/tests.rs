@@ -5615,6 +5615,11 @@ fn a_channels_threads_list_as_discords_client_lists_them() {
         last,
         ..Default::default()
     };
+    // Until the first page answers, the active ones show, and none of the
+    // archived ones the server knows.
+    let sections = app.thread_sections().unwrap();
+    assert_eq!(rooms(&sections.joined), ["30"]);
+    assert!(sections.older.is_empty());
     app.apply(Event::Threads {
         room: general.clone(),
         query: None,
