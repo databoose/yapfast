@@ -600,6 +600,7 @@ impl Adapter {
                                 muted: person.muted,
                                 deafened: person.deafened,
                                 live: person.streaming,
+                                video: person.video,
                                 connected: true,
                                 ..Default::default()
                             })
