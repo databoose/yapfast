@@ -1331,6 +1331,10 @@ its owner and when it was last active. On the right are a few of its
 members' avatars and how many are in it. Clicking a row opens the thread in
 place of the channel, and Shift-click beside it, as Discord's does; a
 thread the account isn't in opens as any other does, without joining it.
+Sized as in Discord's client (its CSS and list in the web bundle): each
+thread is a card 72px tall with 8px under it, the first section's heading
+32px tall and later ones 64px, and the popout 35% of the window wide, from
+480px to 600px, and as tall as its rows, from 400px to 80% of the window.
 
 What fills it, as Discord's web client does it: the active threads come
 from the gateway, never a request. Subscribing to a server with `threads`
@@ -1341,12 +1345,14 @@ with its active threads the account may see and each one's newest message
 server's snapshot, and follows them with MESSAGE_CREATE and
 THREAD_MEMBERS_UPDATE; the list reads them from the snapshot as it shows,
 without copying the server. Archived threads come only with Read Message
-History, when the list opens and then a page of 25 at a time as it's
-scrolled near its end, from `GET /channels/{id}/threads/search` with
+History, when the list opens and then a page of 25 at a time, from `GET /channels/{id}/threads/search` with
 `archived=true&sort_by=last_message_time&sort_order=desc&limit=25`
 and an `offset`, as Discord's client asks; it never calls the
-`/threads/archived/` endpoints. Archived threads the snapshot knows are
-merged in where the pages reach. Search, which also needs Read Message
+`/threads/archived/` endpoints. The next page loads only as a scroll by
+hand ends within 200px of the list's end, as Discord's client does it, so
+a list too short to scroll loads no more. Archived threads the snapshot
+knows are merged in where the pages reach, and none show before the first
+page answers. Search, which also needs Read Message
 History, runs on Enter with `name=` and no `archived`, so it finds active
 and archived threads, and its results replace the sections until it's
 cleared; the first search of a channel can answer 202 while Discord indexes
