@@ -529,7 +529,9 @@ Sharing starts from the call's controls or from the voice panel's Share
 button, which works wherever the window is; the panel says when the stream
 is live and stops it. While the call is off screen, the stream being watched,
 or else this account's own, shows in a corner (`StreamPip`), as Discord's
-picture in picture does; a click on it returns to the call.
+picture in picture does; a click on it returns to the call. This account's
+own stream opens large from its tile, as others' do, without watching it
+through Discord: it shows the worker's preview.
 
 Capture runs in a worker process, `talk --stream-worker`, so its buffers take
 memory only while sharing; the process exits when sharing stops. Playing a

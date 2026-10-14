@@ -471,7 +471,12 @@ export component TalkWindow inherits Window {
     in property <bool> camera-on;
     in property <bool> call-video;
     /// The call's grid of tiles is on screen.
-    out property <bool> grid-shown: root.voice-here && !root.watching && (root.voice-room || root.call-shown) && !root.settings-open;
+    out property <bool> grid-shown: root.voice-here && !root.watching && !root.own-stream-shown && (root.voice-room || root.call-shown) && !root.settings-open;
+    /// This account's own shared screen shows large in place of the grid, as a
+    /// watched stream does, until it's closed, sharing stops or watching starts.
+    property <bool> own-stream-shown;
+    changed sharing => { if !root.sharing { root.own-stream-shown = false; } }
+    changed watching => { if root.watching { root.own-stream-shown = false; } }
     /// Sharing a screen is offered in Discord calls.
     in property <bool> can-share;
     in property <bool> sharing;
@@ -1693,7 +1698,7 @@ export component TalkWindow inherits Window {
                         if root.voice-room || root.call-shown: Rectangle {
                             // Above a DM's messages, a call takes less than half the room,
                             // more while watching a stream, and little while offering to join.
-                            vertical-stretch: root.voice-room ? 1 : !root.voice-here ? 0 : root.watching ? 1.8 : 0.8;
+                            vertical-stretch: root.voice-room ? 1 : !root.voice-here ? 0 : root.watching || root.own-stream-shown ? 1.8 : 0.8;
                             min-height: root.voice-room ? 0px : root.voice-here ? 260px : 210px;
                             max-height: root.voice-room || root.voice-here ? 100000px : 210px;
                             background: Theme.stage;
@@ -1718,11 +1723,17 @@ export component TalkWindow inherits Window {
                                     watch-title: root.watch-title; watch-status: root.watch-status; watch-frame: root.watch-frame;
                                     stop-watching => { root.stop-watching(); }
                                 }
-                                if !root.watching: ParticipantGrid {
+                                if !root.watching && root.own-stream-shown: StreamView {
+                                    watch-title: "Your screen"; watch-status: root.share-status; watch-frame: root.share-frame;
+                                    live: root.share-live; stop-label: "Back to the call";
+                                    stop-watching => { root.own-stream-shown = false; }
+                                }
+                                if !root.watching && !root.own-stream-shown: ParticipantGrid {
                                     participants: root.participants; frames: root.participant-frames;
                                     sharing: root.sharing; share-live: root.share-live;
                                     share-status: root.share-status; share-frame: root.share-frame;
                                     watch-stream(id) => { root.watch-stream(id); }
+                                    show-own-stream => { root.own-stream-shown = true; }
                                     open-volume(person, x, y) => { root.open-volume(person, x, y); }
                                     tiles(columns, width, height, gap, top, scrolled, shown) => { root.call-tiles(columns, width, height, gap, top, scrolled, shown); }
                                 }
@@ -2349,7 +2360,10 @@ export component TalkWindow inherits Window {
         live: !root.watching && root.share-live;
         stop-icon: root.watching ? @image-url("icons/x.svg") : @image-url("icons/screen-share-off.svg");
         stop-label: root.watching ? "Stop watching" : "Stop sharing";
-        open-call => { root.open-conversation(root.voice-channel); }
+        open-call => {
+            if !root.watching { root.own-stream-shown = true; }
+            root.open-conversation(root.voice-channel);
+        }
         stop => { if root.watching { root.stop-watching(); } else { root.toggle-share(); } }
         dropped => {
             root.pip-left = self.x + self.width / 2 < (self.left + self.right + self.width) / 2;

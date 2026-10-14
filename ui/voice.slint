@@ -236,6 +236,9 @@ export component StreamView inherits Rectangle {
     in property <string> watch-title;
     in property <string> watch-status;
     in property <image> watch-frame;
+    /// The stream is live: this account's own isn't until Discord has started it.
+    in property <bool> live: true;
+    in property <string> stop-label: "Stop watching";
     callback stop-watching;
     vertical-stretch: 1;
     Rectangle {
@@ -256,12 +259,12 @@ export component StreamView inherits Rectangle {
             watch-chip := HorizontalLayout {
                 padding-left: 10px; padding-right: 10px; spacing: 8px;
                 Text { text: root.watch-title; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
-                Middle { LivePill { } }
+                if root.live: Middle { LivePill { } }
             }
         }
         IconButton {
             x: parent.width - self.width - 10px; y: 10px; height: self.size;
-            icon: @image-url("icons/x.svg"); label: "Stop watching"; tint: #ffffff;
+            icon: @image-url("icons/x.svg"); label: root.stop-label; tint: #ffffff;
             fill: #000000a6; radius: 16px;
             clicked => { root.stop-watching(); }
         }
@@ -348,6 +351,9 @@ export component ParticipantGrid inherits Flickable {
     in property <string> share-status;
     in property <image> share-frame;
     callback watch-stream(string);
+    /// A click on this account's own screen, or on itself while it shares:
+    /// show the screen large, as a watched stream shows.
+    callback show-own-stream;
     /// A right click on someone, with where it was in the window.
     callback open-volume(PersonRow, length, length);
     /// Where the tiles are, so cameras are decoded only for tiles in sight,
@@ -400,8 +406,9 @@ export component ParticipantGrid inherits Flickable {
         y: root.first-row;
         width: root.tile-width; height: root.tile-height;
         border-radius: 12px; background: #000000; clip: true;
-        accessible-role: text;
+        accessible-role: button;
         accessible-label: "Your screen, " + root.share-status;
+        accessible-action-default => { root.show-own-stream(); }
         Image { width: parent.width; height: parent.height; source: root.share-frame; image-fit: contain; }
         if root.share-frame.width == 0: VerticalLayout {
             alignment: center; spacing: 10px;
@@ -422,6 +429,7 @@ export component ParticipantGrid inherits Flickable {
                 }
             }
         }
+        TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.show-own-stream(); } }
     }
     for person[position] in root.participants: tile := Rectangle {
         property <int> index: position + root.extra;
@@ -443,10 +451,17 @@ export component ParticipantGrid inherits Flickable {
         Rectangle {
             border-radius: 12px; border-width: person.speaking ? 3px : 0px; border-color: Theme.live;
         }
-        // A click watches someone's stream; a right click sets their volumes.
+        // A click watches someone's stream, or shows this account's own; a right
+        // click sets their volumes.
         TouchArea {
-            mouse-cursor: person.live && !person.local ? MouseCursor.pointer : MouseCursor.default;
-            clicked => { if person.live && !person.local { root.watch-stream(person.id); } }
+            mouse-cursor: person.live ? MouseCursor.pointer : MouseCursor.default;
+            clicked => {
+                if person.live && person.local && root.sharing {
+                    root.show-own-stream();
+                } else if person.live && !person.local {
+                    root.watch-stream(person.id);
+                }
+            }
             pointer-event(event) => {
                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                     root.open-volume(person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
