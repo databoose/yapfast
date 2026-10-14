@@ -38,6 +38,8 @@ mod appearance;
 mod callbacks;
 mod menus;
 mod messages;
+#[cfg(windows)]
+mod move_loop;
 mod pictures;
 mod profile;
 mod refresh;
@@ -228,6 +230,10 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
             .on_winit_window_event(move |slint_window, event| {
                 if let WindowEvent::Focused(focused) = event {
                     FOCUSED.set(*focused);
+                }
+                #[cfg(windows)]
+                if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+                    move_loop::moved(&weak);
                 }
                 // Moving to a display of another density: Slint takes its scale,
                 // and then the zoom goes back on top.

@@ -230,6 +230,26 @@ there (OS error 14007).
 
 [The tray](tray.md#windows) lists what to check on real Windows.
 
+## Dragging the window
+
+From the press on the title bar or a border until the release, Windows
+moves or sizes a window in a message loop of its own. winit still passes
+window messages on, but its own loop doesn't run, and Slint advances its
+timers and animation clock only when it does, so the window looked frozen
+while dragged: animations stood still, and pictures that arrived waited.
+`src/ui/move_loop.rs` starts a Win32 timer with the first move or resize
+winit reports while Windows is moving or sizing the window
+(`GetGUIThreadInfo`, `GUI_INMOVESIZE`). Windows calls it from its own loop
+every 16 ms, and it advances Slint's timers and animations and redraws what
+animates, until the window stops moving. `TALK_LOG=talk=debug` logs when it
+starts and stops.
+
+Wine doesn't reproduce the freeze. In its own desktop (`wine explorer
+/desktop=…`), the typing indicator kept pulsing while the old build was
+dragged by its title bar. So check on real Windows: while the window is
+held by its title bar, still and moving, "… is typing" should keep pulsing
+and its dots rising; the same while resizing by a border.
+
 ## Build validation on 2026-10-13
 
 The first cross-build since Discord voice, Go Live's native codecs and

@@ -242,6 +242,16 @@ def perform(command):
             time.sleep(.02)
         INPUT['send']('button 272 0')
         time.sleep(.3)
+    elif verb == 'press':
+        # Held until `release`, for what happens while a button is down,
+        # such as a window being dragged by its title bar.
+        x, y = map(float, values)
+        INPUT['send'](f'move {x} {y}')
+        INPUT['send']('button 272 1')
+        time.sleep(.1)
+    elif verb == 'release':
+        INPUT['send']('button 272 0')
+        time.sleep(.3)
     elif verb == 'scroll':
         INPUT['scroll'](float(rest))
         time.sleep(.1)
