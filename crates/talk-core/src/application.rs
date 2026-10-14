@@ -2321,6 +2321,7 @@ impl Application {
             Event::Gifs { query, result } => self.gifs_came(query, result),
             Event::GifSuggestions { query, terms } => self.gif_suggestions_came(query, terms),
             Event::FavoriteGifs(result) => return self.favorite_gifs_came(result),
+            Event::KeptFavoriteGifs(favorites) => self.kept_favorite_gifs_came(favorites),
             Event::GifPicture { url, picture } => self.gif_picture_came(url, picture),
             Event::Reactors {
                 item,

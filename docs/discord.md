@@ -1045,6 +1045,26 @@ finds GIFs through Klipy, and Talk asks Discord as its desktop client does:
   order, and the Favorites view lists the newest first, searchable by name.
   A message's GIF is its gifv embed's page, or an attached `.gif` without
   the CDN's signature.
+- Favourites show at once, without waiting on Discord or the GIF providers.
+  Talk keeps the list on disk, shows it when the picker opens and replaces
+  it when Discord answers; a star used meanwhile shows at once and is
+  applied to Discord's list once it comes, so a change made on another
+  device stays. Each favourite shown gets a thumbnail in `discord-gifs/`,
+  50 MB at most, the least lately shown going first:
+  - Tenor's own small MP4 when the GIF is Tenor's: its links name the
+    format with a code, `AAAP1` for that MP4, which took 106 KB at the
+    median on Tenor's GIFs, to the full GIF's few megabytes.
+  - The picture itself, when it's a video or no larger than 64 KB, which
+    keeps a small GIF's transparency.
+  - Otherwise a VP9 WebM of it at the tiles' width, made once, off the UI
+    thread, with the VP9 encoder already in Talk's libwebrtc. Measured on
+    Tenor's full GIFs at 231px, they took 14-297 KB, 40 KB at the median: a
+    fifth of an animated WebP at the same quality, and a fifth of its
+    decoding work. A transparent GIF goes over the panel's tone, as VP9
+    keeps no transparency.
+
+  The picture downloads to disk as it comes, so a full-size GIF of tens of
+  megabytes takes no memory, and the thumbnail plays from its file.
 
 ### Jumping to a message
 

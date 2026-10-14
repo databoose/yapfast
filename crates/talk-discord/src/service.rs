@@ -1058,17 +1058,30 @@ impl Discord {
         self.api.gif_select(id, query).await
     }
 
-    /// The account's favourite GIFs.
+    /// The account's favourite GIFs as Talk last saw them, to show until
+    /// [`Self::favorite_gifs`] answers.
+    pub async fn kept_favorite_gifs(&self) -> Option<Vec<crate::gifs::Favorite>> {
+        tokio::task::spawn_blocking(cache::favorite_gifs)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// The account's favourite GIFs, kept on disk too.
     pub async fn favorite_gifs(&self) -> Result<Vec<crate::gifs::Favorite>> {
         let settings = self.api.frecency_settings().await?;
-        Ok(crate::gifs::read_favorites(&settings).unwrap_or_default())
+        let favorites = crate::gifs::read_favorites(&settings).unwrap_or_default();
+        keep_favorite_gifs(favorites.clone()).await;
+        Ok(favorites)
     }
 
     /// Keeps `favorites` as the account's favourite GIFs, in place of the old.
     pub async fn set_favorite_gifs(&self, favorites: &[crate::gifs::Favorite]) -> Result<()> {
         self.api
             .set_frecency_settings(&crate::gifs::write_favorites(favorites))
-            .await
+            .await?;
+        keep_favorite_gifs(favorites.to_vec()).await;
+        Ok(())
     }
 
     /// Sends someone a friend request from their profile, or accepts theirs.
@@ -1766,4 +1779,9 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Keeps the favourite GIFs on disk, off the async threads.
+pub async fn keep_favorite_gifs(favorites: Vec<crate::gifs::Favorite>) {
+    let _ = tokio::task::spawn_blocking(move || cache::keep_favorite_gifs(&favorites)).await;
 }

@@ -51,10 +51,14 @@ pub struct GifPicker {
     pub suggestions: Vec<String>,
     suggested: Option<String>,
     pub pictures: HashMap<String, GifPicture>,
-    /// The favourites were asked for, and a star used before they came,
-    /// which takes effect once they do.
+    /// The favourites were asked for, and those shown are Discord's rather
+    /// than those kept on disk.
     favorites_asked: bool,
-    starred: Option<Gif>,
+    favorites_fresh: bool,
+    /// Stars used before Discord's favourites came, each adding a GIF or
+    /// taking one out: they show at once and reach Discord's once they come,
+    /// so a change made elsewhere meanwhile stays.
+    starred: Vec<(Gif, bool)>,
 }
 
 impl GifPicker {
@@ -130,9 +134,7 @@ impl Application {
     /// Asks for the favourites once, as opening the picker or pointing at a
     /// GIF's star does first.
     pub(super) fn load_favorite_gifs(&mut self) -> Vec<Effect> {
-        if self.state.favorite_gifs.is_some()
-            || self.state.gifs.favorites_asked
-            || self.state.preview
+        if self.state.gifs.favorites_fresh || self.state.gifs.favorites_asked || self.state.preview
         {
             return vec![];
         }
@@ -235,8 +237,19 @@ impl Application {
                 continue;
             }
             picker.pictures.insert(url.clone(), GifPicture::Loading);
+            let favorite = self
+                .state
+                .favorite_gifs
+                .iter()
+                .flatten()
+                .any(|favorite| favorite.src == url);
             effects.push(Effect::Backend(Command::Discord(
-                DiscordCommand::GifPicture { url, width, height },
+                DiscordCommand::GifPicture {
+                    url,
+                    width,
+                    height,
+                    favorite,
+                },
             )));
         }
         if near_end
@@ -334,28 +347,25 @@ impl Application {
     }
 
     /// Adds a GIF to the favourites or takes it out, keeping them all on
-    /// Discord; before they've come, once they do.
+    /// Discord; before Discord's have come, once they do.
     fn star_gif(&mut self, gif: Gif) -> Vec<Effect> {
-        let Some(favorites) = &mut self.state.favorite_gifs else {
-            self.state.gifs.starred = Some(gif);
-            return self.load_favorite_gifs();
-        };
-        if let Some(at) = favorites
-            .iter()
-            .position(|favorite| favorite.url == gif.url)
-        {
-            favorites.remove(at);
-        } else if !gif.src.is_empty() {
-            let added = FavoriteGif::of(&gif, favorites);
-            favorites.push(added);
-        } else {
+        let add = !self.state.is_favorite_gif(&gif.url);
+        if add && gif.src.is_empty() {
             return vec![];
         }
-        let effect = Effect::Backend(Command::Discord(DiscordCommand::SetFavoriteGifs(
-            favorites.clone(),
-        )));
-        self.state.favorite_gifs_changed += 1;
-        vec![effect]
+        if let Some(favorites) = &mut self.state.favorite_gifs
+            && star(favorites, &gif, add)
+        {
+            self.state.favorite_gifs_changed += 1;
+        }
+        if !self.state.gifs.favorites_fresh {
+            self.state.gifs.starred.push((gif, add));
+            return self.load_favorite_gifs();
+        }
+        let favorites = self.state.favorite_gifs.clone().unwrap_or_default();
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::SetFavoriteGifs(favorites),
+        ))]
     }
 
     pub(super) fn gif_categories_came(
@@ -398,25 +408,69 @@ impl Application {
     ) -> Vec<Effect> {
         self.state.gifs.favorites_asked = false;
         match result {
-            Ok(favorites) => {
+            Ok(mut favorites) => {
+                let picker = &mut self.state.gifs;
+                picker.favorites_fresh = true;
+                let mut starred = false;
+                for (gif, add) in std::mem::take(&mut picker.starred) {
+                    starred |= star(&mut favorites, &gif, add);
+                }
                 self.state.favorite_gifs = Some(favorites);
                 self.state.favorite_gifs_changed += 1;
-                match self.state.gifs.starred.take() {
-                    Some(gif) => self.star_gif(gif),
-                    None => vec![],
+                if !starred {
+                    return vec![];
                 }
+                let favorites = self.state.favorite_gifs.clone().unwrap_or_default();
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::SetFavoriteGifs(favorites),
+                ))]
             }
+            // The stars used meanwhile wait for the next try.
             Err(error) => {
                 tracing::warn!(%error, "could not load the favourite GIFs");
-                self.state.gifs.starred = None;
                 vec![]
             }
         }
+    }
+
+    /// Shows the favourites kept on disk, with the stars used since, until
+    /// Discord's come.
+    pub(super) fn kept_favorite_gifs_came(&mut self, mut favorites: Vec<FavoriteGif>) {
+        let picker = &self.state.gifs;
+        if picker.favorites_fresh {
+            return;
+        }
+        for (gif, add) in &picker.starred {
+            star(&mut favorites, gif, *add);
+        }
+        self.state.favorite_gifs = Some(favorites);
+        self.state.favorite_gifs_changed += 1;
     }
 
     pub(super) fn gif_picture_came(&mut self, url: String, picture: Option<Arc<Picture>>) {
         if let Some(shown) = self.state.gifs.pictures.get_mut(&url) {
             *shown = picture.map_or(GifPicture::Failed, GifPicture::Shown);
         }
+    }
+}
+
+/// Adds `gif` to `favorites`, or takes it out; whether that changed them.
+fn star(favorites: &mut Vec<FavoriteGif>, gif: &Gif, add: bool) -> bool {
+    match (
+        favorites
+            .iter()
+            .position(|favorite| favorite.url == gif.url),
+        add,
+    ) {
+        (None, true) => {
+            let added = FavoriteGif::of(gif, favorites);
+            favorites.push(added);
+            true
+        }
+        (Some(at), false) => {
+            favorites.remove(at);
+            true
+        }
+        _ => false,
     }
 }

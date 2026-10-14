@@ -19,6 +19,8 @@ pub mod calls;
 pub mod camera;
 pub mod chat;
 pub mod cli;
+#[cfg(feature = "discord")]
+pub mod clip;
 pub mod clock;
 #[cfg(feature = "discord")]
 pub mod decode;

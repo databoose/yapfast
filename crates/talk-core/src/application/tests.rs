@@ -6259,7 +6259,7 @@ fn a_reactions_tooltip_and_window_ask_for_who_reacted() {
 
 #[cfg(feature = "discord")]
 #[test]
-fn a_messages_gif_is_starred_once_the_favourites_come() {
+fn favourite_gifs_show_from_disk_and_stars_wait_for_discords() {
     use crate::chat::{FavoriteGif, Gif};
     let mut app = connected();
     let gif = Gif {
@@ -6315,33 +6315,48 @@ fn a_messages_gif_is_starred_once_the_favourites_come() {
             .collect()
     };
 
-    // Pointing at the star asks for the favourites, once; a click before
-    // they come waits for them.
+    // Pointing at the star asks for the favourites, once, and those kept
+    // on disk show until Discord's come.
     let asked = backend(app.dispatch(Action::LoadFavoriteGifs));
     assert!(matches!(
         asked.as_slice(),
         [Command::Discord(DiscordCommand::FavoriteGifs)]
     ));
+    let other = |name: &str| Gif {
+        url: format!("https://klipy.com/gifs/{name}"),
+        src: format!("https://static.klipy.com/{name}.webp"),
+        ..gif.clone()
+    };
+    let old = FavoriteGif::of(&other("old"), &[]);
+    app.apply(Event::KeptFavoriteGifs(vec![old.clone()]));
+    assert!(app.state.is_favorite_gif(&old.url));
+    // A click meanwhile shows at once, and waits for Discord's favourites,
+    // so what another client changed meanwhile stays.
     let star = || Action::FavoriteMessageGif {
         item: "e:$1".into(),
         index: 0,
     };
-    assert!(backend(app.dispatch(star())).is_empty());
     let changed = app.state.favorite_gifs_changed;
-    let saved = backend(app.apply(Event::FavoriteGifs(Ok(vec![]))));
+    assert!(backend(app.dispatch(star())).is_empty());
+    assert!(app.state.is_favorite_gif(&gif.url));
+    assert!(app.state.favorite_gifs_changed > changed);
+    let elsewhere = FavoriteGif::of(&other("new"), &[]);
+    let saved = backend(app.apply(Event::FavoriteGifs(Ok(vec![elsewhere.clone()]))));
     assert!(matches!(
         saved.as_slice(),
         [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))]
-            if favorites == &[FavoriteGif::of(&gif, &[])]
+            if favorites == &[elsewhere.clone(), FavoriteGif::of(&gif, std::slice::from_ref(&elsewhere))]
     ));
-    assert!(app.state.is_favorite_gif(&gif.url));
-    assert!(app.state.favorite_gifs_changed > changed);
+    assert!(app.state.is_favorite_gif(&gif.url) && !app.state.is_favorite_gif(&old.url));
+    // Those kept on disk don't replace Discord's.
+    app.apply(Event::KeptFavoriteGifs(vec![old]));
+    assert!(app.state.is_favorite_gif(&elsewhere.url));
 
     // Its star again takes it out.
     let saved = backend(app.dispatch(star()));
     assert!(matches!(
         saved.as_slice(),
-        [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))] if favorites.is_empty()
+        [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))] if favorites == &[elsewhere]
     ));
     assert!(backend(app.dispatch(Action::LoadFavoriteGifs)).is_empty());
 }

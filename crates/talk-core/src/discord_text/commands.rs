@@ -525,6 +525,7 @@ pub fn live(
 ) {
     if let Ok(Live::FavoriteGifs(favorites)) = &event {
         let _ = events.send(Event::FavoriteGifs(Ok(gifs::favorites(favorites))));
+        tokio::spawn(talk_discord::service::keep_favorite_gifs(favorites.clone()));
         return;
     }
     if let Ok(Live::Notify { guild, message }) = &event {

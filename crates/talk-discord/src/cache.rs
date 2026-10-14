@@ -13,6 +13,10 @@
 //!   version of a picture its own address, so a kept one never goes stale.
 //!   The least lately shown go past [`PICTURES_SIZE`].
 //! - `discord-videos/`: the video playing, while it does; see [`videos`].
+//! - `discord-favorite-gifs.json`: the favourite GIFs, as Discord's settings
+//!   last gave them, so the picker shows them before Discord answers.
+//! - `discord-gifs/`: a thumbnail of each favourite GIF shown, by its
+//!   picture's address. The least lately shown go past [`GIFS_SIZE`].
 //!
 //! The files name the login they belong to by a hash of the token, so another
 //! account linked meanwhile starts empty, and unlinking deletes them all.
@@ -48,6 +52,9 @@ const PICTURE_PATHS: [&str; 6] = [
 ];
 /// The most the kept pictures take; the least lately shown go first.
 const PICTURES_SIZE: u64 = 256 * 1024 * 1024;
+/// The most the favourite GIFs' thumbnails take; the least lately shown go
+/// first. A thumbnail takes 14-300 KB, 40 KB at the median.
+const GIFS_SIZE: u64 = 50 * 1024 * 1024;
 /// Downloads larger than this aren't kept, such as a file being saved.
 const LARGEST_PICTURE: usize = 8 * 1024 * 1024;
 /// The most channels whose messages are kept; the least lately used go.
@@ -104,6 +111,13 @@ pub(crate) struct Loaded {
 }
 
 #[derive(Serialize, Deserialize)]
+struct SavedFavoriteGifs {
+    login: String,
+    /// As Discord's settings carry them: see [`crate::gifs::write_favorites`].
+    settings: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct SavedChannel {
     login: String,
     messages: Vec<Message>,
@@ -118,11 +132,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Keeps the account in `file` from now on, and the rest beside it.
 pub fn keep_in(file: PathBuf) {
     *lock(&FILE) = Some(file);
-    if let (Some(pictures), Some(messages), Some(videos)) =
-        (pictures(), messages_directory(), videos())
+    if let (Some(pictures), Some(gifs), Some(messages), Some(videos)) =
+        (pictures(), gifs(), messages_directory(), videos())
     {
         std::thread::spawn(move || {
             prune(&pictures, PICTURES_SIZE, usize::MAX);
+            prune(&gifs, GIFS_SIZE, usize::MAX);
             prune(&messages, u64::MAX, CHANNELS);
             // Videos played before Talk last closed.
             prune(&videos, 0, 0);
@@ -136,6 +151,96 @@ fn file() -> Option<PathBuf> {
 
 fn pictures() -> Option<PathBuf> {
     Some(file()?.with_file_name("discord-pictures"))
+}
+
+fn favorite_gifs_file() -> Option<PathBuf> {
+    Some(file()?.with_file_name("discord-favorite-gifs.json"))
+}
+
+/// The favourite GIFs kept for this login. It reads the disk, so the async
+/// side calls it off its threads.
+pub fn favorite_gifs() -> Option<Vec<crate::gifs::Favorite>> {
+    let (file, login) = (favorite_gifs_file()?, current_login()?);
+    let data = std::fs::read(file).ok()?;
+    match serde_json::from_slice::<SavedFavoriteGifs>(&data) {
+        Ok(saved) if saved.login == login => crate::gifs::read_favorites(&saved.settings),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the saved favourite GIFs");
+            None
+        }
+    }
+}
+
+/// Keeps the favourite GIFs for this login, as [`favorite_gifs`] reads them.
+pub fn keep_favorite_gifs(favorites: &[crate::gifs::Favorite]) {
+    let (Some(file), Some(login)) = (favorite_gifs_file(), current_login()) else {
+        return;
+    };
+    let saved = SavedFavoriteGifs {
+        login,
+        settings: crate::gifs::write_favorites(favorites),
+    };
+    let written = serde_json::to_vec(&saved)
+        .map_err(anyhow::Error::from)
+        .and_then(|data| write_bytes(&file, &data));
+    if let Err(error) = written {
+        tracing::warn!(%error, "could not save the favourite GIFs");
+    }
+}
+
+fn gifs() -> Option<PathBuf> {
+    Some(file()?.with_file_name("discord-gifs"))
+}
+
+/// Where the thumbnail of the favourite GIF whose picture is at `url` is
+/// kept, and where its picture downloads to first.
+fn gif_file(url: &str) -> Option<PathBuf> {
+    Some(gifs()?.join(hash(url)))
+}
+
+/// The thumbnail kept of the favourite GIF whose picture is at `url`.
+pub fn kept_gif(url: &str) -> Option<PathBuf> {
+    let file = gif_file(url).filter(|file| file.is_file())?;
+    // Shown now, so pruning keeps it longer.
+    touch(&file);
+    Some(file)
+}
+
+/// A new file to download the picture at `url` into, before it becomes the
+/// favourite's thumbnail or makes one.
+pub fn gif_download(url: &str) -> Option<(PathBuf, std::fs::File)> {
+    let file = gif_file(url)?.with_extension("download");
+    std::fs::create_dir_all(file.parent()?).ok()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let opened = options.open(&file).ok()?;
+    Some((file, opened))
+}
+
+/// Keeps `thumbnail` as the favourite's at `url`: a file to move there, as a
+/// download from [`gif_download`] is, or bytes to write.
+pub fn keep_gif(url: &str, thumbnail: KeptGif<'_>) -> Option<PathBuf> {
+    let file = gif_file(url)?;
+    let kept = match thumbnail {
+        KeptGif::File(from) => std::fs::rename(from, &file).map_err(anyhow::Error::from),
+        KeptGif::Bytes(data) => write_bytes(&file, data),
+    };
+    match kept {
+        Ok(()) => Some(file),
+        Err(error) => {
+            tracing::warn!(%error, "could not keep a favourite GIF's thumbnail");
+            None
+        }
+    }
+}
+
+/// A favourite GIF's thumbnail to keep.
+pub enum KeptGif<'a> {
+    File(&'a Path),
+    Bytes(&'a [u8]),
 }
 
 fn messages_directory() -> Option<PathBuf> {
@@ -384,14 +489,14 @@ fn prune(directory: &Path, size: u64, count: usize) {
 
 /// Deletes everything kept, as when unlinking.
 pub fn forget() {
-    if let Some(file) = file() {
+    for file in [file(), favorite_gifs_file()].into_iter().flatten() {
         match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => tracing::warn!(%error, "could not delete the saved Discord account"),
         }
     }
-    for directory in [pictures(), messages_directory(), videos()]
+    for directory in [pictures(), gifs(), messages_directory(), videos()]
         .into_iter()
         .flatten()
     {
@@ -524,6 +629,34 @@ mod tests {
         assert_eq!(kept[0].id, "6", "the oldest go");
         assert!(messages("../40").is_empty() && messages("41").is_empty());
 
+        // The favourite GIFs.
+        assert_eq!(favorite_gifs(), None);
+        let favorite = crate::gifs::Favorite {
+            url: "https://klipy.com/gifs/cat-1".into(),
+            src: "https://static.klipy.com/cat.webp".into(),
+            width: 200,
+            height: 100,
+            order: 1,
+            ..Default::default()
+        };
+        keep_favorite_gifs(std::slice::from_ref(&favorite));
+        assert_eq!(favorite_gifs(), Some(vec![favorite]));
+        // Their thumbnails, made from a download or written.
+        let (gif, video) = (
+            "https://media.tenor.com/a.gif",
+            "https://media.tenor.com/b.mp4",
+        );
+        assert_eq!(kept_gif(gif), None);
+        let (downloaded, mut file) = gif_download(gif).unwrap();
+        std::io::Write::write_all(&mut file, b"gif").unwrap();
+        drop(file);
+        let kept = keep_gif(gif, KeptGif::File(&downloaded)).unwrap();
+        assert!(!downloaded.exists());
+        assert_eq!(kept_gif(gif), Some(kept.clone()));
+        assert_eq!(std::fs::read(&kept).unwrap(), b"gif");
+        keep_gif(video, KeptGif::Bytes(b"webm")).unwrap();
+        assert_eq!(std::fs::read(kept_gif(video).unwrap()).unwrap(), b"webm");
+
         // Avatars and the media proxy's previews are kept, whatever their
         // signature; attachments' own files aren't.
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -547,11 +680,14 @@ mod tests {
         // Another login sees none of it.
         assert!(load("another").snapshot.servers.is_empty());
         assert!(messages("40").is_empty());
+        assert_eq!(favorite_gifs(), None);
         load("token");
         forget();
         assert!(load("token").snapshot.servers.is_empty());
         assert!(messages("40").is_empty());
+        assert_eq!(favorite_gifs(), None);
         assert!(!pictures().unwrap().exists());
+        assert_eq!(kept_gif(gif), None);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

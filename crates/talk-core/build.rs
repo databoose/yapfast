@@ -1,11 +1,13 @@
-//! Builds the Go Live codec shims, the video file reader and the cameras
-//! against the libvpx, OpenH264, FFmpeg, dav1d, libyuv and WebRTC headers in
-//! the same libwebrtc archive webrtc-sys links, so they match its code.
+//! Builds the Go Live codec shims, the GIF thumbnail encoder, the video file
+//! reader and the cameras against the libvpx, OpenH264, FFmpeg, dav1d,
+//! libyuv and WebRTC headers in the same libwebrtc archive webrtc-sys links,
+//! so they match its code.
 
 fn main() {
     for file in [
         "vp8.c",
         "h264.c",
+        "clip.c",
         "decode.c",
         "video.c",
         "picture.c",
@@ -64,6 +66,7 @@ fn main() {
     cc::Build::new()
         .file("native/vp8.c")
         .file("native/h264.c")
+        .file("native/clip.c")
         .file("native/decode.c")
         .file("native/video.c")
         .include(third_party.join("libvpx/source/libvpx"))

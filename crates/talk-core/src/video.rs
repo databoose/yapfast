@@ -6,7 +6,6 @@
 use std::{
     ffi::{c_int, c_uchar, c_uint, c_void},
     io::{Read, Seek, SeekFrom},
-    sync::Arc,
 };
 
 use anyhow::{Result, bail};
@@ -256,19 +255,35 @@ impl Drop for Video<'_> {
 
 /// A video as an animation that fits `width` by `height`, as a GIF is:
 /// silent, looping, at most a minute of it. Each picture shows until the
-/// next one's time; the last, and any without a time, as long as the one
-/// before. A video that fails partway shows what came before.
+/// next one's time, and the last until the video's end, as a GIF's often
+/// lingers; any without a time, and a last the file gives no end, as long as
+/// the one before. A video that fails partway shows what came before.
 pub fn decode_animation(data: &[u8], width: u32, height: u32) -> Option<Picture> {
+    decode_kept_animation(data, width, height, None)
+}
+
+/// [`decode_animation`], reading the frames from `kept` when it's `data`'s
+/// file, rather than from a copy of `data`.
+pub(crate) fn decode_kept_animation(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    kept: Option<&std::path::Path>,
+) -> Option<Picture> {
     let mut video = Video::open(std::io::Cursor::new(data), false)?;
     let (width, height) = fit(video.width, video.height, width, height);
     let mut first = None;
     let mut delays = Vec::new();
     let (mut start, mut delay) = (None::<u64>, 100);
+    let mut ended = false;
     loop {
         let time = match video.decode() {
             Ok(Next::Picture(time)) => time,
             Ok(Next::Sound(_)) => continue,
-            Ok(Next::End) => break,
+            Ok(Next::End) => {
+                ended = true;
+                break;
+            }
             Err(error) => {
                 tracing::debug!(%error, "could not decode a video's picture");
                 break;
@@ -295,10 +310,13 @@ pub fn decode_animation(data: &[u8], width: u32, height: u32) -> Option<Picture>
             break;
         }
     }
-    start?;
-    delays.push(delay);
+    let last = start?;
+    delays.push(match video.duration_ms {
+        Some(end) if ended && end > last => (end - last).min(10_000) as u32,
+        _ => delay,
+    });
     let rgba = first?;
-    let animation = (delays.len() > 1).then(|| Animation::video(Arc::from(data), delays));
+    let animation = (delays.len() > 1).then(|| Animation::video(data, kept, delays));
     Some(Picture {
         width,
         height,

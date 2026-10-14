@@ -790,6 +790,14 @@ enum AnimationFile {
 }
 
 impl AnimationFile {
+    /// `data`, or `kept` when that's its file.
+    fn of(data: &[u8], kept: Option<&std::path::Path>) -> Self {
+        kept.map_or_else(
+            || Self::Memory(Arc::from(data)),
+            |file| Self::Disk(file.to_owned()),
+        )
+    }
+
     fn open(&self) -> Option<AnimationReader> {
         match self {
             Self::Memory(data) => Some(AnimationReader::Memory(std::io::Cursor::new(data.clone()))),
@@ -1356,11 +1364,13 @@ pub enum DiscordCommand {
     /// Keep these as the account's favourite GIFs, in place of the old.
     SetFavoriteGifs(Vec<FavoriteGif>),
     /// Download a GIF's picture and decode it to fit `width` by `height`;
-    /// [`Event::GifPicture`] follows.
+    /// [`Event::GifPicture`] follows. A favourite's comes from a thumbnail
+    /// kept on disk, made the first time.
     GifPicture {
         url: String,
         width: u32,
         height: u32,
+        favorite: bool,
     },
     /// The members of a Discord role in the room's server, as far as they're known;
     /// [`Event::RoleMembers`] follows.
@@ -1746,6 +1756,9 @@ pub enum Event {
     /// The account's favourite GIFs, all of them, as fetched or as another
     /// client changed them; or why they couldn't be fetched.
     FavoriteGifs(Result<Vec<FavoriteGif>, String>),
+    /// The favourite GIFs as Talk last saw them, to show until Discord's
+    /// come.
+    KeptFavoriteGifs(Vec<FavoriteGif>),
     /// A GIF's picture, or none when it failed.
     GifPicture {
         url: String,
@@ -2009,15 +2022,36 @@ pub(crate) fn decode_view(data: &[u8]) -> Option<Picture> {
 /// by `height`. A smaller image keeps its size: enlarging it would blur it
 /// and cost memory, and the viewer sizes images from their own dimensions.
 pub fn decode_picture(data: &[u8], width: u32, height: u32) -> Option<Picture> {
+    decode_kept_picture(data, width, height, None)
+}
+
+/// The picture in `file`, as [`decode_picture`] decodes one, read where it
+/// is: none of it is copied to memory, and an animation's frames come from
+/// the file as they show.
+pub fn decode_picture_at(file: &std::path::Path, width: u32, height: u32) -> Option<Picture> {
+    let opened = std::fs::File::open(file).ok()?;
+    // SAFETY: Talk's own files, which nothing changes while they're read.
+    let data = unsafe { memmap2::Mmap::map(&opened) }.ok()?;
+    decode_kept_picture(&data, width, height, Some(file))
+}
+
+/// [`decode_picture`], with an animation reading its frames from `kept`
+/// when it's `data`'s file, rather than from a copy of `data`.
+fn decode_kept_picture(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    kept: Option<&std::path::Path>,
+) -> Option<Picture> {
     #[cfg(feature = "discord")]
     if crate::video::is_video(data) {
-        return crate::video::decode_animation(data, width, height);
+        return crate::video::decode_kept_animation(data, width, height, kept);
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
     if let Some(format) = reader.format()
-        && let Some(animation) = decode_animation(data, format, width, height)
+        && let Some(animation) = decode_animation(data, format, width, height, kept)
     {
         return Some(animation);
     }
@@ -2051,6 +2085,7 @@ fn decode_animation(
     format: image::ImageFormat,
     width: u32,
     height: u32,
+    kept: Option<&std::path::Path>,
 ) -> Option<Picture> {
     use image::ImageFormat;
     let format = match format {
@@ -2070,7 +2105,7 @@ fn decode_animation(
         rgba: Pixels::new(width, height, first),
         animation: Some(Animation {
             delays,
-            file: AnimationFile::Memory(Arc::from(data)),
+            file: AnimationFile::of(data, kept),
             format,
         }),
     })
@@ -2223,11 +2258,12 @@ pub fn fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u3
 
 #[cfg(feature = "discord")]
 impl Animation {
-    /// A video's, whose frames show for `delays`.
-    pub(crate) fn video(file: Arc<[u8]>, delays: Vec<u32>) -> Self {
+    /// A video's, whose frames show for `delays`: `data`, read from `kept`
+    /// when that's its file.
+    pub(crate) fn video(data: &[u8], kept: Option<&std::path::Path>, delays: Vec<u32>) -> Self {
         Self {
             delays,
-            file: AnimationFile::Memory(file),
+            file: AnimationFile::of(data, kept),
             format: AnimationFormat::Video,
         }
     }
