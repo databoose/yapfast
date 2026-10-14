@@ -457,17 +457,26 @@ fn settle(window: &TalkWindow) {
     }
 }
 
-/// For each height down the window, presses there beside the text, drags up past the top
-/// of the list, turning the wheel `wheel` times on the way, lets go and presses Ctrl+C;
-/// then returns the clipboard. The last drag to start on a message starts at the end of
-/// the lowest, so it selects up to the end of that message. The list returns to the newest
-/// message before each.
+/// For each height up the window, presses there beside the text, drags up past the top
+/// of the list, turning the wheel `wheel` times on the way, lets go and presses Ctrl+C,
+/// until a copy changes the clipboard, which it returns. The first drag to start on a
+/// message starts at the end of the lowest, so it selects up to the end of that message.
+/// The list returns to the newest message before each.
 fn copy_upwards(window: &TalkWindow, wheel: usize) -> Option<String> {
     use slint::platform::{Key, PointerEventButton, WindowEvent};
     let dispatch = |event| window.window().dispatch_event(event);
     let at = |x, y| slint::LogicalPosition::new(x, y);
     let button = PointerEventButton::Left;
-    for y in (100..700).step_by(4) {
+    // The composer's single line would turn line breaks into spaces, so
+    // read the clipboard itself.
+    let clipboard = || {
+        i_slint_core::window::WindowInner::from_pub(window.window())
+            .context()
+            .platform()
+            .clipboard_text(i_slint_core::platform::Clipboard::DefaultClipboard)
+    };
+    let before = clipboard();
+    for y in (100..700).step_by(4).rev() {
         window.invoke_scroll_to_latest();
         settle(window);
         let y = y as f32;
@@ -504,13 +513,12 @@ fn copy_upwards(window: &TalkWindow, wheel: usize) -> Option<String> {
         dispatch(WindowEvent::KeyReleased {
             text: Key::Control.into(),
         });
+        let copied = clipboard();
+        if copied != before {
+            return copied;
+        }
     }
-    // The composer's single line would turn line breaks into spaces, so
-    // read the clipboard itself.
-    i_slint_core::window::WindowInner::from_pub(window.window())
-        .context()
-        .platform()
-        .clipboard_text(i_slint_core::platform::Clipboard::DefaultClipboard)
+    before
 }
 
 #[test]

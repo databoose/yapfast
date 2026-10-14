@@ -5,6 +5,11 @@ edition = "2024"
 rust-version = "1.97"
 publish = false
 
+[lib]
+# No documentation examples run as tests: rustdoc would read the whole
+# crate on every `cargo test` for none.
+doctest = false
+
 [features]
 default = ["matrix", "discord"]
 # Matrix: sign-in, encrypted rooms and MatrixRTC voice.

@@ -6,8 +6,8 @@
   `cargo test --profile fast -p talk-core history`; incremental builds take
   seconds. Run `scripts/check --fast` once, before the last commit of a piece
   of work, not before each commit. It enters the dev shell itself and covers
-  Discord-only, Matrix-only and headless builds; it takes under a minute
-  after an edit.
+  Discord-only, Matrix-only and headless builds; it takes about 20 s after
+  an edit, and prints each step's time.
 - In a new worktree, run `scripts/warm-worktree` before building. It copies
   the main checkout's build, so the first check compiles only the crates in
   the repository, about 3.5 minutes.

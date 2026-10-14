@@ -30,11 +30,12 @@ rm -f "$logs"/*.log "$logs"/*.rc
 run() {
   local name=$1
   shift
+  local start=$SECONDS
   "$@" >"$logs/$name.log" 2>&1
   local rc=$?
   echo "$rc" >"$logs/$name.rc"
   local report
-  report="=== $name: $*"$'\n'"rc=$rc"
+  report="=== $name: $*"$'\n'"rc=$rc ($((SECONDS - start)) s)"
   if [[ $rc -ne 0 ]]; then
     # Rust's own diagnostics, without the C compilers' warnings around them,
     # or the end of the output when there are none.
