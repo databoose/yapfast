@@ -2379,6 +2379,9 @@ async fn talks_to_the_fake_server() {
     })
     .await;
 
+    lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
+    starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
+
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
     discord.leave_server(&guild).await.unwrap();
@@ -2413,4 +2416,177 @@ async fn next_step(shown: &mut tokio::sync::mpsc::UnboundedReceiver<Step>) -> St
         .await
         .expect("timed out linking")
         .expect("linking stopped")
+}
+
+/// A channel's list of threads, as Discord's client fills it; part of
+/// [`talks_to_the_fake_server`], whose session it shares.
+async fn lists_a_channels_threads_as_discords_client_does(
+    discord: &Discord,
+    guild: &str,
+    general: &str,
+) {
+    let (guild, general) = (guild.to_owned(), general.to_owned());
+    // Viewing the server subscribed to its threads: the active ones came,
+    // with their newest messages, but not a private one she isn't in.
+    let snapshot = snapshot_where(discord, |snapshot| {
+        snapshot.servers[0]
+            .threads
+            .iter()
+            .any(|thread| thread.name == "Book club")
+    })
+    .await;
+    let threads = &snapshot.servers[0].threads;
+    let book_club = threads
+        .iter()
+        .find(|thread| thread.name == "Book club")
+        .unwrap();
+    let details = book_club.thread.as_deref().unwrap();
+    assert!(!details.joined);
+    assert_eq!(details.members, 2);
+    let recent = details.recent.as_deref().expect("its newest message");
+    assert_eq!(recent.content, "Chapter 3 by Friday?");
+    assert!(
+        threads
+            .iter()
+            .all(|thread| thread.name != "Surprise for Bob")
+    );
+
+    // Archived threads come a page at a time, the newest first.
+    let first = discord.threads(&guild, &general, None, 0).await.unwrap();
+    assert_eq!(first.threads.len(), 25);
+    assert!(first.more);
+    assert!(
+        first
+            .threads
+            .iter()
+            .all(|thread| thread.thread.as_ref().unwrap().archived)
+    );
+    assert_eq!(first.threads[0].name, "Game night 1");
+    let owner = first.threads[0]
+        .thread
+        .as_ref()
+        .unwrap()
+        .owner
+        .clone()
+        .unwrap();
+    assert_eq!(discord.name(&guild, &owner).as_deref(), Some("Bob"));
+    let second = discord.threads(&guild, &general, None, 25).await.unwrap();
+    assert!(!second.more);
+    assert!(second.threads.len() >= 5);
+    // A search finds active and archived ones by name.
+    let found = discord
+        .threads(&guild, &general, Some("night"), 0)
+        .await
+        .unwrap();
+    assert!(found.threads.len() >= 5);
+    assert!(
+        found
+            .threads
+            .iter()
+            .all(|thread| thread.name.contains("night"))
+    );
+
+    // One the list found opens from what Discord gave, and lists meanwhile.
+    let id = first.threads[3].id.clone();
+    let listed = discord.listed_thread(&id);
+    assert!(listed.is_some());
+    discord.forget_listed_threads();
+    assert!(discord.listed_thread(&id).is_none());
+    discord
+        .open_thread(&guild, &id, listed, false)
+        .await
+        .unwrap();
+    snapshot_where(discord, |snapshot| {
+        snapshot.viewing.contains(&id)
+            && snapshot.servers[0]
+                .threads
+                .iter()
+                .any(|thread| thread.id == id)
+    })
+    .await;
+}
+
+/// Threads Alice starts, as Discord's client starts them; part of
+/// [`talks_to_the_fake_server`], whose session it shares.
+async fn starts_threads_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+    general: &str,
+) {
+    let latest = discord
+        .history(guild, general, Span::Latest)
+        .await
+        .unwrap()
+        .messages;
+    let message = latest.last().unwrap().id.clone();
+    // From a message: the thread takes its id, and she's in it.
+    let thread = discord
+        .start_thread(guild, general, Some(&message), "Snacks", false, "Message")
+        .await
+        .unwrap();
+    assert_eq!(thread, message);
+    snapshot_where(discord, |snapshot| {
+        snapshot.servers[0].threads.iter().any(|listed| {
+            listed.id == thread
+                && listed.name == "Snacks"
+                && listed.thread.as_ref().is_some_and(|thread| thread.joined)
+        })
+    })
+    .await;
+    // A message has one thread at most, and a name has 1 to 100 letters.
+    assert!(
+        discord
+            .start_thread(guild, general, Some(&message), "Again", false, "Message")
+            .await
+            .is_err()
+    );
+    assert!(
+        discord
+            .start_thread(guild, general, None, &"a".repeat(101), false, "Plus Button")
+            .await
+            .is_err()
+    );
+    // Without a message, private as she chose.
+    let private = discord
+        .start_thread(
+            guild,
+            general,
+            None,
+            "Surprise",
+            true,
+            "Thread Browser Toolbar",
+        )
+        .await
+        .unwrap();
+    snapshot_where(discord, |snapshot| {
+        snapshot.servers[0].threads.iter().any(|listed| {
+            listed.id == private && listed.thread.as_ref().is_some_and(|thread| thread.private)
+        })
+    })
+    .await;
+    let creates: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/thread-creates", "")).unwrap();
+    let creates = creates.as_array().unwrap();
+    assert_eq!(
+        creates[0],
+        serde_json::json!({
+            "channel": general,
+            "message": message,
+            "name": "Snacks",
+            "type": 11,
+            "auto_archive_duration": 4320,
+            "location": "Message",
+        })
+    );
+    assert_eq!(
+        creates.last().unwrap(),
+        &serde_json::json!({
+            "channel": general,
+            "name": "Surprise",
+            "type": 12,
+            "auto_archive_duration": 4320,
+            "location": "Thread Browser Toolbar",
+        })
+    );
 }

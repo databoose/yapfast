@@ -731,3 +731,37 @@ The difference is inside the spread between runs of one build, so the
 menus cost nothing measurable while idle.
 
 Reproduce: as for the server foundations above, with each build's binary.
+
+## 2026-10-14: A Discord channel's list of threads
+
+The [record](2026-10-14-linux-thread-list.json) compares `8523e9b` with the
+list of threads at `8abb501`. Each active thread the service knows now
+keeps its newest message (its id, author and up to 200 bytes of text), its
+member count and three member ids: 48 bytes more in the thread, plus about
+300 bytes of text and ids, and only for active threads in servers Talk
+subscribed to. The list keeps its archived pages, search results and the
+channel objects it found only while it's open. Both Discord-only `fast`
+builds ran on this change's fake with #general open, and each figure is
+glibc's heap in use, from the window-control `stats` command, as RSS swung
+with other builds on the host.
+
+| Build and state | Heap in use, mean of 3 |
+| --- | --- |
+| `8523e9b`, #general | 7.05 MiB |
+| This change, #general | 7.17 MiB (one run 7.40, as `main` gave in an earlier run) |
+| This change, list open with all 30 archived threads loaded | +2.52 MiB |
+| This change, after the list closes | +1.91 MiB |
+
+Idle with the list never opened, the difference is within the spread
+between runs. Most of what the list costs stays after it first closes, but
+it doesn't grow with later opens: three opens and closes in a row left
+9.31, 9.35 and 9.35 MiB. The pins popover, already in `main`, also leaves
+tens of KiB after each open. What stays is most likely Skia's glyph cache:
+the list's rows fill it with sizes and weights shown nowhere else, and it
+is bounded at 2 MiB by default. This isn't confirmed.
+
+Reproduce: start each build's binary with `scripts/ui-session start
+--discord --bin BUILD`, open #general, append `stats` to
+`.local/ui-session/window-control`, and read the in-use bytes from
+`.local/ui-session/talk.log`; for this change, open the list, scroll it to
+its end and read again, then close it and read again.

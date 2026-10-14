@@ -47,6 +47,9 @@ fn bits(permission: Permission) -> u64 {
         Permission::ManageNicknames => permission::MANAGE_NICKNAMES,
         Permission::ViewChannel => permission::VIEW_CHANNEL,
         Permission::SendMessages => permission::SEND_MESSAGES,
+        Permission::ReadHistory => permission::READ_MESSAGE_HISTORY,
+        Permission::CreatePublicThreads => permission::CREATE_PUBLIC_THREADS,
+        Permission::CreatePrivateThreads => permission::CREATE_PRIVATE_THREADS,
     }
 }
 

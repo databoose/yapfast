@@ -19,13 +19,15 @@ impl Application {
             return vec![];
         };
         self.state.add_people = None;
+        let mut effects = self.close_threads();
         self.state.pins = Some(Pins {
             room: room.clone(),
             messages: None,
         });
-        vec![Effect::Backend(Command::Discord(DiscordCommand::Pins {
+        effects.push(Effect::Backend(Command::Discord(DiscordCommand::Pins {
             room,
-        }))]
+        })));
+        effects
     }
 
     pub(super) fn pins_came(&mut self, room: String, result: Result<Vec<ChatMessage>, String>) {

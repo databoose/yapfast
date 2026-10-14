@@ -20,7 +20,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, Middle } from "theme.slint";
-import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
+import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, VoiceDock, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
@@ -31,8 +31,8 @@ import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, 
 import { ContactRow, ForwardRow, StatusDialog, NewDmDialog, ForwardDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
-import { FoundRow, PickRow, HeaderSearch, PinsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
-import { ThreadPanel } from "thread.slint";
+import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
+import { ThreadPanel, NewThreadPanel } from "thread.slint";
 
 // Rust sees these, besides TalkWindow.
 export { Badges } from "theme.slint";
@@ -523,6 +523,48 @@ export component TalkWindow inherits Window {
     in property <[FoundRow]> pins;
     in property <string> pins-note;
     callback show-pins(bool);
+    // The open channel's list of its threads; see ThreadsPopover.
+    in property <bool> can-list-threads;
+    in property <bool> threads-open;
+    in property <[ThreadRow]> thread-rows;
+    in property <string> threads-note;
+    in property <bool> threads-empty;
+    in property <bool> threads-searchable;
+    in-out property <string> threads-query;
+    in property <bool> threads-more;
+    in property <bool> threads-loading;
+    callback show-threads(bool);
+    callback search-threads(string);
+    callback more-threads;
+    /// Open a thread from the list: in place of the channel, or beside it.
+    callback open-listed-thread(string, bool);
+    // Starting a thread; see NewThreadPanel.
+    /// Threads can start from the open channel's messages.
+    in property <bool> can-start-threads;
+    /// The list of threads' channel can have threads started in it.
+    in property <bool> threads-can-create;
+    in property <bool> new-thread-open;
+    in property <bool> new-thread-from-message;
+    in property <FoundRow> new-thread-starter;
+    in-out property <string> new-thread-name;
+    in property <string> new-thread-placeholder;
+    in-out property <string> new-thread-body;
+    in property <bool> new-thread-can-private;
+    in property <bool> new-thread-only-private;
+    in property <bool> new-thread-private;
+    in property <bool> new-thread-starting;
+    in property <string> new-thread-error;
+    in property <bool> new-thread-leaving;
+    /// Open the form: from a message, by item, or from none, and from
+    /// where: "message", "list", "list-empty" or "plus".
+    callback new-thread(string, string);
+    callback new-thread-name-edited(string);
+    callback new-thread-body-edited(string);
+    callback set-thread-private(bool);
+    callback create-thread;
+    callback close-new-thread;
+    callback leave-new-thread;
+    callback stay-in-new-thread;
     /// The header's search, and what it found, beside the conversation. An
     /// empty search ends it. A server channel's searches its whole server,
     /// and the box says so.
@@ -877,7 +919,9 @@ export component TalkWindow inherits Window {
     property <bool> members-docked: root.members-available && root.member-list && !root.search-open && !root.aside-docked;
     // A thread opened beside the channel takes the place of the member list
     // and the profile, and search results take its place.
-    property <bool> aside-docked: root.aside-open && !root.search-open;
+    // The thread beside the channel, or the form that starts one, in place
+    // of its member list.
+    property <bool> aside-docked: (root.aside-open || root.new-thread-open) && !root.search-open;
     // Rows remade under the pointer show their tooltip again; it goes with the screen.
     changed friends-open => { Tip.text = ""; }
     property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown && !root.search-open && !root.aside-docked;
@@ -1066,6 +1110,28 @@ export component TalkWindow inherits Window {
         root.menu-y = account-panel.absolute-position.y;
         status-menu.show();
     }
+    // The composer's +, where threads can start: upload a file or start one.
+    plus-menu := PopupWindow {
+        width: 224px; height: plus-content.preferred-height;
+        x: max(8px, min(root.width - self.width - 8px, root.menu-x));
+        y: max(8px, root.menu-y - self.height - 8px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            plus-content := VerticalLayout {
+                padding: 6px; spacing: 2px;
+                MenuItem {
+                    text: "Upload a File"; icon: @image-url("icons/file.svg"); disabled: !root.can-attach;
+                    clicked => { if root.can-attach { plus-menu.close(); root.attach(); } }
+                }
+                MenuItem {
+                    text: "Create Thread"; icon: @image-url("icons/messages-square.svg");
+                    clicked => { plus-menu.close(); root.new-thread("", "plus"); }
+                }
+            }
+        }
+    }
     status-menu := PopupWindow {
         width: 248px; height: status-menu-content.preferred-height;
         x: max(8px, min(root.width - self.width - 8px, root.menu-x));
@@ -1136,6 +1202,9 @@ export component TalkWindow inherits Window {
         close-policy: PopupClosePolicy.close-on-click-outside;
         menu-content := MessageMenu {
             menu-message: root.menu-message; menu-can-react: root.menu-can-react; menu-reactions: root.menu-reactions;
+            can-start-thread: root.can-start-threads && !root.menu-aside;
+            start-thread(item) => { root.new-thread(item, "message"); message-menu.close(); }
+            view-thread(room) => { root.open-aside(room); message-menu.close(); }
             emoji-font: root.emoji-font; composer-enabled: root.composer-enabled; trusted: root.trusted; preview: root.preview;
             react(item, key) => { root.react(item, key); message-menu.close(); }
             open-picker(item) => { root.open-picker(item); message-menu.close(); }
@@ -1435,6 +1504,18 @@ export component TalkWindow inherits Window {
                                 icon: @image-url("icons/phone.svg"); label: root.call-going ? "Join the call" : "Start a call";
                                 size: 32px; glyph: 20px; enabled: root.can-join; tip-side: 2;
                                 clicked => { root.start-call(); }
+                            }
+                        }
+                        if root.can-list-threads: Middle {
+                            IconButton {
+                                icon: @image-url("icons/messages-square.svg"); label: "Threads";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                tint: root.threads-open ? Theme.text : Theme.secondary;
+                                clicked => {
+                                    root.popover-x = self.absolute-position.x + self.width;
+                                    root.popover-y = self.absolute-position.y + self.height;
+                                    root.show-threads(!root.threads-open);
+                                }
                             }
                         }
                         if root.can-notify: Middle {
@@ -1949,10 +2030,22 @@ export component TalkWindow inherits Window {
                                         // The buttons stay on the last line as the composer grows.
                                         VerticalLayout {
                                             alignment: end; padding-bottom: 8px;
+                                            // Where threads can start, it opens Discord's menu
+                                            // of uploading a file or starting a thread.
                                             IconButton {
-                                                icon: @image-url("icons/circle-plus.svg"); label: "Attach files";
+                                                icon: @image-url("icons/circle-plus.svg");
+                                                label: root.can-start-threads ? "More options" : "Attach files";
                                                 glyph: 22px;
-                                                enabled: root.can-attach; clicked => { root.attach(); }
+                                                enabled: root.can-attach || root.can-start-threads;
+                                                clicked => {
+                                                    if root.can-start-threads {
+                                                        root.menu-x = self.absolute-position.x;
+                                                        root.menu-y = self.absolute-position.y;
+                                                        plus-menu.show();
+                                                    } else {
+                                                        root.attach();
+                                                    }
+                                                }
                                             }
                                         }
                                         composer := Composer {
@@ -2023,7 +2116,26 @@ export component TalkWindow inherits Window {
                         more-results => { root.more-results(); }
                         close => { root.search-text = ""; root.search(""); }
                     }
-                    if root.aside-docked: ThreadPanel {
+                    if root.aside-docked && root.new-thread-open: NewThreadPanel {
+                        width: root.aside-shown;
+                        from-message: root.new-thread-from-message; starter: root.new-thread-starter;
+                        name <=> root.new-thread-name; name-placeholder: root.new-thread-placeholder;
+                        body <=> root.new-thread-body;
+                        can-private: root.new-thread-can-private; only-private: root.new-thread-only-private;
+                        private: root.new-thread-private; starting: root.new-thread-starting;
+                        error: root.new-thread-error; leaving: root.new-thread-leaving;
+                        init => { self.focus-composer(); }
+                        name-edited(text) => { root.new-thread-name-edited(text); }
+                        body-edited(text) => { root.new-thread-body-edited(text); }
+                        private-changed(private) => { root.set-thread-private(private); }
+                        create => { root.create-thread(); }
+                        close => { root.close-new-thread(); }
+                        leave => { root.leave-new-thread(); }
+                        stay => { root.stay-in-new-thread(); }
+                        jump-to(item) => { root.jump-to(item); }
+                        open-link(link) => { root.open-link(link); }
+                    }
+                    if root.aside-docked && !root.new-thread-open: ThreadPanel {
                         width: root.aside-shown;
                         name: root.aside-name; messages: root.aside-messages; ready: root.aside-ready;
                         loading: root.aside-loading; start: root.aside-start; failed: root.aside-failed;
@@ -2272,6 +2384,32 @@ export component TalkWindow inherits Window {
             jump(item) => { root.show-pins(false); root.jump-to(item); }
             open-link(link) => { root.open-link(link); }
             close => { root.show-pins(false); }
+        }
+    }
+    // The open channel's threads, under the Threads button. Opening one
+    // closes them, as does Escape or a click outside.
+    if root.threads-open: Rectangle {
+        TouchArea { clicked => { root.show-threads(false); } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.show-threads(false); return accept; }
+                return reject;
+            }
+            ThreadsPopover {
+                x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
+                y: root.popover-y + 6px;
+                height: min(600px, root.height - self.y - 16px);
+                rows: root.thread-rows; note: root.threads-note; empty: root.threads-empty;
+                searchable: root.threads-searchable; query <=> root.threads-query;
+                more: root.threads-more; loading: root.threads-loading; can-create: root.threads-can-create;
+                search(text) => { root.search-threads(text); }
+                create(from) => { root.new-thread("", from); }
+                // Opening first, as it may use what the list found.
+                open(room, beside) => { root.open-listed-thread(room, beside); root.show-threads(false); }
+                more-threads => { root.more-threads(); }
+                close => { root.show-threads(false); }
+            }
         }
     }
     // Friends to add to the open DM, under the add button.

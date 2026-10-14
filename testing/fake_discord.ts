@@ -137,7 +137,17 @@
 // /_control/thread-start makes Bob start "Movie night" without a message,
 // which Alice isn't in, with its notice in #general and his first message in
 // it; POST /_control/thread-archive archives "Plans", and with ?open opens it
-// again. Writing in a thread adds Alice to it, as Discord does.
+// again. Writing in a thread adds Alice to it, as Discord does. #general has
+// other threads too: "Book club", which Alice isn't in, a private one she
+// can't see, and 30 older, archived ones. Subscribing to the server with
+// `threads` sends THREAD_LIST_SYNC with its active threads and each one's
+// newest message, and GET /channels/{id}/threads/search lists a channel's
+// threads, as Discord's list of threads asks; GET /_control/thread-searches
+// lists each search's query. POST /channels/{id}/messages/{id}/threads and
+// POST /channels/{id}/threads start threads as Discord does, with
+// THREAD_CREATE, THREAD_MEMBERS_UPDATE adding Alice, the message's
+// MESSAGE_UPDATE and the THREAD_CREATED notice; GET /_control/thread-creates
+// lists each body sent.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -757,7 +767,8 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     tts: false,
     timestamp: iso(timeOf(message.id)),
     edited_timestamp: message.edited ? iso(message.edited) : null,
-    flags: 0,
+    // HAS_THREAD, once a thread started from it.
+    flags: threads.has(message.id) ? 1 << 5 : 0,
     components: [],
   };
   if (message.nonce) wire.nonce = message.nonce;
@@ -1007,7 +1018,7 @@ post(REQUEST_ERIN, strangers.erin!, "Hi Alice, Bob gave me your name. Can I ask 
 // Threads of "Server" by id, each with its messages in `messages`. One
 // started from a message has that message's id.
 type Thread = {
-  id: string; parent: string; name: string; owner: User; type: 11 | 12;
+  id: string; parent: string; name: string; owner: User; type: 10 | 11 | 12;
   archived: boolean; locked: boolean; created: number;
   /** Who is in it, and since when, in Unix milliseconds. */
   members: Map<string, number>;
@@ -1032,6 +1043,7 @@ function wireThread(thread: Thread) {
     name: thread.name, flags: 0, rate_limit_per_user: 0,
     last_message_id: list.at(-1)?.id ?? null,
     message_count: count, total_message_sent: count, member_count: thread.members.size,
+    member_ids_preview: [...thread.members.keys()].slice(0, 5),
     thread_metadata: {
       archived: thread.archived, auto_archive_duration: 4320, archive_timestamp: iso(thread.created),
       locked: thread.locked, create_timestamp: iso(thread.created),
@@ -1041,10 +1053,13 @@ function wireThread(thread: Thread) {
 }
 
 /** Makes a thread, in #general unless it says otherwise. */
-function makeThread(id: string, name: string, owner: User, created: number, members: string[]): Thread {
+function makeThread(
+  id: string, name: string, owner: User, created: number, members: string[], extra: Partial<Thread> = {},
+): Thread {
   const thread: Thread = {
     id, parent: GENERAL, name, owner, type: 11, archived: false, locked: false, created,
     members: new Map(members.map((user) => [user, created])),
+    ...extra,
   };
   threads.set(id, thread);
   messages.set(id, []);
@@ -1068,6 +1083,64 @@ const plans = makeThread(welcome.id, "Plans", users.bob, HISTORY_START + 20_000,
 post(plans.id, users.bob, "", HISTORY_START + 20_000, { type: 21, starter: welcome.id });
 post(plans.id, users.bob, "Saturday works for me", HISTORY_START + 40_000);
 const plansRead = post(plans.id, users.carol, "Count me in", HISTORY_START + 50_000);
+
+// "Book club", Carol's, which Alice isn't in, is one of #general's other
+// active threads; "Surprise for Bob" is private, and hidden from her.
+const bookClub = makeThread(nextId(HISTORY_START + 60_000), "Book club", users.carol, HISTORY_START + 60_000, [users.carol.id, users.bob.id]);
+post(bookClub.id, users.carol, "First up: Piranesi", HISTORY_START + 61_000);
+post(bookClub.id, users.bob, "Chapter 3 by Friday?", HISTORY_START + 62_000);
+const surprise = makeThread(nextId(HISTORY_START + 63_000), "Surprise for Bob", users.carol, HISTORY_START + 63_000, [users.carol.id, users.dave.id], { type: 12 });
+post(surprise.id, users.carol, "Cake or pie?", HISTORY_START + 64_000);
+// #general's older threads, archived, one a day back from the fixture's
+// start, more than a page of them: Alice is in every fourth.
+const OLD_TOPICS = ["Game night", "Movie picks", "Lunch spots", "Bug hunt", "Road trip", "Playlist"];
+for (let index = 0; index < 30; index++) {
+  const created = HISTORY_START - (index + 1) * 86_400_000;
+  const owner = [users.bob, users.carol, users.dave][index % 3]!;
+  const members = index % 4 === 0 ? [owner.id, ALICE] : [owner.id];
+  const thread = makeThread(snowflake(created, 900), `${OLD_TOPICS[index % OLD_TOPICS.length]} ${index + 1}`, owner, created, members, { archived: true });
+  post(thread.id, owner, `Wrapping up ${thread.name}`, created + 3_600_000, { id: snowflake(created + 3_600_000, 901) });
+}
+
+/** Whether Alice may see a thread: a private one only once she's in it. */
+const visibleThread = (thread: Thread) => thread.type !== 12 || thread.members.has(ALICE);
+
+/** When a thread was last active: its newest message, else its start. */
+const threadActivity = (thread: Thread) => BigInt(messages.get(thread.id)!.at(-1)?.id ?? thread.id);
+
+/** Each search of a channel's threads, as GET /_control/thread-searches lists them. */
+const threadSearches: string[] = [];
+/** Each thread Alice started: the channel, the message, if any, and the body
+ *  she sent, as GET /_control/thread-creates lists them. */
+const threadCreates: Record<string, unknown>[] = [];
+
+/** Discord's answer to a thread name that's empty or longer than 100. */
+function threadNameError(name: unknown): Response | undefined {
+  const length = typeof name === "string" ? [...name.trim()].length : 0;
+  if (length >= 1 && length <= 100) return undefined;
+  return json({
+    message: "Invalid Form Body", code: 50035,
+    errors: { name: { _errors: [{ code: "BASE_TYPE_BAD_LENGTH", message: "Must be between 1 and 100 in length." }] } },
+  }, 400);
+}
+
+/** Tells Alice of a thread she started: THREAD_CREATE, then her joining it. */
+function announceThread(thread: Thread) {
+  const { member: _member, ...wire } = wireThread(thread) as Record<string, unknown>;
+  dispatch("THREAD_CREATE", { ...wire, newly_created: true });
+  dispatch("THREAD_MEMBERS_UPDATE", {
+    id: thread.id, guild_id: GUILD, member_count: thread.members.size,
+    member_ids_preview: [...thread.members.keys()].slice(0, 5),
+    added_members: [{ ...wireThreadMember(thread), member: member(users.alice), presence: null }],
+    removed_member_ids: [],
+  });
+}
+
+/** A notice in a thread's channel that it started, as type 18. */
+function noticeThread(thread: Thread, origin: string) {
+  const notice = post(thread.parent, users.alice, thread.name, Date.now(), { type: 18, notice: thread.id });
+  dispatch("MESSAGE_CREATE", dispatched(notice, origin));
+}
 
 // Alice has read all but the last `--unread` messages of the fixture, and Bob's
 // last two in their DM, which count as mentions as in Discord.
@@ -1148,6 +1221,9 @@ type SocketData = {
   cameras?: Set<string>;
   /** The member list this session subscribed to last, by its id. */
   listing?: string;
+  /** Its server's active threads were synced, as a subscription with
+   *  `threads` does once. */
+  threadsSynced?: boolean;
   /** A remote login: the client's key, the nonce it must prove, and the code. */
   remoteAuth?: { key?: CryptoKey; nonce?: Uint8Array; fingerprint?: string; scanned?: boolean; timer?: Timer };
 };
@@ -1862,6 +1938,24 @@ function gatewayMessage(ws: Socket, text: string) {
       // list is sent when asked for. The list subscribed to before stops,
       // which Discord says with INVALIDATE.
       for (const [guildId, subscription] of Object.entries<any>(d.subscriptions ?? {})) {
+        // Subscribing with `threads` syncs the server's active threads Alice
+        // may see, with her thread members and each one's newest message.
+        if (guildId === GUILD && subscription.threads && !ws.data.threadsSynced) {
+          ws.data.threadsSynced = true;
+          const active = [...threads.values()].filter((thread) => !thread.archived && visibleThread(thread));
+          send(ws, 0, {
+            guild_id: GUILD,
+            threads: active.map((thread) => {
+              const { member: _member, ...wire } = wireThread(thread) as Record<string, unknown>;
+              return wire;
+            }),
+            members: active.filter((thread) => thread.members.has(ALICE)).map(wireThreadMember),
+            most_recent_messages: active
+              .map((thread) => messages.get(thread.id)!.at(-1))
+              .filter((message) => message !== undefined)
+              .map((message) => ({ ...wireMessage(message, ws.data.origin), guild_id: GUILD })),
+          }, "THREAD_LIST_SYNC");
+        }
         const channel = Object.keys(subscription.channels ?? {})[0];
         if (guildId !== GUILD || channel === undefined) continue;
         listRequests++;
@@ -3080,6 +3174,81 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     });
   }
 
+  // Starting a thread from a message: a public one, or an announcement
+  // thread in an announcement channel, with the message's id. Its first
+  // message points back at the message, which gains it, and its channel
+  // hears of it if the message wasn't among its ten newest.
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)\/threads$/))) {
+    const [, parent, id] = m as unknown as [string, string, string];
+    if (!messages.has(parent) || privates.has(parent) || threads.has(parent)) return notFound("Unknown Channel", 10003);
+    const original = byId.get(id);
+    if (!original || original.channel !== parent) return notFound("Unknown Message", 10008);
+    const body: any = await req.json();
+    threadCreates.push({ channel: parent, message: id, ...body });
+    const invalid = threadNameError(body.name);
+    if (invalid) return invalid;
+    if (threads.has(id)) return json({ message: "A thread has already been created for this message", code: 160004 }, 400);
+    const now = Date.now();
+    const thread = makeThread(id, body.name.trim(), users.alice, now, [ALICE], { parent });
+    post(thread.id, users.alice, "", now, { type: 21, starter: id });
+    announceThread(thread);
+    dispatch("MESSAGE_UPDATE", dispatched(original, origin));
+    if (!messages.get(parent)!.slice(-10).includes(original)) noticeThread(thread, origin);
+    return json(wireThread(thread), 201);
+  }
+
+  // Starting a thread without a message: public or private in a text
+  // channel, as `type` says. A public one's channel hears of it.
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/threads$/))) {
+    const parent = m[1]!;
+    if (!messages.has(parent) || privates.has(parent) || threads.has(parent)) return notFound("Unknown Channel", 10003);
+    const body: any = await req.json();
+    threadCreates.push({ channel: parent, ...body });
+    const invalid = threadNameError(body.name);
+    if (invalid) return invalid;
+    if (body.type !== 11 && body.type !== 12) {
+      return json({ message: "Invalid Form Body", code: 50035, errors: { type: { _errors: [{ code: "BASE_TYPE_CHOICES", message: "Value must be one of {11, 12}." }] } } }, 400);
+    }
+    const now = Date.now();
+    const thread = makeThread(nextId(now), body.name.trim(), users.alice, now, [ALICE], { parent, type: body.type });
+    announceThread(thread);
+    if (thread.type !== 12) noticeThread(thread, origin);
+    return json(wireThread(thread), 201);
+  }
+
+  // A channel's threads that Alice may see, as Discord's client lists them:
+  // `archived` picks a kind, `name` finds them by the words of their names,
+  // the newest message first, `limit` from the `offset`th. The first search
+  // of each channel answers 202, as Discord's does while it indexes it.
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/threads\/search$/))) {
+    const parent = m[1]!;
+    if (!messages.has(parent) || privates.has(parent) || threads.has(parent)) return notFound("Unknown Channel", 10003);
+    threadSearches.push(url.search.slice(1));
+    if (!indexed.has(`threads:${parent}`)) {
+      indexed.add(`threads:${parent}`);
+      return json({ message: "Index not yet available. Try again later", code: 110000, documents_indexed: 0, retry_after: 0 }, 202);
+    }
+    const archived = url.searchParams.get("archived");
+    const words = (url.searchParams.get("name") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const limit = Math.min(25, Math.max(1, Number(url.searchParams.get("limit") ?? 25)));
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    const found = [...threads.values()]
+      .filter((thread) => thread.parent === parent && visibleThread(thread))
+      .filter((thread) => archived === null || thread.archived === (archived === "true"))
+      .filter((thread) => words.every((word) => thread.name.toLowerCase().includes(word)))
+      .sort((a, b) => (threadActivity(b) > threadActivity(a) ? 1 : -1));
+    const page = found.slice(offset, offset + limit);
+    return json({
+      threads: page.map((thread) => {
+        const { member: _member, ...wire } = wireThread(thread) as Record<string, unknown>;
+        return wire;
+      }),
+      members: page.filter((thread) => thread.members.has(ALICE)).map(wireThreadMember),
+      has_more: offset + limit < found.length,
+      total_results: found.length,
+    });
+  }
+
   // A server's messages, in the channels `channel_id` names or in all of
   // them, found by their text; the first search of each server answers 202,
   // as Discord's does while it indexes it.
@@ -4158,6 +4327,12 @@ const server = Bun.serve<SocketData>({
       const first = post(thread.id, users.bob, "Friday at 8?", now);
       dispatch("MESSAGE_CREATE", dispatched(first, url.origin));
       return Response.json(thread.id);
+    }
+    if (req.method === "GET" && path === "/_control/thread-searches") {
+      return Response.json(threadSearches);
+    }
+    if (req.method === "GET" && path === "/_control/thread-creates") {
+      return Response.json(threadCreates);
     }
     if (req.method === "POST" && path === "/_control/thread-archive") {
       plans.archived = !url.searchParams.has("open");

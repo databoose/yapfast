@@ -38,7 +38,8 @@ routes each action to a method in the module for its area, under
 `rooms`, `aside`, which shows a Discord thread beside the open channel,
 `profiles`, `calls`, `session`, `preview`, `discord_account`,
 `header`, which holds what a conversation's header opens: its pins, a search
-of a DM or a whole server, and adding friends to a DM, `server`, which
+of a DM or a whole server, and adding friends to a DM, `threads`, a Discord
+channel's list of its threads, `server`, which
 answers what the account may do in a Discord server and how the server
 notifies it, `members`, which builds a server member's menu and carries
 out its choices, and `places`, which builds the menus of Discord servers,
@@ -120,7 +121,7 @@ A visible change usually touches each of these steps:
    action to the module for its area in `crates/talk-core/src/application/`:
    `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `calls.rs`,
    `session.rs`, `preview.rs`, `discord_account.rs`, `header.rs`,
-   `server.rs`, `members.rs` or `places.rs`.
+   `threads.rs`, `server.rs`, `members.rs` or `places.rs`.
 5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to
    the chat actor in `crates/talk-core/src/chat.rs`, which routes it to the
    network its room id names, or to voice. Matrix lives

@@ -5353,3 +5353,367 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         [Effect::OpenPage(page)] if page == "https://discord.com/nitro"
     ));
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_channels_threads_list_as_discords_client_lists_them() {
+    use chat::ListedThread;
+    use talk_discord::{
+        ready::{self, Access, permission},
+        service::{Snapshot, Status},
+    };
+    let bits = |bits: u64| bits.to_string();
+    let thread = |id: &str, name: &str, parent: &str, last: &str, archived: bool, joined: bool| {
+        let mut thread = serde_json::json!({
+            "id": id, "type": 11, "name": name, "parent_id": parent, "guild_id": "10",
+            "last_message_id": last, "member_count": 3, "member_ids_preview": ["2", "3"],
+            "thread_metadata": {"archived": archived, "locked": false},
+        });
+        if joined {
+            thread["member"] = serde_json::json!({"id": id, "user_id": "1", "flags": 1});
+        }
+        thread
+    };
+    let mut server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99", "properties": {"name": "Test"},
+        "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": bits(
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES
+                | permission::READ_MESSAGE_HISTORY | permission::SEND_MESSAGES_IN_THREADS)}],
+        "channels": [
+            {"id": "11", "type": 0, "name": "general", "position": 0},
+            {"id": "12", "type": 5, "name": "news", "position": 1,
+             "permission_overwrites": [{"id": "10", "type": 0, "allow": "0",
+                                        "deny": bits(permission::READ_MESSAGE_HISTORY)}]},
+            {"id": "13", "type": 2, "name": "Lounge", "position": 2},
+        ],
+        "threads": [
+            thread("30", "Plans", "11", "300", false, true),
+            thread("31", "Book club", "11", "310", false, false),
+            thread("32", "Old", "11", "200", true, false),
+            thread("33", "Secret", "11", "320", false, false),
+            thread("34", "Elsewhere", "12", "330", false, false),
+        ],
+    }))
+    .unwrap();
+    // READY lists only those she's in; the rest came with THREAD_LIST_SYNC.
+    // As the service publishes them, a private one she isn't in is hidden.
+    for channel in &mut server.threads {
+        channel.thread.as_mut().unwrap().joined = channel.id == "30";
+        if channel.id == "33" {
+            channel.access = Access::Hidden;
+        }
+    }
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        servers: vec![Arc::new(server)],
+        ..Default::default()
+    }));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let general = "discord:10:11".to_owned();
+    app.dispatch(Action::SelectRoom(general.clone()));
+    assert_eq!(app.state.threads_channel(), Some(general.as_str()));
+
+    // Opening it asks for the first page of archived threads, and only that.
+    assert!(matches!(
+        app.dispatch(Action::ShowThreads(true)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Threads { room, query: None, offset: 0 }))]
+            if *room == general
+    ));
+    let rooms = |threads: &[ListedThread]| {
+        threads
+            .iter()
+            .map(|thread| {
+                thread
+                    .room
+                    .as_str()
+                    .trim_start_matches("discord:10:")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let listed = |id: &str, last: u64| ListedThread {
+        room: format!("discord:10:{id}"),
+        name: format!("Thread {id}"),
+        archived: true,
+        last,
+        ..Default::default()
+    };
+    app.apply(Event::Threads {
+        room: general.clone(),
+        query: None,
+        offset: 0,
+        result: Ok((vec![listed("40", 250), listed("41", 150)], true)),
+    });
+    let sections = app.thread_sections().unwrap();
+    assert_eq!(rooms(&sections.joined), ["30"]);
+    assert_eq!(rooms(&sections.other), ["31"], "the hidden one stays out");
+    // Those the server knows were archived join the pages they fall within.
+    assert_eq!(rooms(&sections.older), ["40", "32", "41"]);
+    let plans = &sections.joined[0];
+    assert_eq!((plans.last, plans.members), (300, 3));
+    assert_eq!(plans.member_avatars.len(), 2);
+
+    // The next page loads once, from where the last ended.
+    assert!(matches!(
+        app.dispatch(Action::MoreThreads).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Threads {
+            query: None,
+            offset: 25,
+            ..
+        }))]
+    ));
+    assert!(app.dispatch(Action::MoreThreads).is_empty());
+    app.apply(Event::Threads {
+        room: general.clone(),
+        query: None,
+        offset: 25,
+        result: Ok((vec![listed("42", 100)], false)),
+    });
+    assert_eq!(
+        rooms(&app.thread_sections().unwrap().older),
+        ["40", "32", "41", "42"]
+    );
+    assert!(app.dispatch(Action::MoreThreads).is_empty(), "none left");
+
+    // A search stands in for the list until it's cleared.
+    assert!(matches!(
+        app.dispatch(Action::SearchThreads(" book ".into())).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::Threads { query: Some(query), offset: 0, .. }))]
+            if query == "book"
+    ));
+    app.apply(Event::Threads {
+        room: general.clone(),
+        query: Some("book".into()),
+        offset: 0,
+        result: Ok((vec![listed("31", 310)], false)),
+    });
+    let search = app.state.thread_list().unwrap().search.as_ref().unwrap();
+    assert!(matches!(&search.found, Some(Ok(found)) if found.len() == 1));
+    assert!(
+        app.dispatch(Action::SearchThreads(String::new()))
+            .is_empty()
+    );
+    assert!(app.state.thread_list().unwrap().search.is_none());
+
+    // Closing it, or opening another room, forgets what it found.
+    assert!(matches!(
+        app.dispatch(Action::ShowThreads(false)).as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::CloseThreads
+        ))]
+    ));
+    assert!(app.state.threads.is_none());
+    app.dispatch(Action::ShowThreads(true));
+    let effects = app.dispatch(Action::SelectRoom("discord:10:30".into()));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Discord(DiscordCommand::CloseThreads))
+    )));
+    assert!(app.state.threads.is_none());
+    // A thread lists its channel's threads.
+    assert_eq!(app.state.threads_channel(), Some(general.as_str()));
+
+    // Without its history, a channel lists only its active threads, as
+    // Discord's client does.
+    app.dispatch(Action::SelectRoom("discord:10:12".into()));
+    assert!(app.dispatch(Action::ShowThreads(true)).is_empty());
+    let sections = app.thread_sections().unwrap();
+    assert_eq!(rooms(&sections.other), ["34"]);
+    // A voice channel has none.
+    app.dispatch(Action::SelectRoom("discord:10:13".into()));
+    assert_eq!(app.state.threads_channel(), None);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_thread_starts_from_discords_new_thread_form() {
+    use talk_discord::{
+        ready::{self, permission},
+        service::{Snapshot, Status},
+    };
+    let bits = |bits: u64| bits.to_string();
+    let server = |threads: Vec<serde_json::Value>| {
+        let mut server = ready::server(&serde_json::json!({
+            "id": "10", "owner_id": "99", "properties": {"name": "Test"},
+            "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": bits(
+                permission::VIEW_CHANNEL | permission::SEND_MESSAGES
+                    | permission::READ_MESSAGE_HISTORY | permission::SEND_MESSAGES_IN_THREADS
+                    | permission::CREATE_PUBLIC_THREADS | permission::CREATE_PRIVATE_THREADS)}],
+            "channels": [
+                {"id": "11", "type": 0, "name": "general", "position": 0},
+                {"id": "12", "type": 5, "name": "news", "position": 1},
+                {"id": "14", "type": 0, "name": "quiet", "position": 2,
+                 "permission_overwrites": [{"id": "10", "type": 0, "allow": "0",
+                                            "deny": bits(permission::CREATE_PUBLIC_THREADS)}]},
+            ],
+            "threads": threads,
+        }))
+        .unwrap();
+        for channel in &mut server.threads {
+            channel.thread.as_mut().unwrap().joined = true;
+        }
+        Event::Discord(Arc::new(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            servers: vec![Arc::new(server)],
+            ..Default::default()
+        }))
+    };
+    let mut app = Application::default();
+    app.apply(server(vec![]));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let general = "discord:10:11".to_owned();
+    app.dispatch(Action::SelectRoom(general.clone()));
+    app.apply(Event::Timeline {
+        room: general.clone(),
+        messages: timeline(vec![ChatMessage {
+            body: "## Plan for the weekend trip to the mountains with everyone\nDetails".into(),
+            ..message("d:500", false)
+        }]),
+    });
+    assert!(app.can_start_threads());
+    assert_eq!(app.thread_starts(&general), (true, true));
+
+    // From a message: public, named after it unless named, and the
+    // channel's draft becomes its first message.
+    app.dispatch(Action::SetDraft("Who's driving?".into()));
+    let effects = app.dispatch(Action::NewThread {
+        message: Some("d:500".into()),
+        from: ThreadFrom::Message,
+    });
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::SaveDraft { room, body }) if *room == general && body.is_empty()
+    )));
+    let form = app.state.new_thread().unwrap();
+    assert_eq!(form.default_name, "Plan for the weekend trip to the...");
+    assert_eq!(form.body, "Who's driving?");
+    assert!(!form.can_private);
+    assert_eq!(app.state.draft(), "");
+    assert!(matches!(
+        app.dispatch(Action::CreateThread).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::StartThread {
+            room, message: Some(message), name, private: false, location: "Message",
+        }))] if *room == general && message == "d:500" && name == "Plan for the weekend trip to the..."
+    ));
+    // Discord tells of the thread before it answers; it opens beside the
+    // channel, and its first message goes once its timeline comes.
+    app.apply(server(vec![serde_json::json!({
+        "id": "500", "type": 11, "name": "Plan for the weekend trip to the...",
+        "parent_id": "11", "guild_id": "10", "member_count": 1,
+        "thread_metadata": {"archived": false, "locked": false},
+    })]));
+    let thread = "discord:10:500".to_owned();
+    assert!(
+        app.apply(Event::ThreadStarted {
+            room: general.clone(),
+            result: Ok(thread.clone()),
+        })
+        .iter()
+        .any(|effect| matches!(effect, Effect::Backend(Command::Aside(Some(room))) if *room == thread))
+    );
+    assert!(app.state.new_thread.is_none());
+    let effects = app.apply(Event::Timeline {
+        room: thread.clone(),
+        messages: timeline(vec![]),
+    });
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Send { room, body, .. }) if *room == thread && body == "Who's driving?"
+    )));
+
+    // From the composer's menu: it needs a name and a first message, and
+    // may be private.
+    app.dispatch(Action::CloseAside);
+    app.dispatch(Action::NewThread {
+        message: None,
+        from: ThreadFrom::PlusButton,
+    });
+    let form = app.state.new_thread().unwrap();
+    assert!(form.can_private && !form.only_private && !form.private);
+    app.dispatch(Action::CreateThread);
+    assert_eq!(
+        app.state.new_thread().unwrap().error.as_deref(),
+        Some("Thread Name is required")
+    );
+    app.dispatch(Action::WriteNewThread {
+        name: Some(format!("Snacks\n{}", "a".repeat(150))),
+        body: None,
+    });
+    let form = app.state.new_thread().unwrap();
+    assert_eq!(form.error, None);
+    assert_eq!(form.name.chars().count(), THREAD_NAME_LIMIT);
+    assert!(form.name.starts_with("Snacks a"));
+    app.dispatch(Action::CreateThread);
+    assert_eq!(
+        app.state.new_thread().unwrap().error.as_deref(),
+        Some("Starter Message is required")
+    );
+    app.dispatch(Action::SetThreadPrivate(true));
+    app.dispatch(Action::WriteNewThread {
+        name: Some("Snacks".into()),
+        body: Some("Chips?".into()),
+    });
+    assert!(matches!(
+        app.dispatch(Action::CreateThread).as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::StartThread {
+                message: None,
+                private: true,
+                location: "Plus Button",
+                ..
+            }
+        ))]
+    ));
+    // A refusal leaves the form as it was, saying why.
+    app.apply(Event::ThreadStarted {
+        room: general.clone(),
+        result: Err("Couldn't start the thread: no".into()),
+    });
+    let form = app.state.new_thread().unwrap();
+    assert!(!form.starting);
+    assert_eq!(form.error.as_deref(), Some("Couldn't start the thread: no"));
+    // Closing what was written asks first.
+    app.dispatch(Action::CloseNewThread);
+    assert!(app.state.new_thread().unwrap().leaving);
+    app.dispatch(Action::StayInNewThread);
+    assert!(!app.state.new_thread().unwrap().leaving);
+    app.dispatch(Action::CloseNewThread);
+    app.dispatch(Action::LeaveNewThread);
+    assert!(app.state.new_thread.is_none());
+
+    // An announcement channel has no private threads; where only private
+    // ones may start, the form starts one, and messages offer none.
+    app.dispatch(Action::SelectRoom("discord:10:12".into()));
+    app.dispatch(Action::NewThread {
+        message: None,
+        from: ThreadFrom::PlusButton,
+    });
+    assert!(!app.state.new_thread().unwrap().can_private);
+    app.dispatch(Action::SelectRoom("discord:10:14".into()));
+    assert!(app.state.new_thread.is_none(), "another room closes it");
+    assert!(!app.can_start_threads());
+    app.dispatch(Action::NewThread {
+        message: None,
+        from: ThreadFrom::PlusButton,
+    });
+    let form = app.state.new_thread().unwrap();
+    assert!(form.only_private && form.private);
+    app.dispatch(Action::SetThreadPrivate(false));
+    assert!(app.state.new_thread().unwrap().private);
+}
+
+#[test]
+fn a_threads_default_name_is_discords() {
+    let named = |body: &str| {
+        default_thread_name(&ChatMessage {
+            body: body.into(),
+            ..Default::default()
+        })
+    };
+    assert_eq!(named("- # Short\nmore"), "Short");
+    assert_eq!(named(""), "Thread");
+    assert_eq!(named(&"x".repeat(50)), format!("{}...", "x".repeat(40)));
+}

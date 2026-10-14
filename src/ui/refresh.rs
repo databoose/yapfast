@@ -197,6 +197,8 @@ impl Adapter {
         }
         self.show_header(window);
         self.show_dm_tools(window);
+        self.show_threads(window);
+        self.show_new_thread(window);
         self.show_members(window);
         self.show_invite(window);
         self.show_channel_dialog(window);
@@ -710,6 +712,128 @@ impl Adapter {
         window.set_discord_status(state.discord_presence.as_deref().unwrap_or("online").into());
         window.set_storage(state.storage.unwrap_or_default().into());
         window.set_notice(state.notice.as_deref().unwrap_or_default().into());
+    }
+
+    /// Starting a thread: what the open channel offers, and the "New
+    /// Thread" form beside it.
+    fn show_new_thread(&mut self, window: &TalkWindow) {
+        let app = &self.app;
+        let state = &app.state;
+        window.set_can_start_threads(app.can_start_threads());
+        window.set_threads_can_create(state.thread_list().is_some_and(|list| {
+            let (public, private) = app.thread_starts(&list.room);
+            public || private
+        }));
+        let form = state.new_thread();
+        window.set_new_thread_open(form.is_some());
+        let Some(form) = form else {
+            return;
+        };
+        // The fields are the window's while it's open; Talk writes them only
+        // when they differ, so the caret stays.
+        if window.get_new_thread_name() != form.name.as_str() {
+            window.set_new_thread_name(form.name.as_str().into());
+        }
+        if window.get_new_thread_body() != form.body.as_str() {
+            window.set_new_thread_body(form.body.as_str().into());
+        }
+        window.set_new_thread_placeholder(
+            match form.default_name.as_str() {
+                "" => "New Thread",
+                name => name,
+            }
+            .into(),
+        );
+        let starter = form.message.as_deref().and_then(|item| state.message(item));
+        window.set_new_thread_from_message(starter.is_some());
+        if let Some(starter) = starter {
+            window.set_new_thread_starter(super::messages::found_row(
+                starter,
+                self.layout.twelve_hour_clock,
+            ));
+        }
+        window.set_new_thread_can_private(form.can_private);
+        window.set_new_thread_only_private(form.only_private);
+        window.set_new_thread_private(form.private);
+        window.set_new_thread_starting(form.starting);
+        window.set_new_thread_error(form.error.as_deref().unwrap_or_default().into());
+        window.set_new_thread_leaving(form.leaving);
+    }
+
+    /// The open channel's list of its threads, built again only once what
+    /// it shows changes, or a minute passes.
+    fn show_threads(&mut self, window: &TalkWindow) {
+        let state = &self.app.state;
+        window.set_can_list_threads(state.threads_channel().is_some());
+        let list = state.thread_list();
+        if list.is_some() && !window.get_threads_open() {
+            window.set_threads_query(SharedString::default());
+        }
+        window.set_threads_open(list.is_some());
+        let Some(list) = list else {
+            if self.threads_shown.take().is_some() {
+                self.models.thread_rows.set_vec(Vec::new());
+            }
+            return;
+        };
+        let channel = &list.room;
+        window.set_threads_searchable(
+            self.app
+                .may(channel, talk_core::chat::Permission::ReadHistory),
+        );
+        window.set_threads_more(list.more && list.search.is_none());
+        window.set_threads_loading(list.loading);
+        let sections = self.app.thread_sections().unwrap_or_default();
+        let found = list.search.as_ref().map(|search| &search.found);
+        // While a search shows, its results stand in for the sections.
+        let (note, empty) = match found {
+            Some(None) => ("Searching...".to_owned(), false),
+            Some(Some(Err(error))) => (error.clone(), false),
+            Some(Some(Ok(found))) => (String::new(), found.is_empty()),
+            None if sections.is_empty() && list.loading => ("Loading threads...".into(), false),
+            None if sections.is_empty() => {
+                (list.error.clone().unwrap_or_default(), list.error.is_none())
+            }
+            None => (String::new(), false),
+        };
+        window.set_threads_note(note.into());
+        window.set_threads_empty(empty);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |now| now.as_millis() as u64);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        (&sections, found, now / 60_000).hash(&mut hasher);
+        let shown = hasher.finish();
+        if self.threads_shown == Some(shown) {
+            return;
+        }
+        self.threads_shown = Some(shown);
+        let mut rows = Vec::new();
+        match found {
+            Some(Some(Ok(found))) => {
+                rows.extend(found.iter().map(|thread| thread_row(thread, now)));
+            }
+            _ => {
+                let headed = [
+                    (&sections.joined, "joined thread", "joined threads"),
+                    (
+                        &sections.other,
+                        "other active thread",
+                        "other active threads",
+                    ),
+                ];
+                for (threads, one, many) in headed {
+                    let heading = match threads.len() {
+                        1 => format!("1 {one}"),
+                        count => format!("{count} {many}"),
+                    };
+                    push_section(&mut rows, threads, heading.to_uppercase(), now);
+                }
+                push_section(&mut rows, &sections.older, "OLDER THREADS".into(), now);
+            }
+        }
+        self.models.thread_rows.set_vec(rows);
     }
 
     /// The open conversation's header.
@@ -2889,5 +3013,74 @@ pub(super) fn video_time(at_ms: u64, duration_ms: Option<u64>) -> String {
     match duration_ms {
         Some(duration) => format!("{} / {}", clock(at_ms.min(duration)), clock(duration)),
         None => clock(at_ms),
+    }
+}
+
+/// A section of a list of threads: its heading over the first, if it has any.
+fn push_section(
+    rows: &mut Vec<ThreadRow>,
+    threads: &[talk_core::chat::ListedThread],
+    heading: String,
+    now: u64,
+) {
+    for (index, thread) in threads.iter().enumerate() {
+        let mut row = thread_row(thread, now);
+        if index == 0 {
+            row.heading = heading.clone().into();
+        }
+        rows.push(row);
+    }
+}
+
+/// A thread as its list shows it: an active one with its newest message,
+/// an archived one with who started it, as Discord's client does.
+fn thread_row(thread: &talk_core::chat::ListedThread, now: u64) -> ThreadRow {
+    let ago = ago(thread.active_ms, now);
+    let (person, lead, text, time) = match (&thread.recent, &thread.owner, thread.archived) {
+        (Some(recent), _, false) => (Some(&recent.author), "", recent.text.as_str(), ago),
+        (None, _, false) => (None, "", "No recent messages", ago),
+        (_, Some(owner), true) => (Some(owner), "Started by ", "", format!("Last active {ago}")),
+        (_, None, true) => (None, "", "", format!("Last active {ago}")),
+    };
+    ThreadRow {
+        room: thread.room.as_str().into(),
+        heading: SharedString::default(),
+        name: thread.name.as_str().into(),
+        private: thread.private,
+        archived: thread.archived,
+        person: person.map_or("", |person| person.name.as_str()).into(),
+        initial: person.map_or(SharedString::default(), |person| initial(&person.name)),
+        tint: person.map_or(slint::Color::default(), |person| tint(&person.name)),
+        picture_url: person.map_or("", |person| person.avatar.as_str()).into(),
+        color: role_color(person.and_then(|person| person.color)),
+        has_color: person.is_some_and(|person| person.color.is_some()),
+        lead: lead.into(),
+        text: text.into(),
+        time: time.into(),
+        members: match thread.members {
+            0 => SharedString::default(),
+            count => count.to_string().into(),
+        },
+        member_pictures: ModelRc::new(VecModel::from(
+            thread
+                .member_avatars
+                .iter()
+                .map(|avatar| SharedString::from(avatar.as_str()))
+                .collect::<Vec<_>>(),
+        )),
+    }
+}
+
+/// How long ago something was, as Discord's list of threads says it: "5s
+/// ago" up to "30d ago", then ">30d ago" and ">1y ago".
+pub(super) fn ago(at_ms: u64, now_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(at_ms) / 1000;
+    match seconds {
+        seconds if seconds < 60 => format!("{seconds}s ago"),
+        seconds if seconds < 3600 => format!("{}m ago", seconds / 60),
+        seconds if seconds < 86400 => format!("{}h ago", seconds / 3600),
+        seconds if seconds <= 30 * 86400 => format!("{}d ago", seconds / 86400),
+        seconds if seconds < 365 * 86400 => ">30d ago".into(),
+        _ => ">1y ago".into(),
     }
 }

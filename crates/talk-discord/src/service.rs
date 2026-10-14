@@ -154,6 +154,16 @@ pub struct Person {
     pub friend: bool,
 }
 
+/// A page of a channel's list of threads, in the order Discord gave it:
+/// each has [`ready::Channel::thread`], and its access set, and those this
+/// account may not see are left out.
+#[derive(Debug, Default)]
+pub struct ThreadPage {
+    pub threads: Vec<ready::Channel>,
+    /// Discord has more after these.
+    pub more: bool,
+}
+
 /// Messages a search found: one page, the newest first, and how many it
 /// found in all.
 #[derive(Debug, Default)]
@@ -166,6 +176,8 @@ pub struct Found {
 /// longest it waits between.
 const SEARCH_TRIES: u32 = 5;
 const SEARCH_WAIT: Duration = Duration::from_secs(5);
+/// How many minutes of quiet archive a thread, unless its channel says.
+const DEFAULT_ARCHIVE: u16 = 4320;
 /// Discord's answer to a search of a DM it hasn't indexed yet.
 const INDEX_NOT_READY: u64 = 110000;
 
@@ -340,7 +352,9 @@ enum Request {
     /// know and list: in place of the channel on screen, or beside it.
     OpenThread {
         guild: String,
-        thread: Value,
+        id: String,
+        /// Its channel object; none for one the server's snapshot has.
+        thread: Option<Value>,
         beside: bool,
     },
     /// The thread shown beside the channel on screen, or none.
@@ -439,6 +453,9 @@ pub struct Discord {
     names: Arc<RwLock<Names>>,
     /// Profiles fetched lately, oldest first.
     profiles: Arc<Mutex<Vec<Kept>>>,
+    /// The threads a list of a channel's threads found, by id, while it's
+    /// open: one opens from what Discord gave rather than asking again.
+    listed_threads: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 /// A profile fetched lately, for a user in a server.
@@ -506,6 +523,7 @@ impl Discord {
             api,
             names,
             profiles: Arc::default(),
+            listed_threads: Arc::default(),
         })
     }
 
@@ -1164,18 +1182,195 @@ impl Discord {
     /// Learns of a thread of a server, by id, to open in place of the
     /// channel on screen, or `beside` it: snapshots list it while it's on
     /// screen, as Discord tells a user account only of the threads it
-    /// joined.
-    pub async fn open_thread(&self, guild: &str, thread: &str, beside: bool) -> Result<()> {
-        let value = self.api.channel(thread).await?;
-        if !ready::is_thread(&value) || value["guild_id"] != guild {
+    /// joined. One the server's snapshot or an open list of threads has
+    /// opens from that; Talk asks Discord for the rest.
+    /// `listed` is what [`Self::listed_thread`] gave for it.
+    pub async fn open_thread(
+        &self,
+        guild: &str,
+        thread: &str,
+        listed: Option<Value>,
+        beside: bool,
+    ) -> Result<()> {
+        let known = self
+            .snapshots
+            .borrow()
+            .servers
+            .iter()
+            .find(|server| server.id == guild)
+            .is_some_and(|server| server.threads.iter().any(|known| known.id == thread));
+        let value = match (known, listed) {
+            (true, _) => None,
+            (false, Some(value)) => Some(value),
+            (false, None) => Some(self.api.channel(thread).await?),
+        };
+        if let Some(value) = &value
+            && (!ready::is_thread(value) || value["guild_id"] != guild)
+        {
             bail!("That isn't a thread of this server.");
         }
         let _ = self.requests.send(Request::OpenThread {
             guild: guild.into(),
+            id: thread.into(),
             thread: value,
             beside,
         });
         Ok(())
+    }
+
+    /// A page of a server channel's threads, as its list of threads shows
+    /// them: the archived ones, [`api::THREAD_PAGE`] from the `offset`th,
+    /// those with the newest messages first; or with a `name`, the active
+    /// and archived ones Discord finds by it. Their owners' names are
+    /// learnt, waiting a while for them. Discord indexes a channel the
+    /// first time it's searched, and asks to be asked again until it has.
+    pub async fn threads(
+        &self,
+        guild: &str,
+        channel: &str,
+        name: Option<&str>,
+        offset: u32,
+    ) -> Result<ThreadPage> {
+        for _ in 0..SEARCH_TRIES {
+            let answer = self.api.search_threads(channel, name, offset).await?;
+            if let Some(found) = answer["threads"].as_array() {
+                return Ok(self.thread_page(guild, &answer, found).await);
+            }
+            if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
+                bail!("could not understand Discord's answer");
+            }
+            let wait = answer["retry_after"].as_f64().unwrap_or(1.0).max(0.5);
+            tokio::time::sleep(Duration::from_secs_f64(wait).min(SEARCH_WAIT)).await;
+        }
+        Err(anyhow!(
+            "Discord is still getting these threads ready to search. Try again in a moment."
+        ))
+    }
+
+    async fn thread_page(&self, guild: &str, answer: &Value, found: &[Value]) -> ThreadPage {
+        let threads = self.listed_page(guild, answer, found);
+        let owners: HashSet<String> = {
+            let names = self.read_names();
+            threads
+                .iter()
+                .filter_map(|thread| thread.thread.as_ref()?.owner.clone())
+                .filter(|owner| !names.knows_member(guild, owner))
+                .collect()
+        };
+        if !owners.is_empty() {
+            let (reply, arrived) = oneshot::channel();
+            let _ = self.requests.send(Request::Members {
+                guild: guild.into(),
+                users: owners.into_iter().collect(),
+                reply: Some(reply),
+            });
+            let _ = tokio::time::timeout(SEARCH_TIMEOUT, arrived).await;
+        }
+        ThreadPage {
+            threads,
+            more: answer["has_more"].as_bool().unwrap_or(false),
+        }
+    }
+
+    /// The threads of a page Discord gave, this account's thread members
+    /// in them and its access set, without those it may not see; kept to
+    /// open from while the list is open.
+    fn listed_page(&self, guild: &str, answer: &Value, found: &[Value]) -> Vec<ready::Channel> {
+        let snapshot = self.snapshots.borrow().clone();
+        let server = snapshot.servers.iter().find(|server| server.id == guild);
+        let me = snapshot.user_id.as_deref().unwrap_or_default();
+        let members = answer["members"].as_array();
+        let mut threads = Vec::with_capacity(found.len());
+        let mut listed = self.lock_listed();
+        for value in found {
+            let Some(mut thread) = ready::parse_thread(value) else {
+                continue;
+            };
+            if let Some(member) = members
+                .into_iter()
+                .flatten()
+                .find(|member| member["id"].as_str() == Some(thread.id.as_str()))
+                && let Some(details) = thread.thread.as_deref_mut()
+            {
+                details.join(member);
+            }
+            if let Some(server) = server {
+                thread.access = server.access(&thread, me, &server.my_roles);
+            }
+            if thread.access == ready::Access::Hidden {
+                continue;
+            }
+            listed.insert(thread.id.clone(), value.clone());
+            threads.push(thread);
+        }
+        threads
+    }
+
+    /// Starts a thread in a server's text or announcement channel, from
+    /// one of its messages or from none, as Discord's client does: a
+    /// private one, an announcement thread in an announcement channel, else
+    /// a public one, archiving after the channel's default quiet, or three
+    /// days. `location` is where in the client it started, such as
+    /// "Message". Returns the thread's id; it lists once Discord's
+    /// THREAD_CREATE and THREAD_MEMBERS_UPDATE come.
+    pub async fn start_thread(
+        &self,
+        guild: &str,
+        channel: &str,
+        message: Option<&str>,
+        name: &str,
+        private: bool,
+        location: &str,
+    ) -> Result<String> {
+        let (announcement, archive_after) = {
+            let snapshot = self.snapshots.borrow();
+            let parent = snapshot
+                .servers
+                .iter()
+                .find(|server| server.id == guild)
+                .and_then(|server| server.channel(channel))
+                .ok_or_else(|| anyhow!("Talk doesn't know that channel."))?;
+            (parent.announcement, parent.archive_after)
+        };
+        let kind = match (private, announcement) {
+            (true, false) => ready::PRIVATE_THREAD,
+            (true, true) => bail!("An announcement channel has no private threads."),
+            (false, true) => ready::ANNOUNCEMENT_THREAD,
+            (false, false) => ready::PUBLIC_THREAD,
+        };
+        let body = json!({
+            "name": name,
+            "type": kind,
+            "auto_archive_duration": match archive_after {
+                0 => DEFAULT_ARCHIVE,
+                minutes => minutes,
+            },
+            "location": location,
+        });
+        let thread = self.api.create_thread(channel, message, &body).await?;
+        thread["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("could not understand Discord's answer"))
+    }
+
+    /// A thread an open list of threads found, by id, as Discord gave it,
+    /// to open with [`Self::open_thread`]; ask before the list closes.
+    pub fn listed_thread(&self, thread: &str) -> Option<Value> {
+        self.lock_listed().get(thread).cloned()
+    }
+
+    /// Forgets the threads a list of threads found, as it closes.
+    pub fn forget_listed_threads(&self) {
+        let mut listed = self.lock_listed();
+        listed.clear();
+        listed.shrink_to_fit();
+    }
+
+    fn lock_listed(&self) -> std::sync::MutexGuard<'_, HashMap<String, Value>> {
+        self.listed_threads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Shows a thread of a server beside the channel on screen, or with

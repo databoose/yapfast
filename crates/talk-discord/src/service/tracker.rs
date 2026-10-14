@@ -486,6 +486,25 @@ impl Tracker {
                         thread.join(member);
                     }
                 }
+                // Each thread's newest message, which its row in a list of
+                // threads shows.
+                let recent = data["most_recent_messages"].as_array();
+                for message in recent.into_iter().flatten() {
+                    if let Some(thread) = message["channel_id"]
+                        .as_str()
+                        .and_then(|id| server.thread_mut(id))
+                    {
+                        thread.sent(message);
+                    }
+                }
+                let guild = data["guild_id"].as_str();
+                let mut names = self
+                    .names
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                for message in recent.into_iter().flatten() {
+                    names.learn_message(guild, message);
+                }
                 true
             }
             Event::ThreadMemberUpdate => {
@@ -520,7 +539,25 @@ impl Tracker {
                     .into_iter()
                     .flatten()
                     .any(|user| *user == me.as_str());
-                if added.is_none() && !removed {
+                let count = data["member_count"]
+                    .as_u64()
+                    .and_then(|count| u32::try_from(count).ok());
+                let preview = ready::member_preview(&data["member_ids_preview"]);
+                let known = self
+                    .servers
+                    .iter()
+                    .find(|server| server.id == guild)
+                    .and_then(|server| server.threads.iter().find(|thread| thread.id == id))
+                    .and_then(|thread| thread.thread.as_deref());
+                // Someone else coming or going changes only the count a
+                // list of threads shows.
+                let recounted = known.is_some_and(|known| {
+                    count.is_some_and(|count| count != known.members)
+                        || preview
+                            .as_ref()
+                            .is_some_and(|preview| *preview != known.member_preview)
+                });
+                if added.is_none() && !removed && !recounted {
                     return false;
                 }
                 if let Some(member) = added {
@@ -532,9 +569,16 @@ impl Tracker {
                 else {
                     return false;
                 };
+                if let Some(count) = count {
+                    thread.members = count;
+                }
+                if let Some(preview) = preview {
+                    thread.member_preview = preview;
+                }
                 match added {
                     Some(member) => thread.join(member),
-                    None => thread.leave(),
+                    None if removed => thread.leave(),
+                    None => {}
                 }
                 true
             }
@@ -564,6 +608,7 @@ impl Tracker {
                 // from, isn't counted.
                 if *event == Event::MessageCreate && data["type"] != 21 {
                     thread.messages += 1;
+                    thread.sent(data);
                     // A message opens an archived thread again.
                     thread.archived = false;
                 } else {
@@ -1909,6 +1954,71 @@ mod tests {
             &json!({"guild_id": "10", "user": {"id": "1"}, "roles": ["20"]}),
         );
         assert_eq!(channels(&mut tracker), ["Lounge", "Staff"]);
+    }
+
+    #[test]
+    fn keeps_what_a_list_of_threads_shows_of_each() {
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [{"id": "10", "properties": {"name": "Test", "owner_id": "9"},
+                "roles": [{"id": "10", "permissions": "0"}],
+                "channels": [{"id": "11", "name": "general", "type": 0, "position": 0}],
+                "threads": []}],
+            "merged_members": [[{"user_id": "1", "roles": []}]],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        // Subscribing syncs the server's active threads with their newest
+        // messages, whose authors' names are learnt.
+        let sync = json!({"guild_id": "10",
+            "threads": [{"id": "300", "type": 11, "name": "Book club", "parent_id": "11",
+                "guild_id": "10", "last_message_id": "350", "member_count": 2,
+                "member_ids_preview": ["2", "3"],
+                "thread_metadata": {"archived": false, "locked": false}}],
+            "members": [],
+            "most_recent_messages": [{"id": "350", "channel_id": "300", "type": 0,
+                "content": "Chapter 3 by Friday?",
+                "author": {"id": "2", "username": "bob", "global_name": "Bob"}}]});
+        assert!(tracker.apply(&Event::ThreadListSync, &sync));
+        let details = |tracker: &mut Tracker| {
+            tracker.snapshot().servers[0].threads[0]
+                .thread
+                .as_deref()
+                .unwrap()
+                .clone()
+        };
+        let known = details(&mut tracker);
+        assert_eq!((known.last_message, known.members), (350, 2));
+        assert_eq!(known.member_preview, ["2", "3"]);
+        let recent = known.recent.unwrap();
+        assert_eq!(
+            (recent.author.as_str(), recent.content.as_str()),
+            ("2", "Chapter 3 by Friday?")
+        );
+        assert_eq!(tracker.names.read().unwrap().user_name("2"), Some("Bob"));
+
+        // A later message is its newest; someone else joining changes its count.
+        let message = json!({"id": "360", "channel_id": "300", "guild_id": "10", "type": 0,
+            "content": "Yes", "author": {"id": "3", "username": "carol"}});
+        assert!(tracker.apply(&Event::MessageCreate, &message));
+        let joined = json!({"id": "300", "guild_id": "10", "member_count": 3,
+            "added_members": [{"user_id": "4"}], "removed_member_ids": []});
+        assert!(tracker.apply(&Event::ThreadMembersUpdate, &joined));
+        assert!(
+            !tracker.apply(&Event::ThreadMembersUpdate, &joined),
+            "nothing changed"
+        );
+        let known = details(&mut tracker);
+        assert_eq!((known.last_message, known.members), (360, 3));
+        assert!(!known.joined);
+        assert_eq!(known.recent.unwrap().content, "Yes");
+        // An update without its newest message keeps it.
+        let update = json!({"id": "300", "type": 11, "name": "Book club!", "parent_id": "11",
+            "guild_id": "10", "last_message_id": "350",
+            "thread_metadata": {"archived": false, "locked": false}});
+        assert!(tracker.apply(&Event::ThreadUpdate, &update));
+        let known = details(&mut tracker);
+        assert_eq!(known.last_message, 360);
+        assert_eq!(known.member_preview, ["2", "3"]);
     }
 
     #[test]

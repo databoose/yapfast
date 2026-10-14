@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, ListView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar } from "controls.slint";
 import { StatusDot } from "rail.slint";
@@ -19,6 +19,32 @@ export struct FoundRow {
     heading: string,
 }
 
+/// An entry of a channel's list of threads: a section's heading, or a
+/// thread, as Discord's client shows them.
+export struct ThreadRow {
+    /// The thread's room id; empty for a heading.
+    room: string,
+    /// A heading, such as "2 joined threads", above the thread if it has
+    /// a room.
+    heading: string,
+    name: string,
+    private: bool,
+    archived: bool,
+    /// Who its line names, with their avatar and role colour: the newest
+    /// message's author, or an archived thread's owner; empty for none.
+    person: string, initial: string, tint: color, picture-url: string,
+    color: color, has-color: bool,
+    /// Before the person, such as "Started by ".
+    lead: string,
+    /// After the person: the message's text, or for no one, what to say.
+    text: string,
+    /// When it was last active, as "5m ago" or "Last active 5m ago".
+    time: string,
+    /// How many are in it, and a few of their avatars.
+    members: string,
+    member-pictures: [string],
+}
+
 /// A friend the picker can add to a DM.
 export struct PickRow {
     id: string, name: string, initial: string, tint: color, picture-url: string,
@@ -32,8 +58,11 @@ export struct PickRow {
 export component HeaderSearch inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
+    /// Takes the keyboard as it shows.
+    in property <bool> autofocus;
     callback search(string);
     callback clear;
+    init => { if root.autofocus { input.focus(); } }
     width: input.has-focus || root.text != "" ? 240px : 180px;
     animate width { duration: Theme.quick; }
     height: 28px; border-radius: 6px;
@@ -204,6 +233,188 @@ export component PinsPopover inherits Rectangle {
                     open-link(link) => { root.open-link(link); }
                 }
             }
+        }
+    }
+}
+
+// A thread in a channel's list of threads: its name, then its newest
+// message, or who started an archived one, and when it was last active,
+// and on the right a few of those in it. Clicking opens it; with Shift,
+// beside the channel.
+component ThreadEntry inherits Rectangle {
+    in property <ThreadRow> entry;
+    in property <bool> first;
+    callback open(bool);
+    property <bool> shift;
+    height: (root.entry.heading != "" ? (root.first ? 32px : 56px) : 0px) + (root.entry.room != "" ? 64px : 0px);
+    if root.entry.heading != "": Text {
+        x: 16px; y: root.first ? 8px : 32px; height: 20px; width: root.width - 32px;
+        text: root.entry.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.4px;
+        vertical-alignment: center; overflow: elide;
+    }
+    if root.entry.room != "": Rectangle {
+        y: root.height - 64px; height: 64px; x: 8px; width: root.width - 16px;
+        border-radius: 8px;
+        background: pointer.has-hover ? Theme.hover : transparent;
+        accessible-role: button;
+        accessible-label: root.entry.name + ", " + root.entry.time;
+        accessible-action-default => { root.open(false); }
+        pointer := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down { root.shift = event.modifiers.shift; }
+            }
+            clicked => { root.open(root.shift); }
+        }
+        HorizontalLayout {
+            padding-left: 12px; padding-right: 12px; spacing: 12px;
+            VerticalLayout {
+                alignment: center; spacing: 4px; horizontal-stretch: 1;
+                HorizontalLayout {
+                    spacing: 6px;
+                    if root.entry.private: Middle { Image { source: @image-url("icons/lock.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
+                    Text { text: root.entry.name; color: Theme.text; font-size: 15px; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 0px;
+                    if root.entry.person != "": Middle { Avatar { size: 16px; initial: root.entry.initial; tint: root.entry.tint; picture-url: root.entry.picture-url; } }
+                    if root.entry.person == "" && root.entry.archived: Middle { Image { source: @image-url("icons/messages-square.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
+                    if root.entry.person != "" || root.entry.archived: Rectangle { width: 6px; }
+                    if root.entry.lead != "": Text { text: root.entry.lead; color: Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 0; }
+                    if root.entry.person != "": Text {
+                        text: root.entry.person; color: root.entry.has-color ? root.entry.color : Theme.secondary;
+                        font-size: 13px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 0;
+                    }
+                    // As wide as it is, short of the row; the time follows it.
+                    if root.entry.text != "": Text {
+                        text: (root.entry.person != "" ? ": " : "") + root.entry.text;
+                        color: Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide;
+                        horizontal-stretch: 1; max-width: self.preferred-width;
+                    }
+                    Text {
+                        text: (root.entry.person != "" || root.entry.text != "" ? " • " : "") + root.entry.time;
+                        color: Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 0;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+            if root.entry.members != "": HorizontalLayout {
+                spacing: 6px; horizontal-stretch: 0;
+                Middle {
+                    Rectangle {
+                        width: root.entry.member-pictures.length == 0 ? 0px : 12px * root.entry.member-pictures.length + 8px;
+                        height: 20px;
+                        for picture[index] in root.entry.member-pictures: Rectangle {
+                            x: index * 12px; width: 20px; height: 20px; border-radius: 10px;
+                            background: Theme.sidebar;
+                            Avatar { x: 1px; y: 1px; size: 18px; picture-url: picture; }
+                        }
+                    }
+                }
+                Middle {
+                    Text { text: root.entry.members; color: Theme.muted; font-size: 13px; font-weight: 600; }
+                }
+            }
+        }
+    }
+}
+
+// A channel's list of its threads, under the header's Threads button, as
+// Discord's client has it: the active threads this account is in, the
+// other active ones and older ones, a page at a time, or what a search of
+// their names found. Enter searches, and clearing the search shows the
+// list again.
+export component ThreadsPopover inherits Rectangle {
+    in property <[ThreadRow]> rows;
+    /// Said instead of the list: while it loads, or why it failed.
+    in property <string> note;
+    /// There are none to show.
+    in property <bool> empty;
+    /// The threads' names can be searched, as with Read Message History.
+    in property <bool> searchable;
+    in-out property <string> query;
+    /// Older threads are still to load, and a page is on its way.
+    in property <bool> more;
+    in property <bool> loading;
+    /// Threads can start in the channel.
+    in property <bool> can-create;
+    callback search(string);
+    callback open(string, bool);
+    callback more-threads;
+    callback close;
+    /// Start a thread, from the header's Create ("list") or the empty
+    /// list's Create Thread ("list-empty").
+    callback create(string);
+    width: 520px;
+    background: Theme.sidebar;
+    border-color: Theme.edge; border-width: 1px; border-radius: 10px;
+    drop-shadow-blur: 24px; drop-shadow-color: #00000066; drop-shadow-offset-y: 8px;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: "Threads";
+    TouchArea { }
+    VerticalLayout {
+        Rectangle {
+            height: 48px; background: Theme.panel;
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 10px; spacing: 10px;
+                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 20px; height: 20px; colorize: Theme.secondary; } }
+                Middle { Text { text: "Threads"; color: Theme.text; font-size: 16px; font-weight: 700; } }
+                if root.searchable: Middle { Rectangle { width: 1px; height: 24px; background: Theme.line; } }
+                if root.searchable: Middle {
+                    HeaderSearch {
+                        text <=> root.query;
+                        placeholder: "Search for Thread Name"; autofocus: true;
+                        search(text) => { root.search(text); }
+                        clear => { root.query = ""; root.search(""); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.can-create: Middle {
+                    ActionButton { text: "Create"; small: true; primary: true; clicked => { root.create("list"); } }
+                }
+                Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
+        }
+        if root.note != "": VerticalLayout {
+            padding: 24px; vertical-stretch: 1; alignment: center;
+            Text { text: root.note; color: Theme.muted; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; }
+        }
+        if root.note == "" && root.empty: VerticalLayout {
+            padding: 32px; spacing: 8px; vertical-stretch: 1; alignment: center;
+            Image { source: @image-url("icons/messages-square.svg"); height: 48px; image-fit: contain; colorize: Theme.faint; }
+            Text { text: "There are no threads."; color: Theme.text; font-size: 17px; font-weight: 700; horizontal-alignment: center; }
+            Text {
+                text: "Stay focused on a conversation with a thread - a temporary text channel.";
+                color: Theme.muted; font-size: 14px; wrap: word-wrap; horizontal-alignment: center;
+            }
+            if root.can-create: HorizontalLayout {
+                alignment: center; padding-top: 8px;
+                ActionButton { text: "Create Thread"; primary: true; clicked => { root.create("list-empty"); } }
+            }
+        }
+        if root.note == "" && !root.empty: Rectangle {
+            vertical-stretch: 1;
+            list := ListView {
+                width: parent.width; height: parent.height;
+                for row[index] in root.rows: ThreadEntry {
+                    entry: row; first: index == 0;
+                    open(beside) => { root.open(row.room, beside); }
+                }
+            }
+            // Older threads load as the list nears its end, as Discord's do,
+            // and while a short list doesn't fill it.
+            Timer {
+                interval: 50ms;
+                running: root.more && !root.loading
+                    && -list.content-y + list.visible-height >= list.content-height - 200px;
+                triggered => { root.more-threads(); }
+            }
+        }
+        if root.note == "" && !root.empty && root.loading: HorizontalLayout {
+            padding: 8px; alignment: center;
+            Text { text: "Loading..."; color: Theme.muted; font-size: 13px; }
         }
     }
 }

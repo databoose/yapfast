@@ -634,24 +634,28 @@ impl Application {
         self.state.add_people = None;
         self.state.topic = None;
         self.searched.clear();
+        // The list of threads goes, as the popout does in Discord's client,
+        // and so does a new thread's form.
+        let mut effects = self.close_threads();
+        self.state.new_thread = None;
         if self.state.preview {
             if !voice_room {
                 self.state.messages = Arc::new(self.samples.get(&id).cloned().unwrap_or_default());
                 self.state.members = Some(Ok(preview_members(&id)));
             }
-            vec![]
         } else if voice_room {
-            vec![Effect::Backend(Command::CloseRoom)]
+            effects.push(Effect::Backend(Command::CloseRoom));
         } else if locked {
             // Discord would refuse its messages, and refusals count against
             // the account, so Talk doesn't ask.
             self.state.room_ready = true;
             self.state.notice =
                 Some("Your roles on this Discord server don't let you read this channel.".into());
-            vec![Effect::Backend(Command::CloseRoom)]
+            effects.push(Effect::Backend(Command::CloseRoom));
         } else {
-            vec![Effect::Backend(Command::Open(id))]
+            effects.push(Effect::Backend(Command::Open(id)));
         }
+        effects
     }
 
     pub(super) fn restore_selection(&mut self) -> Vec<Effect> {
@@ -679,6 +683,7 @@ impl Application {
     }
 
     fn close_room(&mut self) -> Vec<Effect> {
+        let mut effects = self.close_threads();
         self.remember_view();
         self.state.selected = None;
         self.state.confirm_delete = None;
@@ -702,11 +707,10 @@ impl Application {
         self.state.members = None;
         self.state.topic = None;
         self.state.selection_version = self.state.selection_version.wrapping_add(1);
-        if self.state.preview {
-            vec![]
-        } else {
-            vec![Effect::Backend(Command::CloseRoom)]
+        if !self.state.preview {
+            effects.push(Effect::Backend(Command::CloseRoom));
         }
+        effects
     }
 
     /// Shows the Matrix and Discord lists together, leaving a server or

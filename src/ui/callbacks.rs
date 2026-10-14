@@ -554,6 +554,12 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_close_add_people, Action::CloseAddPeople);
     bind_item!(on_choose_person, Action::ChoosePerson);
     bind_item!(on_search, Action::Search);
+    bind_item!(on_search_threads, Action::SearchThreads);
+    bind!(on_more_threads, Action::MoreThreads);
+    bind!(on_create_thread, Action::CreateThread);
+    bind!(on_close_new_thread, Action::CloseNewThread);
+    bind!(on_leave_new_thread, Action::LeaveNewThread);
+    bind!(on_stay_in_new_thread, Action::StayInNewThread);
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();
@@ -562,6 +568,86 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 adapter
                     .borrow_mut()
                     .action(&window, Action::ShowPins(shown));
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_show_threads(move |shown| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::ShowThreads(shown));
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_new_thread(move |item, from| {
+            use talk_core::application::ThreadFrom;
+            let from = match from.as_str() {
+                "message" => ThreadFrom::Message,
+                "list" => ThreadFrom::List,
+                "list-empty" => ThreadFrom::ListEmpty,
+                _ => ThreadFrom::PlusButton,
+            };
+            let message = (!item.is_empty()).then(|| item.to_string());
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::NewThread { message, from });
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_new_thread_name_edited(move |name| {
+            if let Some(window) = weak.upgrade() {
+                adapter.borrow_mut().action(
+                    &window,
+                    Action::WriteNewThread {
+                        name: Some(name.into()),
+                        body: None,
+                    },
+                );
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_new_thread_body_edited(move |body| {
+            if let Some(window) = weak.upgrade() {
+                adapter.borrow_mut().action(
+                    &window,
+                    Action::WriteNewThread {
+                        name: None,
+                        body: Some(body.into()),
+                    },
+                );
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_set_thread_private(move |private| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::SetThreadPrivate(private));
+            }
+        });
+    }
+    {
+        // As Discord's: a click shows the thread in place of its channel,
+        // and Shift-click beside it.
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_open_listed_thread(move |room, beside| {
+            if let Some(window) = weak.upgrade() {
+                let action = match beside {
+                    true => Action::OpenAside(room.into()),
+                    false => Action::Open(room.into()),
+                };
+                adapter.borrow_mut().action(&window, action);
             }
         });
     }

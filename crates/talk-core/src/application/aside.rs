@@ -102,6 +102,7 @@ impl Application {
     }
 
     pub(super) fn show_aside(&mut self, room: String) -> Vec<Effect> {
+        self.state.new_thread = None;
         self.state.aside = Some(Aside {
             room: room.clone(),
             ..Default::default()
@@ -112,6 +113,8 @@ impl Application {
 
     pub(super) fn close_aside(&mut self) -> Vec<Effect> {
         self.pending_aside = None;
+        // A new thread's first message stays in its composer.
+        self.first_message = None;
         if self.state.aside.take().is_none() {
             return vec![];
         }
@@ -154,7 +157,13 @@ impl Application {
         }
         aside.ready = true;
         aside.messages = Arc::new(messages);
-        self.mark_aside_read()
+        let room = aside.room.clone();
+        let mut effects = self.mark_aside_read();
+        // A thread just started gets the first message its form held.
+        if self.first_message.take_if(|first| *first == room).is_some() {
+            effects.extend(self.send_in(room));
+        }
+        effects
     }
 
     pub(super) fn aside_history(&mut self, direction: chat::Direction, history: chat::History) {

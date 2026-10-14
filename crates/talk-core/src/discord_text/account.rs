@@ -339,6 +339,118 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::Threads {
+        room,
+        query,
+        offset,
+    }) = command
+    {
+        let place = discord::parse_room(&room)
+            .map(|(guild, channel)| (guild.to_owned(), channel.to_owned()));
+        match (discord, place) {
+            (Ok(discord), Some((guild, channel))) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = match discord
+                        .threads(&guild, &channel, query.as_deref(), offset)
+                        .await
+                    {
+                        Ok(page) => {
+                            let snapshot = discord.snapshots().borrow().clone();
+                            let names = snapshot.names.read();
+                            let threads = snapshot
+                                .servers
+                                .iter()
+                                .find(|server| server.id == guild)
+                                .map(|server| {
+                                    page.threads
+                                        .iter()
+                                        .filter_map(|thread| {
+                                            discord::listed_thread(server, &names, thread)
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            Ok((threads, page.more))
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = format!("{error:#}"), "could not list threads");
+                            Err(format!("Couldn't load the threads: {error}"))
+                        }
+                    };
+                    let _ = events.send(Event::Threads {
+                        room,
+                        query,
+                        offset,
+                        result,
+                    });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::Threads {
+                    room,
+                    query,
+                    offset,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::StartThread {
+        room,
+        message,
+        name,
+        private,
+        location,
+    }) = command
+    {
+        let place = discord::parse_room(&room)
+            .map(|(guild, channel)| (guild.to_owned(), channel.to_owned()));
+        let message = message
+            .as_deref()
+            .and_then(|item| item.strip_prefix("d:"))
+            .map(str::to_owned);
+        match (discord, place) {
+            (Ok(discord), Some((guild, channel))) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .start_thread(
+                            &guild,
+                            &channel,
+                            message.as_deref(),
+                            &name,
+                            private,
+                            location,
+                        )
+                        .await
+                        .map(|thread| discord::room_id(&guild, &thread))
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not start a thread"
+                            );
+                            format!("Couldn't start the thread: {error}")
+                        });
+                    let _ = events.send(Event::ThreadStarted { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::ThreadStarted {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::CloseThreads) = command {
+        if let Ok(discord) = discord {
+            discord.forget_listed_threads();
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::Search {
         place,
         query,
@@ -481,18 +593,16 @@ pub(super) fn command(
         match (discord, place) {
             (Ok(discord), Some((guild, thread))) => {
                 let (discord, events) = (discord.clone(), events.clone());
+                // Now, before the list of threads it was in may close.
+                let listed = discord.listed_thread(&thread);
                 tokio::spawn(async move {
-                    let result =
-                        discord
-                            .open_thread(&guild, &thread, beside)
-                            .await
-                            .map_err(|error| {
-                                tracing::warn!(
-                                    error = format!("{error:#}"),
-                                    "could not open a thread"
-                                );
-                                format!("Couldn't open the thread: {error}")
-                            });
+                    let result = discord
+                        .open_thread(&guild, &thread, listed, beside)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(error = format!("{error:#}"), "could not open a thread");
+                            format!("Couldn't open the thread: {error}")
+                        });
                     let _ = events.send(Event::ThreadOpened { room, result });
                 });
             }

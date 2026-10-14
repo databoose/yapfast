@@ -16,6 +16,10 @@ const API: &str = "https://discord.com/api/v9";
 /// The most messages one history request returns.
 pub const PAGE: usize = 50;
 
+/// How many archived threads a page of a channel's list of threads holds,
+/// as Discord's client asks for them.
+pub const THREAD_PAGE: u32 = 25;
+
 /// Which of a channel's messages a page holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Span<'a> {
@@ -454,6 +458,46 @@ impl Api {
             None => format!("/channels/{channel}/messages/search?{query}"),
         };
         self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Discord's answer to a search of a channel's threads, as its client's
+    /// list of threads asks: the archived ones, the newest message first,
+    /// [`THREAD_PAGE`] from the `offset`th; or with a `name`, those of
+    /// either kind it matches.
+    pub async fn search_threads(
+        &self,
+        channel: &str,
+        name: Option<&str>,
+        offset: u32,
+    ) -> Result<Value> {
+        let path = match name {
+            Some(name) => format!(
+                "/channels/{channel}/threads/search?name={}&tag_setting=match_some",
+                encode(name)
+            ),
+            None => format!(
+                "/channels/{channel}/threads/search?archived=true&sort_by=last_message_time\
+                 &sort_order=desc&limit={THREAD_PAGE}&tag_setting=match_some&offset={offset}"
+            ),
+        };
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Starts a thread in `channel`, from its `message` or from none, with
+    /// `body` as Discord's client sends it; the thread's channel object.
+    /// Discord sends THREAD_CREATE, and adds this account to it.
+    pub async fn create_thread(
+        &self,
+        channel: &str,
+        message: Option<&str>,
+        body: &Value,
+    ) -> Result<Value> {
+        let path = match message {
+            Some(message) => format!("/channels/{channel}/messages/{message}/threads"),
+            None => format!("/channels/{channel}/threads"),
+        };
+        self.json(with_json(self.request(Method::POST, &path), body))
+            .await
     }
 
     /// Shows others that this account is typing in `channel`.

@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio and cameras on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), pinning channels to the top, invites, making and changing channels, threads, leaving servers | Starting threads, forums, pinning messages, forwarding, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, leaving servers | Forums, pinning messages, forwarding, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1313,6 +1313,92 @@ reads and marks read like any other; writing in it joins it, as Discord
 does. The fake has "Plans", from Bob's welcome, and its controls write in
 it, start "Movie night" and archive "Plans".
 
+#### A channel's list of threads
+
+The Threads button comes first in a text or announcement channel's header,
+and in a thread's for its channel, as in Discord's client, which no
+permission hides. It opens the channel's threads under it, as Discord's
+popout does (`application/threads.rs`, `ThreadsPopover`): "N joined
+threads", the active ones the account is in, then "N other active
+threads", then "Older threads", the archived ones, each section with the
+newest message first. An active thread's row shows its newest message, its
+author's avatar and name in their role colour, and how long ago ("5m ago",
+">30d ago"), or "No recent messages"; an archived one's shows "Started by"
+its owner and when it was last active. On the right are a few of its
+members' avatars and how many are in it. Clicking a row opens the thread in
+place of the channel, and Shift-click beside it, as Discord's does; a
+thread the account isn't in opens as any other does, without joining it.
+
+What fills it, as Discord's web client does it: the active threads come
+from the gateway, never a request. Subscribing to a server with `threads`
+(op 37), which Talk does for the server on screen, brings THREAD_LIST_SYNC
+with its active threads the account may see and each one's newest message
+(`most_recent_messages`). The service keeps each thread's newest message
+(its text cut to 200 bytes), its member count and preview ids in the
+server's snapshot, and follows them with MESSAGE_CREATE and
+THREAD_MEMBERS_UPDATE; the list reads them from the snapshot as it shows,
+without copying the server. Archived threads come only with Read Message
+History, when the list opens and then a page of 25 at a time as it's
+scrolled near its end, from `GET /channels/{id}/threads/search` with
+`archived=true&sort_by=last_message_time&sort_order=desc&limit=25`
+and an `offset`, as Discord's client asks; it never calls the
+`/threads/archived/` endpoints. Archived threads the snapshot knows are
+merged in where the pages reach. Search, which also needs Read Message
+History, runs on Enter with `name=` and no `archived`, so it finds active
+and archived threads, and its results replace the sections until it's
+cleared; the first search of a channel can answer 202 while Discord indexes
+it, and Talk asks again. A private thread shows only to its members and
+those with Manage Threads. The pages, the search's results and the channel
+objects the list found, from which a thread opens without another `GET
+/channels/{id}`, are dropped when the list closes or another room opens.
+
+The fake syncs "Plans", "Book club", which Alice isn't in, and leaves out
+"Surprise for Bob", a private thread she isn't in. #general has 30 older,
+archived threads, more than a page, and `/_control/thread-searches` lists
+each search.
+
+#### Starting a thread
+
+A thread starts as in Discord's client, from three places: Create Thread in
+a message's menu, the list of threads' Create button (and its empty
+list's Create Thread), and Create Thread in the composer's + menu, which
+then also holds Upload a File. Each opens Discord's "New Thread" form beside
+the channel, in place of its member list (`application/threads.rs`,
+`NewThreadPanel` in `ui/thread.slint`): Thread Name, up to 100 characters;
+Private Thread, "Only people you invite and moderators can see"; and the
+first message, "Enter a message to start the conversation!", which takes
+the channel composer's draft. From a message the form shows that message,
+the name is optional and the thread public; an empty name becomes
+Discord's default: the message's embed title, else its first line without
+leading `#`, `-` or spaces, grown word by word up to 40 characters and
+then "...", else "Thread". Without a message a name is required ("Thread
+Name is required"), and a first message always is ("Starter Message is
+required"). Closing a form with something written asks "Are you sure you
+want to go?" first.
+
+Discord's client offers a public thread with Create Public Threads and
+Read Message History, and a message's Create Thread only on a delivered
+message without a thread, whose menu offers View Thread instead; a
+private one takes Create Private Threads, in a text channel only, and
+where only that is allowed, the form starts one. Creating sends `POST
+/channels/{id}/messages/{message}/threads` or `POST
+/channels/{id}/threads` with the `name`, the `type` (11, 12 for a
+private one, 10 in an announcement channel), the channel's
+`default_auto_archive_duration`, else 4320 minutes, and the `location`
+Discord's client gives ("Message", "Thread Browser Toolbar", "Thread
+Browser Empty State", "Plus Button"). Discord then sends THREAD_CREATE
+with `newly_created` and THREAD_MEMBERS_UPDATE with the account in it,
+updates the message, which now carries the thread, and posts a
+THREAD_CREATED notice in the channel for a public thread started without a
+message or from an older one. As Discord's client does, Talk opens the
+thread beside the channel and then sends the form's first message as an
+ordinary message in it.
+
+The fake starts threads as Discord does, with those events and notices,
+refuses a second thread on a message (160004) and a name outside 1 to 100
+characters (50035), and `/_control/thread-creates` lists what each request
+sent.
+
 ### Editing one's server profile
 
 Edit server profile, in a server's menu, its header's dropdown and one's
@@ -1612,8 +1698,7 @@ Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 
 In rough order. The browser covers these until then.
 
-- Starting, joining and leaving threads, a channel's list of its threads,
-  and forum channels.
+- Joining and leaving threads from their menus, and forum channels.
 - Pinning and unpinning messages.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.

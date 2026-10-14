@@ -290,6 +290,11 @@ pub enum Permission {
     ManageNicknames,
     ViewChannel,
     SendMessages,
+    /// Read a channel's earlier messages, which its list of threads needs
+    /// for the archived ones and its search, and starting a public thread.
+    ReadHistory,
+    CreatePublicThreads,
+    CreatePrivateThreads,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -544,6 +549,47 @@ pub struct ThreadLink {
     /// Its messages after the first, when Talk knows.
     pub messages: Option<u64>,
     pub archived: bool,
+}
+
+/// A Discord thread as a channel's list of its threads shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ListedThread {
+    /// Its room id, which [`crate::application::Action::Open`] opens.
+    pub room: String,
+    pub name: String,
+    pub private: bool,
+    /// This account is in it.
+    pub joined: bool,
+    pub archived: bool,
+    /// The snowflake of its newest message, else its own: lists order by it.
+    pub last: u64,
+    /// When it was last active, in Unix milliseconds.
+    pub active_ms: u64,
+    /// Who started it, as an archived thread's row says.
+    pub owner: Option<ThreadPerson>,
+    /// Its newest message, as an active thread's row shows it.
+    pub recent: Option<RecentMessage>,
+    /// How many are in it, as Discord counts them: up to 50.
+    pub members: u32,
+    /// The avatars of a few of them.
+    pub member_avatars: Vec<String>,
+}
+
+/// Someone a thread's row names.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ThreadPerson {
+    pub name: String,
+    pub avatar: String,
+    /// Their role colour, when they have one.
+    pub color: Option<u32>,
+}
+
+/// A thread's newest message, as its row shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RecentMessage {
+    pub author: ThreadPerson,
+    /// Its text on one line, mentions and custom emoji as text.
+    pub text: String,
 }
 
 /// A Discord custom emoji, which shows as `text` until its picture arrives.
@@ -1230,6 +1276,28 @@ pub enum DiscordCommand {
     Pins {
         room: String,
     },
+    /// A page of a Discord server channel's threads, by its room id, as its
+    /// list of threads shows them: the archived ones from the `offset`th,
+    /// or with a `query`, those of any kind whose name it finds.
+    /// [`Event::Threads`] follows.
+    Threads {
+        room: String,
+        query: Option<String>,
+        offset: u32,
+    },
+    /// The list of threads closed: forget what it found.
+    CloseThreads,
+    /// Start a thread in a Discord server channel, by its room id: from its
+    /// `message`, by item, or from none, a `private` one or not, from
+    /// `location` in Discord's client, such as "Message".
+    /// [`Event::ThreadStarted`] follows.
+    StartThread {
+        room: String,
+        message: Option<String>,
+        name: String,
+        private: bool,
+        location: &'static str,
+    },
     /// Look for messages a search box's `query`, filters and all, finds: in
     /// a Discord DM, by its room id, or a server, by its server id; a page
     /// from the `offset`th found. [`Event::Found`] follows.
@@ -1571,6 +1639,20 @@ pub enum Event {
     Pins {
         room: String,
         result: Result<Vec<ChatMessage>, String>,
+    },
+    /// [`DiscordCommand::StartThread`]'s thread, by room id, in the channel
+    /// `room`, or why it didn't start.
+    ThreadStarted {
+        room: String,
+        result: Result<String, String>,
+    },
+    /// [`DiscordCommand::Threads`]'s page, and whether Discord has more
+    /// after it, or why it didn't come.
+    Threads {
+        room: String,
+        query: Option<String>,
+        offset: u32,
+        result: Result<(Vec<ListedThread>, bool), String>,
     },
     /// What [`DiscordCommand::Search`] found: a page of messages, the newest
     /// first, and how many in all; or why it couldn't search.

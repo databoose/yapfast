@@ -1,6 +1,8 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Middle } from "theme.slint";
-import { IconButton, ActionButton, MessagesSkeleton } from "controls.slint";
+import { IconButton, ActionButton, MessagesSkeleton, TextField } from "controls.slint";
+import { FoundRow, FoundCard } from "header.slint";
+import { SettingsSwitch } from "settings.slint";
 import { Composer } from "composer.slint";
 import { EmojiCell, EmojiButton, MessageRow, MessageContent, HistoryEdge } from "messages.slint";
 
@@ -267,6 +269,127 @@ export component ThreadPanel inherits Rectangle {
                             clicked => { root.send(); }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// Discord's "New Thread" form, beside the channel in place of its member
+// list: the message it starts from, its name, whether it's private, and
+// the first message, which Enter sends with the thread. Closing it after
+// writing asks first, as Discord's does.
+export component NewThreadPanel inherits Rectangle {
+    /// The message it starts from, if any.
+    in property <bool> from-message;
+    in property <FoundRow> starter;
+    in-out property <string> name;
+    /// What an empty name becomes, or "New Thread".
+    in property <string> name-placeholder;
+    in-out property <string> body;
+    in property <bool> can-private;
+    in property <bool> only-private;
+    in property <bool> private;
+    in property <bool> starting;
+    in property <string> error;
+    /// Closing asks first.
+    in property <bool> leaving;
+    callback name-edited(string);
+    callback body-edited(string);
+    callback private-changed(bool);
+    callback create;
+    callback close;
+    callback leave;
+    callback stay;
+    callback jump-to(string);
+    callback open-link(string);
+    public function focus-composer() { composer.focus-input(); }
+    background: Theme.chat;
+    accessible-role: groupbox;
+    accessible-label: "New Thread";
+    Rectangle { x: 0; width: 1px; background: Theme.edge; }
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 10px; spacing: 10px;
+                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
+                Text { text: "New Thread"; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+        }
+        VerticalLayout {
+            padding: 16px; spacing: 16px; vertical-stretch: 1; alignment: start;
+            if root.from-message: FoundCard {
+                found: root.starter;
+                jump => { root.jump-to(root.starter.item); }
+                open-link(link) => { root.open-link(link); }
+            }
+            VerticalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.from-message ? "THREAD NAME (OPTIONAL)" : "THREAD NAME";
+                    color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+                }
+                name-field := TextField {
+                    text <=> root.name; placeholder: root.name-placeholder; label: "Thread Name";
+                    enabled: !root.starting;
+                    edited(text) => { root.name-edited(text); }
+                    accepted => { root.focus-composer(); }
+                }
+            }
+            if root.can-private: SettingsSwitch {
+                text: "Private Thread";
+                description: root.private
+                    ? "Only people you invite and moderators can see. You can invite new people by @mentioning them."
+                    : "Only people you invite and moderators can see";
+                checked: root.private; enabled: !root.only-private && !root.starting;
+                toggled(checked) => { root.private-changed(checked); }
+            }
+            if root.error != "": Text { text: root.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+        }
+        VerticalLayout {
+            padding-left: 12px; padding-right: 12px; padding-bottom: 12px; vertical-stretch: 0;
+            Rectangle {
+                min-height: 48px; background: Theme.field; border-radius: 10px;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; spacing: 6px;
+                    composer := Composer {
+                        text <=> root.body; enabled: !root.starting; label: "First message";
+                        placeholder: "Enter a message to start the conversation!";
+                        edited(text) => { root.body-edited(text); }
+                        accepted => { root.create(); }
+                    }
+                    VerticalLayout {
+                        alignment: end; padding-bottom: 8px;
+                        IconButton {
+                            icon: @image-url("icons/send-horizontal.svg");
+                            label: root.starting ? "Creating..." : "Create Thread";
+                            enabled: !root.starting; emphasis: !root.starting && root.body != "";
+                            clicked => { root.create(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Leaving what was written, as Discord's client asks.
+    if root.leaving: Rectangle {
+        background: #000000a0;
+        TouchArea { }
+        Rectangle {
+            x: 16px; width: parent.width - 32px; y: (parent.height - self.height) / 2;
+            height: ask.preferred-height;
+            background: Theme.sidebar; border-radius: 10px; border-width: 1px; border-color: Theme.edge;
+            ask := VerticalLayout {
+                padding: 16px; spacing: 10px;
+                Text { text: "Are you sure you want to go?"; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
+                Text { text: "Any changes you made will be lost if you exit now."; color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px; padding-top: 6px;
+                    ActionButton { text: "Back to editing"; ghost: true; clicked => { root.stay(); } }
+                    ActionButton { text: "Exit"; danger: true; clicked => { root.leave(); } }
                 }
             }
         }

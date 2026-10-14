@@ -305,6 +305,60 @@ impl Index {
     }
 }
 
+/// Discord's epoch, in Unix milliseconds, from which snowflakes count.
+#[cfg(feature = "discord")]
+const DISCORD_EPOCH: u64 = 1_420_070_400_000;
+
+/// A thread of `server` as a list of its threads shows it, naming people as
+/// `names` knows them; none for a channel that isn't a thread.
+#[cfg(feature = "discord")]
+pub fn listed_thread(
+    server: &talk_discord::ready::Server,
+    names: &talk_discord::message::Names,
+    thread: &talk_discord::ready::Channel,
+) -> Option<chat::ListedThread> {
+    let details = thread.thread.as_deref()?;
+    let last = details
+        .last_message
+        .max(thread.id.parse().unwrap_or_default());
+    let person = |user: &str| {
+        Some(chat::ThreadPerson {
+            name: names.name(&server.id, user)?.to_owned(),
+            avatar: names.avatar(Some(&server.id), user),
+            color: server.color(names.roles(&server.id, user)),
+        })
+    };
+    let recent = details.recent.as_deref().map(|recent| chat::RecentMessage {
+        author: person(&recent.author).unwrap_or_else(|| chat::ThreadPerson {
+            name: "Unknown".into(),
+            avatar: names.avatar(Some(&server.id), &recent.author),
+            color: None,
+        }),
+        text: names
+            .render(Some(server), &recent.content)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    });
+    Some(chat::ListedThread {
+        room: room_id(&server.id, &thread.id),
+        name: thread.name.clone(),
+        private: details.private,
+        joined: details.joined,
+        archived: details.archived,
+        last,
+        active_ms: (last >> 22) + DISCORD_EPOCH,
+        owner: details.owner.as_deref().and_then(person),
+        recent,
+        members: details.members,
+        member_avatars: details
+            .member_preview
+            .iter()
+            .map(|user| names.avatar(Some(&server.id), user))
+            .collect(),
+    })
+}
+
 /// The item of the last message read in a channel, from its snowflake.
 #[cfg(feature = "discord")]
 fn read_item(last_read: u64) -> Option<String> {
@@ -490,8 +544,10 @@ fn server_rooms(
             }
         });
         channels.push(id);
+        // Each thread's channel is the room listed before the first of them.
+        let parent = rooms.len() - 1;
         for thread in threads.remove(channel.id.as_str()).into_iter().flatten() {
-            let room = thread_room(server, thread, rooms.last().expect("its channel"), premium);
+            let room = thread_room(server, thread, &rooms[parent], premium);
             channels.push(room.id.clone());
             rooms.push(room);
         }
@@ -841,6 +897,11 @@ mod tests {
         kept.update(&first, false, &mut rooms, &mut servers);
         kept.update(&viewing, false, &mut rooms, &mut servers);
         assert_eq!(rooms[3].name, "thread 42");
+        // A channel's second thread is in it too, not in its first.
+        assert_eq!(
+            (rooms[4].name.as_str(), rooms[4].parent.clone()),
+            ("thread 40", parent("22"))
+        );
         assert!((rooms, servers) == index(&viewing, false));
     }
 
