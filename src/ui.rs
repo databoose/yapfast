@@ -34,6 +34,7 @@ use talk_core::{
 
 use crate::{custom_emoji, emoji, graphics, zoom};
 
+mod appearance;
 mod callbacks;
 mod menus;
 mod messages;
@@ -419,16 +420,14 @@ fn control(
                         allocator_stats();
                         Ok(())
                     }
-                    // `theme ID` chooses a built-in theme, as Appearance does.
+                    // `theme ID` chooses a theme, built in or custom, as Appearance does.
                     command if command.starts_with("theme ") => {
                         let id = &command["theme ".len()..];
-                        match (theme::find(id), window.borrow().as_ref()) {
-                            (None, _) => Err("no such theme".into()),
-                            (Some(_), Some(window)) => {
-                                adapter.borrow_mut().choose_theme(window, id);
-                                Ok(())
+                        match window.borrow().as_ref() {
+                            Some(window) if !adapter.borrow_mut().choose_theme(window, id) => {
+                                Err("no such theme".into())
                             }
-                            (Some(_), None) => Ok(()),
+                            _ => Ok(()),
                         }
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
@@ -590,8 +589,10 @@ struct Layout {
     each_sound: std::collections::BTreeMap<Sound, u8>,
     /// Talk draws with Skia GPU from its next start; see [`graphics`].
     gpu_rendering: bool,
-    /// The built-in theme chosen, by its id; Yap unless chosen.
+    /// The theme chosen, by its id; Yap unless chosen.
     theme: Option<String>,
+    /// The person's own themes, in the order Appearance shows them.
+    custom_themes: Vec<theme::Custom>,
 }
 
 /// Talk's sounds start as they're made: 12 dB under full scale at the loudest.
@@ -643,6 +644,7 @@ impl Layout {
             layout.each_sound.insert(Sound::Message, 0);
             layout.each_sound.insert(Sound::Mention, 0);
         }
+        theme::tidy(&mut layout.custom_themes);
         layout
     }
 
@@ -664,10 +666,10 @@ impl Layout {
     fn apply(&self, window: &TalkWindow) {
         // Before the first frame, which the event loop draws. A window made
         // again, after closing to the tray, keeps the theme this way too.
-        let chosen = theme::chosen(self.theme.as_deref());
-        chosen.theme.apply(window);
-        window.set_theme_id(chosen.id.into());
-        window.set_themes(theme::cards());
+        let (id, chosen) = theme::chosen(self.theme.as_deref(), &self.custom_themes);
+        chosen.apply(window);
+        window.set_theme_id(id.into());
+        window.set_themes(theme::cards(&self.custom_themes));
         if let Some(width) = self.sidebar_width {
             window.set_sidebar_width(width);
         }
@@ -936,6 +938,8 @@ struct Adapter {
     revealed: HashSet<String>,
     /// The preferences that shape message rows changed, so they're built again.
     restyle: bool,
+    /// Appearance's theme editor, while it's open.
+    theme_editor: Option<theme::Editor>,
     /// Where the `@` of the word being mentioned is in the composer text.
     mention_at: Option<usize>,
     /// Suggestions for the `@` here were closed with Escape; they stay closed until
@@ -1085,6 +1089,7 @@ impl Adapter {
                 latest_due: false,
                 revealed: HashSet::new(),
                 restyle: false,
+                theme_editor: None,
                 aside_messages: Arc::new(Vec::new()),
                 aside_rows: HashMap::new(),
                 mention_at: None,
@@ -1121,32 +1126,13 @@ impl Adapter {
     fn attach(&mut self, window: &TalkWindow) {
         self.models.attach(window);
         self.layout.apply(window);
-        self.window = window.as_weak();
-    }
-
-    /// Shows the window in a built-in theme and keeps it chosen; nothing
-    /// for an id Talk doesn't know.
-    fn choose_theme(&mut self, window: &TalkWindow, id: &str) {
-        let Some(chosen) = theme::find(id) else {
-            return;
-        };
-        window.set_theme_id(chosen.id.into());
-        self.set_theme(window, &chosen.theme);
-        self.layout.theme = Some(chosen.id.to_owned());
-        self.layout.write(&self.root);
-    }
-
-    /// Shows the window in another theme's colours, building again what
-    /// carries the old mention colour in its markup: message rows, the
-    /// topic, pins and search results.
-    fn set_theme(&mut self, window: &TalkWindow, theme: &theme::Theme) {
-        if theme.apply(window) {
-            self.restyle = true;
-            self.topic_shown = None;
-            self.models.pins.clear();
-            self.models.search_results.clear();
-            self.refresh(window);
+        // The theme being edited goes unsaved with the old window, and rows
+        // may carry its mention colour; the refresh after attaching builds
+        // them again.
+        if self.theme_editor.take().is_some() {
+            self.restyle_mentions();
         }
+        self.window = window.as_weak();
     }
 
     /// Ctrl+V in the composer: files and pictures on the clipboard wait to go

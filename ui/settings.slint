@@ -1,6 +1,6 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider } from "controls.slint";
+import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider, TextField } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
 
@@ -395,6 +395,8 @@ export component VoiceSettings inherits VerticalLayout {
 export struct ThemeCard {
     id: string,
     name: string,
+    /// One of the person's own, which can be edited.
+    custom: bool,
     rail: color,
     sidebar: color,
     chat: color,
@@ -404,12 +406,23 @@ export struct ThemeCard {
     muted: color,
 }
 
+/// A colour in the theme editor: its name, the colour, and its field's text,
+/// wrong when that isn't a colour.
+export struct ThemeColour {
+    name: string,
+    colour: color,
+    hex: string,
+    wrong: bool,
+}
+
 // A theme to choose: a small window drawn in its own colours, with its name
-// below. The current one has an accent ring and a check.
+// below. The current one has an accent ring and a check; the person's own
+// themes have a pencil that edits them.
 component ThemeTile inherits Rectangle {
     in property <ThemeCard> card;
     in property <bool> current;
     callback choose();
+    callback edit();
     border-radius: 10px;
     border-width: root.current || focus.has-focus ? 2px : 1px;
     border-color: root.current || focus.has-focus ? Theme.accent : pointer.has-hover ? Theme.faint : Theme.line;
@@ -449,7 +462,7 @@ component ThemeTile inherits Rectangle {
         }
     }
     HorizontalLayout {
-        x: 10px; y: preview.y + preview.height + 6px; width: parent.width - 20px; height: 24px; spacing: 6px;
+        x: 10px; y: preview.y + preview.height + 6px; width: parent.width - 20px - (root.card.custom ? 26px : 0px); height: 24px; spacing: 6px;
         Text {
             text: root.card.name; color: root.current ? Theme.text : Theme.secondary; font-size: 14px;
             font-weight: root.current ? 700 : 500; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
@@ -471,19 +484,78 @@ component ThemeTile inherits Rectangle {
             clicked => { root.choose(); }
         }
     }
+    if root.card.custom: IconButton {
+        x: parent.width - 8px - self.width; y: preview.y + preview.height + 6px; height: 24px;
+        icon: @image-url("icons/pencil.svg"); label: "Edit " + root.card.name; size: 24px; glyph: 14px;
+        clicked => { root.edit(); }
+    }
 }
 
-// Settings: the window's colours, from the themes Talk comes with. A click
-// shows one at once.
+// A colour in the theme editor: a swatch, its name, and its hex in a field
+// that says when it holds no colour.
+component ThemeColourRow inherits HorizontalLayout {
+    in property <ThemeColour> colour;
+    callback edited(string);
+    spacing: 10px;
+    Middle {
+        Rectangle {
+            width: 28px; height: 28px; border-radius: 6px; background: root.colour.colour;
+            border-width: 1px; border-color: Theme.line;
+        }
+    }
+    VerticalLayout {
+        alignment: center; horizontal-stretch: 1;
+        Text { text: root.colour.name; color: Theme.text; font-size: 14px; overflow: elide; }
+        if root.colour.wrong: Text { text: "Not a colour"; color: Theme.danger; font-size: 12px; overflow: elide; }
+    }
+    Middle {
+        TextField {
+            width: 116px; min-height: 34px; text-size: 14px; pad: 8px;
+            fill: root.colour.wrong ? Theme.danger.with-alpha(0.16) : Theme.sunken;
+            text: root.colour.hex; label: root.colour.name;
+            edited(text) => { root.edited(text); }
+        }
+    }
+}
+
+// Settings: the window's colours, from the themes Talk comes with and the
+// person's own. A click shows one at once. New theme opens the editor, whose
+// changes show at once too; Save keeps them, Cancel restores the theme from
+// before.
 export component AppearanceSettings inherits VerticalLayout {
     in property <[ThemeCard]> themes;
     in property <string> theme-id;
+    /// The editor, while it's open: the colours, the name, whether the theme
+    /// is dark, and whether it edits a saved theme rather than making one,
+    /// from the theme at start-index among the starts.
+    in property <bool> editor;
+    in property <[ThemeColour]> colours;
+    in-out property <string> theme-name;
+    in-out property <bool> theme-dark;
+    in property <bool> editing-saved;
+    in property <[string]> starts;
+    in property <int> start-index;
+    in property <bool> can-save;
     callback choose-theme(string);
+    callback new-theme();
+    callback edit-theme(string);
+    callback start-chosen(int);
+    callback colour-edited(int, string);
+    callback dark-toggled(bool);
+    callback save-theme();
+    callback cancel-theme();
+    callback delete-theme();
     spacing: 16px;
     SettingsTitle { text: "Appearance"; }
-    VerticalLayout {
+    if !root.editor: VerticalLayout {
         spacing: 8px;
-        SettingsHeading { text: "THEME"; }
+        HorizontalLayout {
+            SettingsHeading { text: "THEME"; vertical-alignment: center; horizontal-stretch: 1; }
+            ActionButton {
+                text: "New theme"; small: true; icon: @image-url("icons/circle-plus.svg");
+                clicked => { root.new-theme(); }
+            }
+        }
         // As many 150px or wider cards across as fit, in rows.
         Rectangle {
             property <length> gap: 12px;
@@ -498,6 +570,68 @@ export component AppearanceSettings inherits VerticalLayout {
                 width: parent.card-width; height: parent.card-height;
                 card: card; current: card.id == root.theme-id;
                 choose => { root.choose-theme(card.id); }
+                edit => { root.edit-theme(card.id); }
+            }
+        }
+    }
+    if root.editor: form := VerticalLayout {
+        property <bool> confirming;
+        spacing: 16px;
+        VerticalLayout {
+            spacing: 8px;
+            SettingsHeading { text: root.editing-saved ? "EDIT THEME" : "NEW THEME"; }
+            HorizontalLayout {
+                spacing: 8px;
+                TextField {
+                    text <=> root.theme-name; placeholder: "Name"; label: "Theme name"; min-height: 36px; text-size: 15px;
+                    accepted => { root.save-theme(); }
+                }
+                ActionButton { text: "Save"; primary: true; enabled: root.can-save; clicked => { root.save-theme(); } }
+                ActionButton { text: "Cancel"; clicked => { root.cancel-theme(); } }
+            }
+        }
+        if !root.editing-saved: VerticalLayout {
+            spacing: 8px;
+            SettingsHeading { text: "START FROM"; }
+            ComboBox {
+                model: root.starts; current-index: root.start-index; accessible-label: "Start from";
+                selected => { root.start-chosen(self.current-index); }
+            }
+        }
+        SettingsSwitch {
+            text: "Dark"; description: "Drop-down lists and scroll bars draw dark to match.";
+            checked <=> root.theme-dark; toggled(dark) => { root.dark-toggled(dark); }
+        }
+        VerticalLayout {
+            spacing: 8px;
+            SettingsHeading { text: "COLOURS"; }
+            Label { text: "Each as #rgb, #rrggbb or #rrggbbaa. The window shows a change as you type it."; }
+            // Two columns when they fit, read down.
+            Rectangle {
+                property <int> columns: self.width >= 520px ? 2 : 1;
+                property <length> gap: 24px;
+                property <length> row-height: 46px;
+                property <length> cell-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
+                property <int> rows: ceil(root.colours.length / self.columns);
+                height: self.rows * self.row-height;
+                accessible-role: list; accessible-label: "Colours";
+                for row[index] in root.colours: ThemeColourRow {
+                    x: floor(index / parent.rows) * (parent.cell-width + parent.gap);
+                    y: mod(index, parent.rows) * parent.row-height;
+                    width: parent.cell-width; height: parent.row-height;
+                    colour: row;
+                    edited(text) => { root.colour-edited(index, text); }
+                }
+            }
+        }
+        if root.editing-saved: HorizontalLayout {
+            alignment: start;
+            ActionButton {
+                text: form.confirming ? "Delete it for good" : "Delete theme"; danger: true; small: true;
+                icon: @image-url("icons/trash-2.svg");
+                clicked => {
+                    if form.confirming { root.delete-theme(); } else { form.confirming = true; }
+                }
             }
         }
     }

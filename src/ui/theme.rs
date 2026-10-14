@@ -1,9 +1,9 @@
 //! The window's colours: a full set of what `Theme` in `ui/theme.slint` holds,
 //! which Talk sets on the window to change them all at once.
 
-use std::cell::Cell;
+use std::{cell::Cell, rc::Rc};
 
-use slint::{Color, ComponentHandle, ModelRc, VecModel};
+use slint::{Color, ComponentHandle, Model, ModelRc, VecModel};
 use talk_ui::TalkWindow;
 
 /// Opaque `#rrggbb`.
@@ -38,6 +38,18 @@ macro_rules! theme {
                 $(if tokens.$get() != self.$name {
                     tokens.$set(self.$name);
                 })*
+            }
+
+            /// Each colour's name, as `ui/theme.slint` has it but with `_`
+            /// for `-`, in the order of [`Self::colour`].
+            pub const NAMES: &[&str] = &[$(stringify!($name),)*];
+
+            pub fn colour(&self, index: usize) -> Option<Color> {
+                [$(self.$name,)*].get(index).copied()
+            }
+
+            pub fn colour_mut(&mut self, index: usize) -> Option<&mut Color> {
+                [$(&mut self.$name,)*].into_iter().nth(index)
             }
 
             /// The colours the window shows now.
@@ -547,10 +559,197 @@ pub fn find(id: &str) -> Option<&'static BuiltIn> {
     BUILT_IN.iter().find(|theme| theme.id == id)
 }
 
-/// The theme a layout chose: Yap when it chose none, or one this version
-/// doesn't have.
-pub fn chosen(id: Option<&str>) -> &'static BuiltIn {
-    id.and_then(find).unwrap_or(&BUILT_IN[0])
+/// A theme Appearance offers, built in or the person's own, and its id.
+pub fn lookup<'a>(id: &str, custom: &'a [Custom]) -> Option<(&'a str, Theme)> {
+    find(id)
+        .map(|built_in| (built_in.id, built_in.theme))
+        .or_else(|| {
+            custom
+                .iter()
+                .find(|custom| custom.id == id)
+                .map(|custom| (custom.id.as_str(), custom.theme))
+        })
+}
+
+/// The theme a layout chose, and its id: Yap when it chose none, or one
+/// this version doesn't have or the person deleted.
+pub fn chosen<'a>(id: Option<&str>, custom: &'a [Custom]) -> (&'a str, Theme) {
+    id.and_then(|id| lookup(id, custom))
+        .unwrap_or((BUILT_IN[0].id, YAP))
+}
+
+/// A colour's name as `ui/theme.slint` and `layout.json` have it.
+fn token(name: &str) -> String {
+    name.replace('_', "-")
+}
+
+/// Where a colour named as `layout.json` has it is in [`Theme::colour`].
+fn token_index(token: &str) -> Option<usize> {
+    Theme::NAMES.iter().position(|name| {
+        name.bytes()
+            .map(|byte| if byte == b'_' { b'-' } else { byte })
+            .eq(token.bytes())
+    })
+}
+
+/// A colour written `#rgb`, `#rrggbb` or `#rrggbbaa`, as Slint writes them.
+pub fn parse(text: &str) -> Option<Color> {
+    let digits = text.trim().strip_prefix('#')?;
+    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let value = u32::from_str_radix(digits, 16).ok()?;
+    match digits.len() {
+        3 => {
+            let nibble = |shift: u32| ((value >> shift) & 0xf) * 0x11;
+            Some(rgb((nibble(8) << 16) | (nibble(4) << 8) | nibble(0)))
+        }
+        6 => Some(rgb(value)),
+        8 => Some(rgba(value)),
+        _ => None,
+    }
+}
+
+/// A colour as `#rrggbb`, or `#rrggbbaa` when it isn't opaque.
+pub fn hex(colour: Color) -> String {
+    let rgb = colour.as_argb_encoded() & 0xff_ffff;
+    match colour.alpha() {
+        0xff => format!("#{rgb:06x}"),
+        alpha => format!("#{rgb:06x}{alpha:02x}"),
+    }
+}
+
+/// One of the person's own themes, as a layout keeps it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Custom {
+    /// `custom:` and a number: no built-in id has a colon. See [`tidy`].
+    pub id: String,
+    pub name: String,
+    /// The built-in theme it began as a copy of, whose colours stand in for
+    /// any it doesn't name, such as one added since it was saved.
+    pub base: &'static str,
+    pub theme: Theme,
+}
+
+/// A custom theme in `layout.json`: each colour as text, by its name in
+/// `ui/theme.slint`.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Stored {
+    id: String,
+    name: String,
+    base: String,
+    dark: Option<bool>,
+    colours: std::collections::BTreeMap<String, String>,
+}
+
+impl From<Stored> for Custom {
+    fn from(stored: Stored) -> Self {
+        let base = find(&stored.base).unwrap_or(&BUILT_IN[0]);
+        let mut theme = base.theme;
+        theme.dark = stored.dark.unwrap_or(theme.dark);
+        for (token, text) in &stored.colours {
+            if let (Some(slot), Some(colour)) = (
+                token_index(token).and_then(|index| theme.colour_mut(index)),
+                parse(text),
+            ) {
+                *slot = colour;
+            }
+        }
+        Self {
+            id: stored.id,
+            name: stored.name,
+            base: base.id,
+            theme,
+        }
+    }
+}
+
+impl From<&Custom> for Stored {
+    fn from(custom: &Custom) -> Self {
+        let colours = Theme::NAMES
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| Some((token(name), hex(custom.theme.colour(index)?))))
+            .collect();
+        Self {
+            id: custom.id.clone(),
+            name: custom.name.clone(),
+            base: custom.base.to_owned(),
+            dark: Some(custom.theme.dark),
+            colours,
+        }
+    }
+}
+
+impl serde::Serialize for Custom {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Stored::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Custom {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Stored::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// The number in a custom theme's id, if it's one Talk gives.
+fn custom_number(id: &str) -> Option<u32> {
+    id.strip_prefix("custom:")?.parse().ok()
+}
+
+/// An id for a new custom theme, after those there are.
+pub fn new_id(custom: &[Custom]) -> String {
+    let last = custom
+        .iter()
+        .filter_map(|custom| custom_number(&custom.id))
+        .max()
+        .unwrap_or(0);
+    format!("custom:{}", last + 1)
+}
+
+/// Gives a new id to each custom theme from `layout.json` whose id Talk
+/// wouldn't have given, or that another has, so that ids stay apart from
+/// the built-in ones and from each other.
+pub fn tidy(custom: &mut [Custom]) {
+    let mut seen = std::collections::HashSet::new();
+    let unfit: Vec<usize> = (0..custom.len())
+        .filter(|&index| {
+            custom_number(&custom[index].id).is_none() || !seen.insert(custom[index].id.clone())
+        })
+        .collect();
+    for index in unfit {
+        custom[index].id = new_id(custom);
+    }
+}
+
+/// A theme a new one can start as.
+pub struct Start<'a> {
+    pub id: &'a str,
+    /// The built-in theme it is or began as.
+    pub base: &'static str,
+    pub name: &'a str,
+    pub theme: Theme,
+}
+
+/// What a new theme can start as: every theme Appearance offers, in its
+/// order.
+pub fn starts(custom: &[Custom]) -> impl Iterator<Item = Start<'_>> {
+    BUILT_IN
+        .iter()
+        .map(|built_in| Start {
+            id: built_in.id,
+            base: built_in.id,
+            name: built_in.name,
+            theme: built_in.theme,
+        })
+        .chain(custom.iter().map(|custom| Start {
+            id: &custom.id,
+            base: custom.base,
+            name: &custom.name,
+            theme: custom.theme,
+        }))
 }
 
 thread_local! {
@@ -574,25 +773,106 @@ impl Theme {
     }
 }
 
-/// Appearance's cards: each built-in theme's name and the colours its
-/// preview draws with.
-pub fn cards() -> ModelRc<talk_ui::ThemeCard> {
+/// Appearance's cards: each theme's name and the colours its preview draws
+/// with, the built-in ones first.
+pub fn cards(custom: &[Custom]) -> ModelRc<talk_ui::ThemeCard> {
+    let card = |id: &str, name: &str, custom: bool, theme: &Theme| talk_ui::ThemeCard {
+        id: id.into(),
+        name: name.into(),
+        custom,
+        rail: theme.rail,
+        sidebar: theme.sidebar,
+        chat: theme.chat,
+        raised: theme.raised,
+        accent: theme.accent,
+        text: theme.text,
+        muted: theme.muted,
+    };
     let cards: Vec<_> = BUILT_IN
         .iter()
-        .map(|built_in| {
-            let theme = &built_in.theme;
-            talk_ui::ThemeCard {
-                id: built_in.id.into(),
-                name: built_in.name.into(),
-                rail: theme.rail,
-                sidebar: theme.sidebar,
-                chat: theme.chat,
-                raised: theme.raised,
-                accent: theme.accent,
-                text: theme.text,
-                muted: theme.muted,
-            }
-        })
+        .map(|built_in| card(built_in.id, built_in.name, false, &built_in.theme))
+        .chain(
+            custom
+                .iter()
+                .map(|custom| card(&custom.id, &custom.name, true, &custom.theme)),
+        )
         .collect();
     ModelRc::new(VecModel::from(cards))
+}
+
+/// Appearance's theme editor while it's open: the theme as edited so far,
+/// and a row for each colour, the model it lends the window until it closes.
+pub struct Editor {
+    /// The custom theme being edited, by id; `None` for a new one.
+    pub editing: Option<String>,
+    pub base: &'static str,
+    pub theme: Theme,
+    rows: Rc<VecModel<talk_ui::ThemeColour>>,
+}
+
+impl Editor {
+    pub fn new(editing: Option<String>, base: &'static str, theme: Theme) -> Self {
+        let editor = Self {
+            editing,
+            base,
+            theme,
+            rows: Rc::default(),
+        };
+        editor.fill();
+        editor
+    }
+
+    /// Writes every row again, which also gives each field its text anew.
+    fn fill(&self) {
+        let rows: Vec<_> = Theme::NAMES
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                let colour = self.theme.colour(index)?;
+                Some(talk_ui::ThemeColour {
+                    name: token(name).into(),
+                    colour,
+                    hex: hex(colour).into(),
+                    wrong: false,
+                })
+            })
+            .collect();
+        self.rows.set_vec(rows);
+    }
+
+    pub fn rows(&self) -> ModelRc<talk_ui::ThemeColour> {
+        ModelRc::from(self.rows.clone())
+    }
+
+    /// Starts again from another theme's colours.
+    pub fn restart(&mut self, base: &'static str, theme: Theme) {
+        self.base = base;
+        self.theme = theme;
+        self.fill();
+    }
+
+    /// Takes a colour's text as typed: the theme takes the colour if it is
+    /// one, and the row says so if not. Returns whether the theme changed.
+    pub fn edit(&mut self, index: usize, text: &str) -> bool {
+        let Some(mut row) = self.rows.row_data(index) else {
+            return false;
+        };
+        let colour = parse(text);
+        row.hex = text.into();
+        row.wrong = colour.is_none();
+        row.colour = colour.unwrap_or(row.colour);
+        self.rows.set_row_data(index, row);
+        match (colour, self.theme.colour_mut(index)) {
+            (Some(colour), Some(slot)) if *slot != colour => {
+                *slot = colour;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether every field holds a colour.
+    pub fn valid(&self) -> bool {
+        !self.rows.iter().any(|row| row.wrong)
+    }
 }
