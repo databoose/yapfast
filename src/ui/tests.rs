@@ -3252,3 +3252,59 @@ fn a_theme_paints_the_window_and_the_mentions_in_its_rows() {
     assert!(theme::YAP.apply(&window));
     assert!(message_row_plain(&message).styled == yap_row.styled);
 }
+
+#[test]
+fn a_chosen_theme_is_kept_and_survives_a_window_made_again() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    assert_eq!(window.get_theme_id(), "yap");
+    assert_eq!(window.get_themes().row_count(), theme::BUILT_IN.len());
+    let nord = theme::find("nord").unwrap().theme;
+    window.invoke_choose_theme("nord".into());
+    assert_eq!(window.get_theme_id(), "nord");
+    assert_eq!(theme::Theme::shown(&window), nord);
+    assert_eq!(
+        Layout::read(directory.path()).theme.as_deref(),
+        Some("nord")
+    );
+
+    // Closing to the tray drops the window; the next one starts in Nord.
+    let again = TalkWindow::new().unwrap();
+    adapter.borrow_mut().attach(&again);
+    assert_eq!(theme::Theme::shown(&again), nord);
+    assert_eq!(again.get_theme_id(), "nord");
+
+    // An id Talk doesn't know changes nothing, and a stored one it no longer
+    // has shows Yap.
+    again.invoke_choose_theme("missing".into());
+    assert_eq!(theme::Theme::shown(&again), nord);
+    let fresh = TalkWindow::new().unwrap();
+    Layout {
+        theme: Some("gone".into()),
+        ..Default::default()
+    }
+    .apply(&fresh);
+    assert_eq!(theme::Theme::shown(&fresh), theme::YAP);
+    assert_eq!(fresh.get_theme_id(), "yap");
+}
+
+#[test]
+fn built_in_themes_have_their_own_ids_and_say_whether_they_are_dark() {
+    let mut ids = std::collections::HashSet::new();
+    for built_in in &theme::BUILT_IN {
+        assert!(ids.insert(built_in.id), "{} twice", built_in.id);
+        let chat = built_in.theme.chat;
+        let light =
+            u32::from(chat.red()) + u32::from(chat.green()) + u32::from(chat.blue()) > 3 * 128;
+        assert_eq!(built_in.theme.dark, !light, "{}", built_in.name);
+    }
+    assert_eq!(theme::BUILT_IN[0].theme, theme::YAP, "Yap comes first");
+}

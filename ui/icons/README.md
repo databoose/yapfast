@@ -5,7 +5,7 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
   volume-2 were carried forward from gpui-kit-assets 0.7.0.
 - ban, bell, bell-off, check, chevron-down, circle-plus, copy, copy-plus, download, eye, eye-off, file, folder-plus, headphone-off, history, inbox, lock, log-out, pencil,
   phone, phone-off, pin, pin-off, refresh-cw, reply, screen-share, screen-share-off, send-horizontal,
-  smile-plus, square-pen, sticky-note, trash-2, triangle-alert, user, user-minus, user-pen, user-plus, users and x come unmodified from
+  palette, smile-plus, square-pen, sticky-note, trash-2, triangle-alert, user, user-minus, user-pen, user-plus, users and x come unmodified from
   lucide-static 1.51.0.
 - at-sign, chevron-left, chevron-right, clock, ellipsis, forward, gavel, search,
   shield, smile, user-x, video and video-off follow

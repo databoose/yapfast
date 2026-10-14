@@ -840,6 +840,13 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_choose_theme(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().choose_theme(&window, &id);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_preferences_changed(move || {
         let Some(window) = weak.upgrade() else { return };
         let mut adapter = state.borrow_mut();

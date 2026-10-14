@@ -270,7 +270,7 @@ The window follows Discord's arrangement:
   ticks a box when it's chosen.
 - A dock across the rail and sidebar: the voice panel, then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
-  audio devices, message text size, clock and link previews, notifications,
+  theme, audio devices, message text size, clock and link previews, notifications,
   sounds, reconnect, sign out). A caret beside mute and deafen opens a
   device menu; the input menu shows a local level meter.
 - A conversation with a 48px header: the conversation's icon and name, and
