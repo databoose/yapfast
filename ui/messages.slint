@@ -513,6 +513,10 @@ export component MessageMenu inherits Rectangle {
     callback start-forward(string);
     callback copy-text(string);
     callback request-delete(string);
+    /// Threads can start from the conversation's messages.
+    in property <bool> can-start-thread;
+    callback start-thread(string);
+    callback view-thread(string);
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     menu-content := VerticalLayout {
@@ -539,6 +543,16 @@ export component MessageMenu inherits Rectangle {
         if root.menu-message.can-forward && (root.trusted || root.preview): MenuItem {
             text: "Forward"; icon: @image-url("icons/forward.svg");
             clicked => { root.start-forward(root.menu-message.item); }
+        }
+        // A message someone wrote starts a thread, or leads to its own.
+        if root.can-start-thread && root.menu-message.can-reply && root.menu-message.delivery == ""
+            && root.menu-message.thread-room == "": MenuItem {
+            text: "Create Thread"; icon: @image-url("icons/messages-square.svg");
+            clicked => { root.start-thread(root.menu-message.item); }
+        }
+        if root.menu-message.can-reply && root.menu-message.thread-room != "": MenuItem {
+            text: "View Thread"; icon: @image-url("icons/messages-square.svg");
+            clicked => { root.view-thread(root.menu-message.thread-room); }
         }
         if root.menu-message.body != "": MenuItem {
             text: "Copy text"; icon: @image-url("icons/copy.svg");

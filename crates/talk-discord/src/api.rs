@@ -483,6 +483,23 @@ impl Api {
         self.json(self.request(Method::GET, &path)).await
     }
 
+    /// Starts a thread in `channel`, from its `message` or from none, with
+    /// `body` as Discord's client sends it; the thread's channel object.
+    /// Discord sends THREAD_CREATE, and adds this account to it.
+    pub async fn create_thread(
+        &self,
+        channel: &str,
+        message: Option<&str>,
+        body: &Value,
+    ) -> Result<Value> {
+        let path = match message {
+            Some(message) => format!("/channels/{channel}/messages/{message}/threads"),
+            None => format!("/channels/{channel}/threads"),
+        };
+        self.json(with_json(self.request(Method::POST, &path), body))
+            .await
+    }
+
     /// Shows others that this account is typing in `channel`.
     pub async fn typing(&self, channel: &str) -> Result<()> {
         let path = format!("/channels/{channel}/typing");

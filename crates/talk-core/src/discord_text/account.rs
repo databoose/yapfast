@@ -397,6 +397,54 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::StartThread {
+        room,
+        message,
+        name,
+        private,
+        location,
+    }) = command
+    {
+        let place = discord::parse_room(&room)
+            .map(|(guild, channel)| (guild.to_owned(), channel.to_owned()));
+        let message = message
+            .as_deref()
+            .and_then(|item| item.strip_prefix("d:"))
+            .map(str::to_owned);
+        match (discord, place) {
+            (Ok(discord), Some((guild, channel))) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .start_thread(
+                            &guild,
+                            &channel,
+                            message.as_deref(),
+                            &name,
+                            private,
+                            location,
+                        )
+                        .await
+                        .map(|thread| discord::room_id(&guild, &thread))
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not start a thread"
+                            );
+                            format!("Couldn't start the thread: {error}")
+                        });
+                    let _ = events.send(Event::ThreadStarted { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::ThreadStarted {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::CloseThreads) = command {
         if let Ok(discord) = discord {
             discord.forget_listed_threads();

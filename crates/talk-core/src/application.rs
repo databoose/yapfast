@@ -43,7 +43,10 @@ pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_profile::{
     BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT, PictureEdit, ProfileText, ServerProfileEditor,
 };
-pub use threads::{ThreadList, ThreadSearch, ThreadSections};
+pub use threads::{
+    NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
+    default_thread_name,
+};
 
 use calls::call_sounds;
 use compose::has_markdown;
@@ -420,6 +423,8 @@ pub struct AppState {
     pub search: Option<Search>,
     /// The open Discord channel's list of its threads.
     pub threads: Option<ThreadList>,
+    /// The "New Thread" form beside the open Discord channel.
+    pub new_thread: Option<NewThread>,
     pub add_people: Option<AddPeople>,
     /// The selected Discord channel's topic, once the backend has said it.
     pub topic: Option<Arc<chat::Topic>>,
@@ -1036,6 +1041,25 @@ pub enum Action {
     SearchThreads(String),
     /// Load the list's next page of archived threads.
     MoreThreads,
+    /// Open the "New Thread" form beside the open channel: from a message,
+    /// by item, or from none.
+    NewThread {
+        message: Option<String>,
+        from: ThreadFrom,
+    },
+    /// Write the form's name or first message, or choose a private thread.
+    WriteNewThread {
+        name: Option<String>,
+        body: Option<String>,
+    },
+    SetThreadPrivate(bool),
+    /// Start the thread the form describes.
+    CreateThread,
+    /// Close the form, asking first if something was written; close it
+    /// anyway; or go back to it.
+    CloseNewThread,
+    LeaveNewThread,
+    StayInNewThread,
     /// Search the selected DM's messages, or a server channel's server;
     /// an empty query ends the search.
     Search(String),
@@ -1278,6 +1302,9 @@ pub struct Application {
     pending_open: Option<String>,
     /// A thread to show beside the selected channel once it's listed.
     pending_aside: Option<String>,
+    /// A thread just started, whose first message, its draft, goes once
+    /// it shows beside its channel.
+    first_message: Option<String>,
     /// The items in or near the thread beside's view, as last reported.
     aside_visible: Vec<String>,
     /// The thread beside's timeline as its pictures were last asked for.
@@ -1810,6 +1837,30 @@ impl Application {
             Action::ShowThreads(shown) => self.show_threads(shown),
             Action::SearchThreads(query) => self.search_threads(query),
             Action::MoreThreads => self.more_threads(),
+            Action::NewThread { message, from } => self.open_new_thread(message, from),
+            Action::WriteNewThread { name, body } => {
+                self.write_new_thread(name, body);
+                vec![]
+            }
+            Action::SetThreadPrivate(private) => {
+                self.set_thread_private(private);
+                vec![]
+            }
+            Action::CreateThread => self.create_thread(),
+            Action::CloseNewThread => {
+                self.close_new_thread(false);
+                vec![]
+            }
+            Action::LeaveNewThread => {
+                self.close_new_thread(true);
+                vec![]
+            }
+            Action::StayInNewThread => {
+                if let Some(form) = &mut self.state.new_thread {
+                    form.leaving = false;
+                }
+                vec![]
+            }
             Action::Search(query) => self.search(query),
             Action::MoreResults => self.more_results(),
             Action::OpenAddPeople => self.open_add_people(),
@@ -2165,6 +2216,7 @@ impl Application {
                 offset,
                 result,
             } => self.threads_came(room, query, offset, result),
+            Event::ThreadStarted { room, result } => return self.thread_started(room, result),
             Event::Found {
                 place,
                 query,

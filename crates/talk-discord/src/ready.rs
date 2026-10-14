@@ -24,9 +24,10 @@ const GUILD_VOICE: u64 = 2;
 const GROUP_DM: u64 = 3;
 const GUILD_CATEGORY: u64 = 4;
 const GUILD_ANNOUNCEMENT: u64 = 5;
-const ANNOUNCEMENT_THREAD: u64 = 10;
-const PUBLIC_THREAD: u64 = 11;
-const PRIVATE_THREAD: u64 = 12;
+/// Thread channel types.
+pub const ANNOUNCEMENT_THREAD: u64 = 10;
+pub const PUBLIC_THREAD: u64 = 11;
+pub const PRIVATE_THREAD: u64 = 12;
 const GUILD_STAGE_VOICE: u64 = 13;
 
 /// Discord's permission bits, as roles and channel overwrites carry them;
@@ -48,6 +49,8 @@ pub mod permission {
     pub const MANAGE_ROLES: u64 = 1 << 28;
     /// Seeing every private thread, and sending in locked ones.
     pub const MANAGE_THREADS: u64 = 1 << 34;
+    pub const CREATE_PUBLIC_THREADS: u64 = 1 << 35;
+    pub const CREATE_PRIVATE_THREADS: u64 = 1 << 36;
     pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
     /// Timing members out.
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
@@ -195,6 +198,14 @@ pub struct Channel {
     /// What a thread has besides; none for a channel.
     #[serde(default)]
     pub thread: Option<Box<Thread>>,
+    /// An announcement channel, whose threads are announcement threads and
+    /// never private.
+    #[serde(default)]
+    pub announcement: bool,
+    /// How many minutes of quiet archive a thread started here, as the
+    /// channel's `default_auto_archive_duration` says; 0 when it doesn't.
+    #[serde(default)]
+    pub archive_after: u16,
 }
 
 /// What a thread has that a channel doesn't; see
@@ -1052,6 +1063,11 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
             .filter(|topic| !topic.trim().is_empty())
             .map(Arc::from),
         overwrites: Arc::new(overwrites(channel)),
+        announcement: channel["type"].as_u64() == Some(GUILD_ANNOUNCEMENT),
+        archive_after: channel["default_auto_archive_duration"]
+            .as_u64()
+            .and_then(|minutes| u16::try_from(minutes).ok())
+            .unwrap_or_default(),
         ..Default::default()
     })
 }

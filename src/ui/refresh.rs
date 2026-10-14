@@ -198,6 +198,7 @@ impl Adapter {
         self.show_header(window);
         self.show_dm_tools(window);
         self.show_threads(window);
+        self.show_new_thread(window);
         self.show_members(window);
         self.show_invite(window);
         self.show_channel_dialog(window);
@@ -711,6 +712,52 @@ impl Adapter {
         window.set_discord_status(state.discord_presence.as_deref().unwrap_or("online").into());
         window.set_storage(state.storage.unwrap_or_default().into());
         window.set_notice(state.notice.as_deref().unwrap_or_default().into());
+    }
+
+    /// Starting a thread: what the open channel offers, and the "New
+    /// Thread" form beside it.
+    fn show_new_thread(&mut self, window: &TalkWindow) {
+        let app = &self.app;
+        let state = &app.state;
+        window.set_can_start_threads(app.can_start_threads());
+        window.set_threads_can_create(state.thread_list().is_some_and(|list| {
+            let (public, private) = app.thread_starts(&list.room);
+            public || private
+        }));
+        let form = state.new_thread();
+        window.set_new_thread_open(form.is_some());
+        let Some(form) = form else {
+            return;
+        };
+        // The fields are the window's while it's open; Talk writes them only
+        // when they differ, so the caret stays.
+        if window.get_new_thread_name() != form.name.as_str() {
+            window.set_new_thread_name(form.name.as_str().into());
+        }
+        if window.get_new_thread_body() != form.body.as_str() {
+            window.set_new_thread_body(form.body.as_str().into());
+        }
+        window.set_new_thread_placeholder(
+            match form.default_name.as_str() {
+                "" => "New Thread",
+                name => name,
+            }
+            .into(),
+        );
+        let starter = form.message.as_deref().and_then(|item| state.message(item));
+        window.set_new_thread_from_message(starter.is_some());
+        if let Some(starter) = starter {
+            window.set_new_thread_starter(super::messages::found_row(
+                starter,
+                self.layout.twelve_hour_clock,
+            ));
+        }
+        window.set_new_thread_can_private(form.can_private);
+        window.set_new_thread_only_private(form.only_private);
+        window.set_new_thread_private(form.private);
+        window.set_new_thread_starting(form.starting);
+        window.set_new_thread_error(form.error.as_deref().unwrap_or_default().into());
+        window.set_new_thread_leaving(form.leaving);
     }
 
     /// The open channel's list of its threads, built again only once what

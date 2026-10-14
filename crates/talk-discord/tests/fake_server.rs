@@ -2380,6 +2380,7 @@ async fn talks_to_the_fake_server() {
     .await;
 
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
+    starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -2503,4 +2504,89 @@ async fn lists_a_channels_threads_as_discords_client_does(
                 .any(|thread| thread.id == id)
     })
     .await;
+}
+
+/// Threads Alice starts, as Discord's client starts them; part of
+/// [`talks_to_the_fake_server`], whose session it shares.
+async fn starts_threads_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+    general: &str,
+) {
+    let latest = discord
+        .history(guild, general, Span::Latest)
+        .await
+        .unwrap()
+        .messages;
+    let message = latest.last().unwrap().id.clone();
+    // From a message: the thread takes its id, and she's in it.
+    let thread = discord
+        .start_thread(guild, general, Some(&message), "Snacks", false, "Message")
+        .await
+        .unwrap();
+    assert_eq!(thread, message);
+    snapshot_where(discord, |snapshot| {
+        snapshot.servers[0].threads.iter().any(|listed| {
+            listed.id == thread
+                && listed.name == "Snacks"
+                && listed.thread.as_ref().is_some_and(|thread| thread.joined)
+        })
+    })
+    .await;
+    // A message has one thread at most, and a name has 1 to 100 letters.
+    assert!(
+        discord
+            .start_thread(guild, general, Some(&message), "Again", false, "Message")
+            .await
+            .is_err()
+    );
+    assert!(
+        discord
+            .start_thread(guild, general, None, &"a".repeat(101), false, "Plus Button")
+            .await
+            .is_err()
+    );
+    // Without a message, private as she chose.
+    let private = discord
+        .start_thread(
+            guild,
+            general,
+            None,
+            "Surprise",
+            true,
+            "Thread Browser Toolbar",
+        )
+        .await
+        .unwrap();
+    snapshot_where(discord, |snapshot| {
+        snapshot.servers[0].threads.iter().any(|listed| {
+            listed.id == private && listed.thread.as_ref().is_some_and(|thread| thread.private)
+        })
+    })
+    .await;
+    let creates: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/thread-creates", "")).unwrap();
+    let creates = creates.as_array().unwrap();
+    assert_eq!(
+        creates[0],
+        serde_json::json!({
+            "channel": general,
+            "message": message,
+            "name": "Snacks",
+            "type": 11,
+            "auto_archive_duration": 4320,
+            "location": "Message",
+        })
+    );
+    assert_eq!(
+        creates.last().unwrap(),
+        &serde_json::json!({
+            "channel": general,
+            "name": "Surprise",
+            "type": 12,
+            "auto_archive_duration": 4320,
+            "location": "Thread Browser Toolbar",
+        })
+    );
 }

@@ -176,6 +176,8 @@ pub struct Found {
 /// longest it waits between.
 const SEARCH_TRIES: u32 = 5;
 const SEARCH_WAIT: Duration = Duration::from_secs(5);
+/// How many minutes of quiet archive a thread, unless its channel says.
+const DEFAULT_ARCHIVE: u16 = 4320;
 /// Discord's answer to a search of a DM it hasn't indexed yet.
 const INDEX_NOT_READY: u64 = 110000;
 
@@ -1302,6 +1304,54 @@ impl Discord {
             threads.push(thread);
         }
         threads
+    }
+
+    /// Starts a thread in a server's text or announcement channel, from
+    /// one of its messages or from none, as Discord's client does: a
+    /// private one, an announcement thread in an announcement channel, else
+    /// a public one, archiving after the channel's default quiet, or three
+    /// days. `location` is where in the client it started, such as
+    /// "Message". Returns the thread's id; it lists once Discord's
+    /// THREAD_CREATE and THREAD_MEMBERS_UPDATE come.
+    pub async fn start_thread(
+        &self,
+        guild: &str,
+        channel: &str,
+        message: Option<&str>,
+        name: &str,
+        private: bool,
+        location: &str,
+    ) -> Result<String> {
+        let (announcement, archive_after) = {
+            let snapshot = self.snapshots.borrow();
+            let parent = snapshot
+                .servers
+                .iter()
+                .find(|server| server.id == guild)
+                .and_then(|server| server.channel(channel))
+                .ok_or_else(|| anyhow!("Talk doesn't know that channel."))?;
+            (parent.announcement, parent.archive_after)
+        };
+        let kind = match (private, announcement) {
+            (true, false) => ready::PRIVATE_THREAD,
+            (true, true) => bail!("An announcement channel has no private threads."),
+            (false, true) => ready::ANNOUNCEMENT_THREAD,
+            (false, false) => ready::PUBLIC_THREAD,
+        };
+        let body = json!({
+            "name": name,
+            "type": kind,
+            "auto_archive_duration": match archive_after {
+                0 => DEFAULT_ARCHIVE,
+                minutes => minutes,
+            },
+            "location": location,
+        });
+        let thread = self.api.create_thread(channel, message, &body).await?;
+        thread["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("could not understand Discord's answer"))
     }
 
     /// A thread an open list of threads found, by id, as Discord gave it,

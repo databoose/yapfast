@@ -291,8 +291,10 @@ pub enum Permission {
     ViewChannel,
     SendMessages,
     /// Read a channel's earlier messages, which its list of threads needs
-    /// for the archived ones and its search.
+    /// for the archived ones and its search, and starting a public thread.
     ReadHistory,
+    CreatePublicThreads,
+    CreatePrivateThreads,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -1285,6 +1287,17 @@ pub enum DiscordCommand {
     },
     /// The list of threads closed: forget what it found.
     CloseThreads,
+    /// Start a thread in a Discord server channel, by its room id: from its
+    /// `message`, by item, or from none, a `private` one or not, from
+    /// `location` in Discord's client, such as "Message".
+    /// [`Event::ThreadStarted`] follows.
+    StartThread {
+        room: String,
+        message: Option<String>,
+        name: String,
+        private: bool,
+        location: &'static str,
+    },
     /// Look for messages a search box's `query`, filters and all, finds: in
     /// a Discord DM, by its room id, or a server, by its server id; a page
     /// from the `offset`th found. [`Event::Found`] follows.
@@ -1626,6 +1639,12 @@ pub enum Event {
     Pins {
         room: String,
         result: Result<Vec<ChatMessage>, String>,
+    },
+    /// [`DiscordCommand::StartThread`]'s thread, by room id, in the channel
+    /// `room`, or why it didn't start.
+    ThreadStarted {
+        room: String,
+        result: Result<String, String>,
     },
     /// [`DiscordCommand::Threads`]'s page, and whether Discord has more
     /// after it, or why it didn't come.

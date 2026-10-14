@@ -634,8 +634,10 @@ impl Application {
         self.state.add_people = None;
         self.state.topic = None;
         self.searched.clear();
-        // The list of threads goes, as the popout does in Discord's client.
+        // The list of threads goes, as the popout does in Discord's client,
+        // and so does a new thread's form.
         let mut effects = self.close_threads();
+        self.state.new_thread = None;
         if self.state.preview {
             if !voice_room {
                 self.state.messages = Arc::new(self.samples.get(&id).cloned().unwrap_or_default());
