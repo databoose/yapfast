@@ -310,12 +310,13 @@ export component VoiceSettings inherits VerticalLayout {
                 height: self.width * 9 / 16; border-radius: 8px; background: #000000; clip: true;
                 accessible-role: image; accessible-label: root.camera-testing ? "Your camera" : "Camera preview, off";
                 if root.camera-testing: Image { width: parent.width; height: parent.height; source: root.camera-preview; image-fit: contain; }
+                // Black in every theme, as a camera's picture.
                 if !root.camera-testing || root.camera-preview.width == 0: VerticalLayout {
                     alignment: center; spacing: 10px; padding: 12px;
-                    Image { height: 30px; source: @image-url("icons/video.svg"); image-fit: contain; colorize: Theme.secondary; }
+                    Image { height: 30px; source: @image-url("icons/video.svg"); image-fit: contain; colorize: #b5b8c1; }
                     Text {
                         text: root.camera-note != "" ? root.camera-note : root.camera-testing ? "Starting your camera..." : "Your camera is off.";
-                        color: Theme.secondary; font-size: 14px; horizontal-alignment: center; wrap: word-wrap;
+                        color: #b5b8c1; font-size: 14px; horizontal-alignment: center; wrap: word-wrap;
                     }
                 }
             }

@@ -2,33 +2,53 @@
 // selection, primary actions and messages that mention you, red mention counts and
 // destructive actions, green live voice;
 // a microphone's level goes from green through orange to red as it nears clipping.
+// These are the Yap theme's colours; the application sets others from Rust
+// (src/ui/theme.rs), so the defaults here only paint the first frame.
 export global Theme {
-    out property <color> rail: #111215;
-    out property <color> sidebar: #17181c;
-    out property <color> panel: #121316;
-    out property <color> chat: #1e1f24;
-    out property <color> stage: #1e1f24;
-    out property <color> raised: #26272e;
-    out property <color> field: #2a2b32;
-    out property <color> sunken: #0e0f12;
-    out property <color> hover: #222329;
-    out property <color> active: #2c2d35;
-    out property <color> row-hover: #1a1b20;
-    out property <color> line: #2c2d34;
-    out property <color> edge: #0c0d0f;
-    out property <color> text: #eef0f4;
-    out property <color> secondary: #b5b8c1;
-    out property <color> muted: #8d919c;
-    out property <color> faint: #5c606a;
-    out property <color> accent: #ffbf47;
-    out property <color> accent-hover: #ffcd70;
-    out property <color> on-accent: #1d1607;
-    out property <color> accent-soft: #ffbf4726;
-    out property <color> danger: #f0545e;
-    out property <color> danger-hover: #f46f77;
-    out property <color> live: #3ecf7e;
-    out property <color> loud: #ff8c42;
-    out property <color> link: #7cc4ff;
+    in-out property <color> rail: #111215;
+    in-out property <color> sidebar: #17181c;
+    in-out property <color> panel: #121316;
+    in-out property <color> chat: #1e1f24;
+    in-out property <color> stage: #1e1f24;
+    in-out property <color> raised: #26272e;
+    in-out property <color> field: #2a2b32;
+    in-out property <color> sunken: #0e0f12;
+    in-out property <color> hover: #222329;
+    in-out property <color> active: #2c2d35;
+    in-out property <color> row-hover: #1a1b20;
+    in-out property <color> line: #2c2d34;
+    in-out property <color> edge: #0c0d0f;
+    in-out property <color> text: #eef0f4;
+    in-out property <color> secondary: #b5b8c1;
+    in-out property <color> muted: #8d919c;
+    in-out property <color> faint: #5c606a;
+    in-out property <color> accent: #ffbf47;
+    in-out property <color> accent-hover: #ffcd70;
+    in-out property <color> on-accent: #1d1607;
+    in-out property <color> accent-soft: #ffbf4726;
+    in-out property <color> danger: #f0545e;
+    in-out property <color> danger-hover: #f46f77;
+    /// Text and icons on a danger fill: badges, the LIVE pill, leaving a call.
+    in-out property <color> on-danger: #ffffff;
+    in-out property <color> live: #3ecf7e;
+    in-out property <color> loud: #ff8c42;
+    in-out property <color> link: #7cc4ff;
+    /// The neutral ActionButton face.
+    in-out property <color> button-default: #33343c;
+    in-out property <color> button-default-hover: #3c3d46;
+    /// Laid over any surface at a low alpha to lift it on hover, and behind an
+    /// emoji still loading: white on a dark theme, black on a light one.
+    in-out property <color> overlay: #ffffff;
+    /// The light that sweeps across a skeleton while it loads.
+    in-out property <color> shimmer: #ffffff10;
+    /// The line from a reply's avatar to the message it answers.
+    in-out property <color> reply-spine: #4a4c56;
+    /// The ground of the window's tooltip and the zoom level's note.
+    in-out property <color> tooltip: #0b0c0e;
+    /// An avatar's ground before Talk knows the person's own tint.
+    in-out property <color> avatar: #6b7280;
+    /// Whether the theme is dark, for the std-widgets that follow the system's scheme.
+    in-out property <bool> dark: true;
     out property <duration> quick: 120ms;
 }
 

@@ -27,7 +27,7 @@ export component EmojiFace inherits Rectangle {
     }
     if root.emoji.picture.width == 0 && root.emoji.glyph == root.emoji.name: Rectangle {
         width: root.side * 0.8; height: root.side * 0.8; border-radius: root.side * 0.2;
-        background: #ffffff12;
+        background: Theme.overlay.with-alpha(0.07);
     }
 }
 
@@ -45,7 +45,7 @@ export component EmojiButton inherits Rectangle {
     callback hovered;
     width: root.size; height: root.size;
     border-radius: 6px;
-    background: pointer.has-hover ? #ffffff1f : root.fill;
+    background: pointer.has-hover ? Theme.overlay.with-alpha(0.12) : root.fill;
     animate background { duration: Theme.quick; }
     border-width: focus.has-focus ? 2px : 0px;
     border-color: Theme.accent;
@@ -93,7 +93,7 @@ export component ReactionToggle inherits Rectangle {
     min-width: chip.preferred-width; height: 28px; border-radius: 8px;
     background: root.mine ? Theme.accent-soft : Theme.raised;
     border-width: 1px;
-    border-color: root.mine ? Theme.accent.with-alpha(0.7) : pointer.has-hover && root.enabled ? #ffffff26 : transparent;
+    border-color: root.mine ? Theme.accent.with-alpha(0.7) : pointer.has-hover && root.enabled ? Theme.overlay.with-alpha(0.15) : transparent;
     accessible-role: button;
     accessible-label: root.key + ", " + root.count + (root.mine ? ", including you. Remove your reaction" : ". Add this reaction");
     accessible-enabled: root.enabled;
@@ -597,7 +597,7 @@ export component MessageGallery inherits HorizontalLayout {
             if root.active-item == root.message.item && !root.preview && root.message.delivery == "" && !cell.spoiler: Rectangle {
                 x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
                 IconButton {
-                    icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: Theme.text;
+                    icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: #ffffff;
                     clicked => { root.save-attachment(root.message.item, cell.index); }
                 }
             }
@@ -841,7 +841,7 @@ export component HistoryEdge inherits HorizontalLayout {
         if root.loading: Rectangle {
             width: 120px; height: parent.height;
             x: Math.mod(animation-tick() / 1ms, 1500) / 1500 * (parent.width + self.width) - self.width;
-            background: @linear-gradient(90deg, #ffffff00 0%, #ffffff10 50%, #ffffff00 100%);
+            background: @linear-gradient(90deg, Theme.shimmer.with-alpha(0) 0%, Theme.shimmer 50%, Theme.shimmer.with-alpha(0) 100%);
         }
         content := HorizontalLayout {
             padding-left: 12px; padding-right: 14px; spacing: 6px;
@@ -1133,7 +1133,7 @@ export component MessageContent inherits VerticalLayout {
                 x: 19px; y: 11px; width: 33px; height: 13px; clip: true;
                 Rectangle {
                     x: 0px; y: 0px; width: parent.width + 12px; height: parent.height + 12px;
-                    border-width: 2px; border-color: #4a4c56; border-top-left-radius: 6px;
+                    border-width: 2px; border-color: Theme.reply-spine; border-top-left-radius: 6px;
                 }
             }
             if message.first: Avatar {

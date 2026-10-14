@@ -64,12 +64,10 @@ pub fn target(link: &str) -> Option<Target> {
     (user.starts_with('@') && user.contains(':')).then_some(Target::User(user))
 }
 
-/// The colour of a mention without one of its own: that of a link.
-const LINK_COLOR: u32 = 0x7cc4ff;
-
 /// Markdown with each mention's text, outside code, linked to its target and in
-/// its colour, which the message draws behind it too.
-pub fn linked(markdown: &str, mentions: &[Mentioned]) -> String {
+/// its colour, which the message draws behind it too. A mention without a
+/// colour of its own takes `link_color`, `0xrrggbb`: the theme's for links.
+pub fn linked(markdown: &str, mentions: &[Mentioned], link_color: u32) -> String {
     if mentions.is_empty() {
         return markdown.to_owned();
     }
@@ -84,7 +82,7 @@ pub fn linked(markdown: &str, mentions: &[Mentioned]) -> String {
         }
         if !code && let Some(mention) = sorted.iter().find(|m| rest.starts_with(&m.text)) {
             let text = mention.text.replace('[', "\\[").replace(']', "\\]");
-            let color = mention.color.unwrap_or(LINK_COLOR) & 0xff_ffff;
+            let color = mention.color.unwrap_or(link_color) & 0xff_ffff;
             out.push_str(&format!(
                 "<font color=\"#{color:06x}\">[{text}](<{}>)</font>",
                 link(&mention.target)
@@ -224,7 +222,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            linked("hi @Bob, ask @Mods but not `@Bob`", &mentions),
+            linked("hi @Bob, ask @Mods but not `@Bob`", &mentions, 0x7cc4ff),
             "hi <font color=\"#7cc4ff\">[@Bob](<talk:user/2>)</font>, \
              ask <font color=\"#3498db\">[@Mods](<talk:role/30>)</font> but not `@Bob`"
         );

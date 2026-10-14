@@ -25,7 +25,7 @@ export component LivePill inherits Rectangle {
     background: root.clickable && live-touch.has-hover ? Theme.danger-hover : Theme.danger;
     accessible-role: button; accessible-enabled: root.clickable; accessible-label: root.clickable ? root.label : "Live";
     accessible-action-default => { if root.clickable { root.clicked(); } }
-    live-text := Text { text: "LIVE"; color: #ffffff; font-size: 10px; font-weight: 800; letter-spacing: 0.4px; }
+    live-text := Text { text: "LIVE"; color: Theme.on-danger; font-size: 10px; font-weight: 800; letter-spacing: 0.4px; }
     live-touch := TouchArea {
         enabled: root.clickable; mouse-cursor: root.clickable ? MouseCursor.pointer : MouseCursor.default;
         clicked => { root.clicked(); }
@@ -154,9 +154,10 @@ export component StreamView inherits Rectangle {
         border-radius: 12px; background: #000000; clip: true;
         accessible-role: image; accessible-label: root.watch-title;
         Image { width: parent.width; height: parent.height; source: root.watch-frame; image-fit: contain; }
+        // The stage is black in every theme, so its note is a fixed grey.
         if root.watch-frame.width == 0: Text {
             width: parent.width; height: parent.height;
-            text: root.watch-status; color: Theme.secondary; font-size: 15px;
+            text: root.watch-status; color: #b5b8c1; font-size: 15px;
             horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap;
         }
         Rectangle {
@@ -165,7 +166,7 @@ export component StreamView inherits Rectangle {
             border-radius: 6px; background: #000000a6;
             watch-chip := HorizontalLayout {
                 padding-left: 10px; padding-right: 10px; spacing: 8px;
-                Text { text: root.watch-title; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                Text { text: root.watch-title; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
                 Middle { LivePill { } }
             }
         }
@@ -245,8 +246,9 @@ export component ParticipantGrid inherits Flickable {
         Image { width: parent.width; height: parent.height; source: root.share-frame; image-fit: contain; }
         if root.share-frame.width == 0: VerticalLayout {
             alignment: center; spacing: 10px;
-            Image { height: 34px; source: @image-url("icons/screen-share.svg"); image-fit: contain; colorize: Theme.secondary; }
-            Text { text: root.share-status; color: Theme.secondary; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
+            // Black in every theme, as a stream's stage.
+            Image { height: 34px; source: @image-url("icons/screen-share.svg"); image-fit: contain; colorize: #b5b8c1; }
+            Text { text: root.share-status; color: #b5b8c1; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
         }
         Rectangle {
             x: 10px; y: parent.height - self.height - 10px;
@@ -254,7 +256,7 @@ export component ParticipantGrid inherits Flickable {
             border-radius: 6px; background: #000000a6;
             share-chip := HorizontalLayout {
                 padding-left: 8px; padding-right: 8px; spacing: 6px;
-                Text { text: "Your screen"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                Text { text: "Your screen"; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
                 if root.share-live: Middle { LivePill { } }
                 if !root.share-live && root.share-frame.width > 0: Text {
                     text: root.share-status; color: Theme.accent; font-size: 13px; vertical-alignment: center; overflow: elide;
@@ -298,7 +300,7 @@ export component ParticipantGrid inherits Flickable {
             background: Theme.danger;
             accessible-role: button; accessible-label: "Watch " + person.name + "'s stream";
             accessible-action-default => { root.watch-stream(person.id); }
-            watch-label := Text { text: "Watch stream"; color: #ffffff; font-size: 13px; font-weight: 700; }
+            watch-label := Text { text: "Watch stream"; color: Theme.on-danger; font-size: 13px; font-weight: 700; }
         }
         Rectangle {
             x: 10px; y: parent.height - self.height - 10px;
@@ -308,7 +310,7 @@ export component ParticipantGrid inherits Flickable {
                 padding-left: 8px; padding-right: 8px; spacing: 6px;
                 if person.muted && !person.deafened: Image { source: @image-url("icons/mic-off.svg"); width: 14px; image-fit: contain; colorize: Theme.danger; }
                 if person.deafened: Image { source: @image-url("icons/headphone-off.svg"); width: 14px; image-fit: contain; colorize: Theme.danger; }
-                Text { text: person.name; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                Text { text: person.name; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
                 if person.live: Middle { LivePill { } }
                 if person.status != "Muted" && person.status != "Deafened" && person.status != "Speaking" && person.status != "Listening": Text {
                     text: person.status; color: Theme.accent; font-size: 13px; vertical-alignment: center; overflow: elide;
@@ -382,7 +384,7 @@ export component CallControls inherits HorizontalLayout {
         opacity: root.voice-leaving ? 0.5 : 1;
         accessible-role: button; accessible-label: "Leave voice"; accessible-enabled: !root.voice-leaving;
         accessible-action-default => { if !root.voice-leaving { root.leave-voice(); } }
-        Image { source: @image-url("icons/phone-off.svg"); width: 22px; height: 22px; colorize: #ffffff; }
+        Image { source: @image-url("icons/phone-off.svg"); width: 22px; height: 22px; colorize: Theme.on-danger; }
         leave-touch := TouchArea { enabled: !root.voice-leaving; mouse-cursor: MouseCursor.pointer; clicked => { root.leave-voice(); } }
     }
 }

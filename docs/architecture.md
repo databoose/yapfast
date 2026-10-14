@@ -95,9 +95,10 @@ and stops itself when no decoders need checking.
 A visible change usually touches each of these steps:
 
 1. **Slint.** A component in `ui/<area>.slint` declares a property or callback.
-   Rust sees only `TalkWindow` in `ui/talk.slint` and the structs it exports, so
-   `TalkWindow` declares a matching property or callback and binds it to the
-   component. The areas are `theme`, `controls`, `rail`, `composer`, `messages`,
+   Rust sees only `TalkWindow` in `ui/talk.slint` and the structs and globals
+   it exports, so `TalkWindow` declares a matching property or callback and
+   binds it to the component. Colours are the exception: components read the
+   `Theme` global, which `src/ui/theme.rs` sets whole. The areas are `theme`, `controls`, `rail`, `composer`, `messages`,
    `people`, `friends`, `header`, `voice`, `dialogs`, `settings`, `sign-in` and
    `discord`.
 2. **State to window.** `Adapter::refresh` calls one `show_<area>` method in

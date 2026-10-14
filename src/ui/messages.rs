@@ -173,7 +173,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     let body = custom_emoji::text(&message.body, &message.emoji);
     let jumbo = message.formatted && custom_emoji::only_emoji(&body);
     let styled = if message.formatted {
-        let linked = mention::linked(&body, &message.mentions);
+        let linked = mention::linked(&body, &message.mentions, theme::mention_color());
         if message.spoilers {
             markdown(&spoiler::mark(&linked, &message.item, |index| {
                 revealed.contains(&format!("{}/{index}", message.item))
@@ -465,7 +465,11 @@ fn thread_detail(thread: &talk_core::chat::ThreadLink) -> String {
 pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
     let styled = if message.formatted {
         let body = spoiler::hide(&custom_emoji::text(&message.body, &message.emoji));
-        markdown(&mention::linked(&body, &message.mentions))
+        markdown(&mention::linked(
+            &body,
+            &message.mentions,
+            theme::mention_color(),
+        ))
     } else {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
@@ -504,7 +508,11 @@ pub(super) fn topic_text(topic: &talk_core::chat::Topic, one_line: bool) -> slin
     } else {
         body
     };
-    markdown(&mention::linked(&body, &topic.mentions))
+    markdown(&mention::linked(
+        &body,
+        &topic.mentions,
+        theme::mention_color(),
+    ))
 }
 
 /// Whether a message shows collapsed, being from someone blocked.

@@ -30,6 +30,7 @@ do commands, run in order; the first error stops the rest:
   stage PATH   adds the file to the composer's next message, as a paste would;
       PATH is relative to the repository, outside .local/ui-session, which
       start empties
+  theme ID   shows a built-in theme, such as yap
   control NAME | get NAME   POST or GET /_control/NAME on the fake Discord
 Without arguments, do reads one command per line from standard input.
 
