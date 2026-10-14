@@ -138,6 +138,7 @@ fn voice_person(member: &talk_discord::service::VoiceMember) -> VoicePerson {
         muted: member.muted,
         deafened: member.deafened,
         streaming: member.streaming,
+        video: member.video,
     }
 }
 

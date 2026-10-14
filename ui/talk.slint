@@ -476,6 +476,9 @@ export component TalkWindow inherits Window {
     /// A video plays in the open room: stream-tick brings its pictures to VideoPlayer.
     in property <bool> video-active;
     in property <string> switch-prompt;
+    /// The prompt joins a call from none, to watch a stream; it stays set
+    /// while the prompt fades.
+    in property <bool> switch-joins;
     /// Discord friend requests, message requests and spam, on the requests
     /// screen, which the top of the DM list opens.
     in property <[FriendRequestRow]> friend-requests;
@@ -730,6 +733,8 @@ export component TalkWindow inherits Window {
     callback call-tiles(int, length, length, length, length, length, length);
     /// Watch the participant with this id's stream.
     callback watch-stream(string);
+    /// Someone in a voice channel was clicked in the channel list.
+    callback show-voice-person(string, string);
     /// A channel category's heading was clicked; see RoomList.
     callback toggle-category(string);
     // Someone's volumes, from a right click on them in a call, as percentages.
@@ -1306,7 +1311,7 @@ export component TalkWindow inherits Window {
                                 open-requests => { root.open-requests(); }
                                 open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
                                 open-volume(person, x, y) => { root.open-volume(person, x, y); }
-                                watch-stream(id) => { root.watch-stream(id); }
+                                show-voice-person(room, id) => { root.show-voice-person(room, id); }
                                 toggle-category(heading) => { root.toggle-category(heading); }
                                 open-category-menu(id, x, y) => {
                                     if root.category-of(id) != "" { root.open-context-menu(root.category-of(id), false, x, y); }
@@ -2278,7 +2283,7 @@ export component TalkWindow inherits Window {
     changed switching => { if root.switching { switch-dialog.focus-keys(); } else { switch-dialog.release-keys(); } }
     // Switching voice channels asks first; see SwitchDialog.
     switch-dialog := SwitchDialog {
-        switching: root.switching; switch-text: root.switch-text;
+        switching: root.switching; switch-text: root.switch-text; joins: root.switch-joins;
         cancel-switch => { root.cancel-switch(); }
         confirm-switch => { root.confirm-switch(); }
     }

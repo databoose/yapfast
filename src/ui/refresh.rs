@@ -600,6 +600,8 @@ impl Adapter {
                                 muted: person.muted,
                                 deafened: person.deafened,
                                 live: person.streaming,
+                                video: person.video,
+                                local: state.discord_user.as_ref() == Some(&person.id),
                                 connected: true,
                                 ..Default::default()
                             })
@@ -2430,24 +2432,41 @@ impl Adapter {
                 .iter()
                 .any(|person| person.video.is_some()),
         );
-        let switching = state.switch_voice.as_ref().map(|id| {
-            state
-                .rooms
-                .iter()
-                .find(|room| &room.id == id)
-                .map_or("the other channel", |room| room.name.as_str())
-        });
-        window.set_switch_prompt(
-            switching
-                .map(|target| {
+        let prompt = state.switch_voice.as_ref().map(|id| {
+            let room = state.rooms.iter().find(|room| &room.id == id);
+            let target = room.map_or("the other channel", |room| room.name.as_str());
+            // Whose stream it joins to watch, if it's for one.
+            let watch = state
+                .pending_watch
+                .as_ref()
+                .filter(|(watched, _)| watched == id)
+                .map(|(_, user)| {
+                    room.and_then(|room| room.people.iter().find(|person| &person.id == user))
+                        .map_or("someone", |person| person.name.as_str())
+                });
+            match watch {
+                // Only the prompt shows how it joins; a fading one keeps it.
+                Some(name) if !voice.active() => {
+                    window.set_switch_joins(true);
+                    format!("Join {target} to watch {name}'s stream?")
+                }
+                Some(name) => {
+                    window.set_switch_joins(false);
                     format!(
-                        "You're already in {}. Leave it and join {}? You'll join muted.",
-                        voice.name, target
+                        "You're already in {}. Leave it and join {target} to watch {name}'s stream? You'll join muted.",
+                        voice.name
                     )
-                })
-                .unwrap_or_default()
-                .into(),
-        );
+                }
+                None => {
+                    window.set_switch_joins(false);
+                    format!(
+                        "You're already in {}. Leave it and join {target}? You'll join muted.",
+                        voice.name
+                    )
+                }
+            }
+        });
+        window.set_switch_prompt(prompt.unwrap_or_default().into());
         update_model(
             &self.models.microphones,
             voice

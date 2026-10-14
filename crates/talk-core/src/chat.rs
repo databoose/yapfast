@@ -233,6 +233,8 @@ pub struct VoicePerson {
     pub deafened: bool,
     /// Sharing their screen.
     pub streaming: bool,
+    /// Their camera is on.
+    pub video: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]

@@ -341,6 +341,10 @@ pub struct AppState {
     /// Reading a Discord channel in Talk marks it read on Discord too.
     pub sync_discord_reads: bool,
     pub switch_voice: Option<String>,
+    /// A stream to watch once its call connects and they show sharing in
+    /// it, as clicking them in the channel list asks: the voice channel and
+    /// their user id. Discord drops a watch made before.
+    pub pending_watch: Option<(String, String)>,
     pub account: Option<String>,
     /// The account's name, avatar address and connection status, where the
     /// network gives them; a Discord-only build shows Discord's.
@@ -1215,6 +1219,13 @@ pub enum Action {
     SetStatus(String),
     ConfirmVoiceSwitch,
     CancelVoiceSwitch,
+    /// Someone in a voice channel was clicked in the channel list, by
+    /// user id: watch their stream, joining the call first, which asks if
+    /// it isn't joined yet; or, with only a camera on, show the call.
+    ShowVoicePerson {
+        room: String,
+        user: String,
+    },
     DismissVoiceError,
     Voice(voice::Command),
     /// Turn the microphone on as a call connects, as a preference asks; quietly,
@@ -2009,8 +2020,10 @@ impl Application {
             Action::ConfirmVoiceSwitch => self.confirm_voice_switch(),
             Action::CancelVoiceSwitch => {
                 self.state.switch_voice = None;
+                self.state.pending_watch = None;
                 vec![]
             }
+            Action::ShowVoicePerson { room, user } => self.show_voice_person(room, user),
             Action::DismissVoiceError => {
                 self.state.voice.error = None;
                 vec![]
@@ -2100,8 +2113,17 @@ impl Application {
                 {
                     self.pending_open = Some(to.clone());
                 }
+                // The call a stream waited for failed to join, or was left.
+                if let Some((room, _)) = &self.state.pending_watch
+                    && self.state.voice.room.as_ref() == Some(room)
+                    && state.room.as_ref() != Some(room)
+                {
+                    self.state.pending_watch = None;
+                }
                 self.state.voice = state;
-                return sounds;
+                let mut effects = sounds;
+                effects.extend(self.watch_when_connected());
+                return effects;
             }
             Event::Connected {
                 user,

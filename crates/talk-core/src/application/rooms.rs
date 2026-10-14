@@ -590,6 +590,8 @@ impl Application {
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
         self.state.dm_screen = None;
+        // Showing another room forgets a stream to watch in another call.
+        self.state.pending_watch.take_if(|(room, _)| *room != id);
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
         self.state.forwarding = None;
