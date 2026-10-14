@@ -545,6 +545,7 @@ pub(super) fn command(
         | DiscordCommand::CloseDm { .. }
         | DiscordCommand::Mute { .. }
         | DiscordCommand::Notifications { .. }
+        | DiscordCommand::PinChannel { .. }
         | DiscordCommand::Member { .. }),
     ) = command
     {
@@ -825,6 +826,21 @@ fn change_person(
                     .change_notifications(guild, channel, notification_change(change))
                     .await;
                 (result, "change the notification settings")
+            }
+            DiscordCommand::PinChannel { room, flags } => {
+                let result = match discord::parse_room(&room) {
+                    Some((guild, channel)) => discord.pin_channel(guild, channel, flags).await,
+                    None => Err(anyhow::anyhow!(NOT_DISCORD)),
+                };
+                let pinned = flags & talk_discord::notifications::PINNED != 0;
+                (
+                    result,
+                    if pinned {
+                        "pin the channel"
+                    } else {
+                        "unpin the channel"
+                    },
+                )
             }
             DiscordCommand::Mute { room, muting } => {
                 let (muted, seconds) = mute(muting);

@@ -52,7 +52,9 @@ export struct RoomRow {
     /// for a category with nothing left showing.
     collapsed: bool,
     hidden: bool,
-    /// A DM pinned to the top of the list, and a DM or channel whose notifications are muted.
+    /// A DM pinned to the top of the list, or a Discord channel, or its
+    /// thread, among its server's pinned channels; and a DM or channel whose
+    /// notifications are muted.
     pinned: bool,
     muted: bool,
     /// A Discord thread, listed under its channel, and whether another of
@@ -669,7 +671,20 @@ export component RoomList inherits VerticalLayout {
                 open-friends => { root.open-friends(); }
                 open-requests => { root.open-requests(); }
             }
-            if room.heading != "": CategoryHeading {
+            // A server's pinned channels end with a line, as in Discord.
+            if index > 0 && !room.direct && !room.pinned && root.rooms[index - 1].pinned: Rectangle {
+                height: 9px;
+                Rectangle { height: 1px; background: Theme.line; }
+            }
+            // Their heading neither folds nor has a menu.
+            if room.heading != "" && room.pinned && !room.direct: HorizontalLayout {
+                height: 36px; padding-left: 16px;
+                Text {
+                    text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+                    vertical-alignment: center; overflow: elide; accessible-role: text;
+                }
+            }
+            if room.heading != "" && !(room.pinned && !room.direct): CategoryHeading {
                 text: room.heading; collapsed: room.collapsed;
                 toggled => { root.toggle-category(room.heading); }
                 context-menu(x, y) => { root.open-category-menu(room.id, x, y); }
@@ -707,7 +722,7 @@ export component RoomList inherits VerticalLayout {
                 picture: room.picture; picture-url: room.picture-url; discord: room.discord;
                 selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                 call: room.call; presence: room.presence; detail: room.detail;
-                pinned: room.pinned; muted: room.muted;
+                pinned: room.pinned && room.direct; muted: room.muted;
                 clicked => { root.select-room(room.id); }
                 context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
             }

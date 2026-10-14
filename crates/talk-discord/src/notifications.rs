@@ -1,7 +1,8 @@
 //! This account's notification settings for one server, or for its DMs, as
 //! Discord keeps them in its user guild settings: the server's mute and
 //! level, which mentions call on it, whether muted channels hide, and each
-//! channel's and category's own mute and level. READY lists them in
+//! channel's and category's own mute and level, and whether a channel is
+//! pinned to the top of the channel list. READY lists them in
 //! `user_guild_settings`, USER_GUILD_SETTINGS_UPDATE replaces one, and
 //! `PATCH /users/@me/guilds/{guild}/settings` changes them; see
 //! <https://docs.discord.food/resources/user-settings>.
@@ -73,12 +74,39 @@ impl Mute {
     }
 }
 
+/// A channel override's flag that pins the channel to the top of the
+/// channel list, Discord's `FAVORITED`.
+pub const PINNED: u64 = 1 << 11;
+/// The flag Discord's client sets with the first pin, `OPT_IN_ENABLED`: the
+/// channel shows in a server whose channel list is opt-in.
+const OPT_IN_ENABLED: u64 = 1 << 12;
+
 /// A channel's or category's own settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Override {
     pub mute: Mute,
     /// None: its category's level, or the server's.
     pub level: Option<Level>,
+    /// Its `flags`, such as [`PINNED`].
+    #[serde(default)]
+    pub flags: u64,
+}
+
+impl Override {
+    pub fn pinned(&self) -> bool {
+        self.flags & PINNED != 0
+    }
+
+    /// The flags that pin the channel, or unpin it, as Discord's client
+    /// writes them: pinning also opts the channel in, and unpinning leaves
+    /// that and every other flag as it was.
+    pub fn pin_flags(&self, pin: bool) -> u64 {
+        if pin {
+            self.flags | PINNED | OPT_IN_ENABLED
+        } else {
+            self.flags & !PINNED
+        }
+    }
 }
 
 /// This account's notification settings for one server, or its DMs.
@@ -110,6 +138,7 @@ impl Notifications {
                     Override {
                         mute: Mute::read(channel),
                         level: Level::from(&channel["message_notifications"]),
+                        flags: channel["flags"].as_u64().unwrap_or_default(),
                     },
                 ))
             })
@@ -146,6 +175,14 @@ impl Notifications {
             .find_map(|place| self.overrides.get(place)?.level)
             .or(self.level)
             .unwrap_or(default)
+    }
+
+    /// The channels pinned to the top of the channel list, in no order.
+    pub fn pinned(&self) -> impl Iterator<Item = &str> {
+        self.overrides
+            .iter()
+            .filter(|(_, channel)| channel.pinned())
+            .map(|(id, _)| id.as_str())
     }
 
     /// The soonest end, after `now`, of a mute in force, server's or
@@ -225,6 +262,13 @@ impl Change {
     }
 }
 
+/// The body of `PATCH /users/@me/guilds/settings` that sets a channel's
+/// override `flags`, as Discord's client pins and unpins a channel; see
+/// [`Override::pin_flags`].
+pub fn flags_body(guild: &str, channel: &str, flags: u64) -> Value {
+    json!({"guilds": {guild: {"channel_overrides": {channel: {"flags": flags}}}}})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +313,27 @@ mod tests {
         assert_eq!(settings.level("11", None, Level::Mentions), Level::Mentions);
         assert_eq!(settings.next_end(now), Some(end));
         assert_eq!(settings.of("11").level, None);
+    }
+
+    #[test]
+    fn pins_and_unpins_as_discords_client_does() {
+        let settings = Notifications::read(&json!({
+            "guild_id": "10",
+            "channel_overrides": [
+                {"channel_id": "4", "muted": false, "message_notifications": 3, "flags": 6144},
+                {"channel_id": "11", "muted": true, "message_notifications": 3, "flags": 1024},
+            ],
+        }));
+        assert_eq!(settings.pinned().collect::<Vec<_>>(), ["4"]);
+        // A channel without an override pins with the opt-in flag too.
+        assert_eq!(settings.of("12").pin_flags(true), 6144);
+        assert_eq!(settings.of("11").pin_flags(true), 1024 | 6144);
+        // Unpinning leaves the rest, the opt-in flag with it.
+        assert_eq!(settings.of("4").pin_flags(false), 4096);
+        assert_eq!(
+            flags_body("10", "12", 6144),
+            json!({"guilds": {"10": {"channel_overrides": {"12": {"flags": 6144}}}}})
+        );
     }
 
     #[test]

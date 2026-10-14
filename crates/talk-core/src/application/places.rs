@@ -302,6 +302,22 @@ impl Application {
         {
             choices.insert(at, MenuChoice::Invite);
         }
+        // Pinning it goes between inviting to it and its link, as in
+        // Discord's menu; Discord takes it only while connected.
+        if self.state.discord_online
+            && let Some(at) = choices
+                .iter()
+                .position(|choice| *choice == MenuChoice::CopyLink)
+        {
+            choices.insert(
+                at,
+                if self.channel_pinned(id) {
+                    MenuChoice::UnpinChannel
+                } else {
+                    MenuChoice::PinChannel
+                },
+            );
+        }
         // Managing it goes after its link, before its id.
         let mut managing = vec![];
         if self.manages(id) {
@@ -322,6 +338,38 @@ impl Application {
             .unwrap_or(choices.len());
         choices.splice(at..at, managing);
         choices
+    }
+
+    /// Whether this account pinned a Discord channel, by its room id, to
+    /// the top of its server's channel list.
+    pub fn channel_pinned(&self, room: &str) -> bool {
+        self.state
+            .servers
+            .iter()
+            .any(|server| server.pinned.iter().any(|pinned| pinned == room))
+    }
+
+    /// Asks Discord to pin a channel to the top of its server's channel
+    /// list, or to unpin it, from its menu: its override's flags with the
+    /// pin set or cleared, as Discord's client writes them. The list
+    /// changes when Discord confirms it.
+    pub(super) fn pin_channel(&mut self, room: String, pin: bool) -> Vec<Effect> {
+        let choice = if pin {
+            MenuChoice::PinChannel
+        } else {
+            MenuChoice::UnpinChannel
+        };
+        if !self.menu_choices(&room).contains(&choice) {
+            return vec![];
+        }
+        #[cfg(feature = "discord")]
+        if let Some((server, Some(channel), _)) = self.discord_place(&room) {
+            let flags = server.notifications.of(channel).pin_flags(pin);
+            return vec![Effect::Backend(Command::Discord(
+                DiscordCommand::PinChannel { room, flags },
+            ))];
+        }
+        vec![]
     }
 
     /// The channel an invite from a Discord server's or channel's menu

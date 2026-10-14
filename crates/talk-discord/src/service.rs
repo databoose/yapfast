@@ -1003,6 +1003,15 @@ impl Discord {
         self.api.guild_settings(guild, &body).await
     }
 
+    /// Pins a server's channel to the top of its channel list, or unpins
+    /// it, by setting its override's `flags` to those of
+    /// [`crate::notifications::Override::pin_flags`]. Snapshots show it
+    /// when Discord confirms it.
+    pub async fn pin_channel(&self, guild: &str, channel: &str, flags: u64) -> Result<()> {
+        let body = crate::notifications::flags_body(guild, channel, flags);
+        self.api.guilds_settings(&body).await
+    }
+
     /// Makes an invite to a server's channel; its code. See
     /// [`Api::create_invite`].
     pub async fn create_invite(

@@ -402,6 +402,18 @@ fn server_rooms(
             threads.entry(parent).or_default().push(thread);
         }
     }
+    // Pinned channels list above the rest, as Discord's client lists them:
+    // by their own position, voice channels after text ones.
+    let mut pinned: Vec<_> = listed
+        .iter()
+        .filter(|(_, channel)| server.notifications.of(&channel.id).pinned())
+        .map(|&(voice, channel)| (voice, channel.position, &channel.id))
+        .collect();
+    pinned.sort_unstable();
+    let pinned = pinned
+        .into_iter()
+        .map(|(_, _, channel)| room_id(&server.id, channel))
+        .collect();
     let mut channels = Vec::new();
     for (voice, channel) in listed {
         let id = room_id(&server.id, &channel.id);
@@ -495,6 +507,7 @@ fn server_rooms(
         // Index::update sets it, since a folder changes without its servers.
         folder: None,
         hide_muted: server.notifications.hide_muted_channels,
+        pinned,
     };
     (rooms, server)
 }

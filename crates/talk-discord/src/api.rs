@@ -584,6 +584,19 @@ impl Api {
             .map(drop)
     }
 
+    /// Changes this account's settings for one or more servers, never its
+    /// DMs, by `body`, `{"guilds": {"<id>": <partial settings>}}`, as
+    /// Discord's client does; see [`crate::notifications::flags_body`].
+    /// Discord answers with USER_GUILD_SETTINGS_UPDATE for each server.
+    pub async fn guilds_settings(&self, body: &Value) -> Result<()> {
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/guilds/settings"),
+            body,
+        ))
+        .await
+        .map(drop)
+    }
+
     // A server member's menu: nicknames, roles and moderation. Each fires
     // GUILD_MEMBER_UPDATE, or for a kick GUILD_MEMBER_REMOVE and a ban
     // GUILD_BAN_ADD; see <https://docs.discord.food/resources/guild>.
