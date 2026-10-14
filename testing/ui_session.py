@@ -31,6 +31,7 @@ parser.add_argument('--size', default='1120x760')
 parser.add_argument('--renderer', choices=['software', 'gpu'], default='software')
 parser.add_argument('--discord', action='store_true')
 parser.add_argument('--fake-args', default='')
+parser.add_argument('--tray', type=Path, help='testing/tray_host.rs, built, to run as the tray')
 parser.add_argument('talk_args', nargs=argparse.REMAINDER)
 args = parser.parse_args()
 talk_args = args.talk_args[1:] if args.talk_args[:1] == ['--'] else args.talk_args
@@ -80,6 +81,47 @@ if args.discord:
 
 data = state / 'data'
 talk = None
+tray = None
+
+
+def start_tray():
+    """The stand-in tray, on this session's private bus, as testing/tray_host.rs says."""
+    global tray
+    tray = subprocess.Popen([str(args.tray), 'watch'], stdout=(state / 'tray.log').open('ab'),
+                            stderr=subprocess.STDOUT, start_new_session=True)
+    time.sleep(.5)
+    if tray.poll() is not None:
+        raise RuntimeError(f'The tray exited with {tray.returncode}; see {state / "tray.log"}')
+
+
+def tray_command(rest):
+    if args.tray is None:
+        raise ValueError('tray needs start --tray')
+    if rest == 'off':
+        stop(tray)
+        return ''
+    if rest == 'on':
+        if tray is None or tray.poll() is not None:
+            start_tray()
+        return ''
+    values = rest.split(' ', 1)
+    if values[0] == 'icon':
+        shots = state / 'shots'
+        shots.mkdir(exist_ok=True)
+        picture = shots / f'{values[1]}.pam'
+        size = subprocess.run([str(args.tray), 'icon', str(picture)], check=True, capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+        path = shots / f'{values[1]}.png'
+        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(picture), str(path)],
+                       check=True, timeout=10)
+        picture.unlink()
+        return f'{path} {size}'
+    result = subprocess.run([str(args.tray), *values], capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f'tray_host exited with {result.returncode}')
+    # The window opens, or the menu acts, as Talk hears it.
+    time.sleep(.8)
+    return result.stdout.strip()
 
 
 def launch():
@@ -173,6 +215,8 @@ def perform(command):
         return control('POST', rest)
     if verb == 'get':
         return control('GET', rest)
+    if verb == 'tray':
+        return tray_command(rest)
     if talk.poll() is not None:
         raise RuntimeError(f'Talk exited with {talk.returncode}; see {state / "talk.log"}, or relaunch')
     if verb == 'click':
@@ -229,6 +273,12 @@ def perform(command):
         with window_control.open('a') as window:
             window.write(f'theme {rest}\n')
         time.sleep(.8)
+    elif verb == 'window':
+        if rest not in ('close', 'open', 'destroy', 'create', 'hide', 'show', 'trim', 'stats'):
+            raise ValueError(f'unknown window command {rest!r}')
+        with window_control.open('a') as window:
+            window.write(f'{rest}\n')
+        time.sleep(1.2)
     else:
         raise ValueError(f'unknown command {verb!r}')
     return ''
@@ -237,6 +287,8 @@ def perform(command):
 commands = state / 'commands'
 results = state / 'results'
 try:
+    if args.tray:
+        start_tray()
     launch()
     (state / 'ready').write_text('ready\n')
     seen = 0
@@ -258,4 +310,5 @@ try:
         time.sleep(.05)
 finally:
     stop(talk)
+    stop(tray)
     stop(fake)

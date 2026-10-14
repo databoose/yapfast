@@ -19,7 +19,7 @@ window is the preview. Save keeps the theme and chooses it; Cancel, leaving
 Appearance or closing settings shows the theme from before. A saved theme's
 card has a pencil that opens it again to rename, change or delete it;
 deleting the chosen one shows Yap. A window rebuilt while the editor is open,
-as closing to the tray will, drops the unsaved edit.
+as closing to the [tray](tray.md) does, drops the unsaved edit.
 
 `layout.json` keeps them in `custom_themes`, in the order Appearance shows
 them after the built-in ones:

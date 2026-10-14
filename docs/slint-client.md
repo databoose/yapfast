@@ -27,9 +27,11 @@ No remote push is part of this migration.
   Lucide SVG icons, custom text fields, and window sizing from 1120×760 down to
   800×560. Settings cover the window in sections: account, appearance (the
   [themes](themes.md)), voice and audio, messages
-  (text size, clock and link previews), notifications, sounds and Discord, closed by its close
+  (text size, clock and link previews), notifications, sounds, Discord and advanced
+  (the renderer, closing to the tray), closed by its close
   button or Escape. Desktop notifications for DMs and mentions show while Talk isn't in
-  front; clicking one opens the conversation.
+  front; clicking one opens the conversation. Closing the window leaves Talk in the
+  [tray](tray.md).
 
 `ui/talk.slint` defines the window, with its controls and parts in the other
 files under `ui/`; `src/ui.rs` and the modules under `src/ui/` adapt application
@@ -198,8 +200,10 @@ The previous two-machine messaging/audio report belongs to the GPUI beta.
 The Slint package still needs actual Windows rendering, keyboard/IME/copy-paste,
 resize, graphics compatibility and Linux–Windows audio checks by the tester.
 Native audio/backend regression evidence does not prove the new desktop controls
-on every platform. Full tray behavior, SSO/emoji verification, room creation,
-ringing DM calls, video and screen sharing retain their existing future scope.
+on every platform. The [tray](tray.md) is checked on Linux against a stand-in
+tray and cross-built for Windows; real Windows still needs its checks.
+SSO/emoji verification, room creation, ringing Matrix DM calls, video and screen
+sharing on Matrix retain their existing future scope.
 Attachments and the other conversation features are described in
 [the chat guide](chat-ui.md). The renderer benchmarks here are fixture
 measurements; [connected measurements](measurements/README.md) cover a real

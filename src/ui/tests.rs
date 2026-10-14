@@ -1154,6 +1154,51 @@ fn dragging_the_sidebar_edge_resizes_it_within_limits_and_remembers_it() {
 }
 
 #[test]
+fn a_window_made_again_shows_what_the_last_one_did() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    adapter
+        .borrow_mut()
+        .action(&window, Action::SelectRoom("general".into()));
+    let topic = Arc::new(talk_core::chat::Topic {
+        body: "Plans for the weekend".into(),
+        ..Default::default()
+    });
+    adapter.borrow_mut().apply(Event::Topic {
+        room: "general".into(),
+        topic: Some(topic),
+    });
+    adapter.borrow_mut().refresh(&window);
+    let shown = |window: &TalkWindow| {
+        (
+            window.get_sidebar_title(),
+            window.get_filter_placeholder(),
+            window.get_has_topic(),
+            i_slint_core::talk_selection::plain(&window.get_room_topic()),
+        )
+    };
+    let before = shown(&window);
+    assert_eq!(before.0, "Friends");
+    assert!(!before.1.is_empty());
+    assert_eq!(before.3, "Plans for the weekend");
+    drop(window);
+    let next = TalkWindow::new().unwrap();
+    adapter.borrow_mut().attach(&next);
+    bind_callbacks(&next, &adapter);
+    adapter.borrow_mut().refresh(&next);
+    assert_eq!(shown(&next), before);
+}
+
+#[test]
 fn dragging_the_thread_beside_resizes_it_within_limits_and_remembers_it() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

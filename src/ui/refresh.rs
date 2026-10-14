@@ -221,6 +221,8 @@ impl Adapter {
         self.reset_version = state.reset_version;
         self.messages = state.messages.clone();
         self.forwarding = state.forwarding.is_some();
+        self.show_tray();
+        window.set_tray_available(self.tray.as_ref().is_some_and(crate::tray::Tray::available));
         if self.app.reaction_uses() != &self.layout.reactions {
             self.layout.reactions = self.app.reaction_uses().clone();
             self.layout.write(&self.root);
@@ -2151,6 +2153,7 @@ impl Adapter {
     /// The call: the voice dock, sharing and watching a screen, a DM's call,
     /// ringing, and the devices.
     fn show_voice(&mut self, window: &TalkWindow) {
+        self.ring();
         let state = &self.app.state;
         let room = state.selected_room();
         let voice = &state.voice;
@@ -2298,21 +2301,7 @@ impl Adapter {
             })
             .collect();
         update_model(&self.models.call_people, call_people);
-        let ringing = show_incoming(window, state, &mut self.pictures);
-        // Do Not Disturb shows the call without ringing.
-        #[cfg(feature = "discord")]
-        if !ringing || state.do_not_disturb() {
-            self.ringer = None;
-        } else if self.ringer.is_none() {
-            self.ringer = talk_core::ring::Ringer::start(
-                talk_core::ring::Tone::Incoming,
-                voice.speaker.as_deref(),
-            )
-            .inspect_err(|error| tracing::warn!(%error, "could not ring"))
-            .ok();
-        }
-        #[cfg(not(feature = "discord"))]
-        let _ = ringing;
+        show_incoming(window, state, &mut self.pictures);
         window.set_voice_description(
             if room.is_some_and(|room| room.locked) {
                 "Your roles on this Discord server don't let you join this channel.".into()

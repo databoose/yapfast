@@ -666,6 +666,9 @@ export component TalkWindow inherits Window {
     /// applies when Talk restarts, which restart does.
     in-out property <bool> gpu-rendering;
     in property <bool> gpu-running;
+    /// Closing the window leaves Talk in the system tray, when there's one.
+    in-out property <bool> close-to-tray: true;
+    in property <bool> tray-available;
     callback restart();
     callback preferences-changed();
     /// The built-in themes, and the one shown by its id; choose-theme shows
@@ -2400,6 +2403,7 @@ export component TalkWindow inherits Window {
         }
         if root.settings-section == 6: AdvancedSettings {
             gpu-rendering <=> root.gpu-rendering; gpu-running: root.gpu-running;
+            close-to-tray <=> root.close-to-tray; tray-available: root.tray-available;
             preferences-changed => { root.preferences-changed(); }
             restart => { root.restart(); }
         }

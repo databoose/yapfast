@@ -207,6 +207,29 @@ using, the camera privacy setting turned off, built-in laptop cameras that
 only Media Foundation lists, and the memory and processor time a camera
 takes.
 
+## The tray on Windows
+
+The notification-area icon is `Shell_NotifyIconW` on a hidden window of the
+UI thread; see [the tray](tray.md#windows).
+
+Checked under Wine 11.18 Staging on 2026-10-14, with the Discord-only
+`fast` `talk.exe` on `scripts/ui-session --discord`, through a `--bin`
+script that runs it in `wine explorer /desktop=talk,1120x760` and sends its
+output to a file. Without the Wine desktop, winit can't create its window
+there (OS error 14007).
+
+- Closing the window drops it, and Wine's notification area, a window of its
+  own in Weston's kiosk shell, shows the marigold logo with the unread dot.
+- A left click on the icon opens the window again.
+- A right click reaches Talk (`WM_RBUTTONDOWN`, `WM_RBUTTONUP`) and
+  `TrackPopupMenu` runs, but Wine's Wayland driver never shows the menu,
+  most likely because its owner is a window that was never shown. Until the
+  menu closes, its loop holds Talk's UI thread, as every Win32 menu does; on
+  Windows a click anywhere else closes it. So Open Talk, Disconnect and Quit
+  in the menu are untested on Windows.
+
+[The tray](tray.md#windows) lists what to check on real Windows.
+
 ## Build validation on 2026-10-13
 
 The first cross-build since Discord voice, Go Live's native codecs and
