@@ -3,6 +3,21 @@
 // mirrors the Matrix fixture (Alice reads #general, Bob posts, three people sit
 // in the Lounge voice channel). Run `bun testing/fake_discord.ts --port 18400`,
 // then start Talk with TALK_DISCORD_TEST_SERVER=http://127.0.0.1:18400.
+// `--env PATH` puts an environment's content in place of all of the below's,
+// for demos, promo recordings and screenshots: the account, people with
+// their pictures, presences and friendships, DMs and groups, servers with
+// their roles, members, categories, channels and topics, history with
+// replies, reactions and attached pictures and videos, unread state, and
+// voice channels with people in them, one of whom may stream a video file
+// with Go Live. PATH is JSON, or a TypeScript module whose default export is
+// the env; testing/fake_discord_env.ts describes the format and types it,
+// and testing/envs/example.json uses all of it. Media paths are relative to
+// the env file; videos need ffprobe and ffmpeg, which convert a streamed one
+// once, kept in the system's temporary directory. The seeding options below
+// (--extra, --servers, --dms, --images, --channels, --authors, --folders and
+// --unread) don't apply, and the controls that act on the fixture's people
+// or channels answer 400; those that only report, such as
+// /_control/video, still work. Without --env the fixture is as it is here.
 // `--extra N` sets how many history messages follow the four fixture ones
 // (default 56, 60 in all). `--servers N` adds N - 1 large, quiet servers, as a
 // busy account has, for measuring; POST /_control/busy-start makes Bob post
@@ -169,7 +184,12 @@ import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { deflateSync } from "node:zlib";
+import { basename } from "node:path";
 import type { ServerWebSocket } from "bun";
+import {
+  type CustomStatus, type Env, type Message as EnvMessage, type Status, type Unread,
+  parseColor, parseTime, readEnv, readMedia, readRecording,
+} from "./fake_discord_env.ts";
 
 const { values: args } = parseArgs({
   options: {
@@ -185,8 +205,13 @@ const { values: args } = parseArgs({
     folders: { type: "boolean", default: false },
     "cdn-delay": { type: "string", default: "0" },
     unread: { type: "string", default: "5" },
+    env: { type: "string" },
   },
 });
+/** The env of `--env`, read; its content replaces the fixture's once the
+ *  fixture is made, as `world`. */
+const env = args.env ? await readEnv(args.env) : undefined;
+let world: World | undefined;
 
 const TOKEN = "talk-test-token";
 /** Whether Alice has Nitro: `--nitro`, or POST /_control/nitro, with ?off
@@ -482,6 +507,7 @@ function picture(path: string): Uint8Array {
 // A person's profile as GET /users/{id}/profile gives it, with the server's
 // side when asked for with guild_id.
 function wireProfile(user: User, guild: string | null) {
+  if (world) return envProfile(world, user, guild);
   const bob = user.id === users.bob.id;
   const carol = user.id === users.carol.id;
   const inServer = Object.values(users).includes(user) && user.id !== ALICE;
@@ -510,10 +536,10 @@ function wireProfile(user: User, guild: string | null) {
 
 /** A server profile as GET /users/{id}/profile and PATCH
  *  /guilds/{id}/profile/@me give it. */
-function guildMemberProfile(id: string) {
+function guildMemberProfile(id: string, guild = GUILD) {
   const profile = serverProfile(id);
   return {
-    guild_id: GUILD,
+    guild_id: guild,
     pronouns: profile.pronouns,
     bio: profile.bio,
     banner: profile.banner,
@@ -776,7 +802,7 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     .map(wireUser);
   // As Discord, only roles and @everyone that the author may mention count;
   // here, Bob and the bots may mention anything.
-  const mayMention = message.author.id === users.bob.id || !!message.author.bot;
+  const mayMention = message.author.id === users.bob.id || !!message.author.bot || !!world;
   const wire: Record<string, unknown> = {
     id: message.id,
     type: message.type,
@@ -839,13 +865,13 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
 
 /** The server of a channel as events carry it; DMs have none. */
 function guildOf(channel: string): { guild_id?: string } {
-  return privates.has(channel) ? {} : { guild_id: fillerChannels.get(channel) ?? GUILD };
+  return privates.has(channel) ? {} : { guild_id: fillerChannels.get(channel) ?? world?.channelGuild.get(channel)?.id ?? GUILD };
 }
 
 /** A message as the gateway dispatches it: with the server and the author's member. */
 function dispatched(message: Message, origin: string) {
   if (privates.has(message.channel)) return wireMessage(message, origin);
-  const { user: _, ...profile } = member(message.author);
+  const { user: _, ...profile } = memberIn(guildOf(message.channel).guild_id, message.author);
   return { ...wireMessage(message, origin), ...guildOf(message.channel), member: profile };
 }
 
@@ -1271,8 +1297,8 @@ type SocketData = {
   callKey?: Buffer;
   /** The cameras on in this call, by who films, as op 12 announced them. */
   cameras?: Set<string>;
-  /** The member list this session subscribed to last, by its id. */
-  listing?: string;
+  /** The member list this session subscribed to last in each server, by its id. */
+  listings?: Map<string, string>;
   /** Its server's active threads were synced, as a subscription with
    *  `threads` does once. */
   threadsSynced?: boolean;
@@ -1339,14 +1365,14 @@ function aliceMay(permission: number, user?: string): boolean {
 }
 
 /** A channel of "Server" as Discord sends it. */
-function guildChannel(id: string, name: string, type: number, position: number, parent: string | null) {
+function guildChannel(id: string, name: string, type: number, position: number, parent: string | null, guild = GUILD) {
   return {
     id,
     type,
     name,
     position,
     parent_id: parent,
-    guild_id: GUILD,
+    guild_id: guild,
     flags: 0,
     permission_overwrites: [] as unknown[],
     ...(type === 0
@@ -1444,7 +1470,7 @@ function fillerId(server: number, item: number): string {
   return (FILLER_START + BigInt(server) * 1000n + BigInt(item)).toString();
 }
 
-const fillers = Array.from({ length: Math.max(0, Number(args.servers) - 1) }, (_, index) => {
+const fillers = Array.from({ length: env ? 0 : Math.max(0, Number(args.servers) - 1) }, (_, index) => {
   const id = fillerId(index, 0);
   const role = (n: number) => fillerId(index, 300 + n);
   const channels = [];
@@ -1518,7 +1544,7 @@ const fillerList = [...fillerChannels.keys()];
 // The server list in Alice's settings, GuildFolders (field 14): "Server" on
 // its own, then each folder, then the other servers on their own. A folder
 // has an id, an Int64Value, and may have a name and a colour, wrappers too.
-if (args.folders) {
+if (args.folders && !env) {
   const varint = (field: number, value: bigint) => {
     const out = [field << 3];
     for (; value >= 0x80n; value >>= 7n) out.push(Number(value & 0x7fn) | 0x80);
@@ -1547,11 +1573,15 @@ if (args.folders) {
 
 function ready(ws: Socket) {
   const { user: _, ...alice } = member(users.alice);
+  const own = (guild: string) => {
+    const { user: _, ...mine } = memberIn(guild, users.alice);
+    return mine;
+  };
   return {
     v: 9,
     user: {
       ...wireUser(users.alice),
-      email: "alice@example.org",
+      email: world?.email ?? "alice@example.org",
       verified: true,
       mfa_enabled: false,
       premium_type: nitro ? 2 : 0,
@@ -1561,9 +1591,13 @@ function ready(ws: Socket) {
       locale: "en-US",
       nsfw_allowed: true,
     },
-    users: [...Object.values(users), ...Object.values(strangers), ...fillerPeople].filter((user) => user.id !== ALICE).map(wireUser),
-    guilds: [...(leftServer ? [] : [guild()]), ...fillers],
-    merged_members: [...(leftServer ? [] : [[alice]]), ...fillers.map((filler) => [{ ...alice, roles: [filler.roles[1]!.id, filler.roles[4]!.id] }])],
+    users: (world ? [...userById.values()] : [...Object.values(users), ...Object.values(strangers), ...fillerPeople])
+      .filter((user) => user.id !== ALICE)
+      .map(wireUser),
+    guilds: world ? world.guilds.map(envGuild) : [...(leftServer ? [] : [guild()]), ...fillers],
+    merged_members: world
+      ? world.guilds.map((guild) => [own(guild.id)])
+      : [...(leftServer ? [] : [[alice]]), ...fillers.map((filler) => [{ ...alice, roles: [filler.roles[1]!.id, filler.roles[4]!.id] }])],
     read_state: {
       entries: [...readStates].map(([id, read]) => ({
         id,
@@ -1577,7 +1611,7 @@ function ready(ws: Socket) {
     },
     user_guild_settings: {
       entries: [
-        wireGuildSettings(GUILD),
+        ...(world ? world.guilds.map((guild) => wireGuildSettings(guild.id)) : [wireGuildSettings(GUILD)]),
         wireGuildSettings("@me"),
       ],
       partial: false,
@@ -1613,6 +1647,7 @@ function ready(ws: Socket) {
 }
 
 function readySupplemental() {
+  if (world) return envReadySupplemental(world);
   const inServer = [...voice].filter(([, state]) => state.guild === GUILD);
   const inVoice = inServer.map(([id]) => id);
   if (leftServer) {
@@ -1898,7 +1933,7 @@ function gatewayMessage(ws: Socket, text: string) {
       // moves the voice state to this one, which gets a voice server too.
       if (channel && (before?.channel !== channel || before.session !== ws.data.session)) {
         const server = guild
-          ? { guild_id: GUILD, token: VOICE_TOKEN }
+          ? { guild_id: guild, token: VOICE_TOKEN }
           : { guild_id: null, channel_id: channel, token: callToken(channel) };
         if (guild) voiceToken = VOICE_TOKEN;
         send(ws, 0, { ...server, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
@@ -1959,6 +1994,11 @@ function gatewayMessage(ws: Socket, text: string) {
       break;
     case 8: {
       // Request guild members: a search by name, or these users.
+      const asked = world?.byId.get(String([d.guild_id].flat()[0]));
+      if (asked) {
+        envMembersChunk(asked, d);
+        break;
+      }
       if (typeof d.query === "string") {
         const query = d.query.toLowerCase();
         const found = Object.values(users)
@@ -2009,15 +2049,17 @@ function gatewayMessage(ws: Socket, text: string) {
           }, "THREAD_LIST_SYNC");
         }
         const channel = Object.keys(subscription.channels ?? {})[0];
-        if (guildId !== GUILD || channel === undefined) continue;
+        const envServer = world?.byId.get(guildId);
+        if ((guildId !== GUILD && !envServer) || channel === undefined) continue;
         listRequests++;
         const id = listId(channel);
-        if (ws.data.listing !== undefined && ws.data.listing !== id) {
+        const listing = (ws.data.listings ??= new Map()).get(guildId);
+        if (listing !== undefined && listing !== id) {
           const invalidate = { op: "INVALIDATE", range: [0, 99] };
-          send(ws, 0, { guild_id: GUILD, id: ws.data.listing, ops: [invalidate] }, "GUILD_MEMBER_LIST_UPDATE");
+          send(ws, 0, { guild_id: guildId, id: listing, ops: [invalidate] }, "GUILD_MEMBER_LIST_UPDATE");
         }
-        ws.data.listing = id;
-        send(ws, 0, memberList(id), "GUILD_MEMBER_LIST_UPDATE");
+        ws.data.listings.set(guildId, id);
+        send(ws, 0, envServer ? envMemberList(envServer, id) : memberList(id), "GUILD_MEMBER_LIST_UPDATE");
       }
       break;
     }
@@ -2062,7 +2104,7 @@ function makeRoom(ws: Socket) {
 function announce(user: string) {
   const state = voice.get(user)!;
   const wire = wireVoiceState(user, state);
-  dispatch("VOICE_STATE_UPDATE", state.guild ? { ...wire, member: member(userById.get(user)!) } : wire);
+  dispatch("VOICE_STATE_UPDATE", state.guild ? { ...wire, member: memberIn(state.guild, userById.get(user)!) } : wire);
 }
 
 /** Tells everyone `user` moved in voice from `before`: leaving a server's
@@ -2071,7 +2113,7 @@ function moved(user: string, before: VoiceState | undefined, origin: string) {
   const now = voice.get(user);
   if (before && (before.guild !== now?.guild || before.channel !== now?.channel)) {
     const wire = wireVoiceState(user, undefined, before.guild);
-    dispatch("VOICE_STATE_UPDATE", before.guild ? { ...wire, member: member(userById.get(user)!) } : wire);
+    dispatch("VOICE_STATE_UPDATE", before.guild ? { ...wire, member: memberIn(before.guild, userById.get(user)!) } : wire);
     if (!before.guild) leftCall(before.channel, origin);
   }
   if (!now) return;
@@ -2466,6 +2508,8 @@ let streamCodec: "vp8" | "h264" = "vp8";
 /** A viewer of Bob's stream and what it was sent. */
 type Watcher = {
   stream: string; codec: string; framesSent: number; soundsSent: number; keyframeRequests: number; timer?: Timer;
+  /** What it's sent, if not testing/fixtures' recording: an env's video. */
+  recording?: typeof recordings;
   /** What its connection went through; see `repairs`. */
   repairs: typeof repairs;
   /** Sends Bob's packet with this sequence number again, as RTX. */
@@ -2548,15 +2592,16 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
   };
   watcher.timer = setInterval(() => {
     const timestamp = frame * (camera ? 3000 : 9000);
+    const recorded = watcher.recording ?? recordings;
     if (watcher.codec === "vp8") {
-      const { data } = recordings.vp8[frame % recordings.vp8.length]!;
+      const { data } = recorded.vp8[frame % recorded.vp8.length]!;
       for (let at = 0; at < data.length; at += 1100) {
         const descriptor = Buffer.from([at === 0 ? 0x90 : 0x80, 0x80, 0x80 | (picture >> 8), picture & 0xff]);
         send(Buffer.concat([descriptor, data.subarray(at, at + 1100)]), at + 1100 >= data.length, timestamp, 105);
       }
       picture = (picture + 1) & 0x7fff;
     } else {
-      const h264 = camera ?? recordings.h264;
+      const h264 = camera ?? recorded.h264;
       const { units } = h264[frame % h264.length]!;
       units.forEach((unit, index) => {
         const last = index === units.length - 1;
@@ -2936,13 +2981,16 @@ function voiceMessage(ws: Socket, text: string) {
       const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
       reply(4, { mode: d.data?.mode, secret_key: [...key], dave_protocol_version: 0, audio_codec: "opus", video_codec: codec.toUpperCase() });
       if (watching && ws.data.ssrc) {
-        // Bob's SSRCs, as Discord announces another client's video.
+        // The streamer's SSRCs, as Discord announces another client's video.
         const bob = 5000;
         reply(12, {
-          user_id: users.bob.id, audio_ssrc: bob, video_ssrc: bob + 1, rtx_ssrc: bob + 2,
+          user_id: streamOf(ws.data.stream!).user, audio_ssrc: bob, video_ssrc: bob + 1, rtx_ssrc: bob + 2,
           streams: [{ type: "video", rid: "100", ssrc: bob + 1, rtx_ssrc: bob + 2, active: true, quality: 100 }],
         });
-        watchers.set(ws.data.ssrc, { stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0, repairs });
+        watchers.set(ws.data.ssrc, {
+          stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0, repairs,
+          recording: world?.recordings.get(ws.data.stream!),
+        });
         viewerKeys.set(ws.data.ssrc, key);
         ws.data.waiting = { key, ssrc: bob + 1 };
       }
@@ -3163,7 +3211,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   }
 
   if (method === "GET" && path === "/users/@me") {
-    return json({ ...wireUser(users.alice), email: "alice@example.org", verified: true });
+    return json({ ...wireUser(users.alice), email: world?.email ?? "alice@example.org", verified: true });
   }
 
   if ((m = path.match(/^\/channels\/(\d+)\/messages$/))) {
@@ -3328,7 +3376,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       emoji: { id, name },
       burst: false,
       type: 0,
-      ...(add && !privates.has(message.channel) ? { member: member(users.alice) } : {}),
+      ...(add && !privates.has(message.channel) ? { member: memberIn(guildOf(message.channel).guild_id, users.alice) } : {}),
       ...(add ? { message_author_id: message.author.id } : {}),
     });
     return empty();
@@ -3481,7 +3529,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   // as Discord's does while it indexes it.
   if (method === "GET" && (m = path.match(/^\/guilds\/(\d+)\/messages\/search$/))) {
     const guild = m[1]!;
-    const channels = [...messages.keys()].filter((id) => !privates.has(id) && (fillerChannels.get(id) ?? GUILD) === guild);
+    const channels = [...messages.keys()].filter((id) => !privates.has(id) && guildOf(id).guild_id === guild);
     if (!channels.length) return notFound("Unknown Guild", 10004);
     const asked = url.searchParams.getAll("channel_id");
     if (asked.some((id) => !channels.includes(id))) return notFound("Unknown Channel", 10003);
@@ -3713,6 +3761,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   if (method === "GET" && (m = path.match(/^\/channels\/(\d+)$/)) && threads.has(m[1]!)) {
     return json(wireThread(threads.get(m[1]!)!));
   }
+  const envServer = (m = path.match(/^\/channels\/(\d+)$/)) ? world?.channelGuild.get(m[1]!) : undefined;
+  if (method === "GET" && envServer) return json(envGuild(envServer).channels.find((channel) => channel.id === m![1]));
   if ((m = path.match(/^\/channels\/(\d+)$/)) && guildChannels().some((channel) => channel.id === m![1])) {
     const id = m[1]!;
     const channel = () => guildChannels().find((known) => known.id === id)!;
@@ -3771,7 +3821,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
 
   // Alice's notification settings for a server or her DMs: what the body
   // gives changes, and the rest stays. Channels' overrides come by id.
-  const knownGuild = (guild: string) => guild === GUILD || fillers.some((filler) => filler.id === guild);
+  const knownGuild = (guild: string) => guild === GUILD || fillers.some((filler) => filler.id === guild) || !!world?.byId.has(guild);
   const changeGuildSettings = (guild: string, body: any) => {
     const settings = settingsOf(guild);
     for (const key of ["muted", "message_notifications", "suppress_everyone", "suppress_roles", "hide_muted_channels"] as const) {
@@ -3959,7 +4009,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   // rather than a similar one reused, which the fake never does anyway.
   // Each keeps where Alice's client said it was made, as `location`.
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/invites$/))) {
-    const server = [guild(), ...fillers].find((known) => known.channels.some((channel) => channel.id === m![1]));
+    const server = [...(world ? world.guilds.map(envGuild) : [guild()]), ...fillers].find((known) => known.channels.some((channel) => channel.id === m![1]));
     const channel = server?.channels.find((known) => known.id === m![1] && known.type !== 4);
     if (!server || !channel) return notFound("Unknown Channel", 10003);
     const body: any = await req.json().catch(() => ({}));
@@ -4254,6 +4304,422 @@ function postVideo(origin: string) {
   dispatch("MESSAGE_CREATE", dispatched(linked, origin));
 }
 
+// --- Environments -------------------------------------------------------------
+// With --env, the fixture made above is emptied and the env's content fills
+// the same stores: people in userById, history through post(), DMs in
+// privates, attachments through addFile(), pictures in uploadedPictures for
+// the CDN, voice states and streams. Its servers are plain objects, as the
+// fillers are, in `world`, which READY, member lists, op 8 and op 37 use in
+// place of "Server". See testing/fake_discord_env.ts for the format.
+
+type EnvServer = {
+  id: string;
+  name: string;
+  icon: string | null;
+  owner: string;
+  roles: (typeof serverRoles)[number][];
+  channels: GuildChannel[];
+  /** Its members by user id: their roles' ids and nickname. */
+  members: Map<string, { roles: string[]; nick: string | null }>;
+};
+type World = {
+  guilds: EnvServer[];
+  byId: Map<string, EnvServer>;
+  /** Each server's channels' server, by channel id. */
+  channelGuild: Map<string, EnvServer>;
+  email: string;
+  profiles: Map<string, { bio: string; pronouns: string; banner: string | null; accent_color: number | null }>;
+  /** What viewers of a stream are sent, by stream key, when the env gave a video. */
+  recordings: Map<string, typeof recordings>;
+};
+const ENV_IDS = 1_450_000_000_000_000_000n;
+
+/** The controls that make sense in any env: those that report, or act on
+ *  the account's own session and calls. The rest name the fixture's people
+ *  and channels. */
+const GENERIC_CONTROLS = new Set([
+  "media-requests", "history", "gif-selects", "nitro", "server-profile", "health", "presence", "logouts",
+  "voice-identifies", "voice-changes", "call-audio", "call-video", "voice-link", "voice-drop", "voice-move",
+  "stream-move", "sessions", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
+  "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
+  "reactor-removals", "thread-searches", "thread-creates", "typed", "acks", "invites",
+]);
+
+/** A presence as the env describes it. */
+function envPresence(person: { status?: Status; playing?: string; customStatus?: CustomStatus; mobile?: boolean }) {
+  const status = person.status ?? "online";
+  const custom = person.customStatus;
+  return {
+    status,
+    activities: [
+      ...(custom
+        ? [{ type: 4, name: "Custom Status", ...(custom.text ? { state: custom.text } : {}), ...(custom.emoji ? { emoji: { name: custom.emoji, id: null } } : {}) }]
+        : []),
+      ...(person.playing ? [{ type: 0, name: person.playing }] : []),
+    ],
+    ...(person.mobile ? { client_status: { mobile: status } } : {}),
+  };
+}
+
+function applyEnv({ env, dir }: { env: Env; dir: string }): World {
+  const now = Date.now();
+  let ids = 0n;
+  const newId = () => (ENV_IDS + ids++).toString();
+  for (const store of [messages, byId, privates, files, scaled, relationships, readStates, voice, streams, pins, threads, userById]) {
+    store.clear();
+  }
+  for (const id of Object.keys(presences)) delete presences[id];
+  lastId = 0n;
+
+  /** A picture file as a CDN hash; `fallback` without a file, null for none. */
+  const pictureHash = (path: string | null | undefined, fallback: string | null) => {
+    if (path === null) return null;
+    if (path === undefined) return fallback;
+    const media = readMedia(dir, path);
+    const hash = `env${crc32(media.data).toString(16).padStart(8, "0")}`;
+    uploadedPictures.set(hash, { type: media.contentType, data: media.data });
+    return hash;
+  };
+
+  const me = env.me ?? {};
+  Object.assign(users.alice, {
+    username: me.username ?? users.alice.username,
+    global_name: me.name ?? me.username ?? users.alice.global_name,
+    avatar: pictureHash(me.avatar, users.alice.avatar),
+  });
+  userById.set(ALICE, users.alice);
+  nitro = me.nitro ?? nitro;
+  presences[ALICE] = envPresence(me);
+  // Her status and custom status, as her settings keep them.
+  const custom = me.customStatus;
+  const status = new Uint8Array([
+    ...(me.status ? protoBytes(1, protoBytes(1, text(me.status === "offline" ? "invisible" : me.status))) : []),
+    ...(custom
+      ? protoBytes(2, new Uint8Array([
+          ...(custom.text ? protoBytes(1, text(custom.text)) : []),
+          ...(custom.emoji ? protoBytes(3, text(custom.emoji)) : []),
+        ]))
+      : []),
+  ]);
+  settings = Buffer.from(status.length ? protoBytes(11, status) : new Uint8Array()).toString("base64");
+
+  const byKey = new Map<string, User>([["me", users.alice]]);
+  const profiles: World["profiles"] = new Map();
+  for (const person of env.people ?? []) {
+    if (byKey.has(person.key)) throw new Error(`env: two people are "${person.key}"`);
+    const username = person.username ?? person.key;
+    const user: User = {
+      id: newId(), username, global_name: person.name ?? username, avatar: pictureHash(person.avatar, `${person.key}1`),
+      ...(person.bot ? { bot: true } : {}),
+    };
+    byKey.set(person.key, user);
+    userById.set(user.id, user);
+    presences[user.id] = envPresence(person);
+    if (person.relationship) relationships.set(user.id, { friend: 1, blocked: 2, incoming: 3, outgoing: 4 }[person.relationship]);
+    profiles.set(user.id, {
+      bio: person.bio ?? "", pronouns: person.pronouns ?? "", banner: pictureHash(person.banner, null),
+      accent_color: person.accentColor ? parseColor(person.accentColor) : null,
+    });
+  }
+  const who = (key: string) => {
+    const user = byKey.get(key);
+    if (!user) throw new Error(`env: nobody is "${key}"`);
+    return user;
+  };
+
+  // Each channel's messages, posted once all are known, oldest first, so
+  // their ids follow their times.
+  const pending: { channel: string; server?: EnvServer; spec: EnvMessage; ms: number }[] = [];
+  const unread = new Map<string, Unread & { dm: boolean }>();
+  const queue = (channel: string, list: EnvMessage[] = [], read: Unread & { dm: boolean }, server?: EnvServer) => {
+    messages.set(channel, []);
+    unread.set(channel, read);
+    let ms = now - (list.length + 1) * 60_000;
+    for (const spec of list) {
+      ms = spec.at ? parseTime(spec.at, now) : ms + 60_000;
+      pending.push({ channel, server, spec, ms });
+    }
+  };
+
+  for (const dm of env.dms ?? []) {
+    const id = newId();
+    privates.set(id, { type: 1, recipients: [who(dm.with)] });
+    queue(id, dm.messages, { ...dm, dm: true });
+  }
+  for (const group of env.groups ?? []) {
+    const id = newId();
+    privates.set(id, { type: 3, recipients: group.with.map(who), ...(group.name ? { name: group.name } : {}) });
+    queue(id, group.messages, { ...group, dm: true });
+  }
+
+  const channelGuild = new Map<string, EnvServer>();
+  const recordingsByStream: World["recordings"] = new Map();
+  const guilds = (env.servers ?? []).map((spec) => {
+    const id = newId();
+    const roles = [
+      { ...serverRoles[0]!, id },
+      ...(spec.roles ?? []).map((role, index, all) => ({
+        id: newId(), name: role.name, permissions: role.permissions ?? "0", position: all.length - index,
+        color: parseColor(role.color), hoist: !!role.hoist, managed: false, mentionable: !!role.mentionable, flags: 0,
+      })),
+    ];
+    const owner = who(spec.owner ?? "me");
+    const server: EnvServer = { id, name: spec.name, icon: pictureHash(spec.icon, null), owner: owner.id, roles, channels: [], members: new Map() };
+    for (const entry of spec.members ?? []) {
+      const member = typeof entry === "string" ? { who: entry } : entry;
+      const held = (member.roles ?? []).map((name) => {
+        const role = roles.find((role) => role.name === name);
+        if (!role) throw new Error(`env: ${spec.name} has no role "${name}"`);
+        return role.id;
+      });
+      server.members.set(who(member.who).id, { roles: held, nick: member.nick ?? null });
+    }
+    const join = (user: User) => {
+      if (!server.members.has(user.id)) server.members.set(user.id, { roles: [], nick: null });
+    };
+    join(users.alice);
+    join(owner);
+    const channel = (made: NonNullable<typeof spec.channels>[number], position: number, parent: string | null) => {
+      const channelId = newId();
+      channelGuild.set(channelId, server);
+      if (made.type === "voice") {
+        server.channels.push(guildChannel(channelId, made.name, 2, position, parent, id));
+        for (const seat of made.people ?? []) {
+          const user = who(seat.who);
+          join(user);
+          voice.set(user.id, {
+            guild: id, channel: channelId, self_mute: !!seat.mute, self_deaf: !!seat.deaf, session: `voice-${user.id}`,
+            self_video: !!seat.video, self_stream: !!seat.stream, mute: !!seat.serverMute, deaf: !!seat.serverDeaf,
+          });
+          if (!seat.stream) continue;
+          const key = streamKey(id, channelId, user.id);
+          streams.set(key, { viewers: new Set(), paused: false });
+          if (typeof seat.stream === "string") {
+            const recording = readRecording(dir, seat.stream);
+            recordingsByStream.set(key, { vp8: ivf(recording.vp8), h264: annexB(recording.h264) });
+          }
+        }
+        return;
+      }
+      server.channels.push(Object.assign(guildChannel(channelId, made.name, 0, position, parent, id), { topic: made.topic ?? null }));
+      for (const message of made.messages ?? []) join(who(message.from));
+      queue(channelId, made.messages, { ...made, dm: false }, server);
+    };
+    (spec.channels ?? []).forEach((made, index) => channel(made, index, null));
+    (spec.categories ?? []).forEach((category, index) => {
+      const categoryId = newId();
+      server.channels.push(guildChannel(categoryId, category.name, 4, index, null, id));
+      category.channels.forEach((made, position) => channel(made, position, categoryId));
+    });
+    // Her notifications follow the server's default: all messages.
+    settingsOf(id).message_notifications = 3;
+    return server;
+  });
+
+  // The text of a message: `<@key>`, `<#name>` and `<@&name>` as Discord's mentions.
+  const mentions = (content: string, server?: EnvServer) =>
+    content
+      .replace(/<@([^\d&!>][^>]*)>/g, (_, key: string) => `<@${who(key).id}>`)
+      .replace(/<#([^\d>][^>]*)>/g, (all, name: string) => {
+        const found = server?.channels.find((channel) => channel.name === name && channel.type !== 4);
+        return found ? `<#${found.id}>` : all;
+      })
+      .replace(/<@&([^\d>][^>]*)>/g, (all, name: string) => {
+        const found = server?.roles.find((role) => role.name === name);
+        return found ? `<@&${found.id}>` : all;
+      });
+  const named = new Map<string, Message>();
+  let attached = 0;
+  for (const { channel, server, spec, ms } of pending.sort((a, b) => a.ms - b.ms)) {
+    const files = (spec.files ?? []).map((entry) => {
+      const { path, name, spoiler } = typeof entry === "string" ? { path: entry, name: undefined, spoiler: false } : entry;
+      const media = readMedia(dir, path);
+      const filename = `${spoiler ? "SPOILER_" : ""}${name ?? basename(path)}`;
+      const poster = media.poster;
+      return addFile({
+        id: snowflake(ms, 1 + (attached++ % 4000)), channel, filename, contentType: media.contentType, data: media.data,
+        ...(media.width ? { width: media.width, height: media.height } : {}),
+        ...(poster ? { draw: () => poster } : {}),
+      });
+    });
+    const reply = spec.reply === undefined ? undefined : named.get(`${channel}:${spec.reply}`)?.id;
+    if (spec.reply !== undefined && !reply) throw new Error(`env: no message "${spec.reply}" before its reply`);
+    const message = post(channel, who(spec.from), mentions(spec.text ?? "", server), ms, { files, ...(reply ? { reply } : {}) });
+    if (spec.id) named.set(`${channel}:${spec.id}`, message);
+    for (const reaction of spec.reactions ?? []) {
+      message.reactions.push({ name: reaction.emoji, id: null, users: new Set(reaction.by.map((key) => who(key).id)) });
+    }
+    if (spec.pinned) pins.set(channel, [{ message, at: ms }, ...(pins.get(channel) ?? [])]);
+  }
+
+  // What she has read: all but each channel's `unread` newest messages.
+  for (const [channel, read] of unread) {
+    const list = messages.get(channel)!;
+    if (list.length === 0) continue;
+    const count = Math.min(read.unread ?? 0, list.length);
+    const last = count < list.length ? list[list.length - 1 - count]!.id : (BigInt(list[0]!.id) - 1n).toString();
+    readStates.set(channel, { last, mentions: read.mentions ?? (read.dm ? count : 0) });
+  }
+
+  return {
+    guilds,
+    byId: new Map(guilds.map((server) => [server.id, server])),
+    channelGuild,
+    email: me.email ?? `${users.alice.username}@example.org`,
+    profiles,
+    recordings: recordingsByStream,
+  };
+}
+
+/** An env server as READY lists it, and invites name it. */
+function envGuild(server: EnvServer) {
+  const channels = server.channels.map((channel) =>
+    channel.type === 0 ? { ...channel, last_message_id: messages.get(channel.id)?.at(-1)?.id ?? null } : channel,
+  );
+  return {
+    id: server.id,
+    properties: {
+      id: server.id, name: server.name, owner_id: server.owner, icon: server.icon, banner: null, splash: null,
+      description: null, features: [], preferred_locale: "en-US", verification_level: 0, default_message_notifications: 0,
+      explicit_content_filter: 0, mfa_level: 0, nsfw_level: 0, premium_tier: 0,
+      system_channel_id: channels.find((channel) => channel.type === 0)?.id ?? null, afk_channel_id: null, afk_timeout: 300,
+    },
+    channels,
+    roles: server.roles,
+    emojis: [],
+    stickers: [],
+    threads: [],
+    stage_instances: [],
+    guild_scheduled_events: [],
+    activity_instances: [],
+    member_count: server.members.size,
+    joined_at: JOINED_AT,
+    large: false,
+    lazy: true,
+    premium_subscription_count: 0,
+    data_mode: "full",
+    version: 1,
+  };
+}
+
+/** A member of a server as events carry it: of an env server, with its roles
+ *  and nickname, else of "Server". */
+function memberIn(guild: string | null | undefined, user: User) {
+  const server = guild ? world?.byId.get(guild) : undefined;
+  if (!server) return member(user);
+  const held = server.members.get(user.id);
+  return { ...member(user, held?.roles ?? []), nick: held?.nick ?? null, avatar: null, banner: null, communication_disabled_until: null };
+}
+
+/** An env server's member list, as Discord groups it: those online under
+ *  their highest hoisted role, or Online, then everyone offline, each group
+ *  by name. */
+function envMemberList(server: EnvServer, id: string) {
+  const offline = (user: User) => (presences[user.id]?.status ?? "offline") === "offline";
+  const name = (user: User) => server.members.get(user.id)?.nick ?? user.global_name ?? user.username;
+  const people = [...server.members.keys()].map((user) => userById.get(user)!).sort((a, b) => name(a).localeCompare(name(b)));
+  const hoisted = server.roles.filter((role) => role.hoist).sort((a, b) => b.position - a.position);
+  const groupOf = (user: User) => {
+    if (offline(user)) return "offline";
+    const held = server.members.get(user.id)!.roles;
+    return hoisted.find((role) => held.includes(role.id))?.id ?? "online";
+  };
+  const groups = [...hoisted.map((role) => role.id), "online", "offline"]
+    .map((group) => ({ id: group, count: people.filter((user) => groupOf(user) === group).length }))
+    .filter((group) => group.count > 0);
+  const items = groups.flatMap((group) => [
+    { group },
+    ...people
+      .filter((user) => groupOf(user) === group.id)
+      .map((user) => ({ member: { ...memberIn(server.id, user), presence: { user: { id: user.id }, client_status: {}, ...presences[user.id] } } })),
+  ]);
+  return {
+    guild_id: server.id,
+    id,
+    member_count: people.length,
+    online_count: people.filter((user) => !offline(user)).length,
+    groups,
+    ops: [{ op: "SYNC", range: [0, 99], items }],
+  };
+}
+
+/** Op 8 for an env server: members found by name, or these users. */
+function envMembersChunk(server: EnvServer, d: any) {
+  const people = [...server.members.keys()].map((id) => userById.get(id)!);
+  const query = typeof d.query === "string" ? d.query.toLowerCase() : undefined;
+  const ids: string[] = d.user_ids ?? [];
+  const found = query !== undefined
+    ? people.filter((user) => [user.username, user.global_name].some((name) => name.toLowerCase().startsWith(query))).slice(0, d.limit || 100)
+    : people.filter((user) => ids.includes(user.id));
+  dispatch("GUILD_MEMBERS_CHUNK", {
+    guild_id: server.id,
+    members: found.map((user) => memberIn(server.id, user)),
+    chunk_index: 0,
+    chunk_count: 1,
+    ...(query === undefined ? { not_found: ids.filter((id) => !found.some((user) => user.id === id)) } : {}),
+    ...(d.nonce ? { nonce: d.nonce } : {}),
+  });
+}
+
+/** READY_SUPPLEMENTAL for an env: each server's voice states and the
+ *  members in them, and the presences of friends and people she has DMs
+ *  with who aren't offline, as Discord sends them. */
+function envReadySupplemental(world: World) {
+  const inVoice = (server: EnvServer) => [...voice].filter(([, state]) => state.guild === server.id);
+  const known = new Set([
+    ...[...relationships].filter(([, type]) => type === 1).map(([id]) => id),
+    ...[...privates.values()].flatMap((channel) => channel.recipients.map((user) => user.id)),
+  ]);
+  return {
+    guilds: world.guilds.map((server) => ({
+      id: server.id,
+      voice_states: inVoice(server).map(([user, state]) => {
+        const { guild_id: _, ...wire } = wireVoiceState(user, state);
+        return wire;
+      }),
+      embedded_activities: [],
+      activity_instances: [],
+    })),
+    merged_members: world.guilds.map((server) =>
+      inVoice(server).map(([id]) => {
+        const { user: _, ...profile } = memberIn(server.id, userById.get(id)!);
+        return profile;
+      }),
+    ),
+    merged_presences: {
+      guilds: world.guilds.map(() => []),
+      friends: [...known].filter((id) => presences[id] && presences[id].status !== "offline").map((id) => ({ user_id: id, ...presences[id] })),
+    },
+    lazy_private_channels: [],
+    disclose: [],
+    game_invites: [],
+  };
+}
+
+/** GET /users/{id}/profile in an env: the person's bio, pronouns, banner and
+ *  colour, their member in an env server asked for, and the servers shared. */
+function envProfile(world: World, user: User, guild: string | null) {
+  const profile = world.profiles.get(user.id) ?? { bio: "", pronouns: "", banner: null, accent_color: null };
+  const server = guild ? world.byId.get(guild) : undefined;
+  return {
+    user: { ...wireUser(user), banner: profile.banner, accent_color: profile.accent_color, bio: profile.bio },
+    user_profile: profile,
+    ...(server?.members.has(user.id)
+      ? { guild_member_profile: guildMemberProfile(user.id, server.id), guild_member: { ...memberIn(server.id, user), bio: "" } }
+      : {}),
+    mutual_guilds: user.id === ALICE
+      ? []
+      : world.guilds
+          .filter((server) => server.members.has(user.id))
+          .map((server) => ({ id: server.id, nick: server.members.get(user.id)!.nick })),
+    mutual_friends: [],
+    badges: [],
+    premium_type: null,
+  };
+}
+
+if (env) world = applyEnv(env);
+
 // --- Control ----------------------------------------------------------------
 
 let chat: ReturnType<typeof setInterval> | undefined;
@@ -4298,6 +4764,9 @@ const server = Bun.serve<SocketData>({
     const url = new URL(req.url);
     const path = url.pathname;
     const origin = url.origin;
+    if (world && path.startsWith("/_control/") && !GENERIC_CONTROLS.has(path.slice("/_control/".length))) {
+      return new Response("not in this environment\n", { status: 400 });
+    }
     if (path === "/_control/media-requests") {
       if (req.method === "POST") Object.assign(mediaRequests, { avatars: 0, previews: 0 });
       return Response.json(mediaRequests);
@@ -4458,7 +4927,7 @@ const server = Bun.serve<SocketData>({
       voiceToken = MOVED_VOICE_TOKEN;
       for (const ws of sockets) {
         if (ws.data.session !== state.session) continue;
-        send(ws, 0, { guild_id: GUILD, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
+        send(ws, 0, { guild_id: state.guild, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
       }
       return new Response("moved Alice's call\n");
     }
@@ -4888,5 +5357,7 @@ const server = Bun.serve<SocketData>({
 
 console.error(
   `fake Discord on http://${server.hostname}:${server.port} ` +
-    `(${general.length} messages in #general ${GENERAL}, server ${GUILD})`,
+    (world
+      ? `(${args.env}: ${world.guilds.length} servers, ${privates.size} DMs, ${byId.size} messages)`
+      : `(${general.length} messages in #general ${GENERAL}, server ${GUILD})`),
 );
