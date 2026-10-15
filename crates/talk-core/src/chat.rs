@@ -17,6 +17,9 @@ pub const MAX_MESSAGE_BYTES: usize = 16_000;
 pub(crate) const MAX_PREVIEW_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 pub const PREVIEW_WIDTH: u32 = 360;
 pub const PREVIEW_HEIGHT: u32 = 270;
+/// The pictures a pinned message's or a search result's card shows at
+/// most; it names the rest.
+pub const FOUND_PICTURES: usize = 4;
 /// The image viewer shows pictures up to this size, so a full-size photo
 /// costs at most about 9 MiB while it's open.
 pub const VIEW_WIDTH: u32 = 1920;
@@ -1123,6 +1126,10 @@ pub struct ChatMessage {
     pub can_react: bool,
     /// A sent message whose content can be sent again to another conversation.
     pub can_forward: bool,
+    /// Among its conversation's pinned messages.
+    pub pinned: bool,
+    /// This account may pin it, or unpin it: [`Command::Pin`].
+    pub can_pin: bool,
     /// The Discord thread it started, or that it tells of.
     pub thread: Option<ThreadLink>,
 }
@@ -1258,6 +1265,12 @@ pub enum Command {
     Delete {
         room: String,
         item: String,
+    },
+    /// Pin a Discord message to its channel's pinned messages, or unpin it.
+    Pin {
+        room: String,
+        item: String,
+        pinned: bool,
     },
     Retry {
         room: String,
@@ -1798,6 +1811,7 @@ impl Command {
             | Command::Reactors { room, .. }
             | Command::RemoveReactor { room, .. }
             | Command::Delete { room, .. }
+            | Command::Pin { room, .. }
             | Command::Retry { room, .. }
             | Command::Cancel { room, .. }
             | Command::SaveAttachment { room, .. }

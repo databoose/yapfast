@@ -943,6 +943,36 @@ async fn talks_to_the_fake_server() {
     let pinned = discord.pins(&guild, &general).await.unwrap();
     assert_eq!(pinned.len(), 1);
     assert!(pinned[0].content.starts_with("Welcome to **Talk**"));
+    // Bob's picture after it, pinned as Alice's Crew role allows: Discord
+    // says it's pinned, and it leads the pins until it's unpinned.
+    let after = discord
+        .history(&guild, &general, Span::After(&pinned[0].id))
+        .await
+        .unwrap()
+        .messages;
+    let sunset = after
+        .iter()
+        .find(|message| {
+            message
+                .attachments
+                .iter()
+                .any(|attachment| attachment.image)
+        })
+        .expect("Bob's picture follows the welcome");
+    assert!(pinned[0].pinned && !sunset.pinned);
+    discord.pin(&general, &sunset.id, true).await.unwrap();
+    let updated = live_where(&mut live, |event| match event {
+        Live::Updated(message) if message.id == sunset.id => Some(message),
+        _ => None,
+    })
+    .await;
+    assert!(updated.pinned);
+    let pins = discord.pins(&guild, &general).await.unwrap();
+    assert_eq!(pins.len(), 2);
+    assert_eq!(pins[0].id, sunset.id);
+    assert!(pins[0].attachments[0].preview_url.is_some());
+    discord.pin(&general, &sunset.id, false).await.unwrap();
+    assert_eq!(discord.pins(&guild, &general).await.unwrap().len(), 1);
     let found = discord
         .search(&guild, None, "welcome in:general", 0)
         .await

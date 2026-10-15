@@ -768,6 +768,50 @@ impl OpenChannel {
         });
     }
 
+    /// Pins a message, or unpins it. It shows so once Discord says it did.
+    pub fn pin(
+        &mut self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+        item: &str,
+        pinned: bool,
+    ) {
+        let Some(id) = sent_id(item).map(str::to_owned) else {
+            return;
+        };
+        let (discord, done) = (discord.clone(), done.clone());
+        let (room, channel) = (self.room.clone(), self.channel.clone());
+        tokio::spawn(async move {
+            let result = discord.pin(&channel, &id, pinned).await.map_err(|error| {
+                format!(
+                    "Could not {} the message: {error}",
+                    if pinned { "pin" } else { "unpin" }
+                )
+            });
+            let _ = done.send(Done::Pinned {
+                room,
+                id,
+                pinned,
+                result,
+            });
+        });
+    }
+
+    /// Marks a message pinned or not, as Discord said it now is, ahead of
+    /// the gateway's update.
+    pub fn pinned(&mut self, id: &str, pinned: bool) {
+        let order = id.parse().unwrap_or_default();
+        for run in std::iter::once(&mut self.shown).chain(self.latest.as_mut()) {
+            if let Some(message) = run.messages.get_mut(&order)
+                && message.pinned != pinned
+            {
+                message.pinned = pinned;
+                self.dirty = true;
+            }
+        }
+        self.rendered.remove(&order);
+    }
+
     pub fn deleted(&mut self, id: &str) {
         let order = id.parse().unwrap_or_default();
         let latest = self
@@ -1067,11 +1111,19 @@ impl OpenChannel {
             .iter()
             .find(|server| server.id == self.guild)
             .cloned();
+        let may_pin = server.as_deref().is_none_or(|server| {
+            server.channel(&self.channel).is_some_and(|channel| {
+                server.channel_permissions(channel, &me, &server.my_roles)
+                    & talk_discord::ready::permission::PIN_MESSAGES
+                    != 0
+            })
+        });
         let rendering = Rendering {
             names: discord.names_version(),
             me: me.clone(),
             blocked: snapshot.blocked.clone(),
             server: server.clone(),
+            may_pin,
         };
         if !rendering.alike(&self.rendered_with) {
             self.rendered.clear();
@@ -1299,6 +1351,8 @@ impl OpenChannel {
             can_delete: own,
             can_react: ordinary,
             can_forward: false,
+            pinned: message.pinned,
+            can_pin: ordinary && self.rendered_with.may_pin,
             thread: self.thread_link(server, message),
         }
     }
@@ -1350,20 +1404,7 @@ impl OpenChannel {
         let (discord, done) = (discord.clone(), done.clone());
         let room = self.room.clone();
         self.tasks.spawn(async move {
-            let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
-                Ok(data) => tokio::task::spawn_blocking({
-                    let url = url.clone();
-                    move || {
-                        decode_preview(&data)
-                            .map(|picture| crate::discord::read_kept(&url, picture))
-                    }
-                })
-                .await
-                .ok()
-                .flatten()
-                .map(Arc::new),
-                Err(_) => None,
-            };
+            let picture = super::render::preview(&discord, &url).await;
             let _ = done.send(Done::Picture { room, url, picture });
         });
     }
@@ -1379,6 +1420,8 @@ pub(super) struct Rendering {
     pub(super) me: String,
     pub(super) blocked: Vec<String>,
     pub(super) server: Option<Arc<talk_discord::ready::Server>>,
+    /// This account may pin messages here: anyone may in a DM.
+    pub(super) may_pin: bool,
 }
 
 impl Rendering {
@@ -1406,7 +1449,11 @@ impl Rendering {
             }
             (one, other) => one.is_none() && other.is_none(),
         };
-        self.names == other.names && self.me == other.me && self.blocked == other.blocked && server
+        self.names == other.names
+            && self.me == other.me
+            && self.blocked == other.blocked
+            && self.may_pin == other.may_pin
+            && server
     }
 }
 

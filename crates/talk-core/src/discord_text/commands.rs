@@ -55,7 +55,13 @@ pub fn command(
         }
         return;
     }
-    let Some(command) = account::command(command, discord, &channels.searches, events) else {
+    let Some(command) = account::command(
+        command,
+        discord,
+        &channels.searches,
+        &channels.previews,
+        events,
+    ) else {
         return;
     };
     let Some(command) = server_profile::command(command, discord, events) else {
@@ -72,6 +78,7 @@ pub fn command(
         | Command::Reactors { room, .. }
         | Command::RemoveReactor { room, .. }
         | Command::Delete { room, .. }
+        | Command::Pin { room, .. }
         | Command::Retry { room, .. }
         | Command::Cancel { room, .. }
         | Command::SaveAttachment { room, .. }
@@ -221,6 +228,7 @@ pub fn command(
             item, key, user, ..
         } => channel.remove_reactor(discord, done, &item, &key, user),
         Command::Delete { item, .. } => channel.delete(discord, done, &item),
+        Command::Pin { item, pinned, .. } => channel.pin(discord, done, &item, pinned),
         Command::Retry { item, .. } => {
             channel.retry(discord, done, &item);
             publish(channel, discord, done, events);
@@ -346,6 +354,7 @@ pub fn finished(
         | Done::Sent { room, .. }
         | Done::Edited { room, .. }
         | Done::Deleted { room, .. }
+        | Done::Pinned { room, .. }
         | Done::Picture { room, .. }
         | Done::Image { room, .. }
         | Done::Saved { room, .. }
@@ -473,6 +482,23 @@ pub fn finished(
         (Done::Deleted { id, result, .. }, Some(channel)) => match result {
             Ok(()) => {
                 channel.deleted(&id);
+                changed = true;
+            }
+            Err(error) => {
+                let _ = events.send(Event::RoomError {
+                    room,
+                    message: error,
+                });
+            }
+        },
+        (
+            Done::Pinned {
+                id, pinned, result, ..
+            },
+            Some(channel),
+        ) => match result {
+            Ok(()) => {
+                channel.pinned(&id, pinned);
                 changed = true;
             }
             Err(error) => {

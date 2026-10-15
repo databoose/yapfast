@@ -104,6 +104,9 @@ pub struct Message {
     /// The thread started from it, or that a notice of one names.
     #[serde(default)]
     pub thread: Option<ThreadLink>,
+    /// Among its channel's pinned messages.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A thread a message leads to, as the message carried it; the thread as
@@ -549,6 +552,7 @@ pub fn parse(value: &Value) -> Option<Message> {
             }
             _ => ThreadLink::of(&value["thread"]),
         },
+        pinned: value["pinned"].as_bool().unwrap_or(false),
     })
 }
 

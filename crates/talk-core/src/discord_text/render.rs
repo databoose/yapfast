@@ -1,7 +1,7 @@
 //! Discord's messages, profiles, embeds and members as Talk's chat shows
 //! them.
 
-use super::*;
+use super::{channels::SharedPreviews, *};
 
 /// A new Discord message as a notification: who wrote it, by their name in the server,
 /// and what it says, or what it carries when it has no text.
@@ -58,8 +58,8 @@ pub(super) fn notification(
 
 /// A message as a pinned message or a search result shows it: who wrote
 /// it, by their name, avatar and role colour in `server`, or for a DM with
-/// none, their own; when; and what it says. Its files are named but not
-/// downloaded; jumping to it shows them in the timeline.
+/// none, their own; when; and what it says, and the files it carries.
+/// [`with_previews`] brings its pictures.
 pub(super) fn found(
     discord: &Discord,
     server: Option<&talk_discord::ready::Server>,
@@ -112,6 +112,80 @@ pub(super) fn found(
         emoji: custom_emoji(message),
         ..Default::default()
     }
+}
+
+/// Gives `found`, as [`found`] made them from `messages`, the previews of
+/// their first [`crate::chat::FOUND_PICTURES`] pictures each, as the timeline shows
+/// them: from the previews the recent channels share, or downloaded a few
+/// at a time. One that can't be had is marked so.
+pub(super) async fn with_previews(
+    discord: &Discord,
+    previews: &SharedPreviews,
+    messages: &[Message],
+    found: &mut [ChatMessage],
+) {
+    use futures_util::StreamExt;
+    let mut wanted = Vec::new();
+    for (at, (message, found)) in messages.iter().zip(&*found).enumerate() {
+        let shown = message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.shown == Shown::Message);
+        wanted.extend(
+            shown
+                .zip(&found.attachments)
+                .enumerate()
+                .filter(|(_, (_, attachment))| attachment.image || attachment.video)
+                .filter_map(|(index, (attachment, _))| {
+                    Some((at, index, attachment.preview_url.clone()?))
+                })
+                .take(crate::chat::FOUND_PICTURES),
+        );
+    }
+    let cached = |url: &str| {
+        previews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(url)
+    };
+    let came: Vec<_> = futures_util::stream::iter(wanted)
+        .map(|(at, index, url)| async move {
+            if let Some(picture) = cached(&url) {
+                return (at, index, Some(picture));
+            }
+            let picture = preview(discord, &url).await;
+            if let Some(picture) = &picture {
+                previews
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(url, picture.clone());
+            }
+            (at, index, picture)
+        })
+        .buffer_unordered(4)
+        .collect()
+        .await;
+    for (at, index, picture) in came {
+        let attachment = &mut found[at].attachments[index];
+        attachment.preview_failed = picture.is_none();
+        attachment.preview = picture;
+    }
+}
+
+/// A picture downloaded and decoded at the timeline's preview size.
+pub(super) async fn preview(discord: &Discord, url: &str) -> Option<Arc<Picture>> {
+    let data = discord
+        .download(url, MAX_PREVIEW_DOWNLOAD_BYTES)
+        .await
+        .ok()?;
+    let url = url.to_owned();
+    tokio::task::spawn_blocking(move || {
+        decode_preview(&data).map(|picture| crate::discord::read_kept(&url, picture))
+    })
+    .await
+    .ok()
+    .flatten()
+    .map(Arc::new)
 }
 
 /// Messages found in a room, as [`found`] shows them, with the room's server.

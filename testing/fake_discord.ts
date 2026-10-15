@@ -64,7 +64,10 @@
 // Carol, whom she has none with yet, or with several people makes a group DM,
 // and PUT /channels/{id}/recipients/{user} adds someone to a group.
 // GET /channels/{id}/messages/pins lists a channel's pins: Bob's welcome in
-// #general, his question in his DM and Carol's in the group. GET
+// #general, his question in his DM and Carol's in the group. PUT and DELETE
+// /channels/{id}/messages/pins/{message} pin a message and unpin it, which
+// takes Pin Messages in "Server", as Alice's Crew role gives; pinning posts
+// Discord's notice, and both send MESSAGE_UPDATE and CHANNEL_PINS_UPDATE. GET
 // /channels/{id}/messages/search finds a DM's messages by their text, 25 at
 // a time, and GET /guilds/{id}/messages/search a server's, in the channels
 // channel_id names or in all of them; both take author_id, mentions, has,
@@ -799,7 +802,7 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     embeds: message.embeds?.(origin) ?? [],
     mentions,
     mention_roles: mayMention ? [...message.content.matchAll(/<@&(\d+)>/g)].map((match) => match[1]) : [],
-    pinned: false,
+    pinned: pins.get(message.channel)?.some((pin) => pin.message === message) ?? false,
     mention_everyone: mayMention && /@(everyone|here)\b/.test(message.content),
     tts: false,
     timestamp: iso(timeOf(message.id)),
@@ -1359,8 +1362,8 @@ const serverRoles = [
   { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
   { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-  // Crew may manage channels.
-  { id: CREW, name: "Crew", permissions: String(bit(4)), position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  // Crew may manage channels and pin messages.
+  { id: CREW, name: "Crew", permissions: String(bit(4) + bit(51)), position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: STAFF, name: "Staff", permissions: String(MODERATION), position: 4, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: LEADS, name: "Leads", permissions: "0", position: 5, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
 ];
@@ -3425,6 +3428,28 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       dispatch("CHANNEL_RECIPIENT_ADD", { channel_id: m[1]!, user: wireUser(user) });
     }
     return new Response(null, { status: 204 });
+  }
+
+  if ((m = path.match(/^\/channels\/(\d+)\/messages\/pins\/(\d+)$/)) && (method === "PUT" || method === "DELETE")) {
+    const message = byId.get(m[2]!);
+    if (!message || message.channel !== m[1]) return notFound("Unknown Message", 10008);
+    if (!privates.has(message.channel) && !aliceMay(51)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const list = pins.get(message.channel) ?? [];
+    const others = list.filter((pin) => pin.message !== message);
+    if (method === "PUT" && others.length === list.length) {
+      pins.set(message.channel, [{ message, at: Date.now() }, ...others]);
+      dispatch("MESSAGE_CREATE", dispatched(post(message.channel, users.alice, "", Date.now(), { type: 6 }), origin));
+    } else if (method === "DELETE") {
+      pins.set(message.channel, others);
+    }
+    dispatch("MESSAGE_UPDATE", dispatched(message, origin));
+    const latest = pins.get(message.channel)?.[0];
+    dispatch("CHANNEL_PINS_UPDATE", {
+      channel_id: message.channel,
+      last_pin_timestamp: latest ? iso(latest.at) : null,
+      ...guildOf(message.channel),
+    });
+    return empty();
   }
 
   if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/messages\/pins$/))) {

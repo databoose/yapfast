@@ -61,6 +61,8 @@ pub mod permission {
     pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
     /// Timing members out.
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
+    /// Pinning messages and unpinning them, which `MANAGE_MESSAGES` once gave.
+    pub const PIN_MESSAGES: u64 = 1 << 51;
     /// Every permission, as the owner and administrators hold.
     pub const ALL: u64 = u64::MAX;
 }

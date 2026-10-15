@@ -612,6 +612,31 @@ pub(super) fn gallery(
     previews: &[Preview<'_>],
     covered: &dyn Fn(usize) -> bool,
 ) -> (ModelRc<ImageCell>, i32, i32) {
+    let (cells, width, height) = gallery_cells(previews, covered);
+    (image_cells(cells), width, height)
+}
+
+/// [`gallery`] shrunk to be at most `max_width` wide.
+pub(super) fn gallery_within(
+    previews: &[Preview<'_>],
+    covered: &dyn Fn(usize) -> bool,
+    max_width: i32,
+) -> (ModelRc<ImageCell>, i32, i32) {
+    let (mut cells, width, height) = gallery_cells(previews, covered);
+    if width <= max_width {
+        return (image_cells(cells), width, height);
+    }
+    let scale = |side: i32| (i64::from(side) * i64::from(max_width) / i64::from(width)) as i32;
+    for (cell, _) in &mut cells {
+        (cell.x, cell.y) = (scale(cell.x), scale(cell.y));
+        (cell.width, cell.height) = (scale(cell.width).max(1), scale(cell.height).max(1));
+    }
+    (image_cells(cells), max_width, scale(height).max(1))
+}
+
+type Cells = Vec<(ImageCell, Option<Arc<Picture>>)>;
+
+fn gallery_cells(previews: &[Preview<'_>], covered: &dyn Fn(usize) -> bool) -> (Cells, i32, i32) {
     const TILE: i32 = 178;
     const GAP: i32 = 4;
     let cell =
@@ -652,7 +677,7 @@ pub(super) fn gallery(
             }
         };
     match previews {
-        [] => (ModelRc::default(), 0, 0),
+        [] => (Vec::new(), 0, 0),
         [(index, attachment, preview)] => {
             let (width, height) = match preview {
                 Some(preview) => (preview.width as i32, preview.height as i32),
@@ -663,7 +688,7 @@ pub(super) fn gallery(
                 height,
                 ..cell(*index, attachment, *preview)
             };
-            (image_cells(vec![(image, preview.cloned())]), width, height)
+            (vec![(image, preview.cloned())], width, height)
         }
         _ => {
             let cells = previews
@@ -683,11 +708,7 @@ pub(super) fn gallery(
                 })
                 .collect();
             let rows = previews.len().div_ceil(2) as i32;
-            (
-                image_cells(cells),
-                2 * TILE + GAP,
-                rows * TILE + (rows - 1) * GAP,
-            )
+            (cells, 2 * TILE + GAP, rows * TILE + (rows - 1) * GAP)
         }
     }
 }
@@ -751,6 +772,60 @@ mod tests {
             row.images.row_data(0).unwrap().image.size(),
             first.image.size()
         );
+        PREVIEWS.set(Previews::default());
+    }
+
+    #[test]
+    fn found_cards_show_their_first_pictures_small_and_name_the_rest() {
+        let picture = Arc::new(Picture {
+            width: 360,
+            height: 240,
+            rgba: talk_core::chat::Pixels::new(360, 240, vec![0; 360 * 240 * 4]),
+            ..Default::default()
+        });
+        let attachment =
+            |name: &str, image: bool, preview: Option<&Arc<Picture>>| talk_core::chat::Attachment {
+                name: name.into(),
+                size: None,
+                image,
+                dimensions: Some((360, 240)),
+                preview: preview.cloned(),
+                preview_failed: false,
+                placement: Placement::Message,
+                gif: None,
+                spoiler: false,
+                video: false,
+            };
+        let one = found_row(
+            &ChatMessage {
+                attachments: vec![attachment("sunset.png", true, Some(&picture))],
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!((one.gallery_width, one.gallery_height), (300, 200));
+        let cell = one.images.row_data(0).unwrap();
+        assert_eq!((cell.width, cell.height), (300, 200));
+        assert_eq!(one.files, "");
+
+        // Past the fourth picture, and a file, are named; one on its way
+        // shows as a skeleton.
+        let mut attachments = vec![attachment("notes.txt", false, None)];
+        attachments
+            .extend((0..3).map(|index| attachment(&format!("{index}.png"), true, Some(&picture))));
+        attachments.push(attachment("coming.png", true, None));
+        attachments.push(attachment("fifth.png", true, Some(&picture)));
+        let many = found_row(
+            &ChatMessage {
+                attachments,
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(many.images.row_count(), 4);
+        assert!(many.images.row_data(3).unwrap().loading);
+        assert!(many.gallery_width <= 300);
+        assert_eq!(many.files, "notes.txt, fifth.png");
         PREVIEWS.set(Previews::default());
     }
 

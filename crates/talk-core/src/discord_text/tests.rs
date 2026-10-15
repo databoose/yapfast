@@ -352,6 +352,7 @@ fn messages_render_again_once_what_they_show_changes() {
         me: "1".into(),
         blocked: vec![],
         server,
+        may_pin: false,
     };
     let shown = rendering(1, server("general", false));
     assert!(
@@ -370,6 +371,13 @@ fn messages_render_again_once_what_they_show_changes() {
         blocked: vec!["2".into()],
         ..rendering(1, server("general", false))
     }));
+    assert!(
+        !shown.alike(&Rendering {
+            may_pin: true,
+            ..rendering(1, server("general", false))
+        }),
+        "may pin"
+    );
 }
 
 #[test]
@@ -395,6 +403,25 @@ fn channels_go_to_disk_once_they_change() {
             .collect::<Vec<_>>(),
         ["1", "3"]
     );
+}
+
+#[test]
+fn a_pin_marks_its_message_and_goes_to_disk() {
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.loaded(Load::Latest, shown(page(1..=3)));
+    open.take_changes();
+    open.pinned("2", true);
+    assert!(open.message(2).unwrap().pinned);
+    let (_, saved) = open.take_changes().unwrap();
+    assert!(
+        saved
+            .iter()
+            .any(|message| message.id == "2" && message.pinned)
+    );
+    open.pinned("2", true);
+    assert!(open.take_changes().is_none(), "pinned already");
+    open.pinned("2", false);
+    assert!(!open.message(2).unwrap().pinned);
 }
 
 #[test]
@@ -1141,9 +1168,12 @@ async fn a_server_channels_pins_and_search_show_its_members() {
     let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mut channels = Channels::default();
     let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
-    // These answer straight from the account, with no channel work.
-    let mut run = async |command: Command| {
-        self::command(command, Ok(&discord), &mut channels, &done, &events);
+    // These answer straight from the account, with no channel work; with
+    // no command, the next answer comes.
+    let mut run = async |command: Option<Command>| {
+        if let Some(command) = command {
+            self::command(command, Ok(&discord), &mut channels, &done, &events);
+        }
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let event = received.recv().await.expect("events go on");
@@ -1157,9 +1187,9 @@ async fn a_server_channels_pins_and_search_show_its_members() {
     };
     let Event::Pins {
         result: Ok(pins), ..
-    } = run(Command::Discord(DiscordCommand::Pins {
+    } = run(Some(Command::Discord(DiscordCommand::Pins {
         room: room.clone(),
-    }))
+    })))
     .await
     else {
         panic!("the pins came")
@@ -1167,6 +1197,14 @@ async fn a_server_channels_pins_and_search_show_its_members() {
     assert_eq!(pins.len(), 1);
     assert_eq!(pins[0].author, "Bob");
     assert_eq!(pins[0].color, Some(0x3498db), "Bob is a Mod");
+    // Then again with their pictures, of which the welcome has none.
+    let Event::Pins {
+        result: Ok(again), ..
+    } = run(None).await
+    else {
+        panic!("the pins came again")
+    };
+    assert_eq!(again, pins);
 
     // A search of the whole server, each result with its channel.
     let search = |query: &str| {
@@ -1180,7 +1218,7 @@ async fn a_server_channels_pins_and_search_show_its_members() {
         Event::Found { result, .. } => result,
         _ => panic!("expected search results"),
     };
-    let (total, hits) = found(run(search("welcome")).await).unwrap();
+    let (total, hits) = found(run(Some(search("welcome"))).await).unwrap();
     assert_eq!(total, 2);
     assert_eq!(hits[0].room, room);
     let first = &hits[0].message;
@@ -1195,11 +1233,12 @@ async fn a_server_channels_pins_and_search_show_its_members() {
     );
 
     // Filters name people and channels, which Talk finds by id.
-    let (total, hits) = found(run(search("welcome from:bob in:#general has:link")).await).unwrap();
+    let (total, hits) =
+        found(run(Some(search("welcome from:bob in:#general has:link"))).await).unwrap();
     assert_eq!(total, 1, "Bob's welcome carries a link");
     assert!(hits[0].message.body.starts_with("Welcome to **Talk**"));
-    let refused = found(run(search("from:nobody")).await).unwrap_err();
+    let refused = found(run(Some(search("from:nobody"))).await).unwrap_err();
     assert!(refused.contains("nobody"), "{refused}");
-    let refused = found(run(search("in:nowhere")).await).unwrap_err();
+    let refused = found(run(Some(search("in:nowhere"))).await).unwrap_err();
     assert!(refused.contains("#nowhere"), "{refused}");
 }

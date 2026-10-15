@@ -528,6 +528,13 @@ impl Api {
             .await
     }
 
+    /// Pins a message to its channel's pinned messages, or unpins it.
+    pub async fn pin(&self, channel: &str, message: &str, pinned: bool) -> Result<()> {
+        let path = format!("/channels/{channel}/messages/pins/{message}");
+        let method = if pinned { Method::PUT } else { Method::DELETE };
+        self.empty(self.request(method, &path)).await
+    }
+
     /// A channel's pinned messages, the latest pinned first: up to [`PAGE`].
     pub async fn pins(&self, channel: &str) -> Result<Vec<Value>> {
         let path = format!("/channels/{channel}/messages/pins?limit={PAGE}");

@@ -243,6 +243,7 @@ pub(super) fn sample_actions() -> ChatMessage {
         can_delete: true,
         can_react: true,
         can_forward: true,
+        can_pin: true,
         ..Default::default()
     }
 }

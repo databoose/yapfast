@@ -5,8 +5,9 @@
 
 use super::{
     channels::SEARCH_PAUSE,
+    channels::SharedPreviews,
     commands::NOT_DISCORD,
-    render::{chat_profile, found_in, hits_in},
+    render::{chat_profile, found_in, hits_in, with_previews},
     *,
 };
 use crate::chat::{MemberChange, Muting, NotificationChange, NotifyLevel, RelationshipChange};
@@ -16,6 +17,7 @@ pub(super) fn command(
     command: Command,
     discord: Result<&Discord, &str>,
     searches: &Arc<std::sync::atomic::AtomicU64>,
+    previews: &SharedPreviews,
     events: &UnboundedSender<Event>,
 ) -> Option<Command> {
     // Matrix looks for people too.
@@ -325,15 +327,28 @@ pub(super) fn command(
         match (discord, place) {
             (Ok(discord), Some((guild, channel))) => {
                 let (discord, events) = (discord.clone(), events.clone());
+                let previews = previews.clone();
                 tokio::spawn(async move {
-                    let result = match discord.pins(&guild, &channel).await {
-                        Ok(pins) => Ok(found_in(&discord, &room, &pins)),
+                    let pins = match discord.pins(&guild, &channel).await {
+                        Ok(pins) => pins,
                         Err(error) => {
                             tracing::warn!(error = format!("{error:#}"), "could not list pins");
-                            Err(error.to_string())
+                            let result = Err(error.to_string());
+                            let _ = events.send(Event::Pins { room, result });
+                            return;
                         }
                     };
-                    let _ = events.send(Event::Pins { room, result });
+                    // The list shows at once, its pictures as they come.
+                    let mut found = found_in(&discord, &room, &pins);
+                    let _ = events.send(Event::Pins {
+                        room: room.clone(),
+                        result: Ok(found.clone()),
+                    });
+                    with_previews(&discord, &previews, &pins, &mut found).await;
+                    let _ = events.send(Event::Pins {
+                        room,
+                        result: Ok(found),
+                    });
                 });
             }
             (discord, _) => {
@@ -470,12 +485,24 @@ pub(super) fn command(
         match (discord, scope) {
             (Ok(discord), Some((guild, channel))) => {
                 let (discord, events) = (discord.clone(), events.clone());
+                let previews = previews.clone();
                 tokio::spawn(async move {
                     let result = match discord
                         .search(&guild, channel.as_deref(), &query, offset)
                         .await
                     {
-                        Ok(page) => Ok((page.total, hits_in(&discord, &guild, &page.messages))),
+                        Ok(page) => {
+                            let mut hits = hits_in(&discord, &guild, &page.messages);
+                            let mut found: Vec<_> = hits
+                                .iter_mut()
+                                .map(|hit| std::mem::take(&mut hit.message))
+                                .collect();
+                            with_previews(&discord, &previews, &page.messages, &mut found).await;
+                            for (hit, message) in hits.iter_mut().zip(found) {
+                                hit.message = message;
+                            }
+                            Ok((page.total, hits))
+                        }
                         Err(error) => {
                             tracing::warn!(error = format!("{error:#}"), "could not search");
                             Err(error.to_string())
