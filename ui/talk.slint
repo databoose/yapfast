@@ -23,7 +23,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
 import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
-import { PersonRow, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
+import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
@@ -38,7 +38,7 @@ import { ThreadPanel, NewThreadPanel } from "thread.slint";
 
 // Rust sees these, besides TalkWindow.
 export { Theme, Badges } from "theme.slint";
-export { PersonRow } from "voice.slint";
+export { PersonRow, CallLink } from "voice.slint";
 export { ServerRow, RoomRow, FolderServer } from "rail.slint";
 export { PictureStore, Motion } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
@@ -824,6 +824,10 @@ export component TalkWindow inherits Window {
     property <bool> volume-live;
     property <int> voice-volume: 100;
     property <int> stream-volume: 100;
+    function open-call-link(x: length, y: length, width: length, height: length) {
+        root.anchor(x, y, width, height, false);
+        call-link-menu.show();
+    }
     // Someone's menu in a call or under a voice channel, by the channel's
     // room id: their volumes on top, then what their menu offers there.
     property <bool> voice-menu-volume;
@@ -1355,6 +1359,14 @@ export component TalkWindow inherits Window {
     }
     // A message's actions, from its hover bar's "More" button or a right click.
     property <bool> menu-can-react: root.menu-message.can-react && root.composer-enabled;
+    call-link-menu := PopupWindow {
+        width: 320px; height: call-link-content.content-height;
+        x: max(8px, min(root.width - self.width - 8px, root.anchor-x));
+        y: root.anchor-y + root.anchor-height + 4px + self.height <= root.height - 8px
+            ? root.anchor-y + root.anchor-height + 4px : max(8px, root.anchor-y - self.height - 4px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        call-link-content := CallLinkCard { copy(text) => { root.copy-text(text); } }
+    }
     // The volumes sit above the menu, as wide as it. It opens below the
     // pointer, or above it if it doesn't fit; submenus open beside it, as
     // in the context menu.
@@ -1528,6 +1540,7 @@ export component TalkWindow inherits Window {
                     toggle-camera => { root.toggle-camera(); }
                     toggle-share => { root.toggle-share(); }
                     open-share-menu(x, y) => { root.open-share-menu(x, y); }
+                    open-call-link(x, y, width, height) => { root.open-call-link(x, y, width, height); }
                 }
                 // Account panel.
                 account-panel := Rectangle {
@@ -1762,6 +1775,19 @@ export component TalkWindow inherits Window {
                                     root.popover-x = self.absolute-position.x + self.width;
                                     root.popover-y = self.absolute-position.y + self.height;
                                     if root.add-people-open { root.close-add-people(); } else { root.open-add-people(); }
+                                }
+                            }
+                        }
+                        // The call's signal, in the conversation it's in, as in
+                        // Discord's voice panel.
+                        if root.voice-here && root.voice-ready && CallLink.measured: Middle {
+                            Rectangle {
+                                width: 32px; height: 32px;
+                                accessible-role: button; accessible-label: "Voice details";
+                                SignalIcon { width: 20px; height: 20px; quality: CallLink.quality; }
+                                LinkTouch {
+                                    tip-side: 2;
+                                    open(x, y, width, height) => { root.open-call-link(x, y, width, height); }
                                 }
                             }
                         }

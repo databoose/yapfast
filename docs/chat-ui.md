@@ -296,7 +296,9 @@ The window follows Discord's arrangement:
   submenu taller than the window scrolls, and the keys keep their row in
   sight. `src/ui/menus.rs` builds a menu's rows with each row's submenu, and
   ticks a box when it's chosen.
-- A dock across the rail and sidebar: the voice panel, then the account panel
+- A dock across the rail and sidebar: the voice panel, whose signal icon
+  and status show a Discord call's ping on hover and its connection details
+  on a click (see [Connection details](discord.md#connection-details)), then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
   theme, audio devices, message text size, clock and link previews, notifications,
   sounds, reconnect, sign out). A caret beside mute and deafen opens a

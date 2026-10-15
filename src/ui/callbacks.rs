@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     super::gifs::bind(window, adapter);
+    super::call_link::bind(window, adapter);
     // UI bindings can request images while refresh borrows the adapter.
     // Deliver their requests in one batch after the current UI work.
     let pending = Rc::new(RefCell::new(HashSet::new()));

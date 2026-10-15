@@ -126,6 +126,62 @@ pub enum SharePhase {
     Live,
 }
 
+/// How the call's connection is doing, as Discord's client shows it: the
+/// pings over the last few minutes, oldest first, in milliseconds; the
+/// percentage of this account's packets lost on the way; and the voice
+/// privacy code, 30 digits, while the call is end-to-end encrypted.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkStats {
+    pub pings: Vec<u16>,
+    pub loss: Option<f32>,
+    pub privacy_code: Option<String>,
+}
+
+/// Reads the call's [`LinkStats`], which the call measures all along and
+/// the UI copies out only while it shows them.
+#[derive(Clone)]
+pub struct Link(Arc<dyn Fn() -> LinkStats + Send + Sync>);
+
+impl Link {
+    pub fn new(read: impl Fn() -> LinkStats + Send + Sync + 'static) -> Self {
+        Self(Arc::new(read))
+    }
+
+    pub fn read(&self) -> LinkStats {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for Link {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Link")
+    }
+}
+
+/// How good the call's connection is, as Discord's client grades it for its
+/// signal icon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quality {
+    #[default]
+    Unknown,
+    Fine,
+    Average,
+    Bad,
+}
+
+impl Quality {
+    /// Bad past 500 ms or 10% of packets lost, average past 250 ms or 5%.
+    pub fn of(ping: Option<u16>, loss: Option<f32>) -> Self {
+        let loss = loss.unwrap_or(0.0);
+        match ping {
+            None => Self::Unknown,
+            Some(ping) if ping > 500 || loss > 10.0 => Self::Bad,
+            Some(ping) if ping > 250 || loss > 5.0 => Self::Average,
+            Some(_) => Self::Fine,
+        }
+    }
+}
+
 /// This account's camera in a call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CameraPhase {
@@ -164,6 +220,12 @@ pub struct State {
     pub camera_phase: CameraPhase,
     /// The call carries camera video, so the camera can be turned on.
     pub can_film: bool,
+    /// The call's connection, while it measures how it's doing, and how
+    /// good it is.
+    pub link: Option<Link>,
+    pub link_quality: Quality,
+    /// Media leaves end-to-end encrypted.
+    pub end_to_end: bool,
 }
 
 impl Default for State {
@@ -188,6 +250,9 @@ impl Default for State {
             quality: StreamQuality::default(),
             camera_phase: CameraPhase::Off,
             can_film: false,
+            link: None,
+            link_quality: Quality::Unknown,
+            end_to_end: false,
         }
     }
 }
@@ -207,6 +272,9 @@ impl State {
         self.watching = None;
         self.camera_phase = CameraPhase::Off;
         self.can_film = false;
+        self.link = None;
+        self.link_quality = Quality::Unknown;
+        self.end_to_end = false;
     }
 }
 

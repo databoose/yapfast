@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     call_connection::{self, Order, Sending},
+    call_stats::CallStats,
     call_video::{self, CameraSender, VideoFrame},
     ready::PRIVATE,
     rtp,
@@ -48,6 +49,7 @@ pub struct Call {
     server_id: String,
     /// Everyone else's camera frames, until taken.
     video: Option<channel::Receiver<VideoFrame>>,
+    stats: Arc<CallStats>,
 }
 
 /// Cameras' frames waiting to be decoded; beyond this many, decoding is
@@ -72,8 +74,9 @@ impl Call {
         let sending = Arc::new(Mutex::new(None));
         let identity = identity(server, server_id, channel_id)?;
         let (frames, video) = channel::sync_channel(VIDEO_BACKLOG);
+        let stats = Arc::new(CallStats::default());
         let (orders, connected) =
-            call_connection::start(identity, listener, sending.clone(), frames)?;
+            call_connection::start(identity, listener, sending.clone(), frames, stats.clone())?;
         connected
             .await
             .context("the call stopped while connecting")?
@@ -83,6 +86,7 @@ impl Call {
             sending,
             server_id: server_id.to_owned(),
             video: Some(video),
+            stats,
         })
     }
 
@@ -129,6 +133,11 @@ impl Call {
     /// quality from 0 to 100, for a tile `pixels` in size. No others come.
     pub fn want_video(&mut self, wants: HashMap<u64, (u8, u32)>) {
         let _ = self.orders.send(Order::Want(wants));
+    }
+
+    /// How the call's connection is doing, as the call measures it.
+    pub fn stats(&self) -> Arc<CallStats> {
+        self.stats.clone()
     }
 
     /// Everyone else's camera frames, as they come, for one taker.

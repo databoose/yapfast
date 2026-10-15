@@ -248,6 +248,49 @@ linking, particularly with MSVC on Windows, and now there's one. The Windows
 build gave `opus2` an empty library so that it used libwebrtc's; with `opus2`
 gone, it needs none.
 
+### Connection details
+
+As in Discord's voice panel, the dock's status has a signal icon graded by
+the call's connection, and hovering it or the status shows the last ping
+("42 ms"). The same icon sits in the call's conversation header. A click on
+either opens the details, as Discord's popout from its panel has them: a
+Connection tab with a graph of the ping over the last five minutes, the
+average and last ping, and the outbound packet loss rate; and while the call
+is end-to-end encrypted with someone else in it, a Privacy tab with the voice
+privacy code in six groups of five digits, to compare with the others, and
+a button that copies it. Discord's client shows its graph only in developer
+mode; Talk shows it to everyone. A notice at the bottom says "End-to-end
+encrypted" while DAVE encrypts the call's frames, and "Secure connection"
+otherwise, as Discord's does; the dock's detail line says the same. It said
+end-to-end encrypted before DAVE was ready, and on the fake, which has none.
+
+The ping is the voice gateway's heartbeat round trip, from op 3's nonce,
+the time it was sent, until op 6 echoes it, as Discord's web client
+measures it. Heartbeats go every 5 s rather than the 13.75 s the server
+asks, as that client caps them, and the call keeps the last 60 pings, 120
+bytes. The average is over all of them; Discord's client averages its
+oldest 20. The loss rate comes from the RTCP receiver reports Discord's
+server sends about this account's audio and camera: the packets reported
+lost between two reports, out of those expected, summed over both, as
+Discord's client sums its outbound streams. It's 0 while nothing is sent,
+and unknown until two reports came. The grades are Discord's: bad past
+500 ms or 10% lost, average past 250 ms or 5%, fine below; the icon is
+grey until the first ping.
+
+The call's thread writes these into `talk_discord::call_stats::CallStats`.
+Talk copies the pings out only when the tooltip opens and each second while
+the popout is open. The state the UI refreshes from changes only when the
+grade or the encryption does. The fake answers heartbeats and sends a
+receiver report about a call's audio every 50 packets;
+`POST /_control/voice-link?ping=300&loss=7` slows its ACKs and reports
+loss, and `talks_to_the_fake_server` checks both are measured.
+
+Matrix calls don't have these yet. LiveKit's SDK measures its signal
+connection's round trip but doesn't expose it, and `Room::get_stats`
+serialises all of WebRTC's statistics to JSON and parses them back, too much
+to run every few seconds for a graph. A Matrix call's detail line says
+"End-to-end encrypted" while LiveKit encrypts its frames.
+
 ### How calls carry video
 
 Camera video in calls needed a choice: add video to songbird, or move calls

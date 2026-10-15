@@ -4,6 +4,7 @@
 pub mod api;
 pub mod cache;
 mod call_connection;
+pub mod call_stats;
 pub mod call_video;
 pub mod captcha;
 pub mod client;

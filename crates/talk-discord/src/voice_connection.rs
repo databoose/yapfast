@@ -435,6 +435,17 @@ impl Connection {
         .await
     }
 
+    /// The round trip a heartbeat ACK (op 6) measures: from the
+    /// heartbeat's nonce, the time it left, until now.
+    pub fn acked(data: &Value) -> Option<std::time::Duration> {
+        let sent = data["t"].as_u64()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        Some(std::time::Duration::from_millis(now.checked_sub(sent)?))
+    }
+
     /// Answers DAVE; other messages go back to the caller.
     pub async fn handle(&mut self, message: Incoming) -> Result<Option<(u64, Value)>> {
         match message {

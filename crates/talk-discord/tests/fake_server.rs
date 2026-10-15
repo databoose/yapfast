@@ -1209,6 +1209,21 @@ async fn talks_to_the_fake_server() {
             >= before + 10
     })
     .await;
+    // The call measures its connection, as Discord's voice panel shows it:
+    // the heartbeats' round trips, and the share of this account's audio
+    // Discord's receiver reports say was lost.
+    post_control(server, "/_control/voice-link?loss=10", "");
+    track.play().unwrap();
+    say(&microphone, 120).await;
+    track.pause().unwrap();
+    post_control(server, "/_control/voice-link", "");
+    let stats = call.stats();
+    until("a ping and the loss were measured", || {
+        let read = stats.read();
+        !read.pings.is_empty() && read.loss.is_some_and(|loss| (9.0..=11.0).contains(&loss))
+    })
+    .await;
+    assert!(!stats.read().end_to_end, "the fake has no DAVE");
     cameras_in_call(
         server,
         &discord,

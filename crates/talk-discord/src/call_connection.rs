@@ -22,6 +22,7 @@ use tokio::{
 };
 
 use crate::{
+    call_stats::{CallStats, PING_EVERY, Reported},
     call_video::{self, Camera, Receiving, VideoFrame},
     dave::Dave,
     opus, rtp,
@@ -85,6 +86,7 @@ pub(crate) fn start(
     listener: Arc<dyn Listener>,
     sending: Arc<Mutex<Option<Sending>>>,
     video: channel::SyncSender<VideoFrame>,
+    stats: Arc<CallStats>,
 ) -> Result<(mpsc::UnboundedSender<Order>, oneshot::Receiver<Result<()>>)> {
     let (orders, ordered) = mpsc::unbounded_channel();
     let (ready, connected) = oneshot::channel();
@@ -101,7 +103,9 @@ pub(crate) fn start(
                     return;
                 }
             };
-            runtime.block_on(run(identity, listener, sending, video, ordered, ready));
+            runtime.block_on(run(
+                identity, listener, sending, video, stats, ordered, ready,
+            ));
         })?;
     Ok((orders, connected))
 }
@@ -118,6 +122,7 @@ async fn run(
     listener: Arc<dyn Listener>,
     sending: Arc<Mutex<Option<Sending>>>,
     video: channel::SyncSender<VideoFrame>,
+    stats: Arc<CallStats>,
     mut orders: mpsc::UnboundedReceiver<Order>,
     ready: oneshot::Sender<Result<()>>,
 ) {
@@ -131,7 +136,7 @@ async fn run(
             return;
         }
     };
-    let mut media = match Media::new(video) {
+    let mut media = match Media::new(video, stats) {
         Ok(media) => media,
         Err(error) => {
             listener.disconnected(&format!("{error:#}"));
@@ -236,10 +241,14 @@ struct Media {
     /// This account's camera, while it films, and everyone else's.
     filming: Option<call_video::Sending>,
     watching: Receiving,
+    /// How the connection is doing, for Talk to show, and what Discord's
+    /// last receiver reports said about this account's packets.
+    stats: Arc<CallStats>,
+    reported: Reported,
 }
 
 impl Media {
-    fn new(video: channel::SyncSender<VideoFrame>) -> Result<Self> {
+    fn new(video: channel::SyncSender<VideoFrame>, stats: Arc<CallStats>) -> Result<Self> {
         Ok(Self {
             encoder: opus::Encoder::new(2, opus::Application::Audio, BITRATE)?,
             pcm: vec![0.0; FRAME * 2],
@@ -254,6 +263,8 @@ impl Media {
             encrypting: None,
             filming: None,
             watching: Receiving::new(video),
+            stats,
+            reported: Reported::default(),
         })
     }
 
@@ -266,6 +277,7 @@ impl Media {
         self.speaking = false;
         self.silent = 0;
         self.watching.reset();
+        self.reported.reset();
     }
 
     async fn run(
@@ -279,7 +291,9 @@ impl Media {
             self.learn(op, &data);
             self.watching.learn(op, &data);
         }
-        let interval = connection.interval;
+        // Each heartbeat measures the ping, which Discord's web client
+        // measures this often.
+        let interval = connection.interval.min(PING_EVERY);
         let mut heartbeat = tokio::time::interval_at(Instant::now() + interval, interval);
         let mut ticks = tokio::time::interval(Duration::from_millis(20));
         // Windows wakes timers on its 15.6 ms clock, so a 20 ms tick often
@@ -336,14 +350,23 @@ impl Media {
                         self.hear(listener);
                         self.watching.repair(connection).await?;
                     }
-                    _ = heartbeat.tick() => connection.heartbeat().await?,
+                    _ = heartbeat.tick() => {
+                        connection.heartbeat().await?;
+                        self.secure(connection);
+                    }
                     _ = keepalive.tick() => {
                         let mut packet = [0u8; 8];
                         packet[..4].copy_from_slice(&connection.ssrc.to_be_bytes());
                         connection.udp.send(&packet).await?;
                     }
                     message = receive(&mut connection.ws, &mut connection.seq) => {
-                        if let Some((op, data)) = connection.handle(message?).await? {
+                        let handled = connection.handle(message?).await?;
+                        // DAVE's messages change the group, and its code.
+                        self.secure(connection);
+                        if let Some((op, data)) = handled {
+                            if op == 6 && let Some(round_trip) = Connection::acked(&data) {
+                                self.stats.ping(round_trip);
+                            }
                             self.learn(op, &data);
                             if self.watching.learn(op, &data) {
                                 self.watching.ask(connection).await?;
@@ -358,6 +381,13 @@ impl Media {
         }
         .await;
         result.unwrap_or_else(Ended::Dropped)
+    }
+
+    /// Notes whether frames leave end-to-end encrypted, and the group's
+    /// privacy code.
+    fn secure(&self, connection: &Connection) {
+        self.stats
+            .encryption(connection.dave.encrypting(), connection.dave.privacy_code());
     }
 
     /// Learns whose audio each SSRC carries from their speaking messages
@@ -491,13 +521,16 @@ impl Media {
     }
 
     /// Queues a received Opus packet for its speaker, hands a camera's
-    /// packet on, and answers RTCP about this account's camera.
+    /// packet on, and reads RTCP about this account's packets: their loss,
+    /// and what the camera's viewers ask of it.
     async fn receive(&mut self, connection: &mut Connection, datagram: &[u8]) -> Result<()> {
         if rtp::is_rtcp(datagram) {
-            if let Some(filming) = self.filming.as_mut()
-                && let Some(rtcp) = connection.transport.open(datagram, rtp::RTCP_CLEAR)
-            {
-                filming.feedback(connection, &rtcp).await?;
+            if let Some(rtcp) = connection.transport.open(datagram, rtp::RTCP_CLEAR) {
+                let ours = [connection.ssrc, connection.video];
+                self.reported.learn(&self.stats, &rtcp, &ours);
+                if let Some(filming) = self.filming.as_mut() {
+                    filming.feedback(connection, &rtcp).await?;
+                }
             }
             return Ok(());
         }
@@ -716,7 +749,7 @@ mod tests {
     #[test]
     fn learns_whose_audio_from_speaking_and_video_messages() {
         let (frames, _) = channel::sync_channel(1);
-        let mut media = Media::new(frames).unwrap();
+        let mut media = Media::new(frames, Arc::default()).unwrap();
         media.learn(5, &json!({"user_id": "7", "ssrc": 100, "speaking": 1}));
         // Already talking when Talk joined: only op 12 names their audio.
         media.learn(
