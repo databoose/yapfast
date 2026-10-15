@@ -679,10 +679,21 @@ function wireAttachment(file: File, origin: string) {
   };
 }
 
-function pngSize(data: Uint8Array): { width: number; height: number } | undefined {
-  if (data.length < 24 || data[0] !== 137 || data[1] !== 80) return undefined;
+/** A PNG's, GIF's or AVIF's size, as Discord gives an image attachment's. */
+function imageSize(data: Uint8Array): { width: number; height: number } | undefined {
   const view = new DataView(data.buffer, data.byteOffset);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
+  if (data.length >= 24 && data[0] === 137 && data[1] === 80) {
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+  if (data.length >= 10 && new TextDecoder().decode(data.subarray(0, 3)) === "GIF") {
+    return { width: view.getUint16(6, true), height: view.getUint16(8, true) };
+  }
+  // An AVIF says its size in its `ispe` box, after a version and flags.
+  const ispe = Buffer.from(data.subarray(0, 4096)).indexOf("ispe");
+  if (ispe > 0 && data.length >= ispe + 16) {
+    return { width: view.getUint32(ispe + 8), height: view.getUint32(ispe + 12) };
+  }
+  return undefined;
 }
 
 function contentType(filename: string): string {
@@ -693,6 +704,7 @@ function contentType(filename: string): string {
     jpeg: "image/jpeg",
     gif: "image/gif",
     webp: "image/webp",
+    avif: "image/avif",
     mp4: "video/mp4",
     webm: "video/webm",
     mov: "video/quicktime",
@@ -3251,7 +3263,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
             filename: upload.filename,
             contentType: contentType(upload.filename),
             data: upload.data,
-            ...pngSize(upload.data),
+            ...imageSize(upload.data),
           }),
         );
       }

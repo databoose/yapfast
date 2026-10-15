@@ -1,6 +1,9 @@
 //! Pictures: thumbnails of staged files, the picture cache, fitting and
 //! animating pictures, blurred spoilers, galleries, and the QR code for linking.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+
 use super::*;
 
 /// The readable part of a Matrix ID: `@alice:example.org` becomes `alice`.
@@ -321,9 +324,17 @@ thread_local! {
 /// How long an animation keeps its decoder after its last frame showed, as
 /// when its row scrolled away.
 const IDLE_FRAMES: Duration = Duration::from_secs(1);
+/// How many places one animation plays from at once, each at its own frame,
+/// as the same GIF posted twice does.
+const CURSORS: usize = 4;
+/// How many frames a run may be behind the frame asked for and still give
+/// it, its decoder passing over the ones between; further back, the asker
+/// is another place showing the animation at its own frame.
+const CATCH_UP: usize = 4;
 
-/// An animation's frames, decoded in order as Slint asks for them: only the
-/// one showing is kept, and only while it shows.
+/// An animation's frames, decoded in order off the UI thread as Slint asks
+/// for them. Each place it shows at its own frame has its own decoder, so
+/// two of them don't send each other back to the start.
 struct Frames {
     picture: Arc<Picture>,
     decoding: RefCell<Decoding>,
@@ -331,12 +342,100 @@ struct Frames {
 
 #[derive(Default)]
 struct Decoding {
-    /// The frames still to come.
-    frames: Option<Box<dyn Iterator<Item = Vec<u8>>>>,
-    /// The index of the next.
+    cursors: Vec<Cursor>,
+    used: Option<Duration>,
+}
+
+type Frame = (usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>);
+
+/// One run around an animation's frames. Its thread decodes them in order
+/// and around again, one ahead of the one showing, passing over those
+/// before the frame asked for, and stops when the run is dropped.
+struct Cursor {
+    coming: mpsc::Receiver<Frame>,
+    wanted: Arc<AtomicUsize>,
+    /// The frame to come next.
     next: usize,
     shown: Option<(usize, slint::Image)>,
-    used: Option<Duration>,
+    used: Duration,
+}
+
+impl Cursor {
+    fn start(picture: &Arc<Picture>, row: usize, now: Duration) -> Self {
+        let (send, coming) = mpsc::sync_channel(0);
+        let wanted = Arc::new(AtomicUsize::new(row));
+        let decoding = {
+            let picture = picture.clone();
+            let wanted = wanted.clone();
+            std::thread::Builder::new()
+                .name("talk-frames".into())
+                .spawn(move || decode_frames(&picture, &wanted, &send))
+        };
+        if let Err(error) = decoding {
+            tracing::warn!(%error, "could not start decoding an animation");
+        }
+        Self {
+            coming,
+            wanted,
+            next: row,
+            shown: None,
+            used: now,
+        }
+    }
+
+    /// Takes the frames that came, up to `row`, showing the last; one not
+    /// decoded yet leaves the one before showing. Frames passed over aren't
+    /// made into images.
+    fn advance(&mut self, row: usize, count: usize) {
+        self.wanted.store(row, Ordering::Relaxed);
+        let mut last = None;
+        while not_past(self.next, row, count) {
+            let Ok((index, frame)) = self.coming.try_recv() else {
+                break;
+            };
+            self.next = (index + 1) % count;
+            last = Some((index, frame));
+        }
+        if let Some((index, frame)) = last {
+            self.shown = Some((index, slint::Image::from_rgba8(frame)));
+        }
+    }
+}
+
+/// Sends `picture`'s frames in order and around again, from the one wanted,
+/// until nothing takes them.
+fn decode_frames(picture: &Picture, wanted: &AtomicUsize, send: &mpsc::SyncSender<Frame>) {
+    let count = picture
+        .animation
+        .as_ref()
+        .map_or(0, |animation| animation.delays.len());
+    loop {
+        // A run that sends nothing would never send anything.
+        let mut sent = false;
+        for (index, rgba) in picture.frames().enumerate() {
+            let wanted = wanted.load(Ordering::Relaxed);
+            if index != wanted && not_past(index, wanted, count) {
+                continue;
+            }
+            let frame =
+                slint::SharedPixelBuffer::clone_from_slice(&rgba, picture.width, picture.height);
+            // Not held twice while it waits to be taken.
+            drop(rgba);
+            if send.send((index, frame)).is_err() {
+                return;
+            }
+            sent = true;
+        }
+        if !sent {
+            return;
+        }
+    }
+}
+
+/// Whether frame `at` comes before `row` or is it, going around `count`
+/// frames: less than half the way round from it.
+fn not_past(at: usize, row: usize, count: usize) -> bool {
+    (row + count - at) % count < count.div_ceil(2)
 }
 
 impl Model for Frames {
@@ -350,14 +449,14 @@ impl Model for Frames {
     }
 
     fn row_data(&self, row: usize) -> Option<slint::Image> {
+        if row >= self.row_count() {
+            return None;
+        }
         let now = Duration::from_millis(i_slint_core::animations::current_tick().0);
         let image = {
             let mut decoding = self.decoding.borrow_mut();
             decoding.used = Some(now);
-            match &decoding.shown {
-                Some((shown, image)) if *shown == row => Some(image.clone()),
-                _ => self.decode(&mut decoding, row),
-            }
+            self.frame(&mut decoding, row, now)
         };
         FRAME_SWEEP.with(|timer| {
             if !timer.running() {
@@ -370,7 +469,7 @@ impl Model for Frames {
                 });
             }
         });
-        image
+        Some(image)
     }
 
     fn model_tracker(&self) -> &dyn slint::ModelTracker {
@@ -379,40 +478,57 @@ impl Model for Frames {
 }
 
 impl Frames {
-    /// Frame `row`, decoding on from the last or again from the first. A
-    /// frame that fails leaves the last one showing.
-    fn decode(&self, decoding: &mut Decoding, row: usize) -> Option<slint::Image> {
-        if decoding.frames.is_none() || decoding.next > row {
-            decoding.frames = Some(self.picture.frames());
-            decoding.next = 0;
-        }
-        let frames = decoding.frames.as_mut()?;
-        while decoding.next < row {
-            frames.next();
-            decoding.next += 1;
-        }
-        let Some(rgba) = frames.next() else {
-            return Some(
-                decoding
+    /// Frame `row`, from the run showing it or the nearest one coming up to
+    /// it; otherwise from a run of its own started there, in place of the
+    /// one used longest ago if there are enough. Until a frame is decoded
+    /// the one before shows, or the still.
+    fn frame(&self, decoding: &mut Decoding, row: usize, now: Duration) -> slint::Image {
+        let count = self.row_count();
+        let cursors = &mut decoding.cursors;
+        let at = cursors
+            .iter()
+            .position(|cursor| {
+                cursor
                     .shown
                     .as_ref()
-                    .map_or_else(|| picture(&self.picture), |(_, image)| image.clone()),
-            );
-        };
-        decoding.next += 1;
-        let image = slint::Image::from_rgba8(
-            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                &rgba,
-                self.picture.width,
-                self.picture.height,
-            ),
-        );
-        decoding.shown = Some((row, image.clone()));
-        Some(image)
+                    .is_some_and(|(shown, _)| *shown == row)
+            })
+            .or_else(|| {
+                cursors
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cursor)| not_past(cursor.next, row, count))
+                    .map(|(at, cursor)| (at, (row + count - cursor.next) % count))
+                    .filter(|(_, behind)| *behind <= CATCH_UP)
+                    .min_by_key(|(_, behind)| *behind)
+                    .map(|(at, _)| at)
+            });
+        let at = at.unwrap_or_else(|| {
+            let fresh = Cursor::start(&self.picture, row, now);
+            if cursors.len() < CURSORS {
+                cursors.push(fresh);
+                cursors.len() - 1
+            } else {
+                let at = cursors
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, cursor)| cursor.used)
+                    .map_or(0, |(at, _)| at);
+                cursors[at] = fresh;
+                at
+            }
+        });
+        let cursor = &mut cursors[at];
+        cursor.used = now;
+        cursor.advance(row, count);
+        cursor
+            .shown
+            .as_ref()
+            .map_or_else(|| picture(&self.picture), |(_, image)| image.clone())
     }
 }
 
-/// Lets animations that stopped showing give up their decoders and frames.
+/// Lets runs that stopped showing give up their decoders and frames.
 fn sweep(now: Duration) -> bool {
     let mut active = false;
     FRAMES.with_borrow(|cache| {
@@ -422,10 +538,10 @@ fn sweep(now: Duration) -> bool {
                 active = true;
                 continue;
             };
-            if decoding
-                .used
-                .is_some_and(|used| now.saturating_sub(used) >= IDLE_FRAMES)
-            {
+            decoding
+                .cursors
+                .retain(|cursor| now.saturating_sub(cursor.used) < IDLE_FRAMES);
+            if decoding.cursors.is_empty() {
                 *decoding = Decoding::default();
             }
             active |= decoding.used.is_some();
@@ -698,11 +814,10 @@ mod tests {
         let (frames, _) = animation(&picture);
         let shown = frames.row_data(0).unwrap();
         let model = FRAMES.with_borrow(|cache| cache.last().unwrap().upgrade().unwrap());
-        assert!(model.decoding.borrow().frames.is_some());
+        assert_eq!(model.decoding.borrow().cursors.len(), 1);
         i_slint_backend_testing::mock_elapsed_time(IDLE_FRAMES * 2);
         slint::platform::update_timers_and_animations();
-        assert!(model.decoding.borrow().frames.is_none());
-        assert!(model.decoding.borrow().shown.is_none());
+        assert!(model.decoding.borrow().cursors.is_empty());
         FRAME_SWEEP.with(|timer| assert!(!timer.running()));
         assert_eq!(shown.size(), frames.row_data(0).unwrap().size());
     }
@@ -718,23 +833,40 @@ mod tests {
         let decoded: Vec<_> = picture.frames().collect();
         let (frames, delays) = animation(&picture);
         assert_eq!((frames.row_count(), delays.row_count()), (10, 10));
-        let pixels = |row: usize| {
-            let image = frames.row_data(row).unwrap();
-            image.to_rgba8().unwrap().as_bytes().to_vec()
+        // Frames decode off the UI thread; until one comes, the one before shows.
+        let show = |row: usize| {
+            let started = std::time::Instant::now();
+            loop {
+                let image = frames.row_data(row).unwrap();
+                if image.to_rgba8().unwrap().as_bytes() == decoded[row] {
+                    break;
+                }
+                assert!(started.elapsed() < Duration::from_secs(5), "frame {row}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
         };
-        // In turn, out of turn, and around again from the first.
-        for row in [0, 1, 1, 2, 7, 3, 0, 9] {
-            assert_eq!(pixels(row), decoded[row], "frame {row}");
+        let model = FRAMES.with_borrow(|cache| cache.last().unwrap().upgrade().unwrap());
+        let runs = || model.decoding.borrow().cursors.len();
+        // Played in turn, around and around, by one decoder, which passes
+        // over a frame or two that showed too briefly.
+        for row in (0..10).chain(0..10).chain([2, 5, 6]) {
+            show(row);
         }
+        assert_eq!(runs(), 1);
+        // Another place showing it at its own frame gets a decoder of its own.
+        show(3);
+        assert_eq!(runs(), 2);
+        show(7);
+        show(4);
+        assert_eq!(runs(), 2);
+        assert!(frames.row_data(10).is_none());
         // A row built again shares them.
         assert!(frames == animation(&picture).0);
-        // Idle, it gives up its decoder, and decodes again when it shows.
-        let model = FRAMES.with_borrow(|cache| cache[0].upgrade().unwrap());
+        // Idle, it gives up its decoders, and decodes again when it shows.
         i_slint_backend_testing::mock_elapsed_time(IDLE_FRAMES * 2);
         slint::platform::update_timers_and_animations();
-        assert!(
-            model.decoding.borrow().frames.is_none() && model.decoding.borrow().shown.is_none()
-        );
-        assert_eq!(pixels(4), decoded[4]);
+        assert_eq!(runs(), 0);
+        show(4);
+        assert_eq!(runs(), 1);
     }
 }
