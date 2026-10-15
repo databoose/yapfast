@@ -17,17 +17,19 @@ pub(super) fn friend_offer(relation: Relation) -> i32 {
     }
 }
 
-/// The custom status as the account panel shows it: its emoji, then its words.
+/// The custom status as the account panel shows it: its emoji, then its words
+/// on one line.
 pub(super) fn status_line(status: &talk_core::chat::CustomStatus) -> String {
     let emoji = match (&status.emoji, &status.emoji_id) {
         (_, Some(id)) => custom_emoji::glyph(id).map(String::from),
         (Some(emoji), None) => Some(emoji.clone()),
         (None, None) => None,
     };
+    let text = one_line(&status.text);
     match emoji {
-        Some(emoji) if status.text.is_empty() => emoji,
-        Some(emoji) => format!("{emoji} {}", status.text),
-        None => status.text.clone(),
+        Some(emoji) if text.is_empty() => emoji,
+        Some(emoji) => format!("{emoji} {text}"),
+        None => text,
     }
 }
 
