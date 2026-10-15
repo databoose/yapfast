@@ -1043,8 +1043,14 @@ finds GIFs through Klipy, and Talk asks Discord as its desktop client does:
   changes made elsewhere. A star at a tile's top right, or at the top left of
   a GIF in a message, adds or takes one out; a new one gets the highest
   order, and the Favorites view lists the newest first, searchable by name.
-  A message's GIF is its gifv embed's page, or an attached `.gif` without
-  the CDN's signature.
+  A message's picture has the star when it moves: a gifv embed, or an
+  attachment or image embed whose picture Discord flags `IS_ANIMATED` or
+  serves as `image/gif`, or one named `.gif`. As in Discord's client, the
+  star keys it by the gifv embed's page, an image embed's own link, as when
+  a favourite saved under a direct link to its file is sent, or the
+  attachment's address. An address on Discord's CDN or media proxy under
+  `/attachments/` or `/ephemeral-attachments/` loses its `ex`, `is` and
+  `hm`, the signature that expires; any other stays as it is.
 - Favourites show at once, without waiting on Discord or the GIF providers.
   Talk keeps the list on disk, shows it when the picker opens and replaces
   it when Discord answers; a star used meanwhile shows at once and is

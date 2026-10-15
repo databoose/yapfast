@@ -105,7 +105,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - A GIF picker next to the emoji button, on Discord: a search over Klipy,
   trending terms and favourites, as in Discord's client. A click sends a GIF,
   Shift and a click puts it in the message, and a star keeps it among the
-  favourites; GIFs in messages have the star too. See
+  favourites; GIFs and moving pictures in messages have the star too. See
   [Discord](discord.md#gifs).
 - GIFs, animated emoji, stickers and the picker's tiles play only while
   Talk's window has the focus, as in Discord: on another screen they hold

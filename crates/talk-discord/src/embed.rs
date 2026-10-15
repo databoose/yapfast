@@ -77,7 +77,8 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
         view_url: scaled_url(value, VIEW_WIDTH, VIEW_HEIGHT, animated),
         still_url: None,
         video_url: None,
-        page_url: None,
+        link_url: None,
+        animated: crate::message::animated(value),
         shown,
         spoiler: false,
     })
@@ -89,7 +90,8 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
 /// the video can't play. The file is the video, by its own name. Without a
 /// video the proxy has, the picture plays, if it moves.
 fn gif(picture: &mut Attachment, embed: &Value) {
-    picture.page_url = embed["url"].as_str().map(str::to_owned);
+    picture.link_url = embed["url"].as_str().map(str::to_owned);
+    picture.animated = true;
     let video = &embed["video"];
     if let Some(proxy) = video["proxy_url"].as_str() {
         picture.still_url = picture.preview_url.replace(proxy.to_owned());
@@ -139,6 +141,13 @@ pub fn parse(embeds: &Value) -> Parsed {
                 if let Some(mut picture) = picture(source, Shown::Message, false) {
                     if kind == "gifv" {
                         gif(&mut picture, embed);
+                    } else if picture.animated {
+                        // A moving picture is kept among the favourites by
+                        // its own address, as Discord's client keeps it.
+                        picture.link_url = source["url"]
+                            .as_str()
+                            .or(embed["url"].as_str())
+                            .map(str::to_owned);
                     }
                     parsed.pictures.push(picture);
                     parsed.hides.extend(url);
@@ -300,7 +309,38 @@ mod tests {
         assert_eq!(gif.view_url.as_deref(), Some(mp4));
         assert!(gif.still_url.as_deref().unwrap().contains("cat.png?"));
         assert_eq!((gif.name.as_str(), gif.url.as_str()), ("cat.mp4", mp4));
+        assert_eq!(gif.link_url.as_deref(), Some("https://tenor.com/view/cat"));
+        assert!(gif.animated);
         assert_eq!(parsed.hides, ["https://tenor.com/view/cat"]);
+    }
+
+    #[test]
+    fn linked_pictures_keep_their_link_when_they_move() {
+        let animated = |name: &str, flags: u64| {
+            let mut picture = proxied(name, 220, 165);
+            picture["flags"] = json!(flags);
+            json!({"type": "image", "url": format!("https://example.com/{name}"), "thumbnail": picture})
+        };
+        let parsed = parse(&json!([
+            animated("wave.webp", 32),
+            animated("still.png", 0)
+        ]));
+        let shown: Vec<_> = parsed
+            .pictures
+            .iter()
+            .map(|picture| (picture.animated, picture.link_url.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [(true, Some("https://example.com/wave.webp")), (false, None)]
+        );
+        assert_eq!(
+            parsed.hides,
+            [
+                "https://example.com/wave.webp",
+                "https://example.com/still.png"
+            ]
+        );
     }
 
     #[test]

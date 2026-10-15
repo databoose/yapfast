@@ -42,6 +42,15 @@ const STICKER_SIZE: u32 = 160;
 
 /// The attachment flag that marks a spoiler.
 const IS_SPOILER: u64 = 1 << 3;
+/// The flag of an attachment, or an embed's picture, that moves.
+const IS_ANIMATED: u64 = 1 << 5;
+
+/// Whether an attachment or an embed's picture moves: Discord marks it
+/// animated, or it's a GIF.
+pub(crate) fn animated(media: &Value) -> bool {
+    media["flags"].as_u64().unwrap_or_default() & IS_ANIMATED != 0
+        || media["content_type"].as_str() == Some("image/gif")
+}
 
 /// A page of a channel's history, oldest first.
 #[derive(Debug)]
@@ -154,9 +163,14 @@ pub struct Attachment {
     /// attached video, or a link's through the media proxy.
     #[serde(default)]
     pub video_url: Option<String>,
-    /// The page of a GIF linked on its own, which favourites keep it by.
+    /// The address a GIF or moving picture linked on its own was sent as,
+    /// which Discord's client keeps it among the favourites by: a GIF's page,
+    /// or the picture's own address.
+    #[serde(default, alias = "page_url")]
+    pub link_url: Option<String>,
+    /// It moves: Discord marks it animated, or it's a GIF.
     #[serde(default)]
-    pub page_url: Option<String>,
+    pub animated: bool,
     pub shown: Shown,
     /// Marked as a spoiler: by a name starting `SPOILER_`, or by its flags.
     pub spoiler: bool,
@@ -428,7 +442,8 @@ pub fn parse(value: &Value) -> Option<Message> {
                     .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT, true))
                     .flatten(),
                 video_url: video.then(|| url.clone()),
-                page_url: None,
+                link_url: None,
+                animated: image && animated(attachment),
                 url,
                 still_url: None,
                 shown: Shown::Message,
@@ -492,7 +507,8 @@ pub fn parse(value: &Value) -> Option<Message> {
             view_url: Some(url),
             still_url: None,
             video_url: None,
-            page_url: None,
+            link_url: None,
+            animated: false,
             shown: Shown::Sticker,
             spoiler: false,
         });

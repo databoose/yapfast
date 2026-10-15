@@ -275,43 +275,77 @@ fn thumbnail(url: &str, download: &std::path::Path, width: u32) -> Option<PathBu
 }
 
 /// A message's picture as a GIF to keep among the favourites, as Discord's
-/// client offers it: a linked GIF by its page, or an attached `.gif` by its
-/// address without the signature that expires.
+/// client offers it on any picture that moves: by the address it was linked
+/// by, a GIF's page or the picture's own, or an attached file's address.
 pub(crate) fn favorite_gif(attachment: &talk_discord::message::Attachment) -> Option<Gif> {
-    let (width, height) = attachment.dimensions.unwrap_or_default();
-    let (url, src) = if let Some(page) = &attachment.page_url {
-        (page.clone(), attachment.url.clone())
-    } else if attachment.image && attachment.name.to_lowercase().ends_with(".gif") {
-        let unsigned = unsigned(&attachment.url);
-        (unsigned.clone(), unsigned)
-    } else {
+    // Messages kept before Talk knew what moves have the name to go by.
+    let moves = attachment.animated
+        || attachment.link_url.is_some()
+        || attachment.name.to_lowercase().ends_with(".gif");
+    if !attachment.image || !moves {
         return None;
-    };
+    }
+    let (width, height) = attachment.dimensions.unwrap_or_default();
+    let url = attachment.link_url.as_deref().unwrap_or(&attachment.url);
     Some(Gif {
         id: None,
-        url,
-        src,
+        url: favorite_key(url),
+        src: favorite_key(&attachment.url),
         gif_src: String::new(),
         width,
         height,
     })
 }
 
-/// A Discord file's address without `ex`, `is` and `hm`, which sign it for
-/// a while.
-fn unsigned(url: &str) -> String {
-    let Some((path, query)) = url.split_once('?') else {
+/// `url` as Discord's client keys a favourite by: an attached file's address
+/// on Discord's CDN or media proxy without `ex`, `is` and `hm`, which sign it
+/// for a while, and any other address as it is.
+fn favorite_key(url: &str) -> String {
+    let attached = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .is_some_and(|(host, path)| {
+            ["cdn.discordapp.com", "media.discordapp.net"]
+                .iter()
+                .any(|known| discord_host(host, known))
+                && ["attachments/", "ephemeral-attachments/"]
+                    .iter()
+                    .any(|kept| path.starts_with(kept))
+        });
+    let Some((path, query)) = url.split_once('?').filter(|_| attached) else {
         return url.to_owned();
     };
     let kept: Vec<&str> = query
         .split('&')
-        .filter(|pair| !matches!(pair.split('=').next(), Some("ex" | "is" | "hm")))
+        .filter(|pair| !matches!(pair.split('=').next(), Some("" | "ex" | "is" | "hm")))
         .collect();
     if kept.is_empty() {
         path.to_owned()
     } else {
         format!("{path}?{}", kept.join("&"))
     }
+}
+
+/// Whether `host` is `known` as Discord's client matches it: itself, a name
+/// under it, or a numbered sibling such as `cdn-2.discordapp.com`.
+fn discord_host(host: &str, known: &str) -> bool {
+    if host == known
+        || host
+            .strip_suffix(known)
+            .is_some_and(|start| start.ends_with('.'))
+    {
+        return true;
+    }
+    let (Some((label, domain)), Some((known_label, known_domain))) =
+        (host.split_once('.'), known.split_once('.'))
+    else {
+        return false;
+    };
+    domain == known_domain
+        && label
+            .strip_prefix(known_label)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|rest| !rest.is_empty())
 }
 
 /// The favourites another client changed, as Talk shows them.
@@ -369,6 +403,79 @@ mod tests {
             }
         }
         data
+    }
+
+    #[test]
+    fn stars_moving_pictures_by_the_address_discords_client_keeps_them_by() {
+        // A favourite saved under a direct link to the file, sent from the
+        // favourites: Discord unfurls it into an image embed of the link.
+        let link = "https://static.klipy.com/ii/wave.webp";
+        let message = talk_discord::message::parse(&serde_json::json!({
+            "id": "1", "channel_id": "2", "content": link,
+            "author": {"id": "3", "username": "alice"},
+            "timestamp": "2026-10-15T10:00:00+00:00",
+            "attachments": [
+                {"id": "4", "filename": "spin.webp", "size": 1000, "width": 220, "height": 220,
+                 "url": "https://cdn.discordapp.com/attachments/2/4/spin.webp?ex=1&is=2&hm=3&",
+                 "proxy_url": "https://media.discordapp.net/attachments/2/4/spin.webp?ex=1&is=2&hm=3&",
+                 "content_type": "image/webp", "flags": 32},
+                {"id": "5", "filename": "still.png", "size": 1000, "width": 64, "height": 64,
+                 "url": "https://cdn.discordapp.com/attachments/2/5/still.png",
+                 "proxy_url": "https://media.discordapp.net/attachments/2/5/still.png",
+                 "content_type": "image/png"},
+            ],
+            "embeds": [{
+                "type": "image", "url": link,
+                "thumbnail": {
+                    "url": link,
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/x/https/static.klipy.com/ii/wave.webp",
+                    "width": 220, "height": 165, "content_type": "image/webp",
+                    "placeholder": "", "placeholder_version": 1, "flags": 32,
+                },
+            }],
+        }))
+        .unwrap();
+        let stars: Vec<_> = message
+            .attachments
+            .iter()
+            .map(|attachment| favorite_gif(attachment).map(|gif| gif.url))
+            .collect();
+        assert_eq!(
+            stars,
+            [
+                // An animated WebP, by its address without the signature.
+                Some("https://cdn.discordapp.com/attachments/2/4/spin.webp".to_owned()),
+                // A still picture has no star.
+                None,
+                Some(link.to_owned()),
+            ]
+        );
+        let linked = favorite_gif(&message.attachments[2]).unwrap();
+        assert!(
+            linked
+                .src
+                .starts_with("https://images-ext-1.discordapp.net/external/")
+        );
+        assert_eq!((linked.width, linked.height), (220, 165));
+
+        // Only Discord's own files lose their query.
+        assert_eq!(
+            favorite_key(
+                "https://media.discordapp.net/ephemeral-attachments/1/2/a.gif?ex=1&width=40"
+            ),
+            "https://media.discordapp.net/ephemeral-attachments/1/2/a.gif?width=40"
+        );
+        assert_eq!(
+            favorite_key("https://cdn-2.discordapp.com/attachments/1/2/a.gif?hm=3"),
+            "https://cdn-2.discordapp.com/attachments/1/2/a.gif"
+        );
+        for kept in [
+            "https://example.com/attachments/a.gif?ex=1",
+            "https://cdn.discordapp.com/emojis/1.gif?ex=1",
+            "https://notcdn.discordapp.com/attachments/1/2/a.gif?ex=1",
+        ] {
+            assert_eq!(favorite_key(kept), kept);
+        }
     }
 
     #[test]

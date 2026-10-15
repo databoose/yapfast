@@ -2403,7 +2403,7 @@ async fn talks_to_the_fake_server() {
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
     marks_quiet_threads_as_discords_client_does(&discord, server).await;
     lists_who_reacted_as_discords_client_does(&discord, server, &guild, &general).await;
-    finds_gifs_as_discords_client_does(&discord, server).await;
+    finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
@@ -2530,10 +2530,16 @@ async fn lists_a_channels_threads_as_discords_client_does(
     .await;
 }
 
-/// The GIF picker's searches, its pictures from the provider, and the
+/// The GIF picker's searches, its pictures from the provider, the
 /// favourites in the second settings, which another client's change
-/// updates live. Part of [`talks_to_the_fake_server`].
-async fn finds_gifs_as_discords_client_does(discord: &Discord, server: &str) {
+/// updates live, and one sent by a direct link to its file. Part of
+/// [`talks_to_the_fake_server`].
+async fn finds_gifs_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+    general: &str,
+) {
     let trending = discord.gifs_trending().await.unwrap();
     assert_eq!(trending.categories[0].name, "happy");
     assert!(trending.preview.is_some());
@@ -2561,19 +2567,45 @@ async fn finds_gifs_as_discords_client_does(discord: &Discord, server: &str) {
         control(server, "GET", "/_control/gif-selects", "").contains(r#""id":"9102","q":"dance""#)
     );
 
-    // One favourite, kept by another client; adding one keeps both, and
-    // every session hears of it.
+    // Two favourites, kept by another client: one by its page, one by a
+    // direct link to its file.
     let mut favorites = discord.favorite_gifs().await.unwrap();
-    assert_eq!(favorites.len(), 1);
+    assert_eq!(favorites.len(), 2);
     assert!(favorites[0].src.ends_with("/_gifs/hello.gif"));
+    let linked = favorites[1].url.clone();
+    assert_eq!(linked, "https://static.klipy.com/ii/wave.webp");
     let mut live = discord.live();
+
+    // Sent, the link unfurls into an image embed whose picture moves and
+    // keeps the link, which Discord's client stars it by.
+    let nonce = talk_discord::message::nonce();
+    let sent = discord
+        .send(guild, general, &linked, &nonce, None, vec![])
+        .await
+        .unwrap();
+    let unfurled = live_where(&mut live, |event| match event {
+        Live::Updated(message) if message.id == sent.id && !message.attachments.is_empty() => {
+            Some(message)
+        }
+        _ => None,
+    })
+    .await;
+    assert!(unfurled.content.is_empty());
+    let picture = &unfurled.attachments[0];
+    assert!(picture.animated && picture.image);
+    assert_eq!(picture.link_url.as_deref(), Some(linked.as_str()));
+    let data = discord.download(&picture.url, 1 << 20).await.unwrap();
+    assert_eq!(&data[8..12], b"WEBP");
+    discord.delete(general, &sent.id).await.unwrap();
+
+    // Adding one keeps them all, and every session hears of it.
     favorites.push(talk_discord::gifs::Favorite {
         url: found[0].url.clone(),
         src: found[0].src.clone(),
         video: false,
         width: found[0].width,
         height: found[0].height,
-        order: 2,
+        order: 3,
     });
     discord.set_favorite_gifs(&favorites).await.unwrap();
     let heard = live_where(&mut live, |event| match event {

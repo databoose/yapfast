@@ -86,9 +86,9 @@
 // /gifs/trending, /gifs/trending-gifs, /gifs/search and /gifs/suggest find
 // ten GIFs, made by testing/make-gif-fixtures and served from /_gifs/; a
 // search for "nothing" finds none. GET /_control/gif-selects lists what POST
-// /gifs/select reported. Alice's favourite GIFs, one to start with, are in
+// /gifs/select reported. Alice's favourite GIFs, two to start with, are in
 // /users/@me/settings-proto/2, and a sent GIF's page unfurls into a gifv
-// embed a moment later.
+// embed a moment later, a direct link to a GIF's file into an image embed.
 // Alice's custom status, "Testing Talk", is in her settings; PATCH
 // /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
@@ -2992,8 +2992,9 @@ function gifsFor(query: string) {
   return gifCatalog.filter((gif) => gif.name.startsWith(q) || gif.terms.some((term) => term.startsWith(q)));
 }
 
-// Alice's second settings, FrecencyUserSettings: her favourite GIFs, one
-// added on another client, whose picture is a .gif. PATCH replaces them.
+// Alice's second settings, FrecencyUserSettings: her favourite GIFs, two
+// added on another client: one by its page, whose picture is a .gif, and one
+// by a direct link to its file, an animated WebP. PATCH replaces them.
 function protoNumber(field: number, value: number): Uint8Array {
   const out = [field << 3];
   for (; ; value >>= 7) {
@@ -3003,10 +3004,37 @@ function protoNumber(field: number, value: number): Uint8Array {
   return new Uint8Array(out);
 }
 function favoriteGifs(origin: string): string {
-  const gif = new Uint8Array([...protoNumber(1, 1), ...protoBytes(2, text(`${origin}/_gifs/hello.gif`)),
-    ...protoNumber(3, 220), ...protoNumber(4, 165), ...protoNumber(5, 1)]);
-  const entry = new Uint8Array([...protoBytes(1, text("https://klipy.com/gifs/hello-9000")), ...protoBytes(2, gif)]);
-  return Buffer.from(protoBytes(2, protoBytes(1, entry))).toString("base64");
+  const entry = (url: string, src: string, width: number, height: number, order: number) => {
+    const gif = new Uint8Array([...protoNumber(1, 1), ...protoBytes(2, text(src)),
+      ...protoNumber(3, width), ...protoNumber(4, height), ...protoNumber(5, order)]);
+    return protoBytes(1, new Uint8Array([...protoBytes(1, text(url)), ...protoBytes(2, gif)]));
+  };
+  const gifs = new Uint8Array([
+    ...entry("https://klipy.com/gifs/hello-9000", `${origin}/_gifs/hello.gif`, 220, 165, 1),
+    ...entry(linkedGif("wave", "webp"), `${origin}/_gifs/wave.webp`, 220, 165, 2),
+  ]);
+  return Buffer.from(protoBytes(2, gifs)).toString("base64");
+}
+
+/** A direct link to a GIF provider's file, as a favourite may be kept by. */
+function linkedGif(name: string, extension: string): string {
+  return `https://static.klipy.com/ii/${name}.${extension}`;
+}
+
+// A direct link to a picture that moves unfurls into an image embed: the
+// picture as its thumbnail, through the media proxy, flagged IS_ANIMATED.
+function linkedGifEmbed(content: string, origin: string) {
+  const m = content.trim().match(/^https:\/\/static\.klipy\.com\/ii\/([a-z]+)\.(webp|gif)$/);
+  const gif = m && [...gifCatalog, { name: "hello", width: 220, height: 165 }].find((gif) => gif.name === m[1]);
+  if (!m || !gif) return null;
+  const link = linkedGif(gif.name, m[2]!);
+  return {
+    type: "image", url: link,
+    thumbnail: {
+      url: link, proxy_url: `${origin}/external/klipy/https/static.klipy.com/ii/${gif.name}.${m[2]}`,
+      width: gif.width, height: gif.height, content_type: `image/${m[2]}`, flags: 1 << 5,
+    },
+  };
 }
 let frecencySettings: string | null = null;
 
@@ -3143,7 +3171,13 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       // A GIF the picker sent gets its embed a moment later, as Discord's
       // embeds come: the provider's picture, without a video here.
       const sentGif = gifCatalog.find((gif) => wireGif(gif, origin).url === message.content.trim());
-      if (sentGif) {
+      const linked = linkedGifEmbed(message.content, origin);
+      if (linked) {
+        setTimeout(() => {
+          message.embeds = () => [linked];
+          dispatch("MESSAGE_UPDATE", dispatched(message, origin));
+        }, 300);
+      } else if (sentGif) {
         setTimeout(() => {
           const wired = wireGif(sentGif, origin);
           message.embeds = () => [{
@@ -3943,8 +3977,18 @@ const gifVideo = readFileSync(new URL("gif-mandelbrot.mp4", fixtures));
 // Serves /external/{name}/{width}x{height}.png at its size, or at the
 // width and height asked for, as the media proxy scales, and a GIF's video
 // at /external/{name}/video.mp4, the linked post's clip at
-// /external/post/video.mp4.
+// /external/post/video.mp4, and a GIF provider's file linked directly at
+// /external/klipy/https/static.klipy.com/ii/{name}.{webp,gif}.
 function serveExternal(path: string, url: URL): Response | undefined {
+  const linked = path.match(/^\/external\/klipy\/https\/static\.klipy\.com\/ii\/([a-z]+)\.(webp|gif)$/);
+  if (linked) {
+    try {
+      const data = readFileSync(new URL(`gifs/${linked[1]}.${linked[2]}`, fixtures));
+      return new Response(data, { headers: { "content-type": `image/${linked[2]}` } });
+    } catch {
+      return undefined;
+    }
+  }
   if (/^\/external\/[\w-]+\/video\.mp4$/.test(path)) {
     const data = path === "/external/post/video.mp4" ? clip : gifVideo;
     return new Response(data, { headers: { "content-type": "video/mp4" } });
