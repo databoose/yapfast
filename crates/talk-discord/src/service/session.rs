@@ -24,6 +24,7 @@ use crate::{
     gateway::{Closed, Dispatch, Gateway, Reconnects, TooManyIdentifies},
     message::{self, Names},
     ready,
+    settings::Away,
 };
 
 /// What outlasts a session: the handle's channels and what Talk has on screen.
@@ -35,6 +36,9 @@ pub(super) struct Shared {
     pub(super) lists: MemberLists,
     /// The presence this session last sent, which it identifies with again.
     pub(super) presence: Value,
+    /// Nobody has used Talk since then, in Unix milliseconds, and whether
+    /// it may show idle; see [`settings::Away`].
+    pub(super) inactive: Option<(u64, bool)>,
     /// The server and channel or thread on screen, and a thread beside it,
     /// kept through reconnecting.
     pub(super) viewing: Option<(String, String)>,
@@ -111,7 +115,8 @@ pub(super) async fn run(
     }
 }
 
-/// Answers a request while disconnected. Viewing a channel is remembered.
+/// Answers a request while disconnected. Viewing a channel, and being
+/// idle, is remembered.
 fn refuse(request: Request, shared: &mut Shared) {
     match request {
         Request::Join { reply, .. } => {
@@ -125,6 +130,10 @@ fn refuse(request: Request, shared: &mut Shared) {
         }
         Request::Beside { guild, thread } => {
             shared.beside = thread.map(|thread| (guild, thread));
+        }
+        // The next session shows it once it connects.
+        Request::Inactive(since, show_idle) => {
+            shared.inactive = since.map(|since| (since, show_idle));
         }
         _ => {}
     }
@@ -170,6 +179,8 @@ async fn connected_session(
         mutes_end: Box::pin(tokio::time::sleep(until(tracker.unreads.next_mute_end()))),
         quiet,
         quiets: Box::pin(tokio::time::sleep(until(quiet))),
+        away_change: None,
+        away_changes: Box::pin(tokio::time::sleep(until(None))),
         tracker,
         shared,
         join: VoiceJoin::new(),
@@ -215,6 +226,10 @@ struct Session<'a> {
     /// milliseconds, and the wait for it, after which it stops listing.
     quiet: Option<u64>,
     quiets: Pin<Box<Sleep>>,
+    /// When being away next changes the presence, in Unix milliseconds,
+    /// and the wait for it.
+    away_change: Option<u64>,
+    away_changes: Pin<Box<Sleep>>,
 }
 
 impl Session<'_> {
@@ -246,6 +261,9 @@ impl Session<'_> {
                 () = self.status_ends.as_mut(), if self.tracker.custom_status.as_ref().is_some_and(|custom| custom.expires_at_ms.is_some()) => {
                     self.tracker.custom_status = None;
                     self.publisher.changed();
+                    self.show_presence().await
+                }
+                () = self.away_changes.as_mut(), if self.away_change.is_some() => {
                     self.show_presence().await
                 }
                 () = self.quiets.as_mut(), if self.quiet.is_some() => {
@@ -402,6 +420,10 @@ impl Session<'_> {
                 self.publisher.changed();
                 self.show_presence().await
             }
+            Request::Inactive(since, show_idle) => {
+                self.shared.inactive = since.map(|since| (since, show_idle));
+                self.show_presence().await
+            }
             Request::Search {
                 guild,
                 query,
@@ -503,9 +525,20 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Sends the gateway this session's presence when it changed.
+    /// Sends the gateway this session's presence when it changed, and
+    /// waits for the next time being away changes it.
     async fn show_presence(&mut self) -> Result<()> {
-        let presence = self.tracker.own_presence();
+        let (away, next) = Away::after(
+            self.shared.inactive.map(|(since, _)| since),
+            self.tracker.afk_timeout,
+            self.shared.inactive.is_some_and(|(_, show_idle)| show_idle),
+            now_ms(),
+        );
+        self.away_change = next;
+        self.away_changes
+            .as_mut()
+            .reset(Instant::now() + until(next));
+        let presence = self.tracker.own_presence(away);
         if presence != self.shared.presence {
             self.gateway.update_presence(presence.clone()).await?;
             self.shared.presence = presence;

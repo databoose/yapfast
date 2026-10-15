@@ -458,6 +458,9 @@ enum Request {
     CustomStatus(Option<CustomStatus>),
     /// The status changed in the settings; this session shows it.
     Status(String),
+    /// Nobody has used Talk since then, in Unix milliseconds, or someone
+    /// is using it again; and whether it may show idle.
+    Inactive(Option<u64>, bool),
 }
 
 /// What a channel's dialog edits; see [`Discord::channel_settings`].
@@ -542,6 +545,7 @@ impl Discord {
             },
             cached.custom_status.as_ref(),
             now_ms(),
+            settings::Away::default(),
         );
         let names = Arc::new(RwLock::new(names));
         let mut cached = cached;
@@ -559,6 +563,7 @@ impl Discord {
                 api: api.clone(),
                 lists: MemberLists::new(lists, live.clone(), names.clone()),
                 presence,
+                inactive: None,
                 viewing: None,
                 beside: None,
             },
@@ -1056,6 +1061,16 @@ impl Discord {
         self.api.set_status(status).await?;
         let _ = self.requests.send(Request::Status(status.to_owned()));
         Ok(())
+    }
+
+    /// Tells the session nobody has used Talk since `since`, in Unix
+    /// milliseconds, or `None` once someone does. As in the web client, the
+    /// session then goes AFK after the account's AFK timeout, so Discord
+    /// sends notifications to the phone, and shows idle after 10 minutes
+    /// if `show_idle`. Only this session's presence changes, not the status
+    /// setting.
+    pub fn set_inactive(&self, since: Option<u64>, show_idle: bool) {
+        let _ = self.requests.send(Request::Inactive(since, show_idle));
     }
 
     /// The GIF picker's home: trending terms with a GIF each.

@@ -847,9 +847,11 @@ export component DiscordSettings inherits VerticalLayout {
     in property <bool> matrix-build;
     in property <bool> show-hidden-channels;
     in property <bool> sync-discord-reads;
+    in property <bool> show-idle;
     callback unlink-discord;
     callback show-hidden-channels-toggled(bool);
     callback sync-discord-reads-toggled(bool);
+    callback show-idle-toggled(bool);
     spacing: 16px;
     SettingsTitle { text: "Discord"; }
     if root.matrix-build: HorizontalLayout {
@@ -871,5 +873,11 @@ export component DiscordSettings inherits VerticalLayout {
         description: "Channels you read in Talk show as read in the Discord apps too.";
         checked: root.sync-discord-reads;
         toggled(sync) => { root.sync-discord-reads-toggled(sync); }
+    }
+    SettingsSwitch {
+        text: "Show me as idle when I'm away";
+        description: "After 10 minutes without using Talk, as in Discord. Either way, your phone gets notifications while you're away.";
+        checked: root.show-idle;
+        toggled(shown) => { root.show-idle-toggled(shown); }
     }
 }

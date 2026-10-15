@@ -1036,6 +1036,16 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_show_idle_toggled(move |shown| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.show_idle = Some(shown);
+        adapter.layout.write(&adapter.root);
+        if let Some(window) = weak.upgrade() {
+            adapter.idle_setting_changed(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_sync_discord_reads_toggled(move |sync| {
         let mut adapter = state.borrow_mut();
         adapter.layout.sync_discord_reads = Some(sync);

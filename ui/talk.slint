@@ -246,6 +246,8 @@ export component TalkWindow inherits Window {
     callback open-link(string);
     in-out property <bool> sync-discord-reads;
     callback sync-discord-reads-toggled(bool);
+    in-out property <bool> show-idle: true;
+    callback show-idle-toggled(bool);
     in property <bool> room-selected;
     in property <bool> room-ready;
     in property <bool> room-encrypted;
@@ -2711,7 +2713,9 @@ export component TalkWindow inherits Window {
         if root.settings-section == 4 && root.discord-linked: DiscordSettings {
             matrix-build: root.matrix-build;
             show-hidden-channels: root.show-hidden-channels; sync-discord-reads: root.sync-discord-reads;
+            show-idle: root.show-idle;
             unlink-discord => { root.unlink-discord(); }
+            show-idle-toggled(shown) => { root.show-idle = shown; root.show-idle-toggled(shown); }
             show-hidden-channels-toggled(shown) => { root.show-hidden-channels = shown; root.show-hidden-channels-toggled(shown); }
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
         }

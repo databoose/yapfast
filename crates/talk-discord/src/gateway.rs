@@ -113,6 +113,13 @@ impl std::error::Error for Invalidated {}
 /// a margin for heartbeats.
 const SEND_LIMIT: usize = 110;
 const SEND_WINDOW: Duration = Duration::from_secs(60);
+/// Discord allows 5 presence updates in 20 seconds, which the web client
+/// keeps to.
+const PRESENCE_LIMIT: usize = 5;
+#[cfg(not(test))]
+const PRESENCE_WINDOW: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const PRESENCE_WINDOW: Duration = Duration::from_millis(300);
 /// The longest Talk holds back member requests for a server when Discord
 /// asks it to wait.
 const MEMBERS_HELD: Duration = Duration::from_secs(5 * 60);
@@ -304,6 +311,8 @@ impl Gateway {
             session_id: None,
             resume_url: None,
             limiter,
+            presences: Limiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
+            presence: None,
             resumes: 0,
         };
         connection.greeted().await?;
@@ -575,6 +584,10 @@ struct Connection {
     session_id: Option<String>,
     resume_url: Option<String>,
     limiter: Limiter,
+    /// Presence updates, which Discord allows 5 of in 20 seconds; the
+    /// latest waits, replacing any before it, while that's used up.
+    presences: Limiter,
+    presence: Option<Value>,
     /// Resumes tried since Discord last confirmed one.
     resumes: u32,
 }
@@ -611,7 +624,9 @@ impl Connection {
         held: &mut Option<(u64, Value)>,
     ) -> Result<()> {
         loop {
-            let free_at = self.limiter.free_at(Instant::now());
+            let now = Instant::now();
+            let free_at = self.limiter.free_at(now);
+            let presence_at = self.presences.free_at(now).max(free_at);
             tokio::select! {
                 () = tokio::time::sleep_until(self.next_heartbeat) => {
                     if !self.acked {
@@ -627,7 +642,14 @@ impl Connection {
                     }
                     *held = None;
                 }
+                () = tokio::time::sleep_until(presence_at), if self.presence.is_some() => {
+                    if let Some(presence) = self.presence.take() {
+                        self.presences.sent.push_back(Instant::now());
+                        self.write(PRESENCE_UPDATE, &presence).await?;
+                    }
+                }
                 command = commands.recv(), if held.is_none() => match command {
+                    Some(Command::Send(PRESENCE_UPDATE, data)) => self.presence = Some(data),
                     Some(Command::Send(op, data)) => {
                         if free_at > Instant::now() {
                             tracing::warn!("holding back a gateway command to stay under Discord's limit");
@@ -976,6 +998,8 @@ mod tests {
             session_id: None,
             resume_url: None,
             limiter: limiter(),
+            presences: Limiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
+            presence: None,
             resumes: 0,
         };
         let message = json!({
@@ -1393,6 +1417,25 @@ mod tests {
         gateway.search_members("a", "bo", 10, "n").await.unwrap();
         gateway.request_members("b", &users, None).await.unwrap();
         assert_eq!(peer.command().await["d"]["guild_id"], json!(["b"]));
+    }
+
+    #[tokio::test]
+    async fn presence_updates_keep_to_discords_limit_and_the_latest_goes() {
+        let discord = Discord::new().await;
+        let (mut gateway, mut peer) = discord.session(SLOW_HEARTBEAT, limiter()).await;
+        for n in 0..PRESENCE_LIMIT {
+            gateway.update_presence(json!({"n": n})).await.unwrap();
+            assert_eq!(peer.command().await["d"]["n"], n);
+        }
+        // Past the limit, the later replaces the earlier while both wait.
+        let held = Instant::now();
+        gateway.update_presence(json!({"n": "held"})).await.unwrap();
+        gateway
+            .update_presence(json!({"n": "latest"}))
+            .await
+            .unwrap();
+        assert_eq!(peer.command().await["d"]["n"], "latest");
+        assert!(held.elapsed() >= PRESENCE_WINDOW / 2);
     }
 
     /// Compresses payloads as Discord's gateway does, sharing one stream.

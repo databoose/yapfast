@@ -36,6 +36,7 @@ use crate::drop::Drag;
 use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
+mod away;
 mod call_link;
 mod callbacks;
 mod gifs;
@@ -124,6 +125,7 @@ pub fn run(
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
     bind_callbacks(&window, &adapter);
     watch_window(&window, &adapter);
+    adapter.borrow_mut().watch_away();
     adapter.borrow_mut().refresh(&window);
     if preview {
         adapter.borrow_mut().action(&window, Action::Preview);
@@ -275,6 +277,12 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                         dropped.borrow_mut().push(path.clone());
                     }
                     _ => {}
+                }
+                if away::is_use(event)
+                    && let (Some(adapter), Some(window)) = (adapter.upgrade(), weak.upgrade())
+                    && let Ok(mut adapter) = adapter.try_borrow_mut()
+                {
+                    adapter.used(&window);
                 }
                 if let WindowEvent::Focused(focused) = event {
                     FOCUSED.set(*focused);
@@ -619,6 +627,9 @@ struct Layout {
     show_hidden_channels: bool,
     /// Reading in Talk marks Discord channels read on Discord; on unless turned off.
     sync_discord_reads: Option<bool>,
+    /// Discord shows this account idle after 10 minutes nobody uses Talk;
+    /// on unless turned off.
+    show_idle: Option<bool>,
     /// DMs pinned to the top of the DM list, by room ID, the first pinned first.
     pinned: Vec<String>,
     /// Message times as 9:41 PM rather than 21:41.
@@ -746,6 +757,7 @@ impl Layout {
     }
 
     fn apply(&self, window: &TalkWindow) {
+        window.set_show_idle(self.show_idle.unwrap_or(true));
         // Before the first frame, which the event loop draws. A window made
         // again, after closing to the tray, keeps the theme this way too.
         let (id, chosen) = theme::chosen(self.theme.as_deref(), &self.custom_themes);
@@ -996,6 +1008,7 @@ struct Adapter {
     icons: Icons,
     weak: std::rc::Weak<RefCell<Self>>,
     window: slint::Weak<TalkWindow>,
+    away: away::Away,
     navigation: Navigation,
     /// Whether the forward dialog was open at the last refresh.
     forwarding: bool,
@@ -1186,6 +1199,7 @@ impl Adapter {
                 icons,
                 weak: weak.clone(),
                 window: window.as_weak(),
+                away: away::Away::default(),
                 navigation: Navigation::default(),
                 forwarding: false,
                 selection_version: 0,

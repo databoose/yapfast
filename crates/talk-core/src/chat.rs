@@ -1612,6 +1612,13 @@ pub enum DiscordCommand {
     /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`;
     /// [`Event::StatusSet`] follows.
     SetStatus(String),
+    /// Nobody has used Talk since then, in Unix milliseconds, or someone is
+    /// using it again; Discord goes AFK, and idle if `show_idle`, as its web
+    /// client does.
+    Inactive {
+        since: Option<u64>,
+        show_idle: bool,
+    },
     /// Connect the Discord account that was just linked.
     Start,
     /// Forget the linked Discord account on this device, ending its session

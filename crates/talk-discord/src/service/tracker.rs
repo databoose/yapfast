@@ -84,6 +84,9 @@ pub(super) struct Tracker {
     /// This account's status and custom status, from its settings.
     pub(super) status: String,
     pub(super) custom_status: Option<CustomStatus>,
+    /// How long nobody uses Talk before it's away, in seconds, from the
+    /// settings.
+    pub(super) afk_timeout: u64,
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
@@ -126,6 +129,7 @@ impl Tracker {
             folders: Vec::new(),
             status: "online".into(),
             custom_status: None,
+            afk_timeout: settings::AFK_TIMEOUT,
             requests: HashMap::new(),
             streams: HashMap::new(),
             viewing: None,
@@ -899,6 +903,9 @@ impl Tracker {
         if let Some(custom) = read.custom {
             self.custom_status = custom;
         }
+        if let Some(timeout) = read.afk_timeout {
+            self.afk_timeout = timeout;
+        }
         if let Some(list) = settings::server_list(encoded) {
             self.order = list.order;
             self.folders = list.folders;
@@ -986,9 +993,9 @@ impl Tracker {
             )
     }
 
-    /// The presence this session shows, as the settings say.
-    pub(super) fn own_presence(&self) -> Value {
-        settings::presence(&self.status, self.custom_status.as_ref(), now_ms())
+    /// The presence this session shows, as the settings say, and `away`.
+    pub(super) fn own_presence(&self, away: settings::Away) -> Value {
+        settings::presence(&self.status, self.custom_status.as_ref(), now_ms(), away)
     }
 
     /// Learns a relationship object: a friend, or someone who no longer is one.
@@ -1693,7 +1700,7 @@ mod tests {
         assert_eq!(tracker.snapshot().custom_status, Some(away));
         assert_eq!(tracker.snapshot().presence, "online");
         assert_eq!(
-            tracker.own_presence()["activities"][0]["state"],
+            tracker.own_presence(settings::Away::default())["activities"][0]["state"],
             "Fixing the bridge"
         );
 
@@ -1709,7 +1716,10 @@ mod tests {
             &json!({"settings": {"type": 1, "proto": cleared}, "partial": true}),
         ));
         assert_eq!(tracker.snapshot().custom_status, None);
-        assert_eq!(tracker.own_presence()["activities"], json!([]));
+        assert_eq!(
+            tracker.own_presence(settings::Away::default())["activities"],
+            json!([])
+        );
     }
 
     #[test]

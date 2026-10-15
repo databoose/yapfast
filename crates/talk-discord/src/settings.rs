@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 
 /// `PreloadedUserSettings.status`.
 const STATUS: u64 = 11;
+/// Voice and video settings, and in them the AFK timeout.
+const VOICE_AND_VIDEO: u64 = 5;
+const VOICE_AFK_TIMEOUT: u64 = 6;
 /// `StatusSettings.status`, a `StringValue`, and `StatusSettings.custom_status`.
 const STATUS_STATUS: u64 = 1;
 const STATUS_CUSTOM: u64 = 2;
@@ -71,6 +74,9 @@ pub struct StatusSettings {
     pub status: Option<String>,
     /// The custom status, `Some(None)` when it's cleared.
     pub custom: Option<Option<CustomStatus>>,
+    /// How long, in seconds, nobody uses a client before it tells Discord
+    /// it's away from the keyboard.
+    pub afk_timeout: Option<u64>,
 }
 
 /// The status in base64 settings, as READY's `user_settings_proto` or a
@@ -79,13 +85,24 @@ pub fn read(encoded: &str) -> StatusSettings {
     let Ok(data) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
         return StatusSettings::default();
     };
-    let Some(status) = fields(&data).find_map(|(number, value)| match value {
-        Field::Bytes(bytes) if number == STATUS => Some(bytes),
-        _ => None,
-    }) else {
-        return StatusSettings::default();
+    // A UInt32Value: the number in its field 1.
+    let afk_timeout = message(&data, VOICE_AND_VIDEO)
+        .and_then(|voice| message(voice, VOICE_AFK_TIMEOUT))
+        .map(|wrapper| {
+            fields(wrapper)
+                .find_map(|(number, value)| match value {
+                    Field::Varint(seconds) if number == 1 => Some(seconds),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        });
+    let mut settings = StatusSettings {
+        afk_timeout,
+        ..StatusSettings::default()
     };
-    let mut settings = StatusSettings::default();
+    let Some(status) = message(&data, STATUS) else {
+        return settings;
+    };
     for (number, value) in fields(status) {
         match (number, value) {
             (STATUS_STATUS, Field::Bytes(wrapper)) => {
@@ -121,6 +138,16 @@ pub fn read(encoded: &str) -> StatusSettings {
         }
     }
     settings
+}
+
+/// The last field `number` of `data` that holds a message.
+fn message(data: &[u8], number: u64) -> Option<&[u8]> {
+    fields(data)
+        .filter_map(|(field, value)| match value {
+            Field::Bytes(bytes) if field == number => Some(bytes),
+            _ => None,
+        })
+        .last()
 }
 
 /// A folder in the account's server list.
@@ -315,7 +342,9 @@ pub fn write_status(status: &str) -> String {
 
 /// The presence a session sends the gateway, in IDENTIFY or opcode 3: the
 /// status, and the custom status as an activity unless it has ended.
-pub fn presence(status: &str, custom: Option<&CustomStatus>, now_ms: u64) -> Value {
+/// `away` marks the session AFK, so Discord sends this account's
+/// notifications to its phone, and may show an online status as idle.
+pub fn presence(status: &str, custom: Option<&CustomStatus>, now_ms: u64, away: Away) -> Value {
     let activities: Vec<Value> = custom
         .filter(|custom| !custom.is_empty() && !custom.expired(now_ms))
         .map(|custom| {
@@ -334,12 +363,59 @@ pub fn presence(status: &str, custom: Option<&CustomStatus>, now_ms: u64) -> Val
         })
         .into_iter()
         .collect();
+    let status = match away.idle_since {
+        Some(_) if status == "online" => "idle",
+        _ => status,
+    };
     json!({
         "status": status,
-        "since": 0,
+        "since": away.idle_since.unwrap_or(0),
         "activities": activities,
-        "afk": false,
+        "afk": away.afk,
     })
+}
+
+/// Nobody has used Talk for a while: as the web client decides it, from
+/// [`Away::after`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Away {
+    /// Away from the keyboard: Discord sends notifications to the phone.
+    pub afk: bool,
+    /// Shown idle since then, in Unix milliseconds.
+    pub idle_since: Option<u64>,
+}
+
+/// The web client shows its account idle after 10 minutes without input.
+const IDLE_AFTER_MS: u64 = 10 * 60 * 1000;
+/// The AFK timeout the settings hold when they say none, in seconds.
+pub const AFK_TIMEOUT: u64 = 60;
+
+impl Away {
+    /// How a session is away when nobody has used Talk since
+    /// `inactive_since`, in Unix milliseconds: AFK after the account's AFK
+    /// timeout, at most 10 minutes, and idle after 10 minutes unless
+    /// `show_idle` is off. Also returns when that next changes.
+    pub fn after(
+        inactive_since: Option<u64>,
+        afk_timeout: u64,
+        show_idle: bool,
+        now_ms: u64,
+    ) -> (Self, Option<u64>) {
+        let Some(since) = inactive_since else {
+            return (Self::default(), None);
+        };
+        let afk_at = since + afk_timeout.saturating_mul(1000).min(IDLE_AFTER_MS);
+        let idle_at = since + IDLE_AFTER_MS;
+        let away = Self {
+            afk: now_ms >= afk_at,
+            idle_since: (show_idle && now_ms >= idle_at).then_some(since),
+        };
+        let next = [afk_at, idle_at]
+            .into_iter()
+            .filter(|&at| at > now_ms && (show_idle || at == afk_at))
+            .min();
+        (away, next)
+    }
 }
 
 pub(crate) enum Field<'a> {
@@ -457,6 +533,7 @@ mod tests {
             StatusSettings {
                 status: None,
                 custom: Some(Some(status.clone())),
+                afk_timeout: None,
             }
         );
         assert_eq!(read(&write_custom(None)).custom, Some(None));
@@ -465,6 +542,7 @@ mod tests {
             StatusSettings {
                 status: Some("idle".into()),
                 custom: None,
+                afk_timeout: None,
             },
             "setting the status leaves the custom status as it was"
         );
@@ -532,7 +610,7 @@ mod tests {
             emoji_id: None,
             expires_at_ms: Some(2_000),
         };
-        let shown = presence("idle", Some(&status), 1_000);
+        let shown = presence("idle", Some(&status), 1_000, Away::default());
         assert_eq!(shown["status"], "idle");
         assert_eq!(
             shown["activities"],
@@ -540,8 +618,61 @@ mod tests {
                 "emoji": {"name": "🌙", "id": null, "animated": false}}])
         );
         assert_eq!(
-            presence("online", Some(&status), 2_000)["activities"],
+            presence("online", Some(&status), 2_000, Away::default())["activities"],
             json!([])
         );
+    }
+
+    #[test]
+    fn a_session_nobody_uses_goes_afk_then_idle_as_the_web_client_does() {
+        const MINUTE: u64 = 60_000;
+        let since = 1_000_000;
+        let at = |minutes: u64, show_idle| {
+            Away::after(Some(since), 60, show_idle, since + minutes * MINUTE)
+        };
+        assert_eq!(Away::after(None, 60, true, since), (Away::default(), None));
+        assert_eq!(at(0, true), (Away::default(), Some(since + MINUTE)));
+        let afk = Away {
+            afk: true,
+            idle_since: None,
+        };
+        assert_eq!(at(1, true), (afk, Some(since + 10 * MINUTE)));
+        let idle = Away {
+            afk: true,
+            idle_since: Some(since),
+        };
+        assert_eq!(at(10, true), (idle, None));
+        assert_eq!(at(10, false), (afk, None), "never idle when that's off");
+        // A long AFK timeout still goes AFK at 10 minutes.
+        assert_eq!(
+            Away::after(Some(since), 3600, true, since + 10 * MINUTE).0,
+            idle
+        );
+
+        let shown = presence("online", None, 0, idle);
+        assert_eq!(
+            (&shown["status"], &shown["since"], &shown["afk"]),
+            (&json!("idle"), &json!(since), &json!(true))
+        );
+        let shown = presence("online", None, 0, afk);
+        assert_eq!(
+            (&shown["status"], &shown["since"]),
+            (&json!("online"), &json!(0))
+        );
+        assert_eq!(presence("dnd", None, 0, idle)["status"], "dnd");
+    }
+
+    #[test]
+    fn reads_the_afk_timeout() {
+        // voice_and_video { afk_timeout { value: 300 } }
+        let mut wrapper = Vec::new();
+        wrapper.extend([1 << 3, 0xac, 0x02]);
+        let mut voice = Vec::new();
+        put_bytes(&mut voice, VOICE_AFK_TIMEOUT, &wrapper);
+        let mut settings = Vec::new();
+        put_bytes(&mut settings, VOICE_AND_VIDEO, &voice);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(settings);
+        assert_eq!(read(&encoded).afk_timeout, Some(300));
+        assert_eq!(read(&write_status("dnd")).afk_timeout, None);
     }
 }

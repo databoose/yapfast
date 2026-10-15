@@ -253,6 +253,12 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::Inactive { since, show_idle }) = command {
+        if let Ok(discord) = discord {
+            discord.set_inactive(since, show_idle);
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::SetStatus(status)) = command {
         match discord {
             Ok(discord) => {
