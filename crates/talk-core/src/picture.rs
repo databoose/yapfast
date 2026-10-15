@@ -101,6 +101,14 @@ impl<'a> I420<'a> {
     /// once and keeps for the next picture.
     pub fn to_rgba(&self, scratch: &mut Vec<u8>, rgba: &mut [u8], width: u32, height: u32) {
         assert!(rgba.len() >= width as usize * height as usize * 4);
+        // libyuv reads each plane at its stride, trusting it to be there.
+        let (w, h) = (self.width as usize, self.height as usize);
+        let rows = [h, h.div_ceil(2), h.div_ceil(2)];
+        let widths = [w, w.div_ceil(2), w.div_ceil(2)];
+        for (index, plane) in [self.y, self.u, self.v].into_iter().enumerate() {
+            let stride = self.strides[index] as usize;
+            assert!(stride >= widths[index] && plane.len() >= stride * rows[index]);
+        }
         if (width, height) != (self.width, self.height) {
             let chroma = width.div_ceil(2) as usize * height.div_ceil(2) as usize;
             scratch.resize(width as usize * height as usize + 2 * chroma, 0);

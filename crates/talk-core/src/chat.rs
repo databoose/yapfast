@@ -2278,23 +2278,38 @@ fn image_frames<'a>(
     format: AnimationFormat,
 ) -> Option<((u32, u32), image::Frames<'a>)> {
     use image::{AnimationDecoder, ImageDecoder, codecs};
+    // Every frame is drawn on a canvas of the full size, and a tiny file
+    // can claim a huge one: these keep a sent animation from taking
+    // gigabytes.
     const MAX_SIDE: u32 = 8192;
-    let fits = |(w, h): (u32, u32)| (w <= MAX_SIDE && h <= MAX_SIDE).then_some((w, h));
+    const MAX_PIXELS: u64 = 4096 * 4096;
+    let fits = |(w, h): (u32, u32)| {
+        (w <= MAX_SIDE && h <= MAX_SIDE && u64::from(w) * u64::from(h) <= MAX_PIXELS)
+            .then_some((w, h))
+    };
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(256 * 1024 * 1024);
     match format {
         AnimationFormat::Gif => {
-            let decoder = codecs::gif::GifDecoder::new(cursor).ok()?;
-            Some((fits(decoder.dimensions())?, decoder.into_frames()))
+            let mut decoder = codecs::gif::GifDecoder::new(cursor).ok()?;
+            let size = fits(decoder.dimensions())?;
+            decoder.set_limits(limits).ok()?;
+            Some((size, decoder.into_frames()))
         }
         AnimationFormat::Png => {
-            let decoder = codecs::png::PngDecoder::new(cursor).ok()?;
+            let decoder = codecs::png::PngDecoder::with_limits(cursor, limits).ok()?;
             decoder.is_apng().ok()?.then_some(())?;
             let size = fits(decoder.dimensions())?;
             Some((size, decoder.apng().ok()?.into_frames()))
         }
         AnimationFormat::WebP => {
-            let decoder = codecs::webp::WebPDecoder::new(cursor).ok()?;
+            let mut decoder = codecs::webp::WebPDecoder::new(cursor).ok()?;
             decoder.has_animation().then_some(())?;
-            Some((fits(decoder.dimensions())?, decoder.into_frames()))
+            let size = fits(decoder.dimensions())?;
+            decoder.set_limits(limits).ok()?;
+            Some((size, decoder.into_frames()))
         }
         #[cfg(feature = "discord")]
         AnimationFormat::Video => None,

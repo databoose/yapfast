@@ -338,8 +338,7 @@ pub fn listed_thread(
             avatar: names.avatar(Some(&server.id), &recent.author),
             color: None,
         }),
-        text: names
-            .render(Some(server), &recent.content)
+        text: chat::notification_text(&names.render(Some(server), &recent.content))
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" "),

@@ -609,7 +609,10 @@ impl Connection {
                 match event {
                     Event::Ready => {
                         self.session_id = data["session_id"].as_str().map(str::to_owned);
-                        self.resume_url = data["resume_gateway_url"].as_str().map(str::to_owned);
+                        self.resume_url = data["resume_gateway_url"]
+                            .as_str()
+                            .filter(|url| secure(url))
+                            .map(str::to_owned);
                     }
                     Event::Resumed => {
                         tracing::info!("resumed the Discord gateway session");
@@ -659,7 +662,11 @@ impl Connection {
         let interval = hello["d"]["heartbeat_interval"]
             .as_u64()
             .context("Discord's gateway sent no heartbeat interval")?;
-        self.interval = Duration::from_millis(interval);
+        self.interval = crate::limits::sent_seconds(
+            interval as f64 / 1000.0,
+            Duration::from_millis(100),
+            Duration::from_secs(300),
+        );
         // Discord asks for the first heartbeat after a random part of the interval.
         self.next_heartbeat = Instant::now() + self.interval.mul_f64(rand::random::<f64>());
         self.acked = true;
@@ -739,6 +746,24 @@ impl Connection {
                 _ => {}
             }
         }
+    }
+}
+
+/// Whether a gateway address keeps the token it's sent private: TLS, or a
+/// test server on this machine.
+fn secure(url: &str) -> bool {
+    let Ok(url) = url::Url::parse(url) else {
+        return false;
+    };
+    match url.scheme() {
+        "wss" => true,
+        "ws" => match url.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            Some(url::Host::Domain(domain)) => domain == "localhost",
+            None => false,
+        },
+        _ => false,
     }
 }
 

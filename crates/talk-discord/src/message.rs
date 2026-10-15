@@ -1182,8 +1182,11 @@ impl Names {
             digits(id).then(|| format!("@{}", self.name(guild, id).unwrap_or("Discord user")))
         } else if let Some(id) = tag.strip_prefix('#') {
             digits(id).then(|| {
+                // Anyone who may start a thread names it, and the name
+                // shows inside others' Markdown: it's escaped to show as
+                // typed.
                 let name = server.and_then(|server| server.channel_name(id));
-                format!("#{}", name.unwrap_or("channel"))
+                format!("#{}", escape_markdown(name.unwrap_or("channel")))
             })
         } else if let Some(emoji) = tag.strip_prefix("a:").or_else(|| tag.strip_prefix(':')) {
             let (name, id) = emoji.split_once(':')?;
@@ -1195,6 +1198,18 @@ impl Names {
             None
         }
     }
+}
+
+/// `text` with Markdown's punctuation escaped by backslashes.
+fn escape_markdown(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for character in text.chars() {
+        if character.is_ascii_punctuation() {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 /// A Unix time in the local time zone, such as `2026-10-06 14:05`.

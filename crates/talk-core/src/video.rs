@@ -47,7 +47,12 @@ unsafe extern "C" {
         width: c_int,
         height: c_int,
     ) -> c_int;
-    fn talk_video_sound(video: *const Raw, frames: *mut c_int) -> *const f32;
+    fn talk_video_sound(
+        video: *const Raw,
+        frames: *mut c_int,
+        rate: *mut c_int,
+        channels: *mut c_int,
+    ) -> *const f32;
     fn talk_video_seek(video: *mut Raw, time_ms: i64) -> c_int;
     fn talk_video_free(video: *mut Raw);
 }
@@ -57,6 +62,8 @@ const SEEK_SIZE: c_int = 0x10000;
 
 /// How much of a video becomes an animation; the rest is left out.
 const ANIMATION_MS: u64 = 60_000;
+/// The most pictures such an animation keeps: a minute at 60 a second.
+const ANIMATION_FRAMES: usize = 3600;
 
 /// Whether the bytes start as a video file does: an MP4 or MOV's `ftyp`
 /// box, or WebM's EBML header.
@@ -117,6 +124,13 @@ unsafe extern "C" fn seek_source(source: *mut c_void, offset: i64, whence: c_int
         _ => return -1,
     };
     source.seek(to).map_or(-1, |at| at as i64)
+}
+
+/// Decoded sound: interleaved samples, one a channel.
+pub struct Sound<'a> {
+    pub rate: u32,
+    pub channels: usize,
+    pub samples: &'a [f32],
 }
 
 /// What [`Video::decode`] decoded.
@@ -219,19 +233,27 @@ impl<'a> Video<'a> {
         Ok(())
     }
 
-    /// The sound [`Self::decode`] gave last: interleaved samples, one a
-    /// channel, at [`Self::sound`]'s rate.
-    pub fn sound(&self) -> &[f32] {
-        let mut frames = 0;
+    /// The sound [`Self::decode`] gave last. Its rate and channels can
+    /// differ from what the file said when it opened.
+    pub fn sound(&self) -> Sound<'_> {
+        let (mut frames, mut rate, mut channels) = (0, 0, 0);
         // SAFETY: the samples stay in the video until the next call on it,
-        // which borrowing self forbids meanwhile.
+        // which borrowing self forbids meanwhile, and hold `frames` of
+        // `channels` each.
         unsafe {
-            let samples = talk_video_sound(self.raw, &mut frames);
-            let channels = self.sound.map_or(0, |(_, channels)| channels);
-            if samples.is_null() || frames <= 0 || channels == 0 {
-                return &[];
+            let samples = talk_video_sound(self.raw, &mut frames, &mut rate, &mut channels);
+            if samples.is_null() || frames <= 0 || rate <= 0 || channels <= 0 {
+                return Sound {
+                    rate: 0,
+                    channels: 0,
+                    samples: &[],
+                };
             }
-            std::slice::from_raw_parts(samples, frames as usize * channels)
+            Sound {
+                rate: rate as u32,
+                channels: channels as usize,
+                samples: std::slice::from_raw_parts(samples, frames as usize * channels as usize),
+            }
         }
     }
 
@@ -306,7 +328,9 @@ pub(crate) fn decode_kept_animation(
             }
         };
         start = Some(shows);
-        if shows >= ANIMATION_MS {
+        // Pictures whose times don't move on would otherwise run to the end
+        // of the file.
+        if shows >= ANIMATION_MS || delays.len() >= ANIMATION_FRAMES {
             break;
         }
     }
@@ -420,7 +444,7 @@ mod tests {
                 }
                 Next::Sound(time) => {
                     sounds.push(time.unwrap());
-                    samples += video.sound().len() / channels;
+                    samples += video.sound().samples.len() / channels;
                 }
                 Next::End => return (pictures, sounds, samples),
             }

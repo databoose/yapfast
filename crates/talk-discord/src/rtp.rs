@@ -327,6 +327,9 @@ pub struct Assembled {
     pub timestamp: u32,
 }
 
+/// The largest frame put together, far above a 4K keyframe.
+const MAX_FRAME: usize = 8 << 20;
+
 /// Puts one SSRC's packets back together into frames. A frame missing a
 /// packet is dropped, and frames are dropped until the next keyframe.
 pub struct Assembler {
@@ -399,6 +402,11 @@ impl Assembler {
         match self.codec {
             Codec::Vp8 => self.vp8(packet.payload, first),
             Codec::H264 => self.h264(packet.payload),
+        }
+        // Packets that never end their frame would grow it without end.
+        if self.frame.len() > MAX_FRAME {
+            self.frame = Vec::new();
+            self.damaged = true;
         }
         if !packet.marker {
             return Pushed { frame: None, lost };
@@ -924,6 +932,11 @@ const ASK_AGAIN: std::time::Duration = std::time::Duration::from_millis(80);
 const ASKS: u32 = 3;
 /// Packets held at most while one is missing, about a second at 9 Mbit/s.
 const HELD: usize = 1000;
+/// Missing packets waited for at most, and asked for at once: a sender
+/// skipping far ahead again and again would otherwise run up thousands, and
+/// a request too large to send.
+const MAX_MISSING: usize = HELD;
+const MAX_ASKED: usize = 256;
 
 /// Puts one SSRC's packets back in sequence for the assembler, as they can
 /// arrive out of order, and asks for missing ones again (NACK), as Discord's
@@ -985,7 +998,10 @@ impl Reorder {
                 self.missing.clear();
                 self.next = Some(sequence);
             }
-            Some(highest) if sequence > highest + 1 => {
+            Some(highest)
+                if sequence > highest + 1
+                    && self.missing.len() + (sequence - highest - 1) as usize <= MAX_MISSING =>
+            {
                 for gap in highest + 1..sequence {
                     self.missing.insert(
                         gap,
@@ -1045,6 +1061,9 @@ impl Reorder {
             let due = missing
                 .asked
                 .is_none_or(|asked| now.duration_since(asked) >= ASK_AGAIN);
+            if asking.len() >= MAX_ASKED {
+                break;
+            }
             if missing.asks < ASKS && due {
                 missing.asked = Some(now);
                 missing.asks += 1;
@@ -1351,6 +1370,50 @@ mod tests {
         assert_eq!((sequences(ready), skipped), (vec![4], 2));
         assert_eq!(reorder.insert(held(3), at(410)), Arrival::Late);
         assert_eq!(reorder.counts(), Some((65536 + 4, 2)), "one wrap, two lost");
+    }
+
+    #[test]
+    fn bounds_what_a_sender_skipping_ahead_runs_up() {
+        let at = |ms: u64| std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        let held = |sequence: u16| Held {
+            payload_type: VP8,
+            marker: false,
+            sequence,
+            timestamp: 0,
+            ssrc: 5,
+            payload: vec![0],
+        };
+        let mut reorder = Reorder::default();
+        let mut sequence = 0u16;
+        for _ in 0..2000 {
+            reorder.insert(held(sequence), at(0));
+            sequence = sequence.wrapping_add(HELD as u16 - 1);
+        }
+        assert!(reorder.missing.len() <= MAX_MISSING);
+        assert!(reorder.to_ask(at(0)).len() <= MAX_ASKED);
+    }
+
+    #[test]
+    fn drops_a_frame_that_never_ends() {
+        let mut packetizer = Packetizer::new(5, Codec::Vp8);
+        let mut assembler = Assembler::new(Codec::Vp8);
+        let huge = vec![0x10; MAX_FRAME + 4096];
+        let last = packetizer
+            .packets(&huge, 0)
+            .iter()
+            .map(|sent| assembler.push(&parse(sent).unwrap()))
+            .last()
+            .unwrap();
+        assert_eq!(last.frame, None);
+        assert!(assembler.frame.len() <= MAX_FRAME);
+        let keyframe = vec![0x10; 2500];
+        let last = packetizer
+            .packets(&keyframe, 3000)
+            .iter()
+            .map(|sent| assembler.push(&parse(sent).unwrap()))
+            .last()
+            .unwrap();
+        assert_eq!(last.frame.map(|frame| frame.data), Some(keyframe));
     }
 
     #[test]

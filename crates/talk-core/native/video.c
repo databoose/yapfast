@@ -19,6 +19,10 @@
 
 enum { DECODER_AVCODEC, DECODER_VPX, DECODER_DAV1D };
 
+/* The widest or tallest picture Talk decodes. A file can claim any size,
+ * and each picture would take that much memory. */
+enum { MAX_SIDE = 8192 };
+
 /* What talk_video_next returns. */
 enum { END = 0, PICTURE = 1, SOUND = 2, FAILED = -1, UNSUPPORTED = -2 };
 
@@ -74,6 +78,10 @@ struct talk_video {
   struct planes planes;
   int sound_stream;
   AVCodecContext *sound_context;
+  /* The rate and channels of the samples below; a decoder may change them
+   * from frame to frame, whatever the file said at the start. */
+  int sample_rate;
+  int channels;
   AVFrame *sound_frame;
   /* The sound talk_video_next gave last, as interleaved floats. */
   float *samples;
@@ -130,6 +138,7 @@ static int open_decoder(struct talk_video *video, const AVCodecParameters *param
       if (!video->context || !video->frame) return FAILED;
       if (avcodec_parameters_to_context(video->context, parameters) < 0) return FAILED;
       video->context->thread_count = (int)threads;
+      video->context->max_pixels = (int64_t)MAX_SIDE * MAX_SIDE;
       return avcodec_open2(video->context, codec, NULL) < 0 ? FAILED : 0;
     }
     case AV_CODEC_ID_VP8:
@@ -146,6 +155,7 @@ static int open_decoder(struct talk_video *video, const AVCodecParameters *param
       Dav1dSettings settings;
       dav1d_default_settings(&settings);
       settings.n_threads = (int)threads;
+      settings.frame_size_limit = (unsigned)MAX_SIDE * MAX_SIDE;
       video->decoder = DECODER_DAV1D;
       return dav1d_open(&video->dav1d, &settings) < 0 ? FAILED : 0;
     }
@@ -173,6 +183,8 @@ static void open_sound(struct talk_video *video) {
   video->sound_stream = stream;
   video->sound_context = context;
   video->sound_frame = frame;
+  video->sample_rate = context->sample_rate;
+  video->channels = context->ch_layout.nb_channels;
 }
 
 /* Opens the first video in the file `source`, or returns NULL. With
@@ -213,8 +225,8 @@ struct talk_video *talk_video_open(void *source, talk_read read, talk_seek seek_
   }
   const AVStream *stream = video->format->streams[video->stream];
   const AVCodecParameters *parameters = stream->codecpar;
-  if (parameters->width <= 0 || parameters->height <= 0 ||
-      open_decoder(video, parameters, threads) < 0) {
+  if (parameters->width <= 0 || parameters->height <= 0 || parameters->width > MAX_SIDE ||
+      parameters->height > MAX_SIDE || open_decoder(video, parameters, threads) < 0) {
     talk_video_free(video);
     return NULL;
   }
@@ -234,8 +246,8 @@ struct talk_video *talk_video_open(void *source, talk_read read, talk_seek seek_
   } else {
     info->duration_ms = -1;
   }
-  info->sample_rate = video->sound_context ? video->sound_context->sample_rate : 0;
-  info->channels = video->sound_context ? video->sound_context->ch_layout.nb_channels : 0;
+  info->sample_rate = video->sample_rate;
+  info->channels = video->channels;
   return video;
 }
 
@@ -256,6 +268,8 @@ static int64_t milliseconds(const struct talk_video *video, int stream, int64_t 
 /* Takes the picture decoder's next picture: 1 with one, 0 when it wants data. */
 static int receive_picture(struct talk_video *video, int64_t *time_ms) {
   struct planes *planes = &video->planes;
+  /* Until a new picture comes, there's none: the last may be freed. */
+  *planes = (struct planes){0};
   switch (video->decoder) {
     case DECODER_AVCODEC: {
       AVFrame *frame = video->frame;
@@ -368,11 +382,7 @@ static int receive_sound(struct talk_video *video, int64_t *time_ms) {
   /* Sound that can't be decoded is left out. */
   if (received < 0) return 0;
   int channels = frame->ch_layout.nb_channels;
-  if (channels <= 0 || frame->nb_samples <= 0 ||
-      frame->sample_rate != video->sound_context->sample_rate ||
-      channels != video->sound_context->ch_layout.nb_channels) {
-    return 0;
-  }
+  if (channels <= 0 || frame->nb_samples <= 0 || frame->sample_rate <= 0) return 0;
   size_t needed = (size_t)frame->nb_samples * (size_t)channels * sizeof(float);
   if (video->samples_size < needed) {
     float *grown = realloc(video->samples, needed);
@@ -387,6 +397,8 @@ static int receive_sound(struct talk_video *video, int64_t *time_ms) {
     }
   }
   video->sample_frames = frame->nb_samples;
+  video->sample_rate = frame->sample_rate;
+  video->channels = channels;
   *time_ms = milliseconds(video, video->sound_stream, frame->best_effort_timestamp);
   return 1;
 }
@@ -429,6 +441,8 @@ static int feed(struct talk_video *video) {
       vpx_codec_decode(&video->vpx, packet->data, (unsigned)packet->size, NULL, 0);
       break;
     default: {
+      /* dav1d takes no empty data. */
+      if (packet->size <= 0) break;
       uint8_t *data = dav1d_data_create(&video->dav1d_pending, (size_t)packet->size);
       if (!data) {
         result = FAILED;
@@ -452,7 +466,10 @@ int talk_video_next(struct talk_video *video, int64_t *time_ms) {
     int got = receive_picture(video, time_ms);
     if (got < 0) return got;
     if (got) {
-      if (video->planes.width <= 0 || video->planes.height <= 0) return FAILED;
+      if (video->planes.width <= 0 || video->planes.height <= 0 ||
+          video->planes.width > MAX_SIDE || video->planes.height > MAX_SIDE) {
+        return FAILED;
+      }
       return PICTURE;
     }
     got = receive_sound(video, time_ms);
@@ -501,9 +518,12 @@ int talk_video_picture(struct talk_video *video, unsigned char *rgba, int width,
 }
 
 /* The sound talk_video_next gave last: frames of interleaved floats, one
- * a channel, at the rate talk_video_open said. */
-const float *talk_video_sound(const struct talk_video *video, int *frames) {
+ * a channel, and their rate and channels. */
+const float *talk_video_sound(const struct talk_video *video, int *frames, int *rate,
+                              int *channels) {
   *frames = video->sample_frames;
+  *rate = video->sample_rate;
+  *channels = video->channels;
   return video->samples;
 }
 

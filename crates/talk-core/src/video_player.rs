@@ -553,7 +553,9 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                 let Some(resampler) = resampler.as_mut() else {
                     continue;
                 };
-                let samples = resampler.run(video.sound());
+                let sound = video.sound();
+                resampler.follow(sound.rate, sound.channels);
+                let samples = resampler.run(sound.samples);
                 let time = time.unwrap_or_else(|| {
                     state.sound.back().map_or(skip_until, |sound| {
                         sound.time
@@ -692,6 +694,17 @@ impl Resampler {
     fn reset(&mut self) {
         self.position = 0.0;
         self.last = None;
+    }
+
+    /// Takes sound at `rate` with `channels` from now on, as a file's
+    /// decoder can change them partway.
+    fn follow(&mut self, rate: u32, channels: usize) {
+        if rate > 0 {
+            self.step = f64::from(rate) / f64::from(RATE);
+        }
+        if channels > 0 {
+            self.channels = channels;
+        }
     }
 
     fn run(&mut self, input: &[f32]) -> Vec<f32> {

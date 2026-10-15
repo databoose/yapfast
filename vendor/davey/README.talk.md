@@ -16,3 +16,5 @@ Changes, marked `Talk:` in the source:
 - `DaveSession::set_channel_id` changes the group id and keeps the signing key
   and stored key packages. A pending group starts again under the new id; a
   joined group is left as it is.
+- `read_leb128` stops at ten bytes rather than shifting past a `u64`, which
+  panics in a debug build when a received frame's nonce runs that long.
