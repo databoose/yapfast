@@ -62,6 +62,9 @@ const STILL_DROPPING: u32 = 500;
 const MAX_DROPPED: usize = 64;
 /// Gateway drops in a row that resuming or reconnecting may follow.
 const RETRIES: u32 = 3;
+/// How long a connection holds before its drop no longer counts with
+/// those before.
+const STEADY: Duration = Duration::from_secs(60);
 /// How much longer each resume after the first waits.
 const RESUME_WAIT: Duration = Duration::from_secs(1);
 
@@ -149,6 +152,7 @@ async fn run(
     };
     let mut drops = 0;
     loop {
+        let up = std::time::Instant::now();
         match media
             .run(&mut connection, &listener, &sending, &mut orders)
             .await
@@ -176,6 +180,11 @@ async fn run(
                 }
             }
             Ended::Dropped(error) => {
+                // Drops count in a row: a connection that held a while starts
+                // the count again, so a long call survives the odd blip.
+                if up.elapsed() >= STEADY {
+                    drops = 0;
+                }
                 drops += 1;
                 let code = error
                     .downcast_ref::<Closed>()
