@@ -342,9 +342,10 @@ fn control(server: &str, method: &str, path: &str, body: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The presence Alice's session last sent the fake.
+/// The presence Alice's session last sent the fake. Talk keeps to
+/// Discord's 5 presence updates in 20 seconds, so one may wait that long.
 async fn presence_where(server: &str, check: impl Fn(&serde_json::Value) -> bool) {
-    timeout(WAIT, async {
+    timeout(WAIT + Duration::from_secs(20), async {
         loop {
             let presence = serde_json::from_str(&control(server, "GET", "/_control/presence", ""))
                 .unwrap_or_default();
