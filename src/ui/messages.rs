@@ -44,9 +44,11 @@ fn styled(body: &str) -> slint::StyledText {
     styled_or(body, body)
 }
 
-/// [`styled`], or `typed` as plain text when Slint rejects the Markdown.
+/// [`styled`], or `typed` as plain text when Slint rejects the Markdown. A
+/// link showing other text than where it goes asks before it opens.
 fn styled_or(body: &str, typed: &str) -> slint::StyledText {
-    slint::StyledText::from_markdown(&links::linkify(&keep_blank_lines(body)))
+    let body = keep_blank_lines(body);
+    slint::StyledText::from_markdown(&links::linkify(&links::mark_masked(&body)))
         .ok()
         .or_else(|| plain_with_links(typed))
         .unwrap_or_else(|| slint::StyledText::from_plain_text(typed))

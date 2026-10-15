@@ -12,7 +12,6 @@ use matrix_sdk::{
     Client, ComposerDraft, ComposerDraftType, Room, RoomMemberships,
     attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo},
     event_handler::EventHandlerHandle,
-    media::{MediaFormat, MediaRequestParameters},
     room::{MessagesOptions, edit::EditedContent},
     ruma::{
         OwnedEventId, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
@@ -57,6 +56,7 @@ use crate::{
         Picture, Placement, Reaction, Reactor, Reply, Role, RoomIndex, Start, decode_preview,
         decode_view, notification_text, plain_snippet, sort_members,
     },
+    matrix_media,
     network::Network,
     session::Session,
     voice,
@@ -1568,24 +1568,21 @@ async fn view_image(
     };
     let (client, events) = (client.clone(), events.clone());
     open.tasks.spawn(async move {
-        let request = MediaRequestParameters {
-            source,
-            format: MediaFormat::File,
-        };
-        let picture = match client.media().get_media_content(&request, true).await {
-            Ok(data) if data.len() <= MAX_PREVIEW_DOWNLOAD_BYTES => {
-                tokio::task::spawn_blocking(move || decode_view(&data))
+        let picture =
+            match matrix_media::content(&client, &source, MAX_PREVIEW_DOWNLOAD_BYTES).await {
+                Ok(data) => tokio::task::spawn_blocking(move || decode_view(&data))
                     .await
                     .ok()
                     .flatten()
                     .map(Arc::new)
-                    .ok_or("Talk can't show this image. Save it to open it elsewhere.")
-            }
-            Ok(_) => Err("This image is too large to show here. Save it to open it elsewhere."),
-            Err(_) => {
-                Err("Talk couldn't download this image. Check your connection and try again.")
-            }
-        };
+                    .ok_or("Talk can't show this image. Save it to open it elsewhere."),
+                Err(matrix_media::Failed::TooLarge) => {
+                    Err("This image is too large to show here. Save it to open it elsewhere.")
+                }
+                Err(_) => {
+                    Err("Talk couldn't download this image. Check your connection and try again.")
+                }
+            };
         let _ = events.send(Event::Image {
             room,
             item,
@@ -1614,23 +1611,22 @@ async fn save_attachment(
         .and_then(attachment_source)
         .map(|(source, _)| source)
         .ok_or("This file is no longer available.")?;
-    let data = client
-        .media()
-        .get_media_content(
-            &MediaRequestParameters {
-                source,
-                format: MediaFormat::File,
-            },
-            true,
-        )
+    matrix_media::save(client, &source, MAX_SAVE_BYTES, path)
         .await
-        .map_err(
-            |_| "Talk could not download or decrypt this file. Check your connection and retry.",
-        )?;
-    tokio::fs::write(path, data)
-        .await
-        .map_err(|_| "Talk could not write the file there. Choose another folder.")
+        .map_err(|failed| match failed {
+            matrix_media::Failed::TooLarge => "This file is larger than Talk saves.",
+            matrix_media::Failed::Write => {
+                "Talk could not write the file there. Choose another folder."
+            }
+            matrix_media::Failed::Download | matrix_media::Failed::Decrypt => {
+                "Talk could not download or decrypt this file. Check your connection and retry."
+            }
+        })
 }
+
+/// The largest attachment Talk saves. It goes to disk as it arrives; a
+/// sender can't make it larger by saying it's small.
+const MAX_SAVE_BYTES: u64 = 4 << 30;
 
 fn media_key(source: &MediaSource) -> String {
     match source {
@@ -1820,26 +1816,20 @@ async fn publish_timeline(
                                 let picture = if too_large {
                                     None
                                 } else {
-                                    match client
-                                        .media()
-                                        .get_media_content(
-                                            &MediaRequestParameters {
-                                                source,
-                                                format: MediaFormat::File,
-                                            },
-                                            true,
-                                        )
-                                        .await
+                                    match matrix_media::content(
+                                        &client,
+                                        &source,
+                                        MAX_PREVIEW_DOWNLOAD_BYTES,
+                                    )
+                                    .await
                                     {
-                                        Ok(data) if data.len() <= MAX_PREVIEW_DOWNLOAD_BYTES => {
-                                            tokio::task::spawn_blocking(move || {
-                                                decode_preview(&data)
-                                            })
-                                            .await
-                                            .ok()
-                                            .flatten()
-                                            .map(Arc::new)
-                                        }
+                                        Ok(data) => tokio::task::spawn_blocking(move || {
+                                            decode_preview(&data)
+                                        })
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .map(Arc::new),
                                         _ => None,
                                     }
                                 };

@@ -2,7 +2,11 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
+
+/// What a masked link leads to instead of its address: a click asks before
+/// opening the address that follows.
+pub const LEAVE: &str = "talk:leave/";
 
 /// Turns bare web addresses in Markdown into links, leaving code, existing
 /// links and HTML alone.
@@ -64,6 +68,115 @@ pub fn escape_html(markdown: &str) -> Cow<'_, str> {
     }
     escaped.push_str(&markdown[copied..]);
     Cow::Owned(escaped)
+}
+
+/// Markdown whose links show other text than where they go, such as
+/// `[discord.com](https://evil.example)`, leading to [`LEAVE`] and the
+/// address instead, so a click asks before going there.
+pub fn mark_masked(markdown: &str) -> Cow<'_, str> {
+    struct Link {
+        start: usize,
+        // Where the text between the brackets ends.
+        text_end: usize,
+        text: String,
+        dest: String,
+    }
+    let mut marked = String::new();
+    let mut copied = 0;
+    let mut link: Option<Link> = None;
+    for (event, range) in
+        Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH).into_offset_iter()
+    {
+        match event {
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            }) if !matches!(link_type, LinkType::Autolink | LinkType::Email)
+                && openable(&dest_url) =>
+            {
+                link = Some(Link {
+                    start: range.start,
+                    text_end: range.start + 1,
+                    text: String::new(),
+                    dest: dest_url.into_string(),
+                });
+            }
+            Event::End(TagEnd::Link) => {
+                let Some(link) = link.take() else { continue };
+                if shows(&link.text, &link.dest) || !markdown[link.start..].starts_with('[') {
+                    continue;
+                }
+                marked.push_str(&markdown[copied..link.start]);
+                marked.push_str(&markdown[link.start..link.text_end]);
+                marked.push_str("](<");
+                marked.push_str(LEAVE);
+                for character in link.dest.chars() {
+                    match character {
+                        '<' | '>' | '\\' | ' ' => {
+                            marked.push_str(&format!("%{:02X}", character as u32))
+                        }
+                        character => marked.push(character),
+                    }
+                }
+                marked.push_str(">)");
+                copied = range.end;
+            }
+            event => {
+                if let Some(link) = link.as_mut() {
+                    if let Event::Text(text) | Event::Code(text) = event {
+                        link.text.push_str(&text);
+                    }
+                    link.text_end = link.text_end.max(range.end);
+                }
+            }
+        }
+    }
+    if copied == 0 {
+        return Cow::Borrowed(markdown);
+    }
+    marked.push_str(&markdown[copied..]);
+    Cow::Owned(marked)
+}
+
+/// Whether a link's text is its address, with or without the scheme or a
+/// trailing slash.
+fn shows(text: &str, dest: &str) -> bool {
+    let bare = |link: &str| {
+        let link = link.trim().trim_end_matches('/');
+        let lower = link.to_ascii_lowercase();
+        let scheme = ["https://", "http://"]
+            .into_iter()
+            .find(|scheme| lower.starts_with(scheme))
+            .map_or(0, str::len);
+        link[scheme..].to_ascii_lowercase()
+    };
+    bare(text) == bare(dest)
+}
+
+/// The address a masked link from [`mark_masked`] goes to, when it's one
+/// Talk opens.
+pub fn masked(link: &str) -> Option<&str> {
+    link.strip_prefix(LEAVE).filter(|link| openable(link))
+}
+
+/// A web address's host, as `example.com` in `https://user@example.com:8/a`.
+pub fn host(link: &str) -> &str {
+    let rest = link.split_once("://").map_or(link, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    // Without its port; an IPv6 address keeps its brackets and colons.
+    match host.rsplit_once(':') {
+        Some((name, port))
+            if port.bytes().all(|byte| byte.is_ascii_digit())
+                && (!name.starts_with('[') || name.ends_with(']')) =>
+        {
+            name
+        }
+        _ => host,
+    }
 }
 
 /// Plain text as Markdown with its web addresses as links, or `None`
@@ -223,6 +336,31 @@ mod tests {
             Some("a\\*b <https://e.example/x_y>".into())
         );
         assert_eq!(plain_with_links("no links"), None);
+    }
+
+    #[test]
+    fn marks_links_that_show_another_address() {
+        assert_eq!(
+            mark_masked("see [**discord.com**](<https://evil.example/a b>) now"),
+            "see [**discord.com**](<talk:leave/https://evil.example/a%20b>) now"
+        );
+        for kept in [
+            "<https://a.example>",
+            "[https://a.example/](https://a.example)",
+            "[a.example](https://A.example/)",
+            "[@Bob](<talk:user/2>)",
+            "[x](file:///etc/passwd)",
+            "no links",
+        ] {
+            assert!(matches!(mark_masked(kept), Cow::Borrowed(_)), "{kept}");
+        }
+        assert_eq!(
+            masked("talk:leave/https://evil.example/a%20b"),
+            Some("https://evil.example/a%20b")
+        );
+        assert_eq!(masked("talk:leave/javascript:alert(1)"), None);
+        assert_eq!(host("https://evil.example:8080/x?y#z"), "evil.example");
+        assert_eq!(host("https://[::1]:8/x"), "[::1]");
     }
 
     #[test]

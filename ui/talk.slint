@@ -30,7 +30,7 @@ import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiBut
 import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
-import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog } from "dialogs.slint";
+import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
@@ -382,6 +382,10 @@ export component TalkWindow inherits Window {
     in-out property <string> emoji-query;
     /// The forward dialog, open while Talk forwards a message of the open room.
     in property <bool> forward-open;
+    /// A masked link that was clicked, while Talk asks before opening it,
+    /// and the site it goes to.
+    in property <string> leaving-link;
+    in property <string> leaving-site;
     /// Who reacted with the reaction ReactionHover names, as its tooltip
     /// says it, and its emoji; empty until they're known.
     in property <string> reaction-tip-text;
@@ -888,6 +892,8 @@ export component TalkWindow inherits Window {
     callback forward-to(string);
     callback forward-search;
     callback close-forward;
+    callback visit-leaving-link;
+    callback close-leaving-link;
     callback confirm-delete-message;
     callback cancel-delete;
     callback retry(string);
@@ -2990,6 +2996,12 @@ export component TalkWindow inherits Window {
         forward-search => { root.forward-search(); }
         forward-to(id) => { root.forward-to(id); }
         close-forward => { root.close-forward(); }
+    }
+    // A masked link, before it opens; see LeavingDialog.
+    if root.leaving-link != "": LeavingDialog {
+        link: root.leaving-link; site: root.leaving-site;
+        visit => { root.visit-leaving-link(); }
+        close => { root.close-leaving-link(); }
     }
     // The zoom level, for a moment after it changes.
     if root.zoom-note != "": Rectangle {

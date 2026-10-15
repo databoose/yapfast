@@ -850,11 +850,26 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             state.borrow_mut().action(&window, action);
             return;
         }
-        // Only web pages open; a message can't start other programs.
-        if links::openable(&link)
-            && let Err(error) = webbrowser::open(&link)
-        {
-            tracing::warn!(%error, "could not open a link");
+        // A link whose text shows something else asks first.
+        if let Some(masked) = links::masked(&link) {
+            if let Some(window) = weak.upgrade() {
+                window.set_leaving_site(links::host(masked).into());
+                window.set_leaving_link(masked.into());
+            }
+            return;
+        }
+        open_web_page(&link);
+    });
+    let weak = window.as_weak();
+    window.on_visit_leaving_link(move || {
+        let Some(window) = weak.upgrade() else { return };
+        open_web_page(&window.get_leaving_link());
+        window.set_leaving_link(SharedString::default());
+    });
+    let weak = window.as_weak();
+    window.on_close_leaving_link(move || {
+        if let Some(window) = weak.upgrade() {
+            window.set_leaving_link(SharedString::default());
         }
     });
     let state = adapter.clone();
@@ -1923,5 +1938,15 @@ fn place_videos(adapter: &Adapter, window: &TalkWindow) {
                 .and_then(|tiles| tiles.shown_at(index + before, scale));
             feed.show_at(at);
         }
+    }
+}
+
+/// Opens a web page in the browser. Only web pages open: a message can't
+/// start other programs.
+fn open_web_page(link: &str) {
+    if links::openable(link)
+        && let Err(error) = webbrowser::open(link)
+    {
+        tracing::warn!(%error, "could not open a link");
     }
 }

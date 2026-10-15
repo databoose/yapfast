@@ -294,6 +294,52 @@ export component ForwardDialog inherits Rectangle {
     }
 }
 
+// Asks before opening a link whose text shows something other than where it
+// goes, as Discord's client does, naming the site it really leads to.
+export component LeavingDialog inherits Rectangle {
+    in property <string> link;
+    in property <string> site;
+    callback visit;
+    callback close;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(440px, root.width - 48px); height: content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Leaving Talk";
+        TouchArea { }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                if event.text == Key.Return { root.visit(); return accept; }
+                return reject;
+            }
+            content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Leaving Talk"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                Text { text: "This link goes to"; color: Theme.secondary; font-size: 15px; }
+                Text { text: root.site; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
+                Rectangle {
+                    background: Theme.sunken; border-radius: 6px;
+                    height: link-text.preferred-height + 16px;
+                    link-text := Text {
+                        x: 10px; width: parent.width - 20px;
+                        text: root.link; color: Theme.secondary; font-size: 14px; wrap: char-wrap;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    ActionButton { text: "Go back"; ghost: true; clicked => { root.close(); } }
+                    ActionButton { text: "Visit site"; primary: true; clicked => { root.visit(); } }
+                }
+            }
+        }
+    }
+}
+
 // A status in the status menu: its dot, its name and what it does, with a
 // check beside the current one.
 component StatusOption inherits Rectangle {

@@ -765,6 +765,33 @@ fn a_click_on_a_link_in_selectable_text_opens_it() {
 }
 
 #[test]
+fn a_link_showing_other_text_asks_before_it_opens() {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let window = one_message("See [example.com/talk](https://evil.example/talk)");
+    let opened = Rc::new(RefCell::new(Vec::<String>::new()));
+    let record = opened.clone();
+    window.on_open_link(move |link| record.borrow_mut().push(link.into()));
+    let button = PointerEventButton::Left;
+    for y in (100..700).step_by(4) {
+        let position = slint::LogicalPosition::new(440., y as f32);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+    }
+    let opened = opened.borrow();
+    assert!(!opened.is_empty(), "a click on the link reaches Talk");
+    assert!(
+        opened
+            .iter()
+            .all(|link| link == "talk:leave/https://evil.example/talk"),
+        "{opened:?}"
+    );
+}
+
+#[test]
 fn styled_messages_select_by_dragging_and_copy_as_plain_text() {
     use slint::platform::{Key, PointerEventButton, WindowEvent};
     let window = one_message("Thinking **co-op** after nine, if people are up for it.");
