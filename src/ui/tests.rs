@@ -162,6 +162,66 @@ fn the_composers_menu_cuts_copies_and_pastes_through_the_application() {
     assert_eq!(window.get_draft(), "hellohello");
 }
 
+#[cfg(feature = "discord")]
+#[test]
+fn files_dropped_on_the_window_stage_or_say_why_not() {
+    let (window, adapter, folder) = discord_server_window();
+    adapter
+        .borrow_mut()
+        .app
+        .dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    adapter
+        .borrow_mut()
+        .action(&window, Action::SelectRoom("discord:10:11".into()));
+    // As once its history has come.
+    adapter.borrow_mut().app.state.room_ready = true;
+    let file = |name: &str, size: u64| {
+        let path = folder.path().join(name);
+        std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+        path
+    };
+    let drag = |drag| adapter.borrow_mut().drag(&window, drag);
+    drag(Drag::Entered);
+    assert!(window.get_dragging());
+    assert_eq!(window.get_drop_destination(), "#general");
+    drag(Drag::Left);
+    assert!(!window.get_dragging());
+    drag(Drag::Entered);
+    drag(Drag::Dropped(vec![
+        file("cat.png", 3),
+        file("notes.txt", 5),
+    ]));
+    assert!(!window.get_dragging());
+    assert_eq!(window.get_drop_refusal(), "");
+    assert_eq!(adapter.borrow().app.state.staged().len(), 2);
+    // Two waiting and nine more is too many, and none of them go.
+    let many: Vec<_> = (0..9)
+        .map(|index| file(&format!("{index}.txt"), 1))
+        .collect();
+    drag(Drag::Entered);
+    drag(Drag::Dropped(many));
+    assert_eq!(window.get_drop_refusal(), "Too many uploads!");
+    assert_eq!(
+        window.get_drop_refusal_help(),
+        "You can only upload 10 files at a time!"
+    );
+    assert_eq!(adapter.borrow().app.state.staged().len(), 2);
+    // The next drag puts the refusal away.
+    drag(Drag::Entered);
+    assert_eq!(window.get_drop_refusal(), "");
+    // Without Nitro, in a server without boosts: 20 MiB.
+    drag(Drag::Dropped(vec![file("big.mov", 21 * 1024 * 1024)]));
+    assert_eq!(window.get_drop_refusal(), "Your files are too powerful");
+    assert_eq!(
+        window.get_drop_refusal_help(),
+        "Max file size is 20.00 MB please."
+    );
+    drag(Drag::Entered);
+    drag(Drag::Dropped(vec![folder.path().into()]));
+    assert_eq!(window.get_drop_refusal(), "Invalid file type");
+    assert_eq!(adapter.borrow().app.state.staged().len(), 2);
+}
+
 #[test]
 fn the_keyboard_steps_through_messages_and_acts_on_them() {
     use slint::platform::{Key, WindowEvent};

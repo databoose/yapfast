@@ -131,9 +131,22 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   redacts the message for everyone. Replies quote the original; edits are marked
   "(edited)". Reply and edit modes show above the composer, with Cancel.
   Cancelling an edit restores the draft it replaced.
-- Attach files with the system file dialog, or paste them with Ctrl+V: files
+- Attach files with the system file dialog, paste them with Ctrl+V: files
   copied in a file manager, or a picture copied from a browser or a screenshot
-  tool. They wait above the text as tiles, with a preview for pictures and an
+  tool, or drop them on the window from a file manager. A drag over the
+  window dims it under Discord's card, "Upload to #general" (`@Sam` in a DM,
+  the name in quotes for a thread, the name alone for a group DM), with "You
+  can add comments before uploading." Discord's second line, "Hold shift to
+  upload directly.", is left out: Talk can't see Shift during a drag on
+  Wayland or X11. A drop goes whole or not at all, as in Discord's client,
+  which then says why until Got It, a click or the next drag: "Too many
+  uploads!" past ten files with those waiting, "Your files are too powerful"
+  with "Max file size is 20.00 MB please." for a file past the limit, and
+  "Invalid file type" for a folder. winit takes drops on X11 and Windows; on
+  Wayland, where it has none, Talk keeps a data device for each seat on
+  winit's own connection, which a small thread watches, and takes
+  `text/uri-list`. A drop is taken only where the composer can take files,
+  as a paste is. They wait above the text as tiles, with a preview for pictures and an
   X to take each out, until the message is sent; text can be typed beside
   them, and the message may be the files alone. A message carries up to ten
   files. Each must fit the conversation's limit, and a file that doesn't is

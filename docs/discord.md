@@ -942,7 +942,10 @@ an error.
   account's `premium_type`. A server boosted to level 2 allows 50 MB and one
   at level 3 100 MB to everyone, whichever is higher. Discord sends the
   server's `premium_tier` in READY and GUILD_UPDATE, and the account's
-  `premium_type` in READY and USER_UPDATE.
+  `premium_type` in READY and USER_UPDATE. The web client's own constant
+  without Nitro is still 10 MiB, but `getMaxFileSize` raises every limit to
+  at least 20 MiB (`Math.max(0x1400000, …)`) before it checks a file or names
+  the limit, so 20 MB is what it enforces.
 - Link previews and bots' cards show from the embeds Discord adds to a
   message: Discord's servers read the linked page's Open Graph tags, often a
   moment after sending, and the preview arrives in a message update. A card

@@ -768,6 +768,31 @@ impl AppState {
             && self.staged().len() < chat::MAX_FILES
     }
 
+    /// Why files dropped on the window can't go with the next message, if
+    /// they can't.
+    pub fn drop_refusal(&self, paths: &[PathBuf]) -> Option<chat::Refusal> {
+        let limit = self.selected_room().map_or(0, |room| room.upload_limit);
+        chat::Refusal::of(paths, self.staged().len(), limit)
+    }
+
+    /// Where files dropped on the window go, as Discord's client names it:
+    /// `#general`, `@Sam` for a DM, `"Plans"` for a thread, and a group DM
+    /// or voice channel by its name alone.
+    pub fn upload_destination(&self) -> String {
+        let Some(room) = self.selected_room() else {
+            return String::new();
+        };
+        if room.parent.is_some() {
+            format!("\"{}\"", room.name)
+        } else if self.one_to_one().is_some() {
+            format!("@{}", room.name)
+        } else if room.direct || room.voice {
+            room.name.clone()
+        } else {
+            format!("#{}", room.name)
+        }
+    }
+
     /// Whether the next message's files can be marked as spoilers.
     pub fn can_mark_spoilers(&self) -> bool {
         self.selected_room()

@@ -694,6 +694,68 @@ fn files_wait_in_the_composer_until_sent() {
 }
 
 #[test]
+fn a_drop_is_refused_whole_as_discords_client_refuses_it() {
+    let folder = tempfile::tempdir().unwrap();
+    let file = |name: &str, size: u64| {
+        let path = folder.path().join(name);
+        std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+        path
+    };
+    let (picture, big) = (file("cat.png", 3), file("big.mov", 51 * 1024 * 1024));
+    let mut app = connected();
+    assert_eq!(app.state.drop_refusal(std::slice::from_ref(&picture)), None);
+    let refusal = app.state.drop_refusal(&[picture.clone(), big]).unwrap();
+    assert_eq!(
+        (refusal.title(), refusal.help()),
+        (
+            "Your files are too powerful",
+            "Max file size is 50.00 MB please.".into()
+        )
+    );
+    let refusal = app
+        .state
+        .drop_refusal(&[picture.clone(), folder.path().into()])
+        .unwrap();
+    assert_eq!(refusal, chat::Refusal::Invalid, "a folder isn't a file");
+    assert_eq!(app.state.drop_refusal(&[]), Some(chat::Refusal::Invalid));
+    // The files already waiting count.
+    app.dispatch(Action::Stage(vec![picture.clone(); 4]));
+    assert_eq!(app.state.drop_refusal(&vec![picture.clone(); 6]), None);
+    let refusal = app.state.drop_refusal(&vec![picture; 7]).unwrap();
+    assert_eq!(
+        (refusal.title(), refusal.help()),
+        (
+            "Too many uploads!",
+            "You can only upload 10 files at a time!".into()
+        )
+    );
+}
+
+#[test]
+fn uploads_name_their_destination_as_discord_does() {
+    let mut app = connected();
+    fn room(app: &mut Application) -> &mut ChatRoom {
+        let id = app.state.selected.clone().unwrap();
+        app.state
+            .rooms
+            .iter_mut()
+            .find(|room| room.id == id)
+            .unwrap()
+    }
+    room(&mut app).name = "Sam".into();
+    room(&mut app).direct = true;
+    room(&mut app).members = 2;
+    room(&mut app).person = Some("sam".into());
+    assert_eq!(app.state.upload_destination(), "@Sam");
+    room(&mut app).members = 3;
+    assert_eq!(app.state.upload_destination(), "Sam", "a group DM");
+    room(&mut app).direct = false;
+    assert_eq!(app.state.upload_destination(), "#Sam");
+    room(&mut app).parent = Some("general".into());
+    assert_eq!(app.state.upload_destination(), "\"Sam\"", "a thread");
+}
+
+#[test]
 fn stopped_transport_unblocks_retry_and_failed_logout_keeps_session() {
     let mut app = connected();
     app.dispatch(Action::SetDraft("Retry me".into()));

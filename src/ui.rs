@@ -32,6 +32,7 @@ use talk_core::{
     voice::{self, Phase},
 };
 
+use crate::drop::Drag;
 use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
@@ -205,12 +206,19 @@ const EVENT_BATCH: usize = 256;
 /// How long the zoom level shows after it changes.
 const ZOOM_NOTE: Duration = Duration::from_millis(1200);
 
-/// Follows the native window's focus, for notifications, and zooms the window
-/// with Ctrl and +, - and 0 or the scroll wheel, keeping the level in the layout.
+/// Follows the native window's focus, for notifications, zooms the window
+/// with Ctrl and +, - and 0 or the scroll wheel, keeping the level in the
+/// layout, and takes files dropped on it.
 fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     use slint::winit_030::{EventResult, winit::event::WindowEvent};
     let saved = zoom::saved(adapter.borrow().layout.zoom);
     let adapter = Rc::downgrade(adapter);
+    let (to, weak) = (adapter.clone(), window.as_weak());
+    DRAGGED.set(Some(Box::new(move |drag| {
+        if let (Some(adapter), Some(window)) = (to.upgrade(), weak.upgrade()) {
+            adapter.borrow_mut().drag(&window, drag);
+        }
+    })));
     // The winit window exists once the event loop runs.
     let weak = window.as_weak();
     slint::Timer::single_shot(Duration::ZERO, move || {
@@ -226,10 +234,48 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         zoom::apply(window.window(), base.get(), level.get());
         let note = Rc::new(slint::Timer::default());
         let mut keys = zoom::Keys::default();
+        // The winit window exists by the first event it sends.
+        #[cfg(target_os = "linux")]
+        let mut watching = false;
+        // Files dropped together arrive one at a time, then go as one drop.
+        let dropped = Rc::new(RefCell::new(Vec::new()));
+        let mut hovering = false;
         let weak = window.as_weak();
         window
             .window()
             .on_winit_window_event(move |slint_window, event| {
+                #[cfg(target_os = "linux")]
+                if !watching {
+                    watching = true;
+                    let weak = weak.clone();
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(window) = weak.upgrade() {
+                            watch_wayland_drops(&window);
+                        }
+                    });
+                }
+                // winit takes drops on X11 and Windows; see watch_wayland_drops.
+                match event {
+                    WindowEvent::HoveredFile(_) if !hovering => {
+                        hovering = true;
+                        dragged(Drag::Entered);
+                    }
+                    WindowEvent::HoveredFileCancelled => {
+                        hovering = false;
+                        dragged(Drag::Left);
+                    }
+                    WindowEvent::DroppedFile(path) => {
+                        hovering = false;
+                        if dropped.borrow().is_empty() {
+                            let dropped = dropped.clone();
+                            slint::Timer::single_shot(Duration::ZERO, move || {
+                                dragged(Drag::Dropped(dropped.take()));
+                            });
+                        }
+                        dropped.borrow_mut().push(path.clone());
+                    }
+                    _ => {}
+                }
                 if let WindowEvent::Focused(focused) = event {
                     FOCUSED.set(*focused);
                     // Animations hold still while another window has the focus.
@@ -284,7 +330,49 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// Files dragged over the window, which the current window takes.
+fn dragged(drag: Drag) {
+    DRAGGED.with_borrow(|dragged| {
+        if let Some(dragged) = dragged {
+            dragged(drag);
+        }
+    });
+}
+
+/// On Wayland, where winit takes no drops, a data device on winit's own
+/// connection does, once for every window, as it's the seat's.
+#[cfg(target_os = "linux")]
+fn watch_wayland_drops(window: &TalkWindow) {
+    use slint::winit_030::WinitWindowAccessor;
+    use slint::winit_030::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    thread_local! {
+        static WATCHING: Cell<bool> = const { Cell::new(false) };
+    }
+    if WATCHING.get() {
+        return;
+    }
+    let found = window.window().with_winit_window(|window| {
+        match window.display_handle().map(|handle| handle.as_raw()) {
+            Ok(RawDisplayHandle::Wayland(handle)) => Some(handle.display),
+            _ => None,
+        }
+    });
+    let Some(Some(display)) = found else {
+        return;
+    };
+    WATCHING.set(true);
+    // SAFETY: winit's display stays connected while its event loop runs,
+    // which is as long as Talk does.
+    unsafe {
+        crate::drop::wayland::watch(display, |drag| {
+            let _ = slint::invoke_from_event_loop(move || dragged(drag));
+        });
+    }
+}
+
 thread_local! {
+    /// Takes files dragged over the window; see [`dragged`].
+    static DRAGGED: RefCell<Option<TakeDrag>> = const { RefCell::new(None) };
     /// Whether Talk's window has the keyboard focus, so notifications can wait.
     static FOCUSED: Cell<bool> = const { Cell::new(false) };
     /// Opens a conversation from a clicked notification, in the current window.
@@ -292,6 +380,7 @@ thread_local! {
 }
 
 type OpenRoom = Box<dyn Fn(String)>;
+type TakeDrag = Box<dyn Fn(Drag)>;
 
 fn open_from_notification(room: String) {
     OPEN.with(|open| {
@@ -1221,6 +1310,33 @@ impl Adapter {
         });
         if let Err(error) = task {
             tracing::error!(%error, "could not read the clipboard");
+        }
+    }
+
+    /// Files dragged over the window go with the next message, as they do
+    /// in Discord's client: all of them, or none and why.
+    fn drag(&mut self, window: &TalkWindow, drag: Drag) {
+        let state = &self.app.state;
+        match drag {
+            Drag::Entered => {
+                window.set_drop_refusal(SharedString::default());
+                window.set_drop_destination(state.upload_destination().into());
+                window.set_dragging(state.can_attach());
+            }
+            Drag::Left => window.set_dragging(false),
+            Drag::Dropped(paths) => {
+                window.set_dragging(false);
+                // Staging says why it can't, as in a message being edited.
+                if !state.can_attach() {
+                    self.action(window, Action::Stage(paths));
+                } else if let Some(refusal) = state.drop_refusal(&paths) {
+                    window.set_drop_refusal(refusal.title().into());
+                    window.set_drop_refusal_help(refusal.help().into());
+                } else {
+                    self.action(window, Action::Stage(paths));
+                    window.invoke_focus_composer();
+                }
+            }
         }
     }
 

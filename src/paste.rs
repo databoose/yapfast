@@ -111,7 +111,7 @@ mod wayland {
 
 /// The existing local files a `text/uri-list` names.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn files(list: &str) -> Vec<PathBuf> {
+pub fn files(list: &str) -> Vec<PathBuf> {
     list.lines()
         .map(str::trim)
         .filter(|line| !line.starts_with('#'))

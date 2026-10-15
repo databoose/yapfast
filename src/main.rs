@@ -7,6 +7,8 @@
 #[cfg(feature = "desktop")]
 mod custom_emoji;
 #[cfg(feature = "desktop")]
+mod drop;
+#[cfg(feature = "desktop")]
 mod emoji;
 #[cfg(feature = "desktop")]
 mod emoji_font;

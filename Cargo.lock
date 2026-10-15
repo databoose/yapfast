@@ -9070,6 +9070,8 @@ dependencies = [
  "talk-ui",
  "tempfile",
  "tracing",
+ "wayland-backend",
+ "wayland-client",
  "webbrowser",
  "windows-sys 0.61.2",
  "wl-clipboard-rs",
