@@ -910,12 +910,18 @@ fn discord_participants(
                 user: member.name.clone(),
                 person: member.user_id.clone(),
                 local,
-                muted: if local { state.muted } else { member.muted },
+                muted: if local {
+                    state.muted || member.server_muted
+                } else {
+                    member.muted
+                },
                 deafened: if local {
-                    state.deafened
+                    state.deafened || member.server_deafened
                 } else {
                     member.deafened
                 },
+                server_muted: member.server_muted,
+                server_deafened: member.server_deafened,
                 speaking: if local {
                     talking && !state.muted
                 } else {
@@ -951,6 +957,8 @@ fn discord_participants(
                 local: false,
                 muted: false,
                 deafened: false,
+                server_muted: false,
+                server_deafened: false,
                 speaking: false,
                 connected: false,
                 problem: Some("Calling...".into()),

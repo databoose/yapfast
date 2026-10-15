@@ -55,6 +55,19 @@ pub enum MenuChoice {
     RemoveTimeout,
     Kick,
     Ban,
+    // A member's in a voice channel, as its menu there offers them.
+    /// Mute someone for this account alone, as a box to tick.
+    LocalMute,
+    /// This account's own mute and deafen in the call it's in here.
+    SelfMute,
+    SelfDeafen,
+    /// Move them to another voice channel, in a submenu of those.
+    MoveTo,
+    /// Mute or deafen them for everyone, as boxes to tick, or take them
+    /// out of voice.
+    ServerMute,
+    ServerDeafen,
+    Disconnect,
     // A Discord server channel's or category's notifications: muting it for
     // one of [`MUTE_TIMES`], or unmuting it, and which of its messages notify.
     ChannelMute,

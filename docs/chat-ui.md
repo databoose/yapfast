@@ -330,8 +330,12 @@ The window follows Discord's arrangement:
   or Cancel friend request, then Copy ID. In a Discord server's channel it's
   their menu as a member, as Discord's: Mention, Call, a note and nickname,
   their roles in a submenu of checkboxes, and Time out, Kick and Ban last, in
-  red, as this account's permissions and its rank against theirs allow; see
-  [Discord](discord.md#a-server-members-menu). Time out and Ban ask how long
+  red, as this account's permissions and its rank against theirs allow, then
+  Copy ID; see [Discord](discord.md#a-server-members-menu). In a Discord
+  server's call, or under a voice channel, their volume sits above that
+  menu, which adds a Mute just for you, Move to and, in red, Server mute,
+  Server deafen and Disconnect; see
+  [Discord](discord.md#someones-menu-in-a-voice-channel). Time out and Ban ask how long
   or how much in their dialog, and each asks a reason. In a one-to-one DM, the
   other person's menu is the DM's own, less Mark as read and Copy link, and
   Copy ID copies theirs. Clicking an author's avatar or name, which underlines while

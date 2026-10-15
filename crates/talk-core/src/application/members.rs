@@ -71,24 +71,91 @@ impl Application {
         choices
     }
 
+    /// Someone's menu in a voice channel, from a right click on them in its
+    /// call or under it in the channel list: their menu as a member of its
+    /// server, with what the call offers, as Discord's has it. Nothing in a
+    /// DM's or a Matrix room's call, where the right click sets only their
+    /// volume.
+    pub fn voice_person_choices(&self, room: &str, user: &str) -> Vec<MenuChoice> {
+        #[cfg(feature = "discord")]
+        if self.is_member_place(room, user) {
+            let mut choices = self.member_choices(room, user);
+            self.offer_invite(user, &mut choices);
+            return choices;
+        }
+        let _ = (room, user);
+        vec![]
+    }
+
     /// The open channel, when someone's menu there is a Discord server
     /// member's: a channel of a known server, and a Discord user.
     #[cfg(feature = "discord")]
     pub(super) fn member_place(&self, user: &str) -> Option<&str> {
+        let place = self.state.selected.as_deref()?;
+        (self.state.discord_server_open() && self.is_member_place(place, user)).then_some(place)
+    }
+
+    /// Whether someone's menu in `place` is a Discord server member's.
+    #[cfg(feature = "discord")]
+    fn is_member_place(&self, place: &str, user: &str) -> bool {
         let state = &self.state;
-        let place = state.selected.as_deref()?;
-        let usable = !state.preview
+        !state.preview
             && state.discord_user.is_some()
             && !user.starts_with('@')
-            && state.discord_server_open()
-            && self.discord_place(place).is_some();
-        usable.then_some(place)
+            && self.discord_place(place).is_some()
+    }
+
+    /// Someone in the voice channel `place`, as its list shows them.
+    pub fn voice_person(&self, place: &str, user: &str) -> Option<&crate::chat::VoicePerson> {
+        self.state
+            .rooms
+            .iter()
+            .find(|room| room.id == place && room.voice)?
+            .people
+            .iter()
+            .find(|person| person.id == user)
+    }
+
+    /// The voice channels someone in the voice channel `place` may be moved
+    /// to, by room id and name, in the channel list's order, as Discord's
+    /// Move to offers them: for this account, those it may join, which it
+    /// joins; for someone else, with Move Members here, those it may move
+    /// them to, which it or they may join.
+    pub fn move_targets(&self, place: &str, user: &str) -> Vec<(String, String)> {
+        #[cfg(feature = "discord")]
+        if let Some((server, Some(current), me)) = self.discord_place(place)
+            && self.voice_person(place, user).is_some()
+            && (user == me || self.may(place, Permission::MoveMembers))
+        {
+            use talk_discord::ready::permission::CONNECT;
+            let roles = self.member_roles(place, user);
+            return server
+                .voice_channels
+                .iter()
+                .filter(|channel| channel.id != current)
+                .filter_map(|channel| {
+                    let room = discord::room_id(&server.id, &channel.id);
+                    let may = |permission| self.may(&room, permission);
+                    let allowed = if user == me {
+                        may(Permission::Connect)
+                    } else {
+                        may(Permission::MoveMembers)
+                            && (may(Permission::Connect)
+                                || server.channel_permissions(channel, user, &roles) & CONNECT != 0)
+                    };
+                    allowed.then(|| (room, channel.name.clone()))
+                })
+                .collect();
+        }
+        let _ = (place, user);
+        vec![]
     }
 
     /// A server member's menu, in the order of Discord's: who they are and
-    /// how to reach them, their nickname and how this account stands with
-    /// them, their roles, copying their ID, then moderation, last and in
-    /// red. This account's own leaves out what it can't do to itself.
+    /// how to reach them, in a voice channel they're in its mute, their
+    /// nickname and how this account stands with them, their roles and
+    /// where to move them, moderation in red, then copying their ID. This
+    /// account's own leaves out what it can't do to itself.
     #[cfg(feature = "discord")]
     fn member_choices(&self, place: &str, user: &str) -> Vec<MenuChoice> {
         let state = &self.state;
@@ -112,6 +179,14 @@ impl Application {
                 None => {}
             }
         }
+        // In a voice channel they're in: muting them for this account, or
+        // its own mute and deafen in the call it's in there.
+        let in_voice = self.voice_person(place, user).is_some();
+        if in_voice && !me {
+            choices.push(MenuChoice::LocalMute);
+        } else if in_voice && state.voice.active() && state.voice.room.as_deref() == Some(place) {
+            choices.extend([MenuChoice::SelfMute, MenuChoice::SelfDeafen]);
+        }
         // One's own, as Discord's menu has it, opens the per-server profile
         // editor, of which the nickname is a part.
         if me {
@@ -127,7 +202,20 @@ impl Application {
         if self.may(place, Permission::ManageRoles) && !self.server_roles(place).is_empty() {
             choices.push(MenuChoice::Roles);
         }
-        choices.push(MenuChoice::CopyId);
+        if in_voice && !self.move_targets(place, user).is_empty() {
+            choices.push(MenuChoice::MoveTo);
+        }
+        if in_voice {
+            if self.may(place, Permission::MuteMembers) {
+                choices.push(MenuChoice::ServerMute);
+            }
+            if self.may(place, Permission::DeafenMembers) {
+                choices.push(MenuChoice::ServerDeafen);
+            }
+            if !me && self.may(place, Permission::MoveMembers) {
+                choices.push(MenuChoice::Disconnect);
+            }
+        }
         if self.may_moderate(place, user, Permission::Moderate) && !self.is_admin(place, user) {
             choices.push(if self.timed_out(place, user) {
                 MenuChoice::RemoveTimeout
@@ -141,6 +229,7 @@ impl Application {
         if self.may_moderate(place, user, Permission::Ban) {
             choices.push(MenuChoice::Ban);
         }
+        choices.push(MenuChoice::CopyId);
         choices
     }
 
@@ -355,8 +444,9 @@ impl Application {
         vec![]
     }
 
-    /// Gives a member a role or takes it away, or ends their timeout, when
-    /// this account may; Discord's GUILD_MEMBER_UPDATE shows it.
+    /// Gives a member a role or takes it away, ends their timeout, or mutes,
+    /// deafens, moves or disconnects them in voice, when this account may;
+    /// Discord's GUILD_MEMBER_UPDATE or VOICE_STATE_UPDATE shows it.
     pub(super) fn change_member(
         &mut self,
         place: String,
@@ -370,6 +460,27 @@ impl Application {
                 MemberChange::Timeout { until_ms: None, .. } => {
                     self.may_moderate(&place, &user, Permission::Moderate)
                         && self.timed_out(&place, &user)
+                }
+                MemberChange::ServerMute(_) => {
+                    self.voice_person(&place, &user).is_some()
+                        && self.may(&place, Permission::MuteMembers)
+                }
+                MemberChange::ServerDeafen(_) => {
+                    self.voice_person(&place, &user).is_some()
+                        && self.may(&place, Permission::DeafenMembers)
+                }
+                MemberChange::Move(None) => {
+                    self.voice_person(&place, &user).is_some()
+                        && self.state.relation(&user) != Relation::Me
+                        && self.may(&place, Permission::MoveMembers)
+                }
+                // This account moves itself by joining.
+                MemberChange::Move(Some(to)) => {
+                    self.state.relation(&user) != Relation::Me
+                        && self
+                            .move_targets(&place, &user)
+                            .iter()
+                            .any(|(room, _)| room == to)
                 }
                 _ => false,
             };

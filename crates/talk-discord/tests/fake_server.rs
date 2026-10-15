@@ -1528,6 +1528,83 @@ async fn talks_to_the_fake_server() {
     post_control(server, "/_control/elsewhere?leave", "");
     snapshot_where(&discord, |snapshot| mine(&me, &lounge)(snapshot).is_none()).await;
 
+    // Alice's Staff role may mute, deafen and move members in voice, as
+    // the voice menu does: Dave, muted and deafened by himself, is server
+    // muted and deafened, then not, moved to Create Room and disconnected.
+    let dave_in = |channel: &str| {
+        let channel = channel.to_owned();
+        move |snapshot: &Snapshot| {
+            snapshot.voice.get(&channel).and_then(|members| {
+                members
+                    .iter()
+                    .find(|member| member.name == "Dave")
+                    .map(|member| (member.server_muted, member.server_deafened, member.muted))
+            })
+        }
+    };
+    let dave = snapshot_where(&discord, |snapshot| dave_in(&lounge)(snapshot).is_some())
+        .await
+        .voice[&lounge]
+        .iter()
+        .find(|member| member.name == "Dave")
+        .unwrap()
+        .user_id
+        .clone();
+    discord.server_mute(&guild, &dave, true).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_in(&lounge)(snapshot) == Some((true, false, true))
+    })
+    .await;
+    discord.server_deafen(&guild, &dave, true).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_in(&lounge)(snapshot) == Some((true, true, true))
+    })
+    .await;
+    discord.server_mute(&guild, &dave, false).await.unwrap();
+    discord.server_deafen(&guild, &dave, false).await.unwrap();
+    // Still muted by himself.
+    snapshot_where(&discord, |snapshot| {
+        dave_in(&lounge)(snapshot) == Some((false, false, true))
+    })
+    .await;
+    discord
+        .move_member(&guild, &dave, Some(&create_room))
+        .await
+        .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_in(&create_room)(snapshot).is_some() && dave_in(&lounge)(snapshot).is_none()
+    })
+    .await;
+    discord.move_member(&guild, &dave, None).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        dave_in(&create_room)(snapshot).is_none()
+    })
+    .await;
+    discord
+        .server_mute(&guild, &dave, true)
+        .await
+        .expect_err("he isn't in voice");
+    let changes: serde_json::Value = serde_json::from_str(&crate::control(
+        server,
+        "GET",
+        "/_control/voice-changes",
+        "",
+    ))
+    .unwrap();
+    assert_eq!(
+        changes,
+        serde_json::json!([
+            {"user": dave, "mute": true},
+            {"user": dave, "deaf": true},
+            {"user": dave, "mute": false},
+            {"user": dave, "deaf": false},
+            {"user": dave, "channel_id": create_room},
+            {"user": dave, "channel_id": null},
+        ])
+    );
+    post_control(server, "/_control/voice-reset", "");
+    snapshot_where(&discord, |snapshot| dave_in(&lounge)(snapshot).is_some()).await;
+
     // A DM call: Alice starts one with Bob, connecting with the DM for the
     // server, and rings him; he answers.
     let dm = discord

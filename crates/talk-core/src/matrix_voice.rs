@@ -400,6 +400,8 @@ async fn connected(
                     id: person.member_id.clone(), user: person.user_id.clone(), person: person.user_id.clone(), local: person.is_local,
                     muted: if person.is_local { state.muted } else { person.streams.iter().filter(|stream| stream.kind == MediaStreamKind::Microphone).all(|stream| stream.muted) },
                     deafened: person.is_local && state.deafened,
+                    server_muted: false,
+                    server_deafened: false,
                     speaking: speaking.contains(&person.member_id),
                     connected,
                     problem: problem.map(str::to_owned),
@@ -714,7 +716,7 @@ fn set_volumes(call: &Call, users: &HashMap<String, String>, set: &mut HashMap<S
         let Some(user) = users.get(identity.as_str()) else {
             continue;
         };
-        let volume = crate::volume::get(crate::volume::Kind::Voice, user);
+        let volume = crate::volume::heard(crate::volume::Kind::Voice, user);
         for publication in participant.track_publications().values() {
             if let Some(RemoteTrack::Audio(track)) = publication.track() {
                 let id = track.rtc_track().id();

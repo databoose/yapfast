@@ -46,6 +46,11 @@ pub mod permission {
     pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
     pub const MENTION_EVERYONE: u64 = 1 << 17;
     pub const CONNECT: u64 = 1 << 20;
+    /// Muting, deafening and moving members in voice channels; moving
+    /// takes them out of voice too.
+    pub const MUTE_MEMBERS: u64 = 1 << 22;
+    pub const DEAFEN_MEMBERS: u64 = 1 << 23;
+    pub const MOVE_MEMBERS: u64 = 1 << 24;
     pub const CHANGE_NICKNAME: u64 = 1 << 26;
     pub const MANAGE_NICKNAMES: u64 = 1 << 27;
     pub const MANAGE_ROLES: u64 = 1 << 28;

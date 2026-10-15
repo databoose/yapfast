@@ -1194,8 +1194,11 @@ it.
 Right-clicking someone in a server channel's member list, or a message's
 author there, opens their menu in the order of Discord's: Profile, Mention,
 Message, Call, Add note and the friend nickname; Change nickname, [Invite to
-server](#invite-to-server), friendship, Ignore and Block; Roles; Copy ID;
-then, in red, Time out, Kick and Ban, each naming them. What shows depends on this account's permissions and on its
+server](#invite-to-server), friendship, Ignore and Block; Roles; in red,
+Time out, Kick and Ban, each naming them; then Copy ID, last as in
+Discord's `GuildChannelUserContextMenu`. In a voice channel it has more; see
+[Someone's menu in a voice channel](#someones-menu-in-a-voice-channel).
+What shows depends on this account's permissions and on its
 highest role against theirs, checked when the menu opens
 (`application/members.rs`). The member's roles and timeout come from the
 service's names, which each snapshot shares as `SharedNames` rather than
@@ -1234,6 +1237,34 @@ copying them.
   URL-encoded and cut to the 512 characters Discord keeps.
 - One's own entry has Profile, Change nickname, Roles and Copy ID. Nobody
   outranks the owner, so nobody kicks, bans or times out the owner.
+
+### Someone's menu in a voice channel
+
+Right-clicking someone in a server's call, or under a voice channel in the
+channel list, opens their volumes, as before, above their menu as a member
+of the server, with what Discord's client adds there, in its order:
+
+- After Add note: Mute, a box that mutes them for this account alone and
+  keeps their volume for when it's unticked, which Talk remembers. One's own
+  entry, in the call Talk is in there, has Mute and Deafen boxes for this
+  account's own instead, and no volume.
+- After Roles: Move to, a submenu of the server's other voice channels.
+  Someone else's lists those this account may move them to: it needs Move
+  Members in their channel and in the other, which it or they may join. Its
+  own lists those it may join, and choosing one joins it there, as Discord's
+  client does. Choosing one for someone else is `PATCH
+  /guilds/{id}/members/{user}` with `{"channel_id": ...}`.
+- In red, before Time out: Server mute and Server deafen, boxes ticked from
+  their voice state's `mute` and `deaf`, which need Mute Members and Deafen
+  Members, and send `{"mute": ...}` or `{"deaf": ...}`; then Disconnect,
+  which needs Move Members and sends `{"channel_id": null}`, without asking,
+  as Discord's doesn't. Neither needs outranking them, as on Discord.
+
+The tracker keeps a voice state's own `self_mute` and `self_deaf` apart from
+the server's `mute` and `deaf`, so the channel list and the call show a
+server mute or deafen in red, as Discord's client does. Discord's Disable
+Video, Mute Soundboard and Apps aren't offered yet. In a DM's call or a
+Matrix room's, the right click still sets only the volume.
 
 Discord answers each change with GUILD_MEMBER_UPDATE, or for a kick with
 GUILD_MEMBER_REMOVE, and for a ban with GUILD_BAN_ADD as well, and sends the

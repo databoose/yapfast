@@ -28,10 +28,10 @@ fn a_member_below_gets_every_choice_in_discords_order() {
             Ignore,
             Block,
             Roles,
-            CopyId,
             Timeout,
             Kick,
-            Ban
+            Ban,
+            CopyId
         ]
     );
 }
@@ -59,10 +59,10 @@ fn nobody_acts_on_those_above_them_or_the_owner() {
 fn administrators_are_never_timed_out_and_a_timeout_can_end() {
     let app = staff();
     let gus = app.person_choices("6");
-    assert!(gus.ends_with(&[CopyId, Kick, Ban]), "{gus:?}");
+    assert!(gus.ends_with(&[Kick, Ban, CopyId]), "{gus:?}");
     let hal = app.person_choices("7");
     assert!(
-        hal.ends_with(&[CopyId, RemoveTimeout, Kick, Ban]),
+        hal.ends_with(&[RemoveTimeout, Kick, Ban, CopyId]),
         "{hal:?}"
     );
 }
@@ -367,10 +367,10 @@ fn invite_to_server_lists_where_one_may_invite_but_the_server_theyre_shown_in() 
             Ignore,
             Block,
             Roles,
-            CopyId,
             Timeout,
             Kick,
-            Ban
+            Ban,
+            CopyId
         ],
         "after Change nickname, before Remove friend, as in Discord's"
     );
@@ -418,5 +418,120 @@ fn inviting_someone_sends_them_a_link_to_the_first_channel_by_position() {
     assert_eq!(
         app.state.notice.as_deref(),
         Some("Couldn't send the invite: no")
+    );
+}
+
+const LOUNGE: &str = "discord:10:12";
+
+#[test]
+fn in_a_voice_channel_the_menu_adds_what_the_call_offers_in_discords_order() {
+    let app = staff();
+    assert_eq!(
+        app.voice_person_choices(LOUNGE, "4"),
+        [
+            Profile,
+            Mention,
+            Message,
+            Call,
+            AddNote,
+            AddNickname,
+            LocalMute,
+            ServerNickname,
+            Unfriend,
+            Ignore,
+            Block,
+            Roles,
+            MoveTo,
+            ServerMute,
+            ServerDeafen,
+            Disconnect,
+            Timeout,
+            Kick,
+            Ban,
+            CopyId
+        ]
+    );
+    // Her own, in the call on another client: no mute of her own here,
+    // and she moves by joining, so not disconnecting.
+    assert_eq!(
+        app.voice_person_choices(LOUNGE, "1"),
+        [
+            Profile,
+            EditServerProfile,
+            Roles,
+            MoveTo,
+            ServerMute,
+            ServerDeafen,
+            CopyId
+        ]
+    );
+    // Without the voice permissions, and for someone not in the call.
+    let crew = server(&["20"]);
+    let dave = crew.voice_person_choices(LOUNGE, "4");
+    assert!(!dave.contains(&ServerMute) && !dave.contains(&Disconnect) && !dave.contains(&MoveTo));
+    assert!(dave.contains(&LocalMute));
+    assert!(!app.voice_person_choices(LOUNGE, "3").contains(&LocalMute));
+    // Elsewhere than a server's channel, only the volume.
+    assert!(
+        app.voice_person_choices("!room:test", "@bob:test")
+            .is_empty()
+    );
+}
+
+#[test]
+fn move_to_lists_the_other_voice_channels_one_may_move_them_to() {
+    let app = staff();
+    let names = |targets: Vec<(String, String)>| {
+        targets
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>()
+    };
+    // Vault is closed to Dave and to her alike, but Cara, a Lead, may join it.
+    assert_eq!(names(app.move_targets(LOUNGE, "4")), ["Den"]);
+    assert_eq!(names(app.move_targets(LOUNGE, "1")), ["Den"]);
+    assert!(
+        app.move_targets(LOUNGE, "3").is_empty(),
+        "Cara isn't in voice"
+    );
+    assert!(
+        server(&["20"]).move_targets(LOUNGE, "4").is_empty(),
+        "no Move Members"
+    );
+}
+
+#[test]
+fn server_mute_deafen_move_and_disconnect_change_straight_from_the_menu() {
+    let mut app = staff();
+    let mut change = |user: &str, change: MemberChange| {
+        let sent = app.dispatch(Action::ChangeMember {
+            place: LOUNGE.into(),
+            user: user.into(),
+            change: change.clone(),
+        });
+        matches!(
+            sent.as_slice(),
+            [Effect::Backend(Command::Discord(DiscordCommand::Member { server, user: to, change: sent }))]
+                if server == SERVER && to == user && *sent == change
+        )
+    };
+    assert!(change("4", MemberChange::ServerMute(false)));
+    assert!(change("4", MemberChange::ServerDeafen(true)));
+    assert!(change(
+        "4",
+        MemberChange::Move(Some("discord:10:13".into()))
+    ));
+    assert!(change("4", MemberChange::Move(None)));
+    assert!(
+        !change("4", MemberChange::Move(Some("discord:10:14".into()))),
+        "closed to him"
+    );
+    assert!(
+        !change("1", MemberChange::Move(None)),
+        "she leaves by herself"
+    );
+    assert!(
+        !change("3", MemberChange::ServerMute(true)),
+        "Cara isn't in voice"
     );
 }

@@ -328,8 +328,9 @@ const bit = (n: number) => 2 ** n;
 // voice activity, change one's own nickname, make public and private threads
 // and write in them: Discord's defaults for @everyone.
 const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38].reduce((sum, n) => sum + bit(n), 0);
-// Kick, ban, manage nicknames, manage roles, moderate members.
-const MODERATION = [1, 2, 27, 28, 40].reduce((sum, n) => sum + bit(n), 0);
+// Kick, ban, manage nicknames, manage roles, moderate members, and mute,
+// deafen and move members in voice.
+const MODERATION = [1, 2, 27, 28, 40, 22, 23, 24].reduce((sum, n) => sum + bit(n), 0);
 
 function snowflake(ms: number, increment = 0): string {
   return (((BigInt(ms) - DISCORD_EPOCH) << 22n) | BigInt(increment)).toString();
@@ -361,7 +362,12 @@ function wireUser(user: User) {
 // /guilds/{id}/members/{user} renames others or times them out; PUT and
 // DELETE .../members/{user}/roles/{role} give and take roles, DELETE
 // .../members/{user} kicks, and PUT /guilds/{id}/bans/{user} bans, each as
-// far as Alice's roles allow, as Discord checks them. Each answers with
+// far as Alice's roles allow, as Discord checks them. Staff may also mute,
+// deafen and move members in voice: PATCH .../members/{user} with `mute`,
+// `deaf` or `channel_id`, null to disconnect them, changes the voice state
+// of someone in the server's voice, which VOICE_STATE_UPDATE says, and GET
+// /_control/voice-changes lists each. POST /_control/voice-reset puts Carol
+// and Dave back in the Lounge as they started. Each answers with
 // GUILD_MEMBER_UPDATE, or GUILD_MEMBER_REMOVE and GUILD_BAN_ADD, and the
 // member list's operations. GET /_control/audit-log lists the reasons given,
 // and POST /_control/members-reset puts everyone back but keeps the log.
@@ -390,6 +396,9 @@ function serverProfile(id: string) {
 }
 const timeouts = new Map<string, string>();
 const removed = new Set<string>();
+/** What Alice's PATCH of a member changed in voice, oldest first, for GET
+ *  /_control/voice-changes. */
+const voiceChanges: Record<string, unknown>[] = [];
 const auditLog: { action: string; user: string; reason: string | null }[] = [];
 function resetMembers() {
   memberRoles.clear();
@@ -416,8 +425,8 @@ function member(user: User, roles: string[] = memberRoles.get(user.id) ?? []) {
     banner: serverProfiles.get(user.id)?.banner ?? null,
     joined_at: JOINED_AT,
     premium_since: null,
-    deaf: false,
-    mute: false,
+    deaf: voice.get(user.id)?.deaf ?? false,
+    mute: voice.get(user.id)?.mute ?? false,
     pending: false,
     flags: 0,
   };
@@ -1191,16 +1200,19 @@ const readStates = new Map<string, { last: string; mentions: number }>([
 
 // Bob shares his screen with Go Live.
 // A voice state's guild is null in a DM or group DM call.
+// `mute` and `deaf` are the server's, which a moderator sets.
 type VoiceState = {
   guild: string | null; channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean; self_video?: boolean;
+  mute?: boolean; deaf?: boolean;
 };
 /** The session of Alice's other client, such as her phone. */
 const OTHER_CLIENT = "voice-alice-phone";
-const voice = new Map<string, VoiceState>([
+const startingVoice = (): [string, VoiceState][] => [
   [users.bob.id, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
   [users.carol.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
   [users.dave.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: true, session: "voice-dave" }],
-]);
+];
+const voice = new Map<string, VoiceState>(startingVoice());
 
 // Go Live streams by stream key; Bob's is running from the start. A DM
 // call's streams are keyed `call:{channel}:{user}`.
@@ -1229,8 +1241,8 @@ function wireVoiceState(userId: string, state: VoiceState | undefined, left: str
     self_deaf: state?.self_deaf ?? false,
     self_video: state?.self_video ?? false,
     self_stream: state?.self_stream ?? false,
-    mute: false,
-    deaf: false,
+    mute: state?.mute ?? false,
+    deaf: state?.deaf ?? false,
     suppress: false,
     request_to_speak_timestamp: null,
   };
@@ -3813,6 +3825,28 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         if ("error" in kept) return json({ message: "Invalid Form Body", code: 50035, errors: { avatar: { _errors: [{ code: "IMAGE_INVALID", message: kept.error }] } } }, 400);
         avatar = kept.hash;
       }
+      // Muting, deafening and moving need only the permission, not rank,
+      // and someone in the server's voice; a null channel disconnects.
+      const inVoice = voice.get(user.id)?.guild === GUILD ? voice.get(user.id) : undefined;
+      const voiceFields = ["mute", "deaf", "channel_id"].filter((field) => field in body);
+      if (voiceFields.length) {
+        if (("mute" in body && !aliceMay(22)) || ("deaf" in body && !aliceMay(23)) || ("channel_id" in body && !aliceMay(24))) return refused();
+        if (!inVoice) return json({ message: "Target user is not connected to voice.", code: 40032 }, 400);
+        const to = body.channel_id;
+        if (to && !guild().channels.some((channel) => channel.id === to && channel.type === 2)) {
+          return json({ message: "Invalid Form Body", code: 50035 }, 400);
+        }
+        const before = { ...inVoice };
+        if ("channel_id" in body && to !== inVoice.channel) endStream(streamKey(GUILD, inVoice.channel, user.id), "user_requested");
+        if ("mute" in body) inVoice.mute = !!body.mute;
+        if ("deaf" in body) inVoice.deaf = !!body.deaf;
+        if ("channel_id" in body) {
+          if (to) inVoice.channel = to;
+          else voice.delete(user.id);
+        }
+        moved(user.id, before, origin);
+        voiceChanges.push({ user: user.id, ...Object.fromEntries(voiceFields.map((field) => [field, body[field]])) });
+      }
       if ("communication_disabled_until" in body) {
         const until = body.communication_disabled_until;
         const admin = (serverPermissions(user.id) & (1n << 3n)) !== 0n;
@@ -4326,6 +4360,18 @@ const server = Bun.serve<SocketData>({
     }
     if (path === "/_control/logouts") return Response.json(logouts);
     if (path === "/_control/voice-identifies") return Response.json(voiceIdentifies);
+    if (path === "/_control/voice-changes") return Response.json(voiceChanges);
+    if (req.method === "POST" && path === "/_control/voice-reset") {
+      // Bob, Carol and Dave back in the Lounge as they started, after a
+      // test moved or disconnected them.
+      for (const [user, state] of startingVoice()) {
+        if (user === users.bob.id) continue;
+        const before = voice.get(user);
+        voice.set(user, state);
+        moved(user, before, origin);
+      }
+      return new Response("Carol and Dave are back in the Lounge\n");
+    }
     if (path === "/_control/call-audio") return Response.json(Object.fromEntries(callAudio));
     if (path === "/_control/call-video") {
       return json({

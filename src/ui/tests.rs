@@ -912,10 +912,10 @@ fn a_server_members_menu_follows_permissions_and_ticks_roles() {
             "Ignore",
             "Block",
             "Roles",
-            "Copy ID",
             "Time out Dave",
             "Kick Dave",
             "Ban Dave",
+            "Copy ID",
         ]
     );
     let marked = |pick: fn(&MenuRow) -> bool| -> Vec<&str> {
@@ -926,7 +926,7 @@ fn a_server_members_menu_follows_permissions_and_ticks_roles() {
     };
     assert_eq!(
         marked(|row| row.separated),
-        ["Change nickname", "Roles", "Copy ID", "Time out Dave"]
+        ["Change nickname", "Roles", "Time out Dave", "Copy ID"]
     );
     assert_eq!(
         marked(|row| row.danger),

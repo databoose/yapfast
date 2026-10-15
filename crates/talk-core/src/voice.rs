@@ -44,6 +44,10 @@ pub struct Participant {
     /// Not hearing the call. MatrixRTC doesn't share this, so in Talk calls
     /// only this account's own shows.
     pub deafened: bool,
+    /// Muted or deafened by a Discord server, which shows in red; `muted`
+    /// and `deafened` say so too.
+    pub server_muted: bool,
+    pub server_deafened: bool,
     pub speaking: bool,
     /// False after this participant's media connection disappeared, for
     /// example when their client crashed. Their membership stays listed until

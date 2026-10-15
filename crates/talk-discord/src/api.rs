@@ -779,6 +779,16 @@ impl Api {
             .await
     }
 
+    /// Changes a member's voice state, as the voice menu does: `mute` and
+    /// `deaf` for the server's, and `channel_id` to move them, which with
+    /// null disconnects them. Discord answers with the member, and
+    /// VOICE_STATE_UPDATE.
+    pub async fn modify_member_voice(&self, guild: &str, user: &str, body: &Value) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{user}");
+        self.empty(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
     /// Gives a member a role, or with `add` false takes it away.
     pub async fn member_role(&self, guild: &str, user: &str, role: &str, add: bool) -> Result<()> {
         let path = format!("/guilds/{guild}/members/{user}/roles/{role}");

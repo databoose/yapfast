@@ -85,7 +85,8 @@ impl Listener for Hearing {
         let Some(output) = output.as_ref() else {
             return;
         };
-        let volume = |user: u64| crate::volume::get(crate::volume::Kind::Voice, &user.to_string());
+        let volume =
+            |user: u64| crate::volume::heard(crate::volume::Kind::Voice, &user.to_string());
         let mut frame = spare_frame();
         mix(voices, volume, &mut frame);
         // A full queue means the speakers are behind; dropping a frame keeps
