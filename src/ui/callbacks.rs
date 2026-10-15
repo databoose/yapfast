@@ -946,6 +946,9 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.twelve_hour_clock = window.get_twelve_hour_clock();
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
+        layout.animate = chosen(&ANIMATES, window.get_animate());
+        ANIMATE.set(layout.animate);
+        show_motion(&window);
         layout.unmute_on_join = window.get_unmute_on_join();
         layout.deafen_on_join = window.get_deafen_on_join();
         layout.level_voice = Some(window.get_level_voice());
@@ -1032,6 +1035,16 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 volumes.insert(person.into(), volume);
             }
             adapter.layout.write(&adapter.root);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_show_idle_toggled(move |shown| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.show_idle = Some(shown);
+        adapter.layout.write(&adapter.root);
+        if let Some(window) = weak.upgrade() {
+            adapter.idle_setting_changed(&window);
         }
     });
     let state = adapter.clone();

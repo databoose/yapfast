@@ -11,7 +11,10 @@
 //! Discord's limit on what a connection sends, in the connection's own task,
 //! so commands held back don't hold back the heartbeats.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -34,7 +37,10 @@ use tokio_tungstenite::{
 
 use crate::{client, event::Event, member_list};
 
-const URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
+const URL: &str = "wss://gateway.discord.gg";
+/// What the web client asks of the gateway: JSON, compressed as one zlib
+/// stream for the whole connection.
+const QUERY: &str = "/?encoding=json&v=9&compress=zlib-stream";
 /// The capability bits the web client sends, as used by mautrix-discord.
 const CAPABILITIES: u64 = 1734653;
 
@@ -107,6 +113,16 @@ impl std::error::Error for Invalidated {}
 /// a margin for heartbeats.
 const SEND_LIMIT: usize = 110;
 const SEND_WINDOW: Duration = Duration::from_secs(60);
+/// Discord allows 5 presence updates in 20 seconds, which the web client
+/// keeps to.
+const PRESENCE_LIMIT: usize = 5;
+#[cfg(not(test))]
+const PRESENCE_WINDOW: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const PRESENCE_WINDOW: Duration = Duration::from_millis(300);
+/// The longest Talk holds back member requests for a server when Discord
+/// asks it to wait.
+const MEMBERS_HELD: Duration = Duration::from_secs(5 * 60);
 /// How many times a lost connection tries to resume before Talk identifies
 /// again.
 const RESUME_TRIES: u32 = 3;
@@ -221,6 +237,9 @@ pub struct Gateway {
     /// Dispatched events, and last, the error that ended the session.
     events: mpsc::UnboundedReceiver<Result<Dispatch>>,
     task: JoinHandle<()>,
+    /// Servers whose members Discord said Talk asked about too often, with
+    /// when it may ask again.
+    members_held: HashMap<String, Instant>,
 }
 
 impl Drop for Gateway {
@@ -237,7 +256,7 @@ async fn open(url: &str) -> Result<Socket> {
     let headers = request.headers_mut();
     headers.insert(
         header::USER_AGENT,
-        HeaderValue::from_static(client::USER_AGENT),
+        HeaderValue::from_static(client::user_agent()),
     );
     headers.insert(
         header::ORIGIN,
@@ -266,9 +285,9 @@ impl Gateway {
                 let server = server
                     .replacen("https://", "wss://", 1)
                     .replacen("http://", "ws://", 1);
-                format!("{server}/?v=9&encoding=json")
+                format!("{server}{QUERY}")
             }
-            None => URL.to_owned(),
+            None => format!("{URL}{QUERY}"),
         };
         let limiter = Limiter::new(SEND_LIMIT, SEND_WINDOW);
         Self::connect_to(&url, token, presence, reconnects, limiter).await
@@ -283,6 +302,7 @@ impl Gateway {
     ) -> Result<(Self, Value)> {
         let mut connection = Connection {
             socket: open(url).await?,
+            inflater: Inflater::default(),
             sequence: None,
             interval: Duration::from_secs(40),
             next_heartbeat: Instant::now(),
@@ -291,6 +311,8 @@ impl Gateway {
             session_id: None,
             resume_url: None,
             limiter,
+            presences: Limiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
+            presence: None,
             resumes: 0,
         };
         connection.greeted().await?;
@@ -312,6 +334,7 @@ impl Gateway {
             commands,
             events,
             task,
+            members_held: HashMap::new(),
         };
         loop {
             let event = gateway.next().await?;
@@ -425,6 +448,14 @@ impl Gateway {
         .await
     }
 
+    /// Whether Discord asked Talk to wait before asking about `guild_id`'s
+    /// members again; requests until then aren't sent.
+    pub fn members_held(&mut self, guild_id: &str) -> bool {
+        let now = Instant::now();
+        self.members_held.retain(|_, until| *until > now);
+        self.members_held.contains_key(guild_id)
+    }
+
     /// Asks for these members' server profiles, which arrive as GUILD_MEMBERS_CHUNK.
     pub async fn request_members(
         &mut self,
@@ -432,6 +463,9 @@ impl Gateway {
         user_ids: &[String],
         nonce: Option<&str>,
     ) -> Result<()> {
+        if self.members_held(guild_id) {
+            return Ok(());
+        }
         let mut request = json!({"guild_id": [guild_id], "user_ids": user_ids, "presences": false});
         if let Some(nonce) = nonce {
             request["nonce"] = nonce.into();
@@ -448,6 +482,9 @@ impl Gateway {
         limit: u64,
         nonce: &str,
     ) -> Result<()> {
+        if self.members_held(guild_id) {
+            return Ok(());
+        }
         self.send(
             REQUEST_GUILD_MEMBERS,
             json!({
@@ -463,10 +500,32 @@ impl Gateway {
 
     /// The next dispatched event; an error ends the session.
     pub async fn next(&mut self) -> Result<Dispatch> {
-        match self.events.recv().await {
-            Some(event) => event,
-            None => Err(anyhow!("the Discord gateway connection stopped")),
+        let dispatch = match self.events.recv().await {
+            Some(event) => event?,
+            None => return Err(anyhow!("the Discord gateway connection stopped")),
+        };
+        if dispatch.event == Event::RateLimited {
+            self.rate_limited(&dispatch.data);
         }
+        Ok(dispatch)
+    }
+
+    /// Discord refused a command for being sent too often. Only member
+    /// requests are limited this way, per server; Talk holds them back for
+    /// as long as Discord asks.
+    fn rate_limited(&mut self, data: &Value) {
+        let opcode = data["opcode"].as_u64();
+        let wait = data["retry_after"].as_f64().unwrap_or(0.0);
+        tracing::warn!(?opcode, wait, "Discord's gateway asked Talk to slow down");
+        if opcode != Some(REQUEST_GUILD_MEMBERS) {
+            return;
+        }
+        let Some(guild) = data["meta"]["guild_id"].as_str() else {
+            return;
+        };
+        let wait = crate::limits::sent_seconds(wait, Duration::from_secs(1), MEMBERS_HELD);
+        self.members_held
+            .insert(guild.to_owned(), Instant::now() + wait);
     }
 
     /// Closes the connection, which ends the session.
@@ -513,6 +572,7 @@ impl Limiter {
 /// One connection to the gateway, and the session it carries on.
 struct Connection {
     socket: Socket,
+    inflater: Inflater,
     sequence: Option<u64>,
     interval: Duration,
     next_heartbeat: Instant,
@@ -524,6 +584,10 @@ struct Connection {
     session_id: Option<String>,
     resume_url: Option<String>,
     limiter: Limiter,
+    /// Presence updates, which Discord allows 5 of in 20 seconds; the
+    /// latest waits, replacing any before it, while that's used up.
+    presences: Limiter,
+    presence: Option<Value>,
     /// Resumes tried since Discord last confirmed one.
     resumes: u32,
 }
@@ -560,7 +624,9 @@ impl Connection {
         held: &mut Option<(u64, Value)>,
     ) -> Result<()> {
         loop {
-            let free_at = self.limiter.free_at(Instant::now());
+            let now = Instant::now();
+            let free_at = self.limiter.free_at(now);
+            let presence_at = self.presences.free_at(now).max(free_at);
             tokio::select! {
                 () = tokio::time::sleep_until(self.next_heartbeat) => {
                     if !self.acked {
@@ -576,7 +642,14 @@ impl Connection {
                     }
                     *held = None;
                 }
+                () = tokio::time::sleep_until(presence_at), if self.presence.is_some() => {
+                    if let Some(presence) = self.presence.take() {
+                        self.presences.sent.push_back(Instant::now());
+                        self.write(PRESENCE_UPDATE, &presence).await?;
+                    }
+                }
                 command = commands.recv(), if held.is_none() => match command {
+                    Some(Command::Send(PRESENCE_UPDATE, data)) => self.presence = Some(data),
                     Some(Command::Send(op, data)) => {
                         if free_at > Instant::now() {
                             tracing::warn!("holding back a gateway command to stay under Discord's limit");
@@ -687,7 +760,7 @@ impl Connection {
             return Err(lost);
         };
         tracing::info!(error = %lost, "resuming the Discord gateway session");
-        let url = format!("{}/?v=9&encoding=json", resume_url.trim_end_matches('/'));
+        let url = format!("{}{QUERY}", resume_url.trim_end_matches('/'));
         loop {
             if self.resumes >= RESUME_TRIES {
                 return Err(lost.context("could not resume the gateway session"));
@@ -710,6 +783,7 @@ impl Connection {
         // Dropping the old connection without a close frame keeps the
         // session; a normal close would end it.
         self.socket = open(url).await?;
+        self.inflater = Inflater::default();
         self.limiter.sent.clear();
         self.greeted().await?;
         let resume = json!({
@@ -733,6 +807,11 @@ impl Connection {
                     return serde_json::from_str(&text)
                         .context("could not understand Discord's gateway");
                 }
+                Message::Binary(data) => {
+                    if let Some(payload) = self.inflater.push(&data)? {
+                        return Ok(payload);
+                    }
+                }
                 Message::Close(frame) => {
                     let (code, reason) = frame
                         .map(|frame| (frame.code, frame.reason.to_string()))
@@ -745,6 +824,90 @@ impl Connection {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// The gateway's zlib-stream compression: one zlib stream through the whole
+/// connection, each payload ending with a sync flush, so a payload may come
+/// in more than one message.
+struct Inflater {
+    zlib: flate2::Decompress,
+    /// A payload's start, until its last message comes.
+    partial: Vec<u8>,
+    inflated: Vec<u8>,
+}
+
+/// The end of each payload: zlib's sync flush marker.
+const FLUSHED: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
+/// The most one payload may inflate to. READY is the largest, a few MiB on
+/// an account in many servers.
+const MAX_PAYLOAD: usize = 256 << 20;
+/// Buffers larger than this go after the payload that needed them, rather
+/// than staying for the connection's life.
+const KEPT_BUFFER: usize = 256 << 10;
+
+impl Default for Inflater {
+    fn default() -> Self {
+        Self {
+            zlib: flate2::Decompress::new(true),
+            partial: Vec::new(),
+            inflated: Vec::new(),
+        }
+    }
+}
+
+impl Inflater {
+    /// Takes the next message, returning the payload it completes.
+    fn push(&mut self, data: &[u8]) -> Result<Option<Value>> {
+        let compressed = if self.partial.is_empty() && data.ends_with(&FLUSHED) {
+            data
+        } else {
+            if self.partial.len() + data.len() > MAX_PAYLOAD {
+                bail!("Discord's gateway sent too much at once");
+            }
+            self.partial.extend_from_slice(data);
+            if !self.partial.ends_with(&FLUSHED) {
+                return Ok(None);
+            }
+            &self.partial
+        };
+        let inflated = inflate(&mut self.zlib, compressed, &mut self.inflated);
+        let payload = inflated.and_then(|()| {
+            serde_json::from_slice(&self.inflated).context("could not understand Discord's gateway")
+        });
+        self.partial.clear();
+        self.inflated.clear();
+        for buffer in [&mut self.partial, &mut self.inflated] {
+            if buffer.capacity() > KEPT_BUFFER {
+                *buffer = Vec::new();
+            }
+        }
+        payload.map(Some)
+    }
+}
+
+/// Inflates all of `compressed` into `out`.
+fn inflate(zlib: &mut flate2::Decompress, mut compressed: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    loop {
+        if out.len() == out.capacity() {
+            if out.len() >= MAX_PAYLOAD {
+                bail!("Discord's gateway sent too much at once");
+            }
+            out.reserve((compressed.len() * 4).clamp(16 << 10, MAX_PAYLOAD - out.len()));
+        }
+        let (read, written) = (zlib.total_in(), out.len());
+        zlib.decompress_vec(compressed, out, flate2::FlushDecompress::Sync)
+            .context("could not inflate what Discord's gateway sent")?;
+        let used = (zlib.total_in() - read) as usize;
+        compressed = &compressed[used..];
+        let room = out.len() < out.capacity();
+        // Done once the input is used up and zlib had room to spare.
+        if compressed.is_empty() && room {
+            return Ok(());
+        }
+        if used == 0 && out.len() == written && room {
+            bail!("Discord's gateway sent a compressed stream that stopped");
         }
     }
 }
@@ -826,6 +989,7 @@ mod tests {
         let (socket, _peer) = tokio::join!(open(&discord.url), discord.accept(SLOW_HEARTBEAT));
         let mut connection = Connection {
             socket: socket.unwrap(),
+            inflater: Inflater::default(),
             sequence: None,
             interval: SLOW_HEARTBEAT,
             next_heartbeat: Instant::now(),
@@ -834,6 +998,8 @@ mod tests {
             session_id: None,
             resume_url: None,
             limiter: limiter(),
+            presences: Limiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
+            presence: None,
             resumes: 0,
         };
         let message = json!({
@@ -1227,5 +1393,77 @@ mod tests {
             !matches!(sent, Ok(Some(Ok(Message::Text(_))))),
             "no IDENTIFY went"
         );
+    }
+
+    #[tokio::test]
+    async fn member_requests_wait_as_long_as_discord_asks() {
+        let discord = Discord::new().await;
+        let (mut gateway, mut peer) = discord.session(SLOW_HEARTBEAT, limiter()).await;
+        let users = ["1".to_owned()];
+        gateway.request_members("a", &users, None).await.unwrap();
+        assert_eq!(peer.command().await["op"], REQUEST_GUILD_MEMBERS);
+
+        peer.dispatch(
+            "RATE_LIMITED",
+            json!({"opcode": REQUEST_GUILD_MEMBERS, "retry_after": 30.5, "meta": {"guild_id": "a"}}),
+        )
+        .await;
+        assert_eq!(next(&mut gateway).await.unwrap().event, Event::RateLimited);
+        assert!(gateway.members_held("a"));
+        assert!(!gateway.members_held("b"));
+
+        // Server a's request is held back; b's goes.
+        gateway.request_members("a", &users, None).await.unwrap();
+        gateway.search_members("a", "bo", 10, "n").await.unwrap();
+        gateway.request_members("b", &users, None).await.unwrap();
+        assert_eq!(peer.command().await["d"]["guild_id"], json!(["b"]));
+    }
+
+    #[tokio::test]
+    async fn presence_updates_keep_to_discords_limit_and_the_latest_goes() {
+        let discord = Discord::new().await;
+        let (mut gateway, mut peer) = discord.session(SLOW_HEARTBEAT, limiter()).await;
+        for n in 0..PRESENCE_LIMIT {
+            gateway.update_presence(json!({"n": n})).await.unwrap();
+            assert_eq!(peer.command().await["d"]["n"], n);
+        }
+        // Past the limit, the later replaces the earlier while both wait.
+        let held = Instant::now();
+        gateway.update_presence(json!({"n": "held"})).await.unwrap();
+        gateway
+            .update_presence(json!({"n": "latest"}))
+            .await
+            .unwrap();
+        assert_eq!(peer.command().await["d"]["n"], "latest");
+        assert!(held.elapsed() >= PRESENCE_WINDOW / 2);
+    }
+
+    /// Compresses payloads as Discord's gateway does, sharing one stream.
+    fn deflated(zlib: &mut flate2::Compress, payload: &Value) -> Vec<u8> {
+        let input = payload.to_string();
+        let mut out = Vec::with_capacity(input.len() + 64);
+        zlib.compress_vec(input.as_bytes(), &mut out, flate2::FlushCompress::Sync)
+            .unwrap();
+        assert!(out.ends_with(&FLUSHED));
+        out
+    }
+
+    #[test]
+    fn inflates_payloads_sharing_one_stream() {
+        let mut zlib = flate2::Compress::new(flate2::Compression::default(), true);
+        let mut inflater = Inflater::default();
+        let hello = json!({"op": HELLO, "d": {"heartbeat_interval": 41250}});
+        let first = deflated(&mut zlib, &hello);
+        assert_eq!(inflater.push(&first).unwrap(), Some(hello));
+
+        // A large payload, split across messages, refers back to the first.
+        let ready = json!({"op": DISPATCH, "t": "READY", "d": {"guilds": vec!["heartbeat_interval"; 20_000]}});
+        let second = deflated(&mut zlib, &ready);
+        let (start, end) = second.split_at(second.len() / 2);
+        assert_eq!(inflater.push(start).unwrap(), None);
+        assert_eq!(inflater.push(end).unwrap(), Some(ready));
+        assert_eq!(inflater.inflated.capacity(), 0, "a large buffer stays");
+
+        assert!(inflater.push(b"not zlib\x00\x00\xff\xff").is_err());
     }
 }

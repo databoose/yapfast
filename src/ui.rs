@@ -36,6 +36,7 @@ use crate::drop::Drag;
 use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
+mod away;
 mod call_link;
 mod callbacks;
 mod gifs;
@@ -124,6 +125,7 @@ pub fn run(
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
     bind_callbacks(&window, &adapter);
     watch_window(&window, &adapter);
+    adapter.borrow_mut().watch_away();
     adapter.borrow_mut().refresh(&window);
     if preview {
         adapter.borrow_mut().action(&window, Action::Preview);
@@ -276,11 +278,16 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                     }
                     _ => {}
                 }
+                if away::is_use(event)
+                    && let (Some(adapter), Some(window)) = (adapter.upgrade(), weak.upgrade())
+                    && let Ok(mut adapter) = adapter.try_borrow_mut()
+                {
+                    adapter.used(&window);
+                }
                 if let WindowEvent::Focused(focused) = event {
                     FOCUSED.set(*focused);
-                    // Animations hold still while another window has the focus.
                     if let Some(window) = weak.upgrade() {
-                        window.global::<Motion>().set_playing(*focused);
+                        show_motion(&window);
                     }
                 }
                 #[cfg(windows)]
@@ -375,6 +382,8 @@ thread_local! {
     static DRAGGED: RefCell<Option<TakeDrag>> = const { RefCell::new(None) };
     /// Whether Talk's window has the keyboard focus, so notifications can wait.
     static FOCUSED: Cell<bool> = const { Cell::new(false) };
+    /// When animations play, as the settings say.
+    static ANIMATE: Cell<Animate> = const { Cell::new(Animate::Focused) };
     /// Opens a conversation from a clicked notification, in the current window.
     static OPEN: RefCell<Option<OpenRoom>> = const { RefCell::new(None) };
 }
@@ -619,6 +628,9 @@ struct Layout {
     show_hidden_channels: bool,
     /// Reading in Talk marks Discord channels read on Discord; on unless turned off.
     sync_discord_reads: Option<bool>,
+    /// Discord shows this account idle after 10 minutes nobody uses Talk;
+    /// on unless turned off.
+    show_idle: Option<bool>,
     /// DMs pinned to the top of the DM list, by room ID, the first pinned first.
     pinned: Vec<String>,
     /// Message times as 9:41 PM rather than 21:41.
@@ -627,6 +639,8 @@ struct Layout {
     text_size: Option<i32>,
     /// Link previews under messages; on unless turned off.
     link_previews: Option<bool>,
+    /// When animations play.
+    animate: Animate,
     /// Joining a call turns the microphone on.
     unmute_on_join: bool,
     /// Joining a call deafens.
@@ -692,6 +706,32 @@ const STRENGTHS: [talk_core::noise::Strength; 3] = [
     talk_core::noise::Strength::Light,
 ];
 
+/// When GIFs, animated emoji and stickers play. Held still, an animation
+/// decodes no frame past the one showing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Animate {
+    /// While Talk's window has the focus, as in Discord, so they hold still
+    /// on another screen.
+    #[default]
+    Focused,
+    Always,
+    Never,
+}
+
+/// The animation settings' choices, in the order they show.
+const ANIMATES: [Animate; 3] = [Animate::Focused, Animate::Always, Animate::Never];
+
+/// Plays animations or holds them still, as the setting and the focus say.
+fn show_motion(window: &TalkWindow) {
+    let playing = match ANIMATE.get() {
+        Animate::Focused => FOCUSED.get(),
+        Animate::Always => true,
+        Animate::Never => false,
+    };
+    window.global::<Motion>().set_playing(playing);
+}
+
 /// Where a setting's value is among its choices.
 fn choice<T: PartialEq>(choices: &[T], value: T) -> i32 {
     choices
@@ -746,6 +786,7 @@ impl Layout {
     }
 
     fn apply(&self, window: &TalkWindow) {
+        window.set_show_idle(self.show_idle.unwrap_or(true));
         // Before the first frame, which the event loop draws. A window made
         // again, after closing to the tray, keeps the theme this way too.
         let (id, chosen) = theme::chosen(self.theme.as_deref(), &self.custom_themes);
@@ -763,6 +804,9 @@ impl Layout {
         window.set_twelve_hour_clock(self.twelve_hour_clock);
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
+        window.set_animate(choice(&ANIMATES, self.animate));
+        ANIMATE.set(self.animate);
+        show_motion(window);
         window.set_unmute_on_join(self.unmute_on_join);
         window.set_deafen_on_join(self.deafen_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
@@ -996,6 +1040,7 @@ struct Adapter {
     icons: Icons,
     weak: std::rc::Weak<RefCell<Self>>,
     window: slint::Weak<TalkWindow>,
+    away: away::Away,
     navigation: Navigation,
     /// Whether the forward dialog was open at the last refresh.
     forwarding: bool,
@@ -1186,6 +1231,7 @@ impl Adapter {
                 icons,
                 weak: weak.clone(),
                 window: window.as_weak(),
+                away: away::Away::default(),
                 navigation: Navigation::default(),
                 forwarding: false,
                 selection_version: 0,

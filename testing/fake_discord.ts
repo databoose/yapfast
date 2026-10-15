@@ -1276,6 +1276,10 @@ type SocketData = {
   /** Its server's active threads were synced, as a subscription with
    *  `threads` does once. */
   threadsSynced?: boolean;
+  /** The gateway's zlib-stream compression was asked for; its header went
+   *  once `zlibStarted`. */
+  zlib?: boolean;
+  zlibStarted?: boolean;
   /** A remote login: the client's key, the nonce it must prove, and the code. */
   remoteAuth?: { key?: CryptoKey; nonce?: Uint8Array; fingerprint?: string; scanned?: boolean; timer?: Timer };
 };
@@ -1298,7 +1302,40 @@ const sessionCounts = { identifies: 0, resumes: 0 };
 
 function send(ws: Socket, op: number, d: unknown, t: string | null = null) {
   const s = op === 0 ? ++ws.data.sequence : null;
-  ws.send(JSON.stringify({ op, d, s, t }));
+  sendGateway(ws, JSON.stringify({ op, d, s, t }));
+}
+
+/** Sends a gateway payload, in the connection's zlib stream when it asked for
+ *  one. The fake stores rather than compresses, which is still a valid zlib
+ *  stream: a stored block for each 64 KiB, then the empty stored block that
+ *  is a sync flush. A payload over 64 KiB goes in two messages, as
+ *  Discord's large ones may. */
+function sendGateway(ws: Socket, payload: string) {
+  if (!ws.data.zlib) {
+    ws.send(payload);
+    return;
+  }
+  const data = Buffer.from(payload);
+  const parts: Buffer[] = [];
+  if (!ws.data.zlibStarted) {
+    ws.data.zlibStarted = true;
+    parts.push(Buffer.from([0x78, 0x01]));
+  }
+  for (let at = 0; at < data.length; at += 0xffff) {
+    const block = data.subarray(at, at + 0xffff);
+    const header = Buffer.alloc(5);
+    header.writeUInt16LE(block.length, 1);
+    header.writeUInt16LE(~block.length & 0xffff, 3);
+    parts.push(header, block);
+  }
+  parts.push(Buffer.from([0x00, 0x00, 0x00, 0xff, 0xff]));
+  const message = Buffer.concat(parts);
+  if (message.length <= 0x10000) {
+    ws.send(message);
+    return;
+  }
+  ws.send(message.subarray(0, 0x10000));
+  ws.send(message.subarray(0x10000));
 }
 
 function dispatch(name: string, data: unknown) {
@@ -4315,11 +4352,12 @@ const server = Bun.serve<SocketData>({
       await Bun.sleep(slowMs);
     }
     if (path === "/" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      if (url.searchParams.get("compress")) {
-        return new Response("compression isn't supported", { status: 400 });
+      const compress = url.searchParams.get("compress");
+      if (compress && compress !== "zlib-stream") {
+        return new Response("only zlib-stream compression is supported", { status: 400 });
       }
       const session = `fake-session-${++sessions}`;
-      if (server.upgrade(req, { data: { sequence: 0, identified: false, session, origin } })) {
+      if (server.upgrade(req, { data: { sequence: 0, identified: false, session, origin, zlib: compress === "zlib-stream" } })) {
         return undefined;
       }
       return new Response("upgrade failed", { status: 400 });
@@ -4844,7 +4882,8 @@ const server = Bun.serve<SocketData>({
         return;
       }
       sockets.add(ws);
-      ws.send(
+      sendGateway(
+        ws,
         JSON.stringify({
           op: 10,
           d: { heartbeat_interval: HEARTBEAT_INTERVAL, _trace: ['["fake-gateway",{"micros":0}]'] },

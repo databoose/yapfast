@@ -1326,6 +1326,12 @@ pub enum Action {
     CloseStatusEditor,
     /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`.
     SetStatus(String),
+    /// Nobody has used Talk since then, in Unix milliseconds, or someone is
+    /// using it again; and whether that may show Discord idle.
+    Inactive {
+        since: Option<u64>,
+        show_idle: bool,
+    },
     ConfirmVoiceSwitch,
     CancelVoiceSwitch,
     /// Someone in a voice channel was clicked in the channel list, by
@@ -2140,6 +2146,16 @@ impl Application {
                 }
                 vec![Effect::Backend(Command::Discord(
                     DiscordCommand::SetStatus(status),
+                ))]
+            }
+            Action::Inactive { since, show_idle } => {
+                // Discord keeps it through reconnecting, so it goes even
+                // before Discord connects.
+                if self.state.preview {
+                    return vec![];
+                }
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::Inactive { since, show_idle },
                 ))]
             }
             Action::ConfirmVoiceSwitch => self.confirm_voice_switch(),

@@ -81,6 +81,7 @@ impl std::error::Error for Stopped {}
 /// when the code expired or the person said no.
 pub async fn link(mut step: impl FnMut(Step)) -> Result<String> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    Api::anonymous()?.learn_build_number().await;
     let key = tokio::task::spawn_blocking(|| RsaPrivateKey::new(&mut OsRng, KEY_BITS))
         .await?
         .context("could not make a key to link with")?;
@@ -101,7 +102,7 @@ pub async fn link(mut step: impl FnMut(Step)) -> Result<String> {
     let headers = request.headers_mut();
     headers.insert(
         header::USER_AGENT,
-        HeaderValue::from_static(client::USER_AGENT),
+        HeaderValue::from_static(client::user_agent()),
     );
     headers.insert(
         header::ORIGIN,

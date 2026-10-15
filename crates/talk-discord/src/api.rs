@@ -8,11 +8,14 @@ use serde_json::{Value, json};
 use crate::{
     captcha::Captcha,
     client,
-    limits::{self, Limits},
+    limits::{self, Limits, Refusals, Stopped},
     settings::{self, CustomStatus},
 };
 
 const API: &str = "https://discord.com/api/v9";
+/// The web client's page, which carries its build number.
+const WEB_APP: &str = "https://discord.com/app";
+const UNAUTHORIZED: &str = "Discord rejected the login. Link Discord again.";
 /// The most messages one history request returns.
 pub const PAGE: usize = 50;
 
@@ -110,6 +113,7 @@ pub struct Api {
     /// The API's base URL: Discord's, or the test server's.
     base: String,
     limits: Limits,
+    refusals: Refusals,
     /// Downloads going at once, so opening the emoji picker or a busy channel
     /// spreads its pictures out rather than asking for hundreds together.
     downloads: tokio::sync::Semaphore,
@@ -122,14 +126,8 @@ const DOWNLOADS: usize = 8;
 impl Api {
     pub fn new(token: String) -> Result<Self> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let mut headers = header::HeaderMap::new();
-        headers.insert(
-            "X-Super-Properties",
-            header::HeaderValue::from_str(&client::super_properties())?,
-        );
         let http = Client::builder()
-            .user_agent(client::USER_AGENT)
-            .default_headers(headers)
+            .user_agent(client::user_agent())
             .cookie_provider(crate::cookies::jar())
             .build()
             .context("could not set up HTTPS")?;
@@ -142,6 +140,7 @@ impl Api {
             token,
             base,
             limits: Limits::default(),
+            refusals: Refusals::default(),
             downloads: tokio::sync::Semaphore::new(DOWNLOADS),
         })
     }
@@ -151,8 +150,48 @@ impl Api {
         Self::new(String::new())
     }
 
+    /// Reads the web client's current build number from its page, as a
+    /// browser loads that page before the client connects. Once a run is
+    /// enough; until then, and if the page can't be read, Talk sends the
+    /// last one it knew.
+    pub async fn learn_build_number(&self) {
+        /// The page sets it near the top; the whole page is about 75 KiB.
+        const READ: usize = 256 << 10;
+        if client::test_server().is_some() || client::knows_build_number() {
+            return;
+        }
+        let read = async {
+            let mut response = self
+                .http
+                .get(WEB_APP)
+                .header(header::ACCEPT, "text/html")
+                .send()
+                .await?
+                .error_for_status()?;
+            let mut page = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                page.extend_from_slice(&chunk);
+                if client::learn_build_number(&page) || page.len() >= READ {
+                    break;
+                }
+            }
+            anyhow::Ok(())
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(10), read).await {
+            Ok(Ok(())) if client::knows_build_number() => {}
+            Ok(Ok(())) => tracing::warn!("Discord's web page gave no build number"),
+            Ok(Err(error)) => tracing::warn!(%error, "could not read Discord's web page"),
+            Err(_) => tracing::warn!("Discord's web page didn't load"),
+        }
+    }
+
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        let request = self.http.request(method, format!("{}{path}", self.base));
+        // Only the API gets the client's description, as in the web client;
+        // it changes through a run, so each request makes it again.
+        let request = self
+            .http
+            .request(method, format!("{}{path}", self.base))
+            .header("X-Super-Properties", client::super_properties());
         if self.token.is_empty() {
             return request;
         }
@@ -1043,6 +1082,14 @@ impl Api {
         let route = limits::route(request.method(), request.url().path());
         let mut retried = false;
         loop {
+            match self.refusals.check() {
+                Ok(()) => {}
+                Err(Stopped::Unauthorized) => bail!(UNAUTHORIZED),
+                Err(Stopped::Refused(wait)) => bail!(
+                    "Discord refused too many of Talk's requests lately, so Talk stopped asking. Try again in {} min.",
+                    wait.as_secs().div_ceil(60)
+                ),
+            }
             if let Err(wait) = self.limits.acquire(&route).await {
                 bail!(
                     "Discord asks Talk to slow down. Try again in {} s.",
@@ -1055,6 +1102,19 @@ impl Api {
                 .await
                 .context("Can't reach Discord.")?;
             let status = response.status();
+            if !self.token.is_empty() {
+                self.refusals.answered(status);
+            }
+            if status == StatusCode::UNAUTHORIZED && !self.token.is_empty() {
+                let body = body(response).await;
+                // Discord's answer to a login it no longer takes, rather than
+                // to one request.
+                if body["code"] == 0 {
+                    tracing::warn!("Discord refused the login; Talk stops asking");
+                    self.refusals.unauthorized();
+                }
+                return Err(refusal(status, &body));
+            }
             if status != StatusCode::TOO_MANY_REQUESTS {
                 self.limits.update(&route, response.headers());
                 return checked(response).await;
@@ -1108,7 +1168,7 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
         }
         (_, Some(ALREADY_FRIENDS)) => anyhow!("You're already friends."),
         _ => match status {
-            StatusCode::UNAUTHORIZED => anyhow!("Discord rejected the login. Link Discord again."),
+            StatusCode::UNAUTHORIZED => anyhow!(UNAUTHORIZED),
             StatusCode::FORBIDDEN => {
                 anyhow!("Discord says you don't have permission to do that here.")
             }
