@@ -975,6 +975,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_text = Some(window.get_notification_text());
+        layout.flash_taskbar = Some(window.get_flash_taskbar());
         layout.sound_set = chosen(&SoundSet::ALL, window.get_sound_set());
         layout.sound_volume = Some(window.get_sound_volume().clamp(0, 200) as u8);
         layout.adjust_each_sound = window.get_adjust_each_sound();
@@ -1050,6 +1051,16 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 volumes.insert(person.into(), volume);
             }
             adapter.layout.write(&adapter.root);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_hide_blocked_toggled(move |hide| {
+        let mut adapter = state.borrow_mut();
+        adapter.layout.hide_blocked = hide;
+        adapter.layout.write(&adapter.root);
+        if let Some(window) = weak.upgrade() {
+            adapter.action(&window, Action::HideBlocked(hide));
         }
     });
     let state = adapter.clone();

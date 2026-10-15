@@ -157,7 +157,10 @@ impl Application {
     }
 
     /// The thread beside shows its newest messages, and reads them.
-    pub(super) fn aside_timeline(&mut self, messages: Vec<Arc<ChatMessage>>) -> Vec<Effect> {
+    pub(super) fn aside_timeline(&mut self, mut messages: Vec<Arc<ChatMessage>>) -> Vec<Effect> {
+        if self.state.hide_blocked {
+            messages.retain(|message| !message.blocked);
+        }
         let Some(aside) = self.state.aside.as_mut() else {
             return vec![];
         };

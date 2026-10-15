@@ -741,6 +741,7 @@ export component MessageSettings inherits VerticalLayout {
 export component NotificationSettings inherits VerticalLayout {
     in-out property <bool> notifications;
     in-out property <bool> notification-text;
+    in-out property <bool> flash-taskbar;
     /// The networks in use, whose rules decide what notifies.
     in property <bool> matrix;
     in property <bool> discord;
@@ -761,6 +762,12 @@ export component NotificationSettings inherits VerticalLayout {
         description: "Off shows only who wrote and where, for a screen others can see.";
         checked <=> root.notification-text;
         enabled: root.notifications;
+        toggled => { root.preferences-changed(); }
+    }
+    SettingsSwitch {
+        text: "Flash the taskbar";
+        description: "For a message that notifies while Talk isn't in front. The window's title counts mentions and DMs waiting either way.";
+        checked <=> root.flash-taskbar;
         toggled => { root.preferences-changed(); }
     }
 }
@@ -880,7 +887,9 @@ export component DiscordSettings inherits VerticalLayout {
     in property <bool> show-hidden-channels;
     in property <bool> sync-discord-reads;
     in property <bool> show-idle;
+    in property <bool> hide-blocked;
     callback unlink-discord;
+    callback hide-blocked-toggled(bool);
     callback show-hidden-channels-toggled(bool);
     callback sync-discord-reads-toggled(bool);
     callback show-idle-toggled(bool);
@@ -911,5 +920,11 @@ export component DiscordSettings inherits VerticalLayout {
         description: "After 10 minutes without using Talk, as in Discord. Either way, your phone gets notifications while you're away.";
         checked: root.show-idle;
         toggled(shown) => { root.show-idle-toggled(shown); }
+    }
+    SettingsSwitch {
+        text: "Hide messages from people you blocked";
+        description: "Leaves them out entirely, rather than showing a line you can open.";
+        checked: root.hide-blocked;
+        toggled(hide) => { root.hide-blocked-toggled(hide); }
     }
 }

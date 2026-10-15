@@ -289,6 +289,9 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
                     FOCUSED.set(*focused);
                     if let Some(window) = weak.upgrade() {
                         show_motion(&window);
+                        if *focused {
+                            attention(&window, false);
+                        }
                     }
                 }
                 #[cfg(windows)]
@@ -632,6 +635,11 @@ struct Layout {
     /// Discord shows this account idle after 10 minutes nobody uses Talk;
     /// on unless turned off.
     show_idle: Option<bool>,
+    /// Messages from people this account blocked don't show at all.
+    hide_blocked: bool,
+    /// A message that notifies while Talk isn't in front flashes the
+    /// taskbar; on unless turned off.
+    flash_taskbar: Option<bool>,
     /// DMs pinned to the top of the DM list, by room ID, the first pinned first.
     pinned: Vec<String>,
     /// Message times as 9:41 PM rather than 21:41.
@@ -729,6 +737,15 @@ enum Animate {
 /// The animation settings' choices, in the order they show.
 const ANIMATES: [Animate; 3] = [Animate::Focused, Animate::Always, Animate::Never];
 
+/// Asks the desktop to flash Talk's taskbar entry, or stops it: an urgency
+/// hint on X11, an activation request on Wayland, a flash on Windows.
+fn attention(window: &TalkWindow, wanted: bool) {
+    use slint::winit_030::winit::window::UserAttentionType;
+    window.window().with_winit_window(|winit| {
+        winit.request_user_attention(wanted.then_some(UserAttentionType::Informational));
+    });
+}
+
 /// Plays animations or holds them still, as the setting and the focus say.
 fn show_motion(window: &TalkWindow) {
     let playing = match ANIMATE.get() {
@@ -794,6 +811,8 @@ impl Layout {
 
     fn apply(&self, window: &TalkWindow) {
         window.set_show_idle(self.show_idle.unwrap_or(true));
+        window.set_hide_blocked(self.hide_blocked);
+        window.set_flash_taskbar(self.flash_taskbar.unwrap_or(true));
         // Before the first frame, which the event loop draws. A window made
         // again, after closing to the tray, keeps the theme this way too.
         let (id, chosen) = theme::chosen(self.theme.as_deref(), &self.custom_themes);
@@ -1234,6 +1253,7 @@ impl Adapter {
             layout.sync_discord_reads.unwrap_or(true),
         ));
         app.dispatch(Action::ReplyPing(layout.reply_ping.unwrap_or(true)));
+        app.dispatch(Action::HideBlocked(layout.hide_blocked));
         app.dispatch(Action::StripTracking(layout.strip_tracking.unwrap_or(true)));
         app.dispatch(Action::SetPinned(layout.pinned.clone()));
         Ok(Rc::new_cyclic(|weak| {
@@ -1543,6 +1563,13 @@ impl Adapter {
                         });
                     }
                     // Only while Talk isn't in front: there the lists show what's new.
+                    if !FOCUSED.get()
+                        && !alert.call
+                        && self.layout.flash_taskbar.unwrap_or(true)
+                        && let Some(window) = self.window.upgrade()
+                    {
+                        attention(&window, true);
+                    }
                     if self.layout.notifications.unwrap_or(true) && !FOCUSED.get() {
                         let style = crate::notify::Style {
                             text: self.layout.notification_text.unwrap_or(true),

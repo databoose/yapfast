@@ -224,6 +224,7 @@ impl Adapter {
         self.messages = state.messages.clone();
         self.forwarding = state.forwarding.is_some();
         self.show_tray();
+        self.show_title(window);
         window.set_tray_available(self.tray.as_ref().is_some_and(crate::tray::Tray::available));
         if self.app.reaction_uses() != &self.layout.reactions {
             self.layout.reactions = self.app.reaction_uses().clone();

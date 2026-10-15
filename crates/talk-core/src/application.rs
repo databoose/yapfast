@@ -351,6 +351,9 @@ pub struct AppState {
     pub reply_ping: bool,
     /// Tracking parameters come out of the links in sent messages.
     pub strip_tracking: bool,
+    /// Messages from people this account blocked don't show at all, rather
+    /// than collapsed.
+    pub hide_blocked: bool,
     pub switch_voice: Option<String>,
     /// A stream to watch once its call connects and they show sharing in
     /// it, as clicking them in the channel list asks: the voice channel and
@@ -1366,6 +1369,9 @@ pub enum Action {
     },
     /// Take tracking parameters out of links in sent messages.
     StripTracking(bool),
+    /// Leave out messages from people this account blocked, rather than
+    /// collapsing them.
+    HideBlocked(bool),
     /// Mark Discord channels read on Discord when reading them in Talk.
     SyncDiscordReads(bool),
     /// Accept the selected Discord message request, or ignore it.
@@ -1415,6 +1421,9 @@ pub enum Effect {
     PreviewCamera(Option<(Option<String>, crate::picture::Feed)>),
 }
 
+/// A timeline as the app state holds it, sharing its messages.
+type TimelineArc = Arc<Vec<Arc<ChatMessage>>>;
+
 #[derive(Default)]
 pub struct Application {
     pub state: AppState,
@@ -1434,6 +1443,11 @@ pub struct Application {
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
+    /// The selected room's timeline with the blocked messages
+    /// [`AppState::hide_blocked`] left out, to show them again.
+    /// Kept with the timeline shown from it, so it's used only while that
+    /// still shows.
+    with_blocked: Option<(TimelineArc, TimelineArc)>,
     /// The timeline whose pictures were asked for, so an unchanged one isn't
     /// gone through again.
     pictured_timeline: Arc<Vec<Arc<ChatMessage>>>,
@@ -2206,6 +2220,18 @@ impl Application {
                 self.state.strip_tracking = strip;
                 vec![]
             }
+            Action::HideBlocked(hide) => {
+                if self.state.hide_blocked == hide {
+                    return vec![];
+                }
+                self.state.hide_blocked = hide;
+                let all = match self.with_blocked.take() {
+                    Some((all, shown)) if Arc::ptr_eq(&shown, &self.state.messages) => all,
+                    _ => self.state.messages.clone(),
+                };
+                self.state.messages = self.without_blocked(all);
+                vec![]
+            }
             Action::ShowHiddenChannels(shown) => {
                 if self.state.show_hidden_channels == shown {
                     return vec![];
@@ -2241,6 +2267,25 @@ impl Application {
             Action::UnmuteOnJoin => self.voice_command_quietly(voice::Command::Mute(false)),
             Action::DeafenOnJoin => self.voice_command_quietly(voice::Command::Deafen(true)),
         }
+    }
+
+    /// `messages` as the timeline shows them: without those from people
+    /// this account blocked when they're hidden. The whole timeline is kept
+    /// aside then, sharing its messages, to show them again.
+    fn without_blocked(&mut self, messages: TimelineArc) -> TimelineArc {
+        if !self.state.hide_blocked || !messages.iter().any(|message| message.blocked) {
+            self.with_blocked = None;
+            return messages;
+        }
+        let shown: TimelineArc = Arc::new(
+            messages
+                .iter()
+                .filter(|message| !message.blocked)
+                .cloned()
+                .collect(),
+        );
+        self.with_blocked = Some((messages, shown.clone()));
+        shown
     }
 
     /// A notification titled with who wrote where: the person alone in a DM, else with
@@ -2369,7 +2414,7 @@ impl Application {
                         self.state.history_start = false;
                     }
                     self.state.room_ready = true;
-                    self.state.messages = Arc::new(messages);
+                    self.state.messages = self.without_blocked(Arc::new(messages));
                     let mut effects = self.place_unread();
                     effects.extend(self.seek());
                     effects.extend(self.mark_discord_read());

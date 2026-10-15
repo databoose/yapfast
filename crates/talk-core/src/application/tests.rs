@@ -493,6 +493,31 @@ fn up_in_an_empty_composer_edits_the_newest_own_message() {
 }
 
 #[test]
+fn blocked_messages_can_leave_the_timeline_and_come_back() {
+    let mut app = connected();
+    let blocked = ChatMessage {
+        blocked: true,
+        ..message("e:$troll", false)
+    };
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![message("e:$bob", false), blocked]),
+    });
+    let items = |app: &Application| -> Vec<String> {
+        app.state
+            .messages
+            .iter()
+            .map(|message| message.item.clone())
+            .collect()
+    };
+    assert_eq!(items(&app), ["e:$bob", "e:$troll"], "collapsed, not hidden");
+    app.dispatch(Action::HideBlocked(true));
+    assert_eq!(items(&app), ["e:$bob"]);
+    app.dispatch(Action::HideBlocked(false));
+    assert_eq!(items(&app), ["e:$bob", "e:$troll"]);
+}
+
+#[test]
 fn a_reply_mentions_its_author_unless_switched_off() {
     let mut app = connected();
     app.apply(Event::Timeline {

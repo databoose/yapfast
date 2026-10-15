@@ -50,7 +50,10 @@ export { FoundRow, PickRow } from "header.slint";
 export { GifTile, GifFavorites } from "gifs.slint";
 
 export component TalkWindow inherits Window {
-    title: "Talk";
+    /// "Talk", or "(3) Talk" with mentions and DMs waiting, as a browser
+    /// tab's title counts them, so the taskbar shows it.
+    in property <string> window-title: "Talk";
+    title: root.window-title;
     preferred-width: 1120px; preferred-height: 760px;
     min-width: 800px; min-height: 560px;
     background: Theme.chat;
@@ -248,6 +251,8 @@ export component TalkWindow inherits Window {
     callback sync-discord-reads-toggled(bool);
     in-out property <bool> show-idle: true;
     callback show-idle-toggled(bool);
+    in-out property <bool> hide-blocked;
+    callback hide-blocked-toggled(bool);
     in property <bool> room-selected;
     in property <bool> room-ready;
     in property <bool> room-encrypted;
@@ -723,6 +728,7 @@ export component TalkWindow inherits Window {
     in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
     in-out property <bool> notification-text: true;
+    in-out property <bool> flash-taskbar: true;
     /// Talk's sounds: their set, their volume as a percentage, and each one's
     /// own, which each-sound-changed reports. play-sound plays one to try it.
     in-out property <int> sound-set;
@@ -2704,6 +2710,7 @@ export component TalkWindow inherits Window {
         }
         if root.settings-section == 3: NotificationSettings {
             notifications <=> root.notifications; notification-text <=> root.notification-text;
+            flash-taskbar <=> root.flash-taskbar;
             matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
         }
@@ -2731,6 +2738,8 @@ export component TalkWindow inherits Window {
             show-idle: root.show-idle;
             unlink-discord => { root.unlink-discord(); }
             show-idle-toggled(shown) => { root.show-idle = shown; root.show-idle-toggled(shown); }
+            hide-blocked: root.hide-blocked;
+            hide-blocked-toggled(hide) => { root.hide-blocked = hide; root.hide-blocked-toggled(hide); }
             show-hidden-channels-toggled(shown) => { root.show-hidden-channels = shown; root.show-hidden-channels-toggled(shown); }
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
         }
