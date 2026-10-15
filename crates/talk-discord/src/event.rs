@@ -56,6 +56,8 @@ events! {
     GuildMemberRemove = "GUILD_MEMBER_REMOVE",
     /// Members Talk asked for, by id or by a search.
     GuildMembersChunk = "GUILD_MEMBERS_CHUNK",
+    /// Discord refused a gateway command for being sent too often.
+    RateLimited = "RATE_LIMITED",
     /// The member list of a channel Talk subscribed to.
     GuildMemberListUpdate = "GUILD_MEMBER_LIST_UPDATE",
     GuildRoleCreate = "GUILD_ROLE_CREATE",

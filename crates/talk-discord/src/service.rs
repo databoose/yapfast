@@ -15,7 +15,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
     api::{Api, PAGE, Span},
-    cache,
+    cache, limits,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
     notifications::Change,
@@ -193,10 +193,19 @@ pub struct Found {
     pub messages: Vec<Message>,
 }
 
-/// How many times a search asks again while Discord indexes the DM, and the
-/// longest it waits between.
-const SEARCH_TRIES: u32 = 5;
-const SEARCH_WAIT: Duration = Duration::from_secs(5);
+/// The longest a search waits in all while Discord indexes what it
+/// searches, asking again as often as Discord says.
+const SEARCH_PATIENCE: Duration = Duration::from_secs(30);
+
+/// How long to wait before searching again, as Discord's answer that it's
+/// still indexing asks, or `None` once that would wait past
+/// [`SEARCH_PATIENCE`] in all.
+fn index_wait(answer: &Value, waited: &mut Duration) -> Option<Duration> {
+    let wait = answer["retry_after"].as_f64().unwrap_or(1.0);
+    let wait = crate::limits::sent_seconds(wait, Duration::from_millis(500), SEARCH_PATIENCE);
+    *waited += wait;
+    (*waited <= SEARCH_PATIENCE).then_some(wait)
+}
 /// How many minutes of quiet archive a thread, unless its channel says.
 const DEFAULT_ARCHIVE: u16 = 4320;
 /// Discord's answer to a search of a DM it hasn't indexed yet.
@@ -487,7 +496,14 @@ pub struct Discord {
     /// The threads a list of a channel's threads found, by id, while it's
     /// open: one opens from what Discord gave rather than asking again.
     listed_threads: Arc<Mutex<HashMap<String, Value>>>,
+    /// New DMs started lately, which Discord limits; see [`Self::dm_with`].
+    new_dms: Arc<Mutex<limits::Window>>,
 }
+
+/// Discord allows starting 10 new DMs with people in 10 minutes, and treats
+/// many more as spam; Talk keeps a margin.
+const NEW_DMS: usize = 8;
+const NEW_DM_SPAN: Duration = Duration::from_secs(10 * 60);
 
 /// A profile fetched lately, for a user in a server.
 struct Kept {
@@ -555,6 +571,7 @@ impl Discord {
             names,
             profiles: Arc::default(),
             listed_threads: Arc::default(),
+            new_dms: Arc::new(Mutex::new(limits::Window::new(NEW_DMS, NEW_DM_SPAN))),
         })
     }
 
@@ -755,7 +772,8 @@ impl Discord {
         for name in &query.mentions {
             params.push(("mentions", self.person_named(guild, name).await?));
         }
-        for _ in 0..SEARCH_TRIES {
+        let mut waited = Duration::ZERO;
+        loop {
             let mut answer = self.api.search(in_server, channel, &params, offset).await?;
             if let serde_json::Value::Array(pages) = answer["messages"].take() {
                 // Each result came with the messages around it, which Discord
@@ -772,8 +790,9 @@ impl Discord {
             if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
                 break;
             }
-            let wait = answer["retry_after"].as_f64().unwrap_or(1.0);
-            let wait = crate::limits::sent_seconds(wait, Duration::from_millis(500), SEARCH_WAIT);
+            let Some(wait) = index_wait(&answer, &mut waited) else {
+                break;
+            };
             tokio::time::sleep(wait).await;
         }
         Err(anyhow!(
@@ -1277,7 +1296,7 @@ impl Discord {
     /// message's gateway events show both.
     pub async fn send_invite(&self, user: &str, channel: &str) -> Result<()> {
         let code = self.api.create_invite_once(channel).await?;
-        let dm = self.api.open_dm(user).await?;
+        let dm = self.dm_with(user).await?;
         let link = format!("https://discord.gg/{code}");
         let nonce = crate::message::nonce();
         let sent = self.api.send_from_menu(&dm, &link, &nonce).await?;
@@ -1412,7 +1431,8 @@ impl Discord {
         name: Option<&str>,
         offset: u32,
     ) -> Result<ThreadPage> {
-        for _ in 0..SEARCH_TRIES {
+        let mut waited = Duration::ZERO;
+        loop {
             let answer = self.api.search_threads(channel, name, offset).await?;
             if let Some(found) = answer["threads"].as_array() {
                 return Ok(self.thread_page(guild, &answer, found).await);
@@ -1420,8 +1440,9 @@ impl Discord {
             if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
                 bail!("could not understand Discord's answer");
             }
-            let wait = answer["retry_after"].as_f64().unwrap_or(1.0);
-            let wait = crate::limits::sent_seconds(wait, Duration::from_millis(500), SEARCH_WAIT);
+            let Some(wait) = index_wait(&answer, &mut waited) else {
+                break;
+            };
             tokio::time::sleep(wait).await;
         }
         Err(anyhow!(
@@ -1651,7 +1672,43 @@ impl Discord {
     /// Opens the DM with `user`, or finds the one already open; returns its channel
     /// id. The DM list has it once Discord's CHANNEL_CREATE arrives.
     pub async fn open_dm(&self, user: &str) -> Result<String> {
-        self.api.open_dm(user).await
+        self.dm_with(user).await
+    }
+
+    /// The DM with `user`: the one already listed, or one Discord opens,
+    /// which may be new. Discord limits how many new DMs with people (not
+    /// bots) an account starts, and flags one that starts many as a spammer.
+    async fn dm_with(&self, user: &str) -> Result<String> {
+        let listed = self
+            .snapshots
+            .borrow()
+            .conversations
+            .iter()
+            .find(|conversation| {
+                !conversation.group && conversation.person.as_deref() == Some(user)
+            })
+            .map(|conversation| conversation.id.clone());
+        if let Some(dm) = listed {
+            return Ok(dm);
+        }
+        let person = !self.read_names().is_bot(user);
+        if person && let Some(wait) = self.lock_new_dms().full(Instant::now()) {
+            bail!(
+                "You started {NEW_DMS} new DMs in the last few minutes, and Discord treats more as spam. Try again in {} min.",
+                wait.as_secs().div_ceil(60)
+            );
+        }
+        let dm = self.api.open_dm(user).await?;
+        if person {
+            self.lock_new_dms().push(Instant::now());
+        }
+        Ok(dm)
+    }
+
+    fn lock_new_dms(&self) -> std::sync::MutexGuard<'_, limits::Window> {
+        self.new_dms
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// People to start a DM with whose names start with `query`, friends first; with

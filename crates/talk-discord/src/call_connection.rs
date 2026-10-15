@@ -62,6 +62,8 @@ const STILL_DROPPING: u32 = 500;
 const MAX_DROPPED: usize = 64;
 /// Gateway drops in a row that resuming or reconnecting may follow.
 const RETRIES: u32 = 3;
+/// How much longer each resume after the first waits.
+const RESUME_WAIT: Duration = Duration::from_secs(1);
 
 /// What the microphone sends: written by Talk, read every 20 ms.
 pub(crate) struct Sending {
@@ -187,6 +189,10 @@ async fn run(
                     error = format!("{error:#}"),
                     "the call's voice connection dropped"
                 );
+                // The first try goes at once, so a blip passes unheard; the
+                // rest wait longer each time, rather than hammering a voice
+                // server that's struggling.
+                tokio::time::sleep(RESUME_WAIT * (drops - 1)).await;
                 if let Err(resume) = connection.resume(&identity).await {
                     tracing::info!(
                         error = format!("{resume:#}"),

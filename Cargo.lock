@@ -9137,6 +9137,7 @@ dependencies = [
  "chrono",
  "cookie_store",
  "davey",
+ "flate2",
  "futures-util",
  "keyring",
  "openmls",

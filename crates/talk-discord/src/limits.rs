@@ -8,7 +8,7 @@
 //! blocked for a while.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -26,6 +26,109 @@ pub fn sent_seconds(seconds: f64, min: Duration, max: Duration) -> Duration {
         return min;
     }
     Duration::from_secs_f64(seconds.clamp(min.as_secs_f64(), max.as_secs_f64()))
+}
+
+/// Counts what happened within the last `span`, up to `limit` times.
+pub struct Window {
+    limit: usize,
+    span: Duration,
+    times: VecDeque<Instant>,
+}
+
+impl Window {
+    pub const fn new(limit: usize, span: Duration) -> Self {
+        Self {
+            limit,
+            span,
+            times: VecDeque::new(),
+        }
+    }
+
+    /// How long until it may happen again, if it already happened `limit`
+    /// times within the span.
+    pub fn full(&mut self, now: Instant) -> Option<Duration> {
+        while self
+            .times
+            .front()
+            .is_some_and(|&time| now.duration_since(time) >= self.span)
+        {
+            self.times.pop_front();
+        }
+        (self.times.len() >= self.limit)
+            .then(|| self.span.saturating_sub(now.duration_since(self.times[0])))
+    }
+
+    pub fn push(&mut self, now: Instant) {
+        if self.full(now).is_some() {
+            self.times.pop_front();
+        }
+        self.times.push_back(now);
+    }
+}
+
+/// Discord blocks an address for an hour or more once 10,000 of its
+/// requests in 10 minutes were refused as unauthorized, forbidden or too
+/// many. Talk stops asking long before: at a tenth of that, something is
+/// going wrong, and after a refused login nothing more can work.
+pub struct Refusals {
+    inner: Mutex<(Window, bool)>,
+}
+
+/// How many refusals in [`REFUSAL_SPAN`] stop Talk's requests until fewer
+/// are recent.
+const REFUSAL_LIMIT: usize = 1000;
+const REFUSAL_SPAN: Duration = Duration::from_secs(10 * 60);
+
+impl Default for Refusals {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new((Window::new(REFUSAL_LIMIT, REFUSAL_SPAN), false)),
+        }
+    }
+}
+
+/// Why Talk didn't send a request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stopped {
+    /// Discord refused the login.
+    Unauthorized,
+    /// Too many requests were refused lately; another may go after this.
+    Refused(Duration),
+}
+
+impl Refusals {
+    /// Whether a request may go.
+    pub fn check(&self) -> Result<(), Stopped> {
+        let mut inner = self.lock();
+        if inner.1 {
+            return Err(Stopped::Unauthorized);
+        }
+        match inner.0.full(Instant::now()) {
+            Some(wait) => Err(Stopped::Refused(wait)),
+            None => Ok(()),
+        }
+    }
+
+    /// Counts the answer to a request, if Discord refused it.
+    pub fn answered(&self, status: StatusCode) {
+        if matches!(
+            status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS
+        ) {
+            self.lock().0.push(Instant::now());
+        }
+    }
+
+    /// Discord refused the login itself; nothing more goes.
+    pub fn unauthorized(&self) {
+        self.lock().1 = true;
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, (Window, bool)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 #[derive(Default)]
@@ -426,5 +529,45 @@ mod tests {
             "/webhooks/3/token"
         );
         assert_eq!(major("GET /users/@me"), "");
+    }
+
+    #[test]
+    fn a_window_counts_only_what_is_recent() {
+        let start = Instant::now();
+        let mut window = Window::new(2, Duration::from_secs(10));
+        window.push(start);
+        assert_eq!(window.full(start), None);
+        window.push(start + Duration::from_secs(4));
+        assert_eq!(
+            window.full(start + Duration::from_secs(5)),
+            Some(Duration::from_secs(5)),
+            "full until the first is ten seconds old"
+        );
+        assert_eq!(window.full(start + Duration::from_secs(10)), None);
+    }
+
+    #[test]
+    fn refusals_stop_requests_before_discord_blocks_the_address() {
+        let refusals = Refusals::default();
+        for _ in 0..REFUSAL_LIMIT - 1 {
+            refusals.answered(StatusCode::FORBIDDEN);
+            refusals.answered(StatusCode::OK);
+            refusals.answered(StatusCode::NOT_FOUND);
+        }
+        assert_eq!(refusals.check(), Ok(()));
+        refusals.answered(StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            matches!(refusals.check(), Err(Stopped::Refused(wait)) if wait > Duration::from_secs(9 * 60))
+        );
+
+        let refusals = Refusals::default();
+        refusals.answered(StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            refusals.check(),
+            Ok(()),
+            "one refused request isn't a refused login"
+        );
+        refusals.unauthorized();
+        assert_eq!(refusals.check(), Err(Stopped::Unauthorized));
     }
 }

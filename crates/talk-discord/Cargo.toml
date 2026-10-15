@@ -23,6 +23,8 @@ rsa = { version = "0.9", features = ["getrandom"] }
 sha2 = "0.10"
 anyhow.workspace = true
 base64 = "0.22"
+# The gateway's zlib-stream compression, as the web client asks for it.
+flate2 = "1"
 futures-util.workspace = true
 keyring.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["cookies", "http2", "rustls-no-provider"] }

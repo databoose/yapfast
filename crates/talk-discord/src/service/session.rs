@@ -50,8 +50,12 @@ pub(super) async fn run(
     let mut reconnects = Reconnects::default();
     loop {
         snapshots.send_modify(|snapshot| Arc::make_mut(snapshot).status = Status::Connecting);
+        let connect = async {
+            shared.api.learn_build_number().await;
+            Gateway::connect(&token, shared.presence.clone(), &mut reconnects).await
+        };
         let connected = tokio::select! {
-            connected = Gateway::connect(&token, shared.presence.clone(), &mut reconnects) => connected,
+            connected = connect => connected,
             () = snapshots.closed() => return,
         };
         let (error, up) = match connected {
@@ -442,7 +446,7 @@ impl Session<'_> {
                     self.publisher.changed();
                 }
             }
-            Event::GuildMembersChunk => {
+            Event::GuildMembersChunk | Event::RateLimited => {
                 applied = self.searches.answer(&mut self.tracker, &dispatch);
             }
             _ => {}

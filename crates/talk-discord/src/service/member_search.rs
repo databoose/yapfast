@@ -8,7 +8,10 @@ use anyhow::Result;
 use tokio::sync::oneshot;
 
 use super::tracker::Tracker;
-use crate::gateway::{Dispatch, Gateway};
+use crate::{
+    event::Event,
+    gateway::{Dispatch, Gateway},
+};
 
 /// The most members one search asks for.
 const FOUND: u64 = 10;
@@ -29,6 +32,10 @@ impl MemberSearches {
         query: &str,
         reply: oneshot::Sender<Vec<String>>,
     ) -> Result<()> {
+        if gateway.members_held(guild) {
+            let _ = reply.send(Vec::new());
+            return Ok(());
+        }
         let nonce = self.wait(reply);
         gateway.search_members(guild, query, FOUND, &nonce).await
     }
@@ -42,6 +49,10 @@ impl MemberSearches {
         users: &[String],
         reply: oneshot::Sender<Vec<String>>,
     ) -> Result<()> {
+        if gateway.members_held(guild) {
+            let _ = reply.send(Vec::new());
+            return Ok(());
+        }
         let nonce = self.wait(reply);
         gateway.request_members(guild, users, Some(&nonce)).await
     }
@@ -60,6 +71,14 @@ impl MemberSearches {
     /// learned first, so their names are known; then this returns whether
     /// that changed the tracker, and the chunk needn't be applied again.
     pub(super) fn answer(&mut self, tracker: &mut Tracker, event: &Dispatch) -> Option<bool> {
+        if event.event == Event::RateLimited {
+            // Discord dropped the request this nonce was for.
+            let reply = event.data["meta"]["nonce"]
+                .as_str()
+                .and_then(|nonce| self.waiting.remove(nonce))?;
+            let _ = reply.send(Vec::new());
+            return Some(false);
+        }
         let reply = event.data["nonce"]
             .as_str()
             .and_then(|nonce| self.waiting.remove(nonce))?;
