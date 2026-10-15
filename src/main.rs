@@ -1,5 +1,8 @@
 // Matrix sync's encrypted-event futures exceed rustc's default trait depth.
 #![recursion_limit = "256"]
+// Opened from Explorer, Talk opens no console window beside its own; see
+// `has_console`.
+#![cfg_attr(all(windows, feature = "desktop"), windows_subsystem = "windows")]
 
 #[cfg(feature = "desktop")]
 mod custom_emoji;
@@ -48,12 +51,18 @@ fn main() -> Result<()> {
         logging::init_to_stderr();
         return talk_core::stream_worker::run();
     }
+    let mut arguments: Vec<_> = std::env::args().skip(1).collect();
+    let renderer = renderer_argument(&mut arguments)?;
+    #[cfg(all(windows, feature = "desktop"))]
+    match data_directory(&arguments) {
+        Some(directory) if !has_console() => logging::init_to_file(&directory.join("talk.log")),
+        _ => logging::init(),
+    }
+    #[cfg(not(all(windows, feature = "desktop")))]
     logging::init();
     talk_core::init_tls()?;
 
     let runtime = BackgroundRuntime::new().context("could not start background workers")?;
-    let mut arguments: Vec<_> = std::env::args().skip(1).collect();
-    let renderer = renderer_argument(&mut arguments)?;
     #[cfg(feature = "matrix")]
     if arguments
         .first()
@@ -118,6 +127,35 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!("unknown argument; run talk --help"),
+    }
+}
+
+/// Whether Talk's output reaches someone: a file or pipe it was given, or
+/// the console it was started from, which it joins. A Windows program
+/// without a console of its own gets neither when opened from Explorer.
+#[cfg(all(windows, feature = "desktop"))]
+fn has_console() -> bool {
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE},
+    };
+    // SAFETY: neither call takes a pointer; Talk's other threads haven't started.
+    unsafe {
+        let output = GetStdHandle(STD_OUTPUT_HANDLE);
+        (!output.is_null() && output != INVALID_HANDLE_VALUE)
+            || AttachConsole(ATTACH_PARENT_PROCESS) != 0
+    }
+}
+
+/// The folder Talk keeps its files in, which holds the log without a console.
+#[cfg(all(windows, feature = "desktop"))]
+fn data_directory(arguments: &[String]) -> Option<std::path::PathBuf> {
+    match arguments
+        .iter()
+        .position(|argument| argument == "--data-dir")
+    {
+        Some(index) => arguments.get(index + 1).map(Into::into),
+        None => talk_core::default_directory().ok(),
     }
 }
 

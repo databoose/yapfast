@@ -1052,7 +1052,7 @@ impl Worker {
             .arg(ARGUMENT)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(crate::logging::for_worker())
             .spawn()
             .context("could not start the stream worker")?;
         let mut stdin = child.stdin.take();

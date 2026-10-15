@@ -14,8 +14,11 @@ GPUI package. Recheck the new UI on the tester's PC.
 4. Open **Talk beta**, then **general** for encrypted text or **Lounge** for voice.
 
 The package needs no Rust or Visual Studio installation. It includes the native
-media code and Skia renderer. A console window displays beta diagnostics.
-Closing Talk closes that console too.
+media code and Skia renderer. Opened from Explorer, Talk shows only its
+window and writes its diagnostics to `talk.log` in its data folder,
+`%LOCALAPPDATA%\Talk\Talk\data`, or the `--data-dir` folder. The log grows
+across starts and starts over past 4 MiB.
+Started from a console, as `run-talk.cmd` does, Talk writes there instead.
 If it closes immediately, run `run-talk.cmd` to keep the error visible.
 Talk renders with Skia Software. Use `run-talk.cmd --renderer gpu` to try the
 GPU; if it cannot start, Talk switches back to Skia Software and says so in the
@@ -103,12 +106,12 @@ communications ducking setting turns other sound down during a call.
 ## Go Live on Windows
 
 Sharing, watching and playing a video run in the stream worker, as on Linux:
-Talk starts its own executable with `--stream-worker`, which shares Talk's
-console. The video frames reach the window through a temporary file both
-processes map. Windows won't delete a mapped file, so there Talk creates it
-with `FILE_FLAG_DELETE_ON_CLOSE` and `FILE_ATTRIBUTE_TEMPORARY`, which keeps
-it in memory while it fits, and Windows removes it once both processes close
-it. On Linux it's still unlinked once the worker has it open.
+Talk starts its own executable with `--stream-worker`, which writes its logs
+where Talk does: Talk's console, or Talk's log file. The video frames reach
+the window through a temporary file both processes map. Windows won't delete
+a mapped file, so there Talk creates it with `FILE_FLAG_DELETE_ON_CLOSE` and
+`FILE_ATTRIBUTE_TEMPORARY`, which keeps it in memory while it fits, and
+Windows removes it once both processes close it. On Linux it's still unlinked once the worker has it open.
 
 Windows has no screen sharing dialog for Talk to use, so the share menu
 lists what there is to share above the resolution: "Entire screen" (or
