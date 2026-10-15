@@ -394,6 +394,9 @@ export struct MessageRow {
     hidden-card: string,
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
     can-reply: bool, can-edit: bool, can-delete: bool, can-react: bool, can-forward: bool,
+    /// Among the conversation's pinned messages, and whether this account
+    /// may pin it or unpin it.
+    pinned: bool, can-pin: bool,
     /// The Discord thread it started or tells of, by room id, empty for
     /// none; its name, and how many messages it has.
     thread-room: string, thread-name: string, thread-detail: string,
@@ -541,6 +544,7 @@ export component MessageMenu inherits Rectangle {
     callback reply(string);
     callback start-forward(string);
     callback copy-text(string);
+    callback pin-message(string);
     callback request-delete(string);
     /// Threads can start from the conversation's messages.
     in property <bool> can-start-thread;
@@ -591,6 +595,11 @@ export component MessageMenu inherits Rectangle {
         if root.menu-message.body != "": MenuItem {
             text: "Copy text"; icon: @image-url("icons/copy.svg");
             clicked => { root.copy-text(root.menu-message.body); }
+        }
+        if root.menu-message.can-pin && root.menu-message.delivery == "": MenuItem {
+            text: root.menu-message.pinned ? "Unpin message" : "Pin message";
+            icon: root.menu-message.pinned ? @image-url("icons/pin-off.svg") : @image-url("icons/pin.svg");
+            clicked => { root.pin-message(root.menu-message.item); }
         }
         if root.menu-message.can-delete && root.composer-enabled: Rectangle { height: 1px; background: Theme.line; }
         if root.menu-message.can-delete && root.composer-enabled: MenuItem {

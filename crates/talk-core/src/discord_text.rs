@@ -88,6 +88,12 @@ pub enum Done {
         id: String,
         result: Result<(), String>,
     },
+    Pinned {
+        room: String,
+        id: String,
+        pinned: bool,
+        result: Result<(), String>,
+    },
     Picture {
         room: String,
         url: String,

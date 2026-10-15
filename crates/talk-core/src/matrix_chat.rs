@@ -596,6 +596,8 @@ impl Matrix {
             }
             // Talk removes others' Matrix reactions only as Discord's.
             Command::RemoveReactor { .. } => {}
+            // Talk pins only Discord's messages.
+            Command::Pin { .. } => {}
             Command::Delete { room, item } => {
                 let result = match (active_timeline(open.as_ref(), &room), parse_item(&item)) {
                     (Some(timeline), Some(id)) => timeline.redact(&id, None).await.map_err(|_| ()),

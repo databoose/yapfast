@@ -66,6 +66,26 @@ impl Application {
         vec![]
     }
 
+    pub(super) fn pin_message(&mut self, item: String) -> Vec<Effect> {
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
+        let Some(pinned) = self
+            .state
+            .message(&item)
+            .filter(|message| message.can_pin)
+            .map(|message| !message.pinned)
+        else {
+            return vec![];
+        };
+        if self.state.preview {
+            self.update_sample(&room, &item, |message| message.pinned = pinned);
+            vec![]
+        } else {
+            vec![Effect::Backend(Command::Pin { room, item, pinned })]
+        }
+    }
+
     pub(super) fn start_forward(&mut self, item: String) -> Vec<Effect> {
         if self.state.preview || self.state.trusted {
             self.state.forwarding = self

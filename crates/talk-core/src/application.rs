@@ -1006,6 +1006,9 @@ pub enum Action {
         key: String,
     },
     RequestDelete(String),
+    /// Pin a message of the selected room to its pinned messages, or
+    /// unpin it if it's there.
+    PinMessage(String),
     /// Open the forward dialog for a message of the selected room.
     StartForward(String),
     /// Forward that message into a conversation.
@@ -1883,6 +1886,7 @@ impl Application {
             }
             Action::React { item, key } => self.react(item, key),
             Action::RequestDelete(item) => self.request_delete(item),
+            Action::PinMessage(item) => self.pin_message(item),
             Action::StartForward(item) => self.start_forward(item),
             Action::Forward(target) => self.forward(target),
             Action::CloseForward => {

@@ -614,6 +614,31 @@ fn replies_edits_and_saved_drafts_share_one_composer() {
 }
 
 #[test]
+fn pinning_a_message_takes_leave_and_unpins_a_pinned_one() {
+    let mut app = connected();
+    let mut pinned = message("e:$pinned", false);
+    pinned.can_pin = true;
+    pinned.pinned = true;
+    let mut pinnable = message("e:$pinnable", false);
+    pinnable.can_pin = true;
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![message("e:$bob", false), pinnable, pinned]),
+    });
+    assert!(app.dispatch(Action::PinMessage("e:$bob".into())).is_empty());
+    assert!(matches!(
+        app.dispatch(Action::PinMessage("e:$pinnable".into())).as_slice(),
+        [Effect::Backend(Command::Pin { room, item, pinned: true })]
+            if room == "dm" && item == "e:$pinnable"
+    ));
+    assert!(matches!(
+        app.dispatch(Action::PinMessage("e:$pinned".into()))
+            .as_slice(),
+        [Effect::Backend(Command::Pin { pinned: false, .. })]
+    ));
+}
+
+#[test]
 fn deletion_needs_confirmation_and_queue_actions_need_a_pending_message() {
     let mut app = connected();
     let mut pending = message("t:txn", true);

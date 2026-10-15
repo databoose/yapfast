@@ -906,6 +906,8 @@ export component TalkWindow inherits Window {
     callback remove-reactor(string);
     callback close-reactions;
     callback request-delete(string);
+    /// Pin a message, or unpin a pinned one.
+    callback pin-message(string);
     callback emoji-search(string);
     callback start-forward(string);
     callback forward-to(string);
@@ -1460,6 +1462,7 @@ export component TalkWindow inherits Window {
             reply(item) => { root.reply(item); root.focus-composer-of-menu(); message-menu.close(); }
             start-forward(item) => { root.start-forward(item); message-menu.close(); }
             copy-text(text) => { root.copy-text(text); message-menu.close(); }
+            pin-message(item) => { root.pin-message(item); message-menu.close(); }
             request-delete(item) => { root.request-delete(item); message-menu.close(); }
         }
     }

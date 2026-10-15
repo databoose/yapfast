@@ -414,6 +414,8 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         can_delete: message.can_delete,
         can_react: message.can_react,
         can_forward: message.can_forward,
+        pinned: message.pinned,
+        can_pin: message.can_pin,
         thread_room: message
             .thread
             .as_ref()
@@ -501,8 +503,13 @@ fn thread_detail(thread: &talk_core::chat::ThreadLink) -> String {
     }
 }
 
+/// How wide a found message's card shows its pictures at most: its pinned
+/// messages' and search's 420px, less the card's padding and avatar.
+const FOUND_GALLERY_WIDTH: i32 = 300;
+
 /// A pinned message or a search result as its card shows it, sent at a
-/// time on the chosen clock, its spoilers hidden and its files named.
+/// time on the chosen clock, its spoilers hidden, its first pictures shown
+/// and its other files named.
 pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
     let styled = if message.formatted {
         let body = spoiler::hide(&custom_emoji::text(&message.body, &message.emoji));
@@ -512,10 +519,29 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
     };
     let time = talk_core::clock::time_on(message.timestamp, twelve_hour);
+    let pictures: Vec<Preview<'_>> = message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, attachment)| {
+            attachment.placement == Placement::Message && (attachment.image || attachment.video)
+        })
+        .take(talk_core::chat::FOUND_PICTURES)
+        .filter(|(_, attachment)| attachment.preview.is_some() || loading(attachment))
+        .map(|(index, attachment)| (index, attachment, attachment.preview.as_ref()))
+        .collect();
+    // Spoilers stay covered: clicking the card shows the message.
+    let (images, gallery_width, gallery_height) =
+        gallery_within(&pictures, &|_| true, FOUND_GALLERY_WIDTH);
     let files: Vec<&str> = message
         .attachments
         .iter()
-        .map(|attachment| attachment.name.as_str())
+        .enumerate()
+        .filter(|(index, attachment)| {
+            attachment.placement == Placement::Message
+                && !pictures.iter().any(|(shown, _, _)| shown == index)
+        })
+        .map(|(_, attachment)| attachment.name.as_str())
         .collect();
     FoundRow {
         item: message.item.clone().into(),
@@ -532,6 +558,9 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         styled,
         has_body: !message.body.trim().is_empty(),
         files: files.join(", ").into(),
+        images,
+        gallery_width,
+        gallery_height,
         ..Default::default()
     }
 }

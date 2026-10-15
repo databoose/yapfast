@@ -903,6 +903,11 @@ impl Discord {
         self.api.delete(channel, id).await
     }
 
+    /// Pins a message, or unpins it. The gateway's MESSAGE_UPDATE says so too.
+    pub async fn pin(&self, channel: &str, id: &str, pinned: bool) -> Result<()> {
+        self.api.pin(channel, id, pinned).await
+    }
+
     /// A user's profile, in a server or with [`PRIVATE`] outside any. One
     /// fetched in the last few minutes is given again.
     pub async fn profile(&self, guild: &str, user: &str) -> Result<Profile> {

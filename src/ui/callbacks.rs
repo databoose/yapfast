@@ -372,6 +372,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         });
     }
     bind_item!(on_request_delete, Action::RequestDelete);
+    bind_item!(on_pin_message, Action::PinMessage);
     bind_item!(on_retry, Action::Retry);
     bind_item!(on_cancel_send, Action::CancelSend);
     bind_item!(on_start_forward, Action::StartForward);
