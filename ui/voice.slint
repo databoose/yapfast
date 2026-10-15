@@ -335,11 +335,11 @@ export component VoiceDock inherits Rectangle {
             Rectangle {
                 width: 64px;
                 if !CallLink.measured || !root.voice-ready: Image {
-                    x: 26px; width: 20px; height: 20px; source: @image-url("icons/volume-2.svg");
+                    x: 24px; width: 24px; height: 24px; source: @image-url("icons/volume-2.svg");
                     image-fit: contain; colorize: root.voice-color;
                 }
                 if CallLink.measured && root.voice-ready: SignalIcon {
-                    x: 26px; width: 20px; height: 20px; quality: CallLink.quality;
+                    x: 24px; width: 24px; height: 24px; quality: CallLink.quality;
                 }
                 LinkTouch { open(x, y, width, height) => { root.open-call-link(x, y, width, height); } }
             }
