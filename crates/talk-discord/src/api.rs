@@ -16,6 +16,21 @@ const API: &str = "https://discord.com/api/v9";
 /// The web client's page, which carries its build number.
 const WEB_APP: &str = "https://discord.com/app";
 const UNAUTHORIZED: &str = "Discord rejected the login. Link Discord again.";
+/// How a message goes, besides what it says.
+#[derive(Clone, Copy, Debug)]
+pub struct Sending<'a> {
+    /// Matches the message to its echo from the gateway.
+    pub nonce: &'a str,
+    /// The message it replies to, in the same channel.
+    pub reply: Option<&'a str>,
+    /// Whether a reply notifies the author of what it replies to.
+    pub ping_reply: bool,
+    /// Notifies nobody, as `@silent` does.
+    pub silent: bool,
+}
+
+/// The message flag of `@silent`: no push or desktop notifications.
+const SUPPRESS_NOTIFICATIONS: u64 = 1 << 12;
 /// The most messages one history request returns.
 pub const PAGE: usize = 50;
 
@@ -249,18 +264,20 @@ impl Api {
         }
     }
 
-    /// Sends a message, as a reply when `reply` names one in the same
-    /// channel, with an uploaded file.
+    /// Sends a message, as a reply when `options` names one in the same
+    /// channel, with uploaded files.
     pub async fn send(
         &self,
         guild: Option<&str>,
         channel: &str,
         content: &str,
-        nonce: &str,
-        reply: Option<&str>,
+        options: Sending<'_>,
         uploads: &[Upload],
     ) -> Result<Value> {
-        let mut body = message_body(content, nonce);
+        let mut body = message_body(content, options.nonce);
+        if options.silent {
+            body["flags"] = SUPPRESS_NOTIFICATIONS.into();
+        }
         if !uploads.is_empty() {
             body["attachments"] = uploads
                 .iter()
@@ -274,13 +291,21 @@ impl Api {
                 })
                 .collect();
         }
-        if let Some(reply) = reply {
+        if let Some(reply) = options.reply {
             body["message_reference"] = json!({
                 "guild_id": guild,
                 "channel_id": channel,
                 "message_id": reply,
                 "type": 0,
             });
+            // As Discord's client asks for a reply with its mention off:
+            // everyone the text mentions, but not the author replied to.
+            if !options.ping_reply {
+                body["allowed_mentions"] = json!({
+                    "parse": ["users", "roles", "everyone"],
+                    "replied_user": false,
+                });
+            }
         }
         let path = format!("/channels/{channel}/messages");
         self.json(with_json(self.request(Method::POST, &path), &body))

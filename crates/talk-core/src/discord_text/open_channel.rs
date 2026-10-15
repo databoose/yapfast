@@ -3,6 +3,8 @@
 
 use talk_discord::api::Span;
 
+use crate::chat::SendOptions;
+
 use super::{
     channels::SharedPreviews,
     render::{chat_embed, custom_emoji, mentions, sent_id},
@@ -13,6 +15,7 @@ pub(super) struct Pending {
     pub(super) nonce: String,
     pub(super) body: String,
     pub(super) reply: Option<String>,
+    pub(super) options: SendOptions,
     /// Files sent with it.
     pub(super) files: Vec<PendingFile>,
     pub(super) failed: bool,
@@ -571,6 +574,7 @@ impl OpenChannel {
         done: &UnboundedSender<Done>,
         body: String,
         reply: Option<String>,
+        options: SendOptions,
         files: Vec<OutgoingFile>,
     ) -> Result<(), &'static str> {
         if (body.trim().is_empty() && files.is_empty()) || body.chars().count() > MAX_CHARS {
@@ -605,7 +609,7 @@ impl OpenChannel {
             ),
             None => None,
         };
-        self.queue(discord, done, body, reply, files);
+        self.queue(discord, done, body, reply, options, files);
         Ok(())
     }
 
@@ -615,6 +619,7 @@ impl OpenChannel {
         done: &UnboundedSender<Done>,
         body: String,
         reply: Option<String>,
+        options: SendOptions,
         files: Vec<PendingFile>,
     ) {
         let nonce = talk_discord::message::nonce();
@@ -623,6 +628,7 @@ impl OpenChannel {
             nonce: nonce.clone(),
             body,
             reply,
+            options,
             files,
             failed: false,
         });
@@ -640,10 +646,11 @@ impl OpenChannel {
         pending.failed = false;
         let (discord, done) = (discord.clone(), done.clone());
         let (room, guild, channel) = (self.room.clone(), self.guild.clone(), self.channel.clone());
-        let (nonce, body, reply) = (
+        let (nonce, body, reply, options) = (
             nonce.to_owned(),
             pending.body.clone(),
             pending.reply.clone(),
+            pending.options,
         );
         let files: Vec<_> = pending
             .files
@@ -659,8 +666,14 @@ impl OpenChannel {
                         .map_err(|_| format!("Talk could not read {name}."))?;
                     read.push((upload_name(&name, spoiler), data));
                 }
+                let sending = talk_discord::api::Sending {
+                    nonce: &nonce,
+                    reply: reply.as_deref(),
+                    ping_reply: !options.quiet_reply,
+                    silent: options.silent,
+                };
                 discord
-                    .send(&guild, &channel, &body, &nonce, reply.as_deref(), read)
+                    .send(&guild, &channel, &body, sending, read)
                     .await
                     .map_err(|error| error.to_string())
             }

@@ -92,6 +92,7 @@ impl Application {
             item,
             author: message.author.clone(),
             body: chat::plain_snippet(&message.body),
+            ping: self.state.reply_ping,
         };
         if let Some(Compose::Edit { draft, .. }) = self.state.compose.insert(id.clone(), reply) {
             self.state.drafts.insert(id, draft);
@@ -159,10 +160,27 @@ impl Application {
             return vec![];
         }
         let draft = self.state.drafts.get(&id).cloned().unwrap_or_default();
-        let body = if self.state.preview {
-            draft.clone()
+        let compose = self.state.compose.get(&id).cloned();
+        // Discord's `@silent` at the start sends a message that notifies
+        // nobody; Matrix has no such thing. An edit can't change it.
+        let silent_text = draft
+            .strip_prefix("@silent")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            .filter(|_| {
+                Network::of(&id) == Network::Discord
+                    && !matches!(compose, Some(Compose::Edit { .. }))
+            });
+        let silent = silent_text.is_some();
+        let text = silent_text.map_or(draft.as_str(), str::trim_start);
+        let text = if self.state.strip_tracking {
+            crate::links::without_tracking(text)
         } else {
-            let wired = mention::wire(&draft, &self.state.mention_candidates());
+            std::borrow::Cow::Borrowed(text)
+        };
+        let body = if self.state.preview {
+            text.into_owned()
+        } else {
+            let wired = mention::wire(&text, &self.state.mention_candidates());
             if Network::of(&id) == Network::Discord {
                 let usable: Vec<chat::CustomEmoji> = self
                     .usable_emoji()
@@ -178,7 +196,6 @@ impl Application {
             self.state.notice = Some("Keep messages under 16 KB.".into());
             return vec![];
         }
-        let compose = self.state.compose.get(&id).cloned();
         if self.state.preview {
             match compose {
                 Some(Compose::Edit { item, .. }) => {
@@ -202,7 +219,9 @@ impl Application {
                         time: "Local preview".into(),
                         own: true,
                         reply: match compose {
-                            Some(Compose::Reply { item, author, body }) => Some(Reply {
+                            Some(Compose::Reply {
+                                item, author, body, ..
+                            }) => Some(Reply {
                                 author,
                                 avatar: self
                                     .state
@@ -254,6 +273,10 @@ impl Application {
                 effects.push(Effect::Backend(Command::Send {
                     room: id,
                     body,
+                    options: chat::SendOptions {
+                        quiet_reply: matches!(compose, Some(Compose::Reply { ping: false, .. })),
+                        silent,
+                    },
                     reply: match compose {
                         Some(Compose::Reply { item, .. }) => Some(item),
                         _ => None,

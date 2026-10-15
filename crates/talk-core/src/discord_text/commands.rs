@@ -193,9 +193,10 @@ pub fn command(
             room,
             body,
             reply,
+            options,
             files,
         } => {
-            let result = channel.send(discord, done, body.clone(), reply, files);
+            let result = channel.send(discord, done, body.clone(), reply, options, files);
             publish(channel, discord, done, events);
             let _ = events.send(Event::SendResult { room, body, result });
         }

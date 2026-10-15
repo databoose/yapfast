@@ -648,6 +648,8 @@ export component MessageSettings inherits VerticalLayout {
     in-out property <bool> share-typing;
     /// When animations play: 0 while Talk has the focus, 1 always, 2 never.
     in-out property <int> animate;
+    in-out property <bool> reply-ping;
+    in-out property <bool> strip-tracking;
     /// The networks in use, which the descriptions name.
     in property <bool> matrix;
     in property <bool> discord;
@@ -712,6 +714,18 @@ export component MessageSettings inherits VerticalLayout {
         description: (root.matrix && root.discord ? "Discord and Matrix show" : root.matrix ? "Matrix shows" : "Discord shows")
             + " \"typing...\" while you write. Others still show here when they type.";
         checked <=> root.share-typing;
+        toggled => { root.preferences-changed(); }
+    }
+    SettingsSwitch {
+        text: "Mention people you reply to";
+        description: "They get notified of your reply. Switch it for one reply with @ On on the reply bar.";
+        checked <=> root.reply-ping;
+        toggled => { root.preferences-changed(); }
+    }
+    SettingsSwitch {
+        text: "Remove tracking from links you send";
+        description: "Takes out tags like utm_source and fbclid, and share ids from YouTube, Spotify and X. The links still go to the same page.";
+        checked <=> root.strip-tracking;
         toggled => { root.preferences-changed(); }
     }
 }

@@ -858,15 +858,14 @@ impl Discord {
         Ok(())
     }
 
-    /// Sends a message, or a reply to `reply` in the same channel, with a
-    /// file given as its name and contents.
+    /// Sends a message, or a reply in the same channel as `options` says,
+    /// with files given as their names and contents.
     pub async fn send(
         &self,
         guild: &str,
         channel: &str,
         content: &str,
-        nonce: &str,
-        reply: Option<&str>,
+        options: crate::api::Sending<'_>,
         files: Vec<(String, Vec<u8>)>,
     ) -> Result<Message> {
         let mut uploads = Vec::with_capacity(files.len());
@@ -883,7 +882,7 @@ impl Discord {
         }
         let sent = self
             .api
-            .send(server(guild), channel, content, nonce, reply, &uploads)
+            .send(server(guild), channel, content, options, &uploads)
             .await;
         if sent.is_err() {
             for upload in &uploads {

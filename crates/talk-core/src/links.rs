@@ -250,6 +250,93 @@ fn escape(text: &str, out: &mut String) {
     }
 }
 
+/// `text` with the tracking parameters taken out of its web addresses:
+/// those that only tell a site or an advertiser who shared a link and
+/// where it was clicked. The rest of each address stays as typed.
+pub fn without_tracking(text: &str) -> Cow<'_, str> {
+    let mut clean = String::new();
+    let mut copied = 0;
+    for range in addresses(text) {
+        let Some(link) = untracked(&text[range.clone()]) else {
+            continue;
+        };
+        clean.push_str(&text[copied..range.start]);
+        clean.push_str(&link);
+        copied = range.end;
+    }
+    if copied == 0 {
+        return Cow::Borrowed(text);
+    }
+    clean.push_str(&text[copied..]);
+    Cow::Owned(clean)
+}
+
+/// `link` without its tracking parameters, or `None` when it has none.
+fn untracked(link: &str) -> Option<String> {
+    let (address, fragment) = match link.split_once('#') {
+        Some((address, fragment)) => (address, Some(fragment)),
+        None => (link, None),
+    };
+    let (base, query) = address.split_once('?')?;
+    let host = host(link).to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let parameters = query.split('&');
+    let kept: Vec<&str> = parameters
+        .clone()
+        .filter(|parameter| {
+            let name = parameter.split('=').next().unwrap_or_default();
+            !tracks(host, &name.to_ascii_lowercase())
+        })
+        .collect();
+    if kept.len() == parameters.count() {
+        return None;
+    }
+    let mut clean = base.to_owned();
+    if !kept.is_empty() {
+        clean.push('?');
+        clean.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        clean.push('#');
+        clean.push_str(fragment);
+    }
+    Some(clean)
+}
+
+/// Whether a query parameter named `name` on `host` only tracks: the
+/// campaign tags any site gets, the click ids ad networks add, and the
+/// share ids a few big sites add to links copied from them.
+fn tracks(host: &str, name: &str) -> bool {
+    const ANYWHERE: &[&str] = &[
+        "fbclid",
+        "gclid",
+        "dclid",
+        "gbraid",
+        "wbraid",
+        "msclkid",
+        "yclid",
+        "twclid",
+        "ttclid",
+        "li_fat_id",
+        "mc_cid",
+        "mc_eid",
+        "_hsenc",
+        "_hsmi",
+        "mkt_tok",
+        "igshid",
+    ];
+    let shared = match host {
+        "youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be" | "open.spotify.com" => {
+            &["si"][..]
+        }
+        "instagram.com" => &["igsh"][..],
+        "twitter.com" | "x.com" => &["s", "t", "ref_src"][..],
+        "reddit.com" | "old.reddit.com" => &["share_id", "utm_name"][..],
+        _ => &[][..],
+    };
+    name.starts_with("utm_") || ANYWHERE.contains(&name) || shared.contains(&name)
+}
+
 /// Byte ranges of `http://` and `https://` addresses, without the
 /// punctuation that usually follows one in a sentence.
 fn addresses(text: &str) -> Vec<Range<usize>> {
@@ -312,6 +399,23 @@ fn addresses(text: &str) -> Vec<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_tracking_out_of_links_and_leaves_the_rest() {
+        assert_eq!(
+            without_tracking(
+                "look https://example.com/a?id=4&utm_source=x&UTM_medium=y#top and https://youtu.be/abc?si=Q1&t=30."
+            ),
+            "look https://example.com/a?id=4#top and https://youtu.be/abc?t=30."
+        );
+        assert_eq!(
+            without_tracking("(https://x.com/a/status/1?s=20&t=abc)"),
+            "(https://x.com/a/status/1)"
+        );
+        // Another site's `si` or `t` may mean something.
+        let kept = "https://example.org/?si=1&t=2 and https://example.org/plain";
+        assert!(matches!(without_tracking(kept), Cow::Borrowed(text) if text == kept));
+    }
 
     #[test]
     fn links_bare_addresses_only() {

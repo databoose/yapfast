@@ -1818,6 +1818,10 @@ impl Adapter {
         if window.get_aside_draft() != draft {
             window.set_aside_draft(draft.into());
         }
+        window.set_aside_reply_ping(matches!(
+            state.aside_compose(),
+            Some(Compose::Reply { ping: true, .. })
+        ));
         window.set_aside_compose_label(match state.aside_compose() {
             Some(Compose::Reply { author, body, .. }) => {
                 format!("Replying to {author}: {body}").into()
@@ -1936,6 +1940,10 @@ impl Adapter {
         }
         update_model(&self.models.staged, rows);
         window.set_confirm_delete(state.confirm_delete.clone().unwrap_or_default().into());
+        window.set_reply_ping(matches!(
+            state.compose(),
+            Some(Compose::Reply { ping: true, .. })
+        ));
         window.set_compose_label(match state.compose() {
             Some(Compose::Reply { author, body, .. }) => {
                 format!("Replying to {author}: {body}").into()

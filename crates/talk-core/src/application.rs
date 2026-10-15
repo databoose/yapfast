@@ -289,6 +289,8 @@ pub enum Compose {
         item: String,
         author: String,
         body: String,
+        /// Whether the reply notifies the person it replies to.
+        ping: bool,
     },
     /// Editing replaces the draft; cancelling or finishing restores it.
     Edit { item: String, draft: String },
@@ -344,6 +346,11 @@ pub struct AppState {
     pub show_hidden_channels: bool,
     /// Reading a Discord channel in Talk marks it read on Discord too.
     pub sync_discord_reads: bool,
+    /// Whether a new reply notifies the person it replies to, until it's
+    /// switched for that reply.
+    pub reply_ping: bool,
+    /// Tracking parameters come out of the links in sent messages.
+    pub strip_tracking: bool,
     pub switch_voice: Option<String>,
     /// A stream to watch once its call connects and they show sharing in
     /// it, as clicking them in the channel list asks: the voice channel and
@@ -1350,6 +1357,15 @@ pub enum Action {
     DeafenOnJoin,
     /// List Discord channels this account can't see, locked.
     ShowHiddenChannels(bool),
+    /// Whether new replies notify the person they reply to.
+    ReplyPing(bool),
+    /// Switch whether the reply being written notifies its author: in the
+    /// thread beside's composer, or the selected room's.
+    ToggleReplyPing {
+        aside: bool,
+    },
+    /// Take tracking parameters out of links in sent messages.
+    StripTracking(bool),
     /// Mark Discord channels read on Discord when reading them in Talk.
     SyncDiscordReads(bool),
     /// Accept the selected Discord message request, or ignore it.
@@ -2167,6 +2183,27 @@ impl Application {
             Action::ShowVoicePerson { room, user } => self.show_voice_person(room, user),
             Action::DismissVoiceError => {
                 self.state.voice.error = None;
+                vec![]
+            }
+            Action::ReplyPing(ping) => {
+                self.state.reply_ping = ping;
+                vec![]
+            }
+            Action::ToggleReplyPing { aside } => {
+                let room = if aside {
+                    self.state.aside.as_ref().map(|aside| &aside.room)
+                } else {
+                    self.state.selected.as_ref()
+                };
+                if let Some(room) = room.cloned()
+                    && let Some(Compose::Reply { ping, .. }) = self.state.compose.get_mut(&room)
+                {
+                    *ping = !*ping;
+                }
+                vec![]
+            }
+            Action::StripTracking(strip) => {
+                self.state.strip_tracking = strip;
                 vec![]
             }
             Action::ShowHiddenChannels(shown) => {

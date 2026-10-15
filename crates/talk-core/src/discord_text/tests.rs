@@ -109,6 +109,7 @@ fn live_events_echoes_and_failed_sends() {
             nonce: nonce.into(),
             body: "hi".into(),
             reply: None,
+            options: Default::default(),
             files: vec![],
             failed: false,
         });
@@ -942,6 +943,7 @@ async fn a_file_marked_as_a_spoiler_arrives_as_one() {
             room: room.clone(),
             body: String::new(),
             reply: None,
+            options: Default::default(),
             files: vec![OutgoingFile {
                 path,
                 spoiler: true,

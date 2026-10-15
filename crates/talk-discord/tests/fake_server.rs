@@ -633,8 +633,7 @@ async fn talks_to_the_fake_server() {
             &guild,
             &general,
             "hello from Talk",
-            &nonce,
-            Some(&message.id),
+            sending(&nonce, Some(&message.id)),
             vec![],
         )
         .await
@@ -736,8 +735,7 @@ async fn talks_to_the_fake_server() {
             PRIVATE,
             &dm_bob,
             "On my way",
-            &nonce,
-            Some(&history[3].id),
+            sending(&nonce, Some(&history[3].id)),
             // A message carries several files.
             vec![
                 ("map.txt".into(), b"left at the lake".to_vec()),
@@ -2719,7 +2717,7 @@ async fn finds_gifs_as_discords_client_does(
     // keeps the link, which Discord's client stars it by.
     let nonce = talk_discord::message::nonce();
     let sent = discord
-        .send(guild, general, &linked, &nonce, None, vec![])
+        .send(guild, general, &linked, sending(&nonce, None), vec![])
         .await
         .unwrap();
     let unfurled = live_where(&mut live, |event| match event {
@@ -2933,4 +2931,14 @@ async fn starts_threads_as_discords_client_does(
             "location": "Thread Browser Toolbar",
         })
     );
+}
+
+/// A plain send, as the composer makes it, with `nonce` and `reply`.
+fn sending<'a>(nonce: &'a str, reply: Option<&'a str>) -> talk_discord::api::Sending<'a> {
+    talk_discord::api::Sending {
+        nonce,
+        reply,
+        ping_reply: true,
+        silent: false,
+    }
 }

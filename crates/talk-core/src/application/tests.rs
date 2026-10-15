@@ -493,6 +493,34 @@ fn up_in_an_empty_composer_edits_the_newest_own_message() {
 }
 
 #[test]
+fn a_reply_mentions_its_author_unless_switched_off() {
+    let mut app = connected();
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![message("e:$bob", false)]),
+    });
+    app.dispatch(Action::ReplyPing(true));
+    app.dispatch(Action::Reply("e:$bob".into()));
+    assert!(matches!(
+        app.state.compose(),
+        Some(Compose::Reply { ping: true, .. })
+    ));
+    app.dispatch(Action::ToggleReplyPing { aside: false });
+    app.dispatch(Action::SetDraft("@silent hi".into()));
+    let Command::Send { body, options, .. } = send_command(app.dispatch(Action::Send)) else {
+        unreachable!()
+    };
+    assert_eq!(body, "@silent hi", "Matrix has no silent messages");
+    assert_eq!(
+        options,
+        crate::chat::SendOptions {
+            quiet_reply: true,
+            silent: false
+        }
+    );
+}
+
+#[test]
 fn replies_edits_and_saved_drafts_share_one_composer() {
     let mut app = connected();
     app.apply(Event::Timeline {
@@ -2560,6 +2588,22 @@ fn discord_mentions_search_the_server_and_name_roles() {
         unreachable!()
     };
     assert_eq!(body, "<@9> and <@&30>, look <:talk:5> <a:party:6>");
+    app.apply(Event::SendResult {
+        room: room.clone(),
+        body,
+        result: Ok(()),
+    });
+    // `@silent` sends a message that notifies nobody, and links lose their
+    // tracking.
+    app.dispatch(Action::StripTracking(true));
+    app.dispatch(Action::SetDraft(
+        "@silent see https://a.example/p?utm_source=x&id=2".into(),
+    ));
+    let Command::Send { body, options, .. } = send_command(app.dispatch(Action::Send)) else {
+        unreachable!()
+    };
+    assert_eq!(body, "see https://a.example/p?id=2");
+    assert!(options.silent && !options.quiet_reply);
     // Another conversation starts afresh.
     app.dispatch(Action::Navigate(Navigation::DirectMessages));
     app.dispatch(Action::SelectRoom("dm".into()));
@@ -6574,7 +6618,7 @@ fn the_gif_picker_searches_sends_and_keeps_favorites() {
         sent.as_slice(),
         [
             ..,
-            Command::Send { room, body, reply: None, files },
+            Command::Send { room, body, reply: None, files, .. },
             Command::Discord(DiscordCommand::GifPicked { id, query }),
         ] if room == "discord:10:21" && body == &gif("cat").url && files.is_empty()
             && id == "id-cat" && query == "happy"

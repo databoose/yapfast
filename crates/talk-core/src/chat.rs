@@ -1188,6 +1188,15 @@ pub enum Start {
     },
 }
 
+/// How a message goes, besides what it says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SendOptions {
+    /// A reply that doesn't notify the person it replies to.
+    pub quiet_reply: bool,
+    /// A message that notifies nobody, as Discord's `@silent` sends it.
+    pub silent: bool,
+}
+
 /// What the UI asks of the networks and voice. [`Command::route`] decides
 /// which of them carries out each one.
 #[derive(Clone)]
@@ -1211,6 +1220,7 @@ pub enum Command {
         room: String,
         body: String,
         reply: Option<String>,
+        options: SendOptions,
         files: Vec<OutgoingFile>,
     },
     Edit {
@@ -2731,6 +2741,7 @@ mod tests {
             room: room.clone(),
             body: "hi".into(),
             reply: None,
+            options: Default::default(),
             files: vec![],
         };
         let forward = |room: &String, target: &String| Command::Forward {

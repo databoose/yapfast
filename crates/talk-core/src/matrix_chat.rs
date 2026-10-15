@@ -12,7 +12,11 @@ use matrix_sdk::{
     Client, ComposerDraft, ComposerDraftType, Room, RoomMemberships,
     attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo},
     event_handler::EventHandlerHandle,
-    room::{MessagesOptions, edit::EditedContent},
+    room::{
+        MessagesOptions,
+        edit::EditedContent,
+        reply::{EnforceThread, Reply as ReplyTo},
+    },
     ruma::{
         OwnedEventId, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
         api::client::receipt::create_receipt::v3::ReceiptType,
@@ -23,7 +27,8 @@ use matrix_sdk::{
                 MediaSource,
                 member::RoomMemberEventContent,
                 message::{
-                    MessageType, RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
+                    AddMentions, MessageType, ReplyWithinThread, RoomMessageEventContent,
+                    RoomMessageEventContentWithoutRelation,
                 },
                 power_levels::UserPowerLevel,
             },
@@ -517,6 +522,7 @@ impl Matrix {
                 room,
                 body,
                 reply,
+                options,
                 files,
             } => {
                 typing_notice(client, &room, false);
@@ -530,7 +536,8 @@ impl Matrix {
                     }
                 }
                 if result.is_ok() && (files.is_empty() || !body.trim().is_empty()) {
-                    result = send(session, open.as_ref(), &room, &body, reply.as_deref()).await;
+                    let reply = reply.as_deref().map(|item| (item, !options.quiet_reply));
+                    result = send(session, open.as_ref(), &room, &body, reply).await;
                 }
                 let _ = events.send(Event::SendResult { room, body, result });
             }
@@ -1317,18 +1324,37 @@ async fn send(
     open: Option<&OpenRoom>,
     room: &str,
     body: &str,
-    reply: Option<&str>,
+    reply: Option<(&str, bool)>,
 ) -> Result<(), &'static str> {
     check_text(body)?;
     let timeline = writable(session, open, room).await?;
     let mut content = RoomMessageEventContentWithoutRelation::text_markdown(body);
     content.mentions = Some(mentioned(body));
     let queued = match reply {
-        Some(item) => {
+        Some((item, ping)) => {
             let Some(TimelineEventItemId::EventId(event)) = parse_item(item) else {
                 return Err("You can reply once that message has been sent.");
             };
-            timeline.send_reply(content, event).await
+            if ping {
+                timeline.send_reply(content, event).await
+            } else {
+                // As send_reply does, without mentioning who's replied to.
+                let reply = ReplyTo {
+                    event_id: event,
+                    enforce_thread: if timeline.is_threaded() {
+                        EnforceThread::Threaded(ReplyWithinThread::Yes)
+                    } else {
+                        EnforceThread::MaybeThreaded
+                    },
+                    add_mentions: AddMentions::No,
+                };
+                let content = timeline
+                    .room()
+                    .make_reply_event(content, reply)
+                    .await
+                    .map_err(|_| "Talk could not find the message to reply to.")?;
+                timeline.send(content.into()).await
+            }
         }
         None => timeline.send(content.with_relation(None).into()).await,
     };
@@ -2400,6 +2426,7 @@ mod tests {
                     room: encrypted.to_string(),
                     body: "encrypted chat round trip".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -2519,6 +2546,7 @@ mod tests {
                     room: encrypted.to_string(),
                     body: "before closing".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -2693,6 +2721,7 @@ mod tests {
                     room: encrypted.to_string(),
                     body: "after the window".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -2895,6 +2924,7 @@ mod tests {
                     room: room.clone(),
                     body: "**bold** and `code`".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -2918,6 +2948,7 @@ mod tests {
                     room: room.clone(),
                     body: "plain reply".into(),
                     reply: Some(original.item.clone()),
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -3016,6 +3047,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![picture.clone().into()],
                 })
                 .unwrap();
@@ -3182,6 +3214,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![file.into()],
                 })
                 .unwrap();
@@ -3228,6 +3261,7 @@ mod tests {
                     room: room.clone(),
                     body: "after the draft".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -3330,6 +3364,7 @@ mod tests {
                     room: room.clone(),
                     body: "written offline".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -3360,6 +3395,7 @@ mod tests {
                     room: room.clone(),
                     body: "cancel me".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -3475,6 +3511,7 @@ mod tests {
                     body: "Welcome to **Talk**, with `code` and a [link](https://matrix.org)"
                         .into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -3496,6 +3533,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![picture.into()],
                 })
                 .unwrap();
@@ -3512,6 +3550,7 @@ mod tests {
                     room: room.clone(),
                     body: String::new(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![notes.into()],
                 })
                 .unwrap();
@@ -3526,6 +3565,7 @@ mod tests {
                     room: room.clone(),
                     body: "The welcome has the plan".into(),
                     reply: Some(welcome),
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();
@@ -3555,6 +3595,7 @@ mod tests {
                         room: room.clone(),
                         body,
                         reply: None,
+                        options: Default::default(),
                         files: vec![],
                     })
                     .unwrap();
@@ -3575,6 +3616,7 @@ mod tests {
                     room: room.clone(),
                     body: "Last message from **Bob** with `code`".into(),
                     reply: None,
+                    options: Default::default(),
                     files: vec![],
                 })
                 .unwrap();

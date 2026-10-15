@@ -22,7 +22,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
-import { ActionButton, IconButton, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
+import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
 import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
@@ -278,6 +278,8 @@ export component TalkWindow inherits Window {
     in property <bool> aside-composer-enabled;
     in property <bool> aside-can-send;
     in property <string> aside-compose-label;
+    in property <bool> aside-reply-ping;
+    callback aside-toggle-reply-ping;
     in-out property <string> aside-draft;
     callback aside-close;
     callback aside-expand;
@@ -332,6 +334,9 @@ export component TalkWindow inherits Window {
     callback gifs-scrolled(length, length);
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
+    /// Whether the reply being written mentions the person it replies to.
+    in property <bool> reply-ping;
+    callback toggle-reply-ping;
     in property <bool> can-attach;
     /// Files are being dragged over the window, to go to the open
     /// conversation, which Discord's words name, as `#general`.
@@ -696,6 +701,8 @@ export component TalkWindow inherits Window {
     /// Message text: 0 small, 1 default, 2 large.
     in-out property <int> text-size: 1;
     in-out property <bool> link-previews: true;
+    in-out property <bool> reply-ping-default: true;
+    in-out property <bool> strip-tracking: true;
     /// When animations play: 0 while Talk has the focus, 1 always, 2 never.
     in-out property <int> animate;
     in-out property <bool> unmute-on-join;
@@ -2298,6 +2305,7 @@ export component TalkWindow inherits Window {
                                     padding-left: 14px; padding-right: 4px; spacing: 8px;
                                     Image { source: root.is-editing ? @image-url("icons/pencil.svg") : @image-url("icons/reply.svg"); width: 16px; image-fit: contain; colorize: Theme.muted; }
                                     Text { text: root.compose-label; color: Theme.secondary; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                    if !root.is-editing: VerticalLayout { alignment: center; PingToggle { on: root.reply-ping; toggled => { root.toggle-reply-ping(); } } }
                                     IconButton { icon: @image-url("icons/x.svg"); label: root.is-editing ? "Cancel editing" : "Cancel reply"; size: 28px; glyph: 16px; clicked => { root.cancel-compose(); } }
                                 }
                             }
@@ -2466,6 +2474,7 @@ export component TalkWindow inherits Window {
                         focus-tick: root.aside-focus-tick;
                         busy: root.busy; composer-enabled: root.aside-composer-enabled; can-send: root.aside-can-send;
                         sending: root.sending; compose-label: root.aside-compose-label; draft <=> root.aside-draft;
+                        reply-ping: root.aside-reply-ping; toggle-reply-ping => { root.aside-toggle-reply-ping(); }
                         emoji-font: root.emoji-font; message-font-size: root.message-font-size; bar-reactions: root.bar-reactions;
                         active-item <=> root.active-item; react-item: root.react-item; menu-item: root.menu-item; confirm-delete: root.confirm-delete;
                         close => { root.aside-close(); }
@@ -2687,6 +2696,7 @@ export component TalkWindow inherits Window {
             twelve-hour-clock <=> root.twelve-hour-clock; text-size <=> root.text-size;
             link-previews <=> root.link-previews; share-typing <=> root.share-typing;
             animate <=> root.animate;
+            reply-ping <=> root.reply-ping-default; strip-tracking <=> root.strip-tracking;
             matrix: root.matrix-build; discord: root.discord-linked;
             preferences-changed => { root.preferences-changed(); }
         }

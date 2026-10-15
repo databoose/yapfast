@@ -297,15 +297,20 @@ impl Application {
             effects.extend(self.set_draft(body));
             return effects;
         }
-        let reply = match self.state.compose.get(&room) {
-            Some(Compose::Reply { item, .. }) => Some(item.clone()),
-            _ => None,
+        let (reply, quiet_reply) = match self.state.compose.get(&room) {
+            Some(Compose::Reply { item, ping, .. }) => (Some(item.clone()), !ping),
+            _ => (None, false),
+        };
+        let options = chat::SendOptions {
+            quiet_reply,
+            silent: false,
         };
         effects.extend(self.jump_to_present());
         effects.push(Effect::Backend(Command::Send {
             room,
             body: url,
             reply,
+            options,
             files: vec![],
         }));
         if let (Some(id), Some(query)) = (picked, query) {

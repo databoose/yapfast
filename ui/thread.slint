@@ -1,6 +1,6 @@
 import { ListView } from "scrollview.slint";
 import { Theme, Middle } from "theme.slint";
-import { IconButton, ActionButton, MessagesSkeleton, TextField } from "controls.slint";
+import { IconButton, PingToggle, ActionButton, MessagesSkeleton, TextField } from "controls.slint";
 import { FoundRow, FoundCard } from "header.slint";
 import { SettingsSwitch } from "settings.slint";
 import { Composer } from "composer.slint";
@@ -23,6 +23,9 @@ export component ThreadPanel inherits Rectangle {
     in property <bool> sending;
     /// "Replying to ..." or "Editing your message", over the composer.
     in property <string> compose-label;
+    /// Whether the reply being written mentions the person it replies to.
+    in property <bool> reply-ping;
+    callback toggle-reply-ping;
     in-out property <string> draft;
     in property <string> emoji-font;
     in property <length> message-font-size;
@@ -243,6 +246,7 @@ export component ThreadPanel inherits Rectangle {
                     padding-left: 14px; padding-right: 4px; spacing: 8px;
                     Image { source: root.is-editing ? @image-url("icons/pencil.svg") : @image-url("icons/reply.svg"); width: 16px; image-fit: contain; colorize: Theme.muted; }
                     Text { text: root.compose-label; color: Theme.secondary; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    if !root.is-editing: VerticalLayout { alignment: center; PingToggle { on: root.reply-ping; toggled => { root.toggle-reply-ping(); } } }
                     IconButton { icon: @image-url("icons/x.svg"); label: root.is-editing ? "Cancel editing" : "Cancel reply"; size: 28px; glyph: 16px; clicked => { root.cancel-compose(); } }
                 }
             }

@@ -220,6 +220,14 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     bind!(on_confirm_delete_message, Action::ConfirmDelete);
     bind!(on_cancel_delete, Action::CancelDelete);
     bind!(on_cancel_compose, Action::CancelCompose);
+    bind!(
+        on_toggle_reply_ping,
+        Action::ToggleReplyPing { aside: false }
+    );
+    bind!(
+        on_aside_toggle_reply_ping,
+        Action::ToggleReplyPing { aside: true }
+    );
     bind!(on_aside_close, Action::CloseAside);
     bind!(on_aside_expand, Action::ExpandAside);
     bind!(on_aside_earlier, Action::AsideEarlier);
@@ -946,6 +954,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.twelve_hour_clock = window.get_twelve_hour_clock();
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
+        layout.reply_ping = Some(window.get_reply_ping_default());
+        layout.strip_tracking = Some(window.get_strip_tracking());
         layout.animate = chosen(&ANIMATES, window.get_animate());
         ANIMATE.set(layout.animate);
         show_motion(&window);
@@ -970,6 +980,10 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.gpu_rendering = window.get_gpu_rendering();
         layout.close_to_tray = Some(window.get_close_to_tray());
         adapter.layout.write(&adapter.root);
+        let (reply_ping, strip_tracking) =
+            (window.get_reply_ping_default(), window.get_strip_tracking());
+        adapter.app.dispatch(Action::ReplyPing(reply_ping));
+        adapter.app.dispatch(Action::StripTracking(strip_tracking));
         adapter.restyle = true;
         adapter.refresh(&window);
     });

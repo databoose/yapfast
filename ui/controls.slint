@@ -61,6 +61,26 @@ export component ActionButton inherits Rectangle {
     }
 }
 
+// The reply bar's switch for whether a reply mentions the person it replies
+// to, as Discord's "@ ON".
+export component PingToggle inherits Rectangle {
+    in property <bool> on;
+    callback toggled;
+    width: label.preferred-width + 16px; height: 28px;
+    border-radius: 6px;
+    background: touch.has-hover ? Theme.hover : transparent;
+    accessible-role: checkbox;
+    accessible-checked: root.on;
+    accessible-label: "Mention the person you reply to";
+    accessible-action-default => { root.toggled(); }
+    label := Text {
+        text: root.on ? "@ On" : "@ Off";
+        color: root.on ? Theme.accent : Theme.muted;
+        font-size: 13px; font-weight: 700; vertical-alignment: center;
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.toggled(); } }
+}
+
 // An icon-only action with a tooltip naming it.
 export component IconButton inherits Rectangle {
     in property <image> icon;

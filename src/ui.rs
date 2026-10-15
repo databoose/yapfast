@@ -639,6 +639,10 @@ struct Layout {
     text_size: Option<i32>,
     /// Link previews under messages; on unless turned off.
     link_previews: Option<bool>,
+    /// Replies mention the person they reply to; on unless turned off.
+    reply_ping: Option<bool>,
+    /// Tracking comes out of links in sent messages; on unless turned off.
+    strip_tracking: Option<bool>,
     /// When animations play.
     animate: Animate,
     /// Joining a call turns the microphone on.
@@ -804,6 +808,8 @@ impl Layout {
         window.set_twelve_hour_clock(self.twelve_hour_clock);
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
+        window.set_reply_ping_default(self.reply_ping.unwrap_or(true));
+        window.set_strip_tracking(self.strip_tracking.unwrap_or(true));
         window.set_animate(choice(&ANIMATES, self.animate));
         ANIMATE.set(self.animate);
         show_motion(window);
@@ -1218,6 +1224,8 @@ impl Adapter {
         app.dispatch(Action::SyncDiscordReads(
             layout.sync_discord_reads.unwrap_or(true),
         ));
+        app.dispatch(Action::ReplyPing(layout.reply_ping.unwrap_or(true)));
+        app.dispatch(Action::StripTracking(layout.strip_tracking.unwrap_or(true)));
         app.dispatch(Action::SetPinned(layout.pinned.clone()));
         Ok(Rc::new_cyclic(|weak| {
             RefCell::new(Self {
