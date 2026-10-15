@@ -18,3 +18,7 @@ and DMs, and Discord's brand guidelines apply to it rather than the ISC licence.
 
 logo.svg is the app's own mark, the Shout balloon from the Yapfast logo
 sketches: a comic shout balloon with typing dots cut out of it.
+
+scroll-up, scroll-down, scroll-left and scroll-right are the scrollbar arrows of
+Slint 1.18.1's Fluent style (https://slint.dev/), unmodified, under Slint's
+licence (GPL-3.0-only, the Royalty-free License 2.0 or the Software License 3.0).

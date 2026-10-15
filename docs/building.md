@@ -90,6 +90,17 @@ keep their pace. These are the changes marked `Talk:` around
 Reapply them to the matching release when upgrading Slint. Styled paragraphs now
 have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
 
+`ui/scrollview.slint` is Talk's own `ScrollView` and `ListView`, in place of
+the std-widgets ones: the Fluent style's from Slint 1.18.1, with its scroll
+arrows copied to `ui/icons/scroll-*.svg`. The Fluent scrollbar starts a thumb
+drag over each time `maximum` changes, dropping part of the pointer's travel,
+and a `ListView`'s `maximum` changes all through a drag as rows are measured,
+so the thumb fell behind the pointer. Talk's bar sets the viewport from where
+the pointer has moved the thumb since the drag began, as a share of the track,
+and again when `maximum` changes. The compiler virtualizes any component named
+`ListView` with the viewport's lengths, so Talk's is virtualized as upstream's
+is. Compare it with the Fluent style's when upgrading Slint.
+
 The Matrix SDK revision follows the pinned MatrixRTC revision. Keep those two
 sources together when upgrading.
 

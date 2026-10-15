@@ -3,7 +3,7 @@
 Settings → Appearance shows the window in one of the themes Talk comes with,
 or one of the person's own. Each is a full set of the colours of the Slint
 global `Theme` (`ui/theme.slint`), plus whether it's dark, which sets the
-std-widgets' colour scheme. `src/ui/theme.rs` holds the built-in ones as
+std-widgets' colour scheme and the scrollbars'. `src/ui/theme.rs` holds the built-in ones as
 `BUILT_IN`; DESIGN.md says what each colour paints, under Colors. The choice
 is kept in `layout.json` as `theme`, the theme's id, and applied before the
 window's first frame, and again to a window made anew. An id Talk doesn't

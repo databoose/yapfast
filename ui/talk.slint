@@ -1,4 +1,5 @@
-import { ListView, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { ListView } from "scrollview.slint";
 // The UI's typeface, Atkinson Hyperlegible Next; ExtraBold serves weight 900.
 import "fonts/AtkinsonHyperlegibleNext-Regular.ttf";
 import "fonts/AtkinsonHyperlegibleNext-Italic.ttf";
@@ -58,7 +59,7 @@ export component TalkWindow inherits Window {
     // Both faces' x-heights are about half their size, small, so text
     // defaults to 16px.
     default-font-size: 16px;
-    // The std-widgets (ComboBoxes, scrollbars) follow only the colour scheme,
+    // The std-widgets (ComboBoxes) follow only the colour scheme,
     // so it follows the theme.
     property <bool> dark-theme: Theme.dark;
     changed dark-theme => { Palette.color-scheme = self.dark-theme ? ColorScheme.dark : ColorScheme.light; }
