@@ -646,6 +646,8 @@ export component MessageSettings inherits VerticalLayout {
     in-out property <int> text-size;
     in-out property <bool> link-previews;
     in-out property <bool> share-typing;
+    /// When animations play: 0 while Talk has the focus, 1 always, 2 never.
+    in-out property <int> animate;
     /// The networks in use, which the descriptions name.
     in property <bool> matrix;
     in property <bool> discord;
@@ -687,6 +689,15 @@ export component MessageSettings inherits VerticalLayout {
             label: "Clock"; options: ["24-hour", "12-hour"];
             current: root.twelve-hour-clock ? 1 : 0;
             chosen(index) => { root.twelve-hour-clock = index == 1; root.preferences-changed(); }
+        }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "PLAY GIFS, EMOJI AND STICKERS"; }
+        Choices {
+            label: "Play GIFs, emoji and stickers"; options: ["While Talk is focused", "Always", "Never"];
+            current <=> root.animate;
+            chosen => { root.preferences-changed(); }
         }
     }
     Rectangle { height: 1px; background: Theme.line; }
