@@ -259,6 +259,8 @@ export component ThreadPanel inherits Rectangle {
                         placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : "Message " + root.name;
                         edited(text) => { root.draft-edited(text); }
                         accepted => { root.send(); }
+                        // A thread stages no files, so only text pastes.
+                        paste => { self.paste-text(); }
                     }
                     VerticalLayout {
                         alignment: end; padding-bottom: 8px;
@@ -360,6 +362,7 @@ export component NewThreadPanel inherits Rectangle {
                         placeholder: "Enter a message to start the conversation!";
                         edited(text) => { root.body-edited(text); }
                         accepted => { root.create(); }
+                        paste => { self.paste-text(); }
                     }
                     VerticalLayout {
                         alignment: end; padding-bottom: 8px;

@@ -141,7 +141,11 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   through the data-control protocol, so a picture keeps its copied bytes and a
   GIF stays animated; elsewhere arboard reads it, and pixels are saved as PNG.
   Pasted pictures are saved as `image.png` in a temporary folder removed when
-  Talk closes. Text on the clipboard pastes as text. In Matrix the SDK encrypts
+  Talk closes. Text on the clipboard pastes as text. A right click in the
+  composer opens Discord's menu for the field, without its spelling
+  suggestions: Cut and Copy while text is selected, Paste, which pastes as
+  Ctrl+V does, and Select All, which Discord's lacks. A thread's composer
+  has the menu too, and pastes text only, as it holds no files. In Matrix the SDK encrypts
   and uploads each file through its send queue, up to 50 MB, then sends the
   text after them. Images show a decoded preview of up to
   360×270, decoded with dimension and memory limits, with a save button over the

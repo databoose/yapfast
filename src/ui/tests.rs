@@ -103,6 +103,66 @@ fn the_composer_sends_on_enter_and_breaks_lines_on_shift_enter() {
 }
 
 #[test]
+fn the_composers_menu_cuts_copies_and_pastes_through_the_application() {
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
+    let window = one_message("Hi");
+    let pastes = Rc::new(Cell::new(0));
+    let count = pastes.clone();
+    let weak = window.as_weak();
+    window.on_paste_into_composer(move || {
+        count.set(count.get() + 1);
+        weak.unwrap().invoke_paste_composer_text();
+    });
+    window.invoke_focus_composer();
+    for letter in "hello".chars() {
+        let text: SharedString = letter.into();
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    }
+    let press = |x, y, button| {
+        let position = slint::LogicalPosition::new(x, y);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+        settle(&window);
+    };
+    // The menu opens above the pointer, its rows 34px apart, the last
+    // centred 22px above it: Select All, then Paste, Copy and Cut.
+    let (x, y) = (600., 720.);
+    let choose = |row: f32| {
+        press(x, y, PointerEventButton::Right);
+        press(x + 40., y - 22. - 34. * row, PointerEventButton::Left);
+    };
+    choose(0.);
+    choose(3.);
+    assert_eq!(window.get_draft(), "", "Select All, then Cut");
+    choose(1.);
+    assert_eq!(pastes.get(), 1, "Paste goes through the application");
+    assert_eq!(window.get_draft(), "hello");
+    choose(0.);
+    choose(2.);
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::End.into(),
+    });
+    choose(1.);
+    assert_eq!(window.get_draft(), "hellohello", "Select All, then Copy");
+    // Without a selection there is nothing to cut: the rows are Paste and
+    // Select All, so the third from the bottom is outside the menu.
+    choose(2.);
+    assert_eq!(window.get_draft(), "hellohello");
+}
+
+#[test]
 fn the_keyboard_steps_through_messages_and_acts_on_them() {
     use slint::platform::{Key, WindowEvent};
     let window = showing(

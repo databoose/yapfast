@@ -1,5 +1,5 @@
 import { Theme, Middle } from "theme.slint";
-import { ActionButton, IconButton, Avatar, SpoilerCover } from "controls.slint";
+import { ActionButton, IconButton, Avatar, SpoilerCover, ContextMenu, MenuRow } from "controls.slint";
 import { EmojiCell, EmojiFace } from "messages.slint";
 
 /// A file waiting to go with the next message. A spoiler's picture is blurred.
@@ -53,6 +53,8 @@ export component StagedTile inherits Rectangle {
 
 // The message composer. Text wraps and the field grows to about ten lines, then
 // scrolls to keep the cursor in view. Enter sends; Shift+Enter starts a new line.
+// A right click opens Discord's menu for the field, without its spelling
+// suggestions and with Select All, which Discord's lacks.
 export component Composer inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
@@ -72,8 +74,9 @@ export component Composer inherits Rectangle {
     // Up in an empty composer, and Alt+Up anywhere in it.
     callback up-from-empty;
     callback up-to-messages;
-    // Ctrl+V: the clipboard may hold files or a picture rather than text, so the
-    // application looks first and, finding text, pastes it with paste-text.
+    // Ctrl+V and the menu's Paste: the clipboard may hold files or a picture
+    // rather than text, so the application looks first and, finding text,
+    // pastes it with paste-text.
     callback paste;
     // Ctrl+G and Ctrl+E, as Discord's: open the GIFs, 0, or the emoji, 1.
     callback expressions(int);
@@ -82,6 +85,19 @@ export component Composer inherits Rectangle {
     public function place-caret(offset: int) { input.set-selection-offsets(offset, offset); }
     property <length> pad: 12px;
     property <length> line: root.text-size * 1.5;
+    // Where the menu opens: the pointer, from the composer's corner.
+    property <length> menu-x;
+    property <length> menu-y;
+    property <bool> has-selection: input.anchor-position-byte-offset != input.cursor-position-byte-offset;
+    property <MenuRow> paste-row: { id: "paste", text: "Paste", icon: @image-url("icons/clipboard-paste.svg") };
+    property <MenuRow> select-all-row: { id: "select-all", text: "Select All", icon: @image-url("icons/text-select.svg") };
+    property <[MenuRow]> menu-rows: root.has-selection
+        ? [
+            { id: "cut", text: "Cut", icon: @image-url("icons/scissors.svg") },
+            { id: "copy", text: "Copy", icon: @image-url("icons/copy.svg") },
+            root.paste-row, root.select-all-row,
+        ]
+        : [root.paste-row, root.select-all-row];
     horizontal-stretch: 1;
     height: max(48px, min(input.preferred-height + 2 * root.pad, 10 * root.line + 2 * root.pad));
     Text {
@@ -119,8 +135,21 @@ export component Composer inherits Rectangle {
             }
             return reject;
         }
+        // Behind the field, which leaves it right clicks.
+        TouchArea {
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down && root.enabled {
+                    input.focus();
+                    root.menu-x = self.absolute-position.x - root.absolute-position.x + self.mouse-x;
+                    root.menu-y = self.absolute-position.y - root.absolute-position.y + self.mouse-y;
+                    edit-menu.show();
+                }
+            }
+        }
         flick := Flickable {
             content-height: input.height;
+            // Mouse presses go to the field, or with the right button past it.
+            mouse-drag-pan-enabled: false;
             input := TextInput {
                 width: flick.width;
                 height: max(flick.height, self.preferred-height);
@@ -143,6 +172,27 @@ export component Composer inherits Rectangle {
                     }
                 }
             }
+        }
+    }
+    // Above the pointer, as the composer sits at the window's foot, unless
+    // the window's top is too near.
+    edit-menu := PopupWindow {
+        x: root.menu-x;
+        y: root.absolute-position.y + root.menu-y - edit-content.main-height >= 8px
+            ? root.menu-y - edit-content.main-height : root.menu-y;
+        width: edit-content.content-width; height: edit-content.content-height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        edit-content := ContextMenu {
+            rows: root.menu-rows;
+            chose(id) => {
+                edit-menu.close();
+                input.focus();
+                if id == "cut" { input.cut(); }
+                else if id == "copy" { input.copy(); }
+                else if id == "paste" { root.paste(); }
+                else if id == "select-all" { input.select-all(); }
+            }
+            close => { edit-menu.close(); }
         }
     }
 }
