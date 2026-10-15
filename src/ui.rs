@@ -231,6 +231,10 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
             .on_winit_window_event(move |slint_window, event| {
                 if let WindowEvent::Focused(focused) = event {
                     FOCUSED.set(*focused);
+                    // Animations hold still while another window has the focus.
+                    if let Some(window) = weak.upgrade() {
+                        window.global::<Motion>().set_playing(*focused);
+                    }
                 }
                 #[cfg(windows)]
                 if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {

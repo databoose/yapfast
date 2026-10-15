@@ -107,6 +107,10 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   Shift and a click puts it in the message, and a star keeps it among the
   favourites; GIFs in messages have the star too. See
   [Discord](discord.md#gifs).
+- GIFs, animated emoji, stickers and the picker's tiles play only while
+  Talk's window has the focus, as in Discord: on another screen they hold
+  still on the frame they were showing, and go on from there when the
+  window has the focus again.
 - Who reacted, as in Discord's client: half a second on a reaction shows a
   tooltip, ":tada: reacted by Ann, Bo, Cy, and 2 others", naming the first
   three by their name there, once they come (`Command::Reactors`, three at a

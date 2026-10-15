@@ -322,6 +322,12 @@ export component CallButton inherits VerticalLayout {
     }
 }
 
+// Whether animations play: only while Talk's window has the focus, as in
+// Discord, so GIFs on another screen hold still where they are.
+export global Motion {
+    in property <bool> playing: true;
+}
+
 // A picture, or an animation's frames in turn while it shows.
 export component Picture inherits Image {
     in property <image> still;
@@ -330,7 +336,7 @@ export component Picture inherits Image {
     property <int> frame;
     source: root.frames.length > 1 ? root.frames[root.frame] : root.still;
     Timer {
-        running: root.frames.length > 1;
+        running: root.frames.length > 1 && Motion.playing;
         interval: max(20, root.delays[root.frame]) * 1ms;
         triggered => { root.frame = mod(root.frame + 1, root.frames.length); }
     }
