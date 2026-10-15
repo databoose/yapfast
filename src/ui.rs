@@ -35,6 +35,7 @@ use talk_core::{
 use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
+mod call_link;
 mod callbacks;
 mod gifs;
 mod menus;

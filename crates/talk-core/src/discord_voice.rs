@@ -18,8 +18,8 @@ use crate::{
     ring::{Ringer, Tone},
     stream_worker::{self, Report, Worker},
     voice::{
-        CameraPhase, Chosen, Command, Participant, Phase, SharePhase, Sharing, State,
-        StreamQuality, Watching, devices,
+        CameraPhase, Chosen, Command, Link, LinkStats, Participant, Phase, Quality, SharePhase,
+        Sharing, State, StreamQuality, Watching, devices,
     },
 };
 
@@ -362,6 +362,18 @@ pub(crate) async fn call(
         Chosen::write(remembered, state);
         state.can_film = cfg!(any(target_os = "linux", windows));
         state.phase = Phase::Connected;
+        let link = call.stats();
+        state.link = Some(Link::new({
+            let link = link.clone();
+            move || {
+                let read = link.read();
+                LinkStats {
+                    pings: read.pings.into(),
+                    loss: read.loss,
+                    privacy_code: read.privacy_code,
+                }
+            }
+        }));
         if guild == PRIVATE && alone(&discord_states.borrow(), &channel, &me) {
             // Starting a DM call, rather than joining one, rings the others,
             // once Discord has the call: it rings only in one.
@@ -400,6 +412,15 @@ pub(crate) async fn call(
             cameras.ask(&mut call);
             if participants != state.participants {
                 state.participants = participants;
+                snapshots.send_replace(state.clone());
+            }
+            // The signal icon and the encryption it says change seldom; the
+            // pings themselves the UI reads only while it shows them.
+            let (ping, loss, end_to_end) = link.summary();
+            let quality = Quality::of(ping, loss);
+            if (quality, end_to_end) != (state.link_quality, state.end_to_end) {
+                state.link_quality = quality;
+                state.end_to_end = end_to_end;
                 snapshots.send_replace(state.clone());
             }
             if unrung && !alone(&discord_states.borrow(), &channel, &me) {

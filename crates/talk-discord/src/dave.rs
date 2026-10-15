@@ -136,6 +136,16 @@ impl Dave {
         self.version != 0 && self.session.as_ref().is_some_and(DaveSession::is_ready)
     }
 
+    /// The group's voice privacy code, 30 digits, which Discord's clients
+    /// show so the people in a call can compare it, while frames leave
+    /// end-to-end encrypted.
+    pub fn privacy_code(&self) -> Option<&str> {
+        self.session
+            .as_ref()
+            .filter(|_| self.encrypting())
+            .and_then(DaveSession::voice_privacy_code)
+    }
+
     /// Where the MLS handshake is, for the log: with the group's epoch and
     /// voice privacy code, which Discord's clients show in a call's
     /// encryption details, so the two ends can be compared.

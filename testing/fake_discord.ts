@@ -26,7 +26,11 @@
 // latest speaking value, and whether it ever said it was speaking. POST /_control/bob-speak makes Bob say two
 // seconds of a tone in every call Alice is in. POST /_control/voice-drop closes her call's voice
 // connections with 4015, as a voice server restarting does, for them to
-// resume with op 7. POST /_control/camera turns Bob's camera on in the call
+// resume with op 7. Each call connection gets an RTCP receiver report about
+// its audio every 50 packets, as Discord's voice server sends; POST
+// /_control/voice-link?ping=300&loss=7 holds each heartbeat ACK (op 6) back
+// 300 ms and reports 7% of the audio lost, and with no parameters sets both
+// back to none. POST /_control/camera turns Bob's camera on in the call
 // he's in, and with ?off off again; ?who=carol or dave turns theirs. Calls
 // connected there hear of it with op 12, and get the recording, or the
 // Annex B file FAKE_DISCORD_CAMERA names, once they ask with op 15. Alice's camera
@@ -2227,7 +2231,13 @@ const received = new Map<number, Received>();
 /** What a call connection sent, by its audio SSRC: Opus packets, those that
  *  didn't open, the silent frames among them and those longer than silence,
  *  and op 5's speaking values. */
-type CallAudio = { token: string; packets: number; undecryptable: number; silent: number; voiced: number; speaking: number[]; resumed: number };
+type CallAudio = {
+  token: string; packets: number; undecryptable: number; silent: number; voiced: number; speaking: number[]; resumed: number;
+  /** For receiver reports: the highest sequence number, extended, at the last one, and the packets reported lost. */
+  highest?: number; reported?: number; lost: number; rtcpCounter: number;
+};
+/** What /_control/voice-link set: a heartbeat ACK's delay, and the audio lost. */
+const voiceLink = { ping: 0, loss: 0 };
 const callAudio = new Map<number, CallAudio>();
 /** Each call connection's SSRC by its voice session, for resuming. */
 const callSessions = new Map<string, number>();
@@ -2665,6 +2675,34 @@ function receiveCallAudio(call: CallAudio, ssrc: number, packet: Buffer) {
   const opus = plain.subarray(rtpExtensions(plain).at);
   if (opus.equals(OPUS_SILENCE)) call.silent++;
   else if (opus.length > 3) call.voiced++;
+  reportCallAudio(call, ssrc, key!, plain.readUInt16BE(2));
+}
+
+/** Every 50 packets, a receiver report (RTCP 201) about the call's audio
+ * from the server, encrypted as its other RTCP: the packets lost so far,
+ * with /_control/voice-link's share of those since the last, and the highest
+ * sequence number received, extended. */
+function reportCallAudio(call: CallAudio, ssrc: number, key: Buffer, sequence: number) {
+  const last = call.highest ?? sequence;
+  const highest = last + ((sequence - (last & 0xffff) + 0x10000) % 0x10000);
+  call.highest = highest;
+  call.reported ??= highest;
+  const expected = highest - call.reported;
+  if (expected < 50) return;
+  const lost = Math.round((expected * voiceLink.loss) / 100);
+  call.lost += lost;
+  call.reported = highest;
+  const peer = peers.get(ssrc);
+  if (!peer) return;
+  const packet = Buffer.alloc(32);
+  packet[0] = 0x81;
+  packet[1] = 201;
+  packet.writeUInt16BE(7, 2);
+  packet.writeUInt32BE(1, 4);
+  packet.writeUInt32BE(ssrc, 8);
+  packet.writeUInt32BE(((Math.min(255, Math.round((lost * 256) / expected)) << 24) | call.lost) >>> 0, 12);
+  packet.writeUInt32BE(highest >>> 0, 16);
+  udp.send(sealRtp(packet, key, call.rtcpCounter++, 8), peer.port, peer.address);
 }
 
 /** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
@@ -2892,7 +2930,7 @@ function voiceMessage(ws: Socket, text: string) {
       if (!ws.data.stream && ws.data.ssrc) {
         ws.data.callKey = key;
         callCodecs.set(ws.data.ssrc, { name: offered?.name ?? "VP8", payloadType: offered?.payload_type ?? 105 });
-        callAudio.set(ws.data.ssrc, { token: ws.data.voiceToken ?? "", packets: 0, undecryptable: 0, silent: 0, voiced: 0, speaking: [], resumed: 0 });
+        callAudio.set(ws.data.ssrc, { token: ws.data.voiceToken ?? "", packets: 0, undecryptable: 0, silent: 0, voiced: 0, speaking: [], resumed: 0, lost: 0, rtcpCounter: 1 << 20 });
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
       const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
@@ -2954,7 +2992,8 @@ function voiceMessage(ws: Socket, text: string) {
       break;
     }
     case 3: // Heartbeat
-      reply(6, d);
+      if (voiceLink.ping) setTimeout(() => reply(6, d), voiceLink.ping);
+      else reply(6, d);
       break;
     default: // Speaking and client details need no answer.
       break;
@@ -4400,6 +4439,11 @@ const server = Bun.serve<SocketData>({
       const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
       const spoke = calls.filter((ws) => bobSpeaks(ws)).length;
       return new Response(`Bob speaks in ${spoke} call(s)\n`, { status: spoke ? 200 : 409 });
+    }
+    if (req.method === "POST" && path === "/_control/voice-link") {
+      voiceLink.ping = Number(url.searchParams.get("ping") ?? 0);
+      voiceLink.loss = Number(url.searchParams.get("loss") ?? 0);
+      return new Response(`heartbeat ACKs ${voiceLink.ping} ms late, ${voiceLink.loss}% of call audio lost\n`);
     }
     if (req.method === "POST" && path === "/_control/voice-drop") {
       const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);

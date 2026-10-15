@@ -2304,11 +2304,22 @@ impl Adapter {
         window.set_voice_detail(
             if state.preview {
                 format!("{} · Sample", voice.name)
-            } else {
+            } else if voice.end_to_end {
                 format!("{} · End-to-end encrypted", voice.name)
+            } else {
+                format!("{} · Secure connection", voice.name)
             }
             .into(),
         );
+        let link = window.global::<CallLink>();
+        link.set_measured(voice.active() && voice.link.is_some());
+        link.set_quality(match voice.link_quality {
+            voice::Quality::Unknown => 0,
+            voice::Quality::Fine => 1,
+            voice::Quality::Average => 2,
+            voice::Quality::Bad => 3,
+        });
+        link.set_end_to_end(voice.end_to_end);
         window.set_can_join(room.is_some_and(|room| state.can_join_voice(&room.id)));
         window.set_muted(voice.muted);
         window.set_deafened(voice.deafened);

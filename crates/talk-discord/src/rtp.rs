@@ -1086,6 +1086,39 @@ pub fn receiver_report(
     packet
 }
 
+/// The report blocks of the sender and receiver reports in a decrypted
+/// compound RTCP packet: each about one SSRC, with the packets lost from it
+/// so far and the highest sequence number received, extended.
+pub fn report_blocks(mut rtcp: &[u8]) -> Vec<(u32, u32, u32)> {
+    let mut blocks = vec![];
+    while rtcp.len() >= 4 {
+        let length = (usize::from(u16::from_be_bytes([rtcp[2], rtcp[3]])) + 1) * 4;
+        let packet = &rtcp[..length.min(rtcp.len())];
+        let word = |at: usize| {
+            packet
+                .get(at..at + 4)
+                .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        // A sender report's blocks follow its 20 bytes of sender information.
+        let first = match packet[1] {
+            200 => Some(28),
+            201 => Some(8),
+            _ => None,
+        };
+        for block in first.into_iter().flat_map(|first| {
+            (0..usize::from(packet[0] & 0x1f)).map(move |block| first + block * 24)
+        }) {
+            if let (Some(ssrc), Some(lost), Some(highest)) =
+                (word(block), word(block + 4), word(block + 8))
+            {
+                blocks.push((ssrc, lost & 0x00ff_ffff, highest));
+            }
+        }
+        rtcp = rtcp.get(length..).unwrap_or_default();
+    }
+    blocks
+}
+
 /// The sender reports in a decrypted compound RTCP packet: each sender's
 /// SSRC and the middle 32 bits of its NTP time, which a receiver report
 /// echoes.
@@ -1108,6 +1141,15 @@ pub fn sender_reports(mut rtcp: &[u8]) -> Vec<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_report_blocks() {
+        let report = receiver_report(1, 77, (1000, 12, 3), (0, 0));
+        let both = [report.clone(), receiver_report(1, 78, (40, 0, 0), (0, 0))].concat();
+        assert_eq!(report_blocks(&report), [(77, 12, 1000)]);
+        assert_eq!(report_blocks(&both), [(77, 12, 1000), (78, 0, 40)]);
+        assert!(report_blocks(&picture_loss(1, 77)).is_empty());
+    }
 
     #[test]
     fn packetizes_frames_with_vp8_descriptors() {

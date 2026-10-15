@@ -342,6 +342,9 @@ async fn connected(
         let mut members: HashMap<String, String> = HashMap::new();
         state.can_film = cfg!(any(target_os = "linux", windows));
         state.phase = Phase::Connected;
+        // Talk joins only encrypted rooms' calls, whose media LiveKit
+        // encrypts frame by frame with the call's keys.
+        state.end_to_end = true;
         loop {
             let people = roster.borrow_and_update().clone();
             let now = Instant::now();
@@ -524,9 +527,11 @@ async fn connected(
                             set_muted(&call, &audio, &mut microphone, true).await?;
                             state.muted = true;
                             encryption_fault = true;
+                            state.end_to_end = false;
                             state.error = Some("Audio encryption failed. Your microphone is muted. Check device verification or rejoin.".into());
                         } else if encryption_fault {
                             encryption_fault = false;
+                            state.end_to_end = true;
                             state.error = None;
                         }
                     }

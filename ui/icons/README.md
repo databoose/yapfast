@@ -10,7 +10,8 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
 - at-sign, chevron-left, chevron-right, clock, ellipsis, forward, gavel, search,
   shield, smile, user-x, video and video-off follow
   lucide-static 1.51.0's paths in the same wrapper.
-- maximize, minimize, pause, play and volume-x follow Lucide's paths in the same wrapper.
+- maximize, minimize, pause, play, signal-high, signal-low, signal-medium and
+  volume-x follow Lucide's paths in the same wrapper.
 
 discord.svg is Discord's logo from Simple Icons 16.34.0
 (https://simpleicons.org/, CC0 1.0), filled white. It marks Discord servers
