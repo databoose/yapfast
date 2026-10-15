@@ -24,14 +24,32 @@ pub(super) fn day(timestamp: u64) -> String {
     talk_core::clock::day(timestamp)
 }
 
+/// Someone's Markdown as styled text, with web addresses linked. Any HTML
+/// in it shows as typed: Slint draws `<font>` and `<u>`, which would let a
+/// sender colour text, hide it, or dress it up as a mention.
+pub(super) fn markdown(body: &str) -> slint::StyledText {
+    styled_or(&links::escape_html(body), body)
+}
+
+/// Someone's Markdown with its mentions linked, ready for [`styled`]. Its
+/// HTML is escaped first, so the only HTML left is the mentions' own.
+fn with_mentions(body: &str, mentions: &[talk_core::mention::Mentioned]) -> String {
+    mention::linked(&links::escape_html(body), mentions, theme::mention_color())
+}
+
 /// Markdown as styled text, with web addresses linked. Slint's Markdown
 /// subset rejects some syntax, such as headings; those show as typed,
 /// keeping their links.
-pub(super) fn markdown(body: &str) -> slint::StyledText {
+fn styled(body: &str) -> slint::StyledText {
+    styled_or(body, body)
+}
+
+/// [`styled`], or `typed` as plain text when Slint rejects the Markdown.
+fn styled_or(body: &str, typed: &str) -> slint::StyledText {
     slint::StyledText::from_markdown(&links::linkify(&keep_blank_lines(body)))
         .ok()
-        .or_else(|| plain_with_links(body))
-        .unwrap_or_else(|| slint::StyledText::from_plain_text(body))
+        .or_else(|| plain_with_links(typed))
+        .unwrap_or_else(|| slint::StyledText::from_plain_text(typed))
 }
 
 /// `text` with each blank line between its lines holding a no-break space.
@@ -173,13 +191,13 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     let body = custom_emoji::text(&message.body, &message.emoji);
     let jumbo = message.formatted && custom_emoji::only_emoji(&body);
     let styled = if message.formatted {
-        let linked = mention::linked(&body, &message.mentions, theme::mention_color());
+        let linked = with_mentions(&body, &message.mentions);
         if message.spoilers {
-            markdown(&spoiler::mark(&linked, &message.item, |index| {
+            styled(&spoiler::mark(&linked, &message.item, |index| {
                 revealed.contains(&format!("{}/{index}", message.item))
             }))
         } else {
-            markdown(&linked)
+            styled(&linked)
         }
     } else {
         plain_with_links(&message.body)
@@ -486,11 +504,7 @@ fn thread_detail(thread: &talk_core::chat::ThreadLink) -> String {
 pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
     let styled = if message.formatted {
         let body = spoiler::hide(&custom_emoji::text(&message.body, &message.emoji));
-        markdown(&mention::linked(
-            &body,
-            &message.mentions,
-            theme::mention_color(),
-        ))
+        styled(&with_mentions(&body, &message.mentions))
     } else {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
@@ -529,11 +543,7 @@ pub(super) fn topic_text(topic: &talk_core::chat::Topic, one_line: bool) -> slin
     } else {
         body
     };
-    markdown(&mention::linked(
-        &body,
-        &topic.mentions,
-        theme::mention_color(),
-    ))
+    styled(&with_mentions(&body, &topic.mentions))
 }
 
 /// Whether a message shows collapsed, being from someone blocked.

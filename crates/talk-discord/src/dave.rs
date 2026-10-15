@@ -66,8 +66,9 @@ impl Dave {
 
     /// Encrypts a video frame once the group is ready. Until then frames go
     /// out as they are, as Discord's clients send audio, and receivers pass them
-    /// through during the transition.
-    pub fn encrypt(&mut self, codec: rtp::Codec, frame: &[u8]) -> Vec<u8> {
+    /// through during the transition. None when a ready group couldn't
+    /// encrypt it: the frame is dropped rather than sent in the clear.
+    pub fn encrypt(&mut self, codec: rtp::Codec, frame: &[u8]) -> Option<Vec<u8>> {
         let codec = match codec {
             rtp::Codec::Vp8 => Codec::VP8,
             rtp::Codec::H264 => Codec::H264,
@@ -76,32 +77,40 @@ impl Dave {
             && let Some(session) = self.session.as_mut()
             && session.is_ready()
         {
-            match session.encrypt(MediaType::VIDEO, codec, frame) {
-                Ok(encrypted) => return encrypted.into_owned(),
-                Err(error) => tracing::warn!(?error, "could not end-to-end encrypt a frame"),
-            }
+            return match session.encrypt(MediaType::VIDEO, codec, frame) {
+                Ok(encrypted) => Some(encrypted.into_owned()),
+                Err(error) => {
+                    tracing::warn!(?error, "could not end-to-end encrypt a frame");
+                    None
+                }
+            };
         }
-        frame.to_vec()
+        Some(frame.to_vec())
     }
 
     /// End-to-end encrypts an Opus frame once the group is ready, as
     /// [`Self::encrypt`] does video.
-    pub fn encrypt_opus(&mut self, frame: &[u8]) -> Vec<u8> {
+    pub fn encrypt_opus(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
         if self.version != 0
             && let Some(session) = self.session.as_mut()
             && session.is_ready()
         {
-            match session.encrypt_opus(frame) {
-                Ok(encrypted) => return encrypted.into_owned(),
-                Err(error) => tracing::warn!(?error, "could not end-to-end encrypt sound"),
-            }
+            return match session.encrypt_opus(frame) {
+                Ok(encrypted) => Some(encrypted.into_owned()),
+                Err(error) => {
+                    tracing::warn!(?error, "could not end-to-end encrypt sound");
+                    None
+                }
+            };
         }
-        frame.to_vec()
+        Some(frame.to_vec())
     }
 
-    /// Decrypts a received frame from `sender`. Frames without DAVE's
-    /// marker pass through, as Discord's clients allow; encrypted frames that
-    /// can't be decrypted yet are dropped.
+    /// Decrypts a received frame from `sender`. Before the group is ready,
+    /// frames without DAVE's marker pass through, as Discord's clients allow;
+    /// once it is, only during a transition, which the session times, so the
+    /// voice server can't slip unencrypted frames into an encrypted call.
+    /// Frames that can't be decrypted are dropped.
     pub fn decrypt(&mut self, sender: u64, frame: Vec<u8>) -> Option<Vec<u8>> {
         self.decrypt_media(sender, MediaType::VIDEO, frame)
     }
@@ -115,10 +124,13 @@ impl Dave {
     fn decrypt_media(&mut self, sender: u64, media: MediaType, frame: Vec<u8>) -> Option<Vec<u8>> {
         // https://daveprotocol.com/#protocol-frame-check: a tag, a size
         // byte and the magic marker at least.
-        if self.version == 0 || frame.len() < 11 || !frame.ends_with(&[0xfa, 0xfa]) {
+        if self.version == 0 {
             return Some(frame);
         }
         let Some(session) = self.session.as_mut().filter(|session| session.is_ready()) else {
+            if frame.len() < 11 || !frame.ends_with(&[0xfa, 0xfa]) {
+                return Some(frame);
+            }
             self.unreadable = Some("not in the group yet".to_owned());
             return None;
         };
@@ -456,7 +468,7 @@ mod tests {
         let mut dave = Dave::new(1, 2);
         assert!(dave.start(0).is_empty());
         assert_eq!(
-            dave.encrypt(rtp::Codec::Vp8, b"vp8"),
+            dave.encrypt(rtp::Codec::Vp8, b"vp8").unwrap(),
             b"vp8",
             "transport encryption only"
         );
@@ -468,7 +480,7 @@ mod tests {
             [Out::Binary(Event::DaveMlsKeyPackage(_))]
         ));
         // No group yet, so frames still pass, and encrypted ones wait.
-        assert_eq!(dave.encrypt(rtp::Codec::Vp8, b"vp8"), b"vp8");
+        assert_eq!(dave.encrypt(rtp::Codec::Vp8, b"vp8").unwrap(), b"vp8");
         assert_eq!(dave.decrypt(2, b"plain".to_vec()), Some(b"plain".to_vec()));
         assert_eq!(dave.decrypt(2, marked), None);
     }
@@ -693,7 +705,12 @@ mod tests {
             dave.decrypt_opus(friend, sealed),
             Some(b"friend's voice".to_vec())
         );
-        let sealed = dave.encrypt_opus(b"my voice");
+        assert_eq!(
+            dave.decrypt_opus(friend, b"the server's voice".to_vec()),
+            None,
+            "an unencrypted frame in an encrypted call"
+        );
+        let sealed = dave.encrypt_opus(b"my voice").unwrap();
         assert!(sealed.ends_with(&[0xfa, 0xfa]), "end-to-end encrypted");
         assert_eq!(
             other.decrypt(me, MediaType::AUDIO, &sealed).unwrap(),

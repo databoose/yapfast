@@ -35,6 +35,8 @@ const SENDER_REPORTS: Duration = Duration::from_secs(1);
 const LOG_EVERY: Duration = Duration::from_secs(5);
 /// The most packets resent for one NACK, which can name hundreds.
 const RESENDS: usize = 128;
+/// The most video SSRCs a watched stream puts frames together for.
+const MAX_SSRCS: usize = 4;
 /// A frame's packets past the first `BURST` go out `PACE` a millisecond,
 /// about 37 Mbit/s: a 1080p keyframe sent at once can overflow buffers on
 /// the way.
@@ -426,7 +428,9 @@ async fn send(
                         "sending stream frames"
                     );
                 }
-                let payload = connection.dave.encrypt(SEND_CODEC, &frame.data);
+                let Some(payload) = connection.dave.encrypt(SEND_CODEC, &frame.data) else {
+                    continue;
+                };
                 sent.frames += 1;
                 sent.keyframes += u32::from(frame.keyframe);
                 for (index, mut packet) in packetizer.packets(&payload, frame.timestamp).into_iter().enumerate() {
@@ -472,7 +476,9 @@ async fn send(
                 }
             }
             Some(sound) = sounds.recv() => {
-                let payload = connection.dave.encrypt_opus(&sound.opus);
+                let Some(payload) = connection.dave.encrypt_opus(&sound.opus) else {
+                    continue;
+                };
                 let mut packet =
                     rtp::opus_packet(ssrc, sound_sequence, sound.timestamp, sound_packets == 0, &payload);
                 sound_sequence = sound_sequence.wrapping_add(1);
@@ -772,7 +778,9 @@ async fn receive_stream(
                     continue;
                 };
                 received.payload_types.insert(packet.payload_type);
-                received.ssrcs.insert(packet.ssrc);
+                if received.ssrcs.len() < 64 {
+                    received.ssrcs.insert(packet.ssrc);
+                }
                 if packet.payload_type == rtp::OPUS {
                     received.sounds += 1;
                     match connection.dave.decrypt_opus(streamer_id, packet.payload.to_vec()) {
@@ -800,6 +808,12 @@ async fn receive_stream(
                 };
                 received.video += 1;
                 streamer.video.get_or_insert(held.ssrc);
+                // Packets can name any SSRC: past a few, a new one isn't
+                // given buffers of its own.
+                if incoming.len() >= MAX_SSRCS && !incoming.contains_key(&held.ssrc) {
+                    received.other += 1;
+                    continue;
+                }
                 let video = incoming.entry(held.ssrc).or_insert_with(|| Video {
                     reorder: rtp::Reorder::default(),
                     assembler: Assembler::new(codec),

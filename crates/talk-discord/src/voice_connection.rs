@@ -48,6 +48,16 @@ fn gateway_url(endpoint: &str) -> Result<reqwest::Url> {
     ))?)
 }
 
+/// The heartbeat interval the voice server asks for, in milliseconds, held
+/// to a sane range.
+fn heartbeat(milliseconds: f64) -> Duration {
+    crate::limits::sent_seconds(
+        milliseconds / 1000.0,
+        Duration::from_secs(1),
+        Duration::from_secs(300),
+    )
+}
+
 pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub(crate) async fn send_json(ws: &mut Socket, op: u8, data: Value) -> Result<()> {
@@ -372,7 +382,7 @@ impl Connection {
             ssrc,
             video,
             rtx,
-            interval: Duration::from_secs_f64(interval / 1000.0),
+            interval: heartbeat(interval),
             codec,
             early,
             seq,
@@ -402,7 +412,7 @@ impl Connection {
                     Incoming::Json(9, _) => break,
                     Incoming::Json(8, hello) => {
                         if let Some(interval) = hello["heartbeat_interval"].as_f64() {
-                            self.interval = Duration::from_secs_f64(interval / 1000.0);
+                            self.interval = heartbeat(interval);
                         }
                     }
                     Incoming::Json(op, data) => self.early.push((op, data)),

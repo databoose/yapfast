@@ -129,7 +129,9 @@ impl Sending {
     }
 
     pub async fn send(&mut self, connection: &mut Connection, frame: Frame) -> Result<()> {
-        let payload = connection.dave.encrypt(SEND_CODEC, &frame.data);
+        let Some(payload) = connection.dave.encrypt(SEND_CODEC, &frame.data) else {
+            return Ok(());
+        };
         for mut packet in self.packetizer.packets(&payload, frame.timestamp) {
             self.history.remember(&packet);
             let clear = rtp::rtp_clear_len(&packet).unwrap_or(packet.len());

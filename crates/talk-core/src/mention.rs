@@ -81,7 +81,9 @@ pub fn linked(markdown: &str, mentions: &[Mentioned], link_color: u32) -> String
             code = !code;
         }
         if !code && let Some(mention) = sorted.iter().find(|m| rest.starts_with(&m.text)) {
-            let text = mention.text.replace('[', "\\[").replace(']', "\\]");
+            // A name is shown as typed: one such as `[x](https://…)` would
+            // otherwise be a link of its own.
+            let text = crate::links::escape_markdown(&mention.text);
             let color = mention.color.unwrap_or(link_color) & 0xff_ffff;
             out.push_str(&format!(
                 "<font color=\"#{color:06x}\">[{text}](<{}>)</font>",
@@ -223,8 +225,18 @@ mod tests {
         ];
         assert_eq!(
             linked("hi @Bob, ask @Mods but not `@Bob`", &mentions, 0x7cc4ff),
-            "hi <font color=\"#7cc4ff\">[@Bob](<talk:user/2>)</font>, \
-             ask <font color=\"#3498db\">[@Mods](<talk:role/30>)</font> but not `@Bob`"
+            "hi <font color=\"#7cc4ff\">[\\@Bob](<talk:user/2>)</font>, \
+             ask <font color=\"#3498db\">[\\@Mods](<talk:role/30>)</font> but not `@Bob`"
+        );
+        let named = [Mentioned {
+            text: "@[Support](https://evil.example)".into(),
+            target: Target::User("3".into()),
+            color: None,
+        }];
+        assert!(
+            linked("@[Support](https://evil.example)", &named, 0)
+                .contains("[\\@\\[Support\\]\\(https\\:\\/\\/evil\\.example\\)]"),
+            "a name shows as typed"
         );
         assert_eq!(target("talk:user/2"), Some(Target::User("2".into())));
         assert_eq!(target("talk:role/30"), Some(Target::Role("30".into())));

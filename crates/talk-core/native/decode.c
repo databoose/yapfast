@@ -1,6 +1,7 @@
 /* Decoding Go Live video someone else streams: VP8 through libvpx and H264
  * through FFmpeg, both inside Talk's libwebrtc archive. Pictures come out
  * as I420 planes that stay valid until the next call on the decoder. */
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,6 +10,10 @@
 #include "vpx/vpx_decoder.h"
 
 enum { TALK_VP8 = 0, TALK_H264 = 1 };
+
+/* The widest or tallest picture a stream may send: a 4K stream fits, and a
+ * stream can't make Talk take more memory than that by claiming a bigger one. */
+enum { MAX_SIDE = 8192 };
 
 struct talk_decoder {
   int codec;
@@ -69,6 +74,7 @@ struct talk_decoder *talk_decoder_new(int codec, unsigned threads) {
     return NULL;
   }
   decoder->context->thread_count = (int)threads;
+  decoder->context->max_pixels = (int64_t)MAX_SIDE * MAX_SIDE;
   /* Show each frame as soon as it's decoded. */
   decoder->context->flags |= AV_CODEC_FLAG_LOW_DELAY;
   if (avcodec_open2(decoder->context, h264, NULL) < 0) {
@@ -82,12 +88,14 @@ struct talk_decoder *talk_decoder_new(int codec, unsigned threads) {
  * yet, or a negative number when the frame couldn't be decoded. */
 int talk_decoder_decode(struct talk_decoder *decoder, const unsigned char *data,
                         size_t size, struct talk_picture *picture) {
+  if (size > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE) return -1;
   if (decoder->codec == TALK_VP8) {
     if (vpx_codec_decode(&decoder->vpx, data, (unsigned int)size, NULL, 0)) return -1;
     vpx_codec_iter_t iter = NULL;
     vpx_image_t *image = vpx_codec_get_frame(&decoder->vpx, &iter);
     if (!image) return 0;
     if (image->fmt != VPX_IMG_FMT_I420) return -2;
+    if (image->d_w > MAX_SIDE || image->d_h > MAX_SIDE) return -2;
     picture->width = (int)image->d_w;
     picture->height = (int)image->d_h;
     picture->y = image->planes[VPX_PLANE_Y];
@@ -117,6 +125,7 @@ int talk_decoder_decode(struct talk_decoder *decoder, const unsigned char *data,
   if (received < 0) return -1;
   AVFrame *frame = decoder->frame;
   if (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) return -2;
+  if (frame->width > MAX_SIDE || frame->height > MAX_SIDE) return -2;
   picture->width = frame->width;
   picture->height = frame->height;
   picture->y = frame->data[0];

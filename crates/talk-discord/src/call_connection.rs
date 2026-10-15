@@ -58,6 +58,8 @@ const STALLED: Duration = Duration::from_millis(100);
 /// While a speaker's audio is dropped for one reason, it's logged again
 /// after this many more packets: 10 s.
 const STILL_DROPPING: u32 = 500;
+/// The most SSRCs whose audio is dropped that a call keeps count of.
+const MAX_DROPPED: usize = 64;
 /// Gateway drops in a row that resuming or reconnecting may follow.
 const RETRIES: u32 = 3;
 
@@ -411,6 +413,7 @@ impl Media {
     /// Logs why a speaker's audio is dropped when the reason changes, and
     /// every 10 s while it lasts, since it otherwise vanishes unheard.
     fn report_drop(&mut self, ssrc: u32, reason: &str, dave: &Dave) {
+        let full = self.dropped.len() >= MAX_DROPPED;
         match self.dropped.get_mut(&ssrc) {
             Some((last, count)) if last == reason => {
                 *count += 1;
@@ -424,6 +427,9 @@ impl Media {
                     );
                 }
             }
+            // Packets can name any SSRC: past this many, a new one isn't
+            // kept or logged.
+            None if full => {}
             _ => {
                 tracing::info!(
                     ssrc,
@@ -479,12 +485,14 @@ impl Media {
         if playing {
             let length = self.encoder.encode_float(&self.pcm, &mut self.packet)?;
             let opus = &self.packet[..length];
-            let payload = connection.dave.encrypt_opus(opus);
-            self.transmit(connection, &payload, marker).await?;
+            if let Some(payload) = connection.dave.encrypt_opus(opus) {
+                self.transmit(connection, &payload, marker).await?;
+            }
             self.silent = SILENT_FRAMES;
         } else if self.silent > 0 {
-            let payload = connection.dave.encrypt_opus(&SILENCE);
-            self.transmit(connection, &payload, false).await?;
+            if let Some(payload) = connection.dave.encrypt_opus(&SILENCE) {
+                self.transmit(connection, &payload, false).await?;
+            }
             self.silent -= 1;
             if self.silent == 0 {
                 self.speaking = false;
@@ -674,7 +682,7 @@ impl Speaker {
                 self.decoder.decode(&opus, &mut self.pcm, false)
             }
             waiting => {
-                self.missing += 1;
+                self.missing = self.missing.saturating_add(1);
                 if self.missing >= GONE && waiting.is_none() {
                     // Stopped talking: wait for them to start again.
                     self.next = None;

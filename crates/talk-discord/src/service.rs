@@ -772,8 +772,9 @@ impl Discord {
             if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
                 break;
             }
-            let wait = answer["retry_after"].as_f64().unwrap_or(1.0).max(0.5);
-            tokio::time::sleep(Duration::from_secs_f64(wait).min(SEARCH_WAIT)).await;
+            let wait = answer["retry_after"].as_f64().unwrap_or(1.0);
+            let wait = crate::limits::sent_seconds(wait, Duration::from_millis(500), SEARCH_WAIT);
+            tokio::time::sleep(wait).await;
         }
         Err(anyhow!(
             "Discord is still getting these messages ready to search. Try again in a moment."
@@ -1419,8 +1420,9 @@ impl Discord {
             if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
                 bail!("could not understand Discord's answer");
             }
-            let wait = answer["retry_after"].as_f64().unwrap_or(1.0).max(0.5);
-            tokio::time::sleep(Duration::from_secs_f64(wait).min(SEARCH_WAIT)).await;
+            let wait = answer["retry_after"].as_f64().unwrap_or(1.0);
+            let wait = crate::limits::sent_seconds(wait, Duration::from_millis(500), SEARCH_WAIT);
+            tokio::time::sleep(wait).await;
         }
         Err(anyhow!(
             "Discord is still getting these threads ready to search. Try again in a moment."

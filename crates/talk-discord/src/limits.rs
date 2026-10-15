@@ -19,6 +19,15 @@ use serde_json::Value;
 /// The longest Talk waits on a limit before giving up on the request.
 pub const MAX_WAIT: Duration = Duration::from_secs(60);
 
+/// A time in seconds that Discord sent, held between `min` and `max`: a
+/// negative, endless or huge one would panic, and zero would spin.
+pub fn sent_seconds(seconds: f64, min: Duration, max: Duration) -> Duration {
+    if seconds.is_nan() {
+        return min;
+    }
+    Duration::from_secs_f64(seconds.clamp(min.as_secs_f64(), max.as_secs_f64()))
+}
+
 #[derive(Default)]
 pub struct Limits {
     inner: Mutex<Inner>,
@@ -109,7 +118,9 @@ impl Limits {
         let seconds = |value: Option<f64>| {
             value
                 .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-                .map(Duration::from_secs_f64)
+                .map(|seconds| {
+                    sent_seconds(seconds, Duration::ZERO, Duration::from_secs(24 * 3600))
+                })
         };
         let header_seconds = |name: &str| seconds(text(name).and_then(|value| value.parse().ok()));
         let reset = header_seconds("x-ratelimit-reset-after");

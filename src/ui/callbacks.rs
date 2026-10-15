@@ -1076,10 +1076,20 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             .unwrap_or_default();
         let weak = Rc::downgrade(&state);
         state.borrow_mut().dialog(async move {
-            // Only the file name is suggested; a sender cannot choose the folder.
+            // Only the file name is suggested; a sender cannot choose the
+            // folder, hide the file with a leading dot, or reverse how its
+            // extension reads.
             let name = std::path::Path::new(&name)
                 .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
+                .map(|name| {
+                    name.to_string_lossy()
+                        .chars()
+                        .filter(|&c| !c.is_control() && !links::hidden(c))
+                        .collect::<String>()
+                        .trim_start_matches(['.', ' '])
+                        .to_owned()
+                })
+                .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| "attachment".into());
             let file = rfd::AsyncFileDialog::new()
                 .set_title("Save attachment")
