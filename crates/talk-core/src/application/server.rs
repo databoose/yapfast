@@ -51,6 +51,10 @@ fn bits(permission: Permission) -> u64 {
         Permission::CreatePublicThreads => permission::CREATE_PUBLIC_THREADS,
         Permission::CreatePrivateThreads => permission::CREATE_PRIVATE_THREADS,
         Permission::ManageMessages => permission::MANAGE_MESSAGES,
+        Permission::Connect => permission::CONNECT,
+        Permission::MuteMembers => permission::MUTE_MEMBERS,
+        Permission::DeafenMembers => permission::DEAFEN_MEMBERS,
+        Permission::MoveMembers => permission::MOVE_MEMBERS,
     }
 }
 

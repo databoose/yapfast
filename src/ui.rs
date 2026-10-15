@@ -556,6 +556,8 @@ struct Layout {
     /// come.
     volumes: std::collections::BTreeMap<String, f32>,
     stream_volumes: std::collections::BTreeMap<String, f32>,
+    /// Those muted for this account alone, from their menu in a call.
+    muted_people: std::collections::BTreeSet<String>,
     /// Others see when this account is typing; on unless turned off.
     share_typing: Option<bool>,
     /// Desktop notifications, and whether they say what messages say; on unless
@@ -689,6 +691,9 @@ impl Layout {
         }
         for (person, volume) in &self.stream_volumes {
             talk_core::volume::set(talk_core::volume::Kind::Stream, person, *volume);
+        }
+        for person in &self.muted_people {
+            talk_core::volume::mute(person, true);
         }
         window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
@@ -882,6 +887,11 @@ struct Icons {
     duplicate: slint::Image,
     delete: slint::Image,
     leave: slint::Image,
+    // Someone's menu in a voice channel.
+    mic_off: slint::Image,
+    deafen: slint::Image,
+    move_to: slint::Image,
+    disconnect: slint::Image,
 }
 
 struct Adapter {
@@ -1053,6 +1063,14 @@ impl Adapter {
             ))?,
             delete: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/trash-2.svg"))?,
             leave: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/log-out.svg"))?,
+            mic_off: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/mic-off.svg"))?,
+            deafen: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/headphone-off.svg"
+            ))?,
+            move_to: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/forward.svg"))?,
+            disconnect: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/phone-off.svg"
+            ))?,
         };
         let models = Models::default();
         models.attach(window);

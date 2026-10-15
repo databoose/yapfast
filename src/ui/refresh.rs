@@ -603,10 +603,13 @@ impl Adapter {
                                 ),
                                 muted: person.muted,
                                 deafened: person.deafened,
+                                server_muted: person.server_muted,
+                                server_deafened: person.server_deafened,
                                 live: person.streaming,
                                 video: person.video,
                                 local: state.discord_user.as_ref() == Some(&person.id),
                                 elsewhere: person.elsewhere,
+                                person: person.id.clone().into(),
                                 connected: true,
                                 ..Default::default()
                             })
@@ -2445,6 +2448,8 @@ impl Adapter {
                         live: person.streaming,
                         video: person.video.is_some(),
                         elsewhere: false,
+                        server_muted: person.server_muted,
+                        server_deafened: person.server_deafened,
                         person: person.person.clone().into(),
                         picture: cached_picture(
                             &mut self.pictures,

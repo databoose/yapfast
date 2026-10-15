@@ -640,8 +640,9 @@ export component RoomList inherits VerticalLayout {
     callback open-requests;
     /// A conversation's menu was asked for: its id, and where in the window.
     callback open-room-menu(string, length, length);
-    /// A right click on a participant, with where it was in the window.
-    callback open-volume(PersonRow, length, length);
+    /// A right click on someone in a voice channel: the channel's id,
+    /// theirs, and where it was in the window.
+    callback open-voice-menu(string, PersonRow, length, length);
     /// Someone in a voice channel was clicked, or their LIVE tag: the
     /// channel's id and theirs.
     callback show-voice-person(string, string);
@@ -747,9 +748,15 @@ export component RoomList inherits VerticalLayout {
                     accessible-label: self.watchable ? "Watch " + person.name + "'s stream" : self.clickable ? "Show " + person.name + "'s camera"
                         : person.elsewhere ? person.name + ", connected on another client" : person.name;
                     accessible-action-default => { if self.clickable { root.show-voice-person(room.id, person.id); } }
+                    // A right click opens their menu.
                     person-touch := TouchArea {
-                        enabled: parent.clickable || person.elsewhere; mouse-cursor: parent.clickable ? MouseCursor.pointer : MouseCursor.default;
+                        mouse-cursor: parent.clickable ? MouseCursor.pointer : MouseCursor.default;
                         clicked => { if parent.clickable { root.show-voice-person(room.id, person.id); } }
+                        pointer-event(event) => {
+                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                root.open-voice-menu(room.id, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
                         changed has-hover => {
                             if self.has-hover && parent.tip != "" {
                                 Tip.text = parent.tip; Tip.side = 0;
@@ -778,11 +785,13 @@ export component RoomList inherits VerticalLayout {
                         }
                         if (person.muted || person.deafened) && !person.elsewhere: Image {
                             source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
-                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
+                            colorize: person.server-muted ? Theme.danger : Theme.muted; accessible-role: image;
+                            accessible-label: person.name + (person.server-muted ? " is server muted" : " is muted");
                         }
                         if person.deafened && !person.elsewhere: Image {
                             source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
-                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
+                            colorize: person.server-deafened ? Theme.danger : Theme.muted; accessible-role: image;
+                            accessible-label: person.name + (person.server-deafened ? " is server deafened" : " is deafened");
                         }
                     }
                 }
@@ -804,7 +813,7 @@ export component RoomList inherits VerticalLayout {
                         clicked => { if parent.clickable { root.show-voice-person(room.id, person.id); } }
                         pointer-event(event) => {
                             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                root.open-volume(person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                root.open-voice-menu(root.voice-channel, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                             }
                         }
                     }
@@ -828,11 +837,13 @@ export component RoomList inherits VerticalLayout {
                         }
                         if person.muted || person.deafened: Image {
                             source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
-                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
+                            colorize: person.server-muted ? Theme.danger : Theme.muted; accessible-role: image;
+                            accessible-label: person.name + (person.server-muted ? " is server muted" : " is muted");
                         }
                         if person.deafened: Image {
                             source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
-                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
+                            colorize: person.server-deafened ? Theme.danger : Theme.muted; accessible-role: image;
+                            accessible-label: person.name + (person.server-deafened ? " is server deafened" : " is deafened");
                         }
                     }
                 }

@@ -1075,6 +1075,8 @@ fn in_call(id: &str, local: bool, streaming: bool) -> voice::Participant {
         local,
         muted: false,
         deafened: false,
+        server_muted: false,
+        server_deafened: false,
         speaking: false,
         connected: true,
         problem: None,
@@ -1670,6 +1672,8 @@ fn streams_sound_as_others_start_and_stop_watching() {
         local,
         muted: false,
         deafened: false,
+        server_muted: false,
+        server_deafened: false,
         speaking: false,
         connected: true,
         problem: None,
@@ -1735,6 +1739,8 @@ fn calls_sound_as_people_come_and_go_but_not_while_reconnecting_or_ringing() {
         local,
         muted: false,
         deafened: false,
+        server_muted: false,
+        server_deafened: false,
         speaking: false,
         connected,
         problem: None,
@@ -2147,6 +2153,8 @@ fn asks_once_for_the_pictures_on_screen() {
                 streaming: false,
                 video: false,
                 elsewhere: false,
+                server_muted: false,
+                server_deafened: false,
             }],
         )]
         .into(),
@@ -3228,6 +3236,8 @@ fn discord_dm_calls_start_ring_and_are_answered() {
         streaming: false,
         video: false,
         elsewhere: false,
+        server_muted: false,
+        server_deafened: false,
     };
     let snapshot = |ringing: Vec<VoiceMember>, in_call: Vec<VoiceMember>| Snapshot {
         status: Status::Online,
@@ -3315,6 +3325,8 @@ fn do_not_disturb_shows_a_call_without_notifying() {
         streaming: false,
         video: false,
         elsewhere: false,
+        server_muted: false,
+        server_deafened: false,
     };
     let mut app = Application::default();
     let effects = app.apply(discord_event(Snapshot {

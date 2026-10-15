@@ -244,6 +244,8 @@ impl Application {
                             local: true,
                             muted: true,
                             deafened: false,
+                            server_muted: false,
+                            server_deafened: false,
                             speaking: false,
                             connected: true,
                             problem: None,

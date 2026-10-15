@@ -824,15 +824,24 @@ export component TalkWindow inherits Window {
     property <bool> volume-live;
     property <int> voice-volume: 100;
     property <int> stream-volume: 100;
-    function open-volume(person: PersonRow, x: length, y: length) {
-        if person.local || person.person == "" { return; }
+    // Someone's menu in a call or under a voice channel, by the channel's
+    // room id: their volumes on top, then what their menu offers there.
+    property <bool> voice-menu-volume;
+    property <bool> voice-menu-rows: root.menu-rows.length > 0;
+    function open-voice-menu(room: string, person: PersonRow, x: length, y: length) {
+        if person.person == "" { return; }
+        root.header-menu = false;
         root.anchor(x, y, 0px, 0px, true);
+        root.voice-menu-volume = !person.local;
         root.volume-person = person.person;
         root.volume-name = person.name;
         root.volume-live = person.live;
         root.voice-volume = root.volume-of(person.person, false);
         root.stream-volume = root.volume-of(person.person, true);
-        volume-menu.show();
+        root.menu-target = "in-voice:" + room + "/" + person.person;
+        root.menu-person = true;
+        root.prepare-menu(root.menu-target, true);
+        if root.voice-menu-volume || root.voice-menu-rows { voice-menu.show(); }
     }
     callback stop-watching;
     callback leave-voice;
@@ -1346,15 +1355,46 @@ export component TalkWindow inherits Window {
     }
     // A message's actions, from its hover bar's "More" button or a right click.
     property <bool> menu-can-react: root.menu-message.can-react && root.composer-enabled;
-    volume-menu := PopupWindow {
-        width: 260px; height: volume-content.content-height;
-        x: max(8px, min(root.width - self.width - 8px, root.anchor-x));
-        y: root.anchor-y + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height);
+    // The volumes sit above the menu, as wide as it. It opens below the
+    // pointer, or above it if it doesn't fit; submenus open beside it, as
+    // in the context menu.
+    voice-menu := PopupWindow {
+        property <length> head: root.voice-menu-volume ? volume-content.content-height + (root.voice-menu-rows ? 4px : 0px) : 0px;
+        property <length> main: root.voice-menu-rows ? voice-menu-content.main-height : 0px;
+        property <length> menu-width: root.voice-menu-rows ? voice-menu-content.menu-width : 260px;
+        property <bool> flip: root.voice-menu-rows && voice-menu-content.flip;
+        property <length> lift: root.voice-menu-rows ? voice-menu-content.lift : 0px;
+        property <length> top: root.anchor-y + self.head + self.main <= root.height - 8px
+            ? root.anchor-y : max(8px, root.anchor-y - self.head - self.main);
+        width: root.voice-menu-rows ? voice-menu-content.content-width : self.menu-width;
+        height: self.head + (root.voice-menu-rows ? voice-menu-content.content-height : 0px);
+        x: max(8px, min(root.width - self.menu-width - 8px, root.anchor-x))
+            - (self.flip ? voice-menu-content.content-width - self.menu-width : 0px);
+        y: self.top - self.lift;
         close-policy: PopupClosePolicy.close-on-click-outside;
         volume-content := VolumeMenu {
+            visible: root.voice-menu-volume;
+            x: voice-menu.flip ? voice-menu-content.content-width - voice-menu.menu-width : 0px;
+            y: voice-menu.lift;
+            width: voice-menu.menu-width; height: self.content-height;
             volume-person: root.volume-person; volume-name: root.volume-name; volume-live: root.volume-live;
             voice-volume <=> root.voice-volume; stream-volume <=> root.stream-volume;
             volume-changed(person, stream, volume, last) => { root.volume-changed(person, stream, volume, last); }
+        }
+        voice-menu-content := ContextMenu {
+            visible: root.voice-menu-rows;
+            x: 0px; y: voice-menu.head;
+            narrowest: 260px;
+            rows: root.menu-rows; submenus: root.menu-submenus;
+            room: root.width - 8px - root.anchor-x; tallest: root.height - 16px - voice-menu.head;
+            room-below: root.height - 8px - voice-menu.top - voice-menu.head;
+            chose(id) => {
+                root.profile-at-pointer = true;
+                root.choose-menu(root.menu-target, root.menu-person, id);
+                voice-menu.close();
+            }
+            toggled(id) => { root.choose-menu(root.menu-target, root.menu-person, id); }
+            close => { voice-menu.close(); }
         }
     }
     message-menu := PopupWindow {
@@ -1463,7 +1503,7 @@ export component TalkWindow inherits Window {
                                 open-friends => { root.open-friends(); }
                                 open-requests => { root.open-requests(); }
                                 open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
-                                open-volume(person, x, y) => { root.open-volume(person, x, y); }
+                                open-voice-menu(room, person, x, y) => { root.open-voice-menu(room, person, x, y); }
                                 show-voice-person(room, id) => { root.show-voice-person(room, id); }
                                 toggle-category(heading) => { root.toggle-category(heading); }
                                 open-category-menu(id, x, y) => {
@@ -1832,7 +1872,7 @@ export component TalkWindow inherits Window {
                                     share-viewers: root.share-viewers; share-viewer-names: root.share-viewer-names;
                                     watch-stream(id) => { root.watch-stream(id); }
                                     show-own-stream => { root.own-stream-shown = true; }
-                                    open-volume(person, x, y) => { root.open-volume(person, x, y); }
+                                    open-volume(person, x, y) => { root.open-voice-menu(root.voice-channel, person, x, y); }
                                     tiles(columns, width, height, gap, top, scrolled, shown) => { root.call-tiles(columns, width, height, gap, top, scrolled, shown); }
                                 }
                                 CallControls {

@@ -35,8 +35,11 @@ struct VoiceEntry {
     channel: String,
     /// The voice session, which a stream connection reuses.
     session: Option<String>,
+    /// Muted and deafened by themselves, and by the server.
     muted: bool,
     deafened: bool,
+    server_muted: bool,
+    server_deafened: bool,
     streaming: bool,
     video: bool,
 }
@@ -768,8 +771,10 @@ impl Tracker {
                     VoiceEntry {
                         channel: channel.to_owned(),
                         session: state["session_id"].as_str().map(str::to_owned),
-                        muted: flag("self_mute") || flag("mute"),
-                        deafened: flag("self_deaf") || flag("deaf"),
+                        muted: flag("self_mute"),
+                        deafened: flag("self_deaf"),
+                        server_muted: flag("mute"),
+                        server_deafened: flag("deaf"),
                         streaming: flag("self_stream"),
                         video: flag("self_video"),
                     },
@@ -1124,6 +1129,8 @@ impl Tracker {
                         avatar: names.avatar(None, user),
                         muted: false,
                         deafened: false,
+                        server_muted: false,
+                        server_deafened: false,
                         streaming: false,
                         video: false,
                         elsewhere: false,
@@ -1222,8 +1229,10 @@ impl Tracker {
                     user_id: user.clone(),
                     name: names.name(guild, user).unwrap_or("Discord user").to_owned(),
                     avatar: names.avatar(server(guild), user),
-                    muted: entry.muted,
-                    deafened: entry.deafened,
+                    muted: entry.muted || entry.server_muted,
+                    deafened: entry.deafened || entry.server_deafened,
+                    server_muted: entry.server_muted,
+                    server_deafened: entry.server_deafened,
                     streaming: entry.streaming,
                     video: entry.video,
                     elsewhere: *user == self.me && self.elsewhere(entry),
@@ -1421,6 +1430,40 @@ mod tests {
         // Without `unavailable`, this account left the server.
         tracker.apply(&Event::GuildDelete, &json!({"id": "10"}));
         assert_eq!(listed(&mut tracker), [("Other".into(), false, 1)]);
+    }
+
+    #[test]
+    fn tells_a_server_mute_from_ones_own() {
+        let ready = json!({"user": {"id": "1", "username": "me"}});
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let flags = |tracker: &mut Tracker| {
+            let member = tracker.snapshot().voice["11"][0].clone();
+            (
+                member.muted,
+                member.server_muted,
+                member.deafened,
+                member.server_deafened,
+            )
+        };
+        let state = |extra: Value| {
+            let mut state = json!({"guild_id": "10", "user_id": "2", "channel_id": "11"});
+            state
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            state
+        };
+        tracker.apply(&Event::VoiceStateUpdate, &state(json!({"self_mute": true})));
+        assert_eq!(flags(&mut tracker), (true, false, false, false));
+        tracker.apply(
+            &Event::VoiceStateUpdate,
+            &state(json!({"mute": true, "deaf": true})),
+        );
+        assert_eq!(
+            flags(&mut tracker),
+            (true, true, true, true),
+            "the server's"
+        );
     }
 
     #[test]

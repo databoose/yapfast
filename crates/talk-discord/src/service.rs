@@ -55,8 +55,13 @@ pub struct VoiceMember {
     pub name: String,
     /// The address of the avatar Discord shows for them on this server.
     pub avatar: String,
+    /// Muted or deafened, by themselves or by the server.
     pub muted: bool,
     pub deafened: bool,
+    /// Muted or deafened by the server, which a moderator chose, and
+    /// Discord's client shows in red.
+    pub server_muted: bool,
+    pub server_deafened: bool,
     /// Sharing their screen with Go Live.
     pub streaming: bool,
     /// Their camera is on.
@@ -1176,6 +1181,25 @@ impl Discord {
         self.api
             .time_out(guild, user, until.as_deref(), reason)
             .await
+    }
+
+    /// Mutes a member in the server's voice channels, or unmutes them.
+    pub async fn server_mute(&self, guild: &str, user: &str, mute: bool) -> Result<()> {
+        let body = serde_json::json!({ "mute": mute });
+        self.api.modify_member_voice(guild, user, &body).await
+    }
+
+    /// Deafens a member in the server's voice channels, or undeafens them.
+    pub async fn server_deafen(&self, guild: &str, user: &str, deaf: bool) -> Result<()> {
+        let body = serde_json::json!({ "deaf": deaf });
+        self.api.modify_member_voice(guild, user, &body).await
+    }
+
+    /// Moves a member to another voice channel of the server, or with none
+    /// disconnects them from voice.
+    pub async fn move_member(&self, guild: &str, user: &str, channel: Option<&str>) -> Result<()> {
+        let body = serde_json::json!({ "channel_id": channel });
+        self.api.modify_member_voice(guild, user, &body).await
     }
 
     /// Removes a member from a server.

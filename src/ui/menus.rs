@@ -29,14 +29,18 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     let icons = &adapter.icons;
     let app = &adapter.app;
     let state = &app.state;
-    let choices = if person {
+    let in_voice = voice_target(id);
+    let choices = if let Some((room, user)) = in_voice {
+        app.voice_person_choices(room, user)
+    } else if person {
         app.person_choices(id)
     } else if let Some(server) = id.strip_prefix(HEADER) {
         app.header_choices(server)
     } else {
         app.menu_choices(id)
     };
-    let id = id.strip_prefix(HEADER).unwrap_or(id);
+    let id = in_voice.map_or_else(|| id.strip_prefix(HEADER).unwrap_or(id), |(_, user)| user);
+    let voice_person = in_voice.and_then(|(room, user)| app.voice_person(room, user));
     // Moderation names whom it's about, as Discord's does.
     let named = std::cell::OnceCell::new();
     let name = || {
@@ -106,8 +110,12 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::Invite
                 | MenuChoice::PinChannel
                 | MenuChoice::UnpinChannel => 3,
-                MenuChoice::Roles => 4,
-                MenuChoice::Timeout
+                MenuChoice::Roles | MenuChoice::MoveTo => 4,
+                MenuChoice::LocalMute | MenuChoice::SelfMute | MenuChoice::SelfDeafen => 8,
+                MenuChoice::ServerMute
+                | MenuChoice::ServerDeafen
+                | MenuChoice::Disconnect
+                | MenuChoice::Timeout
                 | MenuChoice::RemoveTimeout
                 | MenuChoice::Kick
                 | MenuChoice::Ban => 5,
@@ -134,7 +142,26 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                     .unwrap_or_default(),
                 _ => String::new(),
             };
-            let checkbox = choice == MenuChoice::HideMuted;
+            let checkbox = matches!(
+                choice,
+                MenuChoice::HideMuted
+                    | MenuChoice::LocalMute
+                    | MenuChoice::SelfMute
+                    | MenuChoice::SelfDeafen
+                    | MenuChoice::ServerMute
+                    | MenuChoice::ServerDeafen
+            );
+            let checked = match choice {
+                MenuChoice::HideMuted => notifications().is_some_and(|known| known.hide_muted),
+                MenuChoice::LocalMute => talk_core::volume::muted(id),
+                MenuChoice::SelfMute => state.voice.muted,
+                MenuChoice::SelfDeafen => state.voice.deafened,
+                MenuChoice::ServerMute => voice_person.is_some_and(|person| person.server_muted),
+                MenuChoice::ServerDeafen => {
+                    voice_person.is_some_and(|person| person.server_deafened)
+                }
+                _ => false,
+            };
             MenuRow {
                 id: choice_id(choice).into(),
                 text: text.into(),
@@ -147,12 +174,15 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Timeout
                         | MenuChoice::Kick
                         | MenuChoice::Ban
+                        | MenuChoice::ServerMute
+                        | MenuChoice::ServerDeafen
+                        | MenuChoice::Disconnect
                         | MenuChoice::DeleteChannel
                         | MenuChoice::LeaveServer
                 ),
                 separated,
                 checkbox,
-                checked: checkbox && notifications().is_some_and(|known| known.hide_muted),
+                checked,
                 ..Default::default()
             }
         })
@@ -175,6 +205,10 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 role_rows(adapter, id)
             } else if row.id == choice_id(MenuChoice::InviteToServer) {
                 invite_rows(app, user.as_deref())
+            } else if let (true, Some((room, user))) =
+                (row.id == choice_id(MenuChoice::MoveTo), in_voice)
+            {
+                move_rows(app, room, user)
             } else if let Some(notify) = &notify {
                 notify.submenu(&row.id)
             } else {
@@ -220,6 +254,12 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::Timeout => ("Time out", &icons.timeout),
         MenuChoice::Kick => ("Kick", &icons.kick),
         MenuChoice::Ban => ("Ban", &icons.ban),
+        MenuChoice::LocalMute | MenuChoice::SelfMute => ("Mute", &icons.mic_off),
+        MenuChoice::SelfDeafen => ("Deafen", &icons.deafen),
+        MenuChoice::MoveTo => ("Move to", &icons.move_to),
+        MenuChoice::ServerMute => ("Server mute", &icons.mic_off),
+        MenuChoice::ServerDeafen => ("Server deafen", &icons.deafen),
+        MenuChoice::Disconnect => ("Disconnect", &icons.disconnect),
         // Notify::dress names these.
         MenuChoice::ChannelMute => ("Mute", &icons.mute),
         MenuChoice::ChannelNotifications => ("Notification settings", &icons.unmute),
@@ -287,6 +327,31 @@ fn invite_rows(app: &Application, user: Option<&str>) -> Vec<MenuRow> {
 /// What a server's row in the Invite to server submenu reports, before the
 /// server's id.
 const INVITE_TO: &str = "invite-to:";
+
+/// How someone's menu in a voice channel names its target: this, the
+/// channel's room id, `/`, and their id, which has no `/`.
+const IN_VOICE: &str = "in-voice:";
+
+/// The voice channel and the person a voice channel's menu is about.
+fn voice_target(target: &str) -> Option<(&str, &str)> {
+    target.strip_prefix(IN_VOICE)?.rsplit_once('/')
+}
+
+/// Someone's Move to submenu, built as it opens: the voice channels they
+/// may be moved to, by name, in the channel list's order.
+fn move_rows(app: &Application, room: &str, user: &str) -> Vec<MenuRow> {
+    app.move_targets(room, user)
+        .into_iter()
+        .map(|(room, name)| MenuRow {
+            id: format!("{MOVE_TO}{room}").into(),
+            text: name.into(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// What a channel's row in the Move to submenu reports, before its room id.
+const MOVE_TO: &str = "move-to:";
 /// The header's bell names its menu by the open channel's room id after this.
 const BELL: &str = "notifications:";
 
@@ -556,6 +621,12 @@ pub(super) fn choose(
 ) {
     // A checkbox shows its new state at once, as the menu stays open.
     let ticked = toggle(window, id);
+    // Someone's menu in a voice channel acts on them in its server.
+    let in_voice = voice_target(&target).map(|(room, user)| (room.to_owned(), user.to_owned()));
+    let target = match &in_voice {
+        Some((_, user)) => user.clone(),
+        None => target,
+    };
     let target = match target.strip_prefix(BELL) {
         Some(place) => place.to_owned(),
         None => target,
@@ -591,7 +662,29 @@ pub(super) fn choose(
     }
     let (room, user) = subjects(&adapter.app.state, &target, person);
     // A member's choices act in the server of the channel they're in.
-    let place = adapter.app.state.selected.clone();
+    let place = in_voice
+        .map(|(room, _)| room)
+        .or_else(|| adapter.app.state.selected.clone());
+    let me = adapter.app.state.discord_user.as_deref() == Some(target.as_str());
+    let voice = |change| {
+        place.clone().map(|place| Action::ChangeMember {
+            place,
+            user: target.clone(),
+            change,
+        })
+    };
+    if let Some(to) = id.strip_prefix(MOVE_TO) {
+        // This account moves by joining there.
+        let action = if me {
+            Some(Action::RequestJoinVoice(to.to_owned()))
+        } else {
+            voice(MemberChange::Move(Some(to.to_owned())))
+        };
+        if let Some(action) = action {
+            adapter.action(window, action);
+        }
+        return;
+    }
     if let (Some(role), Some(add), Some(place)) = (id.strip_prefix(ROLE), ticked, place.clone()) {
         let change = MemberChange::Role {
             role: role.to_owned(),
@@ -691,8 +784,29 @@ pub(super) fn choose(
                 reason: String::new(),
             },
         }),
-        // Its roles are its submenu's, as are the servers to invite to.
-        MenuChoice::Roles | MenuChoice::InviteToServer => None,
+        // Its roles are its submenu's, as are the servers to invite to and
+        // the channels to move to.
+        MenuChoice::Roles | MenuChoice::InviteToServer | MenuChoice::MoveTo => None,
+        MenuChoice::LocalMute => {
+            if let Some(muted) = ticked {
+                talk_core::volume::mute(&target, muted);
+                let people = &mut adapter.layout.muted_people;
+                if muted {
+                    people.insert(target.clone());
+                } else {
+                    people.remove(&target);
+                }
+                adapter.layout.write(&adapter.root);
+            }
+            None
+        }
+        MenuChoice::SelfMute => ticked.map(|muted| Action::Voice(voice::Command::Mute(muted))),
+        MenuChoice::SelfDeafen => {
+            ticked.map(|deafened| Action::Voice(voice::Command::Deafen(deafened)))
+        }
+        MenuChoice::ServerMute => ticked.and_then(|mute| voice(MemberChange::ServerMute(mute))),
+        MenuChoice::ServerDeafen => ticked.and_then(|deaf| voice(MemberChange::ServerDeafen(deaf))),
+        MenuChoice::Disconnect => voice(MemberChange::Move(None)),
         // Notify's choices, above.
         MenuChoice::ChannelMute | MenuChoice::ChannelNotifications => None,
         MenuChoice::Invite => Some(Action::OpenInvite(target)),
@@ -767,7 +881,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 47] = [
+const CHOICES: [MenuChoice; 54] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -815,6 +929,13 @@ const CHOICES: [MenuChoice; 47] = [
     MenuChoice::DeleteChannel,
     MenuChoice::LeaveServer,
     MenuChoice::EditServerProfile,
+    MenuChoice::LocalMute,
+    MenuChoice::SelfMute,
+    MenuChoice::SelfDeafen,
+    MenuChoice::MoveTo,
+    MenuChoice::ServerMute,
+    MenuChoice::ServerDeafen,
+    MenuChoice::Disconnect,
 ];
 
 fn choice_id(choice: MenuChoice) -> &'static str {
@@ -866,6 +987,13 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::DeleteChannel => "delete-channel",
         MenuChoice::LeaveServer => "leave-server",
         MenuChoice::EditServerProfile => "edit-server-profile",
+        MenuChoice::LocalMute => "local-mute",
+        MenuChoice::SelfMute => "self-mute",
+        MenuChoice::SelfDeafen => "self-deafen",
+        MenuChoice::MoveTo => "move-to",
+        MenuChoice::ServerMute => "server-mute",
+        MenuChoice::ServerDeafen => "server-deafen",
+        MenuChoice::Disconnect => "disconnect",
     }
 }
 

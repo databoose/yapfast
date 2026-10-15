@@ -666,11 +666,16 @@ pub(super) fn command(
 }
 
 /// Whether a member's change comes from a dialog, which waits for how it
-/// went; a role or the end of a timeout is chosen from the menu.
+/// went; a role, the end of a timeout, or a change to their voice is
+/// chosen from the menu.
 fn from_dialog(change: &MemberChange) -> bool {
     !matches!(
         change,
-        MemberChange::Role { .. } | MemberChange::Timeout { until_ms: None, .. }
+        MemberChange::Role { .. }
+            | MemberChange::Timeout { until_ms: None, .. }
+            | MemberChange::ServerMute(_)
+            | MemberChange::ServerDeafen(_)
+            | MemberChange::Move(_)
     )
 }
 
@@ -901,6 +906,36 @@ fn change_person(
                         discord.ban(guild, &user, delete_seconds, &reason).await,
                         "ban them",
                     ),
+                    MemberChange::ServerMute(mute) => (
+                        discord.server_mute(guild, &user, mute).await,
+                        if mute {
+                            "server mute them"
+                        } else {
+                            "unmute them"
+                        },
+                    ),
+                    MemberChange::ServerDeafen(deaf) => (
+                        discord.server_deafen(guild, &user, deaf).await,
+                        if deaf {
+                            "server deafen them"
+                        } else {
+                            "undeafen them"
+                        },
+                    ),
+                    MemberChange::Move(to) => {
+                        let channel = to
+                            .as_deref()
+                            .and_then(discord::parse_room)
+                            .map(|(_, channel)| channel);
+                        (
+                            discord.move_member(guild, &user, channel).await,
+                            if to.is_some() {
+                                "move them"
+                            } else {
+                                "disconnect them"
+                            },
+                        )
+                    }
                 };
                 if !dialog {
                     (result, what)

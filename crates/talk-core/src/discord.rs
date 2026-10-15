@@ -137,6 +137,8 @@ fn voice_person(member: &talk_discord::service::VoiceMember) -> VoicePerson {
         avatar: Some(member.avatar.clone()),
         muted: member.muted,
         deafened: member.deafened,
+        server_muted: member.server_muted,
+        server_deafened: member.server_deafened,
         streaming: member.streaming,
         video: member.video,
         elsewhere: member.elsewhere,
@@ -996,6 +998,8 @@ mod tests {
             streaming: false,
             video: false,
             elsewhere: false,
+            server_muted: false,
+            server_deafened: false,
         };
         let first = Snapshot {
             servers: vec![server("10", "11", "12"), server("20", "21", "22")],
@@ -1088,6 +1092,8 @@ mod tests {
                     streaming: true,
                     video: false,
                     elsewhere: false,
+                    server_muted: false,
+                    server_deafened: false,
                 }],
             )]
             .into(),

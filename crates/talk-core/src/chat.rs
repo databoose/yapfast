@@ -229,8 +229,12 @@ pub struct VoicePerson {
     pub name: String,
     /// The address of their avatar; see [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
+    /// Muted or deafened, by themselves or by a Discord server.
     pub muted: bool,
     pub deafened: bool,
+    /// Muted or deafened by the Discord server, which shows in red.
+    pub server_muted: bool,
+    pub server_deafened: bool,
     /// Sharing their screen.
     pub streaming: bool,
     /// Their camera is on.
@@ -302,6 +306,12 @@ pub enum Permission {
     CreatePrivateThreads,
     /// Remove others' reactions, among more.
     ManageMessages,
+    /// Join a voice channel.
+    Connect,
+    /// Mute, deafen, and move or disconnect members in voice channels.
+    MuteMembers,
+    DeafenMembers,
+    MoveMembers,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -1676,6 +1686,12 @@ pub enum MemberChange {
         delete_seconds: u32,
         reason: String,
     },
+    /// Mute or deafen them in the server's voice channels, or undo it.
+    ServerMute(bool),
+    ServerDeafen(bool),
+    /// Move them to another voice channel of the server, by its room id,
+    /// or with none disconnect them from voice.
+    Move(Option<String>),
 }
 
 /// How long a Discord DM, server, channel or category stays muted.

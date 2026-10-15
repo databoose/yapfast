@@ -554,7 +554,7 @@ export component ContextMenu inherits Rectangle {
     /// The room below the menu's top; the rest of `tallest` is above it.
     in property <length> room-below: 100000px;
     // A menu and a submenu are as wide as their rows, within these.
-    property <length> narrowest: 188px;
+    in property <length> narrowest: 188px;
     property <length> widest: 320px;
     out property <length> menu-width: max(root.narrowest, min(root.widest, main.preferred-width));
     property <length> submenu-width: max(root.narrowest, min(root.widest, sub.preferred-width));
