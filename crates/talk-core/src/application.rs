@@ -647,6 +647,29 @@ impl AppState {
                 timed_out_until: None,
             });
         }
+        // Someone in a Discord voice channel, as it lists them, the open
+        // one's first; their profile fills in the rest.
+        if let Some(person) = self
+            .selected_room()
+            .into_iter()
+            .chain(&self.rooms)
+            .flat_map(|room| &room.people)
+            .find(|person| person.id == user)
+        {
+            return Some(ChatMember {
+                id: user.to_owned(),
+                name: person.name.clone(),
+                username: None,
+                role: Role::Member,
+                avatar: person.avatar.clone(),
+                group: None,
+                presence: None,
+                color: None,
+                activity: None,
+                roles: Default::default(),
+                timed_out_until: None,
+            });
+        }
         let target = Target::User(user.to_owned());
         let mentioned = self
             .messages

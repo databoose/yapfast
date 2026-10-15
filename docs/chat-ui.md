@@ -259,13 +259,15 @@ The window follows Discord's arrangement:
   Discord, who is in every other voice channel shows too, with a LIVE tag for a
   screen share and a camera icon. You, in a channel on another client such as
   your phone, show dimmed until hovered, without icons, and the tooltip says
-  "Connected on another client". Clicking someone sharing their screen opens
-  their channel's call and watches them. Outside that call it asks first, "Join
-  <channel> to watch <name>'s stream?", or in another call the switch prompt
-  asks, and the stream opens once the call connects and shows them sharing.
-  Cancelling, leaving, a failed join or opening another room forgets it.
-  Clicking someone with only a camera on opens the call's view, which offers
-  Join if you aren't in it. A right click on a conversation, or
+  "Connected on another client". Every row takes the hover tone, and clicking
+  someone opens their profile card beside the row, as Discord's popout does;
+  someone listed only in a voice channel gets one from the name and avatar the
+  channel gives, which their Discord profile fills in. Clicking someone's LIVE
+  tag opens their channel's call and watches them. Outside that call it asks
+  first, "Join <channel> to watch <name>'s stream?", or in another call the
+  switch prompt asks, and the stream opens once the call connects and shows
+  them sharing. Cancelling, leaving, a failed join or opening another room
+  forgets it. A right click on a conversation, or
   the Menu key or Shift+F10 on a focused one, opens its menu: Mark as read when
   it's unread, Join voice for a voice channel you aren't in, Profile for a
   one-to-one DM, Pin or Unpin and Start call for a DM, then Copy link and Copy

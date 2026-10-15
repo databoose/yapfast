@@ -1859,8 +1859,8 @@ the bell, is still to come.
 
 ### Profiles
 
-Clicking someone in a channel's member list shows their profile in a small
-card beside it, which "View full profile" enlarges into a centred one;
+Clicking someone in a channel's member list, or under a voice channel,
+shows their profile in a small card beside it, which "View full profile" enlarges into a centred one;
 right-clicking a DM and choosing "Profile" opens the full one. A one-to-one
 DM shows its other person's profile in a panel on the right, with the bio in
 full and the mutual servers and friends. Mutual servers show their icon and

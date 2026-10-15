@@ -1183,6 +1183,18 @@ fn show_bob(app: &mut Application) -> Vec<Effect> {
 }
 
 #[test]
+fn someone_in_a_voice_channel_has_a_card_without_being_listed() {
+    let mut app = bob_live_in_lounge();
+    app.dispatch(Action::SelectRoom("lounge".into()));
+    app.dispatch(Action::ShowProfile {
+        user: "@bob:test".into(),
+        large: false,
+    });
+    let view = app.state.profile.as_ref().expect("a card");
+    assert_eq!(view.profile.name, "Bob");
+}
+
+#[test]
 fn clicking_someone_sharing_from_outside_a_call_asks_then_watches_once_connected() {
     let mut app = bob_live_in_lounge();
     assert!(watches(&show_bob(&mut app)).is_empty());

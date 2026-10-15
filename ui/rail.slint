@@ -643,9 +643,12 @@ export component RoomList inherits VerticalLayout {
     /// A right click on someone in a voice channel: the channel's id,
     /// theirs, and where it was in the window.
     callback open-voice-menu(string, PersonRow, length, length);
-    /// Someone in a voice channel was clicked, or their LIVE tag: the
-    /// channel's id and theirs.
+    /// Someone's LIVE tag in a voice channel was clicked: the channel's id
+    /// and theirs.
     callback show-voice-person(string, string);
+    /// Someone in a voice channel was clicked: their row, and where it is
+    /// in the window, which their profile opens beside.
+    callback open-voice-profile(PersonRow, length, length, length, length);
     /// A category's heading was clicked: collapse or open it.
     callback toggle-category(string);
     /// A category's menu was asked for, by its first channel's id.
@@ -734,24 +737,26 @@ export component RoomList inherits VerticalLayout {
             if room.voice && room.id != root.voice-channel && room.people.length > 0: VerticalLayout {
                 padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                 for person in room.people: Rectangle {
-                    // Someone sharing their screen is watched, and a camera
-                    // shows the call; see show-voice-person. This account in
-                    // the call on another client is dimmed until hovered,
-                    // without its icons, as in Discord.
-                    property <bool> watchable: person.live && !person.local;
-                    property <bool> clickable: !person.elsewhere && (self.watchable || person.video);
+                    // A click opens their profile beside the row and a right
+                    // click their menu, as in Discord; their LIVE tag watches
+                    // their stream. This account in the call on another
+                    // client is dimmed until hovered, without its icons.
                     property <string> tip: person.elsewhere ? "Connected on another client" : "";
                     height: 30px; border-radius: 4px;
-                    background: self.clickable && person-touch.has-hover ? Theme.hover : transparent;
+                    background: person-touch.has-hover ? Theme.hover : transparent;
+                    animate background { duration: 90ms; }
                     opacity: person.elsewhere && !person-touch.has-hover ? 0.5 : 1;
-                    accessible-role: button; accessible-enabled: self.clickable;
-                    accessible-label: self.watchable ? "Watch " + person.name + "'s stream" : self.clickable ? "Show " + person.name + "'s camera"
-                        : person.elsewhere ? person.name + ", connected on another client" : person.name;
-                    accessible-action-default => { if self.clickable { root.show-voice-person(room.id, person.id); } }
-                    // A right click opens their menu.
+                    accessible-role: button;
+                    accessible-label: person.elsewhere ? person.name + ", connected on another client" : person.name;
+                    accessible-description: "Show their profile";
+                    accessible-action-default => {
+                        root.open-voice-profile(person, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                    }
                     person-touch := TouchArea {
-                        mouse-cursor: parent.clickable ? MouseCursor.pointer : MouseCursor.default;
-                        clicked => { if parent.clickable { root.show-voice-person(room.id, person.id); } }
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.open-voice-profile(person, parent.absolute-position.x, parent.absolute-position.y, parent.width, parent.height);
+                        }
                         pointer-event(event) => {
                             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                                 root.open-voice-menu(room.id, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
@@ -799,18 +804,21 @@ export component RoomList inherits VerticalLayout {
             if room.voice && room.id == root.voice-channel: VerticalLayout {
                 padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                 for person in root.participants: Rectangle {
-                    // A click watches their stream or shows their camera, as
-                    // above; a right click sets their volumes.
-                    property <bool> watchable: person.live && !person.local;
-                    property <bool> clickable: self.watchable || person.video;
+                    // A click opens their profile and a right click their
+                    // menu, as above.
                     height: 30px; border-radius: 4px;
-                    background: !person.local && participant-touch.has-hover ? Theme.hover : transparent;
-                    accessible-role: button; accessible-enabled: self.clickable;
-                    accessible-label: self.watchable ? "Watch " + person.name + "'s stream" : self.clickable ? "Show " + person.name + "'s camera" : person.name;
-                    accessible-action-default => { if self.clickable { root.show-voice-person(room.id, person.id); } }
+                    background: participant-touch.has-hover ? Theme.hover : transparent;
+                    animate background { duration: 90ms; }
+                    accessible-role: button; accessible-label: person.name;
+                    accessible-description: "Show their profile";
+                    accessible-action-default => {
+                        root.open-voice-profile(person, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                    }
                     participant-touch := TouchArea {
-                        mouse-cursor: parent.clickable ? MouseCursor.pointer : MouseCursor.default;
-                        clicked => { if parent.clickable { root.show-voice-person(room.id, person.id); } }
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.open-voice-profile(person, parent.absolute-position.x, parent.absolute-position.y, parent.width, parent.height);
+                        }
                         pointer-event(event) => {
                             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                                 root.open-voice-menu(root.voice-channel, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);

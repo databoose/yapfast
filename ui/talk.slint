@@ -1524,6 +1524,13 @@ export component TalkWindow inherits Window {
                                 open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
                                 open-voice-menu(room, person, x, y) => { root.open-voice-menu(room, person, x, y); }
                                 show-voice-person(room, id) => { root.show-voice-person(room, id); }
+                                open-voice-profile(person, x, y, width, height) => {
+                                    if person.person != "" {
+                                        root.anchor(x, y, width, height, false);
+                                        root.profile-at-pointer = true;
+                                        root.show-profile(person.person);
+                                    }
+                                }
                                 toggle-category(heading) => { root.toggle-category(heading); }
                                 open-category-menu(id, x, y) => {
                                     if root.category-of(id) != "" { root.open-context-menu(root.category-of(id), false, x, y); }
