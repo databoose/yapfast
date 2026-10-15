@@ -1983,9 +1983,7 @@ fn place_videos(adapter: &Adapter, window: &TalkWindow) {
 /// Opens a web page in the browser. Only web pages open: a message can't
 /// start other programs.
 fn open_web_page(link: &str) {
-    if links::openable(link)
-        && let Err(error) = webbrowser::open(link)
-    {
-        tracing::warn!(%error, "could not open a link");
+    if links::openable(link) {
+        super::browser::open(link);
     }
 }

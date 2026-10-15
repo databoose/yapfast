@@ -37,6 +37,7 @@ use crate::{custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
 mod away;
+mod browser;
 mod call_link;
 mod call_timer;
 mod callbacks;
@@ -1538,11 +1539,7 @@ impl Adapter {
                     #[cfg(feature = "discord")]
                     self.link_discord();
                 }
-                Effect::OpenPage(page) => {
-                    if let Err(error) = webbrowser::open(&page) {
-                        tracing::warn!(%error, "could not open a page in the browser");
-                    }
-                }
+                Effect::OpenPage(page) => browser::open(&page),
                 Effect::StopDiscordLink => {
                     #[cfg(feature = "discord")]
                     {
