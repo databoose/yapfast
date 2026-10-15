@@ -1980,202 +1980,214 @@ export component TalkWindow inherits Window {
                                     }
                                     return reject;
                                 }
-                                timeline := ListView {
+                                // Leaving the timeline puts the last hovered message's bar away, as
+                                // Discord does, unless something opened from it still needs it. The
+                                // list takes the pointer when a press starts, which only ends its
+                                // rows' hover, not this.
+                                TouchArea {
                                     width: parent.width; height: parent.height;
-                                    scrolled => { root.follow-latest = false; }
-                                    for message[index] in root.messages: Rectangle {
-                                        property <bool> lit: root.active-item == message.item;
-                                        property <bool> jumped: root.jump-item != "" && root.jump-item == message.item;
-                                        property <int> jump-tick: root.jump-tick;
-                                        changed jump-tick => {
-                                            if self.jumped {
-                                                root.jump-placed = true;
-                                                timeline.content-y = max(min(0px, timeline.height - timeline.content-height),
-                                                    min(0px, (root.jump-lit ? timeline.height / 3 : 0px) - self.y - self.top));
-                                            }
+                                    changed has-hover => {
+                                        if !self.has-hover && !root.browsing && root.menu-item == "" && root.react-item == "" && root.confirm-delete == "" {
+                                            root.active-item = "";
                                         }
-                                        // The keyboard's message stays in view, with room for the next one,
-                                        // so stepping on finds it built.
-                                        changed lit => {
-                                            if self.lit && root.browsing {
-                                                root.active-index = index;
-                                                if self.y + timeline.content-y < root.keyboard-margin {
-                                                    root.follow-latest = false;
-                                                    timeline.content-y = min(0px, root.keyboard-margin - self.y);
-                                                } else if self.y + self.height + timeline.content-y > timeline.height - root.keyboard-margin {
-                                                    timeline.content-y = max(min(0px, timeline.height - timeline.content-height), timeline.height - root.keyboard-margin - self.y - self.height);
+                                    }
+                                    timeline := ListView {
+                                        width: parent.width; height: parent.height;
+                                        scrolled => { root.follow-latest = false; }
+                                        for message[index] in root.messages: Rectangle {
+                                            property <bool> lit: root.active-item == message.item;
+                                            property <bool> jumped: root.jump-item != "" && root.jump-item == message.item;
+                                            property <int> jump-tick: root.jump-tick;
+                                            changed jump-tick => {
+                                                if self.jumped {
+                                                    root.jump-placed = true;
+                                                    timeline.content-y = max(min(0px, timeline.height - timeline.content-height),
+                                                        min(0px, (root.jump-lit ? timeline.height / 3 : 0px) - self.y - self.top));
                                                 }
                                             }
-                                        }
-                                        property <bool> keyed: self.lit && root.keyboard-popup != "";
-                                        changed keyed => {
-                                            if self.keyed {
-                                                root.anchor(self.absolute-position.x + self.width - 16px, self.absolute-position.y + self.top - 16px, 0px, 32px, false);
-                                                if root.keyboard-popup == "menu" { root.open-menu(message); } else { root.open-picker(message.item); }
-                                                root.keyboard-popup = "";
-                                            }
-                                        }
-                                        // Where it is in the view, for `top-index` and `bottom-index`.
-                                        property <length> view-y: self.y + timeline.content-y;
-                                        property <int> view-tick: root.view-tick;
-                                        property <int> row-index: index;
-                                        function report-view() {
-                                            if self.view-y <= 0px && self.view-y + self.height > 0px {
-                                                root.top-index = index; root.top-item = message.item; root.top-edge = self.view-y + self.height;
-                                            }
-                                            if self.view-y < timeline.height && (self.view-y + self.height >= timeline.height || index == root.messages.length - 1) { root.bottom-index = index; }
-                                            if message.unread-start { root.unread-y = self.view-y + self.top; }
-                                        }
-                                        init => { root.view-tick += 1; }
-                                        changed view-y => { self.report-view(); }
-                                        changed height => { self.report-view(); }
-                                        changed view-tick => { self.report-view(); }
-                                        changed row-index => { self.report-view(); }
-                                        // The space that holds a short history down stays outside the row.
-                                        property <length> top: index == 0 ? root.lead : 0px;
-                                        height: col.preferred-height + self.top;
-                                        Rectangle {
-                                            y: parent.top; height: parent.height - parent.top;
-                                            background: parent.jumped && root.jump-lit ? Theme.accent.transparentize(0.86) : parent.lit ? Theme.row-hover : transparent;
-                                            animate background { duration: 400ms; }
-                                        }
-                                        // A message that calls on this account is tinted marigold with a
-                                        // marigold edge, below the history notice and the dividers above it:
-                                        // a mention always, a reply to its message while it's new.
-                                        property <length> head: (index == 0 && root.room-ready ? 42px : 0px)
-                                            + (message.day != "" || message.unread-start ? 26px : 0px);
-                                        if message.highlighted: Rectangle {
-                                            y: parent.top + (parent.head > 0 ? col.padding-top + parent.head : 0px);
-                                            height: parent.height - self.y - (index == root.messages.length - 1 && root.detached ? 74px : 0px);
-                                            background: Theme.accent.transparentize(0.9);
-                                            Rectangle { x: 0px; width: 2px; background: Theme.accent; }
-                                        }
-                                        // The keyboard's message has a marigold edge.
-                                        if self.lit && root.browsing: Rectangle { x: 0px; y: parent.top; width: 3px; height: parent.height - parent.top; background: Theme.accent; }
-                                        // The pointer area wraps the row, so hovering selectable text still counts.
-                                        // The last hovered or clicked message keeps its actions: the list takes
-                                        // the pointer when a press starts, which ends hover, so a hover-only bar
-                                        // would vanish before its button saw the click.
-                                        row-pointer := TouchArea {
-                                            y: parent.top; height: parent.height - parent.top;
-                                            changed has-hover => { if self.has-hover { root.active-item = message.item; root.active-index = index; } }
-                                            clicked => { root.active-item = message.item; root.active-index = index; }
-                                            // A right click opens the same menu as the hover bar's More button.
-                                            pointer-event(event) => {
-                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down
-                                                    && !message.deleted && message.delivery == "" {
-                                                    root.active-item = message.item;
-                                                    root.anchor(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 0px, 0px, true);
-                                                    root.open-menu(message);
+                                            // The keyboard's message stays in view, with room for the next one,
+                                            // so stepping on finds it built.
+                                            changed lit => {
+                                                if self.lit && root.browsing {
+                                                    root.active-index = index;
+                                                    if self.y + timeline.content-y < root.keyboard-margin {
+                                                        root.follow-latest = false;
+                                                        timeline.content-y = min(0px, root.keyboard-margin - self.y);
+                                                    } else if self.y + self.height + timeline.content-y > timeline.height - root.keyboard-margin {
+                                                        timeline.content-y = max(min(0px, timeline.height - timeline.content-height), timeline.height - root.keyboard-margin - self.y - self.height);
+                                                    }
                                                 }
                                             }
-                                            col := VerticalLayout {
-                                                padding-top: message.day != "" || message.unread-start ? 12px : message.first ? 14px : 1px;
-                                                // The last row leaves room for the bar over a window's end.
-                                                padding-bottom: index == root.messages.length - 1 ? (root.detached ? 52px : 20px) : 1px;
-                                                spacing: 0px;
-                                                // History starts with what's before it: earlier messages
-                                                // loading, or the conversation's start.
-                                                if index == 0 && root.room-ready: HistoryEdge {
-                                                    loading: root.loading-history; failed: root.history-failed; start: root.history-start;
-                                                    enabled: !root.busy && !root.preview; room-direct: root.room-direct; room-name: root.room-name;
-                                                    room-thread: root.room-parent != "";
-                                                    earlier => { root.earlier(); }
+                                            property <bool> keyed: self.lit && root.keyboard-popup != "";
+                                            changed keyed => {
+                                                if self.keyed {
+                                                    root.anchor(self.absolute-position.x + self.width - 16px, self.absolute-position.y + self.top - 16px, 0px, 32px, false);
+                                                    if root.keyboard-popup == "menu" { root.open-menu(message); } else { root.open-picker(message.item); }
+                                                    root.keyboard-popup = "";
                                                 }
-                                                // A new day's date, and the "New" divider in marigold above
-                                                // the first unread message, in the middle of one line, the
-                                                // date and "New" together when both are here.
-                                                if message.day != "" || message.unread-start: HorizontalLayout {
-                                                    padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;
-                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
-                                                    if message.day != "": Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                                    if message.day != "" && message.unread-start: Text { text: "·"; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                                    if message.unread-start: Rectangle {
-                                                        width: new-text.preferred-width + 10px;
-                                                        accessible-role: text; accessible-label: "New messages start here";
-                                                        Rectangle {
-                                                            height: 18px; border-radius: 4px; background: Theme.accent;
-                                                            new-text := Text {
-                                                                text: "New"; color: Theme.on-accent; font-size: 12px; font-weight: 800;
-                                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                            // Where it is in the view, for `top-index` and `bottom-index`.
+                                            property <length> view-y: self.y + timeline.content-y;
+                                            property <int> view-tick: root.view-tick;
+                                            property <int> row-index: index;
+                                            function report-view() {
+                                                if self.view-y <= 0px && self.view-y + self.height > 0px {
+                                                    root.top-index = index; root.top-item = message.item; root.top-edge = self.view-y + self.height;
+                                                }
+                                                if self.view-y < timeline.height && (self.view-y + self.height >= timeline.height || index == root.messages.length - 1) { root.bottom-index = index; }
+                                                if message.unread-start { root.unread-y = self.view-y + self.top; }
+                                            }
+                                            init => { root.view-tick += 1; }
+                                            changed view-y => { self.report-view(); }
+                                            changed height => { self.report-view(); }
+                                            changed view-tick => { self.report-view(); }
+                                            changed row-index => { self.report-view(); }
+                                            // The space that holds a short history down stays outside the row.
+                                            property <length> top: index == 0 ? root.lead : 0px;
+                                            height: col.preferred-height + self.top;
+                                            Rectangle {
+                                                y: parent.top; height: parent.height - parent.top;
+                                                background: parent.jumped && root.jump-lit ? Theme.accent.transparentize(0.86) : parent.lit ? Theme.row-hover : transparent;
+                                                animate background { duration: 400ms; }
+                                            }
+                                            // A message that calls on this account is tinted marigold with a
+                                            // marigold edge, below the history notice and the dividers above it:
+                                            // a mention always, a reply to its message while it's new.
+                                            property <length> head: (index == 0 && root.room-ready ? 42px : 0px)
+                                                + (message.day != "" || message.unread-start ? 26px : 0px);
+                                            if message.highlighted: Rectangle {
+                                                y: parent.top + (parent.head > 0 ? col.padding-top + parent.head : 0px);
+                                                height: parent.height - self.y - (index == root.messages.length - 1 && root.detached ? 74px : 0px);
+                                                background: Theme.accent.transparentize(0.9);
+                                                Rectangle { x: 0px; width: 2px; background: Theme.accent; }
+                                            }
+                                            // The keyboard's message has a marigold edge.
+                                            if self.lit && root.browsing: Rectangle { x: 0px; y: parent.top; width: 3px; height: parent.height - parent.top; background: Theme.accent; }
+                                            // The pointer area wraps the row, so hovering selectable text still counts.
+                                            // The last hovered or clicked message keeps its actions: the list takes
+                                            // the pointer when a press starts, which ends hover, so a hover-only bar
+                                            // would vanish before its button saw the click.
+                                            row-pointer := TouchArea {
+                                                y: parent.top; height: parent.height - parent.top;
+                                                changed has-hover => { if self.has-hover { root.active-item = message.item; root.active-index = index; } }
+                                                clicked => { root.active-item = message.item; root.active-index = index; }
+                                                // A right click opens the same menu as the hover bar's More button.
+                                                pointer-event(event) => {
+                                                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down
+                                                        && !message.deleted && message.delivery == "" {
+                                                        root.active-item = message.item;
+                                                        root.anchor(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 0px, 0px, true);
+                                                        root.open-menu(message);
+                                                    }
+                                                }
+                                                col := VerticalLayout {
+                                                    padding-top: message.day != "" || message.unread-start ? 12px : message.first ? 14px : 1px;
+                                                    // The last row leaves room for the bar over a window's end.
+                                                    padding-bottom: index == root.messages.length - 1 ? (root.detached ? 52px : 20px) : 1px;
+                                                    spacing: 0px;
+                                                    // History starts with what's before it: earlier messages
+                                                    // loading, or the conversation's start.
+                                                    if index == 0 && root.room-ready: HistoryEdge {
+                                                        loading: root.loading-history; failed: root.history-failed; start: root.history-start;
+                                                        enabled: !root.busy && !root.preview; room-direct: root.room-direct; room-name: root.room-name;
+                                                        room-thread: root.room-parent != "";
+                                                        earlier => { root.earlier(); }
+                                                    }
+                                                    // A new day's date, and the "New" divider in marigold above
+                                                    // the first unread message, in the middle of one line, the
+                                                    // date and "New" together when both are here.
+                                                    if message.day != "" || message.unread-start: HorizontalLayout {
+                                                        padding-left: 16px; padding-right: 16px; padding-bottom: 6px; spacing: 10px; height: 26px;
+                                                        Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
+                                                        if message.day != "": Text { text: message.day; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                                        if message.day != "" && message.unread-start: Text { text: "·"; color: Theme.muted; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                                        if message.unread-start: Rectangle {
+                                                            width: new-text.preferred-width + 10px;
+                                                            accessible-role: text; accessible-label: "New messages start here";
+                                                            Rectangle {
+                                                                height: 18px; border-radius: 4px; background: Theme.accent;
+                                                                new-text := Text {
+                                                                    text: "New"; color: Theme.on-accent; font-size: 12px; font-weight: 800;
+                                                                    horizontal-alignment: center; vertical-alignment: center;
+                                                                }
                                                             }
                                                         }
+                                                        Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
                                                     }
-                                                    Rectangle { horizontal-stretch: 1; Rectangle { height: 1px; background: message.unread-start ? Theme.accent : Theme.line; } }
-                                                }
-                                                MessageContent {
-                                                    message: message; active-item: root.active-item; preview: root.preview; composer-enabled: root.composer-enabled;
-                                                    emoji-font: root.emoji-font; message-font-size: root.message-font-size;
-                                                    author-card(item, sender, x, y, width, height) => { root.author-card(item, sender, x, y, width, height); }
-                                                    author-menu(item, sender, x, y) => { root.author-menu(item, sender, x, y); }
-                                                    jump-to(item) => { root.jump-to(item); }
-                                                    // A mention's card opens beside the pointer.
-                                                    link-clicked(link) => {
-                                                        root.anchor(row-pointer.absolute-position.x + row-pointer.mouse-x, row-pointer.absolute-position.y + row-pointer.mouse-y, 0px, 0px, true);
-                                                        root.open-link(link);
+                                                    MessageContent {
+                                                        message: message; active-item: root.active-item; preview: root.preview; composer-enabled: root.composer-enabled;
+                                                        emoji-font: root.emoji-font; message-font-size: root.message-font-size;
+                                                        author-card(item, sender, x, y, width, height) => { root.author-card(item, sender, x, y, width, height); }
+                                                        author-menu(item, sender, x, y) => { root.author-menu(item, sender, x, y); }
+                                                        jump-to(item) => { root.jump-to(item); }
+                                                        // A mention's card opens beside the pointer.
+                                                        link-clicked(link) => {
+                                                            root.anchor(row-pointer.absolute-position.x + row-pointer.mouse-x, row-pointer.absolute-position.y + row-pointer.mouse-y, 0px, 0px, true);
+                                                            root.open-link(link);
+                                                        }
+                                                        open-link(link) => { root.open-link(link); }
+                                                        open-thread(room) => { root.open-aside(room); }
+                                                        react(item, key) => { root.react(item, key); }
+                                                        retry(item) => { root.retry(item); }
+                                                        cancel-send(item) => { root.cancel-send(item); }
+                                                        reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                                                        view-image(id, index) => { root.view-image(id, index); }
+                                                        save-attachment(id, index) => { root.save-attachment(id, index); }
                                                     }
-                                                    open-link(link) => { root.open-link(link); }
-                                                    open-thread(room) => { root.open-aside(room); }
-                                                    react(item, key) => { root.react(item, key); }
-                                                    retry(item) => { root.retry(item); }
-                                                    cancel-send(item) => { root.cancel-send(item); }
-                                                    reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
-                                                    view-image(id, index) => { root.view-image(id, index); }
-                                                    save-attachment(id, index) => { root.save-attachment(id, index); }
-                                                }
-                                                // A window of older messages ends with what's after it: newer
-                                                // messages loading, or a way to load them.
-                                                if index == root.messages.length - 1 && root.detached && root.room-ready: HistoryEdge {
-                                                    newer: true; loading: root.loading-later; failed: root.later-failed;
-                                                    enabled: !root.busy && !root.preview;
-                                                    earlier => { root.later(); }
+                                                    // A window of older messages ends with what's after it: newer
+                                                    // messages loading, or a way to load them.
+                                                    if index == root.messages.length - 1 && root.detached && root.room-ready: HistoryEdge {
+                                                        newer: true; loading: root.loading-later; failed: root.later-failed;
+                                                        enabled: !root.busy && !root.preview;
+                                                        earlier => { root.later(); }
+                                                    }
                                                 }
                                             }
-                                        }
-                                        // Actions, the reaction picker and delete confirmation float over the
-                                        // row's top edge, so opening them never moves the timeline.
-                                        if (self.lit || root.react-item == message.item || root.menu-item == message.item || root.confirm-delete == message.item) && !message.deleted && message.delivery == "": Rectangle {
-                                            x: parent.width - self.width - 16px; y: parent.top + (index == 0 ? 4px : -16px);
-                                            width: actions.preferred-width; height: actions.preferred-height;
-                                            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
-                                            drop-shadow-blur: 10px; drop-shadow-color: #00000059; drop-shadow-offset-y: 2px;
-                                            actions := HorizontalLayout {
-                                                padding: 3px; spacing: 0px;
-                                                if root.confirm-delete == message.item: HorizontalLayout {
-                                                    spacing: 4px; padding-left: 8px;
-                                                    Text { text: "Delete for everyone?"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                    ActionButton { text: "Delete"; danger: true; small: true; clicked => { root.confirm-delete-message(); } }
-                                                    ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-delete(); } }
-                                                }
-                                                // Frequent reactions, then the picker, Edit on your own message or
-                                                // Reply on someone else's, and everything else under More.
-                                                if root.confirm-delete != message.item: HorizontalLayout {
-                                                    spacing: 0px;
-                                                    if message.can-react && root.composer-enabled: HorizontalLayout {
+                                            // Actions, the reaction picker and delete confirmation float over the
+                                            // row's top edge, so opening them never moves the timeline.
+                                            if (self.lit || root.react-item == message.item || root.menu-item == message.item || root.confirm-delete == message.item) && !message.deleted && message.delivery == "": Rectangle {
+                                                x: parent.width - self.width - 16px; y: parent.top + (index == 0 ? 4px : -16px);
+                                                width: actions.preferred-width; height: actions.preferred-height;
+                                                background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+                                                drop-shadow-blur: 10px; drop-shadow-color: #00000059; drop-shadow-offset-y: 2px;
+                                                actions := HorizontalLayout {
+                                                    padding: 3px; spacing: 0px;
+                                                    if root.confirm-delete == message.item: HorizontalLayout {
+                                                        spacing: 4px; padding-left: 8px;
+                                                        Text { text: "Delete for everyone?"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                        ActionButton { text: "Delete"; danger: true; small: true; clicked => { root.confirm-delete-message(); } }
+                                                        ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { root.cancel-delete(); } }
+                                                    }
+                                                    // Frequent reactions, then the picker, Edit on your own message or
+                                                    // Reply on someone else's, and everything else under More.
+                                                    if root.confirm-delete != message.item: HorizontalLayout {
                                                         spacing: 0px;
-                                                        for cell in root.bar-reactions: EmojiButton {
-                                                            emoji: cell; font: root.emoji-font;
-                                                            clicked => { root.react(message.item, cell.key); }
+                                                        if message.can-react && root.composer-enabled: HorizontalLayout {
+                                                            spacing: 0px;
+                                                            for cell in root.bar-reactions: EmojiButton {
+                                                                emoji: cell; font: root.emoji-font;
+                                                                clicked => { root.react(message.item, cell.key); }
+                                                            }
+                                                            Rectangle {
+                                                                width: 9px;
+                                                                Rectangle { width: 1px; height: 20px; background: Theme.line; }
+                                                            }
+                                                            IconButton {
+                                                                icon: @image-url("icons/smile-plus.svg"); label: "Add reaction";
+                                                                clicked => {
+                                                                    root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
+                                                                    root.open-picker(message.item);
+                                                                }
+                                                            }
                                                         }
-                                                        Rectangle {
-                                                            width: 9px;
-                                                            Rectangle { width: 1px; height: 20px; background: Theme.line; }
-                                                        }
+                                                        if message.own && message.can-edit && root.composer-enabled: IconButton { icon: @image-url("icons/pencil.svg"); label: "Edit"; clicked => { root.edit(message.item); root.focus-composer(); } }
+                                                        if !(message.own && message.can-edit) && message.can-reply && root.composer-enabled: IconButton { icon: @image-url("icons/reply.svg"); label: "Reply"; clicked => { root.reply(message.item); root.focus-composer(); } }
                                                         IconButton {
-                                                            icon: @image-url("icons/smile-plus.svg"); label: "Add reaction";
+                                                            icon: @image-url("icons/ellipsis.svg"); label: "More";
                                                             clicked => {
                                                                 root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
-                                                                root.open-picker(message.item);
+                                                                root.open-menu(message);
                                                             }
-                                                        }
-                                                    }
-                                                    if message.own && message.can-edit && root.composer-enabled: IconButton { icon: @image-url("icons/pencil.svg"); label: "Edit"; clicked => { root.edit(message.item); root.focus-composer(); } }
-                                                    if !(message.own && message.can-edit) && message.can-reply && root.composer-enabled: IconButton { icon: @image-url("icons/reply.svg"); label: "Reply"; clicked => { root.reply(message.item); root.focus-composer(); } }
-                                                    IconButton {
-                                                        icon: @image-url("icons/ellipsis.svg"); label: "More";
-                                                        clicked => {
-                                                            root.anchor(self.absolute-position.x, self.absolute-position.y, self.width, self.height, false);
-                                                            root.open-menu(message);
                                                         }
                                                     }
                                                 }
