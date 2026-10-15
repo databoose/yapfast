@@ -71,12 +71,24 @@ name = "tray_host"
 path = "testing/tray_host.rs"
 required-features = ["desktop"]
 
+# Records the private test display; see testing/record_host.rs.
+[[example]]
+name = "record_host"
+path = "testing/record_host.rs"
+required-features = ["desktop"]
+
 [dev-dependencies]
 i-slint-backend-testing = "=1.18.1"
 talk-core = { path = "crates/talk-core", default-features = false, features = ["test-fixtures"] }
 # Builds a Discord server's snapshot for the menus' tests.
 talk-discord = { path = "crates/talk-discord" }
 tempfile.workspace = true
+
+# testing/record_host.rs: Weston's capture protocol, and signals and poll; both
+# already in the tree.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2.189"
+wayland-scanner = "0.31.11"
 
 [workspace.dependencies]
 anyhow = "1"

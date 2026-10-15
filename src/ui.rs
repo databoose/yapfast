@@ -240,10 +240,30 @@ fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
         // Files dropped together arrive one at a time, then go as one drop.
         let dropped = Rc::new(RefCell::new(Vec::new()));
         let mut hovering = false;
+        let mut made = false;
         let weak = window.as_weak();
         window
             .window()
             .on_winit_window_event(move |slint_window, event| {
+                // Slint gives the window its display's scale as winit makes it,
+                // which can come after the zoom above, so the zoom goes back on
+                // top with the window's first event. On Wayland a scale other
+                // than 1 also comes as ScaleFactorChanged, below; 1 never does.
+                if !made {
+                    made = true;
+                    let (weak, base, level) = (weak.clone(), base.clone(), level.clone());
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        let Some(window) = weak.upgrade() else { return };
+                        if std::env::var("SLINT_SCALE_FACTOR").is_err()
+                            && let Some(scale) = window
+                                .window()
+                                .with_winit_window(|winit| winit.scale_factor() as f32)
+                        {
+                            base.set(scale);
+                        }
+                        zoom::apply(window.window(), base.get(), level.get());
+                    });
+                }
                 #[cfg(target_os = "linux")]
                 if !watching {
                     watching = true;
