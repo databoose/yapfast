@@ -35,7 +35,11 @@
 // counted; GET /_control/video lists what each stream received. POST
 // /_control/voice-move moves Alice's call in the server to another voice
 // server, and GET /_control/voice-identifies lists the tokens voice
-// connections identified with. Joining "Create Room" has a bot move Alice to
+// connections identified with. POST /_control/elsewhere has Alice join the
+// Lounge on another client, whose session her voice state then names, and
+// ends her calls here; ?leave leaves it there. Op 4 with no channel takes
+// her out of voice whichever session sent it, as Discord may, so a client
+// must not send it for another's call. Joining "Create Room" has a bot move Alice to
 // "Alice's room", made the first time, on another voice server; POST /_control/stream-move with a stream key
 // moves that stream to another server, and POST
 // /_control/stream-viewer?user=bob has Bob watch Alice's stream (&of=carol
@@ -1190,6 +1194,8 @@ const readStates = new Map<string, { last: string; mentions: number }>([
 type VoiceState = {
   guild: string | null; channel: string; self_mute: boolean; self_deaf: boolean; session: string; self_stream?: boolean; self_video?: boolean;
 };
+/** The session of Alice's other client, such as her phone. */
+const OTHER_CLIENT = "voice-alice-phone";
 const voice = new Map<string, VoiceState>([
   [users.bob.id, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
   [users.carol.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
@@ -4365,6 +4371,22 @@ const server = Bun.serve<SocketData>({
         send(ws, 0, { guild_id: GUILD, token: MOVED_VOICE_TOKEN, endpoint: voiceEndpoint(ws) }, "VOICE_SERVER_UPDATE");
       }
       return new Response("moved Alice's call\n");
+    }
+    if (req.method === "POST" && path === "/_control/elsewhere") {
+      // Alice joins the Lounge on another client, such as her phone, or
+      // with ?leave leaves it there. Discord gives that client her voice
+      // state, and the voice server ends calls of hers with 4014.
+      const before = voice.get(ALICE);
+      if (url.searchParams.has("leave")) {
+        if (before?.session !== OTHER_CLIENT) return new Response("Alice isn't in voice on another client\n", { status: 409 });
+        voice.delete(ALICE);
+      } else {
+        if (before) endStream(streamKey(before.guild, before.channel, ALICE), "user_requested");
+        voice.set(ALICE, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: OTHER_CLIENT });
+        for (const ws of voiceSockets) if (!ws.data.stream && ws.data.callKey) ws.close(4014, "Disconnected.");
+      }
+      moved(ALICE, before, origin);
+      return new Response(url.searchParams.has("leave") ? "Alice left on another client\n" : "Alice joined the Lounge on another client\n");
     }
     if (req.method === "POST" && path === "/_control/stream-viewer") {
       // Someone starts watching, or with ?stop stops watching, a stream:

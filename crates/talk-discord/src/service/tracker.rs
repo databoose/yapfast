@@ -44,6 +44,9 @@ struct VoiceEntry {
 /// The account's servers and voice channels, kept current from gateway events.
 pub(super) struct Tracker {
     pub(super) me: String,
+    /// This gateway session, from READY; a voice state of this account with
+    /// another is on another client.
+    pub(super) session: Option<String>,
     /// This account's Nitro, as [`Account::premium_type`].
     premium: u8,
     /// Changed through [`Self::server_mut`], which copies one a snapshot
@@ -101,6 +104,7 @@ impl Tracker {
     pub(super) fn from_ready(me: String, ready: &Value, names: Arc<RwLock<Names>>) -> Self {
         let mut tracker = Self {
             me,
+            session: ready["session_id"].as_str().map(str::to_owned),
             premium: premium_type(&ready["user"]),
             servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
             published: HashMap::new(),
@@ -693,7 +697,9 @@ impl Tracker {
                 let guild = data["guild_id"].as_str().unwrap_or(PRIVATE);
                 let entry = self.voice.get(&(guild.to_owned(), self.me.clone()))?;
                 // A DM call's update names its channel instead.
-                if guild == PRIVATE && data["channel_id"] != entry.channel.as_str() {
+                if (guild == PRIVATE && data["channel_id"] != entry.channel.as_str())
+                    || self.elsewhere(entry)
+                {
                     return None;
                 }
                 Some(Live::VoiceMoved {
@@ -733,6 +739,20 @@ impl Tracker {
         self.voice
             .get(&(guild.to_owned(), self.me.clone()))
             .and_then(|entry| entry.session.as_deref())
+    }
+
+    /// Whether this account's voice state in `guild` belongs to this
+    /// session, so that leaving there ends this session's call rather than
+    /// another client's.
+    pub(super) fn in_voice_here(&self, guild: &str) -> bool {
+        self.voice
+            .get(&(guild.to_owned(), self.me.clone()))
+            .is_some_and(|entry| !self.elsewhere(entry))
+    }
+
+    /// Whether a voice state of this account is another client's.
+    fn elsewhere(&self, entry: &VoiceEntry) -> bool {
+        self.session.is_some() && entry.session.is_some() && entry.session != self.session
     }
 
     fn voice_state(&mut self, guild: &str, state: &Value) {
@@ -1106,6 +1126,7 @@ impl Tracker {
                         deafened: false,
                         streaming: false,
                         video: false,
+                        elsewhere: false,
                     })
                     .collect();
                 Conversation {
@@ -1205,6 +1226,7 @@ impl Tracker {
                     deafened: entry.deafened,
                     streaming: entry.streaming,
                     video: entry.video,
+                    elsewhere: *user == self.me && self.elsewhere(entry),
                 });
         }
         for members in voice.values_mut() {
@@ -1399,6 +1421,46 @@ mod tests {
         // Without `unavailable`, this account left the server.
         tracker.apply(&Event::GuildDelete, &json!({"id": "10"}));
         assert_eq!(listed(&mut tracker), [("Other".into(), false, 1)]);
+    }
+
+    #[test]
+    fn marks_this_account_in_voice_on_another_client() {
+        let ready = json!({"session_id": "here", "user": {"id": "1", "username": "me"}});
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        tracker.apply(
+            &Event::ReadySupplemental,
+            &json!({"guilds": [{"id": "10", "voice_states": [
+                {"user_id": "1", "channel_id": "11", "session_id": "phone"},
+                {"user_id": "2", "channel_id": "11", "session_id": "theirs"},
+            ]}]}),
+        );
+        let elsewhere = |tracker: &mut Tracker| {
+            let snapshot = tracker.snapshot();
+            let mut members: Vec<_> = snapshot.voice["11"]
+                .iter()
+                .map(|member| (member.user_id.clone(), member.elsewhere))
+                .collect();
+            members.sort();
+            members
+        };
+        assert_eq!(
+            elsewhere(&mut tracker),
+            [("1".into(), true), ("2".into(), false)],
+            "only this account's state is another client's"
+        );
+        assert!(
+            !tracker.in_voice_here("10"),
+            "leaving would end the phone's call"
+        );
+        let update = json!({"guild_id": "10", "token": "t", "endpoint": "e"});
+        assert!(tracker.moved(&Event::VoiceServerUpdate, &update).is_none());
+
+        tracker.apply(
+            &Event::VoiceStateUpdate,
+            &json!({"guild_id": "10", "user_id": "1", "channel_id": "11", "session_id": "here"}),
+        );
+        assert_eq!(elsewhere(&mut tracker)[0], ("1".into(), false));
+        assert!(tracker.in_voice_here("10"));
     }
 
     #[test]

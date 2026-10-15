@@ -244,7 +244,9 @@ The window follows Discord's arrangement:
   DMs show the person's avatar. Participants of the call you are in appear under
   its voice channel, with a green ring while they speak and a muted icon; for
   Discord, who is in every other voice channel shows too, with a LIVE tag for a
-  screen share and a camera icon. Clicking someone sharing their screen opens
+  screen share and a camera icon. You, in a channel on another client such as
+  your phone, show dimmed until hovered, without icons, and the tooltip says
+  "Connected on another client". Clicking someone sharing their screen opens
   their channel's call and watches them. Outside that call it asks first, "Join
   <channel> to watch <name>'s stream?", or in another call the switch prompt
   asks, and the stream opens once the call connects and shows them sharing.

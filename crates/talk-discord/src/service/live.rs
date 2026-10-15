@@ -8,13 +8,16 @@ use super::Live;
 use crate::{
     event::Event,
     message::{self, Message, Names},
+    ready::PRIVATE,
 };
 
 /// The live message events in one gateway event, learning the names it carries.
 /// `message` is the message a MESSAGE_CREATE or MESSAGE_UPDATE carries,
-/// parsed once by the caller.
+/// parsed once by the caller. `session` is this gateway session's, which
+/// tells this account's voice states from its other clients'.
 pub(super) fn live_events(
     me: &str,
+    session: Option<&str>,
     names: &RwLock<Names>,
     event: &Event,
     data: &Value,
@@ -102,7 +105,11 @@ pub(super) fn live_events(
             }]
         }
         Event::VoiceStateUpdate if data["user_id"] == me => {
+            let here = session.is_none_or(|session| data["session_id"] == session);
             match (data["guild_id"].as_str(), data["channel_id"].as_str()) {
+                (_, Some(_)) if !here => vec![Live::VoiceElsewhere {
+                    guild: data["guild_id"].as_str().unwrap_or(PRIVATE).to_owned(),
+                }],
                 (Some(guild), Some(channel)) => vec![Live::VoiceChannel {
                     guild: guild.to_owned(),
                     channel: channel.to_owned(),

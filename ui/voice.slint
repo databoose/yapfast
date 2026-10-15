@@ -10,6 +10,8 @@ export struct PersonRow {
     video: bool,
     /// This account, in a call.
     local: bool,
+    /// This account, in the call on another client: dimmed, without icons.
+    elsewhere: bool,
     /// Who they are across calls, by Discord or Matrix user id, which their
     /// volumes are remembered by.
     person: string,

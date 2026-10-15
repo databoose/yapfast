@@ -1479,10 +1479,57 @@ async fn talks_to_the_fake_server() {
     .unwrap();
     call.leave();
     discord.leave(&guild);
+    let me = snapshot.user_id.clone().unwrap();
+    let mine = |me: &str, channel: &str| {
+        let (me, channel) = (me.to_owned(), channel.to_owned());
+        move |snapshot: &Snapshot| {
+            snapshot.voice.get(&channel).and_then(|members| {
+                members
+                    .iter()
+                    .find(|member| member.user_id == me)
+                    .map(|member| member.elsewhere)
+            })
+        }
+    };
+    snapshot_where(&discord, |snapshot| mine(&me, &room)(snapshot).is_none()).await;
+
+    // Alice joins the Lounge on another client: she shows there as on
+    // another client. Joining here takes the call over, with this
+    // session's voice session.
+    post_control(server, "/_control/elsewhere", "");
+    snapshot_where(&discord, |snapshot| {
+        mine(&me, &lounge)(snapshot) == Some(true)
+    })
+    .await;
+    let assigned = discord.join(&guild, &lounge).await.unwrap();
+    assert_ne!(assigned.session_id, "voice-alice-phone");
+    snapshot_where(&discord, |snapshot| {
+        mine(&me, &lounge)(snapshot) == Some(false)
+    })
+    .await;
+    // The other client takes it back, which Talk hears of; leaving then
+    // sends Discord nothing, which would take her out of that call too.
+    post_control(server, "/_control/elsewhere", "");
+    live_where(&mut live, |event| match event {
+        Live::VoiceElsewhere { guild: there } if there == guild => Some(()),
+        _ => None,
+    })
+    .await;
+    snapshot_where(&discord, |snapshot| {
+        mine(&me, &lounge)(snapshot) == Some(true)
+    })
+    .await;
+    discord.leave(&guild);
+    // A presence after it shows the fake had all this session sent before.
+    discord.set_status("idle").await.unwrap();
+    presence_where(server, |presence| presence["status"] == "idle").await;
+    discord.set_status("online").await.unwrap();
+    presence_where(server, |presence| presence["status"] == "online").await;
+    post_control(server, "/_control/elsewhere?leave", "");
+    snapshot_where(&discord, |snapshot| mine(&me, &lounge)(snapshot).is_none()).await;
 
     // A DM call: Alice starts one with Bob, connecting with the DM for the
     // server, and rings him; he answers.
-    let me = snapshot.user_id.clone().unwrap();
     let dm = discord
         .snapshots()
         .borrow()
