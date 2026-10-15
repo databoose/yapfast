@@ -168,10 +168,14 @@ export type Media = {
   poster?: Uint8Array;
 };
 
-/** The frames a viewer of a stream is sent: the video at 10 frames a
- *  second, as VP8 in IVF and as H264 Annex B with access unit delimiters,
- *  the forms of testing/fixtures' stream-vp8.ivf and stream-h264.h264. */
-export type Recording = { vp8: Buffer; h264: Buffer };
+/** The frames a viewer of a stream is sent: the video at STREAM_FPS, as
+ *  VP8 in IVF and as H264 Annex B with access unit delimiters, the forms of
+ *  testing/fixtures' stream-vp8.ivf and stream-h264.h264. */
+export type Recording = { vp8: Buffer; h264: Buffer; fps: number };
+
+/** An env stream's frame rate: smooth enough to show a game. testing/
+ *  fixtures' own recording stays at 10, as tests expect. */
+export const STREAM_FPS = 30;
 
 /** Reads the env at `path`, relative to the working directory. */
 export async function readEnv(path: string): Promise<{ env: Env; dir: string }> {
@@ -228,18 +232,19 @@ export function readMedia(dir: string, path: string): Media {
 }
 
 /** The recording a stream of this video sends, converted with ffmpeg the
- *  first time. Frames go out at 10 a second, with a keyframe every second. */
+ *  first time. Frames go out at STREAM_FPS, with a keyframe every second. */
 export function readRecording(dir: string, path: string): Recording {
   const file = resolve(dir, path);
   const data = readFileSync(file);
-  const video = ["-v", "error", "-y", "-i", file, "-an", "-r", "10", "-g", "10", "-pix_fmt", "yuv420p"];
-  const vp8 = cached(data, "stream.ivf", (out) => {
+  const rate = String(STREAM_FPS);
+  const video = ["-v", "error", "-y", "-i", file, "-an", "-r", rate, "-g", rate, "-pix_fmt", "yuv420p"];
+  const vp8 = cached(data, `stream-${rate}.ivf`, (out) => {
     run(["ffmpeg", ...video, "-c:v", "libvpx", "-b:v", "1500k", "-auto-alt-ref", "0", "-f", "ivf", out]);
   });
-  const h264 = cached(data, "stream.h264", (out) => {
+  const h264 = cached(data, `stream-${rate}.h264`, (out) => {
     run(["ffmpeg", ...video, "-c:v", "libx264", "-profile:v", "baseline", "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", out]);
   });
-  return { vp8, h264 };
+  return { vp8, h264, fps: STREAM_FPS };
 }
 
 /** When a message was sent, in Unix milliseconds: an ISO time, or "… ago"

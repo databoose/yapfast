@@ -1593,25 +1593,29 @@ const fillers = Array.from({ length: env ? 0 : Math.max(0, Number(args.servers) 
 });
 const fillerList = [...fillerChannels.keys()];
 
-// The server list in Alice's settings, GuildFolders (field 14): "Server" on
-// its own, then each folder, then the other servers on their own. A folder
-// has an id, an Int64Value, and may have a name and a colour, wrappers too.
-if (args.folders && !env) {
+// The server list in Alice's settings, GuildFolders (field 14): a list of
+// entries, each a folder of servers or one server on its own. A folder has
+// an id, an Int64Value, and may have a name and a colour, wrappers too.
+function folderEntry(servers: string[], id?: number, name?: string, color?: number) {
   const varint = (field: number, value: bigint) => {
     const out = [field << 3];
     for (; value >= 0x80n; value >>= 7n) out.push(Number(value & 0x7fn) | 0x80);
     return new Uint8Array([...out, Number(value)]);
   };
-  const entry = (servers: string[], id?: number, name?: string, color?: number) => {
-    const packed = new Uint8Array(servers.length * 8);
-    servers.forEach((server, index) => new DataView(packed.buffer).setBigUint64(index * 8, BigInt(server), true));
-    return protoBytes(1, new Uint8Array([
-      ...protoBytes(1, packed),
-      ...(id === undefined ? [] : protoBytes(2, varint(1, BigInt(id)))),
-      ...(name === undefined ? [] : protoBytes(3, protoBytes(1, text(name)))),
-      ...(color === undefined ? [] : protoBytes(4, varint(1, BigInt(color)))),
-    ]));
-  };
+  const packed = new Uint8Array(servers.length * 8);
+  servers.forEach((server, index) => new DataView(packed.buffer).setBigUint64(index * 8, BigInt(server), true));
+  return protoBytes(1, new Uint8Array([
+    ...protoBytes(1, packed),
+    ...(id === undefined ? [] : protoBytes(2, varint(1, BigInt(id)))),
+    ...(name === undefined ? [] : protoBytes(3, protoBytes(1, text(name)))),
+    ...(color === undefined ? [] : protoBytes(4, varint(1, BigInt(color)))),
+  ]));
+}
+
+// --folders: "Server" on its own, then each folder, then the other servers
+// on their own.
+if (args.folders && !env) {
+  const entry = folderEntry;
   const ids = fillers.map((filler) => filler.id);
   const list = [
     entry([GUILD]),
@@ -2560,8 +2564,9 @@ let streamCodec: "vp8" | "h264" = "vp8";
 /** A viewer of Bob's stream and what it was sent. */
 type Watcher = {
   stream: string; codec: string; framesSent: number; soundsSent: number; keyframeRequests: number; timer?: Timer;
-  /** What it's sent, if not testing/fixtures' recording: an env's video. */
-  recording?: typeof recordings;
+  /** What it's sent, if not testing/fixtures' recording: an env's video,
+   *  at its own frame rate. */
+  recording?: typeof recordings & { fps?: number };
   /** What its connection went through; see `repairs`. */
   repairs: typeof repairs;
   /** Sends Bob's packet with this sequence number again, as RTX. */
@@ -2642,8 +2647,13 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
       if (peer) udp.send(packet, peer.port, peer.address);
     } catch {}
   };
+  // testing/fixtures' recording goes at 10 frames a second, as tests
+  // expect; a camera at 30, and an env's video at the rate it was made at.
+  const fps = camera ? 30 : (watcher.recording?.fps ?? 10);
+  // Which 100 ms of sound comes next: one each tick at 10 frames a second.
+  let sound = 0;
   watcher.timer = setInterval(() => {
-    const timestamp = frame * (camera ? 3000 : 9000);
+    const timestamp = frame * (90000 / fps);
     const recorded = watcher.recording ?? recordings;
     if (watcher.codec === "vp8") {
       const { data } = recorded.vp8[frame % recorded.vp8.length]!;
@@ -2667,21 +2677,24 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
       });
     }
     watcher.framesSent++;
-    // 100 ms of sound from Bob's audio SSRC, just before his video's: five
-    // Opus frames of silence, plain RTP as a call's audio goes. A camera
-    // has no sound of its own.
-    for (let index = 0; index < (watcher.stream === "call" ? 0 : 5); index++) {
-      const header = Buffer.alloc(12);
-      header[0] = 0x80;
-      header[1] = 120;
-      header.writeUInt16BE(soundSequence++ & 0xffff, 2);
-      header.writeUInt32BE((frame * 5 + index) * 960, 4);
-      header.writeUInt32BE(ssrc - 1, 8);
-      toViewer(sealRtp(Buffer.concat([header, OPUS_SILENCE]), key, counter++, 12));
-      watcher.soundsSent++;
+    // Each 100 ms of sound from Bob's audio SSRC, just before his video's:
+    // five Opus frames of silence, plain RTP as a call's audio goes, as the
+    // frames reach it. A camera has no sound of its own.
+    const due = watcher.stream === "call" ? 0 : Math.floor(((frame + 1) * 10) / fps) - sound;
+    for (let block = 0; block < due; block++, sound++) {
+      for (let index = 0; index < 5; index++) {
+        const header = Buffer.alloc(12);
+        header[0] = 0x80;
+        header[1] = 120;
+        header.writeUInt16BE(soundSequence++ & 0xffff, 2);
+        header.writeUInt32BE((sound * 5 + index) * 960, 4);
+        header.writeUInt32BE(ssrc - 1, 8);
+        toViewer(sealRtp(Buffer.concat([header, OPUS_SILENCE]), key, counter++, 12));
+        watcher.soundsSent++;
+      }
     }
     frame++;
-  }, camera ? 1000 / 30 : 100);
+  }, 1000 / fps);
 }
 
 /** Opens an "rtpsize" AES-GCM packet: the header is authenticated, the rest encrypted. */
@@ -4404,7 +4417,7 @@ type World = {
   email: string;
   profiles: Map<string, { bio: string; pronouns: string; banner: string | null; accent_color: number | null }>;
   /** What viewers of a stream are sent, by stream key, when the env gave a video. */
-  recordings: Map<string, typeof recordings>;
+  recordings: Map<string, typeof recordings & { fps?: number }>;
 };
 const ENV_IDS = 1_450_000_000_000_000_000n;
 
@@ -4570,7 +4583,7 @@ function applyEnv({ env, dir }: { env: Env; dir: string }): World {
           streams.set(key, { viewers: new Set(), paused: false });
           if (typeof seat.stream === "string") {
             const recording = readRecording(dir, seat.stream);
-            recordingsByStream.set(key, { vp8: ivf(recording.vp8), h264: annexB(recording.h264) });
+            recordingsByStream.set(key, { vp8: ivf(recording.vp8), h264: annexB(recording.h264), fps: recording.fps });
           }
         }
         return;
@@ -4792,7 +4805,13 @@ function envProfile(world: World, user: User, guild: string | null) {
   };
 }
 
-if (env) world = applyEnv(env);
+if (env) {
+  world = applyEnv(env);
+  // The env's servers, in its order: without a list, clients sort them
+  // their own way, as Talk does by name.
+  const list = world.guilds.map((server) => [...folderEntry([server.id])]).flat();
+  settings = Buffer.concat([Buffer.from(settings, "base64"), protoBytes(14, new Uint8Array(list))]).toString("base64");
+}
 
 // --- Control ----------------------------------------------------------------
 
