@@ -494,6 +494,7 @@ export component TalkWindow inherits Window {
     in property <bool> muted;
     in property <bool> deafened;
     in property <string> voice-status;
+    in property <string> voice-time;
     in property <string> voice-name;
     in property <string> voice-detail;
     in property <string> voice-microphone-status;
@@ -698,6 +699,7 @@ export component TalkWindow inherits Window {
     in-out property <int> settings-section;
     /// Preferences people set in the settings; preferences-changed reports any change.
     in-out property <bool> twelve-hour-clock;
+    in-out property <bool> clock-seconds;
     /// Message text: 0 small, 1 default, 2 large.
     in-out property <int> text-size: 1;
     in-out property <bool> link-previews: true;
@@ -1559,7 +1561,7 @@ export component TalkWindow inherits Window {
                 // The dock spans the rail and the sidebar. Its avatar and voice icon sit on the
                 // rail's axis, 36px from the left; names and status start at 64px.
                 if root.voice-visible: VoiceDock {
-                    voice-status: root.voice-status; voice-detail: root.voice-detail; voice-name: root.voice-name;
+                    voice-status: root.voice-status; voice-time: root.voice-time; voice-detail: root.voice-detail; voice-name: root.voice-name;
                     voice-color: root.voice-color;
                     voice-active: root.voice-active; voice-ready: root.voice-ready; voice-leaving: root.voice-leaving;
                     voice-warning: root.voice-warning; voice-error: root.voice-error;
@@ -2693,7 +2695,7 @@ export component TalkWindow inherits Window {
         }
         if root.settings-section == 2: MessageSettings {
             message-font-size: root.message-font-size;
-            twelve-hour-clock <=> root.twelve-hour-clock; text-size <=> root.text-size;
+            twelve-hour-clock <=> root.twelve-hour-clock; clock-seconds <=> root.clock-seconds; text-size <=> root.text-size;
             link-previews <=> root.link-previews; share-typing <=> root.share-typing;
             animate <=> root.animate;
             reply-ping <=> root.reply-ping-default; strip-tracking <=> root.strip-tracking;

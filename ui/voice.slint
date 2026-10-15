@@ -299,6 +299,8 @@ component DockButton inherits Rectangle {
 // sharing the screen, and while sharing, that it's live, wherever the window is.
 export component VoiceDock inherits Rectangle {
     in property <string> voice-status;
+    /// How long the call has lasted, as 12:05.
+    in property <string> voice-time;
     in property <string> voice-detail;
     in property <string> voice-name;
     in property <color> voice-color;
@@ -346,7 +348,15 @@ export component VoiceDock inherits Rectangle {
                 min-height: status-text.min-height; preferred-height: status-text.preferred-height;
                 status-text := VerticalLayout {
                     alignment: center;
-                    Text { text: root.voice-status; color: root.voice-color; font-size: 15px; font-weight: 700; overflow: elide; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: root.voice-status; color: root.voice-color; font-size: 15px; font-weight: 700; overflow: elide; }
+                        if root.voice-time != "": Text {
+                            text: root.voice-time; color: Theme.muted; font-size: 13px; vertical-alignment: center;
+                            accessible-label: "Call time " + root.voice-time;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
                     if root.voice-active: Text { text: root.voice-detail; color: Theme.muted; font-size: 13px; overflow: elide; }
                 }
                 LinkTouch { open(x, y, width, height) => { root.open-call-link(x, y, width, height); } }

@@ -38,6 +38,7 @@ use crate::{custom_emoji, emoji, graphics, zoom};
 mod appearance;
 mod away;
 mod call_link;
+mod call_timer;
 mod callbacks;
 mod gifs;
 mod menus;
@@ -635,6 +636,8 @@ struct Layout {
     pinned: Vec<String>,
     /// Message times as 9:41 PM rather than 21:41.
     twelve_hour_clock: bool,
+    /// Message times with their seconds, as 21:41:05.
+    clock_seconds: bool,
     /// Message text: 0 small, 1 default, 2 large.
     text_size: Option<i32>,
     /// Link previews under messages; on unless turned off.
@@ -806,6 +809,7 @@ impl Layout {
         window.set_member_list(!self.members_hidden);
         window.set_profile_panel(!self.profile_panel_hidden);
         window.set_twelve_hour_clock(self.twelve_hour_clock);
+        window.set_clock_seconds(self.clock_seconds);
         window.set_text_size(self.text_size.unwrap_or(1).clamp(0, 2));
         window.set_link_previews(self.link_previews.unwrap_or(true));
         window.set_reply_ping_default(self.reply_ping.unwrap_or(true));
@@ -854,7 +858,11 @@ impl Layout {
     /// link previews only when they're on.
     fn restyle(&self, message: &ChatMessage, mut row: MessageRow) -> MessageRow {
         if message.timestamp != 0 {
-            let time = talk_core::clock::time_on(message.timestamp, self.twelve_hour_clock);
+            let time = talk_core::clock::time_with(
+                message.timestamp,
+                self.twelve_hour_clock,
+                self.clock_seconds,
+            );
             // The gutter beside a grouped message is narrow, so it leaves out AM and PM.
             row.short_time = time.split_whitespace().next().unwrap_or_default().into();
             row.time_styled = slint::StyledText::from_plain_text(&time);
@@ -1047,6 +1055,7 @@ struct Adapter {
     weak: std::rc::Weak<RefCell<Self>>,
     window: slint::Weak<TalkWindow>,
     away: away::Away,
+    call_timer: call_timer::CallTimer,
     navigation: Navigation,
     /// Whether the forward dialog was open at the last refresh.
     forwarding: bool,
@@ -1240,6 +1249,7 @@ impl Adapter {
                 weak: weak.clone(),
                 window: window.as_weak(),
                 away: away::Away::default(),
+                call_timer: call_timer::CallTimer::default(),
                 navigation: Navigation::default(),
                 forwarding: false,
                 selection_version: 0,

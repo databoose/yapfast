@@ -2235,6 +2235,11 @@ impl Adapter {
     fn show_voice(&mut self, window: &TalkWindow) {
         self.ring();
         let state = &self.app.state;
+        let timed = matches!(state.voice.phase, Phase::Connected | Phase::Reconnecting)
+            .then(|| state.voice.room.clone())
+            .flatten();
+        self.time_call(window, timed.as_deref());
+        let state = &self.app.state;
         let room = state.selected_room();
         let voice = &state.voice;
         let voice_here =

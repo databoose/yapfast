@@ -952,6 +952,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         let mut adapter = state.borrow_mut();
         let layout = &mut adapter.layout;
         layout.twelve_hour_clock = window.get_twelve_hour_clock();
+        layout.clock_seconds = window.get_clock_seconds();
         layout.text_size = Some(window.get_text_size());
         layout.link_previews = Some(window.get_link_previews());
         layout.reply_ping = Some(window.get_reply_ping_default());

@@ -642,6 +642,7 @@ export component AppearanceSettings inherits VerticalLayout {
 export component MessageSettings inherits VerticalLayout {
     in property <length> message-font-size;
     in-out property <bool> twelve-hour-clock;
+    in-out property <bool> clock-seconds;
     /// Message text: 0 small, 1 default, 2 large.
     in-out property <int> text-size;
     in-out property <bool> link-previews;
@@ -668,7 +669,7 @@ export component MessageSettings inherits VerticalLayout {
                 HorizontalLayout {
                     spacing: 8px;
                     Text { text: "Sam"; color: Theme.text; font-size: root.message-font-size; font-weight: 700; }
-                    Text { text: root.twelve-hour-clock ? "9:41 PM" : "21:41"; color: Theme.muted; font-size: root.message-font-size - 3px; vertical-alignment: center; }
+                    Text { text: (root.twelve-hour-clock ? "9:41" : "21:41") + (root.clock-seconds ? ":05" : "") + (root.twelve-hour-clock ? " PM" : ""); color: Theme.muted; font-size: root.message-font-size - 3px; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
                 }
                 Text { text: "Thinking co-op after nine, if people are up for it."; color: Theme.text; font-size: root.message-font-size; wrap: word-wrap; }
@@ -691,6 +692,12 @@ export component MessageSettings inherits VerticalLayout {
             label: "Clock"; options: ["24-hour", "12-hour"];
             current: root.twelve-hour-clock ? 1 : 0;
             chosen(index) => { root.twelve-hour-clock = index == 1; root.preferences-changed(); }
+        }
+        SettingsSwitch {
+            text: "Show seconds";
+            description: "Message times show them, as 21:41:05.";
+            checked <=> root.clock-seconds;
+            toggled => { root.preferences-changed(); }
         }
     }
     VerticalLayout {

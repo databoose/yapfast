@@ -1192,8 +1192,10 @@ export component MessageContent inherits VerticalLayout {
                     }
                 }
             }
+            // Right-aligned to the avatar's edge; a time with seconds runs
+            // further left, into the padding.
             if !message.first && root.active-item == message.item: Text {
-                x: 0px; y: 4px; width: 40px;
+                width: max(40px, self.preferred-width); x: 40px - self.width; y: 4px;
                 text: message.short-time; color: Theme.muted; font-size: 12px; font-weight: 500;
                 horizontal-alignment: right; overflow: elide;
             }
