@@ -331,6 +331,13 @@ export component TalkWindow inherits Window {
     /// "Replying to …" or "Editing your message"; empty for a new message.
     in property <string> compose-label;
     in property <bool> can-attach;
+    /// Files are being dragged over the window, to go to the open
+    /// conversation, which Discord's words name, as `#general`.
+    in property <bool> dragging;
+    in property <string> drop-destination;
+    /// Why the last files dropped were refused, and more, until dismissed.
+    in-out property <string> drop-refusal;
+    in property <string> drop-refusal-help;
     /// Files waiting to go with the next message.
     in property <[StagedFile]> staged;
     callback unstage(int);
@@ -3013,6 +3020,54 @@ export component TalkWindow inherits Window {
             clicked => {
                 root.view-reactions(ReactionHover.item, ReactionHover.key);
                 ReactionHover.item = ""; ReactionHover.key = ""; ReactionHover.on-tip = false;
+            }
+        }
+    }
+    // Files dragged over the window, as Discord shows them: a card over the
+    // dimmed window saying where they'll go. A drop it refuses says why
+    // until Got It, a click, or the next drag.
+    if root.dragging || root.drop-refusal != "": Rectangle {
+        background: #000000a6;
+        accessible-role: groupbox;
+        accessible-label: root.dragging ? "Upload to " + root.drop-destination : root.drop-refusal;
+        TouchArea { clicked => { root.drop-refusal = ""; } }
+        drop-card := Rectangle {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: 310px; height: drop-lines.preferred-height + 16px;
+            border-radius: 10px; background: root.drop-refusal != "" && !root.dragging ? Theme.danger : Theme.accent;
+            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+            Rectangle {
+                x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px;
+                border-radius: 6px; border-width: 2px; border-color: Theme.on-accent.with-alpha(0.6);
+            }
+            drop-lines := VerticalLayout {
+                x: 8px; y: 8px; width: parent.width - 16px;
+                padding: 20px; padding-top: 24px; spacing: 8px;
+                HorizontalLayout {
+                    alignment: center;
+                    Image { source: @image-url("icons/file.svg"); width: 40px; height: 40px; colorize: Theme.on-accent; }
+                }
+                if root.dragging: HorizontalLayout {
+                    alignment: center;
+                    Text { text: "Upload to "; color: Theme.on-accent; font-size: 20px; font-weight: 400; }
+                    Text { text: root.drop-destination; color: Theme.on-accent; font-size: 20px; font-weight: 700; overflow: elide; }
+                }
+                if root.dragging: Text {
+                    text: "You can add comments before uploading.";
+                    color: Theme.on-accent; font-size: 15px; horizontal-alignment: center; wrap: word-wrap;
+                }
+                if !root.dragging: Text {
+                    text: root.drop-refusal; color: Theme.on-accent; font-size: 20px; font-weight: 700;
+                    horizontal-alignment: center; wrap: word-wrap;
+                }
+                if !root.dragging: Text {
+                    text: root.drop-refusal-help; color: Theme.on-accent; font-size: 15px;
+                    horizontal-alignment: center; wrap: word-wrap;
+                }
+                if !root.dragging: HorizontalLayout {
+                    alignment: center; padding-top: 8px;
+                    ActionButton { text: "Got It"; clicked => { root.drop-refusal = ""; } }
+                }
             }
         }
     }

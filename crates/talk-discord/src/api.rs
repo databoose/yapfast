@@ -59,7 +59,9 @@ const MIB: u64 = 1024 * 1024;
 /// The largest file this account may send, in bytes: by its Nitro, as
 /// [`crate::service::Account::premium_type`], or in a server boosted to
 /// `premium_tier` 2 or 3, by the server's, whichever allows more. These are
-/// Discord's limits since August 2026.
+/// Discord's limits since August 2026. Its client's own constant without
+/// Nitro is still 10 MiB, but the client raises every limit to at least
+/// 20 MiB before checking a file or naming the limit.
 pub fn upload_limit(premium_type: u8, premium_tier: Option<u8>) -> u64 {
     let own = match premium_type {
         2 => 500 * MIB,

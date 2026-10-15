@@ -167,6 +167,55 @@ impl Staged {
     }
 }
 
+/// Why files dropped on the window can't go with the next message, in the
+/// words of Discord's client, which refuses such a drop whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Something other than files, such as a folder.
+    Invalid,
+    /// With the files already waiting, more than [`MAX_FILES`].
+    TooMany,
+    /// One is larger than the conversation's limit, in bytes.
+    TooLarge(u64),
+}
+
+impl Refusal {
+    /// Why files dropped with `staged` waiting and a limit of `limit` bytes
+    /// each can't go, if they can't.
+    pub fn of(paths: &[PathBuf], staged: usize, limit: u64) -> Option<Self> {
+        if paths.is_empty() || !paths.iter().all(|path| path.is_file()) {
+            return Some(Self::Invalid);
+        }
+        if staged + paths.len() > MAX_FILES {
+            return Some(Self::TooMany);
+        }
+        paths
+            .iter()
+            .any(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > limit))
+            .then_some(Self::TooLarge(limit))
+    }
+
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::Invalid => "Invalid file type",
+            Self::TooMany => "Too many uploads!",
+            Self::TooLarge(_) => "Your files are too powerful",
+        }
+    }
+
+    pub fn help(&self) -> String {
+        match self {
+            Self::Invalid => "That file type is not supported.".into(),
+            Self::TooMany => format!("You can only upload {MAX_FILES} files at a time!"),
+            // As Discord's client writes sizes here, to two places.
+            Self::TooLarge(limit) => format!(
+                "Max file size is {:.2} MB please.",
+                *limit as f64 / 1_048_576.
+            ),
+        }
+    }
+}
+
 /// A file going with a message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutgoingFile {
