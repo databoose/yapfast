@@ -257,7 +257,7 @@ impl Application {
                 }
             }
             voice::Command::Leave => {
-                let filming = self.state.voice.camera_on;
+                let filming = self.state.voice.camera_phase != voice::CameraPhase::Off;
                 self.state.voice = self.preview_voice();
                 if filming {
                     let mut effects = call_sounds(&before, &self.state.voice);
@@ -272,7 +272,11 @@ impl Application {
                         person.video = feed.clone();
                     }
                 }
-                self.state.voice.camera_on = on;
+                self.state.voice.camera_phase = if on {
+                    voice::CameraPhase::On
+                } else {
+                    voice::CameraPhase::Off
+                };
                 let camera = self.state.voice.camera.clone();
                 return vec![Effect::PreviewCamera(feed.map(|feed| (camera, feed)))];
             }

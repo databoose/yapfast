@@ -2517,7 +2517,8 @@ impl Adapter {
             frames.push(slint::Image::default());
         }
         window.set_can_film(voice.can_film);
-        window.set_camera_on(voice.camera_on);
+        window.set_camera_on(voice.camera_phase != voice::CameraPhase::Off);
+        window.set_camera_starting(voice.camera_phase == voice::CameraPhase::Starting);
         window.set_call_video(
             voice
                 .participants

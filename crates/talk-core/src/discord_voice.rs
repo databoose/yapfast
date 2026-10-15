@@ -12,13 +12,14 @@ use talk_discord::{
 use tokio::sync::{mpsc, watch};
 
 use crate::{
+    camera::{self, Opening},
     discord_audio::{self, Capture, Hearing, Speakers},
     discord_video::{Filming, Watching as Cameras},
     ring::{Ringer, Tone},
     stream_worker::{self, Report, Worker},
     voice::{
-        Chosen, Command, Participant, Phase, SharePhase, Sharing, State, StreamQuality, Watching,
-        devices,
+        CameraPhase, Chosen, Command, Participant, Phase, SharePhase, Sharing, State,
+        StreamQuality, Watching, devices,
     },
 };
 
@@ -340,6 +341,7 @@ pub(crate) async fn call(
     let _ = track.pause();
     let mut capture: Option<Capture> = None;
     let mut filming: Option<Filming> = None;
+    let mut opening: Opening = None;
     let mut cameras = Cameras::start(call.video_frames());
     let mut share: Option<Share> = None;
     let mut starting: Starting = None;
@@ -470,32 +472,27 @@ pub(crate) async fn call(
                             }
                         }
                         Some(Command::Camera(id)) => {
-                            if let Some(filming) = &mut filming
-                                && let Err(error) = filming.switch(&id)
-                            {
-                                state.error = Some(error.to_string());
+                            if let Some(filming) = &mut filming {
+                                opening = Some(Box::pin(filming.open(Some(&id))));
                             }
                             state.camera = Some(id);
                             Chosen::write(remembered, state);
                         }
                         Some(Command::Video(true)) => {
                             if filming.is_none() {
-                                match Filming::start(&mut call, state.camera.as_deref()) {
-                                    Ok(started) => {
-                                        filming = Some(started);
-                                        state.camera_on = true;
-                                        state.error = None;
-                                    }
-                                    Err(error) => state.error = Some(error.to_string()),
-                                }
+                                let started = filming.insert(Filming::start(&mut call));
+                                opening = Some(Box::pin(started.open(state.camera.as_deref())));
+                                state.camera_phase = CameraPhase::Starting;
+                                state.error = None;
                             }
                         }
                         Some(Command::Video(false)) => {
+                            opening = None;
                             if let Some(stopped) = filming.take() {
                                 stopped.stop(&mut call);
                                 crate::voice::trim_after_call();
                             }
-                            state.camera_on = false;
+                            state.camera_phase = CameraPhase::Off;
                         }
                         Some(Command::GoLive(quality)) => {
                             if share.is_none() {
@@ -533,7 +530,26 @@ pub(crate) async fn call(
                         }
                         Some(Command::LeaveStale) => {}
                     }
-                    discord.set_self(guild, &channel, state.muted, state.deafened, state.camera_on);
+                    discord.set_self(guild, &channel, state.muted, state.deafened, state.camera_phase == CameraPhase::On);
+                    snapshots.send_replace(state.clone());
+                }
+                result = camera::opened(&mut opening) => {
+                    opening = None;
+                    match (result, filming.as_mut()) {
+                        (Ok(camera), Some(going)) => {
+                            going.opened(camera);
+                            state.camera_phase = CameraPhase::On;
+                        }
+                        (Ok(_), None) => {}
+                        (Err(error), _) => {
+                            if let Some(stopped) = filming.take() {
+                                stopped.stop(&mut call);
+                            }
+                            state.camera_phase = CameraPhase::Off;
+                            state.error = Some(error.to_string());
+                        }
+                    }
+                    discord.set_self(guild, &channel, state.muted, state.deafened, state.camera_phase == CameraPhase::On);
                     snapshots.send_replace(state.clone());
                 }
                 report = next_report(&mut share) => {
@@ -789,6 +805,7 @@ pub(crate) async fn call(
     snapshots.send_replace(state.clone());
     drop(ringback);
     drop(capture);
+    drop(opening);
     if let Some(stopped) = filming.take() {
         stopped.stop(&mut call);
     }

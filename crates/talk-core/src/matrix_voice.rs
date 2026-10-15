@@ -26,10 +26,12 @@ use tokio::{
 
 use crate::{
     calls::require_trusted_encrypted_room,
+    camera::{self, Opening},
     matrix_video::{Filming, Watching},
     session::SessionLease,
     voice::{
-        Chosen, Command, Participant, Phase, State, audio, collect_devices, device_id, devices,
+        CameraPhase, Chosen, Command, Participant, Phase, State, audio, collect_devices, device_id,
+        devices,
     },
 };
 
@@ -334,6 +336,7 @@ async fn connected(
         // The volume each remote audio track plays at, by track id.
         let mut volumes_set: HashMap<String, f32> = HashMap::new();
         let mut filming: Option<Filming> = None;
+        let mut opening: Opening = None;
         let mut watching = Watching::default();
         // The LiveKit identity of each member, to match cameras to people.
         let mut members: HashMap<String, String> = HashMap::new();
@@ -366,7 +369,7 @@ async fn connected(
                 // Element mutes its camera track rather than unpublishing it.
                 let filmed = person.streams.iter().any(|stream| stream.kind == MediaStreamKind::Camera && !stream.muted);
                 let video = if person.is_local {
-                    filming.as_ref().filter(|filming| filming.filming()).map(|filming| filming.feed.clone())
+                    filming.as_ref().filter(|_| state.camera_phase != CameraPhase::Off).map(|filming| filming.feed.clone())
                 } else {
                     let feed = sfu_identity.as_deref().and_then(|id| watching.feed(id));
                     // A muted camera's tile shows the avatar: its buffers go,
@@ -454,32 +457,54 @@ async fn connected(
                         }
                     }
                     Some(Command::Camera(id)) => {
-                        if let Some(filming) = &mut filming && let Err(error) = filming.switch(&id) {
-                            state.error = Some(error.to_string());
+                        if state.camera_phase != CameraPhase::Off && let Some(filming) = &mut filming {
+                            opening = Some(Box::pin(filming.open(Some(&id))));
                         }
                         state.camera = Some(id);
                         Chosen::write(remembered, state);
                     }
-                    Some(Command::Video(true)) => {
-                        let result = match &mut filming {
-                            Some(filming) => filming.resume(state.camera.as_deref()),
-                            None => Filming::start(&call, state.camera.as_deref()).await.map(|started| filming = Some(started)),
+                    Some(Command::Video(true)) => if state.camera_phase == CameraPhase::Off {
+                        let made = match &mut filming {
+                            Some(filming) => Ok(filming),
+                            None => Filming::new().map(|made| filming.insert(made)),
                         };
-                        match result {
-                            Ok(()) => { state.camera_on = true; state.error = None; }
+                        match made {
+                            Ok(filming) => {
+                                opening = Some(Box::pin(filming.open(state.camera.as_deref())));
+                                state.camera_phase = CameraPhase::Starting;
+                                state.error = None;
+                            }
                             Err(error) => state.error = Some(error.to_string()),
                         }
                     }
                     Some(Command::Video(false)) => {
+                        opening = None;
                         if let Some(filming) = &mut filming {
                             filming.pause();
                             crate::voice::trim_after_call();
                         }
-                        state.camera_on = false;
+                        state.camera_phase = CameraPhase::Off;
                     }
                     Some(Command::GoLive(_)) => state.error = Some("Screen sharing works in Discord calls for now.".into()),
                     Some(Command::StopLive | Command::Watch(_) | Command::StopWatching | Command::LeaveStale) => {}
                 },
+                result = camera::opened(&mut opening) => {
+                    opening = None;
+                    let result = match (result, filming.as_mut()) {
+                        (Ok(camera), Some(filming)) => filming.opened(&call, camera).await,
+                        (result, _) => result.map(drop),
+                    };
+                    match result {
+                        Ok(()) => state.camera_phase = CameraPhase::On,
+                        Err(error) => {
+                            if let Some(filming) = &mut filming {
+                                filming.pause();
+                            }
+                            state.camera_phase = CameraPhase::Off;
+                            state.error = Some(error.to_string());
+                        }
+                    }
+                }
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
                 // Device trust can change while connected, for example after
                 // verifying someone in another client.
@@ -555,6 +580,7 @@ async fn connected(
             }
         }
         // Leaving takes the track out of the call; the camera closes here.
+        drop(opening);
         drop(filming);
         drop(watching);
         if let Some(track) = microphone.take() {
@@ -1378,11 +1404,15 @@ mod tests {
                                         if index >= count && camera.filming() {
                                             camera.pause();
                                         } else if index < count && !camera.filming() {
-                                            camera.resume(Some("test-pattern")).unwrap();
+                                            let opened = camera.open(Some("test-pattern")).await.unwrap();
+                                            camera.opened(&calls[index], opened).await.unwrap();
                                         }
                                     }
                                     while cameras.len() < count.min(calls.len()) {
-                                        cameras.push(crate::matrix_video::Filming::start(&calls[cameras.len()], Some("test-pattern")).await.unwrap());
+                                        let mut camera = crate::matrix_video::Filming::new().unwrap();
+                                        let opened = camera.open(Some("test-pattern")).await.unwrap();
+                                        camera.opened(&calls[cameras.len()], opened).await.unwrap();
+                                        cameras.push(camera);
                                     }
                                     let filming = cameras.iter().filter(|camera| camera.filming()).count();
                                     status(&format!("filming {filming}"));

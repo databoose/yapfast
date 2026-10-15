@@ -40,13 +40,16 @@ pub(crate) struct Filming {
     source: Source,
     track: LocalVideoTrack,
     camera: Option<Camera>,
+    /// The track is in the call, muted or not.
+    published: bool,
     /// The capture clock's start, the same across cameras.
     started: Instant,
 }
 
 impl Filming {
-    /// Opens the camera `id`, or the first, and publishes it to the call.
-    pub async fn start(call: &Call, id: Option<&str>) -> Result<Self> {
+    /// Makes the camera's track, published once [`Self::open`] has opened
+    /// a camera.
+    pub fn new() -> Result<Self> {
         let video = NativeVideoSource::new(
             VideoResolution {
                 width: camera::WIDTH,
@@ -68,19 +71,37 @@ impl Filming {
         anyhow::ensure!(!source.is_null(), "Could not start your camera's video.");
         let track =
             LocalVideoTrack::create_video_track("Talk camera", RtcVideoSource::Native(video));
-        let mut filming = Self {
+        Ok(Self {
             feed: Feed::new(),
             source,
-            track: track.clone(),
+            track,
             camera: None,
+            published: false,
             started: Instant::now(),
-        };
-        filming.open(id)?;
+        })
+    }
+
+    /// Opens the camera `id`, or the first, off the call's loop, once the
+    /// one filming has closed: one camera at a time. It films into the
+    /// track as soon as it opens, and resolves with its first picture, for
+    /// [`Self::opened`].
+    pub fn open(&mut self, id: Option<&str>) -> impl Future<Output = Result<Camera>> + use<> {
+        Camera::start(self.camera.take(), id.map(str::to_owned), self.sink())
+    }
+
+    /// Keeps the camera [`Self::open`] opened, and sends the track: published
+    /// the first time, and unmuted after.
+    pub async fn opened(&mut self, call: &Call, camera: Camera) -> Result<()> {
+        self.camera = Some(camera);
+        if self.published {
+            self.track.unmute();
+            return Ok(());
+        }
         call.session()
             .room()
             .local_participant()
             .publish_track(
-                LocalTrack::Video(track),
+                LocalTrack::Video(self.track.clone()),
                 TrackPublishOptions {
                     source: TrackSource::Camera,
                     simulcast: true,
@@ -89,22 +110,17 @@ impl Filming {
             )
             .await
             .context("Could not send your camera. Check your connection and try again.")?;
+        self.published = true;
         // Each published track starts at key index 0; move it onto the
         // current one, as the microphone does.
         call.reassert_local_key_index();
-        Ok(filming)
+        Ok(())
     }
 
-    /// Whether the camera is on, rather than muted.
+    /// Whether a camera films, rather than none or one opening.
+    #[cfg(test)]
     pub fn filming(&self) -> bool {
         self.camera.is_some()
-    }
-
-    /// Turns the camera `id`, or the first, back on in the same track.
-    pub fn resume(&mut self, id: Option<&str>) -> Result<()> {
-        self.open(id)?;
-        self.track.unmute();
-        Ok(())
     }
 
     /// Closes the camera, mutes the track, and lets the self-view's and the
@@ -116,44 +132,30 @@ impl Filming {
         self.source.release_buffers();
     }
 
-    /// Films with the camera `id` from now on, if filming.
-    pub fn switch(&mut self, id: &str) -> Result<()> {
-        if self.filming() {
-            self.open(Some(id))?;
-        }
-        Ok(())
-    }
-
-    /// Opens a camera that shows itself mirrored in the feed and sends each
-    /// picture to the track.
-    fn open(&mut self, id: Option<&str>) -> Result<()> {
-        // One camera at a time: the old one closes before the new one opens.
-        self.camera = None;
+    /// Where a camera's pictures go: mirrored into the feed, and into the
+    /// track.
+    fn sink(&self) -> camera::Sink {
         let mut view = self.feed.mirrored_sink();
         let (source, started) = (self.source.clone(), self.started);
-        self.camera = Some(Camera::open(
-            id,
-            Box::new(move |picture: &I420<'_>| {
-                view(picture);
-                let [stride_y, stride_u, stride_v] = picture.strides.map(|stride| stride as i32);
-                // SAFETY: the planes hold the picture's rows at these strides,
-                // and the source copies them before returning.
-                unsafe {
-                    source.capture_i420(
-                        picture.y.as_ptr(),
-                        stride_y,
-                        picture.u.as_ptr(),
-                        stride_u,
-                        picture.v.as_ptr(),
-                        stride_v,
-                        picture.width as i32,
-                        picture.height as i32,
-                        started.elapsed().as_micros() as i64,
-                    );
-                }
-            }),
-        )?);
-        Ok(())
+        Box::new(move |picture: &I420<'_>| {
+            view(picture);
+            let [stride_y, stride_u, stride_v] = picture.strides.map(|stride| stride as i32);
+            // SAFETY: the planes hold the picture's rows at these strides,
+            // and the source copies them before returning.
+            unsafe {
+                source.capture_i420(
+                    picture.y.as_ptr(),
+                    stride_y,
+                    picture.u.as_ptr(),
+                    stride_u,
+                    picture.v.as_ptr(),
+                    stride_v,
+                    picture.width as i32,
+                    picture.height as i32,
+                    started.elapsed().as_micros() as i64,
+                );
+            }
+        })
     }
 }
 

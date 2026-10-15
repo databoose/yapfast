@@ -488,6 +488,8 @@ export component TalkWindow inherits Window {
     /// camera is on, so stream-tick brings their pictures.
     in property <bool> can-film;
     in property <bool> camera-on;
+    /// This account's camera is on its way, until its first picture.
+    in property <bool> camera-starting;
     in property <bool> call-video;
     /// The call's grid of tiles is on screen.
     out property <bool> grid-shown: root.voice-here && !root.watching && !root.own-stream-shown && (root.voice-room || root.call-shown) && !root.settings-open;
@@ -1479,7 +1481,7 @@ export component TalkWindow inherits Window {
                     voice-warning: root.voice-warning; voice-error: root.voice-error;
                     can-share: root.can-share; sharing: root.sharing; share-live: root.share-live; share-status: root.share-status;
                     share-watchers: root.share-viewers.length;
-                    can-film: root.can-film; camera-on: root.camera-on;
+                    can-film: root.can-film; camera-on: root.camera-on; camera-starting: root.camera-starting;
                     leave-voice => { root.leave-voice(); }
                     dismiss-voice-error => { root.dismiss-voice-error(); }
                     toggle-camera => { root.toggle-camera(); }
@@ -1824,7 +1826,7 @@ export component TalkWindow inherits Window {
                                 }
                                 if !root.watching && !root.own-stream-shown: ParticipantGrid {
                                     participants: root.participants; frames: root.participant-frames;
-                                    sharing: root.sharing; share-live: root.share-live;
+                                    camera-starting: root.camera-starting; sharing: root.sharing; share-live: root.share-live;
                                     share-status: root.share-status; share-frame: root.share-frame;
                                     share-viewers: root.share-viewers; share-viewer-names: root.share-viewer-names;
                                     watch-stream(id) => { root.watch-stream(id); }
@@ -1835,7 +1837,7 @@ export component TalkWindow inherits Window {
                                 CallControls {
                                     muted: root.muted; deafened: root.deafened; voice-ready: root.voice-ready; voice-leaving: root.voice-leaving;
                                     can-share: root.can-share; sharing: root.sharing;
-                                    can-film: root.can-film; camera-on: root.camera-on;
+                                    can-film: root.can-film; camera-on: root.camera-on; camera-starting: root.camera-starting;
                                     toggle-camera => { root.toggle-camera(); }
                                     toggle-mute => { root.toggle-mute(); }
                                     toggle-deafen => { root.toggle-deafen(); }

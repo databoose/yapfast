@@ -65,6 +65,16 @@ away, or a grid hidden behind settings or a watched stream, makes no pictures
 and keeps no buffers. Skia draws each frame from Slint's buffer in place
 (`docs/building.md`). Preview, Matrix and Discord calls carry video.
 
+A camera takes a moment to open, and longer to send its first picture, so it
+opens on a blocking thread (`Camera::start`) while the call goes on. Until
+the first picture, the call says the camera is starting: its buttons pulse
+with "Starting camera...", and your own tile says so too. Clicking the button
+then stops it. Only then does Discord's voice state say `self_video`, and a
+Matrix call publish or unmute the track; a camera that fails to open turns
+off again with the reason. Choosing another camera while filming opens it the
+same way, after the old one closes. Listing the cameras looks at the devices
+once, rather than once for each camera listed.
+
 In a Matrix call, Talk publishes the camera to LiveKit as a simulcast VP8
 track, asking for 1280×720, so each receiver can take the layer its tile
 needs. Each picture goes to WebRTC through `capture_i420`, a Talk patch to

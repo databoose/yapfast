@@ -125,6 +125,8 @@ export component VoiceDock inherits Rectangle {
     in property <int> share-watchers;
     in property <bool> can-film;
     in property <bool> camera-on;
+    /// The camera is on its way, until its first picture.
+    in property <bool> camera-starting;
     callback leave-voice;
     callback dismiss-voice-error;
     callback toggle-camera;
@@ -184,7 +186,8 @@ export component VoiceDock inherits Rectangle {
             if root.can-film: DockButton {
                 horizontal-stretch: 1; enabled: root.voice-ready; on: root.camera-on;
                 icon: root.camera-on ? @image-url("icons/video.svg") : @image-url("icons/video-off.svg");
-                label: root.camera-on ? "Turn off camera" : "Turn on camera";
+                label: root.camera-starting ? "Starting camera..." : root.camera-on ? "Turn off camera" : "Turn on camera";
+                opacity: root.camera-starting ? (0.6 + 0.4 * sin(animation-tick() / 1ms * 0.36deg)) : 1;
                 clicked => { root.toggle-camera(); }
             }
             if root.can-share || root.sharing: DockButton {
@@ -402,6 +405,8 @@ export component ParticipantGrid inherits Flickable {
     in property <[PersonRow]> participants;
     /// Each participant's newest camera picture, in the same order.
     in property <[image]> frames;
+    /// This account's camera is on its way, until its first picture.
+    in property <bool> camera-starting;
     in property <bool> sharing;
     in property <bool> share-live;
     in property <string> share-status;
@@ -530,6 +535,12 @@ export component ParticipantGrid inherits Flickable {
                 }
             }
         }
+        if person.local && root.camera-starting: Rectangle {
+            x: 10px; y: 10px; height: 26px;
+            width: starting-label.preferred-width + 20px; border-radius: 13px;
+            background: #000000a6; opacity: (0.6 + 0.4 * sin(animation-tick() / 1ms * 0.36deg));
+            starting-label := Text { text: "Starting camera..."; color: #ffffff; font-size: 13px; font-weight: 700; }
+        }
         if person.live && !person.local: Rectangle {
             x: parent.width - self.width - 10px; y: 10px; height: 26px;
             width: watch-label.preferred-width + 20px; border-radius: 13px;
@@ -568,6 +579,8 @@ export component CallControls inherits HorizontalLayout {
     /// The call carries camera video, and this account's camera is on.
     in property <bool> can-film;
     in property <bool> camera-on;
+    /// The camera is on its way, until its first picture.
+    in property <bool> camera-starting;
     callback toggle-mute;
     callback toggle-deafen;
     callback toggle-camera;
@@ -595,8 +608,8 @@ export component CallControls inherits HorizontalLayout {
     if root.can-film: IconButton {
         size: 52px; glyph: 22px; radius: 26px;
         icon: root.camera-on ? @image-url("icons/video.svg") : @image-url("icons/video-off.svg");
-        label: root.camera-on ? "Turn off camera" : "Turn on camera"; tint: Theme.text;
-        enabled: root.voice-ready;
+        label: root.camera-starting ? "Starting camera..." : root.camera-on ? "Turn off camera" : "Turn on camera"; tint: Theme.text;
+        enabled: root.voice-ready; opacity: root.camera-starting ? (0.6 + 0.4 * sin(animation-tick() / 1ms * 0.36deg)) : 1;
         fill: root.camera-on ? Theme.live.with-alpha(0.22) : Theme.raised;
         clicked => { root.toggle-camera(); }
     }

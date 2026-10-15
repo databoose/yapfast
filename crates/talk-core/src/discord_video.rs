@@ -49,25 +49,27 @@ pub(crate) struct Filming {
 }
 
 impl Filming {
-    /// Opens the camera `id`, or the first, and sends it to the call.
-    pub fn start(call: &mut Call, id: Option<&str>) -> Result<Self> {
-        let sender = Arc::new(call.film(camera::WIDTH, camera::HEIGHT, camera::FPS));
-        let mut filming = Self {
+    /// Sends a camera to the call, once [`Self::open`] has opened one.
+    pub fn start(call: &mut Call) -> Self {
+        Self {
             feed: Feed::new(),
             camera: None,
-            sender,
+            sender: Arc::new(call.film(camera::WIDTH, camera::HEIGHT, camera::FPS)),
             started: Instant::now(),
-        };
-        if let Err(error) = filming.open(id) {
-            call.stop_filming();
-            return Err(error);
         }
-        Ok(filming)
     }
 
-    /// Films with the camera `id` from now on.
-    pub fn switch(&mut self, id: &str) -> Result<()> {
-        self.open(Some(id))
+    /// Opens the camera `id`, or the first, off the call's loop, once the
+    /// one filming has closed: one camera at a time. It films into the call
+    /// as soon as it opens, and resolves with its first picture, for
+    /// [`Self::opened`].
+    pub fn open(&mut self, id: Option<&str>) -> impl Future<Output = Result<Camera>> + use<> {
+        Camera::start(self.camera.take(), id.map(str::to_owned), self.sink())
+    }
+
+    /// Keeps the camera [`Self::open`] opened.
+    pub fn opened(&mut self, camera: Camera) {
+        self.camera = Some(camera);
     }
 
     /// Closes the camera, and tells the call it stopped.
@@ -77,45 +79,39 @@ impl Filming {
         call.stop_filming();
     }
 
-    /// Opens a camera that shows itself mirrored in the feed and sends each
-    /// picture, encoded, to the call.
-    fn open(&mut self, id: Option<&str>) -> Result<()> {
-        // One camera at a time: the old one closes before the new one opens.
-        self.camera = None;
+    /// Where a camera's pictures go: mirrored into the feed, and encoded
+    /// into the call.
+    fn sink(&self) -> camera::Sink {
         let mut view = self.feed.mirrored_sink();
         let (sender, started) = (self.sender.clone(), self.started);
         let mut encoder: Option<Encoder> = None;
-        self.camera = Some(Camera::open(
-            id,
-            Box::new(move |picture: &I420<'_>| {
-                view(picture);
-                // The encoder takes even sizes, and starts again at a new one.
-                let size = (picture.width & !1, picture.height & !1);
-                let fresh = encoder
-                    .as_ref()
-                    .is_none_or(|encoder| encoder.size() != size);
-                if fresh {
-                    encoder = Encoder::new(SEND_CODEC, size.0, size.1, camera::FPS, BITRATE)
-                        .inspect_err(|error| tracing::warn!(%error, "could not encode the camera"))
-                        .ok();
-                }
-                let Some(encoder) = encoder.as_mut() else {
-                    return;
-                };
-                let keyframe = sender.take_keyframe_request() || fresh;
-                let pts = started.elapsed().as_micros() as u64 * CLOCK / 1_000_000;
-                match encoder.encode_picture(picture, pts, keyframe) {
-                    Ok(Some(frame)) => sender.send(Frame {
-                        data: frame.data.to_vec(),
-                        timestamp: pts as u32,
-                        keyframe: frame.keyframe,
-                    }),
-                    Ok(None) => {}
-                    Err(error) => tracing::warn!(%error, "could not encode the camera"),
-                }
-            }),
-        )?);
-        Ok(())
+        Box::new(move |picture: &I420<'_>| {
+            view(picture);
+            // The encoder takes even sizes, and starts again at a new one.
+            let size = (picture.width & !1, picture.height & !1);
+            let fresh = encoder
+                .as_ref()
+                .is_none_or(|encoder| encoder.size() != size);
+            if fresh {
+                encoder = Encoder::new(SEND_CODEC, size.0, size.1, camera::FPS, BITRATE)
+                    .inspect_err(|error| tracing::warn!(%error, "could not encode the camera"))
+                    .ok();
+            }
+            let Some(encoder) = encoder.as_mut() else {
+                return;
+            };
+            let keyframe = sender.take_keyframe_request() || fresh;
+            let pts = started.elapsed().as_micros() as u64 * CLOCK / 1_000_000;
+            match encoder.encode_picture(picture, pts, keyframe) {
+                Ok(Some(frame)) => sender.send(Frame {
+                    data: frame.data.to_vec(),
+                    timestamp: pts as u32,
+                    keyframe: frame.keyframe,
+                }),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not encode the camera"),
+            }
+        })
     }
 }
 

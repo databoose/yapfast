@@ -1771,7 +1771,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     let weak = window.as_weak();
     window.on_toggle_camera(move || {
         let Some(window) = weak.upgrade() else { return };
-        let on = !state.borrow().app.state.voice.camera_on;
+        // A click while the camera starts cancels it.
+        let on = state.borrow().app.state.voice.camera_phase == voice::CameraPhase::Off;
         state
             .borrow_mut()
             .action(&window, Action::Voice(voice::Command::Video(on)));

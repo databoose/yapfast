@@ -3,9 +3,11 @@
 //! and DirectShow, which converts each frame into the same two I420 buffers.
 //!
 //! `TALK_CAMERA_TEST_PATTERN=1` adds a camera that films moving colour bars,
-//! for tests and screenshots on machines without a camera.
+//! for tests and screenshots on machines without a camera, and
+//! `TALK_CAMERA_TEST_DELAY_MS` makes it as slow to open as a real one.
 
 use std::{
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -37,6 +39,18 @@ fn test_pattern() -> bool {
     std::env::var_os("TALK_CAMERA_TEST_PATTERN").is_some_and(|value| value != "0")
 }
 
+/// A camera opening for a call, until its first picture: see
+/// [`Camera::start`].
+pub type Opening = Option<Pin<Box<dyn Future<Output = Result<Camera>> + Send>>>;
+
+/// The camera opened, or never while none is opening.
+pub async fn opened(opening: &mut Opening) -> Result<Camera> {
+    match opening {
+        Some(opening) => opening.await,
+        None => std::future::pending().await,
+    }
+}
+
 /// The cameras on this system, without opening any of them.
 pub fn list() -> Vec<Device> {
     let mut devices = vec![];
@@ -54,7 +68,7 @@ pub fn list() -> Vec<Device> {
 /// libwebrtc's capture module, through `native/camera.cc`.
 #[cfg(any(target_os = "linux", windows))]
 mod native {
-    use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
+    use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
     use anyhow::{Context, Result, bail};
 
@@ -71,14 +85,10 @@ mod native {
 
     type RawSink = extern "C" fn(user: *mut c_void, picture: *const RawPicture);
 
+    type RawEach = extern "C" fn(user: *mut c_void, name: *const c_char, id: *const c_char);
+
     unsafe extern "C" {
-        fn talk_camera_device(
-            index: c_uint,
-            name: *mut c_char,
-            name_length: c_uint,
-            id: *mut c_char,
-            id_length: c_uint,
-        ) -> c_int;
+        fn talk_camera_list(each: RawEach, user: *mut c_void);
         fn talk_camera_open(
             id: *const c_char,
             width: c_int,
@@ -90,40 +100,26 @@ mod native {
         fn talk_camera_close(camera: *mut RawCamera);
     }
 
+    extern "C" fn listed(user: *mut c_void, name: *const c_char, id: *const c_char) {
+        // SAFETY: `user` is the list being filled, and both strings are
+        // terminated, for this call.
+        let devices = unsafe { &mut *user.cast::<Vec<Device>>() };
+        let text = |chars| {
+            unsafe { CStr::from_ptr(chars) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        devices.push(Device {
+            id: text(id),
+            name: text(name),
+        });
+    }
+
+    /// Adds each camera, from one look at the devices: each look opens
+    /// every video device the system has.
     pub(super) fn list(devices: &mut Vec<Device>) {
-        let mut index = 0;
-        loop {
-            let (mut name, mut id) = ([0 as c_char; 256], [0 as c_char; 1024]);
-            // SAFETY: both buffers are as long as said, and come back
-            // terminated.
-            let count = unsafe {
-                talk_camera_device(
-                    index,
-                    name.as_mut_ptr(),
-                    name.len() as c_uint,
-                    id.as_mut_ptr(),
-                    id.len() as c_uint,
-                )
-            };
-            if count < 0 {
-                index += 1;
-                continue;
-            }
-            if index >= count as c_uint {
-                break;
-            }
-            // SAFETY: terminated above.
-            let text = |chars: &[c_char]| {
-                unsafe { CStr::from_ptr(chars.as_ptr()) }
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            devices.push(Device {
-                id: text(&id),
-                name: text(&name),
-            });
-            index += 1;
-        }
+        // SAFETY: the list outlives the call, which calls back only during it.
+        unsafe { talk_camera_list(listed, std::ptr::from_mut(devices).cast()) };
     }
 
     /// A camera filming through the module until dropped.
@@ -202,9 +198,36 @@ impl Camera {
             bail!("No camera found. Connect one and try again.");
         };
         if device.id == TEST_PATTERN {
+            let delay = std::env::var("TALK_CAMERA_TEST_DELAY_MS").ok();
+            if let Some(delay) = delay.and_then(|delay| delay.parse().ok()) {
+                std::thread::sleep(Duration::from_millis(delay));
+            }
             return Ok(Self::pattern(sink));
         }
         Self::native(&device.id, sink)
+    }
+
+    /// Opens the camera `id`, or the first, as [`Self::open`] does, but on a
+    /// blocking thread, once `replaced` has closed there. Resolves when the
+    /// first picture has gone to `sink`, which can be a while after the
+    /// camera opens. Dropped before that, it closes the camera.
+    pub async fn start(replaced: Option<Self>, id: Option<String>, mut sink: Sink) -> Result<Self> {
+        let (first, came) = tokio::sync::oneshot::channel();
+        let mut first = Some(first);
+        let sink: Sink = Box::new(move |picture| {
+            sink(picture);
+            if let Some(first) = first.take() {
+                let _ = first.send(());
+            }
+        });
+        let camera = tokio::task::spawn_blocking(move || {
+            drop(replaced);
+            Self::open(id.as_deref(), sink)
+        })
+        .await??;
+        // The sink lasts as long as the camera, so this ends with a picture.
+        let _ = came.await;
+        Ok(camera)
     }
 
     #[cfg(target_os = "linux")]
@@ -341,6 +364,33 @@ mod tests {
         while received.try_recv().is_ok() {}
         std::thread::sleep(Duration::from_millis(100));
         assert!(received.try_recv().is_err(), "stopped");
+    }
+
+    #[tokio::test]
+    async fn starting_ends_with_the_first_picture() {
+        // SAFETY: tests that read this variable all set it the same way.
+        unsafe { std::env::set_var("TALK_CAMERA_TEST_PATTERN", "1") };
+        let pictures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = pictures.clone();
+        let sink: Sink = Box::new(move |_| {
+            counted.fetch_add(1, Ordering::Relaxed);
+        });
+        let camera = Camera::start(None, Some(TEST_PATTERN.into()), sink)
+            .await
+            .unwrap();
+        assert!(pictures.load(Ordering::Relaxed) >= 1);
+        // Another replaces it, closing it first.
+        let (frames, received) = std::sync::mpsc::channel();
+        let sink: Sink = Box::new(move |picture| {
+            let _ = frames.send(picture.width);
+        });
+        let _camera = Camera::start(Some(camera), Some(TEST_PATTERN.into()), sink)
+            .await
+            .unwrap();
+        let before = pictures.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(pictures.load(Ordering::Relaxed), before, "the first closed");
+        assert_eq!(received.try_recv(), Ok(TEST_PATTERN_SIZE.0));
     }
 
     /// Films the first real camera for a second, or the first whose name

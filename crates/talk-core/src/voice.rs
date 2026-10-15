@@ -122,6 +122,17 @@ pub enum SharePhase {
     Live,
 }
 
+/// This account's camera in a call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CameraPhase {
+    #[default]
+    Off,
+    /// Opening the camera, until its first picture.
+    Starting,
+    /// Filming into the call.
+    On,
+}
+
 #[derive(Clone, Debug)]
 pub struct State {
     pub phase: Phase,
@@ -145,8 +156,8 @@ pub struct State {
     pub watching: Option<Box<Watching>>,
     /// How the next screen share is sent.
     pub quality: StreamQuality,
-    /// This account films with its camera in the call.
-    pub camera_on: bool,
+    /// This account's camera, turned on or starting.
+    pub camera_phase: CameraPhase,
     /// The call carries camera video, so the camera can be turned on.
     pub can_film: bool,
 }
@@ -171,7 +182,7 @@ impl Default for State {
             sharing: None,
             watching: None,
             quality: StreamQuality::default(),
-            camera_on: false,
+            camera_phase: CameraPhase::Off,
             can_film: false,
         }
     }
@@ -190,7 +201,7 @@ impl State {
         self.warning = None;
         self.sharing = None;
         self.watching = None;
-        self.camera_on = false;
+        self.camera_phase = CameraPhase::Off;
         self.can_film = false;
     }
 }

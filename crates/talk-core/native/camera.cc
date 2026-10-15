@@ -117,19 +117,22 @@ struct talk_camera {
 
 extern "C" {
 
-/* The cameras on this system, as names and the ids that open them. Returns
- * how many there are; fills in the one at `index` when it's below that. */
-int talk_camera_device(unsigned index, char *name, unsigned name_length, char *id,
-                       unsigned id_length) {
+typedef void (*talk_camera_each)(void *user, const char *name, const char *id);
+
+/* Calls `each` with the name and the id that opens it of each camera on this
+ * system, from one look at the devices. */
+void talk_camera_list(talk_camera_each each, void *user) {
   std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> info(
       webrtc::VideoCaptureFactory::CreateDeviceInfo());
-  if (!info) return 0;
-  int count = (int)info->NumberOfDevices();
-  if ((int)index < count &&
-      info->GetDeviceName(index, name, name_length, id, id_length) != 0) {
-    return -1;
+  if (!info) return;
+  uint32_t count = info->NumberOfDevices();
+  for (uint32_t index = 0; index < count; index++) {
+    char name[256] = {0};
+    char id[1024] = {0};
+    if (info->GetDeviceName(index, name, sizeof name, id, sizeof id) == 0) {
+      each(user, name, id);
+    }
   }
-  return count;
 }
 
 /* Opens the camera with `id` and calls `frame` with each picture, at most
