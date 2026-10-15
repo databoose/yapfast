@@ -235,6 +235,9 @@ pub struct VoicePerson {
     pub streaming: bool,
     /// Their camera is on.
     pub video: bool,
+    /// This account, in the call on another client, as Discord shows it:
+    /// dimmed, without its icons.
+    pub elsewhere: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]

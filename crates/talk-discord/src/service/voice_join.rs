@@ -10,7 +10,7 @@ use tokio::{
     time::{Duration, Instant, Sleep},
 };
 
-use super::{VoiceServer, server};
+use super::{VoiceServer, server, tracker::Tracker};
 use crate::{event::Event, gateway::Dispatch};
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -70,15 +70,17 @@ impl VoiceJoin {
         }
     }
 
-    /// Stops waiting for a join in `guild`, which this account left.
-    pub(super) fn leave(&mut self, guild: &str) {
-        if self
+    /// Stops waiting for a join in `guild`, which this account left;
+    /// returns whether one was under way.
+    pub(super) fn leave(&mut self, guild: &str) -> bool {
+        let joining = self
             .pending
             .as_ref()
-            .is_some_and(|pending| pending.guild == guild)
-        {
+            .is_some_and(|pending| pending.guild == guild);
+        if joining {
             self.pending = None;
         }
+        joining
     }
 
     pub(super) fn waiting(&self) -> bool {
@@ -93,14 +95,23 @@ impl VoiceJoin {
             .is_some_and(|pending| pending.answers(data))
     }
 
-    /// Takes in a dispatch, and answers the join once Discord said all it needs.
-    pub(super) fn apply(&mut self, me: &str, event: &Dispatch) {
+    /// Takes in a dispatch, and answers the join once Discord said all it
+    /// needs. Only a voice state of this gateway session answers it, not
+    /// one of this account's other clients.
+    pub(super) fn apply(&mut self, tracker: &Tracker, event: &Dispatch) {
         let Some(waiting) = self.pending.as_mut() else {
             return;
         };
-        let data = &event.data;
+        let (me, data) = (tracker.me.as_str(), &event.data);
         match event.event {
-            Event::VoiceStateUpdate if data["user_id"] == me && waiting.answers(data) => {
+            Event::VoiceStateUpdate
+                if data["user_id"] == me
+                    && waiting.answers(data)
+                    && tracker
+                        .session
+                        .as_deref()
+                        .is_none_or(|session| data["session_id"] == session) =>
+            {
                 waiting.session_id = data["session_id"].as_str().map(str::to_owned);
             }
             // The endpoint is null while Discord is still allocating a server.
@@ -146,6 +157,33 @@ mod tests {
 
     use super::*;
     use crate::ready::PRIVATE;
+
+    #[tokio::test]
+    async fn takes_this_sessions_voice_session_not_another_clients() {
+        let tracker = Tracker::from_ready(
+            "1".into(),
+            &json!({"session_id": "here", "user": {"id": "1"}}),
+            Default::default(),
+        );
+        let (reply, mut answer) = oneshot::channel();
+        let mut join = VoiceJoin::new();
+        join.start("10".into(), "11".into(), reply);
+        let dispatch = |event, data| Dispatch { event, data };
+        let state = |session: &str| json!({"guild_id": "10", "user_id": "1", "channel_id": "11", "session_id": session});
+        join.apply(&tracker, &dispatch(Event::VoiceStateUpdate, state("phone")));
+        join.apply(
+            &tracker,
+            &dispatch(
+                Event::VoiceServerUpdate,
+                json!({"guild_id": "10", "token": "t", "endpoint": "e"}),
+            ),
+        );
+        assert!(join.waiting(), "the phone's voice state doesn't answer it");
+        join.apply(&tracker, &dispatch(Event::VoiceStateUpdate, state("here")));
+        let server = answer.try_recv().unwrap().unwrap();
+        assert_eq!(server.session_id, "here");
+        assert!(!join.leave("10"), "nothing is under way once answered");
+    }
 
     #[test]
     fn answers_a_dm_join_by_its_channel() {

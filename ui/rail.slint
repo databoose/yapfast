@@ -734,17 +734,30 @@ export component RoomList inherits VerticalLayout {
                 padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                 for person in room.people: Rectangle {
                     // Someone sharing their screen is watched, and a camera
-                    // shows the call; see show-voice-person.
+                    // shows the call; see show-voice-person. This account in
+                    // the call on another client is dimmed until hovered,
+                    // without its icons, as in Discord.
                     property <bool> watchable: person.live && !person.local;
-                    property <bool> clickable: self.watchable || person.video;
+                    property <bool> clickable: !person.elsewhere && (self.watchable || person.video);
+                    property <string> tip: person.elsewhere ? "Connected on another client" : "";
                     height: 30px; border-radius: 4px;
                     background: self.clickable && person-touch.has-hover ? Theme.hover : transparent;
+                    opacity: person.elsewhere && !person-touch.has-hover ? 0.5 : 1;
                     accessible-role: button; accessible-enabled: self.clickable;
-                    accessible-label: self.watchable ? "Watch " + person.name + "'s stream" : self.clickable ? "Show " + person.name + "'s camera" : person.name;
+                    accessible-label: self.watchable ? "Watch " + person.name + "'s stream" : self.clickable ? "Show " + person.name + "'s camera"
+                        : person.elsewhere ? person.name + ", connected on another client" : person.name;
                     accessible-action-default => { if self.clickable { root.show-voice-person(room.id, person.id); } }
                     person-touch := TouchArea {
-                        enabled: parent.clickable; mouse-cursor: parent.clickable ? MouseCursor.pointer : MouseCursor.default;
-                        clicked => { root.show-voice-person(room.id, person.id); }
+                        enabled: parent.clickable || person.elsewhere; mouse-cursor: parent.clickable ? MouseCursor.pointer : MouseCursor.default;
+                        clicked => { if parent.clickable { root.show-voice-person(room.id, person.id); } }
+                        changed has-hover => {
+                            if self.has-hover && parent.tip != "" {
+                                Tip.text = parent.tip; Tip.side = 0;
+                                Tip.x = parent.absolute-position.x + parent.width / 2; Tip.y = parent.absolute-position.y;
+                            } else if parent.tip != "" && Tip.text == parent.tip {
+                                Tip.text = "";
+                            }
+                        }
                     }
                     HorizontalLayout {
                         spacing: 8px; padding-left: 4px; padding-right: 8px;
@@ -753,21 +766,21 @@ export component RoomList inherits VerticalLayout {
                             text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
                             vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
                         }
-                        if person.video: Image {
+                        if person.video && !person.elsewhere: Image {
                             source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
                             colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
                         }
-                        if person.live: Middle {
+                        if person.live && !person.elsewhere: Middle {
                             LivePill {
                                 clickable: !person.local; label: "Watch " + person.name + "'s stream";
                                 clicked => { root.show-voice-person(room.id, person.id); }
                             }
                         }
-                        if person.muted || person.deafened: Image {
+                        if (person.muted || person.deafened) && !person.elsewhere: Image {
                             source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
                             colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is muted";
                         }
-                        if person.deafened: Image {
+                        if person.deafened && !person.elsewhere: Image {
                             source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
                             colorize: Theme.muted; accessible-role: image; accessible-label: person.name + " is deafened";
                         }

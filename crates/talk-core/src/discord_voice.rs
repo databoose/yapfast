@@ -310,6 +310,11 @@ pub(crate) async fn call(
             }
             result = &mut joining => break result,
             Ok(event) = live.recv() => match event {
+                // Joined on another client meanwhile, which has the call now.
+                Live::VoiceElsewhere { .. } => {
+                    tracing::info!("joined voice on another client while the call connected");
+                    return Ok(());
+                }
                 Live::VoiceChannel { guild: moved, channel: to } if moved == guild && to != channel => {
                     channel = to;
                     moved_to(state, &discord_states.borrow(), guild, &channel);
@@ -665,6 +670,12 @@ pub(crate) async fn call(
                     snapshots.send_replace(state.clone());
                 }
                 Ok(event) = live.recv() => match event {
+                    // Joined on another client, which takes the call over, as
+                    // in Discord. Leaving below sends nothing then.
+                    Live::VoiceElsewhere { .. } => {
+                        tracing::info!("joined voice on another client; ending the call here");
+                        break;
+                    }
                     // Who watches this account's stream, or the one it watches.
                     Live::StreamUpdated { stream_key, viewers, .. } => {
                         let shown = if share.as_ref().is_some_and(|share| share.key.as_ref() == Some(&stream_key)) {

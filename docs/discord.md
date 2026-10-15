@@ -207,6 +207,17 @@ call ends. A stream moves the same way, with a new `STREAM_CREATE` and
 `STREAM_SERVER_UPDATE`: sharing sends to the new server, after waiting up to
 five seconds for it when the old connection ends, and watching connects again.
 
+The account may be in voice on another client too, such as Discord's app on
+a phone. Talk tells that client's voice state from its own by the
+`session_id` it carries: READY's is this gateway session's, and a voice
+state with another is the other client's. The voice channel lists the
+account there as Discord does: dimmed until hovered, without its icons, with
+the tooltip "Connected on another client". Joining here takes the call over,
+and the join waits for a voice state of this session. When the other client
+joins voice, Talk's call ends without sending op 4 with no channel, which
+would end the other client's call too; Talk sends that only for a join under
+way or a voice state of its own session.
+
 The group uses screen sharing often, so sharing a screen and watching
 streams (Go Live) came before the beta; see [Screen sharing](#screen-sharing).
 Camera video works in server voice channels and DM calls; see

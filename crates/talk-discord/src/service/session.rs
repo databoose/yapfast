@@ -293,7 +293,11 @@ impl Session<'_> {
                 sent
             }
             Request::Leave { guild } => {
-                self.join.leave(&guild);
+                // A call there on another client stays: no channel would
+                // take it out of that one too.
+                if !self.join.leave(&guild) && !self.tracker.in_voice_here(&guild) {
+                    return Ok(());
+                }
                 gateway
                     .update_voice_state(server(&guild), None, false, false, false)
                     .await
@@ -428,7 +432,7 @@ impl Session<'_> {
             Event::StreamServerUpdate => self.streams.awaits(data),
             _ => true,
         };
-        self.join.apply(&self.tracker.me, &dispatch);
+        self.join.apply(&self.tracker, &dispatch);
         // Whether the tracker already took this event in, and changed.
         let mut applied = None;
         match event {
@@ -447,8 +451,15 @@ impl Session<'_> {
         let message = matches!(event, Event::MessageCreate | Event::MessageUpdate)
             .then(|| message::parse(data))
             .flatten();
-        let me = &self.tracker.me;
-        for live in live_events(me, &self.shared.names, event, data, message.as_ref()) {
+        let (me, session) = (&self.tracker.me, self.tracker.session.as_deref());
+        for live in live_events(
+            me,
+            session,
+            &self.shared.names,
+            event,
+            data,
+            message.as_ref(),
+        ) {
             let _ = self.shared.live.send(live);
         }
         if *event == Event::MessageCreate

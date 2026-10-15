@@ -61,6 +61,9 @@ pub struct VoiceMember {
     pub streaming: bool,
     /// Their camera is on.
     pub video: bool,
+    /// This account, in the call on another client, such as Discord's app
+    /// on a phone, rather than on this gateway session.
+    pub elsewhere: bool,
 }
 
 /// The linked account, as Discord shows it outside any server.
@@ -331,6 +334,13 @@ pub enum Live {
     VoiceChannel {
         guild: String,
         channel: String,
+    },
+    /// This account joined voice in `guild`, or with [`PRIVATE`] a DM call,
+    /// on another client, such as Discord's app on a phone. That takes over
+    /// from a call Talk has, which ends without leaving: leaving would end
+    /// the other client's call too.
+    VoiceElsewhere {
+        guild: String,
     },
     /// Discord moved this account's call in `guild`, or with [`PRIVATE`] its
     /// DM call, to another voice server, which the call connects to.
