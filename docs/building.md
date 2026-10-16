@@ -209,6 +209,22 @@ lists every option and command. `start --tray` adds a stand-in tray on the
 session's bus; see [the tray](tray.md#testing). The scripted probes are in
 [the Slint client's validation notes](slint-client.md#validation-and-limits).
 
+For demo footage, the session records its display at 60 frames a second:
+
+```sh
+scripts/ui-session start --discord --size 1920x1080 --zoom 1.2 --cursor 32
+scripts/ui-session do 'record start tour' 'glide 400 600' 'click 170 264 glide' \
+  'glide 1000 500' 'scroll -1200 1.5' 'sleep 1' 'record stop'
+```
+
+`testing/record_host.rs` takes the frames through Weston's capture protocol
+and ffmpeg encodes them to `.local/ui-session/videos/tour.mp4`, which later
+starts keep. `--zoom` opens Talk at that zoom level, `--cursor` shows the
+pointer, `glide` and `click … glide` move it as a hand would, and `scroll
+PIXELS SECONDS` scrolls smoothly. Weston's headless display repaints about
+58.5 times a second at most, so about one frame in 40 repeats the one
+before.
+
 ## Networks
 
 Matrix and Discord are Cargo features, `matrix` and `discord`, and the default

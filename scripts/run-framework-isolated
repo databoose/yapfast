@@ -31,6 +31,10 @@ parser.add_argument('--width', type=int, default=1600, help='output width in log
 parser.add_argument('--height', type=int, default=1000, help='output height in logical pixels')
 parser.add_argument('--scale', type=int, default=1, help='output scale, such as 2 for a high-DPI display')
 parser.add_argument('--kiosk', action='store_true', help='kiosk shell: one window filling the output, with no panel')
+parser.add_argument('--repaint-window', type=int, metavar='MS',
+                    help="Weston's repaint window. With the default, 7, the headless backend repaints "
+                         "a busy display about 39 times a second, its frame timer and the window adding up; "
+                         "17, a whole frame or more, repaints every 60 Hz frame")
 parser.add_argument('command', nargs=argparse.REMAINDER)
 args = parser.parse_args()
 command = args.command[1:] if args.command and args.command[0] == '--' else args.command
@@ -49,6 +53,10 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
     (configuration / 'gtk-3.0').mkdir(parents=True)
     (configuration / 'gtk-3.0/settings.ini').write_text('[Settings]\ngtk-xft-dpi=98304\ngtk-application-prefer-dark-theme=1\n')
     run_token = uuid.uuid4().hex
+    weston_config = ['--no-config']
+    if args.repaint_window is not None:
+        (runtime / 'weston.ini').write_text(f'[core]\nrepaint-window={args.repaint_window}\n')
+        weston_config = ['--config=' + str(runtime / 'weston.ini')]
     environment = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), WAYLAND_DISPLAY='wayland-talk-frameworks',
         XDG_SESSION_TYPE='wayland', XDG_CURRENT_DESKTOP='Weston', GDK_BACKEND='wayland',
         XDG_CONFIG_HOME=str(configuration), XDG_CACHE_HOME=str(runtime / 'cache'), XDG_DATA_HOME=str(runtime / 'data'),
@@ -62,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
     compositor = subprocess.Popen([args.weston, '--backend=headless', '--renderer=gl',
         f'--width={args.width}', f'--height={args.height}', f'--scale={args.scale}', '--refresh-rate=60000', '--socket=wayland-talk-frameworks',
         *(['--shell=kiosk'] if args.kiosk else []),
-        '--no-config', '--idle-time=0', '--debug', '--modules=' + str(args.seat_plugin.resolve()), '--log=' + str(args.compositor_log)],
+        *weston_config, '--idle-time=0', '--debug', '--modules=' + str(args.seat_plugin.resolve()), '--log=' + str(args.compositor_log)],
         env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     audio = None
     session = None

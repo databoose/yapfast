@@ -17,10 +17,11 @@ def require_private_display():
     return runtime
 
 
-def send(command):
+def send(command, pause=.03):
+    """Sends one event, then waits `pause` seconds for the compositor and app."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
         client.sendto(command.encode(), str(require_private_display() / 'talk-input.sock'))
-    time.sleep(.03)
+    time.sleep(pause)
 
 
 def click(x, y):
