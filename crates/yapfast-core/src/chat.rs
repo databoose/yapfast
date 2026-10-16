@@ -1096,6 +1096,8 @@ pub struct ChatMessage {
     pub color: Option<u32>,
     /// The author is a Discord bot or webhook.
     pub bot: bool,
+    /// Forwarded on Discord: its body, files and embeds are the original's.
+    pub forwarded: bool,
     pub body: String,
     /// The body is Markdown source whose sender also sent formatting.
     pub formatted: bool,

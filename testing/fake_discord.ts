@@ -156,7 +156,8 @@
 // /_control/slow with a number of milliseconds slows history, attachments
 // and links' pictures, to show loading states.
 // POST /_control/clip makes Bob attach clip.mp4, six seconds with sound, and
-// link a post whose card plays a video, as vxtwitter's do.
+// link a post whose card plays a video, as vxtwitter's do; Carol forwards
+// the clip.
 // POST /_control/bob-away makes Bob idle with a custom status,
 // /_control/bob-mobile puts him online on his phone alone, and
 // /_control/bob-offline takes him offline.
@@ -771,6 +772,9 @@ type Message = {
   starter?: string;
   /** A notice that a thread was made: the thread. */
   notice?: string;
+  /** A forward: the message it carries a copy of, which its own content,
+   * files and embeds are empty for. */
+  forward?: string;
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -871,6 +875,28 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     wire.referenced_message = original ? wireMessage(original, origin, true) : null;
   }
   if (message.notice) wire.message_reference = { type: 0, channel_id: message.notice, guild_id: GUILD };
+  const forwarded = message.forward ? byId.get(message.forward) : undefined;
+  if (forwarded) {
+    const original = wireMessage(forwarded, origin, true);
+    wire.message_reference = { type: 1, channel_id: forwarded.channel, message_id: forwarded.id, ...guildOf(forwarded.channel) };
+    // HAS_SNAPSHOT.
+    wire.flags = (wire.flags as number) | 1 << 14;
+    wire.message_snapshots = [{
+      message: {
+        type: original.type,
+        content: original.content,
+        timestamp: original.timestamp,
+        edited_timestamp: original.edited_timestamp,
+        mentions: original.mentions,
+        mention_roles: original.mention_roles,
+        attachments: original.attachments,
+        embeds: original.embeds,
+        flags: 0,
+        components: [],
+        ...(original.sticker_items ? { sticker_items: original.sticker_items } : {}),
+      },
+    }];
+  }
   if (message.reply && !nested) {
     const original = byId.get(message.reply);
     wire.message_reference = {
@@ -4405,7 +4431,10 @@ function postVideo(origin: string) {
     height: 270,
     draw: sunset,
   });
-  dispatch("MESSAGE_CREATE", dispatched(post(GENERAL, users.bob, "Watch this", now, { files: [video] }), origin));
+  const watch = post(GENERAL, users.bob, "Watch this", now, { files: [video] });
+  dispatch("MESSAGE_CREATE", dispatched(watch, origin));
+  // Carol forwards it: the forward's own content is empty.
+  dispatch("MESSAGE_CREATE", dispatched(post(GENERAL, users.carol, "", now + 2, { forward: watch.id }), origin));
   // vxtwitter's card for a post with a video: rich, with the video the
   // proxy has beside a thumbnail.
   const link = "https://vxtwitter.com/bob/status/1";

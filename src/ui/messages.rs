@@ -368,6 +368,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         time_styled: slint::StyledText::from_plain_text(&message.time),
         edited: message.edited,
         deleted: message.deleted,
+        forwarded: message.forwarded,
         has_reply: message.reply.is_some(),
         reply_author: reply_author.into(),
         reply_initial: initial(reply_author),
@@ -444,6 +445,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             color: Default::default(),
             has_color: false,
             bot: false,
+            forwarded: false,
             body: "Blocked message.".into(),
             styled: slint::StyledText::from_markdown(&note)
                 .unwrap_or_else(|_| slint::StyledText::from_plain_text("Blocked message.")),

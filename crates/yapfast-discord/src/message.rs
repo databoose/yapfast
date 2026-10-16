@@ -30,6 +30,10 @@ const CHAT_INPUT_COMMAND: u64 = 20;
 const THREAD_STARTER_MESSAGE: u64 = 21;
 const CONTEXT_MENU_COMMAND: u64 = 23;
 
+/// The reference of a forward, which carries a copy of the message it
+/// forwards in `message_snapshots`.
+const FORWARD: u64 = 1;
+
 /// The message flag that hides its embeds.
 const SUPPRESS_EMBEDS: u64 = 1 << 2;
 
@@ -107,6 +111,10 @@ pub struct Message {
     /// Among its channel's pinned messages.
     #[serde(default)]
     pub pinned: bool,
+    /// Forwarded from another message, whose content, files and embeds it
+    /// shows as its own.
+    #[serde(default)]
+    pub forwarded: bool,
 }
 
 /// A thread a message leads to, as the message carried it; the thread as
@@ -405,6 +413,13 @@ pub fn parse(value: &Value) -> Option<Message> {
         _ => return None,
     };
     let author = &value["author"];
+    // A forward's own content is empty: what it shows is the copy of the
+    // original it carries.
+    let forwarded = value["message_reference"]["type"].as_u64() == Some(FORWARD);
+    let shown = match &value["message_snapshots"][0]["message"] {
+        snapshot @ Value::Object(_) if forwarded => snapshot,
+        _ => value,
+    };
     let reply = (kind == REPLY).then(|| match &value["referenced_message"] {
         Value::Object(_) => {
             let original = &value["referenced_message"];
@@ -417,7 +432,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         }
         _ => Reply::Deleted,
     });
-    let attachments = value["attachments"]
+    let attachments = shown["attachments"]
         .as_array()
         .into_iter()
         .flatten()
@@ -469,9 +484,9 @@ pub fn parse(value: &Value) -> Option<Message> {
             })
         })
         .collect();
-    let mut content = value["content"].as_str().unwrap_or_default().to_owned();
-    let embeds = if value["flags"].as_u64().unwrap_or_default() & SUPPRESS_EMBEDS == 0 {
-        embed::parse(&value["embeds"])
+    let mut content = shown["content"].as_str().unwrap_or_default().to_owned();
+    let embeds = if shown["flags"].as_u64().unwrap_or_default() & SUPPRESS_EMBEDS == 0 {
+        embed::parse(&shown["embeds"])
     } else {
         embed::parse(&Value::Null)
     };
@@ -487,7 +502,7 @@ pub fn parse(value: &Value) -> Option<Message> {
     }));
     // Stickers show as pictures, but Lottie animations, which Yapfast can't draw,
     // show their name.
-    for sticker in value["sticker_items"].as_array().into_iter().flatten() {
+    for sticker in shown["sticker_items"].as_array().into_iter().flatten() {
         let (Some(id), Some(name)) = (sticker["id"].as_str(), sticker["name"].as_str()) else {
             continue;
         };
@@ -534,7 +549,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         attachments,
         embeds: embeds.embeds,
         reactions,
-        editable: matches!(kind, DEFAULT | REPLY),
+        editable: matches!(kind, DEFAULT | REPLY) && !forwarded,
         mentions: ids(&value["mentions"], |user| user["id"].as_str()),
         mention_roles: ids(&value["mention_roles"], Value::as_str),
         mention_everyone: value["mention_everyone"].as_bool().unwrap_or(false),
@@ -553,6 +568,7 @@ pub fn parse(value: &Value) -> Option<Message> {
             _ => ThreadLink::of(&value["thread"]),
         },
         pinned: value["pinned"].as_bool().unwrap_or(false),
+        forwarded,
     })
 }
 
@@ -1426,6 +1442,47 @@ mod tests {
             &json!({"id": "1", "type": 19, "author": {"id": "1"}, "referenced_message": null}),
         );
         assert_eq!(deleted.unwrap().reply, Some(Reply::Deleted));
+    }
+
+    #[test]
+    fn shows_what_a_forward_carries() {
+        let message = parse(&json!({
+            "id": "1300000000000000000",
+            "channel_id": "11",
+            "type": 0,
+            "content": "",
+            "author": {"id": "1", "username": "me"},
+            "attachments": [],
+            "embeds": [],
+            "message_reference": {"type": 1, "channel_id": "12", "message_id": "9", "guild_id": "10"},
+            "message_snapshots": [{"message": {
+                "type": 0,
+                "content": "look",
+                "flags": 0,
+                "attachments": [{"filename": "clip.mp4", "size": 99, "url": "https://cdn/clip.mp4",
+                    "content_type": "video/mp4", "proxy_url": "https://media/clip.mp4", "width": 640, "height": 360}],
+                "embeds": [],
+                "sticker_items": [{"id": "7", "name": "wave", "format_type": 1}],
+            }}],
+        }))
+        .unwrap();
+        assert!(message.forwarded && !message.editable);
+        assert_eq!(message.content, "look");
+        assert_eq!(
+            message.attachments[0].video_url.as_deref(),
+            Some("https://cdn/clip.mp4")
+        );
+        assert_eq!(message.attachments[1].shown, Shown::Sticker);
+
+        // A reply's reference has the default type, so it shows its own content.
+        let reply = parse(&json!({
+            "id": "1", "type": 19, "content": "mine", "author": {"id": "1"},
+            "message_reference": {"type": 0, "message_id": "9"},
+            "referenced_message": {"id": "9", "author": {"id": "2"}, "content": "theirs"},
+        }))
+        .unwrap();
+        assert!(!reply.forwarded);
+        assert_eq!(reply.content, "mine");
     }
 
     #[test]

@@ -386,6 +386,8 @@ export struct MessageRow {
     /// through all three. A body of nothing but emoji shows them large.
     jumbo: bool,
     styled: styled-text, author-styled: styled-text, time-styled: styled-text, edited: bool, deleted: bool,
+    /// Forwarded on Discord: the body, files and embeds are the original's.
+    forwarded: bool,
     reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, reply-picture: image, has-reply: bool,
     /// The original message's item; clicking the reply jumps to it.
     reply-item: string,
@@ -1318,6 +1320,12 @@ export component MessageContent inherits VerticalLayout {
                 if message.bot: Middle { BotTag { } }
                 StyledText { text: message.time-styled; link-color: Theme.link; default-color: Theme.muted; default-font-size: root.message-font-size - 3px; max-lines: 1; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
+            }
+            // As Discord's client marks a forward, above what it carries.
+            if message.forwarded: HorizontalLayout {
+                spacing: 4px; alignment: start;
+                Image { source: @image-url("icons/forward.svg"); width: 16px; image-fit: contain; colorize: Theme.muted; }
+                Text { text: "Forwarded"; color: Theme.muted; font-size: 14px; font-italic: true; vertical-alignment: center; }
             }
             if message.body != "": StyledText {
                 text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;

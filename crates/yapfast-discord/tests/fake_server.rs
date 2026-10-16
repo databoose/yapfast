@@ -1120,6 +1120,14 @@ async fn talks_to_the_fake_server() {
     let downloaded = std::fs::read(&path).unwrap();
     let _ = std::fs::remove_file(&path);
     assert_eq!(&downloaded[4..8], b"ftyp");
+    // A forward of it shows the clip it carries.
+    let forward = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.forwarded => Some(message),
+        _ => None,
+    })
+    .await;
+    assert_eq!(forward.content, "Watch this");
+    assert_eq!(forward.attachments, posted.attachments);
     // So does a linked post's, its card's thumbnail the poster.
     let linked = live_where(&mut live, |event| match event {
         Live::Created(message) if message.content.starts_with("https://vxtwitter.com/") => {
