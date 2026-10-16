@@ -986,6 +986,12 @@ impl i_slint_core::renderer::RendererSealed for SkiaRenderer {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
+        // Yapfast: a resize draws the whole window in the next frame. Windows throws away a
+        // minimized window's pixels and, restoring it, resizes it to the size it had; partial
+        // rendering then presented only what changed, leaving the rest black.
+        if let Some(state) = self.partial_rendering_state() {
+            state.force_screen_refresh();
+        }
 
         if let Some(surface) = self.surface.borrow().as_ref() {
             surface.resize_event(size)

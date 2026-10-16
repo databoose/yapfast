@@ -145,7 +145,9 @@ dependency in Cargo.toml:
   timelines that keep their place as older messages load, and a wheel that
   speeds up when spun fast, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
-  mipmapped pictures, and uncopied fonts and pictures, above.
+  mipmapped pictures, and uncopied fonts and pictures, above, and a whole
+  frame after every resize: Windows restores a minimized window at its old
+  size without its pixels, which partial rendering left black.
 - `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native
   audio tracks and cancellable joins.
 - `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling,
