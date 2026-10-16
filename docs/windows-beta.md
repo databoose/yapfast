@@ -114,11 +114,14 @@ a mapped file, so there Talk creates it with `FILE_FLAG_DELETE_ON_CLOSE` and
 Windows removes it once both processes close it. On Linux it's still unlinked once the worker has it open.
 
 Windows has no screen sharing dialog for Talk to use, so the share menu
-lists what there is to share above the resolution: "Entire screen" (or
-"Screen 1", "Screen 2", … with several), then each window with a title.
-Talk's own windows aren't listed. libwebrtc's capturers make the list, on a
-short-lived thread as the menu opens, and the worker finds the picked one by
-its id. A window closed after it was listed ends sharing with "That screen
+lists what there is to share above the resolution: the screens as pictures,
+two to a row, named "Entire screen" (or "Screen 1", "Screen 2", … with
+several), then each window with a title. Talk's own windows aren't listed.
+libwebrtc's capturers make the list, on a short-lived thread as the menu
+opens, and the worker finds the picked one by its id. The menu opens with
+the screens' names; their pictures come from a worker job (`Job::Glance`)
+that takes one frame of each screen, scaled down to its card, and exits, so
+capturing them takes memory only until they're in. A window closed after it was listed ends sharing with "That screen
 or window is gone." Without a pick, Talk shares the first screen, as before.
 
 Go Live's sound comes from WASAPI process loopback: one stream of everything

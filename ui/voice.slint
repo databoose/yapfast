@@ -989,10 +989,66 @@ export component InputLevel inherits VerticalLayout {
     if root.meter-note == "" && root.muted: Label { text: "Muted. Nothing you say is sent."; }
 }
 
+/// A screen in the share menu, and once it's taken, a picture of it.
+export struct ShareScreen { title: string, picture: image }
+
+// A screen to share in the share menu, as a picture with its name under it.
+component ScreenCard inherits Rectangle {
+    in property <string> text;
+    in property <image> picture;
+    in property <bool> checked;
+    callback clicked;
+    border-radius: 6px;
+    background: pointer.has-hover ? Theme.active : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    VerticalLayout {
+        padding: 4px; spacing: 4px;
+        Rectangle {
+            height: self.width * 9 / 16;
+            border-radius: 4px; background: Theme.sunken; clip: true;
+            // Until its picture comes.
+            if root.picture.width == 0: Image {
+                height: 24px; source: @image-url("icons/screen-share.svg"); image-fit: contain; colorize: Theme.faint;
+            }
+            Image { width: parent.width; height: parent.height; source: root.picture; image-fit: contain; }
+            Rectangle {
+                border-radius: 4px;
+                border-width: root.checked || focus.has-focus ? 2px : 1px;
+                border-color: root.checked || focus.has-focus ? Theme.accent : Theme.line;
+            }
+        }
+        Text {
+            text: root.text; color: root.checked || pointer.has-hover ? Theme.text : Theme.secondary;
+            font-size: 13px; font-weight: root.checked ? 700 : 400;
+            horizontal-alignment: center; overflow: elide;
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+        pointer := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
 // Going live: what to share, where Talk lists it, and the resolution and frame
 // rate to share it at.
 export component ShareMenu inherits Rectangle {
-    in property <[string]> sources;
+    /// The screens, then the windows, to share; a pick counts the screens
+    /// first.
+    in property <[ShareScreen]> screens;
+    in property <[string]> windows;
     in-out property <int> pick-source;
     in-out property <int> pick-resolution;
     in-out property <int> pick-fps;
@@ -1001,22 +1057,40 @@ export component ShareMenu inherits Rectangle {
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     VerticalLayout {
         padding: 6px; spacing: 2px;
-        if root.sources.length > 0: HorizontalLayout {
+        if root.screens.length > 0: HorizontalLayout {
             padding-left: 8px; padding-top: 4px; padding-bottom: 4px;
-            Text { text: "SHARE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+            Text { text: "SCREENS"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
         }
-        if root.sources.length > 0: ScrollView {
+        // Two to a row; one alone sits in the middle.
+        if root.screens.length > 0: Rectangle {
+            property <length> gap: 4px;
+            property <length> card: (self.width - self.gap) / 2;
+            property <length> card-height: self.card * 9 / 16 + 30px;
+            height: ceil(root.screens.length / 2) * (self.card-height + self.gap) - self.gap;
+            for screen[index] in root.screens: ScreenCard {
+                x: root.screens.length == 1 ? (parent.width - parent.card) / 2 : mod(index, 2) * (parent.card + parent.gap);
+                y: floor(index / 2) * (parent.card-height + parent.gap);
+                width: parent.card; height: parent.card-height;
+                text: screen.title; picture: screen.picture; checked: index == root.pick-source;
+                clicked => { root.pick-source = index; }
+            }
+        }
+        if root.windows.length > 0: HorizontalLayout {
+            padding-left: 8px; padding-top: root.screens.length > 0 ? 8px : 4px; padding-bottom: 4px;
+            Text { text: "WINDOWS"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+        }
+        if root.windows.length > 0: ScrollView {
             // Five before the list scrolls.
-            height: min(5, root.sources.length) * 32px;
+            height: min(5, root.windows.length) * 32px;
             VerticalLayout {
-                for source[index] in root.sources: MenuItem {
-                    text: source; checked: index == root.pick-source;
-                    clicked => { root.pick-source = index; }
+                for window[index] in root.windows: MenuItem {
+                    text: window; checked: root.screens.length + index == root.pick-source;
+                    clicked => { root.pick-source = root.screens.length + index; }
                 }
             }
         }
         HorizontalLayout {
-            padding-left: 8px; padding-top: root.sources.length > 0 ? 8px : 4px; padding-bottom: 4px;
+            padding-left: 8px; padding-top: root.screens.length + root.windows.length > 0 ? 8px : 4px; padding-bottom: 4px;
             Text { text: "RESOLUTION"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
         }
         for choice[index] in ["720p", "1080p", "Source"]: MenuItem {

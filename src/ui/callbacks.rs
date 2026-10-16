@@ -1526,22 +1526,98 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     let weak = window.as_weak();
     #[cfg(feature = "discord")]
     window.on_list_share_sources(move || {
+        use talk_core::stream_worker::{Report, Source, Worker};
+        // A picture fills a card in the share menu, in pixels.
+        let scale = weak
+            .upgrade()
+            .map_or(1.0, |window| window.window().scale_factor());
+        let (width, height) = ((160.0 * scale).ceil() as u32, (90.0 * scale).ceil() as u32);
         // Listing starts a capturer for screens and one for windows, so it
         // runs beside the window, and the menu opens when it's done.
         let weak = weak.clone();
         std::thread::spawn(move || {
             let listed = talk_core::stream_worker::shareable();
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                let titles: Vec<SharedString> = listed
+            let (screens, windows): (Vec<_>, Vec<_>) = listed
+                .into_iter()
+                .partition(|listed| matches!(listed.source, Source::Display(_)));
+            let ids: Vec<u64> = screens
+                .iter()
+                .filter_map(|listed| match listed.source {
+                    Source::Display(id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            let opened = weak.upgrade_in_event_loop(move |window| {
+                let rows: Vec<ShareScreen> = screens
+                    .iter()
+                    .map(|listed| ShareScreen {
+                        title: listed.title.as_str().into(),
+                        picture: Default::default(),
+                    })
+                    .collect();
+                let titles: Vec<SharedString> = windows
                     .iter()
                     .map(|listed| listed.title.as_str().into())
                     .collect();
-                window.set_share_sources(Rc::new(VecModel::from(titles)).into());
+                window.set_share_screens(Rc::new(VecModel::from(rows)).into());
+                window.set_share_windows(Rc::new(VecModel::from(titles)).into());
                 SHAREABLE.with_borrow_mut(|shareable| {
-                    *shareable = listed.into_iter().map(|listed| listed.source).collect();
+                    *shareable = screens
+                        .iter()
+                        .chain(&windows)
+                        .map(|listed| listed.source)
+                        .collect();
                 });
                 window.invoke_show_share_menu();
             });
+            if opened.is_err() || ids.is_empty() {
+                return;
+            }
+            // The pictures come from a worker, so capturing the screens takes
+            // memory only until they're in.
+            let (_worker, mut reports) = match Worker::glance(ids, width, height) {
+                Ok(started) => started,
+                Err(error) => {
+                    tracing::warn!("no pictures of the screens to share: {error:#}");
+                    return;
+                }
+            };
+            while let Some(report) = reports.blocking_recv() {
+                match report {
+                    Report::Screen {
+                        id,
+                        width,
+                        height,
+                        rgba,
+                    } => {
+                        let pixels =
+                            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                &rgba, width, height,
+                            );
+                        let _ = weak.upgrade_in_event_loop(move |window| {
+                            let at = SHAREABLE.with_borrow(|shareable| {
+                                shareable
+                                    .iter()
+                                    .position(|&source| source == Source::Display(id))
+                            });
+                            let screens = window.get_share_screens();
+                            if let Some(at) = at
+                                && let Some(mut row) = screens.row_data(at)
+                            {
+                                row.picture = slint::Image::from_rgba8(pixels);
+                                screens.set_row_data(at, row);
+                            }
+                        });
+                    }
+                    Report::Ended { error } => {
+                        if let Some(error) = error {
+                            tracing::warn!("no pictures of the screens to share: {error}");
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
         });
     });
     let state = adapter.clone();

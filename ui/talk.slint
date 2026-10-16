@@ -23,7 +23,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
 import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
-import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, VolumeMenu } from "voice.slint";
+import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, ShareScreen, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
@@ -38,7 +38,7 @@ import { ThreadPanel, NewThreadPanel } from "thread.slint";
 
 // Rust sees these, besides TalkWindow.
 export { Theme, Badges } from "theme.slint";
-export { PersonRow, CallLink } from "voice.slint";
+export { PersonRow, CallLink, ShareScreen } from "voice.slint";
 export { ServerRow, RoomRow, FolderServer } from "rail.slint";
 export { PictureStore, Motion } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
@@ -824,14 +824,16 @@ export component TalkWindow inherits Window {
     callback join-deafened;
     callback toggle-deafen;
     callback toggle-share;
-    /// Share what share-sources lists at this index, or the screen when it
-    /// lists none, at this resolution, as in share-resolution, and frame rate.
+    /// Share what share-screens, then share-windows, list at this index, or
+    /// the screen when they list none, at this resolution, as in
+    /// share-resolution, and frame rate.
     callback go-live(int, int, int);
     /// The screens and windows to share, where Talk lists them (share-lists):
     /// asked for as the share menu opens, which shows once they're in, with
-    /// the first picked.
+    /// the first picked. The screens' pictures come after.
     in property <bool> share-lists;
-    in property <[string]> share-sources;
+    in property <[ShareScreen]> share-screens;
+    in property <[string]> share-windows;
     callback list-share-sources();
     public function show-share-menu() { share-menu.show(); }
     callback stream-tick;
@@ -1159,10 +1161,11 @@ export component TalkWindow inherits Window {
     share-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);
-        width: 240px;
+        // Wider for the screens' pictures.
+        width: root.share-screens.length > 0 ? 336px : 240px;
         close-policy: PopupClosePolicy.close-on-click-outside;
         ShareMenu {
-            sources: root.share-sources; pick-source <=> root.pick-source;
+            screens: root.share-screens; windows: root.share-windows; pick-source <=> root.pick-source;
             pick-resolution <=> root.pick-resolution; pick-fps <=> root.pick-fps;
             go-live(source, resolution, fps) => { root.go-live(source, resolution, fps); share-menu.close(); }
         }

@@ -110,6 +110,14 @@ pub enum Job {
         speakers: Option<String>,
         volume: f32,
     },
+    /// Takes a picture of each screen in `screens`, by the ids [`shareable`]
+    /// listed them with, scaled down to fit `width` by `height`, for the
+    /// share menu to show. Each comes as a [`Report::Screen`].
+    Glance {
+        screens: Vec<u64>,
+        width: u32,
+        height: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +265,15 @@ pub enum Report {
     },
     /// The video played to its end, and waits there.
     Finished,
+    /// A picture of the screen [`shareable`] listed by `id`, for
+    /// [`Job::Glance`]: RGBA pixels, `width` by `height`.
+    Screen {
+        id: u64,
+        width: u32,
+        height: u32,
+        #[serde(with = "base64_pixels")]
+        rgba: Vec<u8>,
+    },
     /// The job ended: without an error when it was told to stop.
     Ended { error: Option<String> },
 }
@@ -373,6 +390,15 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 volume,
             };
             crate::video_player::play(job, writer, received, &stop, report)
+        }
+        Job::Glance {
+            screens,
+            width,
+            height,
+        } => {
+            report(Report::Ready);
+            glance(&screens, width, height, &stop, report);
+            Ok(())
         }
     });
     report(Report::Ended {
@@ -865,23 +891,8 @@ fn capture_screen(
         let mut seen = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match result {
             Ok(frame) => {
-                let (width, height) = (frame.width().max(1) as u32, frame.height().max(1) as u32);
-                let mut picture = I420Buffer::new(width, height);
-                let (y_stride, u_stride, v_stride) = picture.strides();
-                let (y, u, v) = picture.data_mut();
-                // libyuv's ARGB is B, G, R, A in memory, as the capturer's frames are.
-                yuv_helper::argb_to_i420(
-                    frame.data(),
-                    frame.stride(),
-                    y,
-                    y_stride,
-                    u,
-                    u_stride,
-                    v,
-                    v_stride,
-                    width as i32,
-                    height as i32,
-                );
+                let mut picture = picture_of(&frame);
+                let (width, height) = (picture.width(), picture.height());
                 let size = fit(width, height, max_width, max_height);
                 if size != (width, height) {
                     picture = picture.scale(size.0 as i32, size.1 as i32);
@@ -935,6 +946,131 @@ fn capture_screen(
     Ok(())
 }
 
+/// A captured frame as an I420 picture of its size.
+fn picture_of(frame: &livekit::webrtc::desktop_capturer::DesktopFrame) -> I420Buffer {
+    let (width, height) = (frame.width().max(1) as u32, frame.height().max(1) as u32);
+    let mut picture = I420Buffer::new(width, height);
+    let (y_stride, u_stride, v_stride) = picture.strides();
+    let (y, u, v) = picture.data_mut();
+    // libyuv's ARGB is B, G, R, A in memory, as the capturer's frames are.
+    yuv_helper::argb_to_i420(
+        frame.data(),
+        frame.stride(),
+        y,
+        y_stride,
+        u,
+        u_stride,
+        v,
+        v_stride,
+        width as i32,
+        height as i32,
+    );
+    picture
+}
+
+/// How long [`glance`] waits for a picture of a screen that isn't black,
+/// before showing the last it took, or none.
+#[cfg(not(target_os = "linux"))]
+const GLANCE_WAIT: Duration = Duration::from_millis(1500);
+
+/// Takes a picture of each of `screens`, as [`Job::Glance`] asks. A screen
+/// that gives none goes without, and the rest still come.
+fn glance(
+    screens: &[u64],
+    max_width: u32,
+    max_height: u32,
+    stop: &AtomicBool,
+    report: &mut dyn FnMut(Report),
+) {
+    // On Linux the system's dialog shows what there is to share.
+    #[cfg(target_os = "linux")]
+    let _ = (screens, max_width, max_height, stop, report);
+    #[cfg(not(target_os = "linux"))]
+    for &id in screens {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        match glance_at(id, stop) {
+            Ok(Some(mut picture)) => {
+                let (width, height) = fit(picture.width(), picture.height(), max_width, max_height);
+                if (width, height) != (picture.width(), picture.height()) {
+                    picture = picture.scale(width as i32, height as i32);
+                }
+                let mut rgba = vec![0; (width * height * 4) as usize];
+                to_rgba(&picture, &mut rgba);
+                report(Report::Screen {
+                    id,
+                    width,
+                    height,
+                    rgba,
+                });
+            }
+            Ok(None) => tracing::info!(id, "no picture of the screen came"),
+            Err(error) => tracing::warn!(id, "no picture of the screen: {error:#}"),
+        }
+    }
+}
+
+/// A picture of the screen listed by `id`, at its own size.
+#[cfg(not(target_os = "linux"))]
+fn glance_at(id: u64, stop: &AtomicBool) -> Result<Option<I420Buffer>> {
+    use livekit::webrtc::desktop_capturer::{
+        CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
+    };
+    let mut capturer = DesktopCapturer::new(DesktopCapturerOptions::new(
+        DesktopCaptureSourceType::Screen,
+    ))
+    .context("Screen sharing isn't available on this system.")?;
+    let source = capturer
+        .get_source_list()
+        .into_iter()
+        .find(|listed| listed.id() == id)
+        .context("That screen is gone.")?;
+    // The last picture taken, and whether capture stopped for good.
+    let taken = Arc::new(Mutex::new((None::<I420Buffer>, false)));
+    let into = taken.clone();
+    capturer.start_capture(Some(source), move |result| {
+        let mut taken = into.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match result {
+            Ok(frame) => taken.0 = Some(picture_of(&frame)),
+            Err(CaptureError::Temporary) => {}
+            Err(CaptureError::Permanent) => taken.1 = true,
+        }
+    });
+    // A screen's first picture can come black, before the system has
+    // drawn it for the capturer.
+    let deadline = Instant::now() + GLANCE_WAIT;
+    loop {
+        capturer.capture_frame();
+        let mut taken = taken
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lit = taken.0.as_ref().is_some_and(|picture| !is_black(picture));
+        if lit || taken.1 || Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
+            return Ok(taken.0.take());
+        }
+        drop(taken);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Pixels in a report as base64: a third bigger than they are, where JSON's
+/// array of numbers would be up to four times.
+mod base64_pixels {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(pixels: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(pixels))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        // base64 has nothing JSON escapes, so the line lends it as it is.
+        let text = <&str>::deserialize(deserializer)?;
+        STANDARD.decode(text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Talk's handle on a running worker. Dropping it stops the worker.
 pub struct Worker {
     child: Child,
@@ -964,6 +1100,21 @@ impl Worker {
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
+    }
+
+    /// Starts taking pictures of `screens` for the share menu, each fitting
+    /// `width` by `height`. They come as [`Report::Screen`]s, then
+    /// [`Report::Ended`].
+    pub fn glance(
+        screens: Vec<u64>,
+        width: u32,
+        height: u32,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Report>)> {
+        Self::start(&Job::Glance {
+            screens,
+            width,
+            height,
+        })
     }
 
     /// Starts watching the stream at `server`, with pictures for the UI in a
@@ -1279,6 +1430,63 @@ mod tests {
         writeln!(feed, "stop").unwrap();
         serving.join().unwrap();
         assert_eq!(reports.recv().unwrap(), Report::Ended { error: None });
+    }
+
+    #[test]
+    fn a_screen_picture_survives_its_report_line() {
+        let report = Report::Screen {
+            id: 7,
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 0, 255, 255],
+        };
+        let line = serde_json::to_string(&report).unwrap();
+        assert!(line.contains(r#""rgba":"/wAA/wAA//8=""#), "{line}");
+        assert_eq!(serde_json::from_str::<Report>(&line).unwrap(), report);
+    }
+
+    /// Takes a picture of each listed screen, as the share menu shows them.
+    #[test]
+    #[ignore = "needs a desktop where Talk lists what to share"]
+    fn glances_at_the_listed_screens() {
+        let screens: Vec<u64> = shareable()
+            .into_iter()
+            .filter_map(|listed| match listed.source {
+                Source::Display(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert!(!screens.is_empty(), "no screen");
+        let job = Job::Glance {
+            screens: screens.clone(),
+            width: 320,
+            height: 180,
+        };
+        let (input, mut feed) = std::io::pipe().unwrap();
+        writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
+        let mut reports = vec![];
+        serve(Box::new(BufReader::new(input)), &mut |report| {
+            reports.push(report)
+        });
+        let pictured: Vec<u64> = reports
+            .iter()
+            .filter_map(|report| match report {
+                Report::Screen {
+                    id,
+                    width,
+                    height,
+                    rgba,
+                } => {
+                    eprintln!("screen {id}: {width}x{height}");
+                    assert!(*width <= 320 && *height <= 180);
+                    assert_eq!(rgba.len(), (width * height * 4) as usize);
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pictured, screens);
+        assert_eq!(reports.last(), Some(&Report::Ended { error: None }));
     }
 
     /// Lists what there is to share, and shares the first screen and the

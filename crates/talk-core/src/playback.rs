@@ -127,7 +127,10 @@ impl Playback {
                 return false;
             }
             Wake::Report(Some(
-                Report::Sharing { .. } | Report::Streaming | Report::Preview { .. },
+                Report::Sharing { .. }
+                | Report::Streaming
+                | Report::Preview { .. }
+                | Report::Screen { .. },
             )) => {}
         }
         true
