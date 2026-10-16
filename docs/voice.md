@@ -148,9 +148,12 @@ the one it watches, plays the call's join or leave an octave higher, quicker
 and quieter, as Discord's client sounds a stream's viewers; a call sound at the
 same moment wins, and a stream starting or ending makes no viewer sound.
 
-`sounds.rs` makes each sound as it plays, so nothing is bundled. The four sets
-are Felt piano, Soft marimba, Mellow Rhodes and Glow, all in F major pentatonic
-so any two sound well together. They play on the call's speakers through
+`sounds.rs` makes each sound as it plays. The six sets are Felt piano, Soft
+marimba, Mellow Rhodes, Glow, New Kalimba and Flute, all in F major pentatonic
+so any two sound well together. The first four are synthesized; New Kalimba and
+Flute play the same notes on one recorded note each, made with ElevenLabs'
+sound generator and kept as 24 kHz samples in `crates/yapfast-core/sounds/`
+(38 KB each), played faster or slower for each note. They play on the call's speakers through
 `audio_io.rs`, on Linux and Windows, like ringing. Settings › Sounds chooses
 the set and the volume, from 0% to 200%. A slider's percentage becomes a gain
 by its square, which spreads the quiet settings along more of it. At 100%, the

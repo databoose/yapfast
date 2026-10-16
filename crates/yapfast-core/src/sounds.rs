@@ -1,8 +1,9 @@
 //! Yapfast's own short sounds for calls and messages: joining and leaving, mute and
 //! deafen, a new message or mention, and someone starting or stopping
-//! watching a stream. They come in four sets with one
+//! watching a stream. They come in six sets with one
 //! character each, all in F major pentatonic so any two sound well together.
-//! Each is made when it plays, so nothing is stored or bundled.
+//! Four are synthesized as they play; two play the score on one recorded
+//! note each, the only sound bundled.
 
 use std::sync::Arc;
 
@@ -25,10 +26,76 @@ pub enum SoundSet {
     Rhodes,
     /// Three sine waves a little apart, which shimmer.
     Glow,
+    /// A recorded kalimba's pluck.
+    NewKalimba,
+    /// A recorded breathy wooden flute, shaped into a struck note.
+    Flute,
 }
 
 impl SoundSet {
-    pub const ALL: [Self; 4] = [Self::Felt, Self::Marimba, Self::Rhodes, Self::Glow];
+    /// In the order Settings lists them, which `layout.json` doesn't depend on.
+    pub const ALL: [Self; 6] = [
+        Self::Felt,
+        Self::Marimba,
+        Self::Rhodes,
+        Self::Glow,
+        Self::NewKalimba,
+        Self::Flute,
+    ];
+
+    /// Whether the set plays a recorded note rather than a synthesized one.
+    fn recorded(self) -> bool {
+        matches!(self, Self::NewKalimba | Self::Flute)
+    }
+}
+
+/// One recorded note: 24 kHz mono 16-bit little-endian samples, made with
+/// ElevenLabs' sound generator, and the note it plays at its own speed. The
+/// score plays it faster or slower for each of its notes.
+struct Sample {
+    pcm: &'static [u8],
+    root: f32,
+}
+
+/// The rate [`Sample`]s are stored at. Recorded sets are low-passed at
+/// [`SAMPLED_CUTOFF`], so nothing above 12 kHz is needed.
+const SAMPLE_RATE: f32 = 24_000.0;
+
+/// G4, a few cents sharp.
+static KALIMBA: Sample = Sample {
+    pcm: include_bytes!("../sounds/kalimba.pcm"),
+    root: 67.06,
+};
+
+/// Recorded near C6 and played two octaves up from the score, its own register:
+/// from C4 the score sounds C6.
+static FLUTE: Sample = Sample {
+    pcm: include_bytes!("../sounds/flute.pcm"),
+    root: 59.95,
+};
+
+impl Sample {
+    /// The recording at `time` seconds played `speed` times as fast, between
+    /// stored samples by a straight line, and silent past its end.
+    fn at(&self, time: f32, speed: f32) -> f32 {
+        let position = time * SAMPLE_RATE * speed;
+        let index = position as usize;
+        let read = |index: usize| {
+            self.pcm.get(index * 2..index * 2 + 2).map_or(0.0, |bytes| {
+                f32::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0
+            })
+        };
+        let between = position - index as f32;
+        read(index) * (1.0 - between) + read(index + 1) * between
+    }
+
+    /// One note at `hz`, `time` seconds after it starts. A recording can't
+    /// ring for less time, so `fade` below 1 fades it out sooner instead, as
+    /// the synthesized sets shorten their notes.
+    fn voice(&self, hz: f32, time: f32, fade: f32) -> f32 {
+        let sooner = (1.0 / fade - 1.0) / 0.25;
+        self.at(time, hz / frequency(self.root)) * (-time * sooner).exp() * attack(time, 0.002)
+    }
 }
 
 /// What a sound announces.
@@ -152,6 +219,8 @@ fn voice(set: SoundSet, hz: f32, time: f32, velocity: f32, fade: f32) -> f32 {
                 * decay(0.2 * longer * fade)
                 * attack(time, 0.006)
         }
+        SoundSet::NewKalimba => KALIMBA.voice(hz, time, fade),
+        SoundSet::Flute => FLUTE.voice(hz, time, fade),
         SoundSet::Glow => {
             let longer = (440.0 / hz).powf(0.3);
             let tone = (sine(0.9975) + sine(1.0) + sine(1.0025)) / 3.0
@@ -204,6 +273,10 @@ fn room() -> [Vec<f32>; 2] {
     })
 }
 
+/// Where recorded sets are low-passed: the synthesized ones' 3 kHz would take
+/// the kalimba's ring and the flute's breath, so only the top goes.
+const SAMPLED_CUTOFF: f32 = 9000.0;
+
 /// How much of the room is heard against the sound itself.
 const ROOM: f32 = 0.07;
 
@@ -224,7 +297,14 @@ pub fn render(set: SoundSet, sound: Sound) -> Vec<f32> {
             *sample += velocity * voice(set, hz, index as f32 / RATE as f32, velocity, fade);
         }
     }
-    low_pass(&mut dry, 3000.0);
+    low_pass(
+        &mut dry,
+        if set.recorded() {
+            SAMPLED_CUTOFF
+        } else {
+            3000.0
+        },
+    );
 
     let room = room();
     let length = (dry.len() + room[0].len()).next_power_of_two();

@@ -795,7 +795,7 @@ export component SoundSettings inherits VerticalLayout {
         spacing: 8px;
         SettingsHeading { text: "SOUND SET"; }
         Choices {
-            label: "Sound set"; options: ["Felt piano", "Soft marimba", "Mellow Rhodes", "Glow"];
+            label: "Sound set"; options: ["Felt piano", "Soft marimba", "Mellow Rhodes", "Glow", "New Kalimba", "Flute"];
             max-width: 520px;
             current <=> root.sound-set;
             chosen => { root.preferences-changed(); root.play(0); }
