@@ -46,7 +46,7 @@ do commands, run in order; the first error stops the rest:
   theme ID   chooses a theme, such as yap, sakura or custom:1, as Appearance does
   window close|open|destroy|create|hide|show|trim|stats   acts on the window:
       close as its close button does (to the tray, or quit without one),
-      open as the tray's Open Yapfast; stats writes glibc's heap to talk.log
+      open as the tray's Open Yapfast; stats writes glibc's heap to yapfast.log
   tray activate | menu | click LABEL | icon NAME | off | on   with --tray:
       clicks the icon, prints or chooses its menu's items, saves its picture
       to shots/NAME.png, or stops and starts the stand-in tray

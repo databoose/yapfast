@@ -19,8 +19,7 @@ The [later list](#later) has the rest.
 
 Yapfast connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Yapfast joins Discord voice as that person,
-shows their servers, channels and DMs, and sends and receives messages. This is
-part of the private beta. Yapfast must still be complete without Discord: nothing
+shows their servers, channels and DMs, and sends and receives messages. Yapfast must still be complete without Discord: nothing
 Discord-related appears until someone links an account, and Discord work doesn't
 replace beta features of Yapfast itself.
 

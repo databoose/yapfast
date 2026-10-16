@@ -188,13 +188,8 @@ nix develop path:./nix#windows --command scripts/build-windows
 
 The package appears in `target/dist`. Extract it on Windows and open `yapfast.exe`.
 The sign-in screen defaults to `https://matrix.org`. See the
-[Windows beta guide](docs/windows-beta.md) for account and two-machine checks,
+[Windows guide](docs/windows-beta.md) for two-machine checks,
 and [building](docs/building.md) for native Windows prerequisites.
-
-## Shared beta server
-
-The shared private beta uses `https://matrix.org`, with public voice
-services and closed registration.
 
 ## Try voice locally
 

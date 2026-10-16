@@ -200,12 +200,11 @@ through WASAPI.
 
 ## Run the local demo
 
-For testing with a friend on another machine, use
-the shared beta deployment at `matrix.org`.
-It includes **Yapfast beta**, encrypted **general** and the persistent **Lounge**
-voice channel.
+For testing with a friend on another machine, use two accounts on a
+homeserver that offers MatrixRTC voice (the requirements are listed below),
+in an encrypted space with a text channel and a voice channel.
 
-From the project folder, enter the development shell and start the services:
+To test on one machine, from the project folder, enter the development shell and start the services:
 
 ```sh
 nix develop path:./nix
@@ -268,7 +267,7 @@ one native window removed its participant from the other account. Release
 performance remains unverified.
 
 On 2026-10-02 the user confirmed audio in both directions between Linux and the
-Windows x64 build on the shared beta, along with mute/deafen and browsing text
+Windows x64 build on a test homeserver, along with mute/deafen and browsing text
 channels while voice stays connected. This is a manual user report; exact Windows,
 GPU/driver and audio-device models remain unrecorded. See [the Windows report](windows-beta.md).
 

@@ -934,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the deployed beta and its saved Alice session; joins muted without recording"]
+    #[ignore = "requires a homeserver with MatrixRTC and a saved Alice session in the test data's beta folder; joins muted without recording"]
     fn remote_beta_join_muted_and_leave() {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let runtime = crate::runtime::BackgroundRuntime::new().unwrap();
@@ -943,10 +943,6 @@ mod tests {
             let rooms: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(root.join("rooms.json")).unwrap()).unwrap();
             let alice = Session::restore(root.join("alice")).await.unwrap();
-            assert_eq!(
-                alice.client.homeserver().as_str(),
-                "https://matrix.org/"
-            );
             let sync = alice.start_sync().await.unwrap();
             sync.wait_until_ready().await.unwrap();
             assert!(alice.device_is_trusted().await.unwrap());

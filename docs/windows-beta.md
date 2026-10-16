@@ -1,4 +1,4 @@
-# Windows private beta
+# Windows
 
 The portable package targets Intel/AMD PCs running 64-bit Windows 10 or 11.
 The homeserver is prefilled as `https://matrix.org` and remains editable.
@@ -10,8 +10,9 @@ GPUI package. Recheck the new UI on the tester's PC.
 
 1. Copy `target/dist/Yapfast-0.1.0-windows-x64.zip` to the tester's PC.
 2. Extract the whole ZIP, then double-click `yapfast.exe` in the extracted folder.
-3. Sign in as `bob`, using the password supplied privately by the account owner.
-4. Open **Yapfast beta**, then **general** for encrypted text or **Lounge** for voice.
+3. Sign in with a Matrix account. Voice needs a homeserver that offers MatrixRTC
+   (see [voice](voice.md)).
+4. Open an encrypted room for text, or a voice channel for voice.
 
 The package needs no Rust or Visual Studio installation. It includes the native
 media code and Skia renderer. Opened from Explorer, Yapfast shows only its
