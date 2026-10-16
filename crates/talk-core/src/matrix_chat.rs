@@ -598,6 +598,8 @@ impl Matrix {
             Command::RemoveReactor { .. } => {}
             // Talk pins only Discord's messages.
             Command::Pin { .. } => {}
+            // Matrix's attachments have no address, which copying asks for.
+            Command::CopyAttachment { .. } => {}
             Command::Delete { room, item } => {
                 let result = match (active_timeline(open.as_ref(), &room), parse_item(&item)) {
                     (Some(timeline), Some(id)) => timeline.redact(&id, None).await.map_err(|_| ()),
@@ -1876,6 +1878,7 @@ async fn publish_timeline(
                             preview_failed: matches!(cached, Some(None)),
                             placement: Placement::Message,
                             gif: None,
+                            url: None,
                             spoiler: false,
                             video: false,
                             preview: cached.flatten(),
@@ -1896,6 +1899,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             gif: None,
+                            url: None,
                             spoiler: false,
                             video: false,
                         }];
@@ -1915,6 +1919,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             gif: None,
+                            url: None,
                             spoiler: false,
                             video: false,
                         }];
@@ -1934,6 +1939,7 @@ async fn publish_timeline(
                             preview_failed: false,
                             placement: Placement::Message,
                             gif: None,
+                            url: None,
                             spoiler: false,
                             video: false,
                         }];

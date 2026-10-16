@@ -2142,6 +2142,7 @@ fn videos_play_in_the_open_room_until_it_closes() {
         gif: None,
         spoiler: false,
         video,
+        url: None,
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
@@ -2208,6 +2209,7 @@ fn the_viewer_steps_through_a_messages_images() {
         gif: None,
         spoiler: false,
         video: false,
+        url: None,
     };
     app.apply(Event::Timeline {
         room: "dm".into(),
@@ -2272,6 +2274,56 @@ fn the_viewer_steps_through_a_messages_images() {
     );
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
     assert!(app.state.viewer.is_none(), "another room closes it");
+}
+
+#[test]
+fn a_picture_with_an_address_is_copied_to_the_clipboard() {
+    let mut app = connected();
+    let file = |url: Option<&str>| chat::Attachment {
+        name: "cat.png".into(),
+        size: None,
+        image: true,
+        dimensions: None,
+        preview: None,
+        preview_failed: false,
+        placement: chat::Placement::Message,
+        gif: None,
+        spoiler: false,
+        video: false,
+        url: url.map(Into::into),
+    };
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![ChatMessage {
+            id: "m".into(),
+            item: "e:m".into(),
+            attachments: vec![file(None), file(Some("https://cdn.example/cat.png"))],
+            ..Default::default()
+        }]),
+    });
+    let copy = |index| Action::CopyAttachment {
+        item: "e:m".into(),
+        index,
+    };
+    assert!(
+        app.dispatch(copy(0)).is_empty(),
+        "a picture without an address can't be downloaded to copy"
+    );
+    assert!(matches!(
+        app.dispatch(copy(1)).as_slice(),
+        [Effect::Backend(Command::CopyAttachment { room, index: 1, .. })] if room == "dm"
+    ));
+    assert!(matches!(
+        app.apply(Event::Copied(Ok(b"png".to_vec()))).as_slice(),
+        [Effect::CopyPicture(picture)] if picture == b"png"
+    ));
+    app.apply(Event::Copied(Err(
+        "Talk couldn't copy this picture. Save it instead.",
+    )));
+    assert_eq!(
+        app.state.notice.as_deref(),
+        Some("Talk couldn't copy this picture. Save it instead.")
+    );
 }
 
 #[test]
@@ -3966,6 +4018,7 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
             gif: None,
             spoiler: false,
             video: false,
+            url: None,
         }],
         ..message(&format!("e:${index}"), false)
     };
@@ -6464,6 +6517,7 @@ fn favourite_gifs_show_from_disk_and_stars_wait_for_discords() {
             gif: Some(gif.clone()),
             spoiler: false,
             video: false,
+            url: None,
         }],
         ..message("e:$1", false)
     };

@@ -70,7 +70,7 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
     Some(Attachment {
         name: name.to_owned(),
         size: None,
-        url: proxy.to_owned(),
+        url: proxy.into(),
         image: !matches!(shown, Shown::Poster(_)),
         dimensions,
         preview_url: Some(preview_url),
@@ -90,13 +90,13 @@ fn picture(value: &Value, shown: Shown, thumbnail: bool) -> Option<Attachment> {
 /// the video can't play. The file is the video, by its own name. Without a
 /// video the proxy has, the picture plays, if it moves.
 fn gif(picture: &mut Attachment, embed: &Value) {
-    picture.link_url = embed["url"].as_str().map(str::to_owned);
+    picture.link_url = embed["url"].as_str().map(Into::into);
     picture.animated = true;
     let video = &embed["video"];
     if let Some(proxy) = video["proxy_url"].as_str() {
         picture.still_url = picture.preview_url.replace(proxy.to_owned());
         picture.view_url = Some(proxy.to_owned());
-        picture.url = proxy.to_owned();
+        picture.url = proxy.into();
         if let Some(name) = file_name(video["url"].as_str().unwrap_or(proxy)) {
             picture.name = name.to_owned();
         }
@@ -147,7 +147,7 @@ pub fn parse(embeds: &Value) -> Parsed {
                         picture.link_url = source["url"]
                             .as_str()
                             .or(embed["url"].as_str())
-                            .map(str::to_owned);
+                            .map(Into::into);
                     }
                     parsed.pictures.push(picture);
                     parsed.hides.extend(url);
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(gif.preview_url.as_deref(), Some(mp4));
         assert_eq!(gif.view_url.as_deref(), Some(mp4));
         assert!(gif.still_url.as_deref().unwrap().contains("cat.png?"));
-        assert_eq!((gif.name.as_str(), gif.url.as_str()), ("cat.mp4", mp4));
+        assert_eq!((gif.name.as_str(), &*gif.url), ("cat.mp4", mp4));
         assert_eq!(gif.link_url.as_deref(), Some("https://tenor.com/view/cat"));
         assert!(gif.animated);
         assert_eq!(parsed.hides, ["https://tenor.com/view/cat"]);

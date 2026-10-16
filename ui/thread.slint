@@ -53,6 +53,9 @@ export component ThreadPanel inherits Rectangle {
     /// A message's reaction picker or menu, opening beside what was clicked.
     callback open-picker(string, length, length, length, length);
     callback open-menu(MessageRow, length, length, length, length);
+    /// A message's menu from a right click on its picture or video at this
+    /// index of its attachments, which may be one.
+    callback open-media-menu(MessageRow, int, bool, length, length);
     callback confirm-delete-message;
     callback cancel-delete;
     callback author-card(string, string, length, length, length, length);
@@ -185,6 +188,12 @@ export component ThreadPanel inherits Rectangle {
                                 reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                                 view-image(id, index) => { root.view-image(id, index); }
                                 save-attachment(id, index) => { root.save-attachment(id, index); }
+                                media-menu(id, index, video, x, y) => {
+                                    if !message.deleted && message.delivery == "" {
+                                        root.active-item = message.item;
+                                        root.open-media-menu(message, index, video, x, y);
+                                    }
+                                }
                             }
                         }
                     }

@@ -921,6 +921,9 @@ export component TalkWindow inherits Window {
     callback cancel-send(string);
     callback attach;
     callback save-attachment(string, int);
+    callback copy-attachment(string, int);
+    /// An attachment's address on the web, or empty when it has none.
+    pure callback attachment-link(string, int) -> string;
     callback view-image(string, int);
     callback step-image(int);
     callback close-image();
@@ -1288,8 +1291,19 @@ export component TalkWindow inherits Window {
         }
     }
     function open-menu(message: MessageRow) {
+        root.open-message-menu(message, -1, false);
+    }
+    // A message's menu, with what can be done with its picture or video at
+    // this index of its attachments, from a right click on it.
+    property <int> menu-media: -1;
+    property <bool> menu-video;
+    property <string> menu-link;
+    function open-message-menu(message: MessageRow, media: int, video: bool) {
         root.menu-message = message;
         root.menu-aside = false;
+        root.menu-media = media;
+        root.menu-video = video;
+        root.menu-link = media >= 0 ? root.attachment-link(message.item, media) : "";
         message-menu.show();
     }
     property <bool> picker-open: emoji-picker.is-open;
@@ -1464,6 +1478,10 @@ export component TalkWindow inherits Window {
             copy-text(text) => { root.copy-text(text); message-menu.close(); }
             pin-message(item) => { root.pin-message(item); message-menu.close(); }
             request-delete(item) => { root.request-delete(item); message-menu.close(); }
+            media-index: root.menu-media; media-video: root.menu-video; media-link: root.menu-link;
+            copy-image(item, index) => { root.copy-attachment(item, index); message-menu.close(); }
+            save-attachment(item, index) => { root.save-attachment(item, index); message-menu.close(); }
+            open-link(link) => { root.open-link(link); message-menu.close(); }
         }
     }
 
@@ -2161,6 +2179,14 @@ export component TalkWindow inherits Window {
                                                         reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                                                         view-image(id, index) => { root.view-image(id, index); }
                                                         save-attachment(id, index) => { root.save-attachment(id, index); }
+                                                        // A right click on a picture opens the message's menu with it.
+                                                        media-menu(id, index, video, x, y) => {
+                                                            if !message.deleted && message.delivery == "" {
+                                                                root.active-item = message.item;
+                                                                root.anchor(x, y, 0px, 0px, true);
+                                                                root.open-message-menu(message, index, video);
+                                                            }
+                                                        }
                                                     }
                                                     // A window of older messages ends with what's after it: newer
                                                     // messages loading, or a way to load them.
@@ -2500,6 +2526,7 @@ export component TalkWindow inherits Window {
                         react(item, key) => { root.react(item, key); }
                         open-picker(item, x, y, width, height) => { root.anchor(x, y, width, height, false); root.open-picker(item); }
                         open-menu(message, x, y, width, height) => { root.anchor(x, y, width, height, width == 0px); root.open-menu(message); root.menu-aside = true; }
+                        open-media-menu(message, index, video, x, y) => { root.anchor(x, y, 0px, 0px, true); root.open-message-menu(message, index, video); root.menu-aside = true; }
                         confirm-delete-message => { root.confirm-delete-message(); }
                         cancel-delete => { root.cancel-delete(); }
                         author-card(item, sender, x, y, width, height) => { root.author-card(item, sender, x, y, width, height); }

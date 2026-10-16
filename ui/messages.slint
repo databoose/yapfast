@@ -294,6 +294,8 @@ component VideoControls inherits HorizontalLayout {
 component VideoCell inherits Rectangle {
     in property <string> item;
     in property <ImageCell> cell;
+    /// A right click, at this place in the window.
+    callback menu(length, length);
     property <bool> active: VideoPlayer.item == root.item && VideoPlayer.index == root.cell.index;
     property <bool> failed: root.active && VideoPlayer.error != "";
     accessible-role: button;
@@ -309,6 +311,11 @@ component VideoCell inherits Rectangle {
         mouse-cursor: MouseCursor.pointer;
         clicked => {
             if root.active && !root.failed { VideoPlayer.toggle(); } else { VideoPlayer.play(root.item, root.cell.index, root.width, root.height); }
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
         }
         if root.active && !root.failed && !VideoPlayer.loading && (pointer.has-hover || !VideoPlayer.playing): Rectangle {
             y: parent.height - self.height; height: 36px;
@@ -527,9 +534,16 @@ export component EmojiPicker inherits Rectangle {
 }
 
 // A message's actions, from its hover bar's "More" button or a right click:
-// frequent reactions, then what can be done with it.
+// frequent reactions, then what can be done with it. A right click on a
+// picture or video adds what can be done with that.
 export component MessageMenu inherits Rectangle {
     in property <MessageRow> menu-message;
+    /// The picture or video right-clicked, by its index in the message's
+    /// attachments; -1 for none.
+    in property <int> media-index: -1;
+    in property <bool> media-video;
+    /// Its address on the web, or empty when it has none.
+    in property <string> media-link;
     in property <bool> menu-can-react;
     /// The reactions this device uses most.
     in property <[EmojiCell]> menu-reactions;
@@ -551,6 +565,9 @@ export component MessageMenu inherits Rectangle {
     callback start-thread(string);
     callback view-thread(string);
     callback view-reactions(string);
+    callback copy-image(string, int);
+    callback save-attachment(string, int);
+    callback open-link(string);
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     menu-content := VerticalLayout {
@@ -601,6 +618,23 @@ export component MessageMenu inherits Rectangle {
             icon: root.menu-message.pinned ? @image-url("icons/pin-off.svg") : @image-url("icons/pin.svg");
             clicked => { root.pin-message(root.menu-message.item); }
         }
+        if root.media-index >= 0 && (root.media-link != "" || !root.preview): Rectangle { height: 1px; background: Theme.line; }
+        if root.media-index >= 0 && root.media-link != "" && !root.media-video && !root.preview: MenuItem {
+            text: "Copy Image"; icon: @image-url("icons/image.svg");
+            clicked => { root.copy-image(root.menu-message.item, root.media-index); }
+        }
+        if root.media-index >= 0 && !root.preview: MenuItem {
+            text: root.media-video ? "Save Video" : "Save Image"; icon: @image-url("icons/download.svg");
+            clicked => { root.save-attachment(root.menu-message.item, root.media-index); }
+        }
+        if root.media-index >= 0 && root.media-link != "": MenuItem {
+            text: "Copy Link"; icon: @image-url("icons/link.svg");
+            clicked => { root.copy-text(root.media-link); }
+        }
+        if root.media-index >= 0 && root.media-link != "": MenuItem {
+            text: "Open Link"; icon: @image-url("icons/external-link.svg");
+            clicked => { root.open-link(root.media-link); }
+        }
         if root.menu-message.can-delete && root.composer-enabled: Rectangle { height: 1px; background: Theme.line; }
         if root.menu-message.can-delete && root.composer-enabled: MenuItem {
             text: "Delete message"; icon: @image-url("icons/trash-2.svg"); danger: true;
@@ -618,6 +652,9 @@ export component MessageGallery inherits HorizontalLayout {
     callback reveal-attachment(string, int);
     callback view-image(string, int);
     callback save-attachment(string, int);
+    /// A right click on a picture or video: the message, the attachment's
+    /// index, whether it's a video, and where in the window.
+    callback media-menu(string, int, bool, length, length);
     padding-top: 4px;
     Rectangle {
         width: root.message.gallery-width * 1px; height: root.message.gallery-height * 1px;
@@ -632,6 +669,11 @@ export component MessageGallery inherits HorizontalLayout {
                 clicked => {
                     if cell.spoiler { root.reveal-attachment(root.message.item, cell.index); } else { root.view-image(root.message.item, cell.index); }
                 }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                        root.media-menu(root.message.item, cell.index, cell.video, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
                 // Inside the touch area, so the pointer on it still hovers the GIF.
                 if cell.gif != "" && !cell.spoiler && !root.preview && root.message.delivery == "": FavoriteStar {
                     x: 8px; y: 8px;
@@ -642,6 +684,7 @@ export component MessageGallery inherits HorizontalLayout {
             }
             if cell.video && !cell.spoiler && !cell.loading && !root.preview: VideoCell {
                 width: parent.width; height: parent.height; item: root.message.item; cell: cell;
+                menu(x, y) => { root.media-menu(root.message.item, cell.index, true, x, y); }
             }
             if root.active-item == root.message.item && !root.preview && root.message.delivery == "" && !cell.spoiler: Rectangle {
                 x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
@@ -758,6 +801,8 @@ export component EmbedView inherits HorizontalLayout {
     callback open-link(string);
     callback reveal-attachment(string, int);
     callback view-image(string, int);
+    /// A right click on a picture, as [`MessageGallery`] has it.
+    callback media-menu(string, int, bool, length, length);
     padding-top: 4px;
     // The card takes its height from its contents' layout, which measures
     // wrapped text at the width the card gets. A height bound to their
@@ -814,10 +859,16 @@ export component EmbedView inherits HorizontalLayout {
                                     if cell.spoiler { root.reveal-attachment(root.item, cell.index); }
                                     else if root.embed.video { root.open-link(root.embed.url); } else { root.view-image(root.item, cell.index); }
                                 }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                        root.media-menu(root.item, cell.index, cell.video, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                    }
+                                }
                             }
                             // A video file the media proxy has plays here; others open in the browser.
                             if cell.video && !cell.spoiler && !cell.loading: VideoCell {
                                 width: parent.width; height: parent.height; item: root.item; cell: cell;
+                                menu(x, y) => { root.media-menu(root.item, cell.index, true, x, y); }
                             }
                         }
                     }
@@ -834,6 +885,11 @@ export component EmbedView inherits HorizontalLayout {
                     TouchArea {
                         mouse-cursor: MouseCursor.pointer;
                         clicked => { root.view-image(root.item, root.embed.thumbnail-index); }
+                        pointer-event(event) => {
+                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                root.media-menu(root.item, root.embed.thumbnail-index, false, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
                     }
                 }
             }
@@ -1173,6 +1229,7 @@ export component MessageContent inherits VerticalLayout {
     callback reveal-attachment(string, int);
     callback view-image(string, int);
     callback save-attachment(string, int);
+    callback media-menu(string, int, bool, length, length);
     HorizontalLayout {
         padding-left: root.start-padding; padding-right: root.end-padding; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
         Rectangle {
@@ -1277,6 +1334,7 @@ export component MessageContent inherits VerticalLayout {
                 reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                 view-image(id, index) => { root.view-image(id, index); }
                 save-attachment(id, index) => { root.save-attachment(id, index); }
+                media-menu(id, index, video, x, y) => { root.media-menu(id, index, video, x, y); }
             }
             if message.stickers.length > 0: MessageStickers { stickers: message.stickers; }
             for file in message.files: FileCard {
@@ -1291,6 +1349,7 @@ export component MessageContent inherits VerticalLayout {
                 open-link(link) => { root.open-link(link); }
                 reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                 view-image(id, index) => { root.view-image(id, index); }
+                media-menu(id, index, video, x, y) => { root.media-menu(id, index, video, x, y); }
             }
             if message.thread-room != "": ThreadChip {
                 name: message.thread-name; detail: message.thread-detail;

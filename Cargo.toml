@@ -38,10 +38,12 @@ talk-core = { path = "crates/talk-core", default-features = false }
 talk-ui = { path = "crates/talk-ui", optional = true }
 # Opens links clicked in messages in the default browser.
 webbrowser = { version = "1", optional = true }
-# Files and pictures pasted into the composer. Slint already carries arboard for text.
-arboard = { version = "3.6", default-features = false, features = ["image-data"], optional = true }
-# Saves pictures pasted as pixels to PNG files to attach.
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# Files and pictures pasted into the composer, and pictures copied from
+# messages. Slint already carries arboard for text.
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"], optional = true }
+# Saves pictures pasted as pixels to PNG files to attach, and reads pictures
+# copied from messages.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
 tempfile = { workspace = true, optional = true }
 tracing.workspace = true
 # The code the Discord phone app scans to link an account.

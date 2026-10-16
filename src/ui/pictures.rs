@@ -737,6 +737,7 @@ mod tests {
                 gif: None,
                 spoiler: false,
                 video: false,
+                url: None,
             })
             .collect();
         let row = message_row(
@@ -795,6 +796,7 @@ mod tests {
                 gif: None,
                 spoiler: false,
                 video: false,
+                url: None,
             };
         let one = found_row(
             &ChatMessage {

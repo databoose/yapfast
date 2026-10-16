@@ -983,6 +983,10 @@ pub struct Attachment {
     pub video: bool,
     /// A GIF that can be a favourite: a linked one, or an attached `.gif`.
     pub gif: Option<Gif>,
+    /// Its address on the web, which Copy Link and Open Link give, and from
+    /// which [`Command::CopyAttachment`] copies its picture. Only Discord's
+    /// attachments have one.
+    pub url: Option<Arc<str>>,
 }
 
 /// What [`Command::Video`] tells the video playing.
@@ -1286,6 +1290,13 @@ pub enum Command {
         item: String,
         index: usize,
         path: PathBuf,
+    },
+    /// Download the picture of the attachment at `index` in an item's
+    /// attachments, for the clipboard; it arrives as [`Event::Copied`].
+    CopyAttachment {
+        room: String,
+        item: String,
+        index: usize,
     },
     /// Download an image attachment at viewing size; it arrives as
     /// [`Event::Image`].
@@ -1815,6 +1826,7 @@ impl Command {
             | Command::Retry { room, .. }
             | Command::Cancel { room, .. }
             | Command::SaveAttachment { room, .. }
+            | Command::CopyAttachment { room, .. }
             | Command::ViewImage { room, .. }
             | Command::PlayVideo { room, .. }
             | Command::Typing { room, .. }
@@ -2089,6 +2101,9 @@ pub enum Event {
         name: String,
         result: Result<(), &'static str>,
     },
+    /// The picture [`Command::CopyAttachment`] downloaded: the file as it
+    /// came, for the clipboard; or why it couldn't.
+    Copied(Result<Vec<u8>, &'static str>),
     Trust {
         trusted: bool,
         error: Option<&'static str>,
