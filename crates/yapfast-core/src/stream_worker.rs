@@ -621,7 +621,9 @@ fn watch(
         .ok()
     });
     let mut decoder: Option<Decoder> = None;
-    let mut rgba = vec![];
+    // A frame that doesn't fit scales through this, a picture of the size
+    // shown; one that does goes straight into the shared frame.
+    let mut scratch = vec![];
     let mut shown = false;
     let mut failures = 0u64;
     while !stop.load(Ordering::Relaxed) {
@@ -667,14 +669,12 @@ fn watch(
             }
         };
         let (width, height) = (picture.width, picture.height);
-        rgba.resize((width * height * 4) as usize, 0);
-        picture.to_rgba(&mut rgba);
         if writer.fits(width, height) && width <= max_width && height <= max_height {
-            writer.write(width, height, |pixels| pixels.copy_from_slice(&rgba));
+            writer.write(width, height, |pixels| picture.to_rgba(pixels));
         } else {
-            let size = fit(width, height, max_width, max_height);
-            writer.write(size.0, size.1, |pixels| {
-                scale(&rgba, (width, height, width * 4), pixels, size)
+            let (width, height) = fit(width, height, max_width, max_height);
+            writer.write(width, height, |pixels| {
+                picture.i420().to_rgba(&mut scratch, pixels, width, height)
             });
         }
         if !shown {
@@ -784,37 +784,6 @@ fn to_rgba(picture: &I420Buffer, pixels: &mut [u8]) {
         width as i32,
         height as i32,
     );
-}
-
-/// Scales RGBA pixels down, averaging each 2 by 2 block it lands on.
-fn scale(
-    source: &[u8],
-    (width, height, stride): (u32, u32, u32),
-    target: &mut [u8],
-    (target_width, target_height): (u32, u32),
-) {
-    let at = |x: u32, y: u32| (y.min(height - 1) * stride + x.min(width - 1) * 4) as usize;
-    for y in 0..target_height {
-        let sy = y * height / target_height;
-        for x in 0..target_width {
-            let sx = x * width / target_width;
-            let corners = [
-                at(sx, sy),
-                at(sx + 1, sy),
-                at(sx, sy + 1),
-                at(sx + 1, sy + 1),
-            ];
-            let average = |channel: usize| {
-                (corners
-                    .iter()
-                    .map(|&corner| u32::from(source.get(corner + channel).copied().unwrap_or(0)))
-                    .sum::<u32>()
-                    / 4) as u8
-            };
-            let out = ((y * target_width + x) * 4) as usize;
-            target[out..out + 4].copy_from_slice(&[average(0), average(1), average(2), 255]);
-        }
-    }
 }
 
 // libwebrtc asks the screen sharing portal over D-Bus through GIO, but
@@ -1306,15 +1275,6 @@ mod tests {
         assert_eq!(kbps(1080, Some(4_000_000)), 4000, "what the path carries");
         assert_eq!(kbps(720, Some(9_000_000)), 3500, "never past the cap");
         assert_eq!(kbps(1080, Some(100_000)), 500, "nor below a screen's floor");
-    }
-
-    #[test]
-    fn scales_rgba_down() {
-        // Two by two red-green-blue-black pixels make one average.
-        let source = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255];
-        let mut target = [0; 4];
-        scale(&source, (2, 2, 8), &mut target, (1, 1));
-        assert_eq!(target, [63, 63, 63, 255]);
     }
 
     #[test]
