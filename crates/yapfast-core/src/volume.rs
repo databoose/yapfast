@@ -1,8 +1,8 @@
-//! How loud each person sounds in calls, and their stream's sound, as a
-//! share of how they come: 1.0 unchanged, 0.0 silent, up to [`MAX`]. People
-//! are named as their network does, by Discord user id or Matrix user id.
-//! The UI remembers the choices and sets them here; the calls' audio reads
-//! them as it plays.
+//! How loud each person sounds in calls, and their stream's sound, as the
+//! gain they play at: 1.0 as they come, 0.0 silent, up to [`MAX`]. People are
+//! named as their network does, by Discord user id or Matrix user id. The UI
+//! remembers the choices and sets them here; the calls' audio reads them as
+//! it plays. Its sliders show them on Discord's scale; see [`from_slider`].
 
 use std::{
     collections::{HashMap, HashSet},
@@ -14,11 +14,48 @@ use tokio::sync::watch;
 /// Twice as loud, as Discord allows.
 pub const MAX: f32 = 2.0;
 
+/// The gain of a slider at `value`, from 0 to 200, as Discord's volume
+/// sliders map it: below 100 on a power curve, `(value / 100)^2.8`, so 50 is
+/// about -17 dB; above it 6 dB more for each 100, so 200 is about twice as
+/// loud. A linear slider made everything loud: 40 on Discord's is 0.077, not
+/// 0.4.
+pub fn from_slider(value: f32) -> f32 {
+    let share = value.max(0.0) / 100.0;
+    if share < 1.0 {
+        share.powf(2.8)
+    } else {
+        10f32.powf((share - 1.0) * 6.0 / 20.0)
+    }
+}
+
+/// The slider value that plays at `gain`; see [`from_slider`].
+pub fn to_slider(gain: f32) -> f32 {
+    if gain <= 0.0 {
+        0.0
+    } else if gain < 1.0 {
+        gain.powf(1.0 / 2.8) * 100.0
+    } else {
+        (20.0 * gain.log10() / 6.0 + 1.0) * 100.0
+    }
+}
+
 /// A person's voice, or their stream's sound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Voice,
     Stream,
+}
+
+impl Kind {
+    /// The gain unless one is chosen: voices as they come, and a stream's
+    /// sound at Discord's default of 0.18, about 54 on the slider, since
+    /// it's played as loud as the streamer's computer makes it.
+    pub fn default_gain(self) -> f32 {
+        match self {
+            Kind::Voice => 1.0,
+            Kind::Stream => 0.18,
+        }
+    }
 }
 
 /// The volumes chosen, voices' then streams', by person; looked up by
@@ -32,12 +69,12 @@ fn volumes(kind: Kind) -> &'static RwLock<HashMap<String, f32>> {
     &VOLUMES[kind as usize]
 }
 
-/// Sets how loud `person` sounds; 1.0 forgets the choice.
+/// Sets how loud `person` sounds; the default gain forgets the choice.
 pub fn set(kind: Kind, person: &str, volume: f32) {
     let volume = volume.clamp(0.0, MAX);
     {
         let mut volumes = volumes(kind).write().unwrap();
-        if (volume - 1.0).abs() < f32::EPSILON {
+        if (volume - kind.default_gain()).abs() < f32::EPSILON {
             volumes.remove(person);
         } else {
             volumes.insert(person.to_owned(), volume);
@@ -53,7 +90,7 @@ pub fn get(kind: Kind, person: &str) -> f32 {
         .unwrap()
         .get(person)
         .copied()
-        .unwrap_or(1.0)
+        .unwrap_or(kind.default_gain())
 }
 
 /// Mutes `person`'s voice for this account alone, keeping their volume
@@ -128,7 +165,7 @@ mod tests {
         assert_eq!(heard(Kind::Voice, "volume-test-3"), 0.0);
         assert_eq!(
             heard(Kind::Stream, "volume-test-3"),
-            1.0,
+            Kind::Stream.default_gain(),
             "their stream plays"
         );
         assert_eq!(
@@ -138,5 +175,21 @@ mod tests {
         );
         mute("volume-test-3", false);
         assert_eq!(heard(Kind::Voice, "volume-test-3"), 0.5);
+    }
+
+    #[test]
+    fn sliders_follow_discords_curve() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert_eq!(from_slider(0.0), 0.0, "silent");
+        assert!(close(from_slider(100.0), 1.0), "as they come");
+        assert!(close(from_slider(50.0), 0.143), "about -17 dB");
+        assert!(close(from_slider(40.0), 0.077));
+        assert!(close(from_slider(200.0), 1.995), "6 dB louder");
+        for value in [1.0, 18.0, 40.0, 99.0, 100.0, 150.0, 200.0] {
+            assert!(close(to_slider(from_slider(value)), value), "{value}");
+        }
+        // A stream's default shows at about 54, as on Discord.
+        assert_eq!(to_slider(Kind::Stream.default_gain()).round(), 54.0);
+        assert_eq!(get(Kind::Stream, "volume-test-4"), 0.18);
     }
 }

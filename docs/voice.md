@@ -168,7 +168,12 @@ their reported name, and selects them by their current index instead.
 
 Right-clicking someone in a call, in the sidebar or on their tile, sets how
 loud they sound from 0% to 200%, and their stream's sound too while they're
-live. A drag snaps to 100% near it. Yapfast remembers both by Discord or Matrix
+live. A drag snaps to 100% near it. The sliders follow Discord's, read from its
+web client: below 100% the gain is `(slider / 100)^2.8`, so 50% is about −17 dB
+and 40% a gain of 0.077; above it each 100% adds 6 dB (`volume::from_slider`).
+A linear slider had a music bot at 4% to sound as Discord's 40% did. A
+stream's sound plays at Discord's default gain of 0.18, about 54% on the
+slider, and voices at 1.0. Yapfast remembers the gains by Discord or Matrix
 user id in `layout.json`, so they hold in every call and after a restart. Discord
 voice scales each person as it mixes the call, and a watched stream's worker
 scales its sound. Yapfast calls play remote audio inside WebRTC, which LiveKit's

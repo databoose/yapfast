@@ -1037,15 +1037,21 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         } else {
             yapfast_core::volume::Kind::Voice
         };
-        (yapfast_core::volume::get(kind, &person) * 100.0).round() as i32
+        yapfast_core::volume::to_slider(yapfast_core::volume::get(kind, &person)).round() as i32
     });
     let state = adapter.clone();
-    window.on_volume_changed(move |person, stream, percent, done| {
-        let volume = percent as f32 / 100.0;
+    window.on_volume_changed(move |person, stream, value, done| {
         let kind = if stream {
             yapfast_core::volume::Kind::Stream
         } else {
             yapfast_core::volume::Kind::Voice
+        };
+        // Within a step of the default is the default, as Discord snaps it.
+        let default = kind.default_gain();
+        let volume = if (value as f32 - yapfast_core::volume::to_slider(default)).abs() < 1.0 {
+            default
+        } else {
+            yapfast_core::volume::from_slider(value as f32)
         };
         yapfast_core::volume::set(kind, &person, volume);
         // The drag's last step is remembered, rather than every one.
@@ -1056,7 +1062,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             } else {
                 &mut adapter.layout.volumes
             };
-            if percent == 100 {
+            if volume == default {
                 volumes.remove(person.as_str());
             } else {
                 volumes.insert(person.into(), volume);
