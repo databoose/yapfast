@@ -112,6 +112,8 @@ mod linux {
             hints.insert("category", Value::from("im.received"));
             // Talk plays its own sounds, and rings for a call itself.
             hints.insert("suppress-sound", Value::from(true));
+            // The server finds Talk's name and icon through its desktop entry.
+            hints.insert("desktop-entry", Value::from(crate::icon::APP_ID));
             if let Some(picture) = &alert.picture
                 && let Some(image) = image_data(picture)
             {

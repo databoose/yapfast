@@ -107,7 +107,9 @@ Only joined channels appear; standalone rooms outside Spaces
 are not shown in this navigation yet. Preview messages disappear
 when you leave the preview. Closing the window leaves Talk running in the
 system tray, with any call, where its icon opens it again or quits; without a
-tray it quits Talk ([the tray](docs/tray.md)).
+tray it quits Talk ([the tray](docs/tray.md)). For Talk's icon on its window
+and in the launcher, run `scripts/install-desktop-entry` once after a release
+build ([the app icon](docs/building.md#the-app-icon)).
 
 `path:./nix` also works before files are tracked and keeps Cargo output out of
 the Nix source snapshot. The shell provides Clang 21, Protobuf, desktop libraries,

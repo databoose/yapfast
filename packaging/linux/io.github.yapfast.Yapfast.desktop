@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Talk
+GenericName=Chat
+Comment=Chat and voice for Matrix and Discord
+Exec=talk
+Icon=io.github.yapfast.Yapfast
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+Keywords=Matrix;Discord;Voice;
+StartupWMClass=io.github.yapfast.Yapfast

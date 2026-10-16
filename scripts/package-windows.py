@@ -15,8 +15,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
-SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
-SOURCE_DIRECTORIES = (".cargo", "src", "ui", "crates", "scripts", "nix", "vendor", "testing", "deploy", "docs")
+SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
+SOURCE_DIRECTORIES = (".cargo", "src", "ui", "packaging", "crates", "scripts", "nix", "vendor", "testing", "deploy", "docs")
 
 
 def digest(path):
@@ -45,7 +45,8 @@ def main():
     executable = args.exe.resolve()
     newest_input = max(path.stat().st_mtime for path in
                        [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "build.rs",
-                        *list((ROOT / "src").rglob("*.rs")), *list((ROOT / "ui").rglob("*"))]
+                        *list((ROOT / "src").rglob("*.rs")), *list((ROOT / "ui").rglob("*")),
+                        *list((ROOT / "packaging").rglob("*"))]
                        if path.is_file())
     if executable.stat().st_mtime < newest_input:
         raise SystemExit("Windows executable predates the current UI; run scripts/build-windows first")

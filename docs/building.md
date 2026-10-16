@@ -298,6 +298,26 @@ keyboard focus, navigation, both renderers, resizing, normal close, and reopen
 on the tester's actual GPU. Record Windows and GPU versions in compatibility.md.
 Windows execution has not been demonstrated by a Linux build.
 
+## The app icon
+
+`packaging/icon.svg` is Talk's icon: the logo in marigold, its dots in
+on-accent ink, so it reads on a light taskbar as well as a dark one. The UI
+keeps drawing `ui/icons/logo.svg`.
+
+On Linux the window's app ID is `io.github.yapfast.Yapfast` (`src/icon.rs`).
+Wayland desktops show a window's icon only through the desktop entry of that
+name, `packaging/linux/io.github.yapfast.Yapfast.desktop`;
+`scripts/install-desktop-entry [EXECUTABLE]` installs it and the icon for
+this user, running `target/release/talk` unless told otherwise. On X11 the
+window also carries the icon itself. Notifications name the entry, so the
+notification server shows the same name and icon.
+
+On Windows, `build.rs` compiles `packaging/windows/talk.rc` with `llvm-rc`
+and links the icon into `talk.exe`, for Explorer and shortcuts; the window
+loads it from there for its title bar and the taskbar, each at the size
+Windows draws it. After changing `icon.svg`, run `scripts/make-windows-icon`
+to draw `talk.ico` again.
+
 ## Logs
 
 Talk logs only its own operational events at info level and above. Dependency

@@ -104,8 +104,10 @@ pub fn run(
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name(renderer.into())
+        .with_winit_window_attributes_hook(crate::icon::attributes)
         .select()
         .context("could not select the Slint desktop backend")?;
+    slint::set_xdg_app_id(crate::icon::APP_ID).context("could not set Talk's app ID")?;
     let gpu = plan.renderer == graphics::Renderer::Gpu;
     let failed = |error: slint::PlatformError, context: &'static str| -> Result<Exit> {
         let reason = error.to_string();
