@@ -282,13 +282,27 @@ impl Application {
     /// Discord's menu.
     fn discord_channel_choices(&self, id: &str, listed: &[MenuChoice]) -> Vec<MenuChoice> {
         let mut choices = listed.to_vec();
-        // A thread is neither invited to nor managed as a channel is.
+        // A thread is neither invited to nor managed as a channel is. Its
+        // menu joins or leaves it, after marking it read, as Discord's does.
         if self
             .state
             .rooms
             .iter()
             .any(|room| room.id == id && room.parent.is_some())
         {
+            if self.state.discord_online
+                && let Some(joined) = self.thread_joined(id)
+            {
+                let at = usize::from(choices.first() == Some(&MenuChoice::MarkRead));
+                choices.insert(
+                    at,
+                    if joined {
+                        MenuChoice::LeaveThread
+                    } else {
+                        MenuChoice::JoinThread
+                    },
+                );
+            }
             return choices;
         }
         if self.state.discord_online
@@ -348,6 +362,44 @@ impl Application {
             .unwrap_or(choices.len());
         choices.splice(at..at, managing);
         choices
+    }
+
+    /// Whether this account is in a Discord thread, by its room id; none for
+    /// a room that isn't a thread Yapfast knows.
+    fn thread_joined(&self, room: &str) -> Option<bool> {
+        #[cfg(feature = "discord")]
+        {
+            let (guild, channel) = discord::parse_room(room)?;
+            let snapshot = self.discord.as_ref()?;
+            let server = snapshot.servers.iter().find(|server| server.id == guild)?;
+            server
+                .channel(channel)?
+                .thread
+                .as_ref()
+                .map(|thread| thread.joined)
+        }
+        #[cfg(not(feature = "discord"))]
+        {
+            let _ = room;
+            None
+        }
+    }
+
+    /// Joins a Discord thread from its menu, or leaves it. It lists, or
+    /// stops listing, once Discord confirms it; one left stays open, as in
+    /// Discord's client.
+    pub(super) fn join_thread(&mut self, room: String, join: bool) -> Vec<Effect> {
+        let choice = if join {
+            MenuChoice::JoinThread
+        } else {
+            MenuChoice::LeaveThread
+        };
+        if !self.menu_choices(&room).contains(&choice) {
+            return vec![];
+        }
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::JoinThread { room, join },
+        ))]
     }
 
     /// Whether this account pinned a Discord channel, by its room id, to

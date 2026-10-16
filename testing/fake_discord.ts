@@ -185,7 +185,10 @@
 // POST /channels/{id}/threads start threads as Discord does, with
 // THREAD_CREATE, THREAD_MEMBERS_UPDATE adding Alice, the message's
 // MESSAGE_UPDATE and the THREAD_CREATED notice; GET /_control/thread-creates
-// lists each body sent.
+// lists each body sent. POST /channels/{id}/thread-members/@me, as Discord's
+// client joins a thread (the docs say PUT, which works too), and DELETE,
+// which leaves it, answer as Discord does; GET /_control/thread-members
+// lists each request's method and `location`.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -1197,6 +1200,15 @@ function joinThread(thread: Thread) {
   dispatch("THREAD_CREATE", { ...wireThread(thread), newly_created: false });
 }
 
+/** Takes Alice out of a thread, telling her, as Discord does. */
+function leaveThread(thread: Thread) {
+  if (!thread.members.delete(ALICE)) return;
+  dispatch("THREAD_MEMBERS_UPDATE", {
+    id: thread.id, guild_id: GUILD, member_count: thread.members.size,
+    added_members: [], removed_member_ids: [ALICE],
+  });
+}
+
 // "Plans", from Bob's welcome: its first message points back at it.
 // It was opened again as the fake started, so it lists under #general for
 // its three days, as a thread this quiet otherwise wouldn't.
@@ -1237,6 +1249,9 @@ const reactorPages: string[] = [];
 const reactorRemovals: string[] = [];
 /** Each search of a channel's threads, as GET /_control/thread-searches lists them. */
 const threadSearches: string[] = [];
+/** Each time Alice joined or left a thread, as GET /_control/thread-members
+ *  lists them: the method, then the `location` Discord's client sends. */
+const threadMemberRequests: string[] = [];
 /** Each thread Alice started: the channel, the message, if any, and the body
  *  she sent, as GET /_control/thread-creates lists them. */
 const threadCreates: Record<string, unknown>[] = [];
@@ -3656,6 +3671,15 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   // `archived` picks a kind, `name` finds them by the words of their names,
   // the newest message first, `limit` from the `offset`th. The first search
   // of each channel answers 202, as Discord's does while it indexes it.
+  if ((m = path.match(/^\/channels\/(\d+)\/thread-members\/@me$/)) && ["POST", "PUT", "DELETE"].includes(method)) {
+    const thread = threads.get(m[1]!);
+    if (!thread || !visibleThread(thread)) return notFound("Unknown Channel", 10003);
+    if (thread.archived) return json({ message: "Thread is archived", code: 50083 }, 400);
+    threadMemberRequests.push(`${method} ${url.searchParams.get("location")}`);
+    if (method === "DELETE") leaveThread(thread);
+    else joinThread(thread);
+    return empty();
+  }
   if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/threads\/search$/))) {
     const parent = m[1]!;
     if (!messages.has(parent) || privates.has(parent) || threads.has(parent)) return notFound("Unknown Channel", 10003);
@@ -4506,7 +4530,7 @@ const GENERIC_CONTROLS = new Set([
   "voice-identifies", "voice-changes", "call-audio", "call-video", "voice-link", "voice-drop", "voice-move",
   "stream-move", "sessions", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
-  "reactor-removals", "thread-searches", "thread-creates", "typed", "acks", "invites",
+  "reactor-removals", "thread-searches", "thread-creates", "thread-members", "typed", "acks", "invites",
 ]);
 
 /** A status's emoji as the env gives it, Unicode or `<:name:id>`, as Discord sends it. */
@@ -5351,6 +5375,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/thread-creates") {
       return Response.json(threadCreates);
+    }
+    if (req.method === "GET" && path === "/_control/thread-members") {
+      return Response.json(threadMemberRequests);
     }
     if (req.method === "POST" && path === "/_control/thread-archive") {
       plans.archived = !url.searchParams.has("open");

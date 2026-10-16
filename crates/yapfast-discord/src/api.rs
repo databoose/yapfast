@@ -642,6 +642,19 @@ impl Api {
             .await
     }
 
+    /// Joins a thread, or leaves it with `join` false, as Discord's client
+    /// does: a POST to join, though the docs say PUT, and `location` saying
+    /// where in the client, such as "Context Menu". Discord answers with
+    /// THREAD_MEMBERS_UPDATE.
+    pub async fn thread_member(&self, thread: &str, join: bool, location: &str) -> Result<()> {
+        let path = format!(
+            "/channels/{thread}/thread-members/@me?location={}",
+            encode(location)
+        );
+        let method = if join { Method::POST } else { Method::DELETE };
+        self.empty(self.request(method, &path)).await
+    }
+
     /// Shows others that this account is typing in `channel`.
     pub async fn typing(&self, channel: &str) -> Result<()> {
         let path = format!("/channels/{channel}/typing");

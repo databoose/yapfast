@@ -1225,6 +1225,11 @@ pub enum Action {
         room: String,
         pinned: bool,
     },
+    /// Join a Discord thread, by its room id, or leave it with `join` false.
+    JoinThread {
+        room: String,
+        join: bool,
+    },
     /// Open the invite dialog of a Discord server, by its server id, or of
     /// a channel, by its room id, which makes a link at once; make another
     /// that lasts `max_age` seconds, 0 for good, and works `max_uses`
@@ -2071,6 +2076,7 @@ impl Application {
                 self.change_notifications(place, change)
             }
             Action::PinChannel { room, pinned } => self.pin_channel(room, pinned),
+            Action::JoinThread { room, join } => self.join_thread(room, join),
             Action::OpenInvite(place) => self.open_invite(place),
             Action::MakeInvite { max_age, max_uses } => self.make_invite(max_age, max_uses),
             Action::CloseInvite => {

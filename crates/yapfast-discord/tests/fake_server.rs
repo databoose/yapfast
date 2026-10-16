@@ -2581,6 +2581,7 @@ async fn talks_to_the_fake_server() {
     .await;
 
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
+    joins_and_leaves_threads_as_discords_client_does(&discord, server).await;
     marks_quiet_threads_as_discords_client_does(&discord, server).await;
     lists_who_reacted_as_discords_client_does(&discord, server, &guild, &general).await;
     finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
@@ -2635,6 +2636,34 @@ async fn next_step(shown: &mut tokio::sync::mpsc::UnboundedReceiver<Step>) -> St
         .await
         .expect("timed out linking")
         .expect("linking stopped")
+}
+
+/// Joining a thread from its menu, then leaving it, as Discord's client
+/// does; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn joins_and_leaves_threads_as_discords_client_does(discord: &Discord, server: &str) {
+    let book_club = |snapshot: &Snapshot| {
+        snapshot.servers[0]
+            .threads
+            .iter()
+            .find(|thread| thread.name == "Book club")
+            .and_then(|thread| Some((thread.id.clone(), thread.thread.as_deref()?.joined)))
+    };
+    let (id, joined) = book_club(&discord.snapshots().borrow()).unwrap();
+    assert!(!joined);
+    discord.join_thread(&id, true).await.unwrap();
+    snapshot_where(discord, |snapshot| {
+        book_club(snapshot).is_some_and(|(_, joined)| joined)
+    })
+    .await;
+    discord.join_thread(&id, false).await.unwrap();
+    snapshot_where(discord, |snapshot| {
+        book_club(snapshot).is_some_and(|(_, joined)| !joined)
+    })
+    .await;
+    assert_eq!(
+        self::control(server, "GET", "/_control/thread-members", ""),
+        r#"["POST Context Menu","DELETE Context Menu"]"#
+    );
 }
 
 /// A channel's list of threads, as Discord's client fills it; part of

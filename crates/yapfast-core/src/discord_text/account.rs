@@ -689,6 +689,7 @@ pub(super) fn command(
         | DiscordCommand::Mute { .. }
         | DiscordCommand::Notifications { .. }
         | DiscordCommand::PinChannel { .. }
+        | DiscordCommand::JoinThread { .. }
         | DiscordCommand::Member { .. }),
     ) = command
     {
@@ -1020,6 +1021,14 @@ fn change_person(
                     },
                 )
             }
+            DiscordCommand::JoinThread { room, join } => (
+                discord.join_thread(&channel(&room), join).await,
+                if join {
+                    "join the thread"
+                } else {
+                    "leave the thread"
+                },
+            ),
             DiscordCommand::Mute { room, muting } => {
                 let (muted, seconds) = mute(muting);
                 let result = discord.mute_private(&channel(&room), muted, seconds).await;

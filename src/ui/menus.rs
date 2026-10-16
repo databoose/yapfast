@@ -107,6 +107,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::HideMuted => 2,
                 MenuChoice::CopyLink
                 | MenuChoice::CopyId
+                | MenuChoice::JoinThread
+                | MenuChoice::LeaveThread
                 | MenuChoice::Invite
                 | MenuChoice::PinChannel
                 | MenuChoice::UnpinChannel => 3,
@@ -279,6 +281,8 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::DuplicateChannel => ("Duplicate channel", &icons.duplicate),
         MenuChoice::DeleteChannel => ("Delete channel", &icons.delete),
         MenuChoice::LeaveServer => ("Leave server", &icons.leave),
+        MenuChoice::JoinThread => ("Join thread", &icons.thread),
+        MenuChoice::LeaveThread => ("Leave thread", &icons.leave),
         MenuChoice::EditServerProfile => ("Edit server profile", &icons.rename),
     }
 }
@@ -826,6 +830,10 @@ pub(super) fn choose(
         MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
         MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
         MenuChoice::LeaveServer => Some(Action::AskLeaveServer(target)),
+        MenuChoice::JoinThread | MenuChoice::LeaveThread => Some(Action::JoinThread {
+            room: target,
+            join: choice == MenuChoice::JoinThread,
+        }),
         // From a server's menu, or one's own in its member list.
         MenuChoice::EditServerProfile => {
             if person {
@@ -881,7 +889,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 54] = [
+const CHOICES: [MenuChoice; 56] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::Profile,
@@ -928,6 +936,8 @@ const CHOICES: [MenuChoice; 54] = [
     MenuChoice::DuplicateChannel,
     MenuChoice::DeleteChannel,
     MenuChoice::LeaveServer,
+    MenuChoice::JoinThread,
+    MenuChoice::LeaveThread,
     MenuChoice::EditServerProfile,
     MenuChoice::LocalMute,
     MenuChoice::SelfMute,
@@ -986,6 +996,8 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::DuplicateChannel => "duplicate-channel",
         MenuChoice::DeleteChannel => "delete-channel",
         MenuChoice::LeaveServer => "leave-server",
+        MenuChoice::JoinThread => "join-thread",
+        MenuChoice::LeaveThread => "leave-thread",
         MenuChoice::EditServerProfile => "edit-server-profile",
         MenuChoice::LocalMute => "local-mute",
         MenuChoice::SelfMute => "self-mute",

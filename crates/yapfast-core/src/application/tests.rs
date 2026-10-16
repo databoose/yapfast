@@ -2769,9 +2769,27 @@ fn discord_threads_open_once_listed() {
     ));
     let thread = app.state.selected_room().unwrap();
     assert_eq!(thread.parent.as_deref(), Some("discord:10:21"));
-    // Its menu has no channel's notifications, invites or managing.
+    // Its menu has no channel's notifications, invites or managing, and
+    // joins it.
     let choices = app.menu_choices("discord:10:30");
-    assert_eq!(choices, [MenuChoice::CopyLink, MenuChoice::CopyId]);
+    assert_eq!(
+        choices,
+        [
+            MenuChoice::JoinThread,
+            MenuChoice::CopyLink,
+            MenuChoice::CopyId
+        ]
+    );
+    let join = |join| Action::JoinThread {
+        room: "discord:10:30".into(),
+        join,
+    };
+    assert!(matches!(
+        app.dispatch(join(true)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::JoinThread { room, join: true }))]
+            if room == "discord:10:30"
+    ));
+    assert!(app.dispatch(join(false)).is_empty(), "it isn't in it");
 
     // One Discord won't give says why, and doesn't open later.
     app.dispatch(Action::Open("discord:10:31".into()));
@@ -2791,6 +2809,10 @@ fn discord_threads_open_once_listed() {
             .any(|room| room.id == "discord:10:31")
     );
     assert_eq!(app.state.selected.as_deref(), Some("discord:10:30"));
+    // One it's in, it leaves.
+    let choices = app.menu_choices("discord:10:31");
+    assert!(choices.contains(&MenuChoice::LeaveThread));
+    assert!(!choices.contains(&MenuChoice::JoinThread));
 }
 
 #[test]

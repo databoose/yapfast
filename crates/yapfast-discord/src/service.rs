@@ -1604,6 +1604,13 @@ impl Discord {
         });
     }
 
+    /// Joins a thread from its menu, or leaves it with `join` false.
+    /// Snapshots show it once Discord's THREAD_MEMBERS_UPDATE comes; one
+    /// left stays open, as in Discord's client.
+    pub async fn join_thread(&self, thread: &str, join: bool) -> Result<()> {
+        self.api.thread_member(thread, join, "Context Menu").await
+    }
+
     /// Leaves a server this account doesn't own. Snapshots drop it once its
     /// GUILD_DELETE comes.
     pub async fn leave_server(&self, guild: &str) -> Result<()> {

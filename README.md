@@ -82,8 +82,8 @@ yourself](#build-it-yourself). **macOS** isn't supported.
 - **Messages** you can send, reply to, edit, react to, pin and attach files
   to, with Markdown, embeds, custom emoji, stickers and spoilers, uploads
   included.
-- **Threads**: start one from a message, browse a channel's threads, and
-  read one beside its channel.
+- **Threads**: start one from a message, browse a channel's threads, join
+  or leave one, and read one beside its channel.
 - **Search** a whole server with Discord's filters, and browse a channel's
   pinned messages.
 - **A GIF picker** with your favourites, kept on hand so they show at once.
@@ -105,8 +105,7 @@ yourself](#build-it-yourself). **macOS** isn't supported.
 
 - If Discord asks for a captcha while you link, Yapfast opens it in your
   browser; that hasn't been tried against real Discord yet.
-- Forum channels, and joining or leaving threads from their menus. Writing in
-  a thread joins it.
+- Forum channels.
 - Forwarding as Discord does: Yapfast shows forwarded messages, but forwards
   by sending the text again.
 - A list of the people you blocked.

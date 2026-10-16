@@ -1490,6 +1490,17 @@ reads and marks read like any other; writing in it joins it, as Discord
 does. The fake has "Plans", from Bob's welcome, and its controls write in
 it, start "Movie night" and archive "Plans".
 
+A thread's menu offers Join thread, or Leave thread for one the account is
+in, after Mark as read, as Discord's client does (its `thread-context`
+menu). Discord's client checks nothing else: not archiving, locking or
+permissions. It sends `POST /channels/{id}/thread-members/@me` to join,
+though docs.discord.food says PUT, and `DELETE` to leave, each with
+`?location=Context Menu` and no body; Discord answers with
+THREAD_MEMBERS_UPDATE. A thread left stays on screen, as in Discord's
+client, and stops listing in the sidebar once it's off it. The fake
+answers both, refuses an archived thread (50083), and
+`/_control/thread-members` lists each request.
+
 #### A channel's list of threads
 
 The Threads button comes first in a text or announcement channel's header,
