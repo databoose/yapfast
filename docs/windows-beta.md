@@ -356,7 +356,13 @@ shader build is no longer part of this client.
 A [one-line WebRTC patch](../vendor/webrtc-sys/README.yapfast.md) also fixes an
 MSVC class/struct declaration mismatch, matching the upstream resolution.
 
-The package contains dependency notices, original licenses, a source snapshot
-and build hashes. `target/dist/SHA256SUMS.txt` covers both archives. The source
-snapshot uses an explicit allowlist and excludes `.local`, account credentials,
-sessions, logs and the Wine prefixes.
+The package contains dependency notices, original licenses and build hashes.
+The source snapshot, `Yapfast-VERSION-source.zip`, sits beside the packages in
+`target/dist` rather than in them, and goes on the release page with them:
+`SOURCE.txt` in each package names that page and `BUILD.json` the snapshot's
+SHA-256, which the AGPL dependencies' source offer rests on, so a release's
+snapshot stays up as long as its packages do. `target/dist/SHA256SUMS.txt`
+covers the snapshot, the ZIP and the installer. The snapshot holds only what
+git tracks, plus the exact upstream source of the AGPL MatrixRTC crates, so it
+excludes `.local`, ignored private material, account credentials, sessions,
+logs and the Wine prefixes.
