@@ -8,6 +8,17 @@ GPUI package. Recheck the new UI on the tester's PC.
 
 ## Run the package
 
+`target/dist` holds the portable ZIP and an installer,
+`Yapfast-0.1.0-windows-x64-setup.exe`. The installer needs no administrator
+rights: it installs for the current user into `%LOCALAPPDATA%\Programs\Yapfast`,
+adds Yapfast to the Start menu, optionally to the desktop, and starts it when
+the person signs in unless they untick that. Settings → Advanced turns that
+on and off later ([the tray](tray.md#starting-at-sign-in)). Uninstalling,
+from Settings → Apps, removes the program and the sign-in entry and keeps the
+data folder. Neither is signed, so SmartScreen warns before either runs.
+
+For the ZIP:
+
 1. Copy `target/dist/Yapfast-0.1.0-windows-x64.zip` to the tester's PC.
 2. Extract the whole ZIP, then double-click `yapfast.exe` in the extracted folder.
 3. Sign in with a Matrix account. Voice needs a homeserver that offers MatrixRTC

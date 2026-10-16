@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Package the Windows executable, build inputs and dependency notices."""
+"""Package the Windows executable, build inputs and dependency notices, as a
+portable ZIP and an Inno Setup installer."""
 import argparse
 import hashlib
 import json
@@ -17,6 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
 SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", ".gitignore")
 SOURCE_DIRECTORIES = (".cargo", "src", "ui", "packaging", "crates", "scripts", "nix", "vendor", "testing", "docs")
+# Inno Setup's compiler, run under Wine; installed once into its own prefix.
+INNO_SETUP_VERSION = "7.1.0"
+INNO_SETUP_URL = ("https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/"
+                  f"innosetup-{INNO_SETUP_VERSION}-x64.exe")
+INNO_SETUP_SHA256 = "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
 
 
 def digest(path):
@@ -37,17 +43,72 @@ def license_file(path):
     return path.is_file() and name.startswith(("LICENSE", "COPYING", "NOTICE", "OFL"))
 
 
+def wine_environment(prefix):
+    environment = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG="-all")
+    # The compiler is a console program; Wine opens no window for it.
+    environment.pop("DISPLAY", None)
+    environment.pop("WAYLAND_DISPLAY", None)
+    return environment
+
+
+def inno_setup():
+    """The Wine prefix holding Inno Setup, installed there on first use."""
+    prefix = ROOT / ".local/windows/inno-setup" / INNO_SETUP_VERSION
+    if (prefix / "drive_c/InnoSetup/ISCC.exe").is_file():
+        return prefix
+    installer = prefix.parent / f"innosetup-{INNO_SETUP_VERSION}-x64.exe"
+    if not installer.is_file() or digest(installer) != INNO_SETUP_SHA256:
+        installer.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["curl", "--fail", "--location", "--silent", "--show-error",
+                        "--output", str(installer), INNO_SETUP_URL], check=True, timeout=600)
+        if digest(installer) != INNO_SETUP_SHA256:
+            installer.unlink()
+            raise SystemExit(f"{INNO_SETUP_URL} doesn't match its pinned SHA-256")
+    # Its installer opens windows even when silent, so it gets a private X server.
+    environment = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG="-all")
+    environment.pop("WAYLAND_DISPLAY", None)
+    subprocess.run(["xvfb-run", "--auto-servernum", "sh", "-c",
+                    'wine "$0" /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /NORESTART '
+                    '"/DIR=C:\\InnoSetup" /NOICONS && wineserver -w', str(installer)],
+                   env=environment, check=True, timeout=600)
+    if not (prefix / "drive_c/InnoSetup/ISCC.exe").is_file():
+        raise SystemExit(f"Inno Setup didn't install into {prefix}")
+    return prefix
+
+
+def compile_installer(package, version, output):
+    """Compiles packaging/windows/yapfast.iss over the ZIP's files."""
+    prefix = inno_setup()
+    environment = wine_environment(prefix)
+
+    def windows_path(path):
+        return subprocess.check_output(["winepath", "-w", str(path)], env=environment, text=True,
+                                       timeout=60).strip()
+
+    definitions = [f"/DAppVersion={version}", f"/DSourceDir={windows_path(package)}"]
+    license_path = ROOT / "LICENSE"
+    if license_path.is_file():
+        definitions.append(f"/DLicenseFile={windows_path(license_path)}")
+    subprocess.run(["wine", "C:\\InnoSetup\\ISCC.exe", "/Q", *definitions,
+                    f"/O{windows_path(output)}", windows_path(ROOT / "packaging/windows/yapfast.iss")],
+                   env=environment, check=True, timeout=1800)
+    subprocess.run(["wineserver", "-w"], env=environment, check=True, timeout=120)
+    return output / f"Yapfast-{version}-windows-x64-setup.exe"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path, default=ROOT / "target" / TARGET / "release/yapfast.exe")
     parser.add_argument("--output", type=Path, default=ROOT / "target/dist")
+    parser.add_argument("--no-installer", action="store_true", help="make only the portable ZIP")
     args = parser.parse_args()
     executable = args.exe.resolve()
     newest_input = max(path.stat().st_mtime for path in
                        [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "build.rs",
                         *list((ROOT / "src").rglob("*.rs")), *list((ROOT / "ui").rglob("*")),
                         *list((ROOT / "packaging").rglob("*"))]
-                       if path.is_file())
+                       # The installer's script doesn't go into the executable.
+                       if path.is_file() and path.suffix != ".iss")
     if executable.stat().st_mtime < newest_input:
         raise SystemExit("Windows executable predates the current UI; run scripts/build-windows first")
     with executable.open("rb") as stream:
@@ -58,6 +119,12 @@ def main():
         pe = stream.read(6)
         if pe[:4] != b"PE\0\0" or struct.unpack_from("<H", pe, 4)[0] != 0x8664:
             raise SystemExit("Expected an AMD64 Windows PE executable")
+    # Panic messages and C's asserts hold source paths; built without
+    # scripts/release-env they name this machine's home folder.
+    contents = executable.read_bytes()
+    if any(str(Path.home()).encode(encoding) in contents for encoding in ("utf-8", "utf-16-le")):
+        raise SystemExit(f"{executable} names {Path.home()}; build it with scripts/build-windows")
+    del contents
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", TARGET],
         cwd=ROOT, timeout=30,
@@ -182,9 +249,13 @@ def main():
         }
         (package / "BUILD.json").write_text(json.dumps(build, indent=2) + "\n", encoding="utf-8")
         zip_directory(package, archive_path)
+        installer_path = None if args.no_installer else compile_installer(package, version, args.output.resolve())
     hashes = args.output / "SHA256SUMS.txt"
-    hashes.write_text(f"{digest(archive_path)}  {archive_path.name}\n{digest(source_path)}  {source_path.name}\n", encoding="utf-8")
+    artifacts = [archive_path, source_path, *([installer_path] if installer_path else [])]
+    hashes.write_text("".join(f"{digest(path)}  {path.name}\n" for path in artifacts), encoding="utf-8")
     print(f"Packaged {archive_path} ({archive_path.stat().st_size / 1024 / 1024:.1f} MiB)")
+    if installer_path:
+        print(f"Installer: {installer_path} ({installer_path.stat().st_size / 1024 / 1024:.1f} MiB)")
     print(f"Source snapshot: {source_path}")
     print(f"Checksums: {hashes}")
 

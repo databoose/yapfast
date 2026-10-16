@@ -284,6 +284,26 @@ The Linux cross-build and portable ZIP route is documented in the
 archive and checksum-pinned Skia source through the Windows Nix shell.
 `scripts/build-windows` prepares and caches a static-runtime Skia build before
 compiling Yapfast. The executable uses static CRT linkage to match LiveKit.
+`scripts/package-windows.py`, which `scripts/build-windows` runs, makes the
+portable ZIP and compiles the installer, `packaging/windows/yapfast.iss`, with
+Inno Setup 7.1.0 under Wine. The first run downloads Inno Setup's installer,
+pinned by SHA-256, and installs it into its own Wine prefix in
+`.local/windows/inno-setup`, under `xvfb-run`, since it opens windows even
+when silent. `--no-installer` makes only the ZIP.
+
+Binaries people download name no folder of the machine that built them.
+Rust embeds source paths for panic messages, and C's `__FILE__` reaches
+AWS-LC's errors and asserts, so a plain build names its builder's home folder
+thousands of times, through `~/.cargo`. `scripts/release-env TARGET`, sourced
+before `cargo build --target TARGET`, maps the home folder, Cargo's folder and
+the repository to `/home`, `/cargo` and `/yapfast` with `--remap-path-prefix`
+and Clang's `-ffile-prefix-map`. On Windows it takes `cargo xwin env`'s
+environment and adds the C flags to it, since `cargo xwin build` sets the
+`CFLAGS_<target>` the `cc` crate reads first; `scripts/build-windows` uses it.
+`scripts/package-windows.py` refuses an executable holding the home folder's
+path in UTF-8 or UTF-16. A Linux release needs the same, and the dev shell's
+linker also writes a RUNPATH of `$PWD/outputs/out/lib` and Nix store folders
+into the binary, which a package for other distributions has to replace.
 GPUI's FXC shader build is no longer used.
 
 The supported build route for this migration is the Linux MSVC cross-build.

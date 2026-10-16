@@ -101,6 +101,8 @@
         windows = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             rustup cargo-xwin cmake ninja gn protobuf python3 curl jq zip wineWowPackages.stable
+            # Inno Setup's own installer opens windows even when silent.
+            xvfb-run
             llvmPackages_21.clang llvmPackages_21.lld llvmPackages_21.llvm
             llvmPackages_21.libclang
           ];

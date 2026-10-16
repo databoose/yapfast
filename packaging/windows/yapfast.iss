@@ -1,0 +1,74 @@
+; Yapfast's Windows installer. scripts/package-windows.py compiles it with
+; Inno Setup 7 under Wine, from the same files as the portable ZIP.
+;
+; It installs for the person running it, without administrator rights, and can
+; start Yapfast in the tray when they sign in. That is the Run key value
+; Settings > Advanced > "Start when you sign in" writes (src/autostart.rs), so
+; the installer and the setting turn the same thing on and off.
+
+#ifndef AppVersion
+  #error Compile through scripts/package-windows.py, which defines AppVersion and SourceDir
+#endif
+
+[Setup]
+; Windows knows an installed Yapfast by this; never change it.
+AppId={{19FF8D53-8D7E-4E66-91BB-E2F5BE307E9A}
+AppName=Yapfast
+AppVersion={#AppVersion}
+AppVerName=Yapfast {#AppVersion}
+AppPublisher=Yapfast
+AppPublisherURL=https://yapfast.app
+AppSupportURL=https://github.com/yapfast/yapfast/issues
+AppUpdatesURL=https://github.com/yapfast/yapfast/releases
+VersionInfoVersion={#AppVersion}
+; Per user: %LOCALAPPDATA%\Programs\Yapfast, with no UAC prompt.
+PrivilegesRequired=lowest
+DefaultDirName={autopf}\Yapfast
+DisableProgramGroupPage=yes
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+OutputBaseFilename=Yapfast-{#AppVersion}-windows-x64-setup
+SetupIconFile=yapfast.ico
+UninstallDisplayIcon={app}\yapfast.exe
+UninstallDisplayName=Yapfast
+WizardStyle=modern
+Compression=lzma2/max
+SolidCompression=yes
+; Yapfast keeps running in the tray with its window closed, so an update or
+; uninstall closes it rather than asking.
+CloseApplications=force
+RestartApplications=no
+#ifdef LicenseFile
+LicenseFile={#LicenseFile}
+#endif
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[CustomMessages]
+english.StartOnSignIn=Start Yapfast when I sign in
+english.StartOnSignInGroup=Starting:
+
+[Tasks]
+Name: "startonsignin"; Description: "{cm:StartOnSignIn}"; GroupDescription: "{cm:StartOnSignInGroup}"
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+; README.txt explains the ZIP; the installer needs no instructions.
+Source: "{#SourceDir}\*"; Excludes: "README.txt"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\Yapfast"; Filename: "{app}\yapfast.exe"
+Name: "{autodesktop}\Yapfast"; Filename: "{app}\yapfast.exe"; Tasks: desktopicon
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Yapfast"; ValueData: """{app}\yapfast.exe"" --background"; Tasks: startonsignin
+; Chosen here, it starts even if Task Manager had turned it off before.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; ValueType: none; ValueName: "Yapfast"; Flags: deletevalue dontcreatekey; Tasks: startonsignin
+; Uninstalling stops starting at sign-in, however it was turned on.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Yapfast"; Flags: uninsdeletevalue dontcreatekey
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; ValueType: none; ValueName: "Yapfast"; Flags: uninsdeletevalue dontcreatekey
+
+[Run]
+Filename: "{app}\yapfast.exe"; Description: "{cm:LaunchProgram,Yapfast}"; Flags: nowait postinstall skipifsilent

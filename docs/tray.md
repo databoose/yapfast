@@ -26,7 +26,8 @@ Task Manager's record too. Each start, outside the preview, rewrites an entry
 that's on with this Yapfast's path, so moving its folder or an update keeps it
 working. The entry keeps `--data-dir` if Yapfast had one; an AppImage's entry
 names the AppImage, not its temporary mount. The preview, and platforms
-without either, don't show the switch.
+without either, don't show the switch. The Windows installer's "Start Yapfast
+when I sign in" writes the same value, and uninstalling removes it.
 
 `--background` restores the saved session and goes to the tray without
 showing the window, or shows it when there's no session to restore, since
@@ -110,10 +111,14 @@ The bar is a cross-build and Wine (`scripts/build-windows`, see
 - with "Start when you sign in" on, signing out and in starts Yapfast in the
   tray with no window, and Task Manager's Startup apps lists it; turning it
   off there shows as off in Settings;
+- the installer's "Start Yapfast when I sign in" does the same, an update
+  installs over a running Yapfast, and uninstalling leaves nothing in Startup
+  apps.
 
 The registry side is checked under Wine: `autostart::windows::tests`, ignored
 since it writes the current user's Run key, passes with a throwaway
-`WINEPREFIX`.
+`WINEPREFIX`, and the installer installs, updates over Task Manager's "off",
+and uninstalls under `xvfb-run` in one, leaving the data folder.
 
 ## Testing
 
