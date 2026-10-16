@@ -74,7 +74,7 @@ bootstrap cross-signing through the SDK, which leaves an existing identity intac
 Recovery-key setup is exercised only on disposable experiment accounts; the CLI
 imports an existing key. Room keys use the SDK's identity-based sharing policy.
 
-The [native call experiment](native-call-experiment.md) checks actual OS-store
+The call experiment (`--call-experiment`) checks actual OS-store
 restoration, message-key persistence and recovery against the local server.
 Unit tests separately cover the Linux fallback's permissions, missing credentials,
 metadata damage, retained store passwords and exclusive locking. Windows storage

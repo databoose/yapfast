@@ -1,4 +1,0 @@
-# Unified diffs require a space prefix on blank context lines.
-experiments/frameworks/gpui/gpu-perf-patch/renderer.patch -whitespace
-experiments/frameworks/slint/gpu-renderer.patch -whitespace
-experiments/frameworks/slint/skia-gpu-renderer.patch -whitespace

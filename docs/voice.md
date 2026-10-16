@@ -198,7 +198,7 @@ through WASAPI.
 ## Run the local demo
 
 For testing with a friend on another machine, use
-[the shared beta deployment](../deploy/coolify/README.md) at `matrix.org`.
+the shared beta deployment at `matrix.org`.
 It includes **Yapfast beta**, encrypted **general** and the persistent **Lounge**
 voice channel.
 
@@ -247,7 +247,7 @@ policy.
 
 With the stack running, `scripts/test-voice` exercises encrypted native audio
 using isolated Linux virtual devices and a generated signal. It does not record
-the physical microphone or change the system's default devices. The [Linux test report](measurements/2026-10-02-linux-voice-audio.json) records
+the physical microphone or change the system's default devices. Its Linux run covered
 a 30-second wait alone, a muted late join, native encrypted audio in both
 directions, mute, deafen, undeafen staying muted and clean leave. It also stalls
 authorization after membership publication, cancels with Leave, checks membership
@@ -255,15 +255,14 @@ removal and then joins again. The two clients
 run in separate processes because LiveKit shares its audio engine within a
 process. A regression exposed stale key indices on native tracks first published
 after rotation; the [pinned dependency patch](../vendor/matrix-rtc-livekit/README.yapfast.md)
-reuses the SDK's active-index handling. The original
-[encrypted audio experiment](native-call-experiment.md) separately covers recovery,
+reuses the SDK's active-index handling. The call experiment
+(`--call-experiment`) separately covers recovery,
 invalid keys and departure key rotation.
 
 Linux UI captures cover the preview and real accounts at 1120×760 and 800×560,
 including persistent controls, device selection and channel switching. Closing
-one native window removed its participant from the other account. A separate
-[waiting-alone debug sample](measurements/2026-10-02-linux-voice-waiting-debug.json)
-records resources; release performance remains unverified.
+one native window removed its participant from the other account. Release
+performance remains unverified.
 
 On 2026-10-02 the user confirmed audio in both directions between Linux and the
 Windows x64 build on the shared beta, along with mute/deafen and browsing text
@@ -322,7 +321,7 @@ network loss for Bob only. Run it from the development shell after
 python3 testing/test_voice_reliability.py --report .local/voice-reliability.json
 ```
 
-The full run on 2026-10-03 ([report](measurements/2026-10-03-linux-voice-reliability.json)):
+The full run on 2026-10-03:
 
 | Scenario | Result |
 | --- | --- |

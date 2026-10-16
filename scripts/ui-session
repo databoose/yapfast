@@ -193,7 +193,7 @@ def start(args):
     display = (f'scripts/run-framework-isolated --audio --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" '
                f'--no-services --kiosk --width {width} --height {height} --repaint-window 17 '
                f'--compositor-log {shlex.quote(str(STATE / "weston.log"))} -- {shlex.join(driver)}')
-    session = subprocess.Popen(['nix-shell', '--impure', 'experiments/frameworks/shell.nix', '--run', display],
+    session = subprocess.Popen(['nix-shell', '--impure', 'testing/display/shell.nix', '--run', display],
                                cwd=ROOT, stdin=subprocess.DEVNULL, stdout=(STATE / 'session.log').open('wb'),
                                stderr=subprocess.STDOUT, start_new_session=True)
     SESSION_PID.write_text(f'{session.pid}\n')

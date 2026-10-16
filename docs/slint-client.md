@@ -97,7 +97,7 @@ OpenGL fails, so Yapfast owns the fallback instead:
 It hides every EGL vendor from libglvnd to simulate a missing OpenGL driver:
 
 ```sh
-nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --no-services --compositor-log .local/fallback.weston.log -- python3 testing/probe_renderer_fallback.py --output .impeccable/review/renderer-fallback'
+nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --no-services --compositor-log .local/fallback.weston.log -- python3 testing/probe_renderer_fallback.py --output .impeccable/review/renderer-fallback'
 ```
 
 On 2026-10-13 all six checks passed on the NVIDIA host: the default start used
@@ -178,9 +178,9 @@ To reproduce the isolated checks after a desktop build:
 
 ```sh
 nix develop path:./nix --command cargo build --locked
-nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --compositor-log .local/slint-ui.weston.log -- python3 testing/probe_slint_ui.py --output .impeccable/review/slint-ui --renderer gpu --size 1120x760'
+nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --compositor-log .local/slint-ui.weston.log -- python3 testing/probe_slint_ui.py --output .impeccable/review/slint-ui --renderer gpu --size 1120x760'
 scripts/test-stack up
-nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --no-services --compositor-log .local/slint-connected.weston.log -- python3 testing/probe_slint_ui.py --output .impeccable/review/slint-connected --renderer gpu --size 1120x760 --connected'
+nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --no-services --compositor-log .local/slint-connected.weston.log -- python3 testing/probe_slint_ui.py --output .impeccable/review/slint-connected --renderer gpu --size 1120x760 --connected'
 ```
 
 Use `--renderer software --size 800x560` for the minimum-size capture. GUI evidence

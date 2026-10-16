@@ -6,6 +6,7 @@
 # take no space until the copies diverge, and skips one the worktree already
 # has. It needs a filesystem with reflinks, such as btrfs. The copies keep
 # their timestamps: Cargo rebuilds a crate whose dependencies look newer.
+# It also copies the private material .gitignore keeps out of the repository.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -51,3 +52,16 @@ for dir in fast check-combinations; do
   cargo clean --profile fast --target-dir "$target_dir" "${local_crates[@]}"
   echo "$dir: copied from $main"
 done
+
+# The private material .gitignore keeps out of the repository, which work in a
+# worktree may still read, such as DESIGN.md: each entry of that section,
+# copied from the main checkout unless the worktree has it.
+sed -n '/^# Private working material/,/^$/p' .gitignore | grep '^/' | while read -r entry; do
+  for source in "$main"${entry%/}; do
+    path=${source#"$main"/}
+    [[ -e "$source" && ! -e "$path" ]] || continue
+    mkdir -p "$(dirname "$path")"
+    cp -a --reflink=auto "$source" "$path"
+  done
+done
+echo "private material: copied from $main"

@@ -18,7 +18,7 @@ Find the yapfast-core test binary with
 `nix develop path:./nix --command cargo test --profile fast --locked -p yapfast-core --no-run --message-format short`
 (its "Executable unittests src/lib.rs" line), then run from the repository root:
 
-    nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated
+    nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated
         --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS"
         --compositor-log .local/networks.weston.log --
         python3 testing/measure_networks.py --output .local/measure-networks

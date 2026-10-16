@@ -24,9 +24,6 @@ part of the private beta. Yapfast must still be complete without Discord: nothin
 Discord-related appears until someone links an account, and Discord work doesn't
 replace beta features of Yapfast itself.
 
-[PRODUCT.md](../PRODUCT.md#discord) records the agreed scope. This document
-describes how to build it.
-
 Protocol references: Discord doesn't document what its own client sends. The
 community's
 [discord-userdoccers](https://github.com/discord-userdoccers/discord-userdoccers)
@@ -185,7 +182,7 @@ Scope for the beta:
   mute, deafen and per-person volume.
 - DM and group DM calls, both incoming with ringing and outgoing.
 - One connection at a time across Yapfast and Discord. Joining Discord voice asks
-  to leave a Yapfast call, and the other way round, as in PRODUCT.md.
+  to leave a Yapfast call, and the other way round.
 - The same devices, push-to-talk, voice activation, echo cancellation and
   voice leveling as Yapfast calls. Noise suppression is DeepFilterNet, or
   RNNoise, rather than WebRTC's, as described under Microphone below.
@@ -2065,8 +2062,7 @@ Synapse stack with recorded Discord events instead of a live connection.
 davey is permissive, so closed-source Yapfast can use it, as songbird was
 while it ran calls. GPL
 clients such as [Abaddon](https://github.com/uowuo/abaddon) are reference
-material only, under the borrowing rules in the
-[implementation plan](implementation-plan.md#reference-projects).
+material only.
 
 ## Order of work
 

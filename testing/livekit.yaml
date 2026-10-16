@@ -2,7 +2,7 @@ port: 17880
 bind_addresses: [0.0.0.0]
 rtc:
   tcp_port: 17881
-  # One multiplexed UDP port; a port range runs out past ten people.
+  # One multiplexed UDP port, as on the beta server; a port range runs out past ten people.
   udp_port: 50100
   node_ip: 127.0.0.1
   use_external_ip: false

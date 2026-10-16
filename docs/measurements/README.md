@@ -3,24 +3,24 @@
 This file holds dated measurement records, oldest first, each with its JSON
 beside it. A record describes the code on its date; a later record of the same
 thing replaces it. The current references are the newest:
-[Matrix, Discord or both, 2026-10-06](2026-10-06-linux-networks.json) for idle
+Matrix, Discord or both, 2026-10-06 for idle
 memory by build, and
-[renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
+renderer and allocator, 2026-10-05
 for a call with Skia Software, the default renderer.
 
-[Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
+Startup payload and preview copies, 2026-10-09
 records the first memory pass on a larger fake Discord account.
-[Viewport media and avatars, 2026-10-09](2026-10-09-linux-viewport-media.json)
+Viewport media and avatars, 2026-10-09
 records the subsequent pass. Both comparisons appear below.
 
 Measurements use `fast` builds, as the owner decided on 2026-10-06, unless the
 question is the shipped build's absolute number; then use `release`. The
-[2026-10-05 profile comparison](2026-10-05-linux-fast-profile.json) found the
+2026-10-05 profile comparison found the
 two equivalent.
 
 How to reproduce: run every command from the repository root. The isolated
 runs need `scripts/test-stack up` first; `nix-shell --impure
-experiments/frameworks/shell.nix` adds Weston, PulseAudio and the ALSA plugins
+testing/display/shell.nix` adds Weston, PulseAudio and the ALSA plugins
 to the development shell, and `scripts/run-framework-isolated` gives the run a
 private display, D-Bus and audio. The scripts measure `target/release/yapfast`
 unless `--exe` names another build, such as `target/fast/yapfast`; the networks
@@ -35,7 +35,7 @@ prints its path on the `Executable unittests src/lib.rs
 highest of those samples. For the process's lifetime peak, read `VmHWM` from
 `/proc/PID/status`.
 
-[Linux starter baseline, 2026-10-01](2026-10-01-linux-starter.json) is
+Linux starter baseline, 2026-10-01 is
 historical: it measured the GPUI starter, which Slint has replaced. It measures
 the empty release build-check window after 15 seconds of warm-up, inactive at a
 760x560 window size. It samples the process for 30 seconds through `/proc`.
@@ -62,7 +62,7 @@ Reproduce: the GPUI build is gone; its process was sampled with
 `scripts/measure-process PID --seconds 30`. Keep hardware, workload, warm-up,
 window activity, and memory metric attached to every result.
 
-[Native voice audio, 2026-10-02](2026-10-02-linux-voice-audio.json) is a
+Native voice audio, 2026-10-02 is a
 functional two-process virtual-device result, rather than a performance sample.
 It checks encrypted capture/playback after a 30-second wait alone, both audio
 directions, mute/deafen and clean departure. Physical listening and Windows
@@ -72,7 +72,7 @@ Reproduce: `scripts/test-stack up`, then `nix develop path:./nix --command
 scripts/test-voice --fast` in a desktop session with PipeWire; it adds and
 removes its own null devices.
 
-[Waiting alone in voice, debug build, 2026-10-02](2026-10-02-linux-voice-waiting-debug.json)
+Waiting alone in voice, debug build, 2026-10-02
 samples a real account with one muted participant after confirming encryption
 and waiting at least 15 seconds. Mean RSS was 324.1 MiB, mean PSS 307.9 MiB,
 and CPU 1.03% of one core over 30 seconds. GPU counters were unavailable.
@@ -84,7 +84,7 @@ Linux and Windows machines remain needed.
 Reproduce: not exactly, since it used a real account. Sample a debug build
 waiting in voice with `scripts/measure-process PID --seconds 30`.
 
-[Connected release client, 2026-10-03](2026-10-03-linux-connected.json) samples
+Connected release client, 2026-10-03 samples
 the Slint release build with a real account on the local stack, on a private
 headless Weston desktop with private PulseAudio null devices. Each profile
 warms up for 30 seconds, then samples Yapfast's process for 60 seconds at 1120×760.
@@ -112,10 +112,10 @@ older or integrated GPUs, a large account, physical devices and game
 interference remain unmeasured. The client measured predates the Milestone 2
 chat features.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_connected.py --load-executable TEST_BIN --output .local/measure-connected'`.
+Reproduce, with the test stack up and a release build: `nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_connected.py --load-executable TEST_BIN --output .local/measure-connected'`.
 It measures both renderers unless `--renderer` names one.
 
-[Connected client after Milestone 2 and the UI overhaul, 2026-10-04](2026-10-04-linux-connected-overhaul.json)
+Connected client after Milestone 2 and the UI overhaul, 2026-10-04
 repeats the 2026-10-03 run on the same host, with the same workload, warm-up and
 sampling. It uses the release build with the conversation features, the Satoshi
 fonts and the Discord-style layout. The empty run keeps the baseline's empty
@@ -152,7 +152,7 @@ limits listed for the 2026-10-03 run still apply.
 
 Reproduce: the 2026-10-03 command above; add `--seed` for the seeded rows.
 
-[Joining a 20-person voice channel, 2026-10-05](2026-10-05-linux-voice-join-20.json)
+Joining a 20-person voice channel, 2026-10-05
 measures joins with one process per person (`testing/join_voice.py`). Alice runs
 the release Yapfast window, muted. The other 19 are separate release processes on
 the same voice stack. Each one publishes a tone in turn, sends digital silence
@@ -191,10 +191,10 @@ key during joins. Yapfast now shows a missing key only once it has lasted beyond
 On a real network every round trip adds latency, so absolute join times will be
 longer than here. Windows, real devices and a remote homeserver remain unmeasured.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/join.weston.log -- python3 testing/join_voice.py --participant-executable TEST_BIN --output .local/join-voice'`.
+Reproduce, with the test stack up and a release build: `nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/join.weston.log -- python3 testing/join_voice.py --participant-executable TEST_BIN --output .local/join-voice'`.
 Current code gives the one-peer-connection column.
 
-[A call with the window hidden or destroyed, 2026-10-05](2026-10-05-linux-window-background.json)
+A call with the window hidden or destroyed, 2026-10-05
 measures what a tray could save (`testing/measure_background.py`). Yapfast has no
 tray yet, so a test-only window control (`YAPFAST_UI_TEST_CONTROL`) hides the window,
 destroys it and creates it again while Yapfast stays in the call. Alice runs the
@@ -227,10 +227,10 @@ and trimming the heap saves about a tenth. A small background process for the
 session and call, with the window in a separate process started on demand,
 would come close to the headless figures.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/background.weston.log -- python3 testing/measure_background.py --participant-executable TEST_BIN --people 10 --output .local/measure-background'`.
+Reproduce, with the test stack up and a release build: `nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/background.weston.log -- python3 testing/measure_background.py --participant-executable TEST_BIN --people 10 --output .local/measure-background'`.
 It renders with Skia GPU unless given `--renderer software`.
 
-[Where the memory goes: renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
+Where the memory goes: renderer and allocator, 2026-10-05
 repeats the window measurement with glibc's allocator statistics (`malloc_stats`)
 and a full smaps dump at each sample. It compares GPU rendering, GPU rendering
 with at most two heap arenas, and Skia Software. A heaptrack snapshot of the
@@ -263,7 +263,7 @@ Reproduce: the window command above three times, as is, with
 `--yapfast-env MALLOC_ARENA_MAX=2` and with `--renderer software`. The built-in cap
 row is the first command on a build since the cap.
 
-[Scrolling a long history with each renderer, 2026-10-05](2026-10-05-linux-scroll-renderers.json)
+Scrolling a long history with each renderer, 2026-10-05
 checks whether Skia Software keeps up with the GPU when it has to redraw
 (`testing/measure_scroll.py`). Bob posts the sample conversation and 300 more
 messages. Yapfast opens the channel and settles, then the private seat sends 60
@@ -289,13 +289,13 @@ list measured newly visible rows, Yapfast snapped back to the end before it saw 
 scroll. The timeline now checks the position before following new messages, and
 `scrolling_up_leaves_the_latest_message` covers it.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'YAPFAST_FRAMEWORK_SURFACE_LOG=.local/measure-scroll-surface.ndjson scripts/run-framework-isolated --no-services --compositor-log .local/scroll.weston.log -- python3 testing/measure_scroll.py --fixture-executable TEST_BIN --output .local/measure-scroll --size 1120x760 --scale 1'`,
+Reproduce, with the test stack up and a release build: `nix-shell --impure testing/display/shell.nix --run 'YAPFAST_FRAMEWORK_SURFACE_LOG=.local/measure-scroll-surface.ndjson scripts/run-framework-isolated --no-services --compositor-log .local/scroll.weston.log -- python3 testing/measure_scroll.py --fixture-executable TEST_BIN --output .local/measure-scroll --size 1120x760 --scale 1'`,
 then `python3 testing/measure_scroll.py --frames .local/measure-scroll/results.json
 .local/measure-scroll-surface.ndjson` for the buffer rates. For the large rows,
 give `scripts/run-framework-isolated` `--width 3840 --height 2160 --scale 2` and
 the script `--size 3600x2000 --scale 2`.
 
-[Release and fast builds, 2026-10-05](2026-10-05-linux-fast-profile.json)
+Release and fast builds, 2026-10-05
 measures the same source built with the `release` profile (thin LTO) and the
 `fast` profile (no LTO, incremental), back to back.
 
@@ -314,7 +314,7 @@ people run, is for the shipped build's absolute numbers.
 Reproduce: build both profiles, then run the window command above and the
 scroll command with `--exe target/release/yapfast` and with `--exe target/fast/yapfast`.
 
-[Matrix, Discord or both, 2026-10-06](2026-10-06-linux-networks.json) compares
+Matrix, Discord or both, 2026-10-06 compares
 builds with only Matrix, only Discord, or both, made with the `matrix` and
 `discord` Cargo features ([building](../building.md#networks)). Both networks
 run on test data: Matrix on the local stack with a seeded #general, Discord on
@@ -350,10 +350,10 @@ no voice server, and Discord calls also load libwebrtc's audio processing.
 Reproduce: with the test stack up, build each feature set with `--profile fast`
 (`--no-default-features --features desktop,matrix`, then `desktop,discord`,
 then the default) and copy each `target/fast/yapfast` to `target/networks/` as
-`yapfast-matrix`, `yapfast-discord` and `yapfast-combined`. Then `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
+`yapfast-matrix`, `yapfast-discord` and `yapfast-combined`. Then `nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
 The script starts the fake Discord itself.
 
-[Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
+Startup payload and preview copies, 2026-10-09
 compares the Discord-only `fast` build before and after freeing its READY
 payload and making UI preview copies on demand. The fake account has 100
 servers, 300 DMs, 12 extra channels and 60 authors. Its #general has 60
@@ -402,7 +402,7 @@ Slint pixels into its own raster images. Sharing those pixels needs an owned
 buffer API with safe lifetimes; simply borrowing the bytes would be unsafe.
 These opportunities are unimplemented and their savings are unmeasured.
 
-A [follow-up font-manager experiment](2026-10-09-linux-font-manager.json)
+A follow-up font-manager experiment
 replaced Skia's system font manager with its
 [`custom_empty` manager](https://github.com/rust-skia/rust-skia/blob/master/skia-safe/src/core/font_mgr.rs),
 which loads the font data Fontique selected without another system font scan.
@@ -464,7 +464,7 @@ the fake server; the tests themselves both reported success.
 
 ## 2026-10-09: viewport media and lazy avatars
 
-The [follow-up record](2026-10-09-linux-viewport-media.json) compares commit
+The follow-up record compares commit
 `3a5a109`, which includes the preceding startup fixes, with viewport-driven
 media loading and shared decoded previews. It implements the four proposals
 above. The Discord-only `fast` builds use the same private 1120×760 software
@@ -551,7 +551,7 @@ the owner's next launch.
 
 ## 2026-10-13: Discord server foundations
 
-The [record](2026-10-13-linux-server-foundations.json) compares commit
+The record compares commit
 `28d89c9` with the server foundations: members' roles held once as shared
 `Arc<[String]>` that member list rows and `ChatMember` point at, rather than
 a second copy in each listed member; one shared notification settings
@@ -579,7 +579,7 @@ do 'sleep 8' 'click 36 36' 'sleep 4' 'click 36 102' 'sleep 8' 'move 550 25'
 
 ## 2026-10-13: jumping to a message
 
-The [record](2026-10-13-linux-jump-window.json) compares commit `96910e8`
+The record compares commit `96910e8`
 with `18808f9`, whose jumps load the messages around the one jumped to, as a
 window of older messages, rather than every page between the newest message
 and it. The measured build lacked three fixes made after it, none on this
@@ -620,7 +620,7 @@ the requests with `scripts/ui-session do 'get history'`. Alternate the builds.
 
 ## 2026-10-13: Discord server channel header
 
-The [record](2026-10-13-linux-server-channel-header.json) compares `96910e8`
+The record compares `96910e8`
 with the server channel's header: each channel's topic held once as an
 `Option<Arc<str>>` the server's snapshots share, rendered for the open
 channel only and sent again only when it changes; the notification bell; and
@@ -644,7 +644,7 @@ Reproduce as for the server foundations above, with the two builds.
 
 ## 2026-10-13: Matrix call cameras
 
-[Matrix call cameras, 2026-10-13](2026-10-13-linux-matrix-cameras.json)
+Matrix call cameras, 2026-10-13
 measures Alice's `fast` build in a five-person call on the local stack as the
 others turn their cameras on, then Alice, then everyone off, twice. The load
 accounts film the 640×360 test pattern; each tile shows about 245×137 at
@@ -679,11 +679,11 @@ the connection. Muting keeps the second round level. A later quick run with
 the camera source's pool emptied and the heap trimmed on camera-off returned
 3 MiB of it (53.4 to 50.4 MiB, Software).
 
-Reproduce, with the test stack up: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_cameras.py --load-executable TEST_BIN --output .local/measure-cameras'`.
+Reproduce, with the test stack up: `nix-shell --impure testing/display/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_cameras.py --load-executable TEST_BIN --output .local/measure-cameras'`.
 
 ## 2026-10-13: Discord call cameras
 
-[The record](2026-10-13-linux-discord-cameras.json)
+The record
 measures the Discord-only `fast` build in a four-person call in Lounge on
 `testing/fake_discord.ts`, through `scripts/ui-session`. Bob, Carol and Dave
 film a 720p H264 recording at 30 frames a second and 1.5 Mbit/s, made with
@@ -712,7 +712,7 @@ Reproduce: `python3 testing/measure_discord_cameras.py --camera CAMERA.h264
 
 ## 2026-10-13: Discord server and channel menus
 
-The [record](2026-10-13-linux-server-menus.json) compares `96910e8` with
+The record compares `96910e8` with
 the server and channel menus stacked on it, measured at `0a600d7` before
 they were rebased onto the channel header: a server's menu and header
 dropdown, category menus, invites, making, changing and deleting channels
@@ -734,7 +734,7 @@ Reproduce: as for the server foundations above, with each build's binary.
 
 ## 2026-10-14: A Discord channel's list of threads
 
-The [record](2026-10-14-linux-thread-list.json) compares `8523e9b` with the
+The record compares `8523e9b` with the
 list of threads at `8abb501`. Each active thread the service knows now
 keeps its newest message (its id, author and up to 200 bytes of text), its
 member count and three member ids: 48 bytes more in the thread, plus about
@@ -768,7 +768,7 @@ its end and read again, then close it and read again.
 
 ## 2026-10-14: Closing the window to the tray
 
-The [record](2026-10-14-linux-close-to-tray.json) measures the Discord-only
+The record measures the Discord-only
 `fast` build on the fake Discord with five servers, 20 more DMs and pictures
 in #general (`--servers 4 --dms 20 --images 4`), through
 `testing/measure_tray.py`: #general open and idle, then the window closed to

@@ -66,7 +66,7 @@ if args.dry_run:
     raise SystemExit(0)
 for program in ('weston', 'weston-screenshooter', 'nvidia-smi', 'ffmpeg', 'pulseaudio'):
     if not shutil.which(program):
-        parser.error(program + ' is missing; enter experiments/frameworks/shell.nix.')
+        parser.error(program + ' is missing; enter testing/display/shell.nix.')
 icd = Path('/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.x86_64.json')
 if not icd.is_file():
     parser.error('This recorded hardware suite requires the NVIDIA ICD. Adapt configurations for another machine.')

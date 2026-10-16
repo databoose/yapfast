@@ -7,7 +7,7 @@ Three Nix shells cover the work:
 - `nix develop path:./nix` is the development shell. Run every `cargo` command
   in it, as `nix develop path:./nix --command cargo ...`. It also provides
   `bun` for the fake Discord.
-- `nix-shell --impure experiments/frameworks/shell.nix` adds Weston,
+- `nix-shell --impure testing/display/shell.nix` adds Weston,
   PulseAudio, the ALSA plugins and FFmpeg to it, for the private display that
   `scripts/run-framework-isolated` starts.
 - `nix develop path:./nix#windows` cross-builds for Windows; see the
@@ -295,7 +295,7 @@ The downloadable package needs none of these tools to run.
 
 Before accepting the Windows build, check text entry, selection, copy/paste,
 keyboard focus, navigation, both renderers, resizing, normal close, and reopen
-on the tester's actual GPU. Record Windows and GPU versions in compatibility.md.
+on the tester's actual GPU.
 Windows execution has not been demonstrated by a Linux build.
 
 ## The app icon
@@ -354,8 +354,7 @@ network namespace, and use the same signaling port inside and outside Docker.
 Authorization uses the standalone `/get_token` mode from lk-jwt-service 0.7.0.
 Yapfast's native experiment sets the local authorization fallback explicitly,
 because this stack does not advertise a production RTC discovery endpoint.
-See [the experiment](native-call-experiment.md) for its command and evidence,
-and [sessions](sessions.md) for credential storage and headless sign-in.
+See [sessions](sessions.md) for credential storage and headless sign-in.
 
 The service only allows the local `synapse` homeserver to create SFU rooms. This
 does not establish a production friend-group or room-membership access policy.

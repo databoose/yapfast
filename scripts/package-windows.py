@@ -15,8 +15,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
-SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", "PRODUCT.md", "DESIGN.md", ".gitignore")
-SOURCE_DIRECTORIES = (".cargo", "src", "ui", "packaging", "crates", "scripts", "nix", "vendor", "testing", "deploy", "docs")
+SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", ".gitignore")
+SOURCE_DIRECTORIES = (".cargo", "src", "ui", "packaging", "crates", "scripts", "nix", "vendor", "testing", "docs")
 
 
 def digest(path):
@@ -70,10 +70,13 @@ def main():
         temporary = Path(temporary)
         source = temporary / f"Yapfast-{version}-source"
         source.mkdir()
-        for name in SOURCE_FILES:
+        # Only what the repository tracks: the folders also hold private,
+        # ignored material.
+        tracked = subprocess.check_output(["git", "ls-files", "-z", "--", *SOURCE_FILES, *SOURCE_DIRECTORIES],
+                                          cwd=ROOT, timeout=30).decode().split("\0")
+        for name in filter(None, tracked):
+            (source / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, source / name)
-        for name in SOURCE_DIRECTORIES:
-            shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "review"))
         # Include the exact upstream RTC source used by the AGPL dependencies.
         rtc = next(package for package in metadata["packages"] if package["name"] == "matrix-rtc-core")
         rtc_root = Path(rtc["manifest_path"]).parent.parent.parent

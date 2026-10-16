@@ -1,17 +1,10 @@
 # Yapfast
 
 A native Rust and Slint client for Matrix chat and persistent voice channels.
-The [product scope](PRODUCT.md) and [implementation plan](docs/implementation-plan.md)
-describe the private beta.
 
 The [application architecture](docs/architecture.md) separates the reusable
 `yapfast-core` library from the Slint client. Other native UIs can share sessions,
 chat and voice behavior, drafts, navigation and the local preview.
-
-The [UI framework comparison plan](docs/framework-comparison-plan.md) covers
-GPUI, Slint, Dioxus Native/Blitz, Freya, Iced and Dioxus WebView, with media
-compatibility checks, memory-first benchmarks on Linux and Windows, and future
-web/Android portability.
 
 The desktop now has password sign-in, session restoration, a conversation list,
 message history, device recovery and encrypted text sending. Voice channels have
@@ -180,7 +173,6 @@ cargo run --locked --no-default-features --features matrix,discord -- --call-exp
 This creates fresh disposable accounts, checks restoration and recovery, then
 tests audio in both directions, invalid keys and key rotation after a participant
 leaves. It uses synthetic PCM and accesses no microphone or speaker.
-The [experiment report](docs/native-call-experiment.md) records its evidence and limits.
 
 Run `cargo run --locked --no-default-features --features matrix,discord -- --help` for session commands.
 [Session instructions](docs/sessions.md) cover hidden password/key prompts, secure
@@ -199,16 +191,10 @@ The sign-in screen defaults to `https://matrix.org`. See the
 [Windows beta guide](docs/windows-beta.md) for account and two-machine checks,
 and [building](docs/building.md) for native Windows prerequisites.
 
-[Compatibility](docs/compatibility.md) records dependency pins and what has
-actually been tested. [Development status](docs/development-status.md) tracks the
-remaining milestone exit criteria.
-
 ## Shared beta server
 
 The shared private beta uses `https://matrix.org`, with public voice
-services and closed registration. [Deployment and connection instructions](deploy/coolify/README.md)
-cover the two beta accounts, saved Alice session, Coolify configuration and
-remaining two-machine voice checks.
+services and closed registration.
 
 ## Try voice locally
 

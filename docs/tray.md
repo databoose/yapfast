@@ -1,7 +1,6 @@
 # The tray
 
-Closing the window leaves Yapfast running in the system tray, as `PRODUCT.md`
-asks: the session, a call, notifications, ringing and sounds go on. The
+Closing the window leaves Yapfast running in the system tray: the session, a call, notifications, ringing and sounds go on. The
 tray icon is Yapfast's logo in Yap's marigold, with a red dot cut into its
 corner while a mention or a DM waits unread, as Discord counts them. Clicking
 it opens the window. Its menu has Open Yapfast, Disconnect during a call, and

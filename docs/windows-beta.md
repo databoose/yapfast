@@ -44,7 +44,6 @@ With Alice signed in on Linux and Bob on Windows:
 7. Record Windows version, GPU/driver, audio devices, cameras, input/copy/paste behavior,
    window resizing, and any error text. Never include passwords or recovery keys.
 
-The build and execution evidence is recorded in [compatibility](compatibility.md).
 The user confirmed basic messaging and voice with the earlier GPUI package.
 Repeat these checks with Slint. Exact Windows, GPU/driver and audio-device details
 still need to be recorded.
