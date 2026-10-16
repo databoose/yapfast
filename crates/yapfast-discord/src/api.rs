@@ -1,5 +1,7 @@
 //! Discord's HTTP API, called the way the web client calls it.
 
+use std::sync::RwLock;
+
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, header};
 use serde::Deserialize;
@@ -124,7 +126,8 @@ pub fn may_work_later(error: &anyhow::Error) -> bool {
 
 pub struct Api {
     http: Client,
-    token: String,
+    /// Empty without a login; Discord may refresh it in READY.
+    token: RwLock<String>,
     /// The API's base URL: Discord's, or the test server's.
     base: String,
     limits: Limits,
@@ -152,7 +155,7 @@ impl Api {
         };
         Ok(Self {
             http,
-            token,
+            token: RwLock::new(token),
             base,
             limits: Limits::default(),
             refusals: Refusals::default(),
@@ -207,10 +210,25 @@ impl Api {
             .http
             .request(method, format!("{}{path}", self.base))
             .header("X-Super-Properties", client::super_properties());
-        if self.token.is_empty() {
+        let token = self.token();
+        if token.is_empty() {
             return request;
         }
-        request.header(header::AUTHORIZATION, &self.token)
+        request.header(header::AUTHORIZATION, token.as_str())
+    }
+
+    fn token(&self) -> std::sync::RwLockReadGuard<'_, String> {
+        self.token
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Asks with `token` from now on: Discord refreshed the login to it.
+    pub fn relogin(&self, token: &str) {
+        *self
+            .token
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = token.to_owned();
     }
 
     /// Trades a remote login's ticket for the login, encrypted with the key
@@ -1134,10 +1152,11 @@ impl Api {
                 .await
                 .context("Can't reach Discord.")?;
             let status = response.status();
-            if !self.token.is_empty() {
+            let linked = !self.token().is_empty();
+            if linked {
                 self.refusals.answered(status);
             }
-            if status == StatusCode::UNAUTHORIZED && !self.token.is_empty() {
+            if status == StatusCode::UNAUTHORIZED && linked {
                 let body = body(response).await;
                 // Discord's answer to a login it no longer takes, rather than
                 // to one request.

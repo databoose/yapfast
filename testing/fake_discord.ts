@@ -150,7 +150,10 @@
 // A gateway session whose connection drops resumes with op 6, getting the
 // events it missed; a close with 1000 or 1001 ends it instead. POST
 // /_control/gateway-reconnect sends op 7, and GET /_control/sessions counts
-// identifies and resumes. The API sets a device cookie, as Discord's does, and
+// identifies and resumes. POST /_control/refresh-token with a token ends
+// the session with op 9, and the READY after it refreshes the login to that
+// token in auth_token, as Discord does; from then on only that token works.
+// The API sets a device cookie, as Discord's does, and
 // GET /_control/cookies counts how often it was set and sent back.
 // GET /_control/list-requests counts member list subscriptions. POST
 // /_control/slow with a number of milliseconds slows history, attachments
@@ -218,6 +221,10 @@ const env = args.env ? await readEnv(args.env) : undefined;
 let world: World | undefined;
 
 const TOKEN = "yapfast-test-token";
+// The login the API and gateway take, which POST /_control/refresh-token
+// changes through the next READY.
+let apiToken = TOKEN;
+let refreshingTo: string | null = null;
 /** Whether Alice has Nitro: `--nitro`, or POST /_control/nitro, with ?off
  *  to take it away again, which tells her session with USER_UPDATE. */
 let nitro = args.nitro;
@@ -1963,14 +1970,20 @@ function gatewayMessage(ws: Socket, text: string) {
       send(ws, 11, null);
       break;
     case 2: // Identify
-      if (d.token !== TOKEN) {
+      if (d.token !== apiToken) {
         console.error("gateway: identify with an unexpected token; closing");
         ws.close(4004, "Authentication failed.");
         return;
       }
       ws.data.identified = true;
       sessionCounts.identifies++;
-      send(ws, 0, ready(ws), "READY");
+      if (refreshingTo) {
+        apiToken = refreshingTo;
+        refreshingTo = null;
+        send(ws, 0, { ...ready(ws), auth_token: apiToken }, "READY");
+      } else {
+        send(ws, 0, ready(ws), "READY");
+      }
       send(ws, 0, readySupplemental(), "READY_SUPPLEMENTAL");
       // Calls going on, as Yapfast's capabilities ask.
       for (const channel of calls.keys()) send(ws, 0, wireCall(channel), "CALL_CREATE");
@@ -1978,7 +1991,7 @@ function gatewayMessage(ws: Socket, text: string) {
     case 6: {
       // Resume: replay what the session missed, then RESUMED.
       const session = parked.get(d.session_id);
-      if (d.token !== TOKEN || !session || d.seq !== session.sequence) {
+      if (d.token !== apiToken || !session || d.seq !== session.sequence) {
         console.error(`gateway: can't resume ${d.session_id} at ${d.seq}`);
         send(ws, 9, false);
         return;
@@ -3272,7 +3285,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     tickets.delete(String(body.ticket));
     return json({ encrypted_token: await seal(key, TOKEN) });
   }
-  if (req.headers.get("authorization") !== TOKEN) {
+  if (req.headers.get("authorization") !== apiToken) {
     return json({ message: "401: Unauthorized", code: 0 }, 401);
   }
   const url = new URL(req.url);
@@ -5167,6 +5180,13 @@ const server = Bun.serve<SocketData>({
       // Discord's op 7: the client should drop the connection and resume.
       for (const ws of sockets) if (ws.data.identified) send(ws, 7, null);
       return new Response("asked gateways to reconnect\n");
+    }
+    if (req.method === "POST" && path === "/_control/refresh-token") {
+      refreshingTo = (await req.text()).trim();
+      // Op 9, not resumable: the client identifies again, and gets the new
+      // login in READY.
+      for (const ws of sockets) if (ws.data.identified) send(ws, 9, false);
+      return new Response("the next READY refreshes the login\n");
     }
     if (req.method === "POST" && path === "/_control/qr-scan") {
       return eachRemoteLogin(async (ws, key) => {

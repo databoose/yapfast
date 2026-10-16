@@ -23,7 +23,7 @@
 //! They're readable only by the user, and nothing in them is encrypted.
 
 use std::{
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::Duration,
@@ -61,6 +61,10 @@ const LARGEST_PICTURE: usize = 8 * 1024 * 1024;
 const CHANNELS: usize = 300;
 /// Of each channel, the newest messages kept.
 pub const CHANNEL_MESSAGES: usize = 100;
+
+/// How each file naming its login starts, before the login: it's the first
+/// field of each.
+const LOGIN_FIELD: &[u8] = br#"{"login":""#;
 
 static FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// The login whose files are read and written: a hash of its token.
@@ -292,6 +296,51 @@ pub(crate) fn load(token: &str) -> Loaded {
         names: Names::restore(saved.names),
         lists: saved.lists,
     }
+}
+
+/// Discord refreshed the login to `token`: the files the one before kept
+/// are this one's from now on. Only the login's hash at the start of each
+/// is written, in place, since the new one is as long. It writes to disk,
+/// so the async side calls it off its threads.
+pub(crate) fn relogin(token: &str) {
+    let login = hash(token);
+    let Some(earlier) = lock(&LOGIN).replace(login.clone()) else {
+        return;
+    };
+    let channels = messages_directory()
+        .and_then(|directory| std::fs::read_dir(directory).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| Some(entry.ok()?.path()));
+    for file in [file(), favorite_gifs_file()]
+        .into_iter()
+        .flatten()
+        .chain(channels)
+    {
+        if let Err(error) = relabel(&file, &earlier, &login)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "could not keep a Discord file for the refreshed login");
+        }
+    }
+}
+
+/// Writes `login` over `earlier` at the start of `file`, if it's there.
+fn relabel(file: &Path, earlier: &str, login: &str) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(file)?;
+    let mut start = vec![0; LOGIN_FIELD.len() + earlier.len()];
+    match file.read_exact(&mut start) {
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+        read => read?,
+    }
+    if start.strip_prefix(LOGIN_FIELD) != Some(earlier.as_bytes()) {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(LOGIN_FIELD.len() as u64))?;
+    file.write_all(login.as_bytes())
 }
 
 /// The member lists to save with the account from now on.
@@ -676,6 +725,13 @@ mod tests {
             assert_eq!(picture(resigned).await.as_deref(), Some(&b"preview"[..]));
             assert_eq!(picture(original).await, None);
         });
+
+        // Discord refreshed the login: what's kept is the new one's.
+        relogin("refreshed");
+        assert_eq!(load("refreshed").snapshot.servers[0].name, "Server");
+        assert_eq!(messages("40").len(), CHANNEL_MESSAGES);
+        assert!(favorite_gifs().is_some());
+        assert!(load("token").snapshot.servers.is_empty());
 
         // Another login sees none of it.
         assert!(load("another").snapshot.servers.is_empty());

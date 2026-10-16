@@ -2606,6 +2606,21 @@ async fn talks_to_the_fake_server() {
             .any(|channel| channel.id == general)
     );
 
+    // Discord refreshes the login in a READY: Yapfast asks with the new one
+    // from then on, and keeps it. The fake takes only the latest, and hands
+    // the first back the same way for the tests after these.
+    for login in ["yapfast-refreshed-token", client::TEST_TOKEN] {
+        post_control(server, "/_control/refresh-token", login);
+        timeout(Duration::from_secs(30), async {
+            while token::load().unwrap() != login {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the refreshed login wasn't kept");
+        discord.server_profile(&guild).await.unwrap();
+    }
+
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();
     assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");

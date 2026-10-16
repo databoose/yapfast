@@ -969,6 +969,15 @@ pub fn user_id(ready: &Value) -> Option<&str> {
     ready["user"]["id"].as_str()
 }
 
+/// The login Discord refreshed this one to, which takes the place of the
+/// one Yapfast identified with from now on. The web client's capabilities,
+/// which Yapfast sends, ask for it.
+pub fn auth_token(ready: &Value) -> Option<&str> {
+    ready["auth_token"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+}
+
 /// Servers from READY's guilds, in READY's order; the service orders them as
 /// the account's settings say.
 pub fn servers(ready: &Value) -> Vec<Server> {

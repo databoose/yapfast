@@ -20,11 +20,13 @@ use super::{
 };
 use crate::{
     api::Api,
+    cache,
     event::Event,
     gateway::{Closed, Dispatch, Gateway, Reconnects, TooManyIdentifies},
     message::{self, Names},
     ready,
     settings::Away,
+    token,
 };
 
 /// What outlasts a session: the handle's channels and what Yapfast has on screen.
@@ -46,7 +48,7 @@ pub(super) struct Shared {
 }
 
 pub(super) async fn run(
-    token: String,
+    mut token: String,
     mut requests: mpsc::UnboundedReceiver<Request>,
     mut shared: Shared,
 ) {
@@ -64,6 +66,10 @@ pub(super) async fn run(
         };
         let (error, up) = match connected {
             Ok((gateway, ready)) => {
+                if let Some(refreshed) = ready::auth_token(&ready) {
+                    token = refreshed.to_owned();
+                    relogin(&shared.api, &token).await;
+                }
                 let started = tokio::time::Instant::now();
                 let ended = connected_session(gateway, ready, &mut requests, &mut shared).await;
                 shared.lists.disconnected();
@@ -112,6 +118,23 @@ pub(super) async fn run(
                 },
             }
         }
+    }
+}
+
+/// Discord refreshed the login in READY, and the one Yapfast identified with
+/// is to go: requests, identifying again, the credential store and the
+/// files kept all take the new one. The gateway takes it from READY itself.
+async fn relogin(api: &Api, token: &str) {
+    tracing::info!("Discord refreshed the login");
+    api.relogin(token);
+    let token = token.to_owned();
+    let stored = tokio::task::spawn_blocking(move || {
+        cache::relogin(&token);
+        token::store(&token)
+    })
+    .await;
+    if let Ok(Err(error)) = stored {
+        tracing::warn!(%error, "could not save Discord's refreshed login");
     }
 }
 
