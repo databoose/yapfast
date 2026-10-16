@@ -736,25 +736,39 @@ impl serde::Serialize for SavingNames<'_> {
         }
         let names = self.0;
         let mut saved = serializer.serialize_struct("SavedNames", 8)?;
-        saved.serialize_field("users", &List(|| names.users.iter()))?;
+        saved.serialize_field(
+            "users",
+            &List(|| names.users.iter().map(|(user, name)| (Text(*user), name))),
+        )?;
         saved.serialize_field(
             "nicknames",
             &List(|| {
                 names
                     .nicknames
                     .iter()
-                    .map(|((guild, user), nick)| (guild, user, nick))
+                    .map(|((guild, user), nick)| (Text(*guild), Text(*user), nick))
             }),
         )?;
-        saved.serialize_field("members", &List(|| names.members.iter()))?;
-        saved.serialize_field("avatars", &List(|| names.avatars.iter()))?;
+        saved.serialize_field(
+            "members",
+            &List(|| {
+                names
+                    .members
+                    .iter()
+                    .map(|(guild, user)| (Text(*guild), Text(*user)))
+            }),
+        )?;
+        saved.serialize_field(
+            "avatars",
+            &List(|| names.avatars.iter().map(|(user, hash)| (Text(*user), hash))),
+        )?;
         saved.serialize_field(
             "member_avatars",
             &List(|| {
                 names
                     .member_avatars
                     .iter()
-                    .map(|((guild, user), avatar)| (guild, user, avatar))
+                    .map(|((guild, user), avatar)| (Text(*guild), Text(*user), avatar))
             }),
         )?;
         saved.serialize_field(
@@ -763,12 +777,42 @@ impl serde::Serialize for SavingNames<'_> {
                 names
                     .roles
                     .iter()
-                    .map(|((guild, user), roles)| (guild, user, roles))
+                    .map(|((guild, user), roles)| (Text(*guild), Text(*user), roles))
             }),
         )?;
-        saved.serialize_field("usernames", &List(|| names.usernames.iter()))?;
-        saved.serialize_field("bots", &List(|| names.bots.iter()))?;
+        saved.serialize_field(
+            "usernames",
+            &List(|| {
+                names
+                    .usernames
+                    .iter()
+                    .map(|(user, name)| (Text(*user), name))
+            }),
+        )?;
+        saved.serialize_field("bots", &List(|| names.bots.iter().copied().map(Text)))?;
         saved.end()
+    }
+}
+
+/// A Discord id, a snowflake, as [`Names`] keeps people and servers by:
+/// eight bytes, where its text takes 24 and an allocation of its own.
+type Id = u64;
+
+fn id(text: &str) -> Option<Id> {
+    text.parse().ok()
+}
+
+/// A server's and a member's ids.
+fn member_key(guild: &str, user: &str) -> Option<(Id, Id)> {
+    Some((id(guild)?, id(user)?))
+}
+
+/// An id saved as the text Discord sends it as, as the file always had it.
+struct Text(Id);
+
+impl serde::Serialize for Text {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&self.0)
     }
 }
 
@@ -776,25 +820,25 @@ impl serde::Serialize for SavingNames<'_> {
 #[derive(Default)]
 pub struct Names {
     /// Display names by user id.
-    users: HashMap<String, String>,
+    users: HashMap<Id, String>,
     /// Usernames by user id, such as `ann` for Ann.
-    usernames: HashMap<String, String>,
+    usernames: HashMap<Id, String>,
     /// The bots and apps among them, which nobody invites to a server.
-    bots: HashSet<String>,
+    bots: HashSet<Id>,
     /// Server nicknames by server and user id.
-    nicknames: HashMap<(String, String), String>,
+    nicknames: HashMap<(Id, Id), String>,
     /// Members whose server profile is known, with or without a nickname.
-    members: HashSet<(String, String)>,
+    members: HashSet<(Id, Id)>,
     /// Avatar hashes by user id, of those who set one.
-    avatars: HashMap<String, String>,
+    avatars: HashMap<Id, String>,
     /// Server avatar hashes by server and user id.
-    member_avatars: HashMap<(String, String), String>,
+    member_avatars: HashMap<(Id, Id), String>,
     /// Members' roles by server and user id, for the colour of their name.
     /// Member lists and the core share each, rather than copying it.
-    roles: HashMap<(String, String), Arc<[String]>>,
+    roles: HashMap<(Id, Id), Arc<[String]>>,
     /// When members' timeouts end, in Unix milliseconds, by server and user
     /// id: only those timed out, while Yapfast runs.
-    timeouts: HashMap<(String, String), u64>,
+    timeouts: HashMap<(Id, Id), u64>,
     /// Changes whenever a name, avatar or role of someone known changes, so
     /// what was shown with them can tell it's out of date. Someone new
     /// changes nothing shown, which was rendered after learning them.
@@ -802,14 +846,14 @@ pub struct Names {
     /// When each person was last learned or looked up, by user id, counted
     /// in `ticks`; those not seen for longest go first once there are too
     /// many. Looking up only reads, so these count atomically.
-    seen: HashMap<String, AtomicU64>,
+    seen: HashMap<Id, AtomicU64>,
     ticks: AtomicU64,
 }
 
 /// People whose names are kept, at most. Yapfast shows the authors of the
 /// channels it keeps, 41 of up to 200 messages each, and 40 member lists of
 /// 100 rows; every message Discord sends from any server teaches it one
-/// more. One person takes about 900 bytes.
+/// more. One person in one server, with two roles, takes about 260 bytes.
 const KEPT_PEOPLE: usize = 20_000;
 
 /// Sets `key` to `value`, or removes it for none; whether that changed it.
@@ -838,32 +882,41 @@ impl Names {
     pub fn restore(saved: SavedNames) -> Self {
         let keyed = |list: Vec<(String, String, String)>| {
             list.into_iter()
-                .map(|(guild, user, value)| ((guild, user), value))
+                .filter_map(|(guild, user, value)| Some((member_key(&guild, &user)?, value)))
+                .collect()
+        };
+        let by_user = |list: Vec<(String, String)>| {
+            list.into_iter()
+                .filter_map(|(user, value)| Some((id(&user)?, value)))
                 .collect()
         };
         let mut names = Self {
-            users: saved.users.into_iter().collect(),
+            users: by_user(saved.users),
             nicknames: keyed(saved.nicknames),
-            members: saved.members.into_iter().collect(),
-            avatars: saved.avatars.into_iter().collect(),
+            members: saved
+                .members
+                .iter()
+                .filter_map(|(guild, user)| member_key(guild, user))
+                .collect(),
+            avatars: by_user(saved.avatars),
             member_avatars: keyed(saved.member_avatars),
             roles: saved
                 .roles
                 .into_iter()
-                .map(|(guild, user, roles)| ((guild, user), roles.into()))
+                .filter_map(|(guild, user, roles)| Some((member_key(&guild, &user)?, roles.into())))
                 .collect(),
-            usernames: saved.usernames.into_iter().collect(),
-            bots: saved.bots.into_iter().collect(),
+            usernames: by_user(saved.usernames),
+            bots: saved.bots.iter().filter_map(|user| id(user)).collect(),
             ..Self::default()
         };
         // Those kept from before go before anyone learned since.
-        let people: HashSet<String> = names
+        let people: HashSet<Id> = names
             .users
             .keys()
             .chain(names.avatars.keys())
             .chain(names.usernames.keys())
             .chain(names.members.iter().map(|(_, user)| user))
-            .cloned()
+            .copied()
             .collect();
         names.seen = people
             .into_iter()
@@ -878,8 +931,8 @@ impl Names {
     }
 
     /// Notes that `user` was looked up just now; whether they were known.
-    fn touch(&self, user: &str) -> bool {
-        let Some(at) = self.seen.get(user) else {
+    fn touch(&self, user: Id) -> bool {
+        let Some(at) = self.seen.get(&user) else {
             return false;
         };
         at.store(self.ticks.fetch_add(1, Relaxed) + 1, Relaxed);
@@ -889,12 +942,12 @@ impl Names {
     /// Notes that `user` was learned just now, and forgets the quarter of
     /// people not seen for longest once there are too many; whether they
     /// were known before.
-    fn saw(&mut self, user: &str) -> bool {
+    fn saw(&mut self, user: Id) -> bool {
         if self.touch(user) {
             return true;
         }
         let now = self.ticks.fetch_add(1, Relaxed) + 1;
-        self.seen.insert(user.to_owned(), AtomicU64::new(now));
+        self.seen.insert(user, AtomicU64::new(now));
         if self.seen.len() > KEPT_PEOPLE {
             self.forget();
         }
@@ -929,33 +982,33 @@ impl Names {
     }
 
     pub fn learn_user(&mut self, user: &Value) {
-        let Some(id) = user["id"].as_str() else {
+        let Some(id) = user["id"].as_str().and_then(id) else {
             return;
         };
         let known = self.saw(id);
         let mut learned = false;
         if let Some(name) = ready::display_name(user) {
-            learned |= changed(&mut self.users, id.to_owned(), Some(name.to_owned()));
+            learned |= changed(&mut self.users, id, Some(name.to_owned()));
         }
         if let Some(username) = user["username"].as_str() {
-            self.usernames.insert(id.to_owned(), username.to_owned());
+            self.usernames.insert(id, username.to_owned());
         }
         // Partial user objects leave it out.
         match user["bot"].as_bool() {
             Some(true) => {
-                self.bots.insert(id.to_owned());
+                self.bots.insert(id);
             }
             Some(false) => {
-                self.bots.remove(id);
+                self.bots.remove(&id);
             }
             None => {}
         }
         // Partial user objects leave the avatar out; null removes it.
         match user.get("avatar") {
             Some(Value::String(hash)) => {
-                learned |= changed(&mut self.avatars, id.to_owned(), Some(hash.clone()));
+                learned |= changed(&mut self.avatars, id, Some(hash.clone()));
             }
-            Some(Value::Null) => learned |= changed(&mut self.avatars, id.to_owned(), None),
+            Some(Value::Null) => learned |= changed(&mut self.avatars, id, None),
             _ => {}
         }
         self.version += u64::from(known && learned);
@@ -965,31 +1018,32 @@ impl Names {
     pub fn learn_member(&mut self, guild: &str, member: &Value) {
         let user = member["user_id"]
             .as_str()
-            .or_else(|| member["user"]["id"].as_str());
-        let known = user.is_some_and(|user| self.seen.contains_key(user));
+            .or_else(|| member["user"]["id"].as_str())
+            .and_then(id);
+        let known = user.is_some_and(|user| self.seen.contains_key(&user));
         self.learn_user(&member["user"]);
-        let Some(user) = user else {
+        let (Some(user), Some(guild)) = (user, id(guild)) else {
             return;
         };
         self.saw(user);
-        let key = (guild.to_owned(), user.to_owned());
+        let key = (guild, user);
         let nick = member["nick"].as_str().map(str::to_owned);
-        let mut learned = changed(&mut self.nicknames, key.clone(), nick);
+        let mut learned = changed(&mut self.nicknames, key, nick);
         let avatar = member["avatar"].as_str().map(str::to_owned);
-        learned |= changed(&mut self.member_avatars, key.clone(), avatar);
+        learned |= changed(&mut self.member_avatars, key, avatar);
         // Some member objects leave the roles out.
         if let Some(roles) = member["roles"].as_array() {
             let roles: Arc<[String]> = roles
                 .iter()
                 .filter_map(|role| role.as_str().map(str::to_owned))
                 .collect();
-            learned |= changed(&mut self.roles, key.clone(), Some(roles));
+            learned |= changed(&mut self.roles, key, Some(roles));
         }
         // Present when known, null when they aren't timed out; a time past
         // is a timeout that ended.
         if let Some(until) = member.get("communication_disabled_until") {
             let until = until.as_str().and_then(iso_ms);
-            changed(&mut self.timeouts, key.clone(), until);
+            changed(&mut self.timeouts, key, until);
         }
         self.members.insert(key);
         self.version += u64::from(known && learned);
@@ -998,7 +1052,9 @@ impl Names {
     /// Forgets what's known of someone as a member of a server they left,
     /// were kicked from or banned from.
     pub fn forget_member(&mut self, guild: &str, user: &str) {
-        let key = (guild.to_owned(), user.to_owned());
+        let Some(key) = member_key(guild, user) else {
+            return;
+        };
         let learned = self.nicknames.remove(&key).is_some()
             | self.member_avatars.remove(&key).is_some()
             | self.roles.remove(&key).is_some();
@@ -1010,18 +1066,21 @@ impl Names {
     /// When a member's timeout ends, in Unix milliseconds, if they're timed
     /// out as far as Yapfast knows; it may have ended already.
     pub fn timed_out_until(&self, guild: &str, user: &str) -> Option<u64> {
-        self.timeouts
-            .get(&(guild.to_owned(), user.to_owned()))
-            .copied()
+        self.timeouts.get(&member_key(guild, user)?).copied()
     }
 
     /// The members known to hold `role` in a server, by user id.
     pub fn members_with_role(&self, guild: &str, role: &str) -> Vec<String> {
+        let Some(guild) = id(guild) else {
+            return Vec::new();
+        };
         let mut members: Vec<String> = self
             .roles
             .iter()
-            .filter(|((server, _), roles)| server == guild && roles.iter().any(|held| held == role))
-            .map(|((_, user), _)| user.clone())
+            .filter(|((server, _), roles)| {
+                *server == guild && roles.iter().any(|held| held == role)
+            })
+            .map(|((_, user), _)| user.to_string())
             .collect();
         members.sort();
         members
@@ -1055,19 +1114,19 @@ impl Names {
 
     /// A member's roles in a server, as far as they're known.
     pub fn roles(&self, guild: &str, user: &str) -> &[String] {
-        self.touch(user);
-        self.roles
-            .get(&(guild.to_owned(), user.to_owned()))
-            .map_or(&[], |roles| roles)
+        self.shared(guild, user).map_or(&[], |roles| roles)
     }
 
     /// A member's roles in a server, as far as they're known, shared rather
     /// than copied; none when they aren't known.
     pub fn shared_roles(&self, guild: &str, user: &str) -> Option<Arc<[String]>> {
-        self.touch(user);
-        self.roles
-            .get(&(guild.to_owned(), user.to_owned()))
-            .cloned()
+        self.shared(guild, user).cloned()
+    }
+
+    fn shared(&self, guild: &str, user: &str) -> Option<&Arc<[String]>> {
+        let key = member_key(guild, user)?;
+        self.touch(key.1);
+        self.roles.get(&key)
     }
 
     /// Learns the author and the mentioned users of a message object, and
@@ -1095,18 +1154,18 @@ impl Names {
 
     /// Whether a user is a bot or an app, as far as it's known.
     pub fn is_bot(&self, user: &str) -> bool {
-        self.bots.contains(user)
+        id(user).is_some_and(|user| self.bots.contains(&user))
     }
 
     pub fn knows_member(&self, guild: &str, user: &str) -> bool {
-        self.members.contains(&(guild.to_owned(), user.to_owned()))
+        member_key(guild, user).is_some_and(|key| self.members.contains(&key))
     }
 
     /// Known users whose name starts with `query`, or has a later word that does,
     /// by id; any letter case.
     pub fn find_users(&self, query: &str) -> Vec<String> {
         let query = query.to_lowercase();
-        let mut found: Vec<(bool, &String, &String)> = self
+        let mut found: Vec<(bool, &String, String)> = self
             .users
             .iter()
             .filter_map(|(id, name)| {
@@ -1116,51 +1175,56 @@ impl Names {
                     .split_whitespace()
                     .skip(1)
                     .any(|word| word.starts_with(&query));
-                (starts || later).then_some((!starts, name, id))
+                (starts || later).then(|| (!starts, name, id.to_string()))
             })
             .collect();
         found.sort();
-        found.into_iter().map(|(_, _, id)| id.clone()).collect()
+        found.into_iter().map(|(_, _, id)| id).collect()
     }
 
     /// A user's display name or username, outside any server.
     pub fn user_name(&self, user: &str) -> Option<&str> {
+        let user = id(user)?;
         self.touch(user);
-        self.users.get(user).map(String::as_str)
+        self.users.get(&user).map(String::as_str)
     }
 
     /// A user's username, such as `ann`.
     pub fn username(&self, user: &str) -> Option<&str> {
-        self.usernames.get(user).map(String::as_str)
+        self.usernames.get(&id(user)?).map(String::as_str)
     }
 
     /// A member's nickname in a server, when they set one.
     pub fn nickname(&self, guild: &str, user: &str) -> Option<&str> {
         self.nicknames
-            .get(&(guild.to_owned(), user.to_owned()))
+            .get(&member_key(guild, user)?)
             .map(String::as_str)
     }
 
     pub fn name(&self, guild: &str, user: &str) -> Option<&str> {
-        self.touch(user);
-        self.nicknames
-            .get(&(guild.to_owned(), user.to_owned()))
-            .or_else(|| self.users.get(user))
+        let user_id = id(user)?;
+        self.touch(user_id);
+        id(guild)
+            .and_then(|guild| self.nicknames.get(&(guild, user_id)))
+            .or_else(|| self.users.get(&user_id))
             .map(String::as_str)
     }
 
     /// The address of the avatar Discord shows for a user: their server
     /// avatar in `guild`, else their own, else a default one.
     pub fn avatar(&self, guild: Option<&str>, user: &str) -> String {
-        self.touch(user);
+        let user_id = id(user);
+        if let Some(user_id) = user_id {
+            self.touch(user_id);
+        }
         if let Some(guild) = guild
-            && let Some(hash) = self
-                .member_avatars
-                .get(&(guild.to_owned(), user.to_owned()))
+            && let Some(hash) =
+                member_key(guild, user).and_then(|key| self.member_avatars.get(&key))
         {
             return ready::member_avatar(guild, user, hash);
         }
-        ready::avatar(user, self.avatars.get(user).map(String::as_str))
+        let hash = user_id.and_then(|user| self.avatars.get(&user));
+        ready::avatar(user, hash.map(String::as_str))
     }
 
     /// Discord Markdown for Yapfast: mentions, custom emoji and timestamps
