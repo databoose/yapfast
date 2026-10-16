@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Runs crates/talk-discord/tests/fake_server.rs, then talk-core's ignored
-# discord_text tests, against testing/fake_discord.ts.
+# discord_text tests, against testing/fake_discord.ts, then
+# crates/talk-discord/tests/fake_env.rs against it with an environment.
 # Usage: scripts/test-fake-discord [TEST_ARGS…], such as a test name filter
 # or --test-threads=1, passed to the test binary.
 # Starts the fake on a free port, waits until it answers, runs the ignored
 # tests with the `fast` profile, then stops the fake. Its log is
-# target/fake-discord.log.
+# target/fake-discord.log. Then it does the same for
+# crates/talk-discord/tests/fake_env.rs, against a fake running
+# testing/envs/example.json, whose log is target/fake-discord-env.log.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -13,29 +16,45 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop path:./nix --command "$0" "$@"
 fi
 
-port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 mkdir -p target
-log=target/fake-discord.log
-bun testing/fake_discord.ts --port "$port" >"$log" 2>&1 &
-fake=$!
-trap 'kill "$fake" 2>/dev/null; wait "$fake" 2>/dev/null' EXIT
+fakes=()
+# Stops every fake: a stopped one's status fails `wait`, which mustn't end
+# the trap before the next.
+trap 'for fake in "${fakes[@]}"; do kill "$fake" 2>/dev/null || true; wait "$fake" 2>/dev/null || true; done' EXIT
 
-for _ in $(seq 100); do
-  curl -fsS --max-time 1 "http://127.0.0.1:$port/_control/health" >/dev/null 2>&1 && break
-  if ! kill -0 "$fake" 2>/dev/null; then
-    echo "The fake Discord exited before it was ready:" >&2
-    tail -20 "$log" >&2
+# Starts the fake on a free port, logging to the file given first, with the
+# other arguments, and waits until it answers; sets $server to its address.
+start_fake() {
+  local log=$1
+  shift
+  local port
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  bun testing/fake_discord.ts --port "$port" "$@" >"$log" 2>&1 &
+  local fake=$!
+  fakes+=("$fake")
+  for _ in $(seq 100); do
+    curl -fsS --max-time 1 "http://127.0.0.1:$port/_control/health" >/dev/null 2>&1 && break
+    if ! kill -0 "$fake" 2>/dev/null; then
+      echo "The fake Discord exited before it was ready:" >&2
+      tail -20 "$log" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  curl -fsS --max-time 1 "http://127.0.0.1:$port/_control/health" >/dev/null || {
+    echo "The fake Discord did not answer on port $port; see $log" >&2
     exit 1
-  fi
-  sleep 0.1
-done
-curl -fsS --max-time 1 "http://127.0.0.1:$port/_control/health" >/dev/null || {
-  echo "The fake Discord did not answer on port $port; see $log" >&2
-  exit 1
+  }
+  server="http://127.0.0.1:$port"
 }
 
-TALK_DISCORD_TEST_SERVER="http://127.0.0.1:$port" \
+start_fake target/fake-discord.log
+TALK_DISCORD_TEST_SERVER=$server \
   cargo test --locked --profile fast -p talk-discord --test fake_server -- --ignored "$@"
 # The shared core's Discord side, against the same fake.
-TALK_DISCORD_TEST_SERVER="http://127.0.0.1:$port" \
+TALK_DISCORD_TEST_SERVER=$server \
   cargo test --locked --profile fast -p talk-core discord_text::tests -- --ignored "$@"
+# The example environment, in a fake of its own.
+start_fake target/fake-discord-env.log --env testing/envs/example.json
+TALK_DISCORD_TEST_SERVER=$server \
+  cargo test --locked --profile fast -p talk-discord --test fake_env -- --ignored "$@"

@@ -2044,7 +2044,11 @@ linked account, kept in memory. With `TALK_DISCORD_TEST_UNLINKED=1` too, Talk
 starts unlinked and links against the fake, whose controls scan and confirm
 the code. The fake resumes a dropped gateway session, replaying what it
 missed, and can send op 7. `crates/talk-discord/tests/fake_server.rs`
-runs against it. It counts the audio a call sends (`/_control/call-audio`,
+runs against it. With `--env PATH`, the fake serves an environment's
+content in place of its fixture, for demos and screenshots; see
+[building](building.md#networks) and `testing/fake_discord_env.ts`.
+`crates/talk-discord/tests/fake_env.rs` runs against
+`testing/envs/example.json`. It counts the audio a call sends (`/_control/call-audio`,
 and by SSRC `/_control/voice-audio`),
 which the ignored `discord_audio` test `a_call_sends_what_the_microphone_hears`
 checks: Talk joins the Lounge, unmutes and beeps into a microphone that hears

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Draws the pictures and videos testing/envs/example.json uses, into
+# testing/envs/example/, with ImageMagick and ffmpeg.
+# Usage: testing/envs/make-example-media
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+out=testing/envs/example
+mkdir -p "$out"
+
+avatar() {
+  magick -size 128x128 radial-gradient:"$2"-"$3" \
+    \( -size 128x128 xc:none -fill 'rgba(255,255,255,0.85)' \
+       -draw 'circle 64,50 64,26' -draw 'ellipse 64,122 42,36 180,360' \) \
+    -composite -depth 8 -strip -define png:compression-level=9 "$out/$1.png"
+}
+avatar me '#ff8a65' '#d84315'
+avatar maya '#ba68c8' '#6a1b9a'
+avatar theo '#4fc3f7' '#01579b'
+avatar priya '#81c784' '#1b5e20'
+avatar jonas '#ffd54f' '#e65100'
+avatar lena '#f06292' '#880e4f'
+avatar sprout '#aed581' '#33691e'
+
+magick -size 256x256 gradient:'#43a047'-'#1b5e20' \
+  -fill '#c5e1a5' -draw 'circle 128,150 128,80' \
+  -fill '#f9a825' -draw 'circle 128,150 128,125' \
+  -fill '#2e7d32' -draw 'polygon 128,40 150,90 106,90' -depth 8 -strip "$out/garden.png"
+magick -size 256x256 gradient:'#4fc3f7'-'#0277bd' \
+  -fill '#eceff1' -draw 'polygon 20,210 110,70 200,210' \
+  -fill '#90a4ae' -draw 'polygon 100,210 170,110 240,210' \
+  -fill '#ffee58' -draw 'circle 200,60 200,40' -depth 8 -strip "$out/hikers.png"
+# A wide banner for Maya's profile.
+magick -size 600x240 gradient:'#ce93d8'-'#4a148c' -depth 8 -strip "$out/maya-banner.png"
+
+# A photo: a sunrise over hills.
+magick -size 960x600 gradient:'#ffcc80'-'#5c6bc0' \
+  -fill '#fff59d' -draw 'circle 640,330 640,270' \
+  -fill '#33691e' -draw 'polygon 0,600 0,420 220,360 480,430 760,380 960,440 960,600' \
+  -fill '#1b5e20' -draw 'polygon 0,600 0,500 300,450 620,520 960,480 960,600' \
+  -depth 8 -quality 82 -strip "$out/sunrise.jpg"
+
+# A short clip with a soft tone: a slow pan across the sunrise.
+ffmpeg -v error -y -loop 1 -i "$out/sunrise.jpg" -f lavfi -i 'sine=frequency=330:sample_rate=48000' -t 3 \
+  -vf "zoompan=z='1.2+0.002*on':x='iw/2-(iw/zoom/2)+on*2':y='ih/2-(ih/zoom/2)':d=1:s=480x270:fps=15" \
+  -c:v libx264 -pix_fmt yuv420p -crf 30 -c:a aac -b:a 48k -af 'volume=0.2,afade=t=in:d=0.5,afade=t=out:st=2.4:d=0.6' \
+  -shortest -movflags +faststart "$out/sunrise-pan.mp4"
+# Maya's stream: a screen of panels over shifting colours, with a dot that moves.
+ffmpeg -v error -y -f lavfi -i 'gradients=size=640x360:rate=10:speed=0.08:c0=#283593:c1=#00897b:c2=#6a1b9a:nb_colors=3,drawbox=x=50:y=50:w=540:h=40:color=white@0.85:t=fill,drawbox=x=50:y=120:w=340:h=190:color=white@0.6:t=fill,drawbox=x=420:y=120:w=170:h=190:color=#ffd54f@0.9:t=fill[screen];color=c=#e91e63:size=48x24:rate=10[dot];[screen][dot]overlay=x=70+mod(t*80\,260):y=270' \
+  -t 4 -c:v libx264 -pix_fmt yuv420p -crf 32 -movflags +faststart "$out/screen-stream.mp4"
+ls -la "$out"

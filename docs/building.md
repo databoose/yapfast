@@ -230,7 +230,29 @@ network only opens `--preview`.
 test token instead of the linked account, so the real token never reaches it.
 `scripts/test-fake-discord [FILTER]` starts the fake on a free port, waits until
 it answers, runs the ignored tests in `crates/talk-discord/tests/fake_server.rs`
-with the `fast` profile, and stops it.
+with the `fast` profile, and stops it. It then runs
+`crates/talk-discord/tests/fake_env.rs` against a second fake that runs the
+example environment.
+
+`--env PATH` replaces the fake's built-in content with an environment, for
+demos, promo recordings and screenshots. An environment is a JSON file, or a
+TypeScript module whose default export is the environment. It sets up the
+account, people with avatar pictures, statuses and friendships, DMs and
+group DMs, and servers. A server has roles, members, categories, text
+channels with history and unread counts, and voice channels with people in
+them. One of those people can stream a video file with Go Live.
+`testing/fake_discord_env.ts` defines the format as TypeScript types, and
+`testing/envs/example.json` uses every part of it:
+
+```sh
+scripts/ui-session start --discord --fake-args '--env testing/envs/example.json'
+```
+
+Media paths are relative to the environment file. Videos need `ffprobe` and
+`ffmpeg`. A streamed video is converted once to the fake's stream formats,
+and the result is cached in the system's temporary directory. Without
+`--env`, the fake serves its built-in content unchanged, and the tests rely
+on it.
 `TALK_DISCORD_TEST_UNLINKED=1` starts Talk unlinked, to link against the fake.
 [Network memory](measurements/README.md) compares the three builds.
 
