@@ -40,10 +40,19 @@ native app would. You keep your servers, DMs, friends, voice and GIFs.
 - **Familiar.** If you know Discord, you already know where everything is.
 - **Open source.** All of it, down to the UI library.
 
-> [!WARNING]
-> Discord doesn't allow third-party apps like Yapfast on personal accounts.
-> Linking your account puts it at some risk of being suspended. Yapfast says
-> so before you link, and it's your call.
+### Will I get banned for using Yapfast?
+
+Third-party apps like Yapfast are against Discord's Terms of Service. But
+Discord is pretty indifferent about them, and bans for using one are very
+rare. Accounts that get banned are almost always spamming or running
+automation. Yapfast only does what you ask it to, and keeps within the limits
+Discord's own app keeps within, so you should generally be fine.
+
+If your account is very important to you, and losing it would be a disaster,
+you should probably not use any third-party app, Yapfast or another, just to
+be safe. Don't post screenshots of Yapfast in a server whose moderators might
+ban you for it, either. Yapfast reminds you of this before you link your
+account.
 
 ## Get started
 
@@ -70,13 +79,23 @@ yourself](#build-it-yourself). **macOS** isn't supported.
 ## Features
 
 - **Servers, channels, DMs and group DMs**, all live.
-- **Messages** you can send, reply to, edit, react to and attach files to,
-  with Markdown, embeds, custom emoji, stickers and spoilers.
+- **Messages** you can send, reply to, edit, react to, pin and attach files
+  to, with Markdown, embeds, custom emoji, stickers and spoilers, uploads
+  included.
+- **Threads**: start one from a message, browse a channel's threads, and
+  read one beside its channel.
+- **Search** a whole server with Discord's filters, and browse a channel's
+  pinned messages.
 - **A GIF picker** with your favourites, kept on hand so they show at once.
 - **Voice and video**: server voice channels and DM calls, with mute, deafen,
   per-person volume and noise suppression. Go Live to share your screen, watch
   others' streams, and turn on your camera.
-- **Friends**: requests, adding by username, your status and custom status.
+- **Friends**: requests, adding by username, notes, your status and custom
+  status. Block and ignore people from their menu, and hide what the blocked
+  write.
+- **Running a server**: make and edit channels and categories, invite people,
+  kick and ban, edit your server profile, and leave servers. Folders show as
+  in Discord.
 - **Notifications**, unread markers and member lists.
 - **Themes**: ten built in, from Catppuccin to Tokyo Night, or make your own.
 - **Soft sounds** for joining, leaving, muting and messages, in six sets.
@@ -86,15 +105,14 @@ yourself](#build-it-yourself). **macOS** isn't supported.
 
 - If Discord asks for a captcha while you link, Yapfast opens it in your
   browser; that hasn't been tried against real Discord yet.
-- Threads and forum channels.
-- Search and pinned messages in servers, and pinning messages.
-- Forwarding messages as forwards.
-- Blocking and unblocking, and a list of blocked people. Messages from people
-  you blocked elsewhere already show collapsed.
-- Server folders, joining servers by invite, and leaving them.
-- Discord's push-to-talk and voice settings, and the soundboard.
-- Polls, activities and server administration.
-- Marking an upload as a spoiler.
+- Forum channels, and joining or leaving threads from their menus. Writing in
+  a thread joins it.
+- Forwarding as Discord does: Yapfast shows forwarded messages, but forwards
+  by sending the text again.
+- A list of the people you blocked.
+- Making and changing server folders, and joining servers by invite.
+- Push-to-talk and the soundboard.
+- Polls, activities and server settings.
 - Animated custom emoji in messages show their first frame.
 
 Use Discord in a browser for these until then. The [Discord
