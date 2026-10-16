@@ -281,6 +281,8 @@ export component YapfastWindow inherits Window {
     // in place of the member list: its messages, history and composer.
     in property <bool> aside-open;
     in property <string> aside-name;
+    /// The thread beside the channel's room id, which its More menu is about.
+    in property <string> aside-room;
     in property <[MessageRow]> aside-messages;
     in property <bool> aside-ready;
     in property <bool> aside-loading;
@@ -1884,6 +1886,17 @@ export component YapfastWindow inherits Window {
                                 clicked => { root.toggle-members(); }
                             }
                         }
+                        // A thread's, after its member list, as in Discord's toolbar.
+                        if root.room-parent != "" && root.room-selected: Middle {
+                            IconButton {
+                                icon: @image-url("icons/ellipsis.svg"); label: "More";
+                                size: 32px; glyph: 20px; tip-side: 2;
+                                clicked => {
+                                    root.open-context-menu("thread-toolbar:" + root.room-id, false,
+                                        self.absolute-position.x, self.absolute-position.y + self.height + 6px);
+                                }
+                            }
+                        }
                         if root.profile-available: Middle {
                             IconButton {
                                 icon: @image-url("icons/user.svg"); label: root.profile-panel ? "Hide profile" : "Show profile";
@@ -2531,6 +2544,7 @@ export component YapfastWindow inherits Window {
                         active-item <=> root.active-item; react-item: root.react-item; menu-item: root.menu-item; confirm-delete: root.confirm-delete;
                         close => { root.aside-close(); }
                         expand => { root.aside-expand(); }
+                        more(x, y) => { root.open-context-menu("thread-sidebar:" + root.aside-room, false, x, y); }
                         earlier => { root.aside-earlier(); }
                         draft-edited(text) => { root.aside-draft-edited(text); }
                         send => { root.aside-send(); }

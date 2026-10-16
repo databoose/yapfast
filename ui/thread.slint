@@ -41,6 +41,8 @@ export component ThreadPanel inherits Rectangle {
     property <int> bottom-index: -1;
     callback close;
     callback expand;
+    /// The More button, with where its menu opens.
+    callback more(length, length);
     callback earlier;
     callback draft-edited(string);
     callback send;
@@ -116,6 +118,12 @@ export component ThreadPanel inherits Rectangle {
                 padding-left: 16px; padding-right: 10px; spacing: 8px;
                 Middle { Image { source: @image-url("icons/messages-square.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
                 Text { text: root.name; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                Middle {
+                    IconButton {
+                        icon: @image-url("icons/ellipsis.svg"); label: "More"; size: 28px; glyph: 18px; tip-side: 2;
+                        clicked => { root.more(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+                    }
+                }
                 Middle { IconButton { icon: @image-url("icons/maximize.svg"); label: "Open in full view"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.expand(); } } }
                 Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close thread"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
             }

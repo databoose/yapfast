@@ -1588,11 +1588,13 @@ pub enum DiscordCommand {
         change: NotificationChange,
     },
     /// Join a Discord thread, by its room id, or leave it with `join`
-    /// false; snapshots show it once Discord confirms it, and a failure
-    /// comes back as [`Event::Error`].
+    /// false, from the menu Discord's client names `location`; snapshots
+    /// show it once Discord confirms it, and a failure comes back as
+    /// [`Event::Error`].
     JoinThread {
         room: String,
         join: bool,
+        location: &'static str,
     },
     /// Set the flags of this account's override for a Discord server's
     /// channel, by its room id, which pins it to the top of the channel

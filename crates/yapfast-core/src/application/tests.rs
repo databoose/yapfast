@@ -2783,12 +2783,25 @@ fn discord_threads_open_once_listed() {
     let join = |join| Action::JoinThread {
         room: "discord:10:30".into(),
         join,
+        location: "Context Menu",
     };
     assert!(matches!(
         app.dispatch(join(true)).as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::JoinThread { room, join: true }))]
-            if room == "discord:10:30"
+        [Effect::Backend(Command::Discord(DiscordCommand::JoinThread {
+            room,
+            join: true,
+            location: "Context Menu",
+        }))] if room == "discord:10:30"
     ));
+    // Its header's More menu offers the same, less marking it read.
+    assert_eq!(
+        app.thread_more_choices("discord:10:30"),
+        [
+            MenuChoice::JoinThread,
+            MenuChoice::CopyLink,
+            MenuChoice::CopyId
+        ]
+    );
     assert!(app.dispatch(join(false)).is_empty(), "it isn't in it");
 
     // One Discord won't give says why, and doesn't open later.

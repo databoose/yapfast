@@ -1813,6 +1813,9 @@ impl Adapter {
         let room = &aside.room;
         let name = state.aside_room().map_or("", |listed| listed.name.as_str());
         window.set_aside_open(true);
+        if window.get_aside_room() != room.as_str() {
+            window.set_aside_room(room.as_str().into());
+        }
         window.set_aside_name(name.into());
         window.set_aside_ready(aside.ready);
         window.set_aside_loading(aside.loading_history);

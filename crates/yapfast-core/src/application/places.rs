@@ -385,10 +385,23 @@ impl Application {
         }
     }
 
-    /// Joins a Discord thread from its menu, or leaves it. It lists, or
+    /// What a Discord thread header's More menu offers, by its room id, as
+    /// Discord's does: the thread's menu, less marking it read.
+    pub fn thread_more_choices(&self, room: &str) -> Vec<MenuChoice> {
+        let mut choices = self.menu_choices(room);
+        choices.retain(|choice| *choice != MenuChoice::MarkRead);
+        choices
+    }
+
+    /// Joins a Discord thread from a menu, or leaves it. It lists, or
     /// stops listing, once Discord confirms it; one left stays open, as in
     /// Discord's client.
-    pub(super) fn join_thread(&mut self, room: String, join: bool) -> Vec<Effect> {
+    pub(super) fn join_thread(
+        &mut self,
+        room: String,
+        join: bool,
+        location: &'static str,
+    ) -> Vec<Effect> {
         let choice = if join {
             MenuChoice::JoinThread
         } else {
@@ -398,7 +411,11 @@ impl Application {
             return vec![];
         }
         vec![Effect::Backend(Command::Discord(
-            DiscordCommand::JoinThread { room, join },
+            DiscordCommand::JoinThread {
+                room,
+                join,
+                location,
+            },
         ))]
     }
 

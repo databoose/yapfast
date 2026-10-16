@@ -1492,11 +1492,16 @@ it, start "Movie night" and archive "Plans".
 
 A thread's menu offers Join thread, or Leave thread for one the account is
 in, after Mark as read, as Discord's client does (its `thread-context`
-menu). Discord's client checks nothing else: not archiving, locking or
-permissions. It sends `POST /channels/{id}/thread-members/@me` to join,
-though docs.discord.food says PUT, and `DELETE` to leave, each with
-`?location=Context Menu` and no body; Discord answers with
-THREAD_MEMBERS_UPDATE. A thread left stays on screen, as in Discord's
+menu). So does the More button (…) in a thread's header, after its member
+list, and in the header of a thread beside its channel: the same menu less
+Mark as read, as Discord's "Toolbar Overflow" and "Sidebar Overflow" menus
+start with joining or leaving; their other items, such as closing or
+locking the thread, Yapfast doesn't have yet. Discord's client checks
+nothing else: not archiving, locking or permissions. It sends `POST
+/channels/{id}/thread-members/@me` to join, though docs.discord.food says
+PUT, and `DELETE` to leave, each with the menu's `location` ("Context
+Menu", "Toolbar Overflow" or "Sidebar Overflow") and no body; Discord
+answers with THREAD_MEMBERS_UPDATE. A thread left stays on screen, as in Discord's
 client, and stops listing in the sidebar once it's off it. The fake
 answers both, refuses an archived thread (50083), and
 `/_control/thread-members` lists each request.

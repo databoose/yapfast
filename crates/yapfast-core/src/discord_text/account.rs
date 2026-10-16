@@ -1021,8 +1021,12 @@ fn change_person(
                     },
                 )
             }
-            DiscordCommand::JoinThread { room, join } => (
-                discord.join_thread(&channel(&room), join).await,
+            DiscordCommand::JoinThread {
+                room,
+                join,
+                location,
+            } => (
+                discord.join_thread(&channel(&room), join, location).await,
                 if join {
                     "join the thread"
                 } else {

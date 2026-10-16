@@ -14,6 +14,22 @@ use super::*;
 /// some of the server menu's choices: this, then the server's id.
 pub(super) const HEADER: &str = "header:";
 
+/// How a Discord thread header's More button names its menu, before the
+/// thread's room id: the header in full view, and the one beside its channel.
+pub(super) const TOOLBAR: &str = "thread-toolbar:";
+pub(super) const SIDEBAR: &str = "thread-sidebar:";
+
+/// The thread a header's More menu is about, and where Discord's client says
+/// a choice in it came from.
+fn thread_more(id: &str) -> Option<(&str, &'static str)> {
+    id.strip_prefix(TOOLBAR)
+        .map(|room| (room, "Toolbar Overflow"))
+        .or_else(|| {
+            id.strip_prefix(SIDEBAR)
+                .map(|room| (room, "Sidebar Overflow"))
+        })
+}
+
 /// A menu's rows, and the submenu each opens by the row's index: empty for a
 /// row without one, and none at all when no row has one, as the window's
 /// ContextMenu takes them.
@@ -30,8 +46,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     let app = &adapter.app;
     let state = &app.state;
     let in_voice = voice_target(id);
+    let thread = thread_more(id);
     let choices = if let Some((room, user)) = in_voice {
         app.voice_person_choices(room, user)
+    } else if let Some((room, _)) = thread {
+        app.thread_more_choices(room)
     } else if person {
         app.person_choices(id)
     } else if let Some(server) = id.strip_prefix(HEADER) {
@@ -39,7 +58,11 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     } else {
         app.menu_choices(id)
     };
-    let id = in_voice.map_or_else(|| id.strip_prefix(HEADER).unwrap_or(id), |(_, user)| user);
+    let id = match (in_voice, thread) {
+        (Some((_, user)), _) => user,
+        (None, Some((room, _))) => room,
+        (None, None) => id.strip_prefix(HEADER).unwrap_or(id),
+    };
     let voice_person = in_voice.and_then(|(room, user)| app.voice_person(room, user));
     // Moderation names whom it's about, as Discord's does.
     let named = std::cell::OnceCell::new();
@@ -635,6 +658,10 @@ pub(super) fn choose(
         Some(place) => place.to_owned(),
         None => target,
     };
+    let (target, location) = match thread_more(&target) {
+        Some((room, location)) => (room.to_owned(), location),
+        None => (target, "Context Menu"),
+    };
     let notify = Notify::of(adapter, &target);
     let change = |change| Action::ChangeNotifications {
         place: target.clone(),
@@ -833,6 +860,7 @@ pub(super) fn choose(
         MenuChoice::JoinThread | MenuChoice::LeaveThread => Some(Action::JoinThread {
             room: target,
             join: choice == MenuChoice::JoinThread,
+            location,
         }),
         // From a server's menu, or one's own in its member list.
         MenuChoice::EditServerProfile => {

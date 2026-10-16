@@ -2650,19 +2650,25 @@ async fn joins_and_leaves_threads_as_discords_client_does(discord: &Discord, ser
     };
     let (id, joined) = book_club(&discord.snapshots().borrow()).unwrap();
     assert!(!joined);
-    discord.join_thread(&id, true).await.unwrap();
+    discord
+        .join_thread(&id, true, "Context Menu")
+        .await
+        .unwrap();
     snapshot_where(discord, |snapshot| {
         book_club(snapshot).is_some_and(|(_, joined)| joined)
     })
     .await;
-    discord.join_thread(&id, false).await.unwrap();
+    discord
+        .join_thread(&id, false, "Toolbar Overflow")
+        .await
+        .unwrap();
     snapshot_where(discord, |snapshot| {
         book_club(snapshot).is_some_and(|(_, joined)| !joined)
     })
     .await;
     assert_eq!(
         self::control(server, "GET", "/_control/thread-members", ""),
-        r#"["POST Context Menu","DELETE Context Menu"]"#
+        r#"["POST Context Menu","DELETE Toolbar Overflow"]"#
     );
 }
 
