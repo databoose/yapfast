@@ -7,10 +7,5 @@ yapfast_skia_archive=$(python3 nix/prepare-windows-skia.py)
 export SKIA_BINARIES_URL="file://$yapfast_skia_archive"
 # cargo-xwin's environment, with source paths that name no folder here.
 source scripts/release-env x86_64-pc-windows-msvc
-# Thin LTO made the Windows executable bigger, 247 MiB against 232.5, and
-# the installer 60.8 MiB against 57.0, for no measured speed; strip changes
-# nothing, the symbols being in the PDB. "off", as false still runs LTO
-# within each crate.
-export CARGO_PROFILE_RELEASE_LTO=off
 cargo build --locked --release --target x86_64-pc-windows-msvc
 python3 scripts/package-windows.py
