@@ -3,9 +3,7 @@
 On 2026-10-03, Yapfast's production desktop UI moved from GPUI to Slint 1.18.1.
 The Matrix/session/voice services and application model stay in `yapfast-core`.
 The existing backend dependency pins, crypto stores and account directory format
-remain unchanged. `archive/gpui-before-slint` preserves the complete pre-migration
-state at `4bbc6ad`; the earlier main snapshot also has an archive branch.
-No remote push is part of this migration.
+remain unchanged. The GPUI client is in the history before that date.
 
 ## Delivered behavior
 
