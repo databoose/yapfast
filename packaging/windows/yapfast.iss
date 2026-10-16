@@ -47,8 +47,8 @@ LicenseFile={#LicenseFile}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-english.StartOnSignIn=Start Yapfast when I sign in
-english.StartOnSignInGroup=Starting:
+english.StartOnSignIn=Start Yapfast automatically when Windows starts
+english.StartOnSignInGroup=Startup:
 
 [Tasks]
 Name: "startonsignin"; Description: "{cm:StartOnSignIn}"; GroupDescription: "{cm:StartOnSignInGroup}"
