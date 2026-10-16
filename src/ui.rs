@@ -1105,11 +1105,14 @@ struct Adapter {
     reset_version: u64,
     /// The timeline shown, which tells the messages that changed since.
     messages: Arc<Vec<Arc<ChatMessage>>>,
-    /// The rows built for those messages, by id, so the list keeps their state.
-    rows: HashMap<String, MessageRow>,
+    /// The rows built for those messages, as the list shows them.
+    rows: Vec<MessageRow>,
     /// The same for the thread beside the open channel.
     aside_messages: Arc<Vec<Arc<ChatMessage>>>,
-    aside_rows: HashMap<String, MessageRow>,
+    aside_rows: Vec<MessageRow>,
+    /// The thread's rows are built again at its next showing, as the
+    /// timeline's were.
+    aside_restyle: bool,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
     /// A hash of what the friends picker's rows were built from, so they're
@@ -1298,7 +1301,7 @@ impl Adapter {
                 selection_version: 0,
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
-                rows: HashMap::new(),
+                rows: Vec::new(),
                 sidebar: None,
                 picker_shown: None,
                 threads_shown: None,
@@ -1315,7 +1318,8 @@ impl Adapter {
                 restyle: false,
                 theme_editor: None,
                 aside_messages: Arc::new(Vec::new()),
-                aside_rows: HashMap::new(),
+                aside_rows: Vec::new(),
+                aside_restyle: false,
                 mention_at: None,
                 mention_dismissed: None,
                 emoji_word: None,
@@ -1945,23 +1949,6 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
     }
     for row in rows.into_iter().skip(common) {
         model.push(row);
-    }
-}
-
-/// Shows the timeline's rows, building again only those that changed. Older
-/// messages go in above the rows shown, and the list keeps those where they
-/// are on screen, even when it shows the first row; see
-/// `i_slint_core::yapfast_anchor`.
-fn show_rows(model: &VecModel<MessageRow>, rows: Vec<MessageRow>) {
-    let earlier = model
-        .row_data(0)
-        .is_some_and(|first| rows.iter().skip(1).any(|row| row.id == first.id));
-    if earlier {
-        i_slint_core::yapfast_anchor::hold(|| {
-            update_model_by_id(model, rows, |row| row.id.clone())
-        });
-    } else {
-        update_model_by_id(model, rows, |row| row.id.clone());
     }
 }
 

@@ -1671,7 +1671,8 @@ fn older_messages_go_in_above_without_moving_those_shown() {
     window.set_loading_history(true);
     // The first row carries the loading notice and its day; once older
     // messages from that day are above it, it carries neither.
-    let rows = |from: usize| -> Vec<MessageRow> {
+    // Each from someone else, so each row shows its author, all on one day.
+    let messages = |from: usize| -> Vec<Arc<ChatMessage>> {
         (from..200)
             .map(|index| {
                 let body = if index % 3 == 0 {
@@ -1679,23 +1680,30 @@ fn older_messages_go_in_above_without_moving_those_shown() {
                 } else {
                     format!("Message {index}")
                 };
-                let mut row = message_row_plain(&ChatMessage {
+                Arc::new(ChatMessage {
                     id: format!("m{index}"),
                     item: format!("i{index}"),
-                    author: "Bob".into(),
+                    author: format!("Person {index}"),
                     body,
                     formatted: true,
+                    // Noon on 1 October 2026, UTC.
+                    timestamp: 1_790_856_000 + index as u64,
                     ..Default::default()
-                });
-                row.first = true;
-                if index == from {
-                    row.day = "1 October 2026".into();
-                }
-                row
+                })
             })
             .collect()
     };
-    let model = Rc::new(VecModel::from(rows(150)));
+    let revealed = HashSet::new();
+    let marks = Marks {
+        first_new: usize::MAX,
+        first_unread: None,
+        revealed: &revealed,
+        restyle: false,
+    };
+    let model = Rc::new(VecModel::default());
+    let mut rows = Vec::new();
+    let shown = messages(150);
+    show_timeline(&model, &mut rows, &[], &shown, &marks, message_row_plain);
     window.set_messages(ModelRc::from(model.clone()));
     window.show().unwrap();
     window
@@ -1737,7 +1745,14 @@ fn older_messages_go_in_above_without_moving_those_shown() {
     settle();
     assert_eq!(window.get_top_index(), 0);
     let edge = window.get_top_edge();
-    show_rows(&model, rows(100));
+    show_timeline(
+        &model,
+        &mut rows,
+        &shown,
+        &messages(100),
+        &marks,
+        message_row_plain,
+    );
     settle();
     assert_eq!(
         (window.get_top_index(), window.get_top_item().as_str()),
@@ -3872,4 +3887,43 @@ fn a_reactions_tooltip_names_up_to_three_as_discords_client_does() {
     assert_eq!(emoji::shortcode("👍"), ":thumbsup:");
     assert_eq!(emoji::shortcode("🎉"), ":tada:");
     assert_eq!(emoji::shortcode(":talk:"), ":talk:");
+}
+
+#[test]
+fn the_thread_beside_keeps_its_rows_when_a_new_layout_builds_them_again() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = YapfastWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    window.invoke_explore_preview();
+    let messages: Vec<_> = (0..3)
+        .map(|n| {
+            Arc::new(ChatMessage {
+                id: format!("t{n}"),
+                item: format!("t{n}"),
+                author: "Ann".into(),
+                body: format!("Reply {n}"),
+                ..Default::default()
+            })
+        })
+        .collect();
+    {
+        let mut adapter = adapter.borrow_mut();
+        let aside = adapter.app.state.aside.insert(Default::default());
+        aside.room = "thread".into();
+        aside.ready = true;
+        aside.messages = Arc::new(messages);
+    }
+    adapter.borrow_mut().refresh(&window);
+    assert_eq!(window.get_aside_messages().row_count(), 3);
+    // As a theme's colours do, which the rows carry.
+    adapter.borrow_mut().restyle = true;
+    adapter.borrow_mut().refresh(&window);
+    assert_eq!(window.get_aside_messages().row_count(), 3);
 }

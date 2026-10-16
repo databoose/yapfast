@@ -6,13 +6,13 @@ use super::*;
 /// A message continues the previous one's group when the same person sent it
 /// within seven minutes, without replying to something else.
 pub(super) fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
-    let sender = |message: &ChatMessage| {
+    fn sender(message: &ChatMessage) -> &str {
         if message.sender.is_empty() {
-            message.author.clone()
+            &message.author
         } else {
-            message.sender.clone()
+            &message.sender
         }
-    };
+    }
     let close = before.timestamp == 0
         || message.timestamp == 0
         || message.timestamp.abs_diff(before.timestamp) <= 7 * 60;
@@ -22,6 +22,159 @@ pub(super) fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
 /// The local calendar date of a timestamp, such as "3 October 2026"; empty when unknown.
 pub(super) fn day(timestamp: u64) -> String {
     yapfast_core::clock::day(timestamp)
+}
+
+/// How a timeline marks its rows beyond what their messages say.
+pub(super) struct Marks<'a> {
+    /// The index of the first message that came since the timeline was read.
+    pub first_new: usize,
+    /// The item the "New" divider shows above.
+    pub first_unread: Option<&'a str>,
+    pub revealed: &'a HashSet<String>,
+    /// Every row is built again, as for a new layout.
+    pub restyle: bool,
+}
+
+/// What a row shows of the messages around it, and of its author's picture.
+struct Decoration<'a> {
+    first: bool,
+    day: Option<String>,
+    picture_url: &'a str,
+    reply_picture_url: &'a str,
+    unread_start: bool,
+    highlighted: bool,
+}
+
+impl Decoration<'_> {
+    /// Puts it on `row`, and says whether that changed it.
+    fn apply(&self, row: &mut MessageRow) -> bool {
+        let day = self.day.as_deref().unwrap_or_default();
+        let changed = row.first != self.first
+            || row.day.as_str() != day
+            || row.picture_url.as_str() != self.picture_url
+            || row.reply_picture_url.as_str() != self.reply_picture_url
+            || row.unread_start != self.unread_start
+            || row.highlighted != self.highlighted;
+        if changed {
+            row.first = self.first;
+            row.day = day.into();
+            row.picture_url = self.picture_url.into();
+            row.reply_picture_url = self.reply_picture_url.into();
+            row.unread_start = self.unread_start;
+            row.highlighted = self.highlighted;
+        }
+        changed
+    }
+}
+
+/// Shows `messages` in `model`, which shows `rows`, built for `shown`. A row
+/// is built again only for a message that changed since, and set in the
+/// model only where it changed; the rest stay as they are, so the list keeps
+/// their state. Older messages go in above the rows shown, and the list keeps
+/// those where they are on screen, even when it shows the first row; see
+/// `i_slint_core::yapfast_anchor`.
+pub(super) fn show_timeline(
+    model: &VecModel<MessageRow>,
+    rows: &mut Vec<MessageRow>,
+    shown: &[Arc<ChatMessage>],
+    messages: &[Arc<ChatMessage>],
+    marks: &Marks<'_>,
+    build: impl Fn(&ChatMessage) -> MessageRow,
+) {
+    let at: HashMap<&str, usize> = shown
+        .iter()
+        .enumerate()
+        .map(|(index, message)| (message.id.as_str(), index))
+        .collect();
+    debug_assert_eq!(
+        model.row_count(),
+        shown.len(),
+        "the rows shown are those built for `shown`"
+    );
+    let mut earlier = std::mem::take(rows);
+    rows.reserve_exact(messages.len());
+    let mut changed = Vec::with_capacity(messages.len());
+    let mut before: Option<&ChatMessage> = None;
+    let mut before_date = None;
+    for (index, message) in messages.iter().enumerate() {
+        let was = at.get(message.id.as_str()).copied();
+        // A row the backend sent again is the same one.
+        let unchanged = !marks.restyle
+            && was.is_some_and(|was| Arc::ptr_eq(&shown[was], message) || shown[was] == *message);
+        let date = yapfast_core::clock::date(message.timestamp);
+        let new_day = date.is_some() && (before.is_none() || before_date != date);
+        // The author shows again below the "New" divider.
+        let unread_start = marks.first_unread == Some(message.item.as_str());
+        let decoration = Decoration {
+            first: new_day
+                || unread_start
+                || before.is_none_or(|before| !continues(before, message)),
+            day: new_day.then(|| day(message.timestamp)),
+            picture_url: if collapsed(message, marks.revealed) {
+                ""
+            } else {
+                message.avatar.as_deref().unwrap_or_default()
+            },
+            reply_picture_url: message
+                .reply
+                .as_ref()
+                .and_then(|reply| reply.avatar.as_deref())
+                .unwrap_or_default(),
+            unread_start,
+            highlighted: message.highlighted(index >= marks.first_new),
+        };
+        // Each id shows once; a second would find its row taken.
+        let row = was
+            .map(|was| std::mem::take(&mut earlier[was]))
+            .filter(|row| !row.id.is_empty());
+        let (row, dirty) = match row {
+            Some(mut row) if unchanged => {
+                let dirty = decoration.apply(&mut row);
+                (row, dirty)
+            }
+            row => {
+                let mut built = build(message);
+                built.picture = slint::Image::default();
+                built.reply_picture = slint::Image::default();
+                decoration.apply(&mut built);
+                let dirty = row.is_none_or(|row| row != built);
+                (built, dirty)
+            }
+        };
+        rows.push(row);
+        changed.push(dirty);
+        before = Some(message);
+        before_date = date;
+    }
+    let update = || {
+        let same = |old: usize, new: usize| shown[old].id == messages[new].id;
+        let common = shown.len().min(messages.len());
+        let start = (0..common).take_while(|&index| same(index, index)).count();
+        let end = (0..common - start)
+            .take_while(|&back| same(shown.len() - 1 - back, messages.len() - 1 - back))
+            .count();
+        for _ in start..shown.len() - end {
+            model.remove(start);
+        }
+        for (index, row) in rows.iter().enumerate() {
+            if (start..messages.len() - end).contains(&index) {
+                model.insert(index, row.clone());
+            } else if changed[index] {
+                model.set_row_data(index, row.clone());
+            }
+        }
+    };
+    let older = shown.first().is_some_and(|first| {
+        messages
+            .iter()
+            .skip(1)
+            .any(|message| message.id == first.id)
+    });
+    if older {
+        i_slint_core::yapfast_anchor::hold(update);
+    } else {
+        update();
+    }
 }
 
 /// Someone's Markdown as styled text, with web addresses linked. Any HTML

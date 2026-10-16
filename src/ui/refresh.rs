@@ -1835,60 +1835,24 @@ impl Adapter {
             Some(Compose::Edit { .. }) => "Editing your message".into(),
             None => SharedString::default(),
         });
-        if Arc::ptr_eq(&self.aside_messages, &aside.messages) {
+        if Arc::ptr_eq(&self.aside_messages, &aside.messages) && !self.aside_restyle {
             return;
         }
-        let shown: HashMap<&str, &Arc<ChatMessage>> = self
-            .aside_messages
-            .iter()
-            .map(|message| (message.id.as_str(), message))
-            .collect();
-        let mut previous = std::mem::take(&mut self.aside_rows);
-        let mut before: Option<&ChatMessage> = None;
-        let first_new = yapfast_core::chat::first_new(&aside.messages, aside.seen.as_deref());
-        let rows: Vec<MessageRow> = aside
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(index, message)| {
-                let unchanged = shown
-                    .get(message.id.as_str())
-                    .is_some_and(|shown| Arc::ptr_eq(shown, message) || shown == &message);
-                let mut row = match previous.remove(&message.id) {
-                    Some(row) if unchanged => row,
-                    _ => self
-                        .layout
-                        .restyle(message, message_row(message, &self.revealed)),
-                };
-                self.aside_rows.insert(message.id.clone(), row.clone());
-                let day = day(message.timestamp);
-                let new_day = !day.is_empty()
-                    && before.is_none_or(|before| self::day(before.timestamp) != day);
-                row.first = new_day || before.is_none_or(|before| !continues(before, message));
-                row.picture = slint::Image::default();
-                row.picture_url = if collapsed(message, &self.revealed) {
-                    SharedString::default()
-                } else {
-                    message.avatar.as_deref().unwrap_or_default().into()
-                };
-                row.reply_picture = slint::Image::default();
-                row.reply_picture_url = message
-                    .reply
-                    .as_ref()
-                    .and_then(|reply| reply.avatar.as_deref())
-                    .unwrap_or_default()
-                    .into();
-                row.day = if new_day {
-                    day.into()
-                } else {
-                    SharedString::default()
-                };
-                row.highlighted = message.highlighted(index >= first_new);
-                before = Some(message);
-                row
-            })
-            .collect();
-        show_rows(&self.models.aside_messages, rows);
+        let marks = Marks {
+            first_new: yapfast_core::chat::first_new(&aside.messages, aside.seen.as_deref()),
+            first_unread: None,
+            revealed: &self.revealed,
+            restyle: std::mem::take(&mut self.aside_restyle),
+        };
+        let layout = &self.layout;
+        show_timeline(
+            &self.models.aside_messages,
+            &mut self.aside_rows,
+            &self.aside_messages,
+            &aside.messages,
+            &marks,
+            |message| layout.restyle(message, message_row(message, marks.revealed)),
+        );
         self.aside_messages = aside.messages.clone();
     }
 
@@ -2107,73 +2071,28 @@ impl Adapter {
         let state = &self.app.state;
         let restyle = std::mem::take(&mut self.restyle);
         // The thread beside builds its rows again with the timeline's.
-        if restyle {
-            self.aside_messages = Arc::new(Vec::new());
-        }
+        self.aside_restyle |= restyle;
         if messages_changed || selection_changed || reset || pictures_arrived || restyle {
             if selection_changed || reset {
                 window.set_react_item(SharedString::default());
                 window.set_active_item(SharedString::default());
                 window.set_jump_item(SharedString::default());
             }
-            // Rows are built again only for messages that changed since the
-            // timeline shown.
-            let shown: HashMap<&str, &Arc<ChatMessage>> = self
-                .messages
-                .iter()
-                .map(|message| (message.id.as_str(), message))
-                .collect();
-            let mut previous = std::mem::take(&mut self.rows);
-            let mut before: Option<&ChatMessage> = None;
-            let first_new = yapfast_core::chat::first_new(&state.messages, state.seen.as_deref());
-            let rows: Vec<MessageRow> = state
-                .messages
-                .iter()
-                .enumerate()
-                .map(|(index, message)| {
-                    // A row the backend sent again is the same one.
-                    let unchanged = !restyle
-                        && shown
-                            .get(message.id.as_str())
-                            .is_some_and(|shown| Arc::ptr_eq(shown, message) || shown == &message);
-                    let mut row = match previous.remove(&message.id) {
-                        Some(row) if unchanged => row,
-                        _ => self
-                            .layout
-                            .restyle(message, message_row(message, &self.revealed)),
-                    };
-                    self.rows.insert(message.id.clone(), row.clone());
-                    let day = day(message.timestamp);
-                    let new_day = !day.is_empty()
-                        && before.is_none_or(|before| self::day(before.timestamp) != day);
-                    row.first = new_day || before.is_none_or(|before| !continues(before, message));
-                    row.picture = slint::Image::default();
-                    row.picture_url = if collapsed(message, &self.revealed) {
-                        SharedString::default()
-                    } else {
-                        message.avatar.as_deref().unwrap_or_default().into()
-                    };
-                    row.reply_picture = slint::Image::default();
-                    row.reply_picture_url = message
-                        .reply
-                        .as_ref()
-                        .and_then(|reply| reply.avatar.as_deref())
-                        .unwrap_or_default()
-                        .into();
-                    row.day = if new_day {
-                        day.into()
-                    } else {
-                        SharedString::default()
-                    };
-                    // The author shows again below the "New" divider.
-                    row.unread_start = state.first_unread.as_ref() == Some(&message.item);
-                    row.first |= row.unread_start;
-                    row.highlighted = message.highlighted(index >= first_new);
-                    before = Some(message);
-                    row
-                })
-                .collect();
-            show_rows(&self.models.messages, rows);
+            let marks = Marks {
+                first_new: yapfast_core::chat::first_new(&state.messages, state.seen.as_deref()),
+                first_unread: state.first_unread.as_deref(),
+                revealed: &self.revealed,
+                restyle,
+            };
+            let layout = &self.layout;
+            show_timeline(
+                &self.models.messages,
+                &mut self.rows,
+                &self.messages,
+                &state.messages,
+                &marks,
+                |message| layout.restyle(message, message_row(message, marks.revealed)),
+            );
             if selection_changed || reset {
                 self.latest_due = false;
             } else if messages_changed && !state.detached && std::mem::take(&mut self.latest_due) {

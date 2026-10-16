@@ -49,6 +49,11 @@ where
     at(zone, seconds).format(format).to_string()
 }
 
+/// The local calendar date of a Unix time, which [`day`] names; none when unknown.
+pub fn date(seconds: u64) -> Option<chrono::NaiveDate> {
+    (seconds != 0).then(|| at(&Local, seconds).date_naive())
+}
+
 fn day_in<Tz: TimeZone>(zone: &Tz, seconds: u64) -> String
 where
     Tz::Offset: std::fmt::Display,
