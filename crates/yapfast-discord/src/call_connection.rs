@@ -632,10 +632,17 @@ struct Speaker {
     next: Option<u16>,
     /// Packets missing in a row.
     missing: u8,
-    /// The last frame decoded, interleaved stereo.
+    /// The last packet decoded, interleaved stereo: room for the longest an
+    /// Opus packet can be, 120 ms. Voice comes in 20 ms packets, but music
+    /// bots that pass a source's Opus through can send 40 or 60 ms ones.
     pcm: Vec<i16>,
+    /// What of `pcm` is still to play, 20 ms a tick.
+    left: std::ops::Range<usize>,
     heard: std::time::Instant,
 }
+
+/// The most samples per channel an Opus packet decodes to: 120 ms.
+const LONGEST: usize = FRAME * 6;
 
 /// Whether sequence number `a` comes before `b`, across wrapping.
 fn before(a: u16, b: u16) -> bool {
@@ -650,7 +657,8 @@ impl Speaker {
             waiting: VecDeque::with_capacity(MOST + 1),
             next: None,
             missing: 0,
-            pcm: vec![0; FRAME * usize::from(crate::voice::CHANNELS)],
+            pcm: vec![0; LONGEST * usize::from(crate::voice::CHANNELS)],
+            left: 0..0,
             heard: std::time::Instant::now(),
         })
     }
@@ -677,6 +685,23 @@ impl Speaker {
 
     /// The next 20 ms, or nothing while waiting to start or once stopped.
     fn next(&mut self) -> Option<&[i16]> {
+        if self.left.is_empty() {
+            let samples = self.decode_next()?;
+            self.left = 0..samples * usize::from(crate::voice::CHANNELS);
+        }
+        let start = self.left.start;
+        let end = self
+            .left
+            .end
+            .min(start + FRAME * usize::from(crate::voice::CHANNELS));
+        self.left.start = end;
+        Some(&self.pcm[start..end])
+    }
+
+    /// Decodes the next packet into `pcm`, or conceals a missing one, and
+    /// says how many samples per channel it made.
+    fn decode_next(&mut self) -> Option<usize> {
+        let frame = FRAME * usize::from(crate::voice::CHANNELS);
         let next = match self.next {
             Some(next) => next,
             None if self.waiting.len() >= START => self.waiting.front()?.0,
@@ -708,14 +733,14 @@ impl Speaker {
                     // The next packet carries this one's forward error
                     // correction.
                     Some((sequence, opus)) if *sequence == next.wrapping_add(1) => {
-                        self.decoder.decode(opus, &mut self.pcm, true)
+                        self.decoder.decode(opus, &mut self.pcm[..frame], true)
                     }
-                    _ => self.decoder.conceal(&mut self.pcm),
+                    _ => self.decoder.conceal(&mut self.pcm[..frame]),
                 }
             }
         };
         match decoded {
-            Ok(samples) => Some(&self.pcm[..samples * usize::from(crate::voice::CHANNELS)]),
+            Ok(samples) => Some(samples),
             Err(error) => {
                 tracing::debug!(%error, "a call's audio packet didn't decode");
                 None
@@ -767,6 +792,31 @@ mod tests {
         let played = std::iter::from_fn(|| speaker.next().map(|_| ())).count();
         assert_eq!(played, usize::from(GONE) - 1);
         assert!(speaker.next.is_none());
+    }
+
+    #[test]
+    fn a_long_packet_plays_over_as_many_ticks() {
+        // A music bot passing a source's Opus through can send 60 ms
+        // packets: each plays as three 20 ms frames, then the next.
+        let mut encoder = opus::Encoder::new(2, opus::Application::Audio, BITRATE).unwrap();
+        let mut speaker = Speaker::new(7).unwrap();
+        let music: Vec<f32> = (0..FRAME * 3 * 2)
+            .map(|at| (at as f32 * 0.01).sin() * 0.25)
+            .collect();
+        for sequence in 0..START as u16 {
+            let mut packet = vec![0; 4000];
+            let length = encoder.encode_float(&music, &mut packet).unwrap();
+            packet.truncate(length);
+            speaker.push(sequence, packet);
+        }
+        for tick in 0..START * 3 {
+            assert_eq!(
+                speaker.next().map(<[i16]>::len),
+                Some(FRAME * 2),
+                "tick {tick}"
+            );
+            assert_eq!(speaker.waiting.len(), START - 1 - tick / 3);
+        }
     }
 
     #[test]
