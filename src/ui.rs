@@ -33,7 +33,7 @@ use yapfast_core::{
 };
 
 use crate::drop::Drag;
-use crate::{custom_emoji, emoji, graphics, zoom};
+use crate::{autostart, custom_emoji, emoji, graphics, zoom};
 
 mod appearance;
 mod away;
@@ -83,6 +83,7 @@ pub fn run(
     preview: bool,
     renderer: Option<graphics::Renderer>,
     gpu_failure: Option<String>,
+    background: bool,
 ) -> Result<Exit> {
     let plan = {
         let mut layout = Layout::read(&root);
@@ -118,12 +119,19 @@ pub fn run(
             Err(anyhow::Error::new(error).context(context))
         }
     };
+    // Started at sign-in, Yapfast goes to the tray with the saved session.
+    // Without one there's nothing to do there but sign in, which needs the window.
+    let hidden = background && !preview && yapfast_core::chat::can_restore(&root);
     let window = match YapfastWindow::new() {
         Ok(window) => window,
         Err(error) => return failed(error, "could not create the Yapfast window"),
     };
-    if let Err(error) = window.show() {
+    if !hidden && let Err(error) = window.show() {
         return failed(error, "could not show Yapfast");
+    }
+    if !preview {
+        AUTOSTART.set(autostart::SUPPORTED);
+        autostart::refresh();
     }
     prepare(&window);
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
@@ -144,7 +152,7 @@ pub fn run(
     // Slint 1.18 keeps its event loop running when it creates a window late and
     // the GPU surface fails, leaving no window. Check for the native window.
     let missing_window = Rc::new(Cell::new(false));
-    if gpu {
+    if gpu && !hidden {
         let missing_window = missing_window.clone();
         let weak = window.as_weak();
         // A window already closed to the tray had appeared.
@@ -159,16 +167,27 @@ pub fn run(
         });
     }
     let shell = shell::Shell::new(window, adapter.clone(), notice, gpu);
-    tracing::info!(renderer, "starting the Slint desktop window");
+    if hidden {
+        shell.start_in_tray();
+    }
+    tracing::info!(renderer, hidden, "starting the Slint desktop window");
     let _control = test_control().map(|path| control(path, shell.clone()));
     // Until quit: closing the window to the tray doesn't end Yapfast.
     let result = slint::run_event_loop_until_quit();
     let restart = shell.restarting();
+    let late_gpu_failure = shell.gpu_failure();
     drop(shell);
     let mut adapter = adapter.borrow_mut();
     // The icon goes before Yapfast does, not when Windows next looks at it.
     adapter.tray = None;
     adapter.stop_backend();
+    // A window made late, as from the tray after starting in it, failed on the GPU.
+    if result.is_ok()
+        && let Some(reason) = late_gpu_failure
+    {
+        tracing::error!(%reason, "GPU rendering failed; restarting with Skia Software");
+        return Ok(Exit::UseSoftware(reason));
+    }
     match result {
         Err(error) => failed(error, "Slint's desktop event loop failed"),
         Ok(()) if missing_window.get() => failed(
@@ -186,6 +205,10 @@ fn isolated_display() -> bool {
 }
 
 fn prepare(window: &YapfastWindow) {
+    // The entry is the setting, so each window reads it as it is.
+    let autostart = AUTOSTART.get();
+    window.set_autostart_available(autostart);
+    window.set_start_on_sign_in(autostart && autostart::enabled());
     // Without Matrix everything is Discord's, so its badge would say nothing.
     window
         .global::<Badges>()
@@ -409,6 +432,8 @@ thread_local! {
     static DRAGGED: RefCell<Option<TakeDrag>> = const { RefCell::new(None) };
     /// Whether Yapfast's window has the keyboard focus, so notifications can wait.
     static FOCUSED: Cell<bool> = const { Cell::new(false) };
+    /// Settings offer starting at sign-in: the platform can, and this isn't the preview.
+    static AUTOSTART: Cell<bool> = const { Cell::new(false) };
     /// When animations play, as the settings say.
     static ANIMATE: Cell<Animate> = const { Cell::new(Animate::Focused) };
     /// Opens a conversation from a clicked notification, in the current window.

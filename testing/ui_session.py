@@ -136,12 +136,13 @@ def tray_command(rest):
     return result.stdout.strip()
 
 
-def launch():
+def launch(extra=()):
     global yapfast
     # A new Yapfast would run every line again.
     window_control.write_text('')
     # Yapfast takes --preview only before --data-dir.
-    yapfast = subprocess.Popen([str(args.bin), '--renderer', args.renderer, *yapfast_args, '--data-dir', str(data)],
+    yapfast = subprocess.Popen([str(args.bin), '--renderer', args.renderer, *yapfast_args, *extra,
+                                '--data-dir', str(data)],
                             env=environment, stdout=(state / 'yapfast.log').open('ab'),
                             stderr=subprocess.STDOUT, start_new_session=True)
     (state / 'yapfast.pid').write_text(f'{yapfast.pid}\n')
@@ -335,7 +336,7 @@ def perform(command):
     values = rest.split()
     if verb == 'relaunch':
         stop(yapfast)
-        launch()
+        launch(values)
         return f'pid {yapfast.pid}'
     if verb == 'pid':
         return str(yapfast.pid)

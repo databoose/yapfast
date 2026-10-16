@@ -5,6 +5,8 @@
 #![cfg_attr(all(windows, feature = "desktop"), windows_subsystem = "windows")]
 
 #[cfg(feature = "desktop")]
+mod autostart;
+#[cfg(feature = "desktop")]
 mod copy;
 #[cfg(feature = "desktop")]
 mod custom_emoji;
@@ -59,6 +61,7 @@ fn main() -> Result<()> {
     }
     let mut arguments: Vec<_> = std::env::args().skip(1).collect();
     let renderer = renderer_argument(&mut arguments)?;
+    let background = flag_argument(&mut arguments, "--background");
     #[cfg(all(windows, feature = "desktop"))]
     match data_directory(&arguments) {
         Some(directory) if !has_console() => logging::init_to_file(&directory.join("yapfast.log")),
@@ -82,6 +85,7 @@ fn main() -> Result<()> {
             yapfast_core::default_directory()?,
             false,
             renderer,
+            background,
             &arguments,
         ),
         [argument] if argument == "--preview" => launch(
@@ -89,13 +93,19 @@ fn main() -> Result<()> {
             yapfast_core::default_directory()?,
             true,
             renderer,
+            background,
             &arguments,
         ),
-        [argument, path] if argument == "--data-dir" => {
-            launch(runtime, path.into(), false, renderer, &arguments)
-        }
+        [argument, path] if argument == "--data-dir" => launch(
+            runtime,
+            path.into(),
+            false,
+            renderer,
+            background,
+            &arguments,
+        ),
         [preview, argument, path] if preview == "--preview" && argument == "--data-dir" => {
-            launch(runtime, path.into(), true, renderer, &arguments)
+            launch(runtime, path.into(), true, renderer, background, &arguments)
         }
         [argument] if argument == "--smoke-test" => {
             runtime.block_on(runtime.spawn(yapfast_core::check_build()))?;
@@ -128,7 +138,7 @@ fn main() -> Result<()> {
         }
         [argument] if argument == "--help" || argument == "-h" => {
             println!(
-                "Usage: yapfast [--preview] [--data-dir PATH] [--renderer gpu|software]\n       yapfast [--smoke-test | --help]\n       yapfast --call-experiment [--resume PATH]\n       yapfast [--voice-demo | --audio-devices]\n       yapfast session login --homeserver URL --user USER --password-stdin [--data-dir PATH]\n       yapfast session status [--data-dir PATH]\n       yapfast session recover --key-stdin [--data-dir PATH]\n       yapfast session logout [--data-dir PATH]\n\nWithout arguments, opens native Slint chat and restores a saved session.\n--renderer selects Skia Software or Skia GPU for this start, over the setting.\nIf Skia GPU fails to start, Yapfast restarts with Skia Software.\n--preview opens local sample conversations without connecting to Matrix.\n--smoke-test checks the linked stack without signing in or opening audio devices.\n--call-experiment creates disposable local accounts and checks encrypted synthetic audio. Start scripts/test-stack up first.\n--voice-demo creates two local accounts and a server with encrypted text and voice channels.\n--audio-devices lists native audio devices and cameras without recording.\nSession commands support password sign-in. Secrets are read from stdin."
+                "Usage: yapfast [--preview] [--data-dir PATH] [--renderer gpu|software] [--background]\n       yapfast [--smoke-test | --help]\n       yapfast --call-experiment [--resume PATH]\n       yapfast [--voice-demo | --audio-devices]\n       yapfast session login --homeserver URL --user USER --password-stdin [--data-dir PATH]\n       yapfast session status [--data-dir PATH]\n       yapfast session recover --key-stdin [--data-dir PATH]\n       yapfast session logout [--data-dir PATH]\n\nWithout arguments, opens native Slint chat and restores a saved session.\n--renderer selects Skia Software or Skia GPU for this start, over the setting.\nIf Skia GPU fails to start, Yapfast restarts with Skia Software.\n--background starts in the system tray with a saved session, as starting at sign-in does.\n--preview opens local sample conversations without connecting to Matrix.\n--smoke-test checks the linked stack without signing in or opening audio devices.\n--call-experiment creates disposable local accounts and checks encrypted synthetic audio. Start scripts/test-stack up first.\n--voice-demo creates two local accounts and a server with encrypted text and voice channels.\n--audio-devices lists native audio devices and cameras without recording.\nSession commands support password sign-in. Secrets are read from stdin."
             );
             Ok(())
         }
@@ -175,6 +185,7 @@ fn launch(
     root: std::path::PathBuf,
     preview: bool,
     renderer: Option<&str>,
+    background: bool,
     arguments: &[String],
 ) -> Result<()> {
     let renderer = renderer.map(|renderer| match renderer {
@@ -184,7 +195,7 @@ fn launch(
     let fallback = std::env::var(GPU_FALLBACK_REASON).ok();
     #[cfg(feature = "discord")]
     yapfast_core::keep_discord_files(&root);
-    match ui::run(runtime, root, preview, renderer, fallback)? {
+    match ui::run(runtime, root, preview, renderer, fallback, background)? {
         ui::Exit::Closed => Ok(()),
         ui::Exit::UseSoftware(reason) => relaunch(arguments, Some(&reason)),
         ui::Exit::Restart => relaunch(arguments, None),
@@ -194,7 +205,7 @@ fn launch(
 /// The window system allows one renderer per process, so a failed GPU start,
 /// or a changed renderer setting, continues in a new process after this one
 /// released its session and runtime. `arguments` no longer hold `--renderer`,
-/// so a restart follows the setting.
+/// so a restart follows the setting, nor `--background`: the window shows.
 #[cfg(feature = "desktop")]
 fn relaunch(arguments: &[String], gpu_failure: Option<&str>) -> Result<()> {
     let mut command = std::process::Command::new(
@@ -225,11 +236,19 @@ fn launch(
     _: std::path::PathBuf,
     _: bool,
     _: Option<&str>,
+    _: bool,
     _: &[String],
 ) -> Result<()> {
     bail!(
         "this build has no desktop UI; run --help for headless commands or rebuild with default features"
     )
+}
+
+/// Whether `flag` was given, taking it out of `arguments`.
+fn flag_argument(arguments: &mut Vec<String>, flag: &str) -> bool {
+    let before = arguments.len();
+    arguments.retain(|argument| argument != flag);
+    arguments.len() != before
 }
 
 /// The renderer `--renderer` asks for; without it, the setting decides.

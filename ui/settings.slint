@@ -832,10 +832,18 @@ export component AdvancedSettings inherits VerticalLayout {
     in property <bool> gpu-running;
     in-out property <bool> close-to-tray;
     in property <bool> tray-available;
+    in-out property <bool> start-on-sign-in;
+    in property <bool> autostart-available;
     callback preferences-changed;
     callback restart;
     spacing: 16px;
     SettingsTitle { text: "Advanced"; }
+    if root.autostart-available: SettingsSwitch {
+        text: "Start when you sign in";
+        description: "Yapfast starts in the system tray when you sign in to your computer, so messages and calls reach you.";
+        checked <=> root.start-on-sign-in;
+        toggled => { root.preferences-changed(); }
+    }
     SettingsSwitch {
         text: "Close to tray";
         description: root.tray-available

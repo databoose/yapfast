@@ -21,6 +21,9 @@ pub(super) struct Shell {
     gpu: bool,
     /// The renderer setting changed and Yapfast restarts to use it.
     restart: Cell<bool>,
+    /// Why a window made after the first failed on the GPU; Yapfast restarts
+    /// with Skia Software.
+    gpu_failure: RefCell<Option<String>>,
     /// What the closed window showed that the application doesn't keep.
     view: RefCell<Option<View>>,
 }
@@ -48,6 +51,7 @@ impl Shell {
             notice,
             gpu,
             restart: Cell::new(false),
+            gpu_failure: RefCell::new(None),
             view: RefCell::new(None),
         });
         shell.watch(&window);
@@ -71,6 +75,72 @@ impl Shell {
     /// Whether Yapfast ends to restart with another renderer.
     pub(super) fn restarting(&self) -> bool {
         self.restart.get()
+    }
+
+    /// Why a window made late failed on the GPU, if one did.
+    pub(super) fn gpu_failure(&self) -> Option<String> {
+        self.gpu_failure.borrow_mut().take()
+    }
+
+    /// Goes to the tray, as starting at sign-in does: the first window, never
+    /// shown, goes, and the next opens where a first one would.
+    pub(super) fn start_in_tray(self: &Rc<Self>) {
+        // Windows knows at once whether the icon went in. On Linux the bus says
+        // a moment later, and without a tray `chosen` opens the window.
+        let missing = match self.adapter.borrow().tray.as_ref() {
+            None => true,
+            Some(tray) => cfg!(windows) && !tray.available(),
+        };
+        if missing {
+            self.show_first();
+            return;
+        }
+        if let Some(window) = self.window.borrow_mut().take() {
+            self.adapter.borrow_mut().detach();
+            drop(window);
+        }
+        tracing::info!("started in the tray");
+        slint::Timer::single_shot(Duration::from_millis(500), release_memory);
+    }
+
+    /// Shows the first window, which started hidden for a tray there wasn't.
+    fn show_first(self: &Rc<Self>) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        match window.show() {
+            Ok(()) => self.confirm_gpu(&window),
+            Err(error) => self.fail_on_gpu(error.to_string()),
+        }
+    }
+
+    /// As for the first window shown at start: Slint can go on with no window
+    /// when the GPU surface fails, so check for the native one.
+    fn confirm_gpu(self: &Rc<Self>, window: &YapfastWindow) {
+        if !self.gpu {
+            return;
+        }
+        let shell = Rc::downgrade(self);
+        let weak = window.as_weak();
+        slint::Timer::single_shot(GPU_START_CONFIRMATION, move || {
+            if let Some(shell) = shell.upgrade()
+                && weak
+                    .upgrade()
+                    .is_some_and(|window| !window.window().has_winit_window())
+            {
+                shell.fail_on_gpu("the window did not appear".to_owned());
+            }
+        });
+    }
+
+    /// A window failed to appear: with the GPU, Yapfast restarts with Skia
+    /// Software, which shows it.
+    fn fail_on_gpu(&self, reason: String) {
+        tracing::error!(%reason, "could not show the window");
+        if self.gpu {
+            *self.gpu_failure.borrow_mut() = Some(reason);
+            let _ = slint::quit_event_loop();
+        }
     }
 
     pub(super) fn window(&self) -> Option<YapfastWindow> {
@@ -156,9 +226,13 @@ impl Shell {
                 .with_winit_window(|winit| winit.focus_window());
             return Some(window);
         }
-        self.make()
-            .inspect_err(|error| tracing::error!(%error, "could not open the window"))
-            .ok()
+        match self.make() {
+            Ok(window) => Some(window),
+            Err(error) => {
+                self.fail_on_gpu(error.to_string());
+                None
+            }
+        }
     }
 
     /// Opens the window on a conversation, as a clicked notification does.
@@ -187,6 +261,7 @@ impl Shell {
             }
         }
         window.show()?;
+        self.confirm_gpu(&window);
         prepare(&window);
         window.set_graphics_notice(self.notice.clone());
         window.set_gpu_running(self.gpu);
@@ -242,9 +317,20 @@ fn chosen(choice: Choice) {
             let _ = slint::quit_event_loop();
         }
         Choice::Available => {
-            if let Some(window) = shell.window() {
-                let adapter = shell.adapter.borrow();
-                window.set_tray_available(adapter.tray.as_ref().is_some_and(Tray::available));
+            let available = shell
+                .adapter
+                .borrow()
+                .tray
+                .as_ref()
+                .is_some_and(Tray::available);
+            match shell.window() {
+                Some(window) => window.set_tray_available(available),
+                // Without a tray to open it from, the window can't stay closed.
+                None if !available => {
+                    tracing::info!("the tray went; opening the window");
+                    shell.open();
+                }
+                None => {}
             }
         }
     }

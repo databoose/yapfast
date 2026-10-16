@@ -12,6 +12,30 @@ closing the window quits Yapfast, as it did before; the setting's description
 says when there's no tray. A tray that starts after Yapfast, or comes back,
 still gets the icon.
 
+## Starting at sign-in
+
+Settings → Advanced → "Start when you sign in" starts Yapfast with
+`--background` when the person signs in to their computer (`src/autostart.rs`).
+The entry is the setting, not `layout.json`: on Windows a value named
+`Yapfast` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, on Linux
+`io.github.yapfast.Yapfast.desktop` in `$XDG_CONFIG_HOME/autostart`. Each
+window reads it, so turning Yapfast off in Task Manager's Startup apps (an odd
+first byte in `Explorer\StartupApproved\Run`), or a desktop setting
+`Hidden=true` or deleting the file, shows as off. Turning it on here clears
+Task Manager's record too. Each start, outside the preview, rewrites an entry
+that's on with this Yapfast's path, so moving its folder or an update keeps it
+working. The entry keeps `--data-dir` if Yapfast had one; an AppImage's entry
+names the AppImage, not its temporary mount. The preview, and platforms
+without either, don't show the switch.
+
+`--background` restores the saved session and goes to the tray without
+showing the window, or shows it when there's no session to restore, since
+signing in needs it. Windows knows at once whether the icon went into the
+notification area; without it the window shows. On Linux the bus says a
+moment later, and a tray that's missing, or goes while the window is closed,
+opens the window. A window made late, from the tray, fails over to Skia
+Software as the first does when the GPU fails.
+
 ## The window
 
 `src/ui/shell.rs` holds the window. Closing it drops the whole component, its
@@ -83,6 +107,13 @@ The bar is a cross-build and Wine (`scripts/build-windows`, see
   for a minute;
 - after restarting Explorer, the icon comes back;
 - the icon goes when Yapfast quits, and doesn't linger until hovered.
+- with "Start when you sign in" on, signing out and in starts Yapfast in the
+  tray with no window, and Task Manager's Startup apps lists it; turning it
+  off there shows as off in Settings;
+
+The registry side is checked under Wine: `autostart::windows::tests`, ignored
+since it writes the current user's Run key, passes with a throwaway
+`WINEPREFIX`.
 
 ## Testing
 

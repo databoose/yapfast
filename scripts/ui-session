@@ -6,7 +6,9 @@
                            [--zoom 1.2] [--cursor [SIZE]] [--bin PATH | --no-build]
                            [-- YAPFAST_ARGS...]
   scripts/ui-session do 'click X Y' 'type Hello' 'key enter' 'shot NAME' ...
-  scripts/ui-session relaunch     rebuild, then restart Yapfast on the same display
+  scripts/ui-session relaunch [-- YAPFAST_ARGS...]   rebuild, then restart Yapfast
+                                  on the same display, with these arguments added
+                                  this once, such as -- --background
   scripts/ui-session status
   scripts/ui-session stop
 
@@ -216,7 +218,8 @@ def relaunch():
     settings = json.loads(SETTINGS.read_text())
     if settings['build']:
         build(settings['discord'])
-    send(['relaunch'])
+    extra = args.yapfast_args[1:] if args.yapfast_args[:1] == ['--'] else args.yapfast_args
+    send([' '.join(['relaunch', *extra])])
 
 
 def stop():
@@ -254,7 +257,8 @@ binary.add_argument('--no-build', action='store_true', help='run the copy from t
 starting.add_argument('yapfast_args', nargs=argparse.REMAINDER, help='after --, arguments for Yapfast')
 doing = actions.add_parser('do')
 doing.add_argument('commands', nargs='*')
-actions.add_parser('relaunch')
+actions.add_parser('relaunch').add_argument('yapfast_args', nargs=argparse.REMAINDER,
+                                            help='after --, arguments for Yapfast this once')
 actions.add_parser('status')
 actions.add_parser('stop')
 args = parser.parse_args()

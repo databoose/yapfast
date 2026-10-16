@@ -749,6 +749,10 @@ export component YapfastWindow inherits Window {
     /// Closing the window leaves Yapfast in the system tray, when there's one.
     in-out property <bool> close-to-tray: true;
     in property <bool> tray-available;
+    /// Yapfast starts in the tray when the person signs in to their computer,
+    /// where the platform can, outside the preview.
+    in-out property <bool> start-on-sign-in;
+    in property <bool> autostart-available;
     callback restart();
     callback preferences-changed();
     /// The built-in themes, and the one shown by its id; choose-theme shows
@@ -2764,6 +2768,7 @@ export component YapfastWindow inherits Window {
         if root.settings-section == 6: AdvancedSettings {
             gpu-rendering <=> root.gpu-rendering; gpu-running: root.gpu-running;
             close-to-tray <=> root.close-to-tray; tray-available: root.tray-available;
+            start-on-sign-in <=> root.start-on-sign-in; autostart-available: root.autostart-available;
             preferences-changed => { root.preferences-changed(); }
             restart => { root.restart(); }
         }
