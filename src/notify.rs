@@ -1,8 +1,8 @@
 //! Desktop notifications. On Linux they go to the freedesktop notification service,
 //! which GNOME, KDE and the other desktops run; clicking one opens its conversation.
-//! Elsewhere Talk doesn't show them yet.
+//! Elsewhere Yapfast doesn't show them yet.
 
-use talk_core::chat::Alert;
+use yapfast_core::chat::Alert;
 
 /// How a notification shows.
 #[derive(Clone, Copy)]
@@ -26,7 +26,7 @@ impl Notifier {
         {
             let (requests, alerts) = std::sync::mpsc::channel();
             let started = std::thread::Builder::new()
-                .name("talk-notify".into())
+                .name("yapfast-notify".into())
                 .spawn(move || linux::run(alerts, opened));
             if let Err(error) = started {
                 tracing::warn!(%error, "could not start desktop notifications");
@@ -65,7 +65,7 @@ mod linux {
         sync::{Arc, Mutex, mpsc::Receiver},
     };
 
-    use talk_core::chat::Alert;
+    use yapfast_core::chat::Alert;
     use zbus::{
         blocking::{Connection, MessageIterator},
         zvariant::{StructureBuilder, Value},
@@ -98,7 +98,7 @@ mod linux {
         let clicks = connection.clone();
         let rooms = shown.clone();
         let listening = std::thread::Builder::new()
-            .name("talk-notify-clicks".into())
+            .name("yapfast-notify-clicks".into())
             .spawn(move || listen(&clicks, &rooms, opened));
         if let Err(error) = listening {
             tracing::warn!(%error, "notifications can't open their conversations");
@@ -110,9 +110,9 @@ mod linux {
             }
             let mut hints = HashMap::<&str, Value>::new();
             hints.insert("category", Value::from("im.received"));
-            // Talk plays its own sounds, and rings for a call itself.
+            // Yapfast plays its own sounds, and rings for a call itself.
             hints.insert("suppress-sound", Value::from(true));
-            // The server finds Talk's name and icon through its desktop entry.
+            // The server finds Yapfast's name and icon through its desktop entry.
             hints.insert("desktop-entry", Value::from(crate::icon::APP_ID));
             if let Some(picture) = &alert.picture
                 && let Some(image) = image_data(picture)
@@ -121,7 +121,7 @@ mod linux {
             }
             let actions = ["default", "Open"];
             let request = (
-                "Talk",
+                "Yapfast",
                 0u32,
                 "",
                 alert.title.as_str(),
@@ -189,7 +189,7 @@ mod linux {
     }
 
     /// The author's picture, as the specification's `(iiibiiay)` image.
-    fn image_data(picture: &talk_core::chat::Picture) -> Option<Value<'static>> {
+    fn image_data(picture: &yapfast_core::chat::Picture) -> Option<Value<'static>> {
         let width = i32::try_from(picture.width).ok()?;
         let height = i32::try_from(picture.height).ok()?;
         let structure = StructureBuilder::new()

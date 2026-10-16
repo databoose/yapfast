@@ -27,7 +27,7 @@ def provision():
 
 def capture(folder, name):
     time.sleep(.3)
-    with tempfile.TemporaryDirectory(prefix='talk-voice-shot-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='yapfast-voice-shot-') as temporary:
         subprocess.run(['weston-screenshooter'], env=dict(os.environ, XDG_PICTURES_DIR=temporary),
                        check=True, timeout=10, capture_output=True)
         picture = next(Path(temporary).glob('*.png'))
@@ -38,7 +38,7 @@ def capture(folder, name):
 
 
 def locate_rail(picture, minimum_height=HEIGHT // 2):
-    """Top-left corner of Talk's window content in screenshot pixels, found by the rail's exact colour."""
+    """Top-left corner of Yapfast's window content in screenshot pixels, found by the rail's exact colour."""
     # The rail's exact graphite (Theme.rail, #111215) forms the window's long left edge.
     output_width, output_height = (int(value) for value in subprocess.check_output(
         ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
@@ -50,7 +50,7 @@ def locate_rail(picture, minimum_height=HEIGHT // 2):
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
     if best < minimum_height:
-        raise RuntimeError(f'Talk rail was not found; inspect {picture}')
+        raise RuntimeError(f'Yapfast rail was not found; inspect {picture}')
     x = next(x for x, count in enumerate(columns) if count >= best - 2)
     ys = [y for y in range(output_height)
           if pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target]
@@ -130,8 +130,8 @@ class Participant:
         self.process = subprocess.Popen(
             [executable, '--exact', 'matrix_voice::tests::stress_participant', '--ignored', '--nocapture'],
             cwd=ROOT, stdout=self.log, stderr=self.log, start_new_session=True,
-            env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture), TALK_TEST_ACCOUNT_DIR=str(account),
-                     TALK_TEST_INDEX=str(index), TALK_TEST_COUNT=str(count)))
+            env=dict(os.environ, YAPFAST_TEST_VOICE_ROOT=str(fixture), YAPFAST_TEST_ACCOUNT_DIR=str(account),
+                     YAPFAST_TEST_INDEX=str(index), YAPFAST_TEST_COUNT=str(count)))
 
     def send(self, command):
         with self.commands.open('a') as commands:

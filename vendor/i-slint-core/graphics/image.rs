@@ -674,7 +674,7 @@ fn dynamic_image_to_shared_image_buffer(dynamic_image: image::DynamicImage) -> S
 impl PartialEq for ImageInner {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            // Talk: no image equals no image. Without this a model row or struct
+            // Yapfast: no image equals no image. Without this a model row or struct
             // property holding an empty image never compares equal to itself
             // rebuilt, so it counts as changed and is laid out again every time.
             (Self::None, Self::None) => true,

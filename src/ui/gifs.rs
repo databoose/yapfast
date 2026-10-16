@@ -1,7 +1,7 @@
 //! The GIF picker's grid: its tiles placed in columns as Discord's masonry
 //! places them, and the pictures loaded only for those in sight.
 
-use talk_core::application::{GifPicture, GifView};
+use yapfast_core::application::{GifPicture, GifView};
 
 use super::*;
 
@@ -103,7 +103,7 @@ thread_local! {
 }
 
 impl Adapter {
-    pub(super) fn show_gifs(&mut self, window: &TalkWindow) {
+    pub(super) fn show_gifs(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         window.set_can_pick_gifs(state.can_pick_gifs());
         if self.gifs.favorites_seen != state.favorite_gifs_changed {
@@ -283,14 +283,14 @@ impl Adapter {
     }
 
     /// The grid scrolled, or changed its height.
-    pub(super) fn gifs_scrolled(&mut self, window: &TalkWindow, top: f32, height: f32) {
+    pub(super) fn gifs_scrolled(&mut self, window: &YapfastWindow, top: f32, height: f32) {
         self.gifs.viewport = (top, height);
         self.ask_gif_pictures(window);
     }
 
     /// Asks for the pictures of the tiles in sight and a screen either side,
     /// letting go of the rest, and says whether the grid is near its end.
-    fn ask_gif_pictures(&mut self, window: &TalkWindow) {
+    fn ask_gif_pictures(&mut self, window: &YapfastWindow) {
         if !self.app.state.gifs.open {
             return;
         }
@@ -336,7 +336,7 @@ fn masonry_height(width: u32, height: u32) -> f32 {
     Masonry::new().height_of(width, height)
 }
 
-pub(super) fn bind(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     macro_rules! act {
         ($callback:ident($($arg:ident),*) => $action:expr) => {{
             let state = adapter.clone();

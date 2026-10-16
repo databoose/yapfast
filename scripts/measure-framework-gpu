@@ -30,9 +30,9 @@ frame_path = args.output.with_suffix('.frames.ndjson')
 pmon_path = args.output.with_suffix('.pmon.ndjson')
 device_path = args.output.with_suffix('.device.ndjson')
 environment = dict(os.environ)
-environment.pop('TALK_GPU_FRAME_LOG', None)
+environment.pop('YAPFAST_GPU_FRAME_LOG', None)
 if not args.without_timestamps:
-    environment['TALK_GPU_FRAME_LOG'] = str(frame_path)
+    environment['YAPFAST_GPU_FRAME_LOG'] = str(frame_path)
 stop = threading.Event()
 
 
@@ -116,9 +116,9 @@ if report['summary']['nvidia_framebuffer_mib']['peak'] <= 0:
     raise SystemExit('Owned application has no observed NVIDIA GPU allocation.')
 report['gpu_workload'] = {
     'scene_specification': 'experiments/frameworks/GPU-PERF.md',
-    'items': int(environment.get('TALK_GPU_ITEMS', '1024')),
+    'items': int(environment.get('YAPFAST_GPU_ITEMS', '1024')),
     'timestamp_instrumentation': not args.without_timestamps,
-    'animation_driver': environment.get('TALK_GPU_ANIMATION', 'frame') if args.candidate == 'gpui' else 'timer',
+    'animation_driver': environment.get('YAPFAST_GPU_ANIMATION', 'frame') if args.candidate == 'gpui' else 'timer',
     'gpu_frame_log': frame_path.name if not args.without_timestamps else None,
     'nvidia_process_log': pmon_path.name,
     'nvidia_device_log': device_path.name,

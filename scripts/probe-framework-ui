@@ -42,12 +42,12 @@ def interrupted(signum, _frame):
 for signum in (signal.SIGTERM, signal.SIGINT):
     signal.signal(signum, interrupted)
 with (args.output / 'app.log').open('wb') as log:
-    process = subprocess.Popen(command, env=dict(os.environ, TALK_FRAMEWORK_RUN_ID=token), stdout=log, stderr=log, start_new_session=True)
+    process = subprocess.Popen(command, env=dict(os.environ, YAPFAST_FRAMEWORK_RUN_ID=token), stdout=log, stderr=log, start_new_session=True)
     try:
         time.sleep(args.start_after)
         if process.poll() is not None: raise RuntimeError('Application exited; inspect app.log')
         def capture(name):
-            with tempfile.TemporaryDirectory(prefix='talk-probe-shot-') as temporary:
+            with tempfile.TemporaryDirectory(prefix='yapfast-probe-shot-') as temporary:
                 subprocess.run(['weston-screenshooter'], env=dict(os.environ, XDG_PICTURES_DIR=temporary), check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 images = list(Path(temporary).glob('*.png'))
                 if len(images) != 1: raise RuntimeError('Screenshot missing')
@@ -66,7 +66,7 @@ with (args.output / 'app.log').open('wb') as log:
         (args.output / 'actions.json').write_text(json.dumps({'candidate':args.candidate,
             'command':command,'binary_sha256':hashlib.sha256(Path(command[0]).read_bytes()).hexdigest(),
             'first_interaction_seconds':args.start_after,
-            'renderer_environment':{key:os.environ[key] for key in ('FREYA_RENDERER','TALK_WEBVIEW_ACCELERATION') if key in os.environ},
+            'renderer_environment':{key:os.environ[key] for key in ('FREYA_RENDERER','YAPFAST_WEBVIEW_ACCELERATION') if key in os.environ},
             'virtual_positions':positions,'requested_actions':['type fixture test','click send','click DM'],
             'validation':'Screenshots require visual inspection. This script does not assert an action succeeded from coordinates alone.',
             'screenshot_transform':'vflip corrects NVIDIA/Weston headless capture orientation.'},indent=2))

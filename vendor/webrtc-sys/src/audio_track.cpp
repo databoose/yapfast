@@ -58,7 +58,7 @@ inline AudioSourceOptions to_rust_audio_options(
   return options;
 }
 
-// Talk: every audio track wrapper by its track's id, so the application can
+// Yapfast: every audio track wrapper by its track's id, so the application can
 // set how loud a remote one plays; LiveKit's Rust API has no such call.
 namespace {
 webrtc::Mutex& tracks_mutex() {

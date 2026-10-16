@@ -21,7 +21,7 @@ pub(super) fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
 
 /// The local calendar date of a timestamp, such as "3 October 2026"; empty when unknown.
 pub(super) fn day(timestamp: u64) -> String {
-    talk_core::clock::day(timestamp)
+    yapfast_core::clock::day(timestamp)
 }
 
 /// Someone's Markdown as styled text, with web addresses linked. Any HTML
@@ -33,7 +33,7 @@ pub(super) fn markdown(body: &str) -> slint::StyledText {
 
 /// Someone's Markdown with its mentions linked, ready for [`styled`]. Its
 /// HTML is escaped first, so the only HTML left is the mentions' own.
-fn with_mentions(body: &str, mentions: &[talk_core::mention::Mentioned]) -> String {
+fn with_mentions(body: &str, mentions: &[yapfast_core::mention::Mentioned]) -> String {
     mention::linked(&links::escape_html(body), mentions, theme::mention_color())
 }
 
@@ -120,10 +120,10 @@ pub(super) fn bold(text: &str) -> slint::StyledText {
 /// An embed's fields in rows: up to three inline fields share one, and any
 /// other field takes a row of its own, as in Discord.
 pub(super) fn field_rows(fields: &[EmbedField]) -> ModelRc<EmbedFieldRow> {
-    let mut rows: Vec<Vec<talk_ui::EmbedField>> = Vec::new();
+    let mut rows: Vec<Vec<yapfast_ui::EmbedField>> = Vec::new();
     let mut open = false;
     for field in fields {
-        let cell = talk_ui::EmbedField {
+        let cell = yapfast_ui::EmbedField {
             name: bold(&field.name),
             value: markdown(&field.value),
         };
@@ -152,7 +152,7 @@ pub(super) fn plain_with_links(body: &str) -> Option<slint::StyledText> {
 /// for a moment where `lit`, else to the top, as for the first unread message. The
 /// list builds rows as they come into view, so the row settles its place a few times
 /// as those around it measure.
-pub(super) fn show_message(window: &TalkWindow, index: usize, item: &str, lit: bool) {
+pub(super) fn show_message(window: &YapfastWindow, index: usize, item: &str, lit: bool) {
     // At once, so the list stops following the newest message before anything
     // else scrolls it.
     window.invoke_show_message(i32::try_from(index).unwrap_or(i32::MAX), item.into(), lit);
@@ -318,7 +318,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         Delivery::Sent => ("", false, false),
         Delivery::Sending => ("Sending...", false, true),
         Delivery::Waiting => (
-            "Not sent yet. Talk sends it when the connection returns.",
+            "Not sent yet. Yapfast sends it when the connection returns.",
             false,
             true,
         ),
@@ -488,7 +488,7 @@ pub(super) fn reaction_tip(emoji: &str, names: &[String], count: usize) -> Strin
     format!("{emoji} reacted by {people}")
 }
 
-fn thread_detail(thread: &talk_core::chat::ThreadLink) -> String {
+fn thread_detail(thread: &yapfast_core::chat::ThreadLink) -> String {
     let count = match thread.messages {
         None => None,
         Some(0) => Some("No messages yet".to_owned()),
@@ -518,7 +518,7 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
     };
-    let time = talk_core::clock::time_on(message.timestamp, twelve_hour);
+    let time = yapfast_core::clock::time_on(message.timestamp, twelve_hour);
     let pictures: Vec<Preview<'_>> = message
         .attachments
         .iter()
@@ -526,7 +526,7 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         .filter(|(_, attachment)| {
             attachment.placement == Placement::Message && (attachment.image || attachment.video)
         })
-        .take(talk_core::chat::FOUND_PICTURES)
+        .take(yapfast_core::chat::FOUND_PICTURES)
         .filter(|(_, attachment)| attachment.preview.is_some() || loading(attachment))
         .map(|(index, attachment)| (index, attachment, attachment.preview.as_ref()))
         .collect();
@@ -567,7 +567,7 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
 
 /// A Discord channel's topic, as its header shows it: on one line, or in
 /// full.
-pub(super) fn topic_text(topic: &talk_core::chat::Topic, one_line: bool) -> slint::StyledText {
+pub(super) fn topic_text(topic: &yapfast_core::chat::Topic, one_line: bool) -> slint::StyledText {
     let body = custom_emoji::text(&topic.body, &topic.emoji);
     let body = if one_line {
         body.split_whitespace().collect::<Vec<_>>().join(" ")

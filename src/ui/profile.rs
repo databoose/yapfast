@@ -19,7 +19,7 @@ pub(super) fn friend_offer(relation: Relation) -> i32 {
 
 /// The custom status as the account panel shows it: its emoji, then its words
 /// on one line.
-pub(super) fn status_line(status: &talk_core::chat::CustomStatus) -> String {
+pub(super) fn status_line(status: &yapfast_core::chat::CustomStatus) -> String {
     let emoji = match (&status.emoji, &status.emoji_id) {
         (_, Some(id)) => custom_emoji::glyph(id).map(String::from),
         (Some(emoji), None) => Some(emoji.clone()),
@@ -34,7 +34,7 @@ pub(super) fn status_line(status: &talk_core::chat::CustomStatus) -> String {
 }
 
 /// The picker's key for the custom status's emoji: the emoji, or `name:id`.
-pub(super) fn status_key(status: &talk_core::chat::CustomStatus) -> Option<String> {
+pub(super) fn status_key(status: &yapfast_core::chat::CustomStatus) -> Option<String> {
     match (&status.emoji, &status.emoji_id) {
         (Some(name), Some(id)) => Some(format!("{name}:{id}")),
         (Some(emoji), None) => Some(emoji.clone()),
@@ -174,7 +174,7 @@ pub(super) fn role_rows(roles: &[ProfileRole], width: f32) -> ModelRc<ProfileRol
     const GAP: f32 = 4.;
     // Padding, the colour dot and the space after it.
     const CHROME: f32 = 8. + 10. + 6. + 8.;
-    let mut rows: Vec<Vec<talk_ui::ProfileRole>> = Vec::new();
+    let mut rows: Vec<Vec<yapfast_ui::ProfileRole>> = Vec::new();
     let mut used = width;
     for role in roles {
         let chip = CHROME + 7. * role.name.chars().count() as f32;
@@ -185,7 +185,7 @@ pub(super) fn role_rows(roles: &[ProfileRole], width: f32) -> ModelRc<ProfileRol
             used += GAP + chip;
         }
         if let Some(row) = rows.last_mut() {
-            row.push(talk_ui::ProfileRole {
+            row.push(yapfast_ui::ProfileRole {
                 name: role.name.clone().into(),
                 color: role_color(role.color),
                 has_color: role.color.is_some(),

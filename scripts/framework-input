@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send events only to Talk's private virtual test seat."""
+"""Send events only to Yapfast's private virtual test seat."""
 import argparse
 import os
 from pathlib import Path
@@ -9,10 +9,10 @@ import time
 
 def require_private_display():
     runtime = Path(os.environ.get('XDG_RUNTIME_DIR', '/missing'))
-    if (os.environ.get('TALK_FRAMEWORK_ISOLATED_DISPLAY') != '1'
-            or os.environ.get('WAYLAND_DISPLAY') != 'wayland-talk-frameworks'
-            or not runtime.name.startswith('talk-framework-display-')
-            or not (runtime / 'talk-input.sock').is_socket()):
+    if (os.environ.get('YAPFAST_FRAMEWORK_ISOLATED_DISPLAY') != '1'
+            or os.environ.get('WAYLAND_DISPLAY') != 'wayland-yapfast-frameworks'
+            or not runtime.name.startswith('yapfast-framework-display-')
+            or not (runtime / 'yapfast-input.sock').is_socket()):
         raise SystemExit('Only the isolated framework display supports this input tool.')
     return runtime
 
@@ -20,7 +20,7 @@ def require_private_display():
 def send(command, pause=.03):
     """Sends one event, then waits `pause` seconds for the compositor and app."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
-        client.sendto(command.encode(), str(require_private_display() / 'talk-input.sock'))
+        client.sendto(command.encode(), str(require_private_display() / 'yapfast-input.sock'))
     time.sleep(pause)
 
 

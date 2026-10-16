@@ -850,12 +850,12 @@ impl WindowInner {
         // handle multiple press release
         event = self.click_state.check_repeat(event, self.context());
 
-        // Talk: a left press ends a selection; one in text starts another.
+        // Yapfast: a left press ends a selection; one in text starts another.
         if matches!(
             event,
             MouseEvent::Pressed { button: crate::items::PointerEventButton::Left, .. }
         ) {
-            crate::talk_selection::pressed();
+            crate::yapfast_selection::pressed();
         }
 
         let window_adapter = self.window_adapter();
@@ -1301,17 +1301,17 @@ impl WindowInner {
         internal_key_event.key_event.modifiers =
             self.context().0.modifiers.get().modifiers_for(&internal_key_event);
 
-        // Talk: copies or clears a selection of text; see `crate::talk_selection`. Escape still
+        // Yapfast: copies or clears a selection of text; see `crate::yapfast_selection`. Escape still
         // goes on to the focused item.
         if internal_key_event.event_type == KeyEventType::KeyPressed {
             if matches!(internal_key_event.shortcut(), Some(crate::input::StandardShortcut::Copy))
-                && crate::talk_selection::copy(self)
+                && crate::yapfast_selection::copy(self)
             {
                 return crate::input::KeyEventResult::EventAccepted;
             }
             let escape = char::from(crate::input::key_codes::Key::Escape);
             if internal_key_event.key_event.text.chars().eq([escape]) {
-                crate::talk_selection::clear();
+                crate::yapfast_selection::clear();
             }
         }
 

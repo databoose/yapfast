@@ -46,7 +46,7 @@ if not args.seat_plugin.exists():
     subprocess.run([str(Path(__file__).with_name('build-framework-seat')), str(args.seat_plugin)], check=True, timeout=35)
 if not args.gtk_dpi_module.exists():
     subprocess.run([str(Path(__file__).with_name('build-framework-gtk-dpi')), str(args.gtk_dpi_module)], check=True, timeout=35)
-with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
+with tempfile.TemporaryDirectory(prefix='yapfast-framework-display-') as temporary:
     runtime = Path(temporary)
     runtime.chmod(0o700)
     configuration = runtime / 'config'
@@ -57,18 +57,18 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
     if args.repaint_window is not None:
         (runtime / 'weston.ini').write_text(f'[core]\nrepaint-window={args.repaint_window}\n')
         weston_config = ['--config=' + str(runtime / 'weston.ini')]
-    environment = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), WAYLAND_DISPLAY='wayland-talk-frameworks',
+    environment = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), WAYLAND_DISPLAY='wayland-yapfast-frameworks',
         XDG_SESSION_TYPE='wayland', XDG_CURRENT_DESKTOP='Weston', GDK_BACKEND='wayland',
         XDG_CONFIG_HOME=str(configuration), XDG_CACHE_HOME=str(runtime / 'cache'), XDG_DATA_HOME=str(runtime / 'data'),
         GDK_SCALE='1', GDK_DPI_SCALE='1',
         GTK_MODULES=str(args.gtk_dpi_module.resolve()),
-        WINIT_UNIX_BACKEND='wayland', TALK_FRAMEWORK_ISOLATED_DISPLAY='1',
-        TALK_FRAMEWORK_COMPOSITOR_LOG=str(args.compositor_log), TALK_FRAMEWORK_DISPLAY_RUN_ID=run_token)
+        WINIT_UNIX_BACKEND='wayland', YAPFAST_FRAMEWORK_ISOLATED_DISPLAY='1',
+        YAPFAST_FRAMEWORK_COMPOSITOR_LOG=str(args.compositor_log), YAPFAST_FRAMEWORK_DISPLAY_RUN_ID=run_token)
     # Remove all inherited access to the desktop, including its private bus.
     for variable in ('DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'HYPRLAND_INSTANCE_SIGNATURE', 'SWAYSOCK'):
         environment.pop(variable, None)
     compositor = subprocess.Popen([args.weston, '--backend=headless', '--renderer=gl',
-        f'--width={args.width}', f'--height={args.height}', f'--scale={args.scale}', '--refresh-rate=60000', '--socket=wayland-talk-frameworks',
+        f'--width={args.width}', f'--height={args.height}', f'--scale={args.scale}', '--refresh-rate=60000', '--socket=wayland-yapfast-frameworks',
         *(['--shell=kiosk'] if args.kiosk else []),
         *weston_config, '--idle-time=0', '--debug', '--modules=' + str(args.seat_plugin.resolve()), '--log=' + str(args.compositor_log)],
         env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
     session = None
     try:
         deadline = time.monotonic() + 15
-        while not (runtime / 'wayland-talk-frameworks').exists():
+        while not (runtime / 'wayland-yapfast-frameworks').exists():
             if compositor.poll() is not None or time.monotonic() > deadline:
                 raise SystemExit('Private compositor failed; see ' + str(args.compositor_log))
             time.sleep(.1)
@@ -85,8 +85,8 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
             if not args.alsa_plugins or not (args.alsa_plugins / 'libasound_module_pcm_pulse.so').exists():
                 raise SystemExit('--audio requires --alsa-plugins with the PulseAudio PCM plugin')
             audio_socket = runtime / 'audio.sock'
-            environment.update(PULSE_SERVER='unix:' + str(audio_socket), PULSE_SINK='talk_frameworks',
-                PULSE_SOURCE='talk_frameworks.monitor', ALSA_PLUGIN_DIR=str(args.alsa_plugins))
+            environment.update(PULSE_SERVER='unix:' + str(audio_socket), PULSE_SINK='yapfast_frameworks',
+                PULSE_SOURCE='yapfast_frameworks.monitor', ALSA_PLUGIN_DIR=str(args.alsa_plugins))
             alsa = runtime / 'alsa.conf'
             alsa.write_text('pcm.!default { type pulse server "unix:' + str(audio_socket) + '" }\n')
             environment['ALSA_CONFIG_PATH'] = str(alsa)
@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
             audio = subprocess.Popen(['pulseaudio', '-n', '--daemonize=no', '--use-pid-file=no',
                 '--exit-idle-time=-1', '--disable-shm=yes', '--log-target=file:' + str(audio_log),
                 '--load=module-native-protocol-unix socket=' + str(audio_socket) + ' auth-anonymous=1',
-                '--load=module-null-sink sink_name=talk_frameworks rate=48000'], env=environment,
+                '--load=module-null-sink sink_name=yapfast_frameworks rate=48000'], env=environment,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             deadline = time.monotonic() + 5
             while not audio_socket.exists():
@@ -131,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix='talk-framework-display-') as temporary:
                     service.wait(timeout=5)
         # Catch reparented helpers or an app whose collector was killed. Every
         # owned child inherits this display's unique marker; no host app does.
-        marker = b'TALK_FRAMEWORK_DISPLAY_RUN_ID=' + run_token.encode() + b'\0'
+        marker = b'YAPFAST_FRAMEWORK_DISPLAY_RUN_ID=' + run_token.encode() + b'\0'
         for directory in Path('/proc').iterdir():
             if directory.name.isdecimal():
                 try:

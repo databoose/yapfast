@@ -13,7 +13,7 @@ pub(super) fn open(page: &str) {
     }
 }
 
-/// Starts `xdg-open` without `LD_LIBRARY_PATH`: the libraries Talk was
+/// Starts `xdg-open` without `LD_LIBRARY_PATH`: the libraries Yapfast was
 /// started to find, as from its development shell or a Nix wrapper, are
 /// other versions than the browser's, and Firefox exits at once on them.
 /// A thread waits for `xdg-open`, which waits for a browser that wasn't

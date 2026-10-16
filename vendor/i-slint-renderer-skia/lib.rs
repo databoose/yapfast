@@ -684,7 +684,7 @@ impl SkiaRenderer {
             },
             &self.pre_present_callback,
         );
-        // Talk: pictures read in place that the drawn frame no longer shows
+        // Yapfast: pictures read in place that the drawn frame no longer shows
         // let go of their pixels.
         cached_image::release_borrowed();
         outcome

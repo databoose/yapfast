@@ -2,7 +2,7 @@
 //!
 //! A Linux system can have several fonts named "Noto Color Emoji". Slint's Skia
 //! renderer draws nothing for the COLRv1 build, and fontconfig may prefer it to
-//! the bitmap (CBDT) build that it draws in color. Talk registers an installed
+//! the bitmap (CBDT) build that it draws in color. Yapfast registers an installed
 //! bitmap emoji font under its own family name and uses that one.
 
 use std::sync::{Arc, OnceLock};
@@ -11,13 +11,13 @@ use slint::{
     Model, ModelRc, SharedString, VecModel,
     fontique_011::{fontique, shared_collection},
 };
-use talk_core::chat::EmojiSet;
-use talk_ui::{EmojiCell, EmojiRow, EmojiSection};
+use yapfast_core::chat::EmojiSet;
+use yapfast_ui::{EmojiCell, EmojiRow, EmojiSection};
 
 use crate::custom_emoji;
 
-/// The family name Talk gives the bitmap emoji font it registers.
-const REGISTERED: &str = "Talk Color Emoji";
+/// The family name Yapfast gives the bitmap emoji font it registers.
+const REGISTERED: &str = "Yapfast Color Emoji";
 
 /// The emoji font family to request. Call after selecting the Slint backend.
 pub fn family() -> &'static str {
@@ -38,7 +38,7 @@ pub fn family() -> &'static str {
 /// Emoji per row of the picker's grid.
 const COLUMNS: usize = 8;
 
-/// Windows 11 and the Noto Color Emoji builds Talk is tested with draw Unicode
+/// Windows 11 and the Noto Color Emoji builds Yapfast is tested with draw Unicode
 /// 15.0; newer emoji would show as empty boxes.
 const NEWEST: emojis::UnicodeVersion = emojis::UnicodeVersion::new(15, 0);
 
@@ -121,12 +121,12 @@ fn with_picture(shown: EmojiCell) -> Option<EmojiCell> {
 }
 
 /// A custom emoji's reaction key, Discord's `name:id`.
-pub fn custom_key(emoji: &talk_core::chat::CustomEmoji) -> String {
+pub fn custom_key(emoji: &yapfast_core::chat::CustomEmoji) -> String {
     format!("{}:{}", emoji.text.trim_matches(':'), emoji.id)
 }
 
 /// What an emoji puts in the composer: the emoji itself, or a custom emoji's
-/// `:name:`, which goes out in Discord's form; see `talk_core::chat::wire_emoji`.
+/// `:name:`, which goes out in Discord's form; see `yapfast_core::chat::wire_emoji`.
 pub fn composer_text(key: &str) -> String {
     match key.split_once(':') {
         Some((name, _)) => format!(":{name}:"),
@@ -317,7 +317,7 @@ fn register_bitmap_font() -> bool {
         .filter(|name| name.to_lowercase().contains("emoji"))
         .map(str::to_owned)
         .collect();
-    // Noto Color Emoji first, as the font Talk is designed and tested with.
+    // Noto Color Emoji first, as the font Yapfast is designed and tested with.
     names.sort_by_key(|name| name != "Noto Color Emoji");
     for name in names {
         let Some(family) = collection.family_by_name(&name) else {
@@ -331,7 +331,7 @@ fn register_bitmap_font() -> bool {
                 continue;
             };
             // SAFETY: font files are installed read-only and not modified while
-            // Talk runs; the map is shared with the font collection for the
+            // Yapfast runs; the map is shared with the font collection for the
             // process's lifetime.
             let Ok(data) = (unsafe { memmap2::Mmap::map(&file) }) else {
                 continue;
@@ -432,7 +432,7 @@ mod tests {
         let custom = [EmojiSet {
             server: "Games".into(),
             icon: None,
-            emoji: vec![talk_core::chat::CustomEmoji {
+            emoji: vec![yapfast_core::chat::CustomEmoji {
                 text: ":gg:".into(),
                 id: "77".into(),
                 animated: false,
@@ -444,10 +444,10 @@ mod tests {
         let sections = VecModel::from(sections);
         let cells = model.row_data(1).unwrap().cells;
         assert_eq!(cells.row_data(0).unwrap().picture.size().width, 0);
-        let picture = talk_core::chat::Picture {
+        let picture = yapfast_core::chat::Picture {
             width: 2,
             height: 2,
-            rgba: talk_core::chat::Pixels::new(2, 2, [255, 0, 0, 255].repeat(4)),
+            rgba: yapfast_core::chat::Pixels::new(2, 2, [255, 0, 0, 255].repeat(4)),
             ..Default::default()
         };
         assert!(custom_emoji::add_images([("77", &picture)]));
@@ -495,7 +495,7 @@ mod tests {
         let custom = [EmojiSet {
             server: "Games".into(),
             icon: None,
-            emoji: vec![talk_core::chat::CustomEmoji {
+            emoji: vec![yapfast_core::chat::CustomEmoji {
                 text: ":pog:".into(),
                 id: "5".into(),
                 animated: false,
@@ -536,7 +536,7 @@ mod tests {
         let custom = [EmojiSet {
             server: "Games".into(),
             icon: None,
-            emoji: vec![talk_core::chat::CustomEmoji {
+            emoji: vec![yapfast_core::chat::CustomEmoji {
                 text: ":thunk:".into(),
                 id: "5".into(),
                 animated: false,

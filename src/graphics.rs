@@ -1,11 +1,11 @@
 //! Renderer choice at startup and recovery from a failed GPU start.
 //!
-//! Talk renders with Skia Software. In a ten-person call it used about half the
+//! Yapfast renders with Skia Software. In a ten-person call it used about half the
 //! memory of Skia GPU at the same CPU, and scrolling a long history at 2× scale
 //! cost less CPU too. The GPU is a setting, which `--renderer` overrides for one
-//! start; if the GPU fails, Talk restarts itself with Skia Software, says why and
+//! start; if the GPU fails, Yapfast restarts itself with Skia Software, says why and
 //! turns the setting off. Slint picks one renderer per process and never unloads
-//! the OpenGL driver, so a changed setting applies when Talk restarts.
+//! the OpenGL driver, so a changed setting applies when Yapfast restarts.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Renderer {
@@ -38,7 +38,7 @@ pub fn plan(requested: Option<Renderer>, saved_gpu: bool, relaunch_reason: Optio
 }
 
 /// The technical reason stays in the log; the notice is for people.
-const NOTICE: &str = "GPU rendering failed to start, so Talk is using software rendering.";
+const NOTICE: &str = "GPU rendering failed to start, so Yapfast is using software rendering.";
 
 #[cfg(test)]
 mod tests {

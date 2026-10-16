@@ -41,7 +41,7 @@ def members(root_pid, token, table):
         found.update(children)
     # Engines may reparent or create another session. Only this run's inherited
     # marker admits such processes; unrelated browser processes are excluded.
-    marker = b'TALK_FRAMEWORK_RUN_ID=' + token.encode() + b'\0'
+    marker = b'YAPFAST_FRAMEWORK_RUN_ID=' + token.encode() + b'\0'
     for pid in table.keys() - found:
         try:
             if marker in Path(f'/proc/{pid}/environ').read_bytes():
@@ -94,7 +94,7 @@ def run(args):
         raise SystemExit(128 + signum)
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, interrupted)
-    if os.environ.get('TALK_FRAMEWORK_ISOLATED_DISPLAY') != '1':
+    if os.environ.get('YAPFAST_FRAMEWORK_ISOLATED_DISPLAY') != '1':
         raise SystemExit('Use scripts/run-framework-isolated; desktop automation is prohibited.')
     command = args.command
     if command and command[0] == '--':
@@ -103,7 +103,7 @@ def run(args):
         raise SystemExit('An executable command is required after --.')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
-    environment = dict(os.environ, TALK_FRAMEWORK_RUN_ID=token)
+    environment = dict(os.environ, YAPFAST_FRAMEWORK_RUN_ID=token)
     log_path = args.output.with_suffix('.app.log')
     samples = []
     warmup_samples = []
@@ -156,9 +156,9 @@ def run(args):
                 args.output.with_suffix('.samples.json').write_text(json.dumps({'warmup': warmup_samples, 'measured': samples}, indent=2))
             report = {
                 'candidate': args.candidate, 'configuration': args.configuration,
-                'scenario': os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
-                'actual_view': 'chat' if args.candidate in ('slint', 'iced') and os.environ.get('TALK_FRAMEWORK_SCENARIO') == 'input' else os.environ.get('TALK_FRAMEWORK_SCENARIO', 'chat'),
-                'fixture': 'talk-chat-fixture-v1', 'build_mode': 'release',
+                'scenario': os.environ.get('YAPFAST_FRAMEWORK_SCENARIO', 'chat'),
+                'actual_view': 'chat' if args.candidate in ('slint', 'iced') and os.environ.get('YAPFAST_FRAMEWORK_SCENARIO') == 'input' else os.environ.get('YAPFAST_FRAMEWORK_SCENARIO', 'chat'),
+                'fixture': 'yapfast-chat-fixture-v1', 'build_mode': 'release',
                 'command': command, 'warmup_seconds': args.warmup, 'measurement_seconds': args.seconds,
                 'post_window_grace_seconds': args.post_window_grace,
                 'started_monotonic_ns': int(started * 1_000_000_000),
@@ -169,7 +169,7 @@ def run(args):
                 'raw_samples': args.output.with_suffix('.samples.json').name,
                 'app_log': log_path.name,
                 'display': {'wayland': os.environ.get('WAYLAND_DISPLAY'), 'x11': os.environ.get('DISPLAY'),
-                    'compositor_log': os.environ.get('TALK_FRAMEWORK_COMPOSITOR_LOG')},
+                    'compositor_log': os.environ.get('YAPFAST_FRAMEWORK_COMPOSITOR_LOG')},
                 'limits': ['Short deterministic fixture screen, not synced beta idle.',
                     'Actual presented FPS is not measured by this collector.',
                     'NVIDIA framebuffer memory is vendor-reported per-process allocation, separate from Linux RAM PSS.' if args.nvidia_memory else 'GPU allocations are not measured by this run.',
@@ -178,7 +178,7 @@ def run(args):
             }
             args.output.write_text(json.dumps(report, indent=2))
             if args.screenshot:
-                with tempfile.TemporaryDirectory(prefix='talk-framework-shot-') as directory:
+                with tempfile.TemporaryDirectory(prefix='yapfast-framework-shot-') as directory:
                     shot = subprocess.run([args.screenshot], env=dict(os.environ, XDG_PICTURES_DIR=directory),
                         capture_output=True, text=True, timeout=10)
                     images = list(Path(directory).glob('*.png'))

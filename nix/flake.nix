@@ -1,5 +1,5 @@
 {
-  description = "Talk native desktop development environment";
+  description = "Yapfast native desktop development environment";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
 
@@ -28,11 +28,11 @@
       };
       skia = pkgs.runCommand "talk-skia-0.153.3-linux" {
         nativeBuildInputs = [ pkgs.python3 pkgs.binutils pkgs.llvmPackages_21.llvm ];
-        TALK_SKIA_SOURCE = skiaArchive;
-        TALK_SKIA_OBJCOPY = "${pkgs.llvmPackages_21.llvm}/bin/llvm-objcopy";
-        TALK_SKIA_NM = "${pkgs.llvmPackages_21.llvm}/bin/llvm-nm";
+        YAPFAST_SKIA_SOURCE = skiaArchive;
+        YAPFAST_SKIA_OBJCOPY = "${pkgs.llvmPackages_21.llvm}/bin/llvm-objcopy";
+        YAPFAST_SKIA_NM = "${pkgs.llvmPackages_21.llvm}/bin/llvm-nm";
       } ''
-        export TALK_SKIA_OUTPUT="$out"
+        export YAPFAST_SKIA_OUTPUT="$out"
         python3 ${./prepare-skia-native.py}
       '';
       windowsWebrtc = pkgs.runCommand "talk-libwebrtc-windows-51ef663" {
@@ -95,7 +95,7 @@
           shellHook = ''
             export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LD_LIBRARY_PATH"
             # Only people see the greeting; commands run through the shell don't.
-            [ -t 1 ] && echo "Talk dev shell. Run scripts/check --fast or cargo run --profile fast."
+            [ -t 1 ] && echo "Yapfast dev shell. Run scripts/check --fast or cargo run --profile fast."
           '';
         };
         windows = pkgs.mkShell {
@@ -108,10 +108,10 @@
           CXX = "clang++";
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           LK_CUSTOM_WEBRTC = "${windowsWebrtc}";
-          TALK_SKIA_WINDOWS_SOURCE = "${windowsSkiaSource}";
-          TALK_SKIA_CLANG = "${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang-cl";
-          TALK_SKIA_LLD = "${pkgs.llvmPackages_21.lld}/bin/lld-link";
-          TALK_SKIA_CLANG_HEADERS = "${pkgs.llvmPackages_21.clang}/resource-root/include";
+          YAPFAST_SKIA_WINDOWS_SOURCE = "${windowsSkiaSource}";
+          YAPFAST_SKIA_CLANG = "${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang-cl";
+          YAPFAST_SKIA_LLD = "${pkgs.llvmPackages_21.lld}/bin/lld-link";
+          YAPFAST_SKIA_CLANG_HEADERS = "${pkgs.llvmPackages_21.clang}/resource-root/include";
           LIBCLANG_PATH = "${pkgs.llvmPackages_21.libclang.lib}/lib";
         };
       };

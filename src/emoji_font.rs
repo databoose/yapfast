@@ -1,6 +1,6 @@
 //! A colour bitmap font made at runtime, so Discord's custom emoji show inline
 //! in message text: Slint's `StyledText` draws only glyphs. Each emoji is a PNG
-//! in a CBDT table, the format of the Noto Color Emoji build Talk already draws,
+//! in a CBDT table, the format of the Noto Color Emoji build Yapfast already draws,
 //! at a Private Use Area code point. The font's vertical metrics are the UI
 //! typeface's, Atkinson Hyperlegible Next's, so a line with an emoji keeps its
 //! baseline.
@@ -187,7 +187,7 @@ fn os2(advance: i16, glyphs: &[(char, Vec<u8>)]) -> Vec<u8> {
     put32(&mut out, 1 << (60 - 32));
     put32(&mut out, 1 << (90 - 64));
     put32(&mut out, 0);
-    out.extend_from_slice(b"TALK");
+    out.extend_from_slice(b"YAPF");
     // Regular, and the typographic metrics are the ones to use.
     put16(&mut out, 0x0040 | 0x0080);
     let first = glyphs

@@ -411,7 +411,7 @@ impl<'a> SkiaItemRenderer<'a> {
                 skia_image.height() * fit.clip_rect.size.height / source_size.height as i32,
             );
 
-            // Talk: small smooth pictures sample mipmaps, so one drawn smaller
+            // Yapfast: small smooth pictures sample mipmaps, so one drawn smaller
             // than its pixels, such as a 128-pixel avatar at 40, averages them
             // rather than picking a few and looking jagged. Skia builds a
             // picture's mipmaps once, but each video frame is a new picture:
@@ -1120,7 +1120,7 @@ impl GlyphRenderer for SkiaItemRenderer<'_> {
         };
         let mut font = skia_safe::Font::from_typeface(type_face, font_size.get());
         font.set_subpixel(true);
-        // Talk: hint vertically only, as Chromium does on Linux. Skia's default
+        // Yapfast: hint vertically only, as Chromium does on Linux. Skia's default
         // hinting also snaps glyphs horizontally while their positions stay
         // fractional, which spaces letters unevenly in unhinted fonts such as Satoshi.
         font.set_hinting(skia_safe::FontHinting::Slight);

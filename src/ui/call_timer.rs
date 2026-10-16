@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
-use super::{Adapter, TalkWindow};
+use super::{Adapter, YapfastWindow};
 
 /// The call it's timing and when it connected.
 #[derive(Default)]
@@ -17,7 +17,7 @@ pub(super) struct CallTimer {
 impl Adapter {
     /// Starts timing the call in `room` once it connects, and stops when it
     /// ends; a call that moves to another room starts again.
-    pub(super) fn time_call(&mut self, window: &TalkWindow, room: Option<&str>) {
+    pub(super) fn time_call(&mut self, window: &YapfastWindow, room: Option<&str>) {
         let same = match (&self.call_timer.since, room) {
             (Some((timed, _)), Some(room)) => timed == room,
             (None, None) => true,

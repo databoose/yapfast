@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use slint::{
     ComponentHandle, Model, ModelRc, SharedString, VecModel, winit_030::WinitWindowAccessor,
 };
-use talk_core::{
+use yapfast_core::{
     application::{
         Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ClearAfter, Compose,
         DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm,
@@ -59,8 +59,8 @@ pub(crate) use pictures::picture as slint_image;
 use pictures::*;
 use profile::*;
 use refresh::{Reach, SidebarShown};
-use talk_ui::*;
 use tiles::Tiles;
+use yapfast_ui::*;
 
 /// How the desktop window ended.
 pub enum Exit {
@@ -96,7 +96,7 @@ pub fn run(
     decode_into_slint_buffers();
     pictures::make_frames_in_slint_buffers();
     // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
-    // surface; Talk owns the fallback and tells the user about it.
+    // surface; Yapfast owns the fallback and tells the user about it.
     let renderer = match plan.renderer {
         graphics::Renderer::Gpu => "skia-opengl",
         graphics::Renderer::Software => "skia-software",
@@ -107,7 +107,7 @@ pub fn run(
         .with_winit_window_attributes_hook(crate::icon::attributes)
         .select()
         .context("could not select the Slint desktop backend")?;
-    slint::set_xdg_app_id(crate::icon::APP_ID).context("could not set Talk's app ID")?;
+    slint::set_xdg_app_id(crate::icon::APP_ID).context("could not set Yapfast's app ID")?;
     let gpu = plan.renderer == graphics::Renderer::Gpu;
     let failed = |error: slint::PlatformError, context: &'static str| -> Result<Exit> {
         let reason = error.to_string();
@@ -118,12 +118,12 @@ pub fn run(
             Err(anyhow::Error::new(error).context(context))
         }
     };
-    let window = match TalkWindow::new() {
+    let window = match YapfastWindow::new() {
         Ok(window) => window,
-        Err(error) => return failed(error, "could not create the Talk window"),
+        Err(error) => return failed(error, "could not create the Yapfast window"),
     };
     if let Err(error) = window.show() {
-        return failed(error, "could not show Talk");
+        return failed(error, "could not show Yapfast");
     }
     prepare(&window);
     let adapter = Adapter::new(Arc::new(runtime), root, &window)?;
@@ -133,7 +133,7 @@ pub fn run(
     adapter.borrow_mut().refresh(&window);
     if preview {
         adapter.borrow_mut().action(&window, Action::Preview);
-    } else if talk_core::chat::can_restore(&adapter.borrow().root) {
+    } else if yapfast_core::chat::can_restore(&adapter.borrow().root) {
         adapter.borrow_mut().action(&window, Action::Restore);
     } else {
         window.invoke_focus_sign_in();
@@ -161,19 +161,19 @@ pub fn run(
     let shell = shell::Shell::new(window, adapter.clone(), notice, gpu);
     tracing::info!(renderer, "starting the Slint desktop window");
     let _control = test_control().map(|path| control(path, shell.clone()));
-    // Until quit: closing the window to the tray doesn't end Talk.
+    // Until quit: closing the window to the tray doesn't end Yapfast.
     let result = slint::run_event_loop_until_quit();
     let restart = shell.restarting();
     drop(shell);
     let mut adapter = adapter.borrow_mut();
-    // The icon goes before Talk does, not when Windows next looks at it.
+    // The icon goes before Yapfast does, not when Windows next looks at it.
     adapter.tray = None;
     adapter.stop_backend();
     match result {
         Err(error) => failed(error, "Slint's desktop event loop failed"),
         Ok(()) if missing_window.get() => failed(
             "the window did not appear".into(),
-            "Talk's window did not appear",
+            "Yapfast's window did not appear",
         ),
         Ok(()) if restart => Ok(Exit::Restart),
         Ok(()) => Ok(Exit::Closed),
@@ -182,16 +182,16 @@ pub fn run(
 
 /// Only the private test compositor can request a different initial size.
 fn isolated_display() -> bool {
-    std::env::var("TALK_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1")
+    std::env::var("YAPFAST_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1")
 }
 
-fn prepare(window: &TalkWindow) {
+fn prepare(window: &YapfastWindow) {
     // Without Matrix everything is Discord's, so its badge would say nothing.
     window
         .global::<Badges>()
         .set_discord(cfg!(feature = "matrix"));
     if isolated_display()
-        && let Ok(size) = std::env::var("TALK_UI_TEST_SIZE")
+        && let Ok(size) = std::env::var("YAPFAST_UI_TEST_SIZE")
         && let Some((width, height)) = size.split_once('x')
         && let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>())
         && width >= 800
@@ -215,7 +215,7 @@ const ZOOM_NOTE: Duration = Duration::from_millis(1200);
 /// Follows the native window's focus, for notifications, zooms the window
 /// with Ctrl and +, - and 0 or the scroll wheel, keeping the level in the
 /// layout, and takes files dropped on it.
-fn watch_window(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     use slint::winit_030::{EventResult, winit::event::WindowEvent};
     let saved = zoom::saved(adapter.borrow().layout.zoom);
     let adapter = Rc::downgrade(adapter);
@@ -376,7 +376,7 @@ fn dragged(drag: Drag) {
 /// On Wayland, where winit takes no drops, a data device on winit's own
 /// connection does, once for every window, as it's the seat's.
 #[cfg(target_os = "linux")]
-fn watch_wayland_drops(window: &TalkWindow) {
+fn watch_wayland_drops(window: &YapfastWindow) {
     use slint::winit_030::WinitWindowAccessor;
     use slint::winit_030::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     thread_local! {
@@ -396,7 +396,7 @@ fn watch_wayland_drops(window: &TalkWindow) {
     };
     WATCHING.set(true);
     // SAFETY: winit's display stays connected while its event loop runs,
-    // which is as long as Talk does.
+    // which is as long as Yapfast does.
     unsafe {
         crate::drop::wayland::watch(display, |drag| {
             let _ = slint::invoke_from_event_loop(move || dragged(drag));
@@ -407,7 +407,7 @@ fn watch_wayland_drops(window: &TalkWindow) {
 thread_local! {
     /// Takes files dragged over the window; see [`dragged`].
     static DRAGGED: RefCell<Option<TakeDrag>> = const { RefCell::new(None) };
-    /// Whether Talk's window has the keyboard focus, so notifications can wait.
+    /// Whether Yapfast's window has the keyboard focus, so notifications can wait.
     static FOCUSED: Cell<bool> = const { Cell::new(false) };
     /// When animations play, as the settings say.
     static ANIMATE: Cell<Animate> = const { Cell::new(Animate::Focused) };
@@ -428,9 +428,9 @@ fn open_from_notification(room: String) {
 
 /// Lets a selection of text copy the messages it covers whole, including those scrolled out of
 /// view, which the list no longer shows.
-fn copy_whole_messages(window: &TalkWindow) {
+fn copy_whole_messages(window: &YapfastWindow) {
     let window = window.as_weak();
-    i_slint_core::talk_selection::set_row_text(move |row| {
+    i_slint_core::yapfast_selection::set_row_text(move |row| {
         Some(message_text(
             &window.upgrade()?.get_messages().row_data(row)?,
         ))
@@ -440,7 +440,7 @@ fn copy_whole_messages(window: &TalkWindow) {
 /// A message as a selection covering it copies it, reading as its row shows it: texts beside
 /// each other joined by a space, others by line breaks, and each picture as `[Picture]`.
 fn message_text(row: &MessageRow) -> String {
-    let plain = i_slint_core::talk_selection::plain;
+    let plain = i_slint_core::yapfast_selection::plain;
     let mut lines = Vec::new();
     if row.first {
         lines.push(format!(
@@ -491,13 +491,13 @@ fn message_text(row: &MessageRow) -> String {
 }
 
 /// A command file through which the private test compositor can hide, destroy
-/// and recreate the window while Talk keeps running, close it as its close
+/// and recreate the window while Yapfast keeps running, close it as its close
 /// button does and open it as the tray does, and add a file to the next
 /// message with `stage PATH`, as a paste would: the private display has no
 /// clipboard, file chooser or window decorations to do it with.
 fn test_control() -> Option<PathBuf> {
     isolated_display()
-        .then(|| std::env::var_os("TALK_UI_TEST_CONTROL"))
+        .then(|| std::env::var_os("YAPFAST_UI_TEST_CONTROL"))
         .flatten()
         .map(PathBuf::from)
 }
@@ -534,7 +534,7 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                         shell.close();
                         Ok(())
                     }
-                    // As the tray's Open Talk.
+                    // As the tray's Open Yapfast.
                     "create" | "open" => {
                         drop(window);
                         shell.open();
@@ -653,14 +653,14 @@ struct Layout {
     reactions: HashMap<String, u32>,
     /// List Discord channels hidden from this account, locked.
     show_hidden_channels: bool,
-    /// Reading in Talk marks Discord channels read on Discord; on unless turned off.
+    /// Reading in Yapfast marks Discord channels read on Discord; on unless turned off.
     sync_discord_reads: Option<bool>,
-    /// Discord shows this account idle after 10 minutes nobody uses Talk;
+    /// Discord shows this account idle after 10 minutes nobody uses Yapfast;
     /// on unless turned off.
     show_idle: Option<bool>,
     /// Messages from people this account blocked don't show at all.
     hide_blocked: bool,
-    /// A message that notifies while Talk isn't in front flashes the
+    /// A message that notifies while Yapfast isn't in front flashes the
     /// taskbar; on unless turned off.
     flash_taskbar: Option<bool>,
     /// DMs pinned to the top of the DM list, by room ID, the first pinned first.
@@ -687,14 +687,14 @@ struct Layout {
     level_voice: Option<bool>,
     /// What takes out noise in Discord calls, and how far; DeepFilterNet,
     /// fully, unless changed.
-    noise_suppression: talk_core::noise::Suppressor,
-    noise_strength: talk_core::noise::Strength,
+    noise_suppression: yapfast_core::noise::Suppressor,
+    noise_strength: yapfast_core::noise::Strength,
     /// Discord calls take the room's reverb out of the microphone.
     reduce_room_echo: bool,
     /// The quietest speech Discord calls send, in dBFS; -60 unless changed.
     input_sensitivity: Option<i32>,
     /// How loud people sound in calls, and their streams, by Discord or
-    /// Matrix user id; see [`talk_core::volume`]. Unlisted people are as they
+    /// Matrix user id; see [`yapfast_core::volume`]. Unlisted people are as they
     /// come.
     volumes: std::collections::BTreeMap<String, f32>,
     stream_volumes: std::collections::BTreeMap<String, f32>,
@@ -706,11 +706,11 @@ struct Layout {
     /// turned off.
     notifications: Option<bool>,
     notification_text: Option<bool>,
-    /// Whether notifications played the desktop's sound, before Talk had its own;
+    /// Whether notifications played the desktop's sound, before Yapfast had its own;
     /// read once, to keep messages quiet for someone who turned it off.
     #[serde(skip_serializing)]
     notification_sound: Option<bool>,
-    /// The instrument Talk's sounds play on, and how loud they are as a slider's
+    /// The instrument Yapfast's sounds play on, and how loud they are as a slider's
     /// percentage from 0% to 200%; [`DEFAULT_SOUND_VOLUME`] unless changed.
     sound_set: SoundSet,
     sound_volume: Option<u8>,
@@ -719,29 +719,29 @@ struct Layout {
     adjust_each_sound: bool,
     /// Each sound's own volume as a percentage up to 100%, if it isn't 100%.
     each_sound: std::collections::BTreeMap<Sound, u8>,
-    /// Talk draws with Skia GPU from its next start; see [`graphics`].
+    /// Yapfast draws with Skia GPU from its next start; see [`graphics`].
     gpu_rendering: bool,
     /// The theme chosen, by its id; Yap unless chosen.
     theme: Option<String>,
     /// The person's own themes, in the order Appearance shows them.
     custom_themes: Vec<theme::Custom>,
-    /// Closing the window leaves Talk in the system tray; on unless turned off.
+    /// Closing the window leaves Yapfast in the system tray; on unless turned off.
     close_to_tray: Option<bool>,
 }
 
-/// Talk's sounds start as they're made: 12 dB under full scale at the loudest.
+/// Yapfast's sounds start as they're made: 12 dB under full scale at the loudest.
 const DEFAULT_SOUND_VOLUME: u8 = 100;
 
 /// The noise suppression settings' choices, in the order they show.
-const SUPPRESSORS: [talk_core::noise::Suppressor; 3] = [
-    talk_core::noise::Suppressor::DeepFilterNet,
-    talk_core::noise::Suppressor::RNNoise,
-    talk_core::noise::Suppressor::Off,
+const SUPPRESSORS: [yapfast_core::noise::Suppressor; 3] = [
+    yapfast_core::noise::Suppressor::DeepFilterNet,
+    yapfast_core::noise::Suppressor::RNNoise,
+    yapfast_core::noise::Suppressor::Off,
 ];
-const STRENGTHS: [talk_core::noise::Strength; 3] = [
-    talk_core::noise::Strength::Full,
-    talk_core::noise::Strength::Medium,
-    talk_core::noise::Strength::Light,
+const STRENGTHS: [yapfast_core::noise::Strength; 3] = [
+    yapfast_core::noise::Strength::Full,
+    yapfast_core::noise::Strength::Medium,
+    yapfast_core::noise::Strength::Light,
 ];
 
 /// When GIFs, animated emoji and stickers play. Held still, an animation
@@ -749,7 +749,7 @@ const STRENGTHS: [talk_core::noise::Strength; 3] = [
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Animate {
-    /// While Talk's window has the focus, as in Discord, so they hold still
+    /// While Yapfast's window has the focus, as in Discord, so they hold still
     /// on another screen.
     #[default]
     Focused,
@@ -760,9 +760,9 @@ enum Animate {
 /// The animation settings' choices, in the order they show.
 const ANIMATES: [Animate; 3] = [Animate::Focused, Animate::Always, Animate::Never];
 
-/// Asks the desktop to flash Talk's taskbar entry, or stops it: an urgency
+/// Asks the desktop to flash Yapfast's taskbar entry, or stops it: an urgency
 /// hint on X11, an activation request on Wayland, a flash on Windows.
-fn attention(window: &TalkWindow, wanted: bool) {
+fn attention(window: &YapfastWindow, wanted: bool) {
     use slint::winit_030::winit::window::UserAttentionType;
     window.window().with_winit_window(|winit| {
         winit.request_user_attention(wanted.then_some(UserAttentionType::Informational));
@@ -770,7 +770,7 @@ fn attention(window: &TalkWindow, wanted: bool) {
 }
 
 /// Plays animations or holds them still, as the setting and the focus say.
-fn show_motion(window: &TalkWindow) {
+fn show_motion(window: &YapfastWindow) {
     let playing = match ANIMATE.get() {
         Animate::Focused => FOCUSED.get(),
         Animate::Always => true,
@@ -799,7 +799,7 @@ impl Layout {
     /// The voice gate's sensitivity, in whole dBFS from -80 to 0.
     fn sensitivity(&self) -> i32 {
         self.input_sensitivity
-            .unwrap_or(talk_core::noise::DEFAULT_SENSITIVITY as i32)
+            .unwrap_or(yapfast_core::noise::DEFAULT_SENSITIVITY as i32)
             .clamp(-80, 0)
     }
 
@@ -832,7 +832,7 @@ impl Layout {
             * sounds::gain(self.each_sound(sound))
     }
 
-    fn apply(&self, window: &TalkWindow) {
+    fn apply(&self, window: &YapfastWindow) {
         window.set_show_idle(self.show_idle.unwrap_or(true));
         window.set_hide_blocked(self.hide_blocked);
         window.set_flash_taskbar(self.flash_taskbar.unwrap_or(true));
@@ -862,24 +862,24 @@ impl Layout {
         window.set_unmute_on_join(self.unmute_on_join);
         window.set_deafen_on_join(self.deafen_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
-        talk_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
+        yapfast_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
         window.set_noise_suppression(choice(&SUPPRESSORS, self.noise_suppression));
         window.set_noise_strength(choice(&STRENGTHS, self.noise_strength));
-        talk_core::noise::set(self.noise_suppression);
-        talk_core::noise::set_strength(self.noise_strength);
+        yapfast_core::noise::set(self.noise_suppression);
+        yapfast_core::noise::set_strength(self.noise_strength);
         window.set_dereverb(self.reduce_room_echo);
-        talk_core::noise::set_dereverb(self.reduce_room_echo);
+        yapfast_core::noise::set_dereverb(self.reduce_room_echo);
         let sensitivity = self.sensitivity();
         window.set_sensitivity(sensitivity);
-        talk_core::noise::set_sensitivity(sensitivity as f32);
+        yapfast_core::noise::set_sensitivity(sensitivity as f32);
         for (person, volume) in &self.volumes {
-            talk_core::volume::set(talk_core::volume::Kind::Voice, person, *volume);
+            yapfast_core::volume::set(yapfast_core::volume::Kind::Voice, person, *volume);
         }
         for (person, volume) in &self.stream_volumes {
-            talk_core::volume::set(talk_core::volume::Kind::Stream, person, *volume);
+            yapfast_core::volume::set(yapfast_core::volume::Kind::Stream, person, *volume);
         }
         for person in &self.muted_people {
-            talk_core::volume::mute(person, true);
+            yapfast_core::volume::mute(person, true);
         }
         window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
@@ -900,7 +900,7 @@ impl Layout {
     /// link previews only when they're on.
     fn restyle(&self, message: &ChatMessage, mut row: MessageRow) -> MessageRow {
         if message.timestamp != 0 {
-            let time = talk_core::clock::time_with(
+            let time = yapfast_core::clock::time_with(
                 message.timestamp,
                 self.twelve_hour_clock,
                 self.clock_seconds,
@@ -936,7 +936,7 @@ impl Layout {
         row
     }
 
-    /// A lost layout only costs the person their arrangement; it never stops Talk.
+    /// A lost layout only costs the person their arrangement; it never stops Yapfast.
     fn write(&self, root: &std::path::Path) {
         let result = std::fs::create_dir_all(root).and_then(|()| {
             std::fs::write(
@@ -1003,7 +1003,7 @@ struct Models {
 }
 
 impl Models {
-    fn attach(&self, window: &TalkWindow) {
+    fn attach(&self, window: &YapfastWindow) {
         window.set_servers(ModelRc::from(self.servers.clone()));
         window.set_rooms(ModelRc::from(self.rooms.clone()));
         window.set_message_requests(ModelRc::from(self.message_requests.clone()));
@@ -1095,7 +1095,7 @@ struct Adapter {
     models: Models,
     icons: Icons,
     weak: std::rc::Weak<RefCell<Self>>,
-    window: slint::Weak<TalkWindow>,
+    window: slint::Weak<YapfastWindow>,
     away: away::Away,
     call_timer: call_timer::CallTimer,
     navigation: Navigation,
@@ -1119,7 +1119,7 @@ struct Adapter {
     /// as its rows say how long ago each was active.
     threads_shown: Option<u64>,
     /// The topic the header shows, so it's styled again only once it changes.
-    topic_shown: Option<Arc<talk_core::chat::Topic>>,
+    topic_shown: Option<Arc<yapfast_core::chat::Topic>>,
     /// Shows pictures that arrived, together with those that follow them closely.
     pictures_due: slint::Timer,
     /// Stream ticks without a new picture of a video that isn't playing,
@@ -1170,9 +1170,9 @@ struct Adapter {
     /// Reads the microphone while the input menu shows its level.
     meter: Option<InputMeter>,
     /// Films with the chosen camera while voice settings try it.
-    camera_test: Option<(talk_core::camera::Camera, talk_core::picture::Feed)>,
+    camera_test: Option<(yapfast_core::camera::Camera, yapfast_core::picture::Feed)>,
     /// Films for a preview call with the camera on.
-    preview_camera: Option<talk_core::camera::Camera>,
+    preview_camera: Option<yapfast_core::camera::Camera>,
     /// Whose camera picture each place in the call's grid holds.
     frame_ids: Vec<String>,
     /// Where the call's tiles are, as the grid last said.
@@ -1180,20 +1180,20 @@ struct Adapter {
     /// Runs the microphone through Discord's processing while voice settings
     /// show the voice gate's sensitivity.
     #[cfg(feature = "discord")]
-    gate_meter: Option<talk_core::discord_audio::GateMeter>,
+    gate_meter: Option<yapfast_core::discord_audio::GateMeter>,
     /// Previews of the pictures waiting in the composer, by file; `None` while
     /// one is read, or when it can't be.
     thumbnails: HashMap<PathBuf, Option<pictures::Thumbnail>>,
-    /// Where pasted pictures are saved until they're sent; removed as Talk closes.
+    /// Where pasted pictures are saved until they're sent; removed as Yapfast closes.
     pasted: Option<tempfile::TempDir>,
     /// Ringing for a DM call that rings this account.
     #[cfg(feature = "discord")]
-    ringer: Option<talk_core::ring::Ringer>,
-    /// Talk's icon in the system tray, where the window can close to.
+    ringer: Option<yapfast_core::ring::Ringer>,
+    /// Yapfast's icon in the system tray, where the window can close to.
     tray: Option<crate::tray::Tray>,
     /// Linking a Discord account by QR code; dropping it stops the linking.
     #[cfg(feature = "discord")]
-    linking: Option<talk_core::runtime::BackgroundTask<()>>,
+    linking: Option<yapfast_core::runtime::BackgroundTask<()>>,
     /// Counts linking runs, so a replaced run's last words are ignored.
     #[cfg(feature = "discord")]
     link_run: u64,
@@ -1208,7 +1208,7 @@ impl Adapter {
     fn new(
         runtime: Arc<BackgroundRuntime>,
         root: PathBuf,
-        window: &TalkWindow,
+        window: &YapfastWindow,
     ) -> Result<Rc<RefCell<Self>>> {
         let icons = Icons {
             dm: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/message-circle.svg"))?,
@@ -1349,7 +1349,7 @@ impl Adapter {
     }
 
     /// Present the existing models and state in a new window.
-    fn attach(&mut self, window: &TalkWindow) {
+    fn attach(&mut self, window: &YapfastWindow) {
         self.models.attach(window);
         self.layout.apply(window);
         // The theme being edited goes unsaved with the old window, and rows
@@ -1375,7 +1375,7 @@ impl Adapter {
     fn paste(&mut self) {
         if self.pasted.is_none() {
             self.pasted = tempfile::Builder::new()
-                .prefix("talk-pasted-")
+                .prefix("yapfast-pasted-")
                 .tempdir()
                 .inspect_err(
                     |error| tracing::warn!(%error, "could not make a folder for pasted pictures"),
@@ -1422,7 +1422,7 @@ impl Adapter {
 
     /// Files dragged over the window go with the next message, as they do
     /// in Discord's client: all of them, or none and why.
-    fn drag(&mut self, window: &TalkWindow, drag: Drag) {
+    fn drag(&mut self, window: &YapfastWindow, drag: Drag) {
         let state = &self.app.state;
         match drag {
             Drag::Entered => {
@@ -1456,7 +1456,7 @@ impl Adapter {
             Ok(handle) => self.dialog = Some(handle),
             Err(error) => {
                 tracing::error!(%error, "could not open the file dialog");
-                self.app.state.notice = Some("Talk could not open a file dialog.".into());
+                self.app.state.notice = Some("Yapfast could not open a file dialog.".into());
             }
         }
     }
@@ -1528,7 +1528,7 @@ impl Adapter {
                     self.preview_camera = None;
                     if let Some((camera, feed)) = filming {
                         let sink = Box::new(feed.mirrored_sink());
-                        match talk_core::camera::Camera::open(camera.as_deref(), sink) {
+                        match yapfast_core::camera::Camera::open(camera.as_deref(), sink) {
                             Ok(camera) => self.preview_camera = Some(camera),
                             Err(error) => self.app.state.voice.error = Some(error.to_string()),
                         }
@@ -1582,7 +1582,7 @@ impl Adapter {
                             Sound::Message
                         });
                     }
-                    // Only while Talk isn't in front: there the lists show what's new.
+                    // Only while Yapfast isn't in front: there the lists show what's new.
                     if !FOCUSED.get()
                         && !alert.call
                         && self.layout.flash_taskbar.unwrap_or(true)
@@ -1619,7 +1619,7 @@ impl Adapter {
     fn link_discord(&mut self) {
         self.link_run += 1;
         let run = self.link_run;
-        let (task, mut progress) = talk_core::discord_link::start(&self.runtime);
+        let (task, mut progress) = yapfast_core::discord_link::start(&self.runtime);
         self.linking = Some(task);
         let weak = self.weak.clone();
         let task = slint::spawn_local(async move {
@@ -1645,7 +1645,7 @@ impl Adapter {
         }
     }
 
-    /// Plays one of Talk's sounds as the person set them. While deafened, only
+    /// Plays one of Yapfast's sounds as the person set them. While deafened, only
     /// deafening's own sounds play.
     fn sound(&self, sound: Sound) {
         let voice = &self.app.state.voice;
@@ -1657,7 +1657,7 @@ impl Adapter {
 
     /// Out of a call, mutes or deafens the next one, or stops doing so, with
     /// the sound it makes in a call. Unmuting undeafens, as in a call.
-    fn toggle_on_join(&mut self, window: &TalkWindow, deafen: bool) {
+    fn toggle_on_join(&mut self, window: &YapfastWindow, deafen: bool) {
         let layout = &mut self.layout;
         let sound = if deafen {
             layout.deafen_on_join = !layout.deafen_on_join;
@@ -1693,7 +1693,7 @@ impl Adapter {
         );
     }
 
-    fn action(&mut self, window: &TalkWindow, action: Action) {
+    fn action(&mut self, window: &YapfastWindow, action: Action) {
         // A keystroke in the composer changes only the composer, and one in
         // the server profile editor only the editor; the rest of the window
         // stays as it is.
@@ -1737,8 +1737,8 @@ impl Drop for Adapter {
 
 /// The DM calls ringing this account: those it isn't in already.
 fn ringing(
-    state: &talk_core::application::AppState,
-) -> impl Iterator<Item = &talk_core::chat::ChatRoom> {
+    state: &yapfast_core::application::AppState,
+) -> impl Iterator<Item = &yapfast_core::chat::ChatRoom> {
     let voice = &state.voice;
     state
         .rooms
@@ -1749,8 +1749,8 @@ fn ringing(
 /// Shows a DM call ringing this account in another conversation over
 /// everything.
 fn show_incoming(
-    window: &TalkWindow,
-    state: &talk_core::application::AppState,
+    window: &YapfastWindow,
+    state: &yapfast_core::application::AppState,
     pictures: &mut HashMap<String, slint::Image>,
 ) {
     // The open DM's own call answers in its panel.
@@ -1773,7 +1773,7 @@ fn show_incoming(
     }
 }
 
-fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
+fn who_is_here(people: &[yapfast_core::chat::VoicePerson]) -> String {
     let names: Vec<&str> = people.iter().map(|person| person.name.as_str()).collect();
     match names.as_slice() {
         [one] => format!("{one} is"),
@@ -1784,7 +1784,7 @@ fn who_is_here(people: &[talk_core::chat::VoicePerson]) -> String {
     }
 }
 
-fn mention_badge(room: &talk_core::chat::ChatRoom) -> SharedString {
+fn mention_badge(room: &yapfast_core::chat::ChatRoom) -> SharedString {
     count_badge(room.mentions)
 }
 
@@ -1842,13 +1842,13 @@ fn initials(name: &str) -> SharedString {
     text.into()
 }
 
-use talk_core::chat::file_size;
+use yapfast_core::chat::file_size;
 
 /// An attachment's place in a message, the attachment, and its preview once
 /// it has arrived.
 type Preview<'a> = (
     usize,
-    &'a talk_core::chat::Attachment,
+    &'a yapfast_core::chat::Attachment,
     Option<&'a Arc<Picture>>,
 );
 
@@ -1857,7 +1857,7 @@ const STICKER_SIZE: i32 = 160;
 
 /// The line under a Discord DM in the list: the person's custom status or
 /// what they're doing on one line, or a group's size.
-fn dm_detail(room: &talk_core::chat::ChatRoom) -> String {
+fn dm_detail(room: &yapfast_core::chat::ChatRoom) -> String {
     if !room.direct || room.network != Network::Discord {
         return String::new();
     }
@@ -1899,7 +1899,7 @@ const MAX_PICKER_EMOJI: usize = 600;
 const EMOJI_SUGGESTIONS: usize = 10;
 
 /// The link that shows a blocked message, followed by its item.
-const BLOCKED_LINK: &str = "talk:blocked/";
+const BLOCKED_LINK: &str = "yapfast:blocked/";
 
 fn initial(text: &str) -> SharedString {
     text.chars()
@@ -1947,13 +1947,15 @@ fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T
 /// Shows the timeline's rows, building again only those that changed. Older
 /// messages go in above the rows shown, and the list keeps those where they
 /// are on screen, even when it shows the first row; see
-/// `i_slint_core::talk_anchor`.
+/// `i_slint_core::yapfast_anchor`.
 fn show_rows(model: &VecModel<MessageRow>, rows: Vec<MessageRow>) {
     let earlier = model
         .row_data(0)
         .is_some_and(|first| rows.iter().skip(1).any(|row| row.id == first.id));
     if earlier {
-        i_slint_core::talk_anchor::hold(|| update_model_by_id(model, rows, |row| row.id.clone()));
+        i_slint_core::yapfast_anchor::hold(|| {
+            update_model_by_id(model, rows, |row| row.id.clone())
+        });
     } else {
         update_model_by_id(model, rows, |row| row.id.clone());
     }

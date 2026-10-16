@@ -1,4 +1,4 @@
-name: talk-test
+name: yapfast-test
 
 services:
   certificates:
@@ -61,8 +61,8 @@ services:
     environment:
       LIVEKIT_JWT_BIND: :6080
       LIVEKIT_URL: ws://localhost:17880
-      LIVEKIT_KEY: talk-test
-      LIVEKIT_SECRET: talk-test-secret-do-not-deploy
+      LIVEKIT_KEY: yapfast-test
+      LIVEKIT_SECRET: yapfast-test-secret-do-not-deploy
       LIVEKIT_FULL_ACCESS_HOMESERVERS: synapse
       LIVEKIT_INSECURE_SKIP_VERIFY_TLS: YES_I_KNOW_WHAT_I_AM_DOING
       LIVEKIT_LOG_LEVEL: warn

@@ -49,17 +49,17 @@ run() {
 clippy=(cargo clippy --locked "${profile[@]}" --all-targets)
 
 # Each network alone, in the desktop and in the shared core with its tests,
-# and the headless build. These build talk and talk-core with other features
+# and the headless build. These build yapfast and yapfast-core with other features
 # than the steps below, so they run alongside them in a target directory of
 # their own: Cargo lets one build at a time use a target directory. The
 # headless binary stays out of target/<profile>/ that way too.
 combinations() {
   export CARGO_TARGET_DIR=target/check-combinations
-  run clippy-discord-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
-    --features talk/desktop,talk/discord,talk-core/discord -- -D warnings
-  run clippy-matrix-only "${clippy[@]}" -p talk -p talk-core --no-default-features \
-    --features talk/desktop,talk/matrix,talk-core/matrix -- -D warnings
-  run clippy-headless "${clippy[@]}" -p talk --no-default-features --features matrix,discord -- -D warnings
+  run clippy-discord-only "${clippy[@]}" -p yapfast -p yapfast-core --no-default-features \
+    --features yapfast/desktop,yapfast/discord,yapfast-core/discord -- -D warnings
+  run clippy-matrix-only "${clippy[@]}" -p yapfast -p yapfast-core --no-default-features \
+    --features yapfast/desktop,yapfast/matrix,yapfast-core/matrix -- -D warnings
+  run clippy-headless "${clippy[@]}" -p yapfast --no-default-features --features matrix,discord -- -D warnings
   run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
 }
 
@@ -77,9 +77,9 @@ run clippy "${clippy[@]}" --workspace -- -D warnings
 run test cargo test --locked "${profile[@]}" --workspace
 run build cargo build --locked "${profile[@]}" --workspace
 # The binary the build step made: `cargo run` would resolve the dependencies'
-# features for talk alone, not the workspace, and compile it again.
+# features for yapfast alone, not the workspace, and compile it again.
 if [[ "$(cat "$logs/build.rc")" == 0 ]]; then
-  run smoke "target/$profile_dir/talk" --smoke-test
+  run smoke "target/$profile_dir/yapfast" --smoke-test
 else
   echo "=== smoke: skipped, as the build failed"
 fi

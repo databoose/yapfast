@@ -12,7 +12,7 @@ pub enum Clipboard {
     Files(Vec<PathBuf>),
     /// A picture's file contents, and the extension for its type.
     Picture(Vec<u8>, &'static str),
-    /// Text, or nothing Talk can attach.
+    /// Text, or nothing Yapfast can attach.
     Other,
 }
 
@@ -25,7 +25,7 @@ const PICTURES: [(&str, &str); 4] = [
 ];
 
 /// Reads the clipboard. Blocks while the copying app sends its data, so it
-/// runs off the UI thread; Talk itself may be that app.
+/// runs off the UI thread; Yapfast itself may be that app.
 pub fn read() -> Clipboard {
     #[cfg(target_os = "linux")]
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {

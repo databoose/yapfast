@@ -60,9 +60,9 @@ pub mod sharedvector;
 pub mod slice;
 pub mod string;
 pub mod styled_text;
-// Talk: see the modules.
-pub mod talk_anchor;
-pub mod talk_selection;
+// Yapfast: see the modules.
+pub mod yapfast_anchor;
+pub mod yapfast_selection;
 pub mod textlayout;
 pub mod timers;
 pub mod translations;

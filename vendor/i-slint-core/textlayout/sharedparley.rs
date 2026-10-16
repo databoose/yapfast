@@ -213,7 +213,7 @@ pub fn draw_text(
             };
 
             if render {
-                // Talk: a selected `StyledText` fills its selection's background and keeps its
+                // Yapfast: a selected `StyledText` fills its selection's background and keeps its
                 // glyphs' own colours, so links and code still read as such.
                 if let Some((range, background)) =
                     text.selection().filter(|(range, _)| !range.is_empty())
@@ -254,7 +254,7 @@ pub fn link_under_cursor(
         .map(|(link, _)| link)
 }
 
-/// Talk: the link under the cursor, with the box of its part on the line there, so a
+/// Yapfast: the link under the cursor, with the box of its part on the line there, so a
 /// popup it opens can sit beside it.
 pub fn link_box_under_cursor(
     scale_factor: ScaleFactor,
@@ -288,7 +288,7 @@ pub fn link_box_under_cursor(
     .flatten()
 }
 
-/// Talk: how much text a press selects.
+/// Yapfast: how much text a press selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextUnit {
     Character,
@@ -296,7 +296,7 @@ pub enum TextUnit {
     Paragraph,
 }
 
-/// Talk: the text at `position` as a byte range, the paragraphs counted as if joined by newlines:
+/// Yapfast: the text at `position` as a byte range, the paragraphs counted as if joined by newlines:
 /// empty at a character boundary, else the word or paragraph there. Above the text is its start
 /// and below it its end, so dragging past either selects to it.
 #[cfg(feature = "std")]

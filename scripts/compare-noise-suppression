@@ -18,7 +18,7 @@ work=.local/noise-suppression
 limit=${1:-100}
 out="$work/out/limit-$limit"
 mkdir -p "$work/download" "$work/raw" "$out/alone" "$out/chain"
-export TALK_NOISE_LIMIT=$limit
+export YAPFAST_NOISE_LIMIT=$limit
 
 # Name, then the file on Wikimedia Commons, with its licence.
 sources=(
@@ -34,7 +34,7 @@ for source in "${sources[@]}"; do
   read -r name path <<<"$source"
   download="$work/download/$name.${path##*.}"
   if [[ ! -s "$download" ]]; then
-    curl -sSfL -A 'talk-noise-suppression/1.0' -o "$download" \
+    curl -sSfL -A 'yapfast-noise-suppression/1.0' -o "$download" \
       "https://upload.wikimedia.org/wikipedia/commons/$path"
   fi
   if [[ ! -s "$work/raw/$name.f32" ]]; then
@@ -49,16 +49,16 @@ python() {
 }
 python mix "$work/raw" "$work/mixes"
 
-tests=$(cargo test --profile fast --locked -p talk-core --no-run --message-format json 2>/dev/null |
-  jq -r 'select(.profile.test == true and .target.name == "talk_core" and .executable != null) | .executable')
+tests=$(cargo test --profile fast --locked -p yapfast-core --no-run --message-format json 2>/dev/null |
+  jq -r 'select(.profile.test == true and .target.name == "yapfast_core" and .executable != null) | .executable')
 for mix in clean typing fan hiss typing_fan typing_hiss quiet_typing_fan quiet_typing_hiss; do
   echo "== $mix"
-  TALK_NOISE_IN="$work/mixes/$mix.f32" TALK_NOISE_OUT="$out/alone/${mix}_" \
+  YAPFAST_NOISE_IN="$work/mixes/$mix.f32" YAPFAST_NOISE_OUT="$out/alone/${mix}_" \
     "$tests" --exact noise::tests::compares_suppressors --ignored --nocapture |
     grep -E 'loaded|blocks'
   for suppressor in deepfilternet rnnoise off; do
-    TALK_SUPPRESSOR=$suppressor TALK_AUDIO_IN="$work/mixes/$mix.s16" \
-      TALK_AUDIO_OUT="$out/chain/${mix}_$suppressor.s16" \
+    YAPFAST_SUPPRESSOR=$suppressor YAPFAST_AUDIO_IN="$work/mixes/$mix.s16" \
+      YAPFAST_AUDIO_OUT="$out/chain/${mix}_$suppressor.s16" \
       "$tests" --exact discord_audio::linux::processes_a_recording --ignored --nocapture \
       >"$out/chain/${mix}_$suppressor.log"
     echo "whole microphone, $suppressor: $(grep -o '[0-9.]*µs a block' "$out/chain/${mix}_$suppressor.log")"

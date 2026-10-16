@@ -1,6 +1,6 @@
 //! The menus a right click opens: what they offer, and the choices made.
 
-use talk_core::{
+use yapfast_core::{
     application::{ChannelAsk, MUTE_TIMES, MenuChoice, network_id, network_link},
     chat::{
         ChannelKind, MemberChange, Muting, NotificationChange, Notifications, NotifyLevel,
@@ -20,7 +20,7 @@ pub(super) const HEADER: &str = "header:";
 pub(super) type Menu = (Vec<MenuRow>, Vec<Vec<MenuRow>>);
 
 /// What a server's, conversation's or person's menu offers; nothing for one
-/// Talk doesn't know.
+/// Yapfast doesn't know.
 pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     if let Some(place) = id.strip_prefix(BELL) {
         return Notify::of(adapter, place)
@@ -153,7 +153,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             );
             let checked = match choice {
                 MenuChoice::HideMuted => notifications().is_some_and(|known| known.hide_muted),
-                MenuChoice::LocalMute => talk_core::volume::muted(id),
+                MenuChoice::LocalMute => yapfast_core::volume::muted(id),
                 MenuChoice::SelfMute => state.voice.muted,
                 MenuChoice::SelfDeafen => state.voice.deafened,
                 MenuChoice::ServerMute => voice_person.is_some_and(|person| person.server_muted),
@@ -544,10 +544,10 @@ const SUPPRESS_ROLES: &str = "suppress-roles";
 
 /// When a mute ends, as its Unmute row says it: the time today, or the day too.
 fn muted_until(seconds: u64, twelve_hour: bool) -> String {
-    let now = talk_core::clock::now_ms() / 1000;
-    let time = talk_core::clock::time_on(seconds, twelve_hour);
-    let on = talk_core::clock::day(seconds);
-    if on == talk_core::clock::day(now) {
+    let now = yapfast_core::clock::now_ms() / 1000;
+    let time = yapfast_core::clock::time_on(seconds, twelve_hour);
+    let on = yapfast_core::clock::day(seconds);
+    if on == yapfast_core::clock::day(now) {
         format!("Muted until {time}")
     } else {
         format!("Muted until {on}, {time}")
@@ -575,7 +575,7 @@ fn mute_times() -> Vec<MenuRow> {
 }
 
 /// Shows a menu in the window, its submenus only when a row has one.
-pub(super) fn show(window: &TalkWindow, (rows, submenus): Menu) {
+pub(super) fn show(window: &YapfastWindow, (rows, submenus): Menu) {
     let submenus: Vec<ModelRc<MenuRow>> = if submenus.iter().all(Vec::is_empty) {
         vec![]
     } else {
@@ -597,7 +597,7 @@ pub(super) fn show(window: &TalkWindow, (rows, submenus): Menu) {
 /// Ticks or unticks the checkbox row `id` in the menu showing, as choosing
 /// it does while the menu stays open; whether it's ticked now, when there
 /// was one.
-pub(super) fn toggle(window: &TalkWindow, id: &str) -> Option<bool> {
+pub(super) fn toggle(window: &YapfastWindow, id: &str) -> Option<bool> {
     let flip = |rows: ModelRc<MenuRow>| {
         let index = rows.iter().position(|row| row.checkbox && row.id == id)?;
         let mut row = rows.row_data(index)?;
@@ -614,7 +614,7 @@ pub(super) fn toggle(window: &TalkWindow, id: &str) -> Option<bool> {
 /// Carries out the choice a menu reports by its row's id.
 pub(super) fn choose(
     adapter: &mut Adapter,
-    window: &TalkWindow,
+    window: &YapfastWindow,
     target: String,
     person: bool,
     id: &str,
@@ -789,7 +789,7 @@ pub(super) fn choose(
         MenuChoice::Roles | MenuChoice::InviteToServer | MenuChoice::MoveTo => None,
         MenuChoice::LocalMute => {
             if let Some(muted) = ticked {
-                talk_core::volume::mute(&target, muted);
+                yapfast_core::volume::mute(&target, muted);
                 let people = &mut adapter.layout.muted_people;
                 if muted {
                     people.insert(target.clone());

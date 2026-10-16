@@ -214,7 +214,7 @@ impl LayoutWithoutLineBreaksBuilder {
                     Style::Underline => {
                         builder.push(parley::StyleProperty::Underline(true), span.range);
                     }
-                    // Talk: a link in a colour is a mention, drawn in its colour on a pill of
+                    // Yapfast: a link in a colour is a mention, drawn in its colour on a pill of
                     // it (see `TextParagraph::mentions`), without the underline.
                     Style::Link if pills.iter().any(|(range, _)| range == &span.range) => {
                         let color = pills.iter().find(|(range, _)| range == &span.range).map(|(_, c)| *c);
@@ -327,7 +327,7 @@ pub(super) fn create_text_paragraphs(
             }
         }
         PlainOrStyledText::Styled(rich_text) => {
-            // Talk: styled paragraphs are placed as if joined by newlines, as plain text is, so
+            // Yapfast: styled paragraphs are placed as if joined by newlines, as plain text is, so
             // a selection's byte range spans them.
             let mut start = 0;
             for paragraph in rich_text.paragraphs {
@@ -422,12 +422,12 @@ pub(super) struct TextParagraph {
     /// translucent rounded background by `draw` for visual parity with common markdown
     /// renderers.
     pub(super) code_ranges: std::vec::Vec<Range<usize>>,
-    /// Talk: links inside a colour span, which are mentions: drawn in the colour on a
+    /// Yapfast: links inside a colour span, which are mentions: drawn in the colour on a
     /// translucent pill of it.
     pub(super) mentions: std::vec::Vec<(Range<usize>, Color)>,
 }
 
-/// Talk: the links that lie inside a colour span, each with that colour.
+/// Yapfast: the links that lie inside a colour span, each with that colour.
 fn mention_ranges(
     formatting: &[i_slint_common::styled_text::FormattedSpan],
 ) -> std::vec::Vec<(Range<usize>, Color)> {

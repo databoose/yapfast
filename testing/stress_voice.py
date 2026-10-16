@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stress a voice channel with many people, with and without Opus DTX.
 
-Alice runs the given Talk build as a muted listener in the voice view. One
+Alice runs the given Yapfast build as a muted listener in the voice view. One
 publish-only load process joins Bob and extra fixture accounts in steps, with
 generated tones. In the conversation pattern one person speaks at a time and
 everyone else sends digital silence, as behind a voice-activation gate; in the
@@ -10,7 +10,7 @@ matters for the conversation pattern, so --dtx off measures that pattern only.
 Run DTX on and off as separate runs: leaving a large call takes minutes, and
 lingering memberships would distort a second pass.
 
-Each sample records Talk's memory and CPU, the LiveKit and Synapse containers'
+Each sample records Yapfast's memory and CPU, the LiveKit and Synapse containers'
 CPU, LiveKit's network traffic, the load process's CPU and the host's CPU.
 
 Run inside scripts/run-framework-isolated --audio --no-services, with the local
@@ -34,14 +34,14 @@ import voice_harness
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/release/talk')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/release/yapfast')
 parser.add_argument('--renderer', choices=['gpu', 'software'], default='gpu')
 parser.add_argument('--sizes', default='10,25,50', help='people in the call, including Alice')
 parser.add_argument('--warmup', type=int, default=20, help='seconds after each join step')
 parser.add_argument('--settle', type=int, default=10, help='seconds after switching the pattern')
 parser.add_argument('--seconds', type=int, default=45, help='sample length')
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--load-executable', type=Path, required=True, help='prebuilt talk-core test binary')
+parser.add_argument('--load-executable', type=Path, required=True, help='prebuilt yapfast-core test binary')
 parser.add_argument('--dtx', choices=['on', 'off'], required=True,
                     help='Opus silence suppression for the load accounts; run each in a fresh process, since a mass leave lingers')
 args = parser.parse_args()
@@ -61,9 +61,9 @@ class Load:
         self.log = (fixture / 'load.log').open('ab')
         self.process = subprocess.Popen([executable, '--exact', 'matrix_voice::tests::load_participants', '--ignored',
                                          '--nocapture'], cwd=ROOT, stdout=self.log, stderr=self.log,
-                                        env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
-                                                 TALK_TEST_EXTRA_ACCOUNTS=str(extra),
-                                                 TALK_TEST_PUBLISH_ONLY='1'),
+                                        env=dict(os.environ, YAPFAST_TEST_VOICE_ROOT=str(fixture),
+                                                 YAPFAST_TEST_EXTRA_ACCOUNTS=str(extra),
+                                                 YAPFAST_TEST_PUBLISH_ONLY='1'),
                                         start_new_session=True)
 
     def send(self, command, expect=None, timeout=600):
@@ -95,13 +95,13 @@ class Load:
         self.log.close()
 
 
-livekit, synapse = Container('talk-test-livekit-1'), Container('talk-test-synapse-1')
+livekit, synapse = Container('yapfast-test-livekit-1'), Container('yapfast-test-synapse-1')
 
 
-def sample(talk, load, notes):
+def sample(yapfast, load, notes):
     before = {'livekit': livekit.read(), 'synapse': synapse.read(), 'load': process_cpu_seconds(load.process.pid),
               'host': host_ticks(), 'time': time.monotonic()}
-    result = json.loads(subprocess.check_output(['python3', str(ROOT / 'scripts/measure-process'), str(talk.pid),
+    result = json.loads(subprocess.check_output(['python3', str(ROOT / 'scripts/measure-process'), str(yapfast.pid),
                                                  '--seconds', str(args.seconds)], text=True))
     after = {'livekit': livekit.read(), 'synapse': synapse.read(), 'load': process_cpu_seconds(load.process.pid),
              'host': host_ticks(), 'time': time.monotonic()}
@@ -136,14 +136,14 @@ print(f'Fixture {fixture}', flush=True)
 try:
     load = Load(str(args.load_executable.resolve()), fixture, sizes[-1] - 2)
     load.wait('ready', 1200)
-    log = (args.output / 'talk.log').open('wb')
-    talk = subprocess.Popen([str(args.exe.resolve()), '--renderer', args.renderer, '--data-dir', str(fixture / 'alice')],
-                            env=dict(os.environ, TALK_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}'),
+    log = (args.output / 'yapfast.log').open('wb')
+    yapfast = subprocess.Popen([str(args.exe.resolve()), '--renderer', args.renderer, '--data-dir', str(fixture / 'alice')],
+                            env=dict(os.environ, YAPFAST_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}'),
                             stdout=log, stderr=log, start_new_session=True)
     try:
         time.sleep(12)
-        if talk.poll() is not None:
-            raise RuntimeError('Talk exited during startup; see talk.log')
+        if yapfast.poll() is not None:
+            raise RuntimeError('Yapfast exited during startup; see yapfast.log')
         origin_x, origin_y = locate_rail(capture('startup'))
 
         def click(x, y):
@@ -169,17 +169,17 @@ try:
                 capture(f'dtx-{dtx}-{people}-{pattern}')
                 notes = {'renderer': args.renderer, 'window': [WIDTH, HEIGHT], 'people': people,
                          'pattern': pattern, 'dtx': dtx, 'alice': 'muted listener, voice view open'}
-                results.append(sample(talk, load, notes))
+                results.append(sample(yapfast, load, notes))
         seconds = load.send('leave', 'ready')
         joins.append({'dtx': dtx, 'leave_all_seconds': round(seconds, 1)})
         print(json.dumps(joins[-1]), flush=True)
         time.sleep(args.warmup)
         click(WIDTH - 19, -20)  # Close on the private window's title bar.
-        talk.wait(timeout=20)
+        yapfast.wait(timeout=20)
     finally:
-        if talk.poll() is None:
-            os.killpg(talk.pid, signal.SIGTERM)
-            talk.wait(timeout=20)
+        if yapfast.poll() is None:
+            os.killpg(yapfast.pid, signal.SIGTERM)
+            yapfast.wait(timeout=20)
         log.close()
 finally:
     if load:

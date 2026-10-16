@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise Talk on the private compositor and capture states for visual review."""
+"""Exercise Yapfast on the private compositor and capture states for visual review."""
 import argparse
 import hashlib
 import json
@@ -22,11 +22,11 @@ parser.add_argument('--renderer', choices=['gpu', 'software'], default='gpu')
 parser.add_argument('--size', choices=['1120x760', '800x560'], default='1120x760')
 parser.add_argument('--connected', action='store_true', help='Create a disposable local Matrix account and check encrypted UI sending/restoration.')
 parser.add_argument('--long-name', action='store_true', help='Use a long channel label in the connected fixture.')
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/debug/talk')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/debug/yapfast')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 width, height = map(int, args.size.split('x'))
-environment = dict(os.environ, TALK_UI_TEST_SIZE=args.size)
+environment = dict(os.environ, YAPFAST_UI_TEST_SIZE=args.size)
 session_directory = args.output / ('connected-session-' + uuid.uuid4().hex if args.connected else 'unused-preview-session')
 command = [str(args.exe.resolve()), '--renderer', args.renderer,
            '--data-dir', str(session_directory)]
@@ -66,7 +66,7 @@ if args.connected:
 
 def capture(name):
     time.sleep(.25)
-    with tempfile.TemporaryDirectory(prefix='talk-slint-shot-') as folder:
+    with tempfile.TemporaryDirectory(prefix='yapfast-slint-shot-') as folder:
         subprocess.run(['weston-screenshooter'],
                        env=dict(environment, XDG_PICTURES_DIR=folder),
                        check=True, timeout=10, capture_output=True)
@@ -94,7 +94,7 @@ def locate_rail(picture):
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
     if best < height - 80:
-        raise RuntimeError('Talk rail was not found; inspect startup.png and app.log')
+        raise RuntimeError('Yapfast rail was not found; inspect startup.png and app.log')
     x = next(x for x, count in enumerate(columns) if count >= best - 2)
     ys = [y for y in range(output_height)
           if pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target]
@@ -107,7 +107,7 @@ with (args.output / 'app.log').open('wb') as log:
     try:
         time.sleep(2)
         if process.poll() is not None:
-            raise RuntimeError('Talk exited before the first capture; inspect app.log')
+            raise RuntimeError('Yapfast exited before the first capture; inspect app.log')
         origin_x, origin_y = locate_rail(capture('startup'))
 
         def click(x, y):

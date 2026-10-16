@@ -1,0 +1,518 @@
+//! Discord's messages, profiles, embeds and members as Yapfast's chat shows
+//! them.
+
+use super::{channels::SharedPreviews, *};
+
+/// A new Discord message as a notification: who wrote it, by their name in the server,
+/// and what it says, or what it carries when it has no text.
+pub(super) fn notification(
+    discord: &Discord,
+    guild: Option<&str>,
+    message: &Message,
+) -> Notification {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = guild
+        .and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild))
+        .map(Arc::as_ref);
+    let author = discord
+        .name(
+            guild.unwrap_or(yapfast_discord::ready::PRIVATE),
+            &message.author_id,
+        )
+        .unwrap_or_else(|| message.author.clone());
+    let mut body = crate::chat::notification_text(&crate::spoiler::hide(
+        &discord.render(server, &message.content),
+    ));
+    if body.is_empty() {
+        body = if message
+            .attachments
+            .iter()
+            .any(|attachment| attachment.shown == Shown::Sticker)
+        {
+            "Sent a sticker".into()
+        } else if message
+            .attachments
+            .iter()
+            .any(|attachment| attachment.image)
+        {
+            "Sent a picture".into()
+        } else if !message.attachments.is_empty() {
+            "Sent a file".into()
+        } else if let Some(title) = message.embeds.iter().find_map(|embed| embed.title.clone()) {
+            title
+        } else {
+            "Sent a message".into()
+        };
+    }
+    Notification {
+        room: crate::discord::room_id(
+            guild.unwrap_or(yapfast_discord::ready::PRIVATE),
+            &message.channel_id,
+        ),
+        author,
+        body,
+        avatar: Some(discord.avatar(guild, &message.author_id)),
+        mention: message.mentions_me(snapshot.user_id.as_deref().unwrap_or_default(), server),
+    }
+}
+
+/// A message as a pinned message or a search result shows it: who wrote
+/// it, by their name, avatar and role colour in `server`, or for a DM with
+/// none, their own; when; and what it says, and the files it carries.
+/// [`with_previews`] brings its pictures.
+pub(super) fn found(
+    discord: &Discord,
+    server: Option<&yapfast_discord::ready::Server>,
+    message: &Message,
+) -> ChatMessage {
+    let guild = server.map(|server| server.id.as_str());
+    let author = discord
+        .name(
+            guild.unwrap_or(yapfast_discord::ready::PRIVATE),
+            &message.author_id,
+        )
+        .unwrap_or_else(|| message.author.clone());
+    let ordinary = message.system.is_none();
+    let timestamp = message.timestamp();
+    ChatMessage {
+        id: format!("d:{}", message.id),
+        item: format!("d:{}", message.id),
+        sender: discord::sender_id(&message.author_id),
+        spoilers: true,
+        avatar: Some(discord.avatar(guild, &message.author_id)),
+        color: server.and_then(|server| discord.color(server, &message.author_id)),
+        bot: message.bot,
+        body: match &message.system {
+            Some(system) => format!("{author} {system}"),
+            None => discord.render(server, &message.content),
+        },
+        author,
+        formatted: ordinary,
+        time: crate::clock::time(timestamp),
+        timestamp,
+        edited: message.edited,
+        attachments: message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.shown == Shown::Message)
+            .map(|attachment| Attachment {
+                name: attachment.name.clone(),
+                size: attachment.size,
+                image: attachment.image,
+                dimensions: attachment.dimensions,
+                preview: None,
+                preview_failed: false,
+                placement: Placement::Message,
+                spoiler: attachment.spoiler,
+                video: attachment.video_url.is_some(),
+                gif: super::gifs::favorite_gif(attachment),
+                url: Some(
+                    attachment
+                        .link_url
+                        .clone()
+                        .unwrap_or_else(|| attachment.url.clone()),
+                ),
+            })
+            .collect(),
+        mentions: mentions(discord, server, &message.content),
+        emoji: custom_emoji(message),
+        ..Default::default()
+    }
+}
+
+/// Gives `found`, as [`found`] made them from `messages`, the previews of
+/// their first [`crate::chat::FOUND_PICTURES`] pictures each, as the timeline shows
+/// them: from the previews the recent channels share, or downloaded a few
+/// at a time. One that can't be had is marked so.
+pub(super) async fn with_previews(
+    discord: &Discord,
+    previews: &SharedPreviews,
+    messages: &[Message],
+    found: &mut [ChatMessage],
+) {
+    use futures_util::StreamExt;
+    let mut wanted = Vec::new();
+    for (at, (message, found)) in messages.iter().zip(&*found).enumerate() {
+        let shown = message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.shown == Shown::Message);
+        wanted.extend(
+            shown
+                .zip(&found.attachments)
+                .enumerate()
+                .filter(|(_, (_, attachment))| attachment.image || attachment.video)
+                .filter_map(|(index, (attachment, _))| {
+                    Some((at, index, attachment.preview_url.clone()?))
+                })
+                .take(crate::chat::FOUND_PICTURES),
+        );
+    }
+    let cached = |url: &str| {
+        previews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(url)
+    };
+    let came: Vec<_> = futures_util::stream::iter(wanted)
+        .map(|(at, index, url)| async move {
+            if let Some(picture) = cached(&url) {
+                return (at, index, Some(picture));
+            }
+            let picture = preview(discord, &url).await;
+            if let Some(picture) = &picture {
+                previews
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(url, picture.clone());
+            }
+            (at, index, picture)
+        })
+        .buffer_unordered(4)
+        .collect()
+        .await;
+    for (at, index, picture) in came {
+        let attachment = &mut found[at].attachments[index];
+        attachment.preview_failed = picture.is_none();
+        attachment.preview = picture;
+    }
+}
+
+/// A picture downloaded and decoded at the timeline's preview size.
+pub(super) async fn preview(discord: &Discord, url: &str) -> Option<Arc<Picture>> {
+    let data = discord
+        .download(url, MAX_PREVIEW_DOWNLOAD_BYTES)
+        .await
+        .ok()?;
+    let url = url.to_owned();
+    tokio::task::spawn_blocking(move || {
+        decode_preview(&data).map(|picture| crate::discord::read_kept(&url, picture))
+    })
+    .await
+    .ok()
+    .flatten()
+    .map(Arc::new)
+}
+
+/// Messages found in a room, as [`found`] shows them, with the room's server.
+pub(super) fn found_in(discord: &Discord, room: &str, messages: &[Message]) -> Vec<ChatMessage> {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = discord::parse_room(room)
+        .and_then(|(guild, _)| snapshot.servers.iter().find(|server| server.id == guild))
+        .map(Arc::as_ref);
+    messages
+        .iter()
+        .map(|message| found(discord, server, message))
+        .collect()
+}
+
+/// Messages a search found in a server, or with [`yapfast_discord::ready::PRIVATE`]
+/// in DMs, as [`found`] shows them, each with its room.
+pub(super) fn hits_in(discord: &Discord, guild: &str, messages: &[Message]) -> Vec<SearchHit> {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == guild)
+        .map(Arc::as_ref);
+    messages
+        .iter()
+        .map(|message| SearchHit {
+            room: discord::room_id(guild, &message.channel_id),
+            message: found(discord, server, message),
+        })
+        .collect()
+}
+
+/// The custom emoji in a message's text and reactions.
+pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
+    let mut found = emoji_in(&message.content);
+    for reaction in &message.reactions {
+        if let Some((_, id)) = reaction.emoji.split_once(':')
+            && !found.iter().any(|known| known.id == id)
+        {
+            found.push(CustomEmoji {
+                text: reaction.key.clone(),
+                id: id.to_owned(),
+                animated: false,
+                picture: yapfast_discord::ready::custom_emoji(
+                    id,
+                    false,
+                    crate::chat::EMOJI_PICTURE_SIZE,
+                ),
+            });
+        }
+    }
+    found
+}
+
+/// The custom emoji in Discord's markup.
+fn emoji_in(content: &str) -> Vec<CustomEmoji> {
+    yapfast_discord::message::custom_emoji(content)
+        .into_iter()
+        .map(|emoji| CustomEmoji {
+            text: format!(":{}:", emoji.name),
+            picture: yapfast_discord::ready::custom_emoji(
+                &emoji.id,
+                false,
+                crate::chat::EMOJI_PICTURE_SIZE,
+            ),
+            id: emoji.id,
+            animated: emoji.animated,
+        })
+        .collect()
+}
+
+/// Sends the open server channel's topic, as [`Event::Topic`], when it
+/// opens (`opened`), and after that when the topic changes, or the names
+/// of people it mentions do.
+pub(super) fn send_topic(
+    channel: &mut OpenChannel,
+    discord: &Discord,
+    events: &UnboundedSender<Event>,
+    opened: bool,
+) {
+    if channel.guild == yapfast_discord::ready::PRIVATE {
+        return;
+    }
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == channel.guild)
+        .map(Arc::as_ref);
+    let raw = server
+        .and_then(|server| {
+            server
+                .text_channels
+                .iter()
+                .find(|known| known.id == channel.channel)
+        })
+        .and_then(|known| known.topic.clone());
+    let names = raw
+        .as_deref()
+        .filter(|raw| raw.contains("<@"))
+        .map_or(0, |_| discord.names_version());
+    let sent = (raw, names);
+    if !opened && channel.topic_sent.as_ref() == Some(&sent) {
+        return;
+    }
+    let topic = sent.0.as_deref().map(|raw| {
+        Arc::new(Topic {
+            body: discord.render(server, raw),
+            mentions: mentions(discord, server, raw),
+            emoji: emoji_in(raw),
+        })
+    });
+    channel.topic_sent = Some(sent);
+    let _ = events.send(Event::Topic {
+        room: channel.room.clone(),
+        topic,
+    });
+}
+
+/// Who and what a message mentions, as its rendered body shows them.
+pub(super) fn mentions(
+    discord: &Discord,
+    server: Option<&yapfast_discord::ready::Server>,
+    content: &str,
+) -> Vec<Mentioned> {
+    discord
+        .mentions(server, content)
+        .into_iter()
+        .map(|(text, role, id)| {
+            let color = server.and_then(|server| {
+                if role {
+                    server.role_colors.get(&id).map(|(_, color)| *color)
+                } else {
+                    discord.color(server, &id)
+                }
+            });
+            Mentioned {
+                text,
+                target: if role {
+                    Target::Role(id)
+                } else {
+                    Target::User(id)
+                },
+                color,
+            }
+        })
+        .collect()
+}
+
+/// The roles a message in a server channel may mention, after @everyone and @here
+/// for those allowed them.
+pub(super) fn mention_groups(discord: &Discord, room: &str) -> Vec<MentionGroup> {
+    let Some((guild, channel)) = discord::parse_room(room) else {
+        return vec![];
+    };
+    let snapshot = discord.snapshots().borrow().clone();
+    let Some(server) = snapshot.servers.iter().find(|server| server.id == guild) else {
+        return vec![];
+    };
+    let everyone = server
+        .text_channels
+        .iter()
+        .find(|text| text.id == channel)
+        .is_some_and(|text| text.mention_everyone);
+    let mut groups = Vec::new();
+    if everyone {
+        for name in ["everyone", "here"] {
+            groups.push(MentionGroup {
+                name: name.into(),
+                mention: format!("@{name}"),
+                color: None,
+            });
+        }
+    }
+    groups.extend(
+        server
+            .mentionable(everyone)
+            .into_iter()
+            .map(|(id, name, color)| MentionGroup {
+                name,
+                mention: format!("<@&{id}>"),
+                color,
+            }),
+    );
+    groups
+}
+
+/// A Discord profile as Yapfast's profile card shows it, with the server's role
+/// names, colours and names known now.
+pub(super) fn chat_profile(
+    discord: &Discord,
+    guild: &str,
+    profile: yapfast_discord::profile::Profile,
+) -> Profile {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == guild)
+        .map(Arc::as_ref);
+    Profile {
+        name: profile.name,
+        avatar: Some(profile.avatar),
+        banner: profile.banner,
+        accent: profile.accent,
+        pronouns: profile.pronouns.unwrap_or_default(),
+        bio: profile
+            .bio
+            .map(|bio| discord.render(server, &bio))
+            .unwrap_or_default(),
+        roles: server
+            .map(|server| server.named_roles(&profile.roles))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, color)| ProfileRole { name, color })
+            .collect(),
+        created: Some(yapfast_discord::message::date(profile.created)),
+        joined: profile.joined.map(yapfast_discord::message::date),
+        servers: profile
+            .mutual_servers
+            .into_iter()
+            .filter_map(|mutual| {
+                let server = snapshot
+                    .servers
+                    .iter()
+                    .find(|server| server.id == mutual.id)?;
+                Some(ProfileServer {
+                    id: discord::server_id(&server.id),
+                    name: server.name.clone(),
+                    icon: server.icon.clone(),
+                    banner: server.banner.clone(),
+                    members: server.member_count,
+                    channels: server.text_channels.len() + server.voice_channels.len(),
+                    nick: mutual.nick,
+                })
+            })
+            .collect(),
+        friends: profile
+            .mutual_friends
+            .into_iter()
+            .map(|friend| ProfileFriend {
+                id: friend.id,
+                name: friend.name,
+                avatar: Some(friend.avatar),
+            })
+            .collect(),
+        handle: profile.username,
+        id: profile.user_id,
+        // What the member list knows; the profile doesn't say.
+        presence: None,
+        activity: None,
+    }
+}
+
+/// An embed as Yapfast shows it, its mentions written as names.
+pub(super) fn chat_embed(
+    discord: &Discord,
+    server: Option<&yapfast_discord::ready::Server>,
+    embed: &yapfast_discord::embed::Embed,
+) -> Embed {
+    let text = |text: &Option<String>| text.clone().unwrap_or_default();
+    Embed {
+        color: embed.color,
+        provider: text(&embed.provider),
+        author: text(&embed.author),
+        title: text(&embed.title),
+        url: text(&embed.url),
+        description: embed
+            .description
+            .as_deref()
+            .map(|description| discord.render(server, description))
+            .unwrap_or_default(),
+        fields: embed
+            .fields
+            .iter()
+            .map(|field| EmbedField {
+                name: field.name.clone(),
+                value: discord.render(server, &field.value),
+                inline: field.inline,
+            })
+            .collect(),
+        footer: text(&embed.footer),
+        video: embed.video,
+    }
+}
+
+pub(super) fn chat_member(member: ListedMember) -> ChatMember {
+    ChatMember {
+        id: member.user_id,
+        name: member.name,
+        username: member.username,
+        role: Role::Member,
+        avatar: Some(member.avatar),
+        group: Some(member.group),
+        presence: Some(discord::presence(member.presence)),
+        color: member.color,
+        activity: member.activity,
+        roles: member.roles,
+        timed_out_until: member.timed_out_until,
+    }
+}
+
+pub(super) fn publish(
+    channel: &mut OpenChannel,
+    discord: &Discord,
+    done: &UnboundedSender<Done>,
+    events: &UnboundedSender<Event>,
+) {
+    // The timeline stays as it is while the messages around one jumped to
+    // are on their way.
+    if channel.focusing {
+        return;
+    }
+    let messages = channel.publish(discord, done);
+    let _ = events.send(Event::Timeline {
+        room: channel.room.clone(),
+        messages,
+    });
+}
+
+/// The Discord message id of a sent message's timeline item.
+pub(super) fn sent_id(item: &str) -> Option<&str> {
+    item.strip_prefix("d:")
+}

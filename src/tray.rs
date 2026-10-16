@@ -1,7 +1,7 @@
-//! Talk's icon in the system tray, which keeps Talk running with its window
-//! closed: a StatusNotifierItem on Linux, on the session bus Talk is given,
+//! Yapfast's icon in the system tray, which keeps Yapfast running with its window
+//! closed: a StatusNotifierItem on Linux, on the session bus Yapfast is given,
 //! and a notification-area icon on Windows. Clicking it opens the window; its
-//! menu opens Talk, leaves a call and quits.
+//! menu opens Yapfast, leaves a call and quits.
 
 use std::cell::Cell;
 
@@ -30,7 +30,7 @@ pub struct Tray {
 }
 
 impl Tray {
-    /// Puts Talk's icon in the tray. `chosen` runs on Slint's event loop with
+    /// Puts Yapfast's icon in the tray. `chosen` runs on Slint's event loop with
     /// what the person picked. `None` where there's no tray to use.
     pub fn start(chosen: fn(Choice)) -> Option<Self> {
         let platform = platform::Tray::start(chosen)?;
@@ -54,7 +54,7 @@ impl Tray {
     }
 }
 
-/// Talk's logo in Yap's marigold, `size` pixels square, with a red dot for
+/// Yapfast's logo in Yap's marigold, `size` pixels square, with a red dot for
 /// unread messages cut into its corner.
 fn logo(size: u32, unread: bool) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
     let mut svg = include_str!("../ui/icons/logo.svg")
@@ -134,7 +134,7 @@ mod linux {
             let (updates, shown) = mpsc::channel();
             // Registering waits on the bus, and so does each update.
             let started = std::thread::Builder::new()
-                .name("talk-tray".into())
+                .name("yapfast-tray".into())
                 .spawn(move || run(item, shown));
             if let Err(error) = started {
                 tracing::warn!(%error, "could not start the tray icon");
@@ -158,12 +158,12 @@ mod linux {
         let chosen = item.chosen;
         // Until registering says otherwise; it reports a missing watcher.
         online.store(true, Ordering::Relaxed);
-        // A tray that starts after Talk, or comes back, still gets the icon.
+        // A tray that starts after Yapfast, or comes back, still gets the icon.
         let handle = match item.assume_sni_available(true).spawn() {
             Ok(handle) => handle,
             Err(error) => {
                 online.store(false, Ordering::Relaxed);
-                tracing::info!(%error, "no tray icon; closing the window quits Talk");
+                tracing::info!(%error, "no tray icon; closing the window quits Yapfast");
                 return;
             }
         };
@@ -191,11 +191,11 @@ mod linux {
 
     impl ksni::Tray for Item {
         fn id(&self) -> String {
-            "talk".into()
+            "yapfast".into()
         }
 
         fn title(&self) -> String {
-            "Talk".into()
+            "Yapfast".into()
         }
 
         fn category(&self) -> ksni::Category {
@@ -208,7 +208,7 @@ mod linux {
 
         fn tool_tip(&self) -> ksni::ToolTip {
             ksni::ToolTip {
-                title: "Talk".into(),
+                title: "Yapfast".into(),
                 description: if self.shown.unread {
                     "Unread messages".into()
                 } else {
@@ -231,7 +231,7 @@ mod linux {
                 }
                 .into()
             };
-            let mut menu = vec![item("Open Talk", Choice::Open)];
+            let mut menu = vec![item("Open Yapfast", Choice::Open)];
             if self.shown.call {
                 menu.push(item("Disconnect", Choice::Disconnect));
             }
@@ -324,7 +324,7 @@ mod windows {
                 let class = WNDCLASSW {
                     lpfnWndProc: Some(procedure),
                     hInstance: instance,
-                    lpszClassName: w!("TalkTray"),
+                    lpszClassName: w!("YapfastTray"),
                     ..std::mem::zeroed()
                 };
                 RegisterClassW(&class);
@@ -332,8 +332,8 @@ mod windows {
                 // which wouldn't hear that Explorer restarted.
                 let window = CreateWindowExW(
                     0,
-                    w!("TalkTray"),
-                    w!("Talk"),
+                    w!("YapfastTray"),
+                    w!("Yapfast"),
                     WS_OVERLAPPED,
                     0,
                     0,
@@ -360,12 +360,12 @@ mod windows {
                     hIcon: icons[0],
                     ..std::mem::zeroed()
                 };
-                for (place, unit) in data.szTip.iter_mut().zip("Talk".encode_utf16()) {
+                for (place, unit) in data.szTip.iter_mut().zip("Yapfast".encode_utf16()) {
                     *place = unit;
                 }
                 let added = notify(NIM_ADD, &data);
                 if !added {
-                    tracing::info!("no notification area; closing the window quits Talk");
+                    tracing::info!("no notification area; closing the window quits Yapfast");
                 }
                 ICON.set(Some(Icon {
                     data,
@@ -488,7 +488,7 @@ mod windows {
         // this thread.
         let picked = unsafe {
             let menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, OPEN, w!("Open Talk"));
+            AppendMenuW(menu, MF_STRING, OPEN, w!("Open Yapfast"));
             if call {
                 AppendMenuW(menu, MF_STRING, DISCONNECT, w!("Disconnect"));
             }

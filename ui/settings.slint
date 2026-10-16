@@ -387,7 +387,7 @@ export component VoiceSettings inherits VerticalLayout {
         }
         Label {
             text: root.gate-meter-note != "" ? root.gate-meter-note
-                : "Talk sends your voice when it's louder than the handle, and other sounds when they're 18 dB louder still. The bar is your microphone after noise suppression, as Talk hears it to decide.";
+                : "Yapfast sends your voice when it's louder than the handle, and other sounds when they're 18 dB louder still. The bar is your microphone after noise suppression, as Yapfast hears it to decide.";
         }
     }
 }
@@ -519,7 +519,7 @@ component ThemeColourRow inherits HorizontalLayout {
     }
 }
 
-// Settings: the window's colours, from the themes Talk comes with and the
+// Settings: the window's colours, from the themes Yapfast comes with and the
 // person's own. A click shows one at once. New theme opens the editor, whose
 // changes show at once too; Save keeps them, Cancel restores the theme from
 // before.
@@ -647,7 +647,7 @@ export component MessageSettings inherits VerticalLayout {
     in-out property <int> text-size;
     in-out property <bool> link-previews;
     in-out property <bool> share-typing;
-    /// When animations play: 0 while Talk has the focus, 1 always, 2 never.
+    /// When animations play: 0 while Yapfast has the focus, 1 always, 2 never.
     in-out property <int> animate;
     in-out property <bool> reply-ping;
     in-out property <bool> strip-tracking;
@@ -704,7 +704,7 @@ export component MessageSettings inherits VerticalLayout {
         spacing: 8px;
         SettingsHeading { text: "PLAY GIFS, EMOJI AND STICKERS"; }
         Choices {
-            label: "Play GIFs, emoji and stickers"; options: ["While Talk is focused", "Always", "Never"];
+            label: "Play GIFs, emoji and stickers"; options: ["While Yapfast is focused", "Always", "Never"];
             current <=> root.animate;
             chosen => { root.preferences-changed(); }
         }
@@ -750,7 +750,7 @@ export component NotificationSettings inherits VerticalLayout {
     SettingsTitle { text: "Notifications"; }
     SettingsSwitch {
         text: "Show desktop notifications";
-        description: "For new messages while Talk isn't in front. "
+        description: "For new messages while Yapfast isn't in front. "
             + (root.matrix && root.discord ? "Each Discord server's notification settings and your Matrix notification rules decide"
                 : root.matrix ? "Your Matrix notification rules decide" : "Each Discord server's notification settings decide")
             + " which: usually DMs and mentions. Clicking one opens the conversation.";
@@ -766,13 +766,13 @@ export component NotificationSettings inherits VerticalLayout {
     }
     SettingsSwitch {
         text: "Flash the taskbar";
-        description: "For a message that notifies while Talk isn't in front. The window's title counts mentions and DMs waiting either way.";
+        description: "For a message that notifies while Yapfast isn't in front. The window's title counts mentions and DMs waiting either way.";
         checked <=> root.flash-taskbar;
         toggled => { root.preferences-changed(); }
     }
 }
 
-// Settings: Talk's own sounds for calls and messages, which instrument plays
+// Settings: Yapfast's own sounds for calls and messages, which instrument plays
 // them, and how loud they are, all together or each on its own.
 export component SoundSettings inherits VerticalLayout {
     /// The set, in the order the choices show.
@@ -789,7 +789,7 @@ export component SoundSettings inherits VerticalLayout {
     property <[string]> names: ["Someone joins the call", "Someone leaves the call", "Muting", "Unmuting", "Deafening", "Undeafening", "A message", "A mention", "Someone starts watching a stream", "Someone stops watching a stream"];
     spacing: 16px;
     SettingsTitle { text: "Sounds"; }
-    Label { text: "Talk plays these as you and others join and leave a call, as you mute and deafen, as others start and stop watching your stream or the one you watch, and for messages that notify, except in the conversation in front of you. They play on the speakers chosen for calls."; }
+    Label { text: "Yapfast plays these as you and others join and leave a call, as you mute and deafen, as others start and stop watching your stream or the one you watch, and for messages that notify, except in the conversation in front of you. They play on the speakers chosen for calls."; }
     VerticalLayout {
         spacing: 8px;
         SettingsHeading { text: "SOUND SET"; }
@@ -824,7 +824,7 @@ export component SoundSettings inherits VerticalLayout {
     }
 }
 
-// Settings: how Talk draws its window. Slint picks a renderer once per
+// Settings: how Yapfast draws its window. Slint picks a renderer once per
 // process, so a change waits for a restart, which this offers.
 export component AdvancedSettings inherits VerticalLayout {
     in-out property <bool> gpu-rendering;
@@ -838,25 +838,25 @@ export component AdvancedSettings inherits VerticalLayout {
     SettingsSwitch {
         text: "Close to tray";
         description: root.tray-available
-            ? "Closing the window keeps Talk running in the system tray, with any call. Quit from the tray icon's menu."
-            : "No system tray is running, so closing the window quits Talk.";
+            ? "Closing the window keeps Yapfast running in the system tray, with any call. Quit from the tray icon's menu."
+            : "No system tray is running, so closing the window quits Yapfast.";
         checked <=> root.close-to-tray;
         toggled => { root.preferences-changed(); }
     }
     SettingsSwitch {
         text: "Render with the GPU";
-        description: "Hardware acceleration. Off, Talk draws on the processor, which uses about half the memory.";
+        description: "Hardware acceleration. Off, Yapfast draws on the processor, which uses about half the memory.";
         checked <=> root.gpu-rendering;
         toggled => { root.preferences-changed(); }
     }
     if root.gpu-rendering != root.gpu-running: HorizontalLayout {
         spacing: 12px;
         Label {
-            text: "Talk switches to " + (root.gpu-rendering ? "the GPU" : "the processor") + " when it restarts. Restarting leaves any call.";
+            text: "Yapfast switches to " + (root.gpu-rendering ? "the GPU" : "the processor") + " when it restarts. Restarting leaves any call.";
             vertical-alignment: center; horizontal-stretch: 1;
         }
         ActionButton {
-            text: "Restart Talk"; icon: @image-url("icons/refresh-cw.svg");
+            text: "Restart Yapfast"; icon: @image-url("icons/refresh-cw.svg");
             clicked => { root.restart(); }
         }
     }
@@ -873,7 +873,7 @@ export component DiscordLinkSettings inherits VerticalLayout {
     callback open-discord-captcha;
     spacing: 16px;
     SettingsTitle { text: "Discord"; }
-    Label { text: "Link your Discord account to see its servers and DMs in Talk, and join its calls. The login stays on this computer, in the system's credential store."; }
+    Label { text: "Link your Discord account to see its servers and DMs in Yapfast, and join its calls. The login stays on this computer, in the system's credential store."; }
     DiscordLinkPanel {
         phase: root.link-phase; code: root.link-code; name: root.link-name; note: root.link-note;
         begin => { root.link-discord(); }
@@ -897,7 +897,7 @@ export component DiscordSettings inherits VerticalLayout {
     SettingsTitle { text: "Discord"; }
     if root.matrix-build: HorizontalLayout {
         spacing: 12px;
-        Label { text: "Unlinking signs Talk out of Discord on this computer."; vertical-alignment: center; horizontal-stretch: 1; }
+        Label { text: "Unlinking signs Yapfast out of Discord on this computer."; vertical-alignment: center; horizontal-stretch: 1; }
         ActionButton {
             text: "Unlink Discord"; icon: @image-url("icons/log-out.svg"); danger: true;
             clicked => { root.unlink-discord(); }
@@ -911,13 +911,13 @@ export component DiscordSettings inherits VerticalLayout {
     }
     SettingsSwitch {
         text: "Mark messages read on Discord";
-        description: "Channels you read in Talk show as read in the Discord apps too.";
+        description: "Channels you read in Yapfast show as read in the Discord apps too.";
         checked: root.sync-discord-reads;
         toggled(sync) => { root.sync-discord-reads-toggled(sync); }
     }
     SettingsSwitch {
         text: "Show me as idle when I'm away";
-        description: "After 10 minutes without using Talk, as in Discord. Either way, your phone gets notifications while you're away.";
+        description: "After 10 minutes without using Yapfast, as in Discord. Either way, your phone gets notifications while you're away.";
         checked: root.show-idle;
         toggled(shown) => { root.show-idle-toggled(shown); }
     }

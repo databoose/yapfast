@@ -71,7 +71,7 @@ pub mod ffi {
         ) -> SharedPtr<AudioTrackSource>;
 
         fn audio_to_media(track: SharedPtr<AudioTrack>) -> SharedPtr<MediaStreamTrack>;
-        /// Talk: sets how loud the remote audio tracks with this id play,
+        /// Yapfast: sets how loud the remote audio tracks with this id play,
         /// from 0 to 10 with 1 unchanged. False when no such track is open.
         fn set_audio_track_volume(id: &str, volume: f64) -> bool;
         unsafe fn media_to_audio(track: SharedPtr<MediaStreamTrack>) -> SharedPtr<AudioTrack>;

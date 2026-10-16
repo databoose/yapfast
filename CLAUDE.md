@@ -1,9 +1,9 @@
-# Talk
+# Yapfast
 
 - Run every cargo command in the dev shell, with the `fast` profile:
   `nix develop path:./nix --command cargo build --profile fast`.
 - While working, build and test only what changed, such as
-  `cargo test --profile fast -p talk-core history`; incremental builds take
+  `cargo test --profile fast -p yapfast-core history`; incremental builds take
   seconds. Run `scripts/check --fast` once, before the last commit of a piece
   of work, not before each commit. It enters the dev shell itself and covers
   Discord-only, Matrix-only and headless builds; it takes about 20 s after
@@ -21,7 +21,7 @@
 - Discord service tests: `scripts/test-fake-discord`. Matrix and LiveKit:
   `scripts/test-stack up`.
 - How a UI change flows from `ui/*.slint` to `application/`:
-  `docs/architecture.md`. Shells, logging (`TALK_LOG`, not `RUST_LOG`) and
+  `docs/architecture.md`. Shells, logging (`YAPFAST_LOG`, not `RUST_LOG`) and
   dependency sources: `docs/building.md`.
 - Memory is a product goal. Keep every change lean without being asked, and
   check the code it runs through as well: share data held in two places

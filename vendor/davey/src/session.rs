@@ -240,7 +240,7 @@ impl DaveSession {
     )
   }
 
-  /// Talk: moves the session to another group id while keeping its signing
+  /// Yapfast: moves the session to another group id while keeping its signing
   /// key and the key packages it has made, so a welcome built from a key
   /// package already sent still opens. A joined group keeps its state; a
   /// pending one starts again under the new id.

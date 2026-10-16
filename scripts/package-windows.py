@@ -39,7 +39,7 @@ def license_file(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--exe", type=Path, default=ROOT / "target" / TARGET / "release/talk.exe")
+    parser.add_argument("--exe", type=Path, default=ROOT / "target" / TARGET / "release/yapfast.exe")
     parser.add_argument("--output", type=Path, default=ROOT / "target/dist")
     args = parser.parse_args()
     executable = args.exe.resolve()
@@ -62,13 +62,13 @@ def main():
         ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", TARGET],
         cwd=ROOT, timeout=30,
     ))
-    version = next(package["version"] for package in metadata["packages"] if package["name"] == "talk")
+    version = next(package["version"] for package in metadata["packages"] if package["name"] == "yapfast")
     args.output.mkdir(parents=True, exist_ok=True)
-    archive_path = args.output / f"Talk-{version}-windows-x64.zip"
-    source_path = args.output / f"Talk-{version}-source.zip"
-    with tempfile.TemporaryDirectory(prefix="talk-windows-package-") as temporary:
+    archive_path = args.output / f"Yapfast-{version}-windows-x64.zip"
+    source_path = args.output / f"Yapfast-{version}-source.zip"
+    with tempfile.TemporaryDirectory(prefix="yapfast-windows-package-") as temporary:
         temporary = Path(temporary)
-        source = temporary / f"Talk-{version}-source"
+        source = temporary / f"Yapfast-{version}-source"
         source.mkdir()
         for name in SOURCE_FILES:
             shutil.copy2(ROOT / name, source / name)
@@ -80,44 +80,44 @@ def main():
         shutil.copytree(rtc_root, source / "upstream/matrix-rust-rtc", ignore=shutil.ignore_patterns(".git", "target", "node_modules"))
         zip_directory(source, source_path)
 
-        package = temporary / f"Talk-{version}-windows-x64"
+        package = temporary / f"Yapfast-{version}-windows-x64"
         package.mkdir()
-        shutil.copy2(executable, package / "talk.exe")
+        shutil.copy2(executable, package / "yapfast.exe")
         shutil.copy2(source_path, package / source_path.name)
         (package / "README.txt").write_text(
-            "Talk private beta for 64-bit Windows 10/11\n\n"
+            "Yapfast private beta for 64-bit Windows 10/11\n\n"
             "1. Extract the entire ZIP to a folder.\n"
-            "2. Double-click talk.exe.\n"
+            "2. Double-click yapfast.exe.\n"
             "3. Keep the homeserver https://matrix.org.\n"
             "4. Enter bob and the password supplied privately by the account owner.\n"
-            "5. Open Talk beta, then general or Lounge. Voice starts muted.\n\n"
+            "5. Open Yapfast beta, then general or Lounge. Voice starts muted.\n\n"
             "Passwords, recovery keys and saved sessions are not included.\n"
             "No Rust, Visual Studio, or separate app installation is required.\n"
-            "Talk writes beta diagnostics to talk.log in its data folder,\n"
-            "%LOCALAPPDATA%\\Talk\\Talk\\data, or to the console run-talk.cmd opens.\n"
+            "Yapfast writes beta diagnostics to talk.log in its data folder,\n"
+            "%LOCALAPPDATA%\\Yapfast\\Yapfast\\data, or to the console run-yapfast.cmd opens.\n"
             "Windows stores session secrets in Credential Manager and app data\n"
             "under your Windows user profile. Keep the first verified session.\n\n"
             "Voice: select Lounge, Join voice, choose devices, then Unmute.\n"
             "Use headphones for the first two-machine audio test.\n"
             "If anything fails, record the error text, Windows version, GPU and\n"
             "audio device model. Never send your password or recovery key in logs.\n\n"
-            "If Talk closes immediately, run run-talk.cmd to keep its error visible.\n\n"
-            "Talk switches to software rendering if the GPU cannot start.\n"
-            "To choose it yourself, run run-talk.cmd --renderer software.\n"
-            "To retry the GPU after a fallback, run run-talk.cmd --renderer gpu.\n\n"
+            "If Yapfast closes immediately, run run-yapfast.cmd to keep its error visible.\n\n"
+            "Yapfast switches to software rendering if the GPU cannot start.\n"
+            "To choose it yourself, run run-yapfast.cmd --renderer software.\n"
+            "To retry the GPU after a fallback, run run-yapfast.cmd --renderer gpu.\n\n"
             "Source snapshot, dependency notices and original licenses are included.\n",
             encoding="utf-8",
         )
-        (package / "run-talk.cmd").write_text(
-            '@echo off\ncd /d "%~dp0"\ntalk.exe %*\n'
-            'if errorlevel 1 (\n  echo Talk exited with an error.\n  pause\n)\n',
+        (package / "run-yapfast.cmd").write_text(
+            '@echo off\ncd /d "%~dp0"\nyapfast.exe %*\n'
+            'if errorlevel 1 (\n  echo Yapfast exited with an error.\n  pause\n)\n',
             encoding="utf-8", newline="\r\n",
         )
         dependencies = []
         licenses = package / "licenses"
         licenses.mkdir()
         for item in sorted(metadata["packages"], key=lambda value: (value["name"], value["version"])):
-            if item["name"] == "talk":
+            if item["name"] == "yapfast":
                 continue
             directory = Path(item["manifest_path"]).parent
             target = licenses / (item["name"] + "-" + item["version"])
@@ -150,7 +150,7 @@ def main():
                 if member.isfile() and Path(member.name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE")):
                     with native.extractfile(member) as notice:
                         (licenses / ("skia-native-" + Path(member.name).name)).write_bytes(notice.read())
-        skia_source = Path(os.environ["TALK_SKIA_WINDOWS_SOURCE"])
+        skia_source = Path(os.environ["YAPFAST_SKIA_WINDOWS_SOURCE"])
         for notice in skia_source.rglob("*"):
             if license_file(notice):
                 destination = licenses / "skia-source" / notice.relative_to(skia_source)

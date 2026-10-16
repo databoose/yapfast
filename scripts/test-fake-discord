@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Runs crates/talk-discord/tests/fake_server.rs, then talk-core's ignored
+# Runs crates/yapfast-discord/tests/fake_server.rs, then yapfast-core's ignored
 # discord_text tests, against testing/fake_discord.ts, then
-# crates/talk-discord/tests/fake_env.rs against it with an environment.
+# crates/yapfast-discord/tests/fake_env.rs against it with an environment.
 # Usage: scripts/test-fake-discord [TEST_ARGS…], such as a test name filter
 # or --test-threads=1, passed to the test binary.
 # Starts the fake on a free port, waits until it answers, runs the ignored
 # tests with the `fast` profile, then stops the fake. Its log is
 # target/fake-discord.log. Then it does the same for
-# crates/talk-discord/tests/fake_env.rs, against a fake running
+# crates/yapfast-discord/tests/fake_env.rs, against a fake running
 # testing/envs/example.json, whose log is target/fake-discord-env.log.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -49,12 +49,12 @@ start_fake() {
 }
 
 start_fake target/fake-discord.log
-TALK_DISCORD_TEST_SERVER=$server \
-  cargo test --locked --profile fast -p talk-discord --test fake_server -- --ignored "$@"
+YAPFAST_DISCORD_TEST_SERVER=$server \
+  cargo test --locked --profile fast -p yapfast-discord --test fake_server -- --ignored "$@"
 # The shared core's Discord side, against the same fake.
-TALK_DISCORD_TEST_SERVER=$server \
-  cargo test --locked --profile fast -p talk-core discord_text::tests -- --ignored "$@"
+YAPFAST_DISCORD_TEST_SERVER=$server \
+  cargo test --locked --profile fast -p yapfast-core discord_text::tests -- --ignored "$@"
 # The example environment, in a fake of its own.
 start_fake target/fake-discord-env.log --env testing/envs/example.json
-TALK_DISCORD_TEST_SERVER=$server \
-  cargo test --locked --profile fast -p talk-discord --test fake_env -- --ignored "$@"
+YAPFAST_DISCORD_TEST_SERVER=$server \
+  cargo test --locked --profile fast -p yapfast-discord --test fake_env -- --ignored "$@"

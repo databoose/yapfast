@@ -22,20 +22,20 @@ use windows_sys::Win32::{
     },
 };
 
-use super::TalkWindow;
+use super::YapfastWindow;
 
 /// How often the timer runs: about a frame at 60 Hz.
 const TICK_MS: u32 = 16;
 
 thread_local! {
     /// The window to redraw, and the running timer's id, or 0.
-    static WINDOW: RefCell<slint::Weak<TalkWindow>> = RefCell::new(slint::Weak::default());
+    static WINDOW: RefCell<slint::Weak<YapfastWindow>> = RefCell::new(slint::Weak::default());
     static TIMER: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The window moved or resized: if Windows is dragging it, keep it moving
 /// until it stops.
-pub(super) fn moved(window: &slint::Weak<TalkWindow>) {
+pub(super) fn moved(window: &slint::Weak<YapfastWindow>) {
     if TIMER.get() != 0 || !in_move_size() {
         return;
     }

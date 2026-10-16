@@ -33,7 +33,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Flatten channels in joined subspaces, deduplicate shared links, and tolerate
   cyclic Space relationships. A shared channel can appear in multiple servers.
   Removed child links update the channel list during sync.
-- Restore each server's last selected channel and the last selected DM. Talk
+- Restore each server's last selected channel and the last selected DM. Yapfast
   keeps each server's channel in `layout.json`, so after a restart a server
   opens its last channel; a server opened for the first time shows its top one.
 - List the joined members of the open text channel or group DM on the right,
@@ -45,7 +45,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   hides or shows. A Discord text channel
   lists whoever can read it, grouped as in Discord: under hoisted roles, then
   ONLINE and OFFLINE, with counts, avatars, status dots, role colours,
-  custom statuses, and a red clock beside someone timed out. Talk subscribes to the list's
+  custom statuses, and a red clock beside someone timed out. Yapfast subscribes to the list's
   first 100 rows while the channel is open, and Discord keeps them current.
 - Read live text messages. Earlier history loads as the timeline scrolls
   within a screen of its top, a page at a time (30 events for Matrix, 50
@@ -66,7 +66,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   under the last one, as scrolling up loads earlier ones. New messages don't
   go in the window, and the conversation stays unread. Jump to present,
   sending a message, or a newer page that reaches the newest shows the
-  newest again, as Talk kept them, and leaving the conversation lets the
+  newest again, as Yapfast kept them, and leaving the conversation lets the
   window go. A jump to a conversation that isn't open opens it at the
   message.
 - Recover encryption keys or recheck verification performed in another client.
@@ -76,7 +76,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   Slint's subset has no headings, so those show as typed. Formatted text isn't
   selectable, so every message has a Copy action.
 - Start a DM from the pen in the DM list's header: type a name to search the
-  homeserver's user directory, or a full Matrix id. Talk opens the DM you
+  homeserver's user directory, or a full Matrix id. Yapfast opens the DM you
   already have with them, or starts an encrypted one and opens it once sync
   lists it.
 - Use the keyboard for messages: Up in an empty composer edits your last
@@ -88,7 +88,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   message links to them (`[Name](https://matrix.to/#/@user:server)`) and lists
   them in `m.mentions`, so their client notifies them. Who else is typing
   shows just above the composer, gently pulsing, after three dots under the
-  avatars that rise in turn, and Talk tells the room while you type unless a
+  avatars that rise in turn, and Yapfast tells the room while you type unless a
   setting turns it off.
 - Hover or click a message for its toolbar: your three most used reactions,
   Add reaction, Edit on your own message or Reply on someone else's, and More.
@@ -96,7 +96,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   reactions, Add reaction, View Reactions, Edit, Reply, Forward, Copy text and
   Delete; View Reactions appears once a message has reactions, and Edit and
   Delete appear on your own messages only. Until you have reacted, the most used
-  reactions are 👍, ❤️, 😂 and 🎉. Talk counts the reactions you add, not the
+  reactions are 👍, ❤️, 😂 and 🎉. Yapfast counts the reactions you add, not the
   ones you remove, in `layout.json` on this computer. The icons have tooltips and
   accessible names. Add reaction opens a picker with a search field, frequently
   used emoji and every category of the `emojis` crate up to Unicode 15.0, which
@@ -108,7 +108,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   favourites; GIFs and moving pictures in messages have the star too. See
   [Discord](discord.md#gifs).
 - GIFs, animated emoji, stickers and the picker's tiles play only while
-  Talk's window has the focus, as in Discord: on another screen they hold
+  Yapfast's window has the focus, as in Discord: on another screen they hold
   still on the frame they were showing, and go on from there when the
   window has the focus again.
 - Who reacted, as in Discord's client: half a second on a reaction shows a
@@ -119,12 +119,12 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   lists the message's reactions down the left, the most first, and who
   reacted with the chosen one, 100 at a time, the next page as the list nears
   its end. Hovering your own row offers to remove your reaction; a Discord
-  moderator, with Manage Messages, may remove anyone's. Talk keeps the last
+  moderator, with Manage Messages, may remove anyone's. Yapfast keeps the last
   32 tooltips' names while their counts stay, and the window's people only
   while it's open. Matrix rooms answer from the timeline, which holds every
   reaction's senders.
 - Forward a sent message to any encrypted DM or channel from a dialog with a
-  search field; each conversation can receive it once per forward. Talk sends
+  search field; each conversation can receive it once per forward. Yapfast sends
   the message's current content as a new message, without its reply quote. An
   encrypted attachment keeps its uploaded file, and its key travels in the new
   encrypted event. Delete asks for confirmation, then
@@ -137,13 +137,13 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   window dims it under Discord's card, "Upload to #general" (`@Sam` in a DM,
   the name in quotes for a thread, the name alone for a group DM), with "You
   can add comments before uploading." Discord's second line, "Hold shift to
-  upload directly.", is left out: Talk can't see Shift during a drag on
+  upload directly.", is left out: Yapfast can't see Shift during a drag on
   Wayland or X11. A drop goes whole or not at all, as in Discord's client,
   which then says why until Got It, a click or the next drag: "Too many
   uploads!" past ten files with those waiting, "Your files are too powerful"
   with "Max file size is 20.00 MB please." for a file past the limit, and
   "Invalid file type" for a folder. winit takes drops on X11 and Windows; on
-  Wayland, where it has none, Talk keeps a data device for each seat on
+  Wayland, where it has none, Yapfast keeps a data device for each seat on
   winit's own connection, which a small thread watches, and takes
   `text/uri-list`. A drop is taken only where the composer can take files,
   as a paste is. They wait above the text as tiles, with a preview for pictures and an
@@ -154,7 +154,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   through the data-control protocol, so a picture keeps its copied bytes and a
   GIF stays animated; elsewhere arboard reads it, and pixels are saved as PNG.
   Pasted pictures are saved as `image.png` in a temporary folder removed when
-  Talk closes. Text on the clipboard pastes as text. A right click in the
+  Yapfast closes. Text on the clipboard pastes as text. A right click in the
   composer opens Discord's menu for the field, without its spelling
   suggestions: Cut and Copy while text is selected, Paste, which pastes as
   Ctrl+V does, and Select All, which Discord's lacks. A thread's composer
@@ -166,7 +166,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   decrypted file where you choose. A Discord message with several images shows
   them as square tiles, two to a row.
 - Click an image to see it large over the window. It opens at the image's full
-  proportions with the preview, then sharpens when Talk has downloaded it at up
+  proportions with the preview, then sharpens when Yapfast has downloaded it at up
   to 1920×1200. The left and right arrow keys or the side buttons step through
   the message's other images, a counter shows which one it is, and Escape, the
   close button or a click outside the image closes it. It can save the image
@@ -175,7 +175,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   "Sending...". After a connection problem it shows "Not sent yet" and goes out
   by itself when sync recovers. Sync now uses the SDK's offline mode, which keeps
   probing the homeserver. A refused message shows "Not sent" with Retry. Queued
-  messages can be cancelled, and they survive closing Talk.
+  messages can be cancelled, and they survive closing Yapfast.
 - Save each room's draft in the encrypted session store, so drafts survive
   restarts. Sending clears the saved draft.
 - Show unread channels in bold with a short pill at the sidebar edge, and the
@@ -204,8 +204,8 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   them as mentioned, so it counts as a mention only when its text names
   them. Matrix's push rules decide which messages mention the user; a reply
   stays a mention when its text has their user ID or a link to it, or
-  @room. Their own messages are never highlighted. Talk counts unread messages on this device; for a room that isn't open,
-  sync often delivers only the newest event, so Talk shows that something is
+  @room. Their own messages are never highlighted. Yapfast counts unread messages on this device; for a room that isn't open,
+  sync often delivers only the newest event, so Yapfast shows that something is
   unread rather than how much.
 - Show sync status in the account panel. Reconnect appears there when offline;
   sign out (which retains encrypted stores) is in settings.
@@ -215,7 +215,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 Ctrl with + or -, or with the scroll wheel, zooms the whole window, text and
 layout together, from 50% to 200%: 5% a step up to 150%, then 10%. Ctrl+0
 returns to 100%. The level shows
-for a moment at the top and is kept in `layout.json`. Talk multiplies the
+for a moment at the top and is kept in `layout.json`. Yapfast multiplies the
 display's scale factor by it, so the window lays out in fewer logical pixels,
 and zooming in stops before those would fall below the window's 800×560
 minimum, which would make it grow.
@@ -252,7 +252,7 @@ The window follows Discord's arrangement:
   category's menu: Mark as read when its channels have messages to read,
   its mute and notification settings (below), Edit category and Delete
   category where the account may manage it, and Copy ID. The heading
-  names its first channel, or an empty category's own id, and Talk finds
+  names its first channel, or an empty category's own id, and Yapfast finds
   the category from that.
   DMs show the person's avatar. Participants of the call you are in appear under
   its voice channel, with a green ring while they speak and a muted icon; for
@@ -339,7 +339,7 @@ The window follows Discord's arrangement:
 - A 240px member sidebar right of the conversation, under its header, on the
   sidebar's tone. The member count in a group DM's header shows or hides it,
   as the people icon does in a server channel's, bright while the list
-  shows, and Talk remembers a closed list. While it shows, dragging the left sidebar still
+  shows, and Yapfast remembers a closed list. While it shows, dragging the left sidebar still
   leaves the conversation 420px.
 - A right click on someone, in the member list, on a message author's avatar
   or name, or in the friends list, opens their menu: Profile, Message to open
@@ -377,7 +377,7 @@ if linked to a Space. Standalone rooms outside Spaces, channel discovery, room
 creation, mentions with autocomplete,
 threads, a full emoji picker, Matrix video and audio playback, drag and drop, and deleting
 other people's messages remain later work. Message actions need a pointer;
-keyboard access to them is still missing. Closing the last window exits Talk.
+keyboard access to them is still missing. Closing the last window exits Yapfast.
 
 ## Validation
 
@@ -393,7 +393,7 @@ The local chat integration tests create disposable accounts:
   that the preview decodes, and that Save writes the original bytes. It also
   sends a text file and checks that a draft survives a restart.
 - `offline_messages_wait_survive_restart_and_send_once` cuts the network with a
-  local relay, sends and cancels messages offline, closes and restarts Talk,
+  local relay, sends and cancels messages offline, closes and restarts Yapfast,
   then restores the network. The queued message went out 0.6 s later, once; the
   cancelled one never reached the server.
 - `opening_a_room_shows_messages_missed_while_it_was_closed` checks that eight
@@ -403,7 +403,7 @@ The local chat integration tests create disposable accounts:
 Run them after `scripts/test-stack up`:
 
 ```sh
-cargo test --locked -p talk-core matrix_chat::tests -- --ignored --test-threads=1
+cargo test --locked -p yapfast-core matrix_chat::tests -- --ignored --test-threads=1
 ```
 
 On 2026-10-03 the conversation features were also driven through the real
@@ -415,8 +415,8 @@ the private desktop doesn't run, so Attach and Save were checked only through
 the integration test. Slint's Skia renderer drew nothing for the COLRv1 build
 of Noto Color Emoji; the CBDT build, which most distributions ship, rendered in
 color. Fontconfig can prefer the COLRv1 build when both are installed, which
-left reactions blank. On Linux Talk now finds an installed emoji font with CBDT
-or sbix bitmaps and no COLR table, maps it and registers it with Slint as "Talk
+left reactions blank. On Linux Yapfast now finds an installed emoji font with CBDT
+or sbix bitmaps and no COLR table, maps it and registers it with Slint as "Yapfast
 Color Emoji". That font also leads the sans-serif and UI fallback lists, ahead
 of display fonts that carry a few monochrome emoji, so emoji in message text
 draw in color too; symbols the UI typeface lacks that have an emoji form, such as ♥,

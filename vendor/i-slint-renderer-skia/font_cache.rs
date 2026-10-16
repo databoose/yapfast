@@ -77,7 +77,7 @@ impl FontCache {
     }
 
     fn load_typeface_internal(&self, font: &parley::FontData) -> Option<skia_safe::Typeface> {
-        // Talk: Skia reads the font where fontique keeps it, rather than a copy.
+        // Yapfast: Skia reads the font where fontique keeps it, rather than a copy.
         // Fontique maps system fonts from disk, so the copy put each whole file
         // on the heap, 10 MiB for Noto Color Emoji, once more for each variation.
         let bytes = keep_for_skia(&font.data);
@@ -109,7 +109,7 @@ impl FontCache {
     }
 }
 
-/// Talk: every font blob Skia reads without a copy, by blob id, never released.
+/// Yapfast: every font blob Skia reads without a copy, by blob id, never released.
 /// They are the few font files drawn with; fontique maps system fonts from disk
 /// and bundled ones are in the executable, so keeping them takes no heap.
 static KEPT_FOR_SKIA: std::sync::Mutex<std::collections::BTreeMap<u64, fontique::Blob<u8>>> =

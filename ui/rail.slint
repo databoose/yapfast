@@ -733,7 +733,7 @@ export component RoomList inherits VerticalLayout {
                 context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
             }
             // Discord reports who is in every voice channel; Matrix
-            // only shows the call Talk is in, below.
+            // only shows the call Yapfast is in, below.
             if room.voice && room.id != root.voice-channel && room.people.length > 0: VerticalLayout {
                 padding-left: 32px; padding-bottom: 4px; spacing: 0px;
                 for person in room.people: Rectangle {

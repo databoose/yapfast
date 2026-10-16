@@ -27,12 +27,12 @@ python() {
 }
 python make "$noise/speech.f32" "$work"
 
-tests=$(cargo test --profile fast --locked -p talk-core --no-run --message-format json 2>/dev/null |
-  jq -r 'select(.profile.test == true and .target.name == "talk_core" and .executable != null) | .executable')
+tests=$(cargo test --profile fast --locked -p yapfast-core --no-run --message-format json 2>/dev/null |
+  jq -r 'select(.profile.test == true and .target.name == "yapfast_core" and .executable != null) | .executable')
 for dereverb in off on; do
   for input in "$work"/{dry,rt40,rt60,rt80}.s16 "$noise"/{typing,fan,hiss,typing_fan}.s16; do
     name=$(basename "$input" .s16)
-    TALK_DEREVERB=$dereverb TALK_AUDIO_IN="$input" TALK_AUDIO_OUT="$work/chain/${name}_$dereverb.s16" \
+    YAPFAST_DEREVERB=$dereverb YAPFAST_AUDIO_IN="$input" YAPFAST_AUDIO_OUT="$work/chain/${name}_$dereverb.s16" \
       "$tests" --exact discord_audio::linux::processes_a_recording --ignored --nocapture \
       >"$work/chain/${name}_$dereverb.log"
   done

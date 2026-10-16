@@ -32,7 +32,7 @@ database:
 
 enable_registration: true
 enable_registration_without_verification: true
-registration_shared_secret: talk-local-registration-only
+registration_shared_secret: yapfast-local-registration-only
 max_event_delay_duration: 24h
 experimental_features:
   msc4222_enabled: true

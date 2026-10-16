@@ -1,6 +1,6 @@
 # Matrix sessions
 
-Talk currently supports password sign-in, restoration, recovery-key import and
+Yapfast currently supports password sign-in, restoration, recovery-key import and
 logout through the CLI and native desktop. Launch `cargo run --locked` to sign in
 or restore an account, or add `-- --preview` to try the layout locally first.
 The desktop exposes masked password and recovery-key fields and a device-trust
@@ -12,9 +12,9 @@ Run these commands inside the development shell. This example uses fish's hidden
 prompt so the password stays out of shell history and process arguments:
 
 ```fish
-read --silent --prompt-str 'Matrix password: ' talk_password
-printf '%s\n' "$talk_password" | cargo run --locked --no-default-features --features matrix,discord -- session login --homeserver http://localhost:18008 --user alice --password-stdin --data-dir .local/manual-session
-set --erase talk_password
+read --silent --prompt-str 'Matrix password: ' yapfast_password
+printf '%s\n' "$yapfast_password" | cargo run --locked --no-default-features --features matrix,discord -- session login --homeserver http://localhost:18008 --user alice --password-stdin --data-dir .local/manual-session
+set --erase yapfast_password
 cargo run --locked --no-default-features --features matrix,discord -- session status --data-dir .local/manual-session
 ```
 
@@ -25,9 +25,9 @@ only on loopback. Homeserver URLs containing credentials are rejected.
 Import an existing recovery key with the same hidden-prompt pattern:
 
 ```fish
-read --silent --prompt-str 'Recovery key: ' talk_recovery_key
-printf '%s\n' "$talk_recovery_key" | cargo run --locked --no-default-features --features matrix,discord -- session recover --key-stdin --data-dir .local/manual-session
-set --erase talk_recovery_key
+read --silent --prompt-str 'Recovery key: ' yapfast_recovery_key
+printf '%s\n' "$yapfast_recovery_key" | cargo run --locked --no-default-features --features matrix,discord -- session recover --key-stdin --data-dir .local/manual-session
+set --erase yapfast_recovery_key
 ```
 
 The CLI reads one secret line from stdin and refuses an echoing terminal input.
@@ -36,7 +36,7 @@ prints the account ID, device ID and current cross-signing trust result.
 
 ## Storage and lifecycle
 
-Without `--data-dir`, Talk uses the platform's local application data directory.
+Without `--data-dir`, Yapfast uses the platform's local application data directory.
 Each directory has one active session and an exclusive process lock. Corrupt
 metadata, missing credentials and a missing crypto store stop restoration. They
 never silently create a replacement device or reset its identity.
