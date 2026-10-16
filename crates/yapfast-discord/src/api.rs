@@ -421,9 +421,20 @@ impl Api {
             .await
     }
 
+    /// Deletes a message. One Discord no longer has is as good as deleted:
+    /// another client, or a moderator, got there first.
     pub async fn delete(&self, channel: &str, message: &str) -> Result<()> {
         let path = format!("/channels/{channel}/messages/{message}");
-        self.empty(self.request(Method::DELETE, &path)).await
+        match self.empty(self.request(Method::DELETE, &path)).await {
+            Err(error)
+                if error
+                    .downcast_ref::<Refused>()
+                    .is_some_and(|refused| refused.0 == StatusCode::NOT_FOUND) =>
+            {
+                Ok(())
+            }
+            deleted => deleted,
+        }
     }
 
     /// Marks a channel read up to `message`, as the official client does

@@ -664,6 +664,9 @@ async fn talks_to_the_fake_server() {
         _ => None,
     })
     .await;
+    // Deleting one Discord no longer has, as from a timeline that still
+    // showed it, does what was asked.
+    discord.delete(&general, &sent.id).await.unwrap();
 
     // DMs and message requests, the latest first; each unread message in a
     // DM counts as a mention, and requests count none.

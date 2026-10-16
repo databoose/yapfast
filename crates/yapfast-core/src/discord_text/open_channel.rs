@@ -142,6 +142,9 @@ pub struct OpenChannel {
     pub(super) pending: Vec<Pending>,
     /// Nonces of messages sent from here, which keep their row as they arrive.
     pub(super) sent: HashSet<String>,
+    /// Messages deleted while the channel is open. A page asked for before
+    /// Discord deleted one can still carry it, and mustn't bring it back.
+    deleted: HashSet<u64>,
     /// A page of earlier history is on its way.
     pub(super) loading_earlier: bool,
     /// A page after the window is on its way.
@@ -224,6 +227,7 @@ impl OpenChannel {
             latest: None,
             pending: Vec::new(),
             sent: HashSet::new(),
+            deleted: HashSet::new(),
             loading_earlier: false,
             loading_later: false,
             focusing: false,
@@ -498,6 +502,9 @@ impl OpenChannel {
     }
 
     fn insert(&mut self, message: Message) {
+        if self.deleted.contains(&message.order()) {
+            return;
+        }
         self.dirty = true;
         if let Some(nonce) = &message.nonce {
             self.pending.retain(|pending| &pending.nonce != nonce);
@@ -508,6 +515,9 @@ impl OpenChannel {
 
     /// Adds a message to the newest kept while a window shows.
     fn insert_latest(&mut self, message: Message) {
+        if self.deleted.contains(&message.order()) {
+            return;
+        }
         if let Some(nonce) = &message.nonce {
             self.pending.retain(|pending| &pending.nonce != nonce);
         }
@@ -527,6 +537,11 @@ impl OpenChannel {
 
     /// Applies a gateway event; returns whether the shown messages changed.
     pub fn live(&mut self, event: &Live) -> bool {
+        if let Live::Deleted { channel, id } = event
+            && *channel == self.channel
+        {
+            self.deleted.insert(id.parse().unwrap_or_default());
+        }
         // The newest kept behind a window follow it as a closed channel's do.
         if self.latest.is_some() {
             if let Live::Created(message) = event
@@ -814,6 +829,7 @@ impl OpenChannel {
 
     pub fn deleted(&mut self, id: &str) {
         let order = id.parse().unwrap_or_default();
+        self.deleted.insert(order);
         let latest = self
             .latest
             .as_mut()

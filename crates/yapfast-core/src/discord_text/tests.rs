@@ -406,6 +406,21 @@ fn channels_go_to_disk_once_they_change() {
 }
 
 #[test]
+fn a_page_asked_for_before_a_delete_doesnt_bring_the_message_back() {
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.loaded(Load::Latest, shown(page(1..=3)));
+    // Someone deletes one, and this account another, while a page asked
+    // for before is on its way.
+    open.live(&Live::Deleted {
+        channel: "11".into(),
+        id: "2".into(),
+    });
+    open.deleted("3");
+    open.loaded(Load::Latest, shown(page(1..=4)));
+    assert!(open.shown.messages.keys().eq(&[1, 4]));
+}
+
+#[test]
 fn a_pin_marks_its_message_and_goes_to_disk() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     open.loaded(Load::Latest, shown(page(1..=3)));
