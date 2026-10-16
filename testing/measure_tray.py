@@ -4,13 +4,13 @@
 Alice reads #general on testing/fake_discord.ts, with a few more servers and
 DMs, while the window is open and idle, after it closed to the tray (which
 drops the window and trims the heap), and after the tray opened it again;
-then the same in the Lounge call. Only Talk's process is sampled.
+then the same in the Lounge call. Only Yapfast's process is sampled.
 
-Memory is anonymous memory plus swap, which is what Talk itself holds and
+Memory is anonymous memory plus swap, which is what Yapfast itself holds and
 close to the private bytes Windows shows. Heap in use is glibc's, from the
 window control's `stats`.
 
-Runs Talk through scripts/ui-session --tray, which builds the Discord-only
+Runs Yapfast through scripts/ui-session --tray, which builds the Discord-only
 `fast` build and runs testing/tray_host.rs as the tray, on a private display
 and bus.
 """
@@ -49,8 +49,8 @@ def field(path, key):
 
 
 def heap_in_use():
-    """glibc's heap in use, in MiB, from the last `stats` in Talk's log."""
-    log = SESSION / 'talk.log'
+    """glibc's heap in use, in MiB, from the last `stats` in Yapfast's log."""
+    log = SESSION / 'yapfast.log'
     before = log.stat().st_size
     session('do', 'window stats')
     text = log.read_text(errors='replace')[before:]
@@ -59,7 +59,7 @@ def heap_in_use():
 
 
 def sample(name, seconds, notes):
-    pid = int((SESSION / 'talk.pid').read_text())
+    pid = int((SESSION / 'yapfast.pid').read_text())
     result = json.loads(subprocess.check_output(['python3', str(ROOT / 'scripts/measure-process'), str(pid),
                                                  '--seconds', str(seconds)], text=True))
     anonymous = field(f'/proc/{pid}/smaps_rollup', 'Anonymous:') + field(f'/proc/{pid}/status', 'VmSwap:')
@@ -112,7 +112,7 @@ finally:
     subprocess.run([str(ROOT / 'scripts/ui-session'), 'stop'], cwd=ROOT, capture_output=True)
     (args.output / 'results.json').write_text(json.dumps({
         'recorded_on': time.strftime('%Y-%m-%d'),
-        'binary': str(ROOT / 'target/fast/talk'),
+        'binary': str(ROOT / 'target/fast/yapfast'),
         'os': f'{platform.system()} {platform.release()}', 'machine': platform.machine(),
         'isolation': 'scripts/ui-session --tray: private headless Weston, PulseAudio and D-Bus, '
                      'with testing/tray_host.rs as the tray',

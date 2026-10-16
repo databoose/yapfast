@@ -1,12 +1,12 @@
 # Themes
 
-Settings → Appearance shows the window in one of the themes Talk comes with,
+Settings → Appearance shows the window in one of the themes Yapfast comes with,
 or one of the person's own. Each is a full set of the colours of the Slint
 global `Theme` (`ui/theme.slint`), plus whether it's dark, which sets the
 std-widgets' colour scheme and the scrollbars'. `src/ui/theme.rs` holds the built-in ones as
 `BUILT_IN`; DESIGN.md says what each colour paints, under Colors. The choice
 is kept in `layout.json` as `theme`, the theme's id, and applied before the
-window's first frame, and again to a window made anew. An id Talk doesn't
+window's first frame, and again to a window made anew. An id Yapfast doesn't
 know, or a deleted theme's, shows Yap.
 
 ## Custom themes
@@ -35,18 +35,18 @@ them after the built-in ones:
 ```
 
 `base` is the built-in theme the first copy came from (a copy of a custom
-theme takes its base). Talk writes every colour, but a colour that's missing,
+theme takes its base). Yapfast writes every colour, but a colour that's missing,
 such as one added in a later version, or that isn't a colour, takes the
-base's value, and a name Talk doesn't know is ignored, so themes survive new
+base's value, and a name Yapfast doesn't know is ignored, so themes survive new
 colours. Ids are `custom:` and a number, and no built-in id has a colon, so
-they can't collide; on reading, Talk gives a fresh one to any custom theme
+they can't collide; on reading, Yapfast gives a fresh one to any custom theme
 whose id isn't of that form or repeats another's. The editor's rows are a
 Slint model only while it's open; otherwise a custom theme costs its parsed
 colours and a card.
 
 | Theme | Id | Dark | Accent | From |
 | --- | --- | --- | --- | --- |
-| Yap | `yap` | yes | marigold | Talk's own, the default |
+| Yap | `yap` | yes | marigold | Yapfast's own, the default |
 | Bonfire | `bonfire` | yes | blurple | Discord's Dark theme |
 | Catppuccin Mocha | `catppuccin-mocha` | yes | mauve | [Catppuccin](https://github.com/catppuccin/catppuccin) |
 | Dracula | `dracula` | yes | purple | [Dracula](https://draculatheme.com/contribute) |
@@ -55,13 +55,13 @@ colours and a card.
 | Tokyo Night | `tokyo-night` | yes | blue | [Tokyo Night](https://github.com/tokyo-night/tokyo-night-vscode-theme), Night style |
 | Catppuccin Latte | `catppuccin-latte` | no | mauve | [Catppuccin](https://github.com/catppuccin/catppuccin) |
 | Rosé Pine Dawn | `rose-pine-dawn` | no | rose | [Rosé Pine](https://rosepinetheme.com/palette/) |
-| Sakura | `sakura` | no | blossom pink | Talk's own |
+| Sakura | `sakura` | no | blossom pink | Yapfast's own |
 
 The palettes of Catppuccin, Dracula, Nord, Gruvbox, Tokyo Night and Rosé Pine
 are published under the MIT licence; thanks to their authors. For Tokyo
 Night, the steps between its grounds and text (bg_highlight, fg_gutter, dark3,
-dark5) are named as folke's tokyonight.nvim names them. Talk takes their
-colours, not their names for UI parts, so each mapping is Talk's:
+dark5) are named as folke's tokyonight.nvim names them. Yapfast takes their
+colours, not their names for UI parts, so each mapping is Yapfast's:
 
 - The ground steps go rail, sidebar, chat from the deepest to the one text
   sits on, with raised surfaces (popovers, reactions, stage tiles) and the
@@ -94,4 +94,4 @@ the chat `--background-base-lower` (#1a1a1e), the account panel and composer
 no Discord name or logo.
 
 Discord role colours stay as servers set them, and some read faintly on a
-light theme; Talk doesn't adjust them yet.
+light theme; Yapfast doesn't adjust them yet.

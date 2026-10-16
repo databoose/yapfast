@@ -116,7 +116,7 @@ pub(super) struct FrameCodec {
     out_buffer_write_len: usize,
     /// Header and remaining size of the incoming packet being processed.
     header: Option<(FrameHeader, u64)>,
-    /// Talk: the capacity `in_buffer` starts with, which it goes back to after
+    /// Yapfast: the capacity `in_buffer` starts with, which it goes back to after
     /// a larger frame.
     in_buf_len: usize,
 }
@@ -192,7 +192,7 @@ impl FrameCodec {
 
                     if len <= self.in_buffer.len() {
                         let payload = self.in_buffer.split_to(len);
-                        // Talk: a frame larger than the buffer, such as Discord's
+                        // Yapfast: a frame larger than the buffer, such as Discord's
                         // READY, grew it to the frame's size, and the buffer kept
                         // that capacity for the rest of the connection, zeroing
                         // it on every read. What follows the frame moves to a
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(rest, vec![0x99]);
     }
 
-    // Talk: what follows a large frame moves out of the frame's allocation,
+    // Yapfast: what follows a large frame moves out of the frame's allocation,
     // into a buffer of the usual size, so the allocation goes with the payload.
     #[test]
     fn a_large_frame_leaves_its_allocation_to_the_payload() {

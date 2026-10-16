@@ -1,0 +1,50 @@
+[package]
+name = "yapfast-discord"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lib]
+# No documentation examples run as tests: rustdoc would read the whole
+# crate on every `cargo test` for none.
+doctest = false
+
+[dependencies]
+chrono.workspace = true
+# Voice's transport encryption, and DAVE.
+aes-gcm = "0.10.3"
+chacha20poly1305 = "0.10.1"
+davey = "0.1.4"
+rand = "0.9"
+# Linking by QR code: Discord's remote login encrypts what it sends with the
+# client's RSA key, OAEP with SHA-256.
+rsa = { version = "0.9", features = ["getrandom"] }
+sha2 = "0.10"
+anyhow.workspace = true
+base64 = "0.22"
+# The gateway's zlib-stream compression, as the web client asks for it.
+flate2 = "1"
+futures-util.workspace = true
+keyring.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["cookies", "http2", "rustls-no-provider"] }
+cookie_store = { version = "0.22", features = ["serde_json"] }
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The voice gateway's messages, DAVE's among them.
+serenity-voice-model = "0.3"
+tokio = { workspace = true, features = ["macros", "signal", "io-util"] }
+# The voice gateway.
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+# Links Yapfast's libwebrtc archive, whose libopus calls use.
+webrtc-sys = "=0.3.35"
+
+[dev-dependencies]
+# Building DAVE handshake messages in tests, at the versions davey uses.
+openmls = "0.8.1"
+openmls_basic_credential = "0.5.0"
+openmls_rust_crypto = "0.5.1"

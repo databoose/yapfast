@@ -93,7 +93,7 @@ pub mod ffi {
             timestamp_us: i64,
             frame_metadata: &FrameMetadata,
         ) -> bool;
-        /// Talk: sends an I420 picture, copied into a pooled buffer at the
+        /// Yapfast: sends an I420 picture, copied into a pooled buffer at the
         /// size the encoder asks for. False when the frame is dropped.
         ///
         /// # Safety
@@ -111,7 +111,7 @@ pub mod ffi {
             height: i32,
             timestamp_us: i64,
         ) -> bool;
-        /// Talk: lets go of `capture_i420`'s pooled buffers, for while the
+        /// Yapfast: lets go of `capture_i420`'s pooled buffers, for while the
         /// camera is off.
         fn release_buffers(self: &VideoTrackSource);
         fn set_packet_trailer_handler(
@@ -122,7 +122,7 @@ pub mod ffi {
             resolution: &VideoResolution,
             is_screencast: bool,
         ) -> SharedPtr<VideoTrackSource>;
-        /// Talk: the source `new_video_track_source` last made on this
+        /// Yapfast: the source `new_video_track_source` last made on this
         /// thread, while it lives. libwebrtc's `NativeVideoSource` keeps its
         /// handle private; asked right after making one, this reaches it.
         fn last_video_track_source() -> SharedPtr<VideoTrackSource>;

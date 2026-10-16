@@ -431,7 +431,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "talk-skia-static-builder"
+name = "yapfast-skia-static-builder"
 version = "0.1.0"
 dependencies = [
  "skia-bindings",

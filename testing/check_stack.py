@@ -58,13 +58,13 @@ def check():
                 "type": "m.login.password",
                 "identifier": {"type": "m.id.user", "user": user},
                 "password": PASSWORD,
-                "device_id": "TALK_TEST_" + user.upper(),
+                "device_id": "YAPFAST_TEST_" + user.upper(),
             }))
             sessions.append(session)
 
         alice = sessions[0]
         room = require(*request(HOMESERVER, "POST", "/_matrix/client/v3/createRoom", {
-            "name": "Talk backend check",
+            "name": "Yapfast backend check",
             "preset": "private_chat",
             "initial_state": [{
                 "type": "m.room.encryption",

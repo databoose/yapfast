@@ -364,7 +364,7 @@ impl TextParagraph {
         }
     }
 
-    /// Talk: covers each line of a hidden spoiler, a link to `talk:spoiler/`, with an
+    /// Yapfast: covers each line of a hidden spoiler, a link to `yapfast:spoiler/`, with an
     /// opaque pill drawn over its glyphs; clicking the link reveals it.
     fn draw_spoiler_covers<R: GlyphRenderer>(
         &self,
@@ -374,7 +374,7 @@ impl TextParagraph {
     ) {
         const RADIUS: LogicalLength = LogicalLength::new(4.0);
         const PADDING: LogicalLength = LogicalLength::new(2.0);
-        let spoilers = self.links.iter().filter(|(_, link)| link.starts_with("talk:spoiler/"));
+        let spoilers = self.links.iter().filter(|(_, link)| link.starts_with("yapfast:spoiler/"));
         let scale_factor = item_renderer.scale_factor();
         let padding = (PADDING * scale_factor).get();
         let cover = Color::from_rgb_u8(0x3a, 0x3c, 0x45);
@@ -408,7 +408,7 @@ impl TextParagraph {
         }
     }
 
-    /// Talk: paints a translucent pill of a mention's colour under each line of it.
+    /// Yapfast: paints a translucent pill of a mention's colour under each line of it.
     fn draw_mention_backgrounds<R: GlyphRenderer>(
         &self,
         item_renderer: &mut R,

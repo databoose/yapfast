@@ -250,17 +250,17 @@ pub struct StyledTextItem {
     pub link_clicked: Callback<StringArg>,
     pub link_color: Property<Color>,
     pub cached_rendering_data: CachedRenderingData,
-    /// Talk: a press in this text is selecting.
+    /// Yapfast: a press in this text is selecting.
     pressed: Cell<bool>,
-    /// Talk: the part of this text a selection covers, as last drawn, and its colour.
+    /// Yapfast: the part of this text a selection covers, as last drawn, and its colour.
     shown_selection: core::cell::RefCell<Option<(core::ops::Range<usize>, Color)>>,
 }
 
-/// Talk: selecting the text of a `StyledText`; see [`crate::talk_selection`].
+/// Yapfast: selecting the text of a `StyledText`; see [`crate::yapfast_selection`].
 impl StyledTextItem {
     /// The text as one string, its paragraphs joined by newlines, as the layout places them.
     pub(crate) fn plain(self: Pin<&Self>) -> String {
-        crate::talk_selection::plain(&self.text())
+        crate::yapfast_selection::plain(&self.text())
     }
 
     /// The text at `position`, in this item's coordinates, by `unit`.
@@ -355,8 +355,8 @@ impl Item for StyledTextItem {
                 None,
             )
         };
-        // Talk: pressing and dragging selects, as in a read-only `TextInput`, on through the
-        // texts and pictures around it; see `crate::talk_selection`. A double press selects by
+        // Yapfast: pressing and dragging selects, as in a read-only `TextInput`, on through the
+        // texts and pictures around it; see `crate::yapfast_selection`. A double press selects by
         // word and a triple press by paragraph. A click that selects nothing still follows a link.
         #[cfg(feature = "shared-parley")]
         let in_window = |position: &LogicalPoint| {
@@ -373,7 +373,7 @@ impl Item for StyledTextItem {
         match event {
             #[cfg(feature = "shared-parley")]
             MouseEvent::Pressed { position, button: PointerEventButton::Left, click_count, .. } => {
-                let pressed = crate::talk_selection::press(
+                let pressed = crate::yapfast_selection::press(
                     self_rc,
                     self,
                     window_adapter,
@@ -386,17 +386,17 @@ impl Item for StyledTextItem {
             }
             #[cfg(feature = "shared-parley")]
             MouseEvent::Moved { position, .. } if self.pressed.get() => {
-                crate::talk_selection::drag_to(window_adapter, in_window(position));
+                crate::yapfast_selection::drag_to(window_adapter, in_window(position));
                 *cursor = super::MouseCursorInner::BuiltIn(super::BuiltInMouseCursor::Text);
                 InputEventResult::GrabMouse
             }
             #[cfg(feature = "shared-parley")]
             MouseEvent::Released { position, button: PointerEventButton::Left, .. } => {
                 self.pressed.set(false);
-                if !crate::talk_selection::release(window_adapter)
+                if !crate::yapfast_selection::release(window_adapter)
                     && let Some((link, rect)) = find_link_box(position)
                 {
-                    // Talk: where the link is, for a popup it opens; see `clicked_link`.
+                    // Yapfast: where the link is, for a popup it opens; see `clicked_link`.
                     let scale_factor = crate::lengths::ScaleFactor::new(
                         WindowInner::from_pub(window_adapter.window()).scale_factor(),
                     );
@@ -404,9 +404,9 @@ impl Item for StyledTextItem {
                     let origin = self_rc.map_to_window(
                         self_rc.geometry().origin + rect.origin.to_vector(),
                     );
-                    crate::talk_selection::set_clicked_link(Some(LogicalRect::new(origin, rect.size)));
+                    crate::yapfast_selection::set_clicked_link(Some(LogicalRect::new(origin, rect.size)));
                     Self::FIELD_OFFSETS.link_clicked().apply_pin(self).call(&(link.into(),));
-                    crate::talk_selection::set_clicked_link(None);
+                    crate::yapfast_selection::set_clicked_link(None);
                 }
                 point(position);
                 InputEventResult::EventAccepted
@@ -459,8 +459,8 @@ impl Item for StyledTextItem {
         self_rc: &ItemRc,
         size: LogicalSize,
     ) -> RenderingResult {
-        // Talk: what of this text a selection covers.
-        *self.shown_selection.borrow_mut() = crate::talk_selection::covered(self_rc);
+        // Yapfast: what of this text a selection covers.
+        *self.shown_selection.borrow_mut() = crate::yapfast_selection::covered(self_rc);
         (*backend).draw_text(self, self_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
     }
@@ -543,7 +543,7 @@ impl RenderText for StyledTextItem {
 
     fn selection(self: Pin<&Self>) -> Option<(core::ops::Range<usize>, Color)> {
         // Drawing calls this, so draws the text again when a selection changes.
-        crate::talk_selection::track();
+        crate::yapfast_selection::track();
         self.shown_selection.borrow().clone()
     }
 }

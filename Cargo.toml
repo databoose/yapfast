@@ -1,12 +1,12 @@
 [package]
-name = "talk"
+name = "yapfast"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false
 
 [workspace]
-members = ["crates/talk-core", "crates/talk-discord", "crates/talk-ui"]
+members = ["crates/yapfast-core", "crates/yapfast-discord", "crates/yapfast-ui"]
 default-members = ["."]
 exclude = ["vendor/matrix-rtc-livekit", "vendor/webrtc-sys", "vendor/gpui-pre-windows", "vendor/davey"]
 resolver = "3"
@@ -14,9 +14,9 @@ resolver = "3"
 [features]
 default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
-matrix = ["talk-core/matrix"]
-discord = ["talk-core/discord", "dep:qrcode"]
-desktop = ["dep:slint", "dep:talk-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:wayland-client", "dep:wayland-backend", "dep:ksni", "dep:windows-sys"]
+matrix = ["yapfast-core/matrix"]
+discord = ["yapfast-core/discord", "dep:qrcode"]
+desktop = ["dep:slint", "dep:yapfast-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:wayland-client", "dep:wayland-backend", "dep:ksni", "dep:windows-sys"]
 
 [dependencies]
 anyhow.workspace = true
@@ -29,13 +29,13 @@ skia-safe = { version = "=0.153.3", default-features = false, features = ["binar
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 # Names and categories for the emoji picker.
 emojis = { version = "0.9", optional = true }
-# Maps the color emoji font Talk registers with Slint, rather than copying it.
+# Maps the color emoji font Yapfast registers with Slint, rather than copying it.
 memmap2 = { version = "0.9", optional = true }
-# Slint's internals, for the selection of text across messages Talk patches in; see
+# Slint's internals, for the selection of text across messages Yapfast patches in; see
 # docs/building.md. Tests also read the testing backend's clipboard through it.
 i-slint-core = { version = "=1.18.1", optional = true }
-talk-core = { path = "crates/talk-core", default-features = false }
-talk-ui = { path = "crates/talk-ui", optional = true }
+yapfast-core = { path = "crates/yapfast-core", default-features = false }
+yapfast-ui = { path = "crates/yapfast-ui", optional = true }
 # Opens links clicked in messages in the default browser.
 webbrowser = { version = "1", optional = true }
 # Files and pictures pasted into the composer, and pictures copied from
@@ -81,9 +81,9 @@ required-features = ["desktop"]
 
 [dev-dependencies]
 i-slint-backend-testing = "=1.18.1"
-talk-core = { path = "crates/talk-core", default-features = false, features = ["test-fixtures"] }
+yapfast-core = { path = "crates/yapfast-core", default-features = false, features = ["test-fixtures"] }
 # Builds a Discord server's snapshot for the menus' tests.
-talk-discord = { path = "crates/talk-discord" }
+yapfast-discord = { path = "crates/yapfast-discord" }
 tempfile.workspace = true
 
 # testing/record_host.rs: Weston's capture protocol, and signals and poll; both
@@ -157,7 +157,7 @@ strip = true
 # Optimized like release, without LTO and with incremental builds: for tests,
 # local runs and quick checks. Builds people use, and measurements, stay release.
 # "off" rather than false, which still runs LTO across each crate's codegen
-# units: that made rebuilding talk-core after an edit take 15 s instead of 4.
+# units: that made rebuilding yapfast-core after an edit take 15 s instead of 4.
 [profile.fast]
 inherits = "release"
 lto = "off"

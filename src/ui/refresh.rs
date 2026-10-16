@@ -12,7 +12,7 @@ pub(super) struct Changes {
 }
 
 impl Changes {
-    fn read(adapter: &Adapter, window: &TalkWindow) -> Self {
+    fn read(adapter: &Adapter, window: &YapfastWindow) -> Self {
         let state = &adapter.app.state;
         Self {
             reset: adapter.reset_version != state.reset_version,
@@ -100,7 +100,7 @@ pub(super) struct SidebarShown {
 }
 
 impl SidebarShown {
-    fn of(state: &AppState, window: &TalkWindow) -> Self {
+    fn of(state: &AppState, window: &YapfastWindow) -> Self {
         Self {
             lists: Self::lists(state),
             navigation: state.navigation.clone(),
@@ -129,7 +129,7 @@ impl SidebarShown {
     }
 
     /// Whether the sidebar would show the same.
-    fn shows(&self, state: &AppState, window: &TalkWindow) -> bool {
+    fn shows(&self, state: &AppState, window: &YapfastWindow) -> bool {
         self.navigation == state.navigation
             && self.selected == state.selected
             && self.dm_screen == state.dm_screen
@@ -144,7 +144,7 @@ impl SidebarShown {
 
 impl Adapter {
     /// Shows what a burst of backend events can have changed.
-    pub(super) fn show(&mut self, window: &TalkWindow, reach: Reach) {
+    pub(super) fn show(&mut self, window: &YapfastWindow, reach: Reach) {
         if reach.everything {
             self.refresh(window);
             return;
@@ -172,7 +172,7 @@ impl Adapter {
         }
     }
 
-    pub(super) fn refresh(&mut self, window: &TalkWindow) {
+    pub(super) fn refresh(&mut self, window: &YapfastWindow) {
         refresh_avatar_sources(&self.app.state);
         window
             .global::<PictureStore>()
@@ -240,16 +240,16 @@ impl Adapter {
         }
     }
 
-    /// Whether Talk is signed in or previewing, what the account is doing, and
+    /// Whether Yapfast is signed in or previewing, what the account is doing, and
     /// linking Discord.
-    fn show_workspace(&mut self, window: &TalkWindow) {
+    fn show_workspace(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         window.set_workspace(state.preview || state.account.is_some());
         window.set_preview(state.preview);
         window.set_busy(state.busy);
         window.set_trusted(state.trusted);
         window.set_online(state.online);
-        window.set_restore_available(talk_core::chat::can_restore(&self.root));
+        window.set_restore_available(yapfast_core::chat::can_restore(&self.root));
         window.set_dms_selected(state.navigation == Navigation::DirectMessages);
         window.set_dms_unread(
             state
@@ -294,7 +294,7 @@ impl Adapter {
         );
         #[cfg(feature = "discord")]
         {
-            use talk_core::application::DiscordLink;
+            use yapfast_core::application::DiscordLink;
             let (phase, name, note) = match &state.discord_link {
                 None => (0, "", ""),
                 Some(DiscordLink::Starting) => (1, "", ""),
@@ -327,7 +327,7 @@ impl Adapter {
 
     /// The rail, the channel or DM list, and the friends and requests screens,
     /// built again only when what they show changed.
-    pub(super) fn show_sidebar(&mut self, window: &TalkWindow) {
+    pub(super) fn show_sidebar(&mut self, window: &YapfastWindow) {
         if self
             .sidebar
             .as_ref()
@@ -371,7 +371,7 @@ impl Adapter {
             }
             .into(),
         );
-        let rooms_by_id: HashMap<&str, &talk_core::chat::ChatRoom> = state
+        let rooms_by_id: HashMap<&str, &yapfast_core::chat::ChatRoom> = state
             .rooms
             .iter()
             .map(|room| (room.id.as_str(), room))
@@ -476,7 +476,7 @@ impl Adapter {
                     })),
         );
         let dm_icon = self.icons.dm.clone();
-        let request_row = |room: &&talk_core::chat::ChatRoom| RoomRow {
+        let request_row = |room: &&yapfast_core::chat::ChatRoom| RoomRow {
             id: room.id.clone().into(),
             name: room.name.clone().into(),
             icon: dm_icon.clone(),
@@ -518,7 +518,7 @@ impl Adapter {
                 .map_or(&[][..], |server| server.pinned.as_slice()),
             Navigation::DirectMessages => &[],
         };
-        let pinned_at = |room: &talk_core::chat::ChatRoom| {
+        let pinned_at = |room: &yapfast_core::chat::ChatRoom| {
             pinned
                 .iter()
                 .position(|id| *id == room.id || room.parent.as_ref() == Some(id))
@@ -684,7 +684,7 @@ impl Adapter {
     }
 
     /// The account at the bottom of the sidebar, and the notice.
-    fn show_account(&mut self, window: &TalkWindow) {
+    fn show_account(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let account = state.account.as_deref().unwrap_or("Preview");
         let account_name = state
@@ -727,7 +727,7 @@ impl Adapter {
 
     /// Starting a thread: what the open channel offers, and the "New
     /// Thread" form beside it.
-    fn show_new_thread(&mut self, window: &TalkWindow) {
+    fn show_new_thread(&mut self, window: &YapfastWindow) {
         let app = &self.app;
         let state = &app.state;
         window.set_can_start_threads(app.can_start_threads());
@@ -740,7 +740,7 @@ impl Adapter {
         let Some(form) = form else {
             return;
         };
-        // The fields are the window's while it's open; Talk writes them only
+        // The fields are the window's while it's open; Yapfast writes them only
         // when they differ, so the caret stays.
         if window.get_new_thread_name() != form.name.as_str() {
             window.set_new_thread_name(form.name.as_str().into());
@@ -775,7 +775,7 @@ impl Adapter {
     /// it shows changes, or a minute passes.
     /// Who reacted: the tooltip over the reaction the pointer stays on, and
     /// the Reactions window.
-    fn show_reactions(&mut self, window: &TalkWindow) {
+    fn show_reactions(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let emoji_of = |item: &str, key: &str| -> String {
             state.message(item).map_or_else(
@@ -839,7 +839,7 @@ impl Adapter {
         update_model(&self.models.reactor_rows, rows);
     }
 
-    fn show_threads(&mut self, window: &TalkWindow) {
+    fn show_threads(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         window.set_can_list_threads(state.threads_channel().is_some());
         let list = state.thread_list();
@@ -856,7 +856,7 @@ impl Adapter {
         let channel = &list.room;
         window.set_threads_searchable(
             self.app
-                .may(channel, talk_core::chat::Permission::ReadHistory),
+                .may(channel, yapfast_core::chat::Permission::ReadHistory),
         );
         window.set_threads_more(list.more && list.search.is_none());
         window.set_threads_loading(list.loading);
@@ -916,7 +916,7 @@ impl Adapter {
     }
 
     /// The open conversation's header.
-    fn show_header(&mut self, window: &TalkWindow) {
+    fn show_header(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let room = state.selected_room();
         window.set_room_selected(room.is_some());
@@ -976,7 +976,7 @@ impl Adapter {
         window.set_can_notify(state.selected.as_deref().is_some_and(|id| {
             state
                 .menu_choices(id)
-                .contains(&talk_core::application::MenuChoice::ChannelNotifications)
+                .contains(&yapfast_core::application::MenuChoice::ChannelNotifications)
         }));
         let topic = state.topic.as_ref();
         window.set_has_topic(topic.is_some());
@@ -999,7 +999,7 @@ impl Adapter {
 
     /// What the open DM's header opens: its pinned messages, what its
     /// search found, and the friends picker.
-    fn show_dm_tools(&mut self, window: &TalkWindow) {
+    fn show_dm_tools(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let twelve_hour = self.layout.twelve_hour_clock;
         window.set_can_pin(state.conversation_that(|can| can.pins).is_some());
@@ -1136,9 +1136,9 @@ impl Adapter {
     }
 
     /// The member list, the reactions offered on messages, and a role's card.
-    fn show_members(&mut self, window: &TalkWindow) {
+    fn show_members(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
-        let now = talk_core::clock::now_ms();
+        let now = yapfast_core::clock::now_ms();
         let members = match &state.members {
             Some(Ok(members)) => members.as_slice(),
             _ => &[],
@@ -1226,7 +1226,7 @@ impl Adapter {
                 match &role.members {
                     None => "Loading...",
                     Some(members) if members.is_empty() => {
-                        "Talk hasn't seen anyone with this role yet."
+                        "Yapfast hasn't seen anyone with this role yet."
                     }
                     Some(_) => "",
                 }
@@ -1253,7 +1253,7 @@ impl Adapter {
     }
 
     /// A Discord server's or channel's invite dialog.
-    fn show_invite(&self, window: &TalkWindow) {
+    fn show_invite(&self, window: &YapfastWindow) {
         let invite = self.app.state.invite.as_ref();
         // A dialog opening starts from the link it makes first.
         if let Some(invite) = invite
@@ -1305,7 +1305,7 @@ impl Adapter {
 
     /// The dialog that makes, changes, copies or deletes a Discord channel
     /// or category.
-    fn show_channel_dialog(&self, window: &TalkWindow) {
+    fn show_channel_dialog(&self, window: &YapfastWindow) {
         let dialog = self.app.state.channel_dialog.as_ref();
         // Its fields start from what Discord has, once that's here.
         if let Some(dialog) = dialog
@@ -1398,8 +1398,8 @@ impl Adapter {
 
     /// The editor of this account's profile in a Discord server, with a
     /// preview of its profile card there.
-    pub(super) fn show_server_profile(&mut self, window: &TalkWindow) {
-        use talk_core::application::{BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT};
+    pub(super) fn show_server_profile(&mut self, window: &YapfastWindow) {
+        use yapfast_core::application::{BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT};
         let editor = self.app.state.server_profile.as_ref();
         // Its fields start from what Discord has, once that's here.
         if let Some(editor) = editor
@@ -1432,7 +1432,7 @@ impl Adapter {
         };
         // The bio as written is Markdown, where the main one was rendered.
         let view = ProfileView {
-            profile: talk_core::chat::Profile {
+            profile: yapfast_core::chat::Profile {
                 id: main.map(|main| main.id.clone()).unwrap_or_default(),
                 name: written(&editor.nick, main.map(|main| &main.name)),
                 handle: main_text(main.map(|main| &main.handle)),
@@ -1503,7 +1503,7 @@ impl Adapter {
     }
 
     /// Asks before leaving a Discord server, as Discord's dialog does.
-    fn show_leave(&self, window: &TalkWindow) {
+    fn show_leave(&self, window: &YapfastWindow) {
         let leave = self.app.state.leave.as_ref();
         window.set_leave_open(leave.is_some());
         let Some(leave) = leave else {
@@ -1525,7 +1525,7 @@ impl Adapter {
     }
 
     /// The dialog from a DM's menu about its other person.
-    fn show_person_dialog(&self, window: &TalkWindow) {
+    fn show_person_dialog(&self, window: &YapfastWindow) {
         let dialog = self.app.state.person_dialog.as_ref();
         // The field starts from the note or nickname there is, once it's here.
         if let Some(text) = dialog.and_then(|dialog| dialog.text.as_deref())
@@ -1652,7 +1652,7 @@ impl Adapter {
     }
 
     /// The dialogs for adding a friend, the custom status, a new DM and forwarding.
-    fn show_dialogs(&mut self, window: &TalkWindow) {
+    fn show_dialogs(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let add_friend = state.add_friend.as_ref();
         if add_friend.is_some() && !window.get_add_friend_open() {
@@ -1748,7 +1748,7 @@ impl Adapter {
                 .and_then(|forwarding| state.message(&forwarding.item))
                 .map(|message| match message.attachments.first() {
                     Some(attachment) if message.body.is_empty() => attachment.name.clone(),
-                    _ => talk_core::chat::plain_snippet(&message.body),
+                    _ => yapfast_core::chat::plain_snippet(&message.body),
                 })
                 .unwrap_or_default()
                 .into(),
@@ -1794,7 +1794,7 @@ impl Adapter {
     /// its hint.
     /// The thread beside the open channel: its rows, built again only for
     /// messages that changed, and its composer.
-    pub(super) fn show_aside(&mut self, window: &TalkWindow) {
+    pub(super) fn show_aside(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let Some(aside) = &state.aside else {
             if window.get_aside_open() {
@@ -1840,7 +1840,7 @@ impl Adapter {
             .collect();
         let mut previous = std::mem::take(&mut self.aside_rows);
         let mut before: Option<&ChatMessage> = None;
-        let first_new = talk_core::chat::first_new(&aside.messages, aside.seen.as_deref());
+        let first_new = yapfast_core::chat::first_new(&aside.messages, aside.seen.as_deref());
         let rows: Vec<MessageRow> = aside
             .messages
             .iter()
@@ -1887,7 +1887,7 @@ impl Adapter {
         self.aside_messages = aside.messages.clone();
     }
 
-    pub(super) fn show_composer(&mut self, window: &TalkWindow) {
+    pub(super) fn show_composer(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let room = state.selected_room();
         window.set_voice_room(room.is_some_and(|room| room.voice));
@@ -2010,7 +2010,7 @@ impl Adapter {
             } else if discord_room && room.is_some_and(|room| room.read_only || room.locked) {
                 "You can't send messages in this Discord channel."
             } else if discord_room && !state.discord_online {
-                "Discord is disconnected. Talk is reconnecting."
+                "Discord is disconnected. Yapfast is reconnecting."
             } else if discord_only {
                 ""
             } else if discord_room {
@@ -2035,7 +2035,7 @@ impl Adapter {
     }
 
     /// Emoji for the `:name` being typed, or none.
-    pub(super) fn show_emoji_suggestions(&mut self, window: &TalkWindow) {
+    pub(super) fn show_emoji_suggestions(&mut self, window: &YapfastWindow) {
         let (query, cells) = match &self.emoji_word {
             Some((_, name)) => (
                 name.as_str(),
@@ -2052,7 +2052,7 @@ impl Adapter {
 
     /// The messages, built again only where they changed, and where the list
     /// scrolls.
-    fn show_messages(&mut self, window: &TalkWindow, changes: &Changes) {
+    fn show_messages(&mut self, window: &YapfastWindow, changes: &Changes) {
         let &Changes {
             reset,
             selection: selection_changed,
@@ -2120,7 +2120,7 @@ impl Adapter {
                 .collect();
             let mut previous = std::mem::take(&mut self.rows);
             let mut before: Option<&ChatMessage> = None;
-            let first_new = talk_core::chat::first_new(&state.messages, state.seen.as_deref());
+            let first_new = yapfast_core::chat::first_new(&state.messages, state.seen.as_deref());
             let rows: Vec<MessageRow> = state
                 .messages
                 .iter()
@@ -2233,7 +2233,7 @@ impl Adapter {
 
     /// The call: the voice dock, sharing and watching a screen, a DM's call,
     /// ringing, and the devices.
-    fn show_voice(&mut self, window: &TalkWindow) {
+    fn show_voice(&mut self, window: &YapfastWindow) {
         self.ring();
         let state = &self.app.state;
         let timed = matches!(state.voice.phase, Phase::Connected | Phase::Reconnecting)
@@ -2626,7 +2626,7 @@ impl Adapter {
 
     /// The open profile card, and the profile beside a one-to-one DM, with
     /// what's known so far.
-    fn show_profile(&mut self, window: &TalkWindow) {
+    fn show_profile(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         window.set_profile_open(state.profile.is_some());
         window.set_panel_profile_shown(state.panel_profile.is_some());
@@ -2664,7 +2664,7 @@ impl Adapter {
     /// The image viewer: the full image once it arrives, the preview until then.
     /// The video playing, which its cell shows through [`VideoPlayer`]; its
     /// pictures come with each stream tick.
-    fn show_video(&mut self, window: &TalkWindow) {
+    fn show_video(&mut self, window: &YapfastWindow) {
         let player = window.global::<VideoPlayer>();
         let video = self.app.state.video.as_ref();
         // Stream ticks bring its pictures, until a quiet moment while it
@@ -2729,7 +2729,7 @@ impl Adapter {
         }
     }
 
-    fn show_viewer(&mut self, window: &TalkWindow) {
+    fn show_viewer(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let viewing = state.viewer.as_ref().and_then(|viewer| {
             let message = state.message(&viewer.item)?;
@@ -2847,11 +2847,11 @@ pub(super) fn unread_dm_rows(state: &AppState) -> Vec<ServerRow> {
 /// while it's open.
 pub(super) fn rail_rows(
     state: &AppState,
-    rooms_by_id: &HashMap<&str, &talk_core::chat::ChatRoom>,
+    rooms_by_id: &HashMap<&str, &yapfast_core::chat::ChatRoom>,
     open_folders: &std::collections::BTreeSet<String>,
 ) -> Vec<ServerRow> {
     // A server's channels: whether any is unread, and its mentions.
-    let marks = |server: &talk_core::chat::ChatServer| {
+    let marks = |server: &yapfast_core::chat::ChatServer| {
         let rooms = || {
             server
                 .channels
@@ -2864,7 +2864,7 @@ pub(super) fn rail_rows(
             rooms().map(|room| room.mentions).sum::<u64>(),
         )
     };
-    let selected = |server: &talk_core::chat::ChatServer| {
+    let selected = |server: &yapfast_core::chat::ChatServer| {
         state.navigation == Navigation::Server(server.id.clone())
     };
     let mut rows = Vec::with_capacity(state.servers.len());
@@ -2943,7 +2943,7 @@ pub(super) fn rail_rows(
 const FOLDER_COLOR: slint::Color = slint::Color::from_rgb_u8(0x58, 0x65, 0xf2);
 
 fn server_row(
-    server: &talk_core::chat::ChatServer,
+    server: &yapfast_core::chat::ChatServer,
     selected: bool,
     unread: bool,
     mentions: u64,
@@ -3051,8 +3051,8 @@ pub(super) fn with_empty_categories(
 /// A custom emoji and its picture, once that has arrived.
 fn arrived<'a>(
     state: &'a AppState,
-    emoji: &'a talk_core::chat::CustomEmoji,
-) -> Option<(&'a str, &'a talk_core::chat::Picture)> {
+    emoji: &'a yapfast_core::chat::CustomEmoji,
+) -> Option<(&'a str, &'a yapfast_core::chat::Picture)> {
     Some((
         emoji.id.as_str(),
         state.pictures.get(&emoji.picture)?.as_ref(),
@@ -3095,7 +3095,7 @@ pub(super) fn span(seconds: u32) -> String {
 fn show_hits(
     model: &VecModel<FoundRow>,
     state: &AppState,
-    hits: &[talk_core::chat::SearchHit],
+    hits: &[yapfast_core::chat::SearchHit],
     server: bool,
     twelve_hour: bool,
 ) {
@@ -3171,7 +3171,7 @@ pub(super) fn video_time(at_ms: u64, duration_ms: Option<u64>) -> String {
 /// A section of a list of threads: its heading over the first, if it has any.
 fn push_section(
     rows: &mut Vec<ThreadRow>,
-    threads: &[talk_core::chat::ListedThread],
+    threads: &[yapfast_core::chat::ListedThread],
     heading: String,
     now: u64,
 ) {
@@ -3186,7 +3186,7 @@ fn push_section(
 
 /// A thread as its list shows it: an active one with its newest message,
 /// an archived one with who started it, as Discord's client does.
-fn thread_row(thread: &talk_core::chat::ListedThread, now: u64) -> ThreadRow {
+fn thread_row(thread: &yapfast_core::chat::ListedThread, now: u64) -> ThreadRow {
     let ago = ago(thread.active_ms, now);
     let (person, lead, text, time) = match (&thread.recent, &thread.owner, thread.archived) {
         (Some(recent), _, false) => (Some(&recent.author), "", recent.text.as_str(), ago),

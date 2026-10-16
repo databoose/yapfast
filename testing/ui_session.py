@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run Talk on the private display and act on commands from scripts/ui-session.
+"""Run Yapfast on the private display and act on commands from scripts/ui-session.
 
 scripts/ui-session starts this inside scripts/run-framework-isolated. It
-starts Talk (and, with --discord, testing/fake_discord.ts), then reads
+starts Yapfast (and, with --discord, testing/fake_discord.ts), then reads
 "ID<TAB>COMMAND" lines appended to STATE/commands and answers each with
 "ID<TAB>ok|error<TAB>JSON_OUTPUT" in STATE/results. See scripts/ui-session for the
 commands.
@@ -35,9 +35,9 @@ parser.add_argument('--fake-args', default='')
 parser.add_argument('--tray', type=Path, help='testing/tray_host.rs, built, to run as the tray')
 parser.add_argument('--record', type=Path, help='testing/record_host.rs, built, for record')
 parser.add_argument('--cursor', type=int, metavar='SIZE', help="show the pointer, Adwaita's, this many pixels tall")
-parser.add_argument('talk_args', nargs=argparse.REMAINDER)
+parser.add_argument('yapfast_args', nargs=argparse.REMAINDER)
 args = parser.parse_args()
-talk_args = args.talk_args[1:] if args.talk_args[:1] == ['--'] else args.talk_args
+yapfast_args = args.yapfast_args[1:] if args.yapfast_args[:1] == ['--'] else args.yapfast_args
 state = args.state
 
 KEYS = {
@@ -59,14 +59,14 @@ CHARACTERS.update({' ': (57, False), '-': (12, False), '=': (13, False), ';': (3
                    ':': (39, True), '?': (53, True), '(': (10, True), ')': (11, True)})
 
 fake = None
-# Talk reads commands for its window from this file; see `test_control` in src/ui.rs.
+# Yapfast reads commands for its window from this file; see `test_control` in src/ui.rs.
 window_control = state / 'window-control'
-environment = dict(os.environ, TALK_UI_TEST_SIZE=args.size, TALK_UI_TEST_CONTROL=str(window_control))
+environment = dict(os.environ, YAPFAST_UI_TEST_SIZE=args.size, YAPFAST_UI_TEST_CONTROL=str(window_control))
 if args.cursor:
     # Weston draws the pointer the window asks for, and winit finds none
     # without a theme; the shell gives one, as the desktop's isn't here.
     environment.update(XCURSOR_THEME='Adwaita', XCURSOR_SIZE=str(args.cursor),
-                       XCURSOR_PATH=os.environ['TALK_FRAMEWORK_CURSORS'])
+                       XCURSOR_PATH=os.environ['YAPFAST_FRAMEWORK_CURSORS'])
 if args.discord:
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
@@ -85,10 +85,10 @@ if args.discord:
             if fake.poll() is not None or time.monotonic() > deadline:
                 raise SystemExit('The fake Discord did not start; see ' + str(state / 'fake.log'))
             time.sleep(.2)
-    environment['TALK_DISCORD_TEST_SERVER'] = discord
+    environment['YAPFAST_DISCORD_TEST_SERVER'] = discord
 
 data = state / 'data'
-talk = None
+yapfast = None
 tray = None
 # The pointer's position, where Weston puts it until the first move.
 pointer = [100., 100.]
@@ -131,23 +131,23 @@ def tray_command(rest):
     result = subprocess.run([str(args.tray), *values], capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f'tray_host exited with {result.returncode}')
-    # The window opens, or the menu acts, as Talk hears it.
+    # The window opens, or the menu acts, as Yapfast hears it.
     time.sleep(.8)
     return result.stdout.strip()
 
 
 def launch():
-    global talk
-    # A new Talk would run every line again.
+    global yapfast
+    # A new Yapfast would run every line again.
     window_control.write_text('')
-    # Talk takes --preview only before --data-dir.
-    talk = subprocess.Popen([str(args.bin), '--renderer', args.renderer, *talk_args, '--data-dir', str(data)],
-                            env=environment, stdout=(state / 'talk.log').open('ab'),
+    # Yapfast takes --preview only before --data-dir.
+    yapfast = subprocess.Popen([str(args.bin), '--renderer', args.renderer, *yapfast_args, '--data-dir', str(data)],
+                            env=environment, stdout=(state / 'yapfast.log').open('ab'),
                             stderr=subprocess.STDOUT, start_new_session=True)
-    (state / 'talk.pid').write_text(f'{talk.pid}\n')
+    (state / 'yapfast.pid').write_text(f'{yapfast.pid}\n')
     time.sleep(2)
-    if talk.poll() is not None:
-        raise RuntimeError(f'Talk exited with {talk.returncode}; see {state / "talk.log"}')
+    if yapfast.poll() is not None:
+        raise RuntimeError(f'Yapfast exited with {yapfast.returncode}; see {state / "yapfast.log"}')
 
 
 def stop(process):
@@ -166,7 +166,7 @@ def shot(name, *crop):
     shots.mkdir(exist_ok=True)
     path = shots / f'{name}.png'
     time.sleep(.4)
-    with tempfile.TemporaryDirectory(prefix='talk-shot-') as folder:
+    with tempfile.TemporaryDirectory(prefix='yapfast-shot-') as folder:
         subprocess.run(['weston-screenshooter'], env=dict(os.environ, XDG_PICTURES_DIR=folder),
                        check=True, timeout=10, capture_output=True)
         picture = next(Path(folder).glob('*.png'))
@@ -334,11 +334,11 @@ def perform(command):
     verb, _, rest = command.partition(' ')
     values = rest.split()
     if verb == 'relaunch':
-        stop(talk)
+        stop(yapfast)
         launch()
-        return f'pid {talk.pid}'
+        return f'pid {yapfast.pid}'
     if verb == 'pid':
-        return str(talk.pid)
+        return str(yapfast.pid)
     if verb == 'sleep':
         time.sleep(float(rest))
         return ''
@@ -350,8 +350,8 @@ def perform(command):
         return tray_command(rest)
     if verb == 'record':
         return record(rest)
-    if talk.poll() is not None:
-        raise RuntimeError(f'Talk exited with {talk.returncode}; see {state / "talk.log"}, or relaunch')
+    if yapfast.poll() is not None:
+        raise RuntimeError(f'Yapfast exited with {yapfast.returncode}; see {state / "yapfast.log"}, or relaunch')
     if verb == 'click':
         # Then modifiers held down for the click, as shift or ctrl+shift, and
         # glide [SECONDS] to move there as a hand would first.
@@ -434,7 +434,7 @@ def perform(command):
             raise ValueError(f'no file at {path}')
         with window_control.open('a') as window:
             window.write(f'stage {path}\n')
-        # Talk reads the file every half second.
+        # Yapfast reads the file every half second.
         time.sleep(.8)
     elif verb == 'theme':
         with window_control.open('a') as window:
@@ -483,6 +483,6 @@ try:
         time.sleep(.05)
 finally:
     stop_recording()
-    stop(talk)
+    stop(yapfast)
     stop(tray)
     stop(fake)

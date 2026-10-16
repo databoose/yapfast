@@ -1,11 +1,11 @@
-# Talk
+# Yapfast
 
 A native Rust and Slint client for Matrix chat and persistent voice channels.
 The [product scope](PRODUCT.md) and [implementation plan](docs/implementation-plan.md)
 describe the private beta.
 
 The [application architecture](docs/architecture.md) separates the reusable
-`talk-core` library from the Slint client. Other native UIs can share sessions,
+`yapfast-core` library from the Slint client. Other native UIs can share sessions,
 chat and voice behavior, drafts, navigation and the local preview.
 
 The [UI framework comparison plan](docs/framework-comparison-plan.md) covers
@@ -20,7 +20,7 @@ stays connected while you browse messages. Joining, leaving, muting and messages
 make soft sounds, in a choice of four sets, each sound at a volume you can set. A local preview lets you try the
 controls without an account or audio access.
 
-Talk renders with Skia Software, which uses about half the memory of Skia GPU.
+Yapfast renders with Skia Software, which uses about half the memory of Skia GPU.
 To use the GPU:
 
 ```sh
@@ -28,23 +28,23 @@ nix develop path:./nix --command cargo run --locked -- --preview --renderer gpu
 ```
 
 Omit `--preview` to sign in or restore your real account. If the GPU cannot
-start, Talk restarts itself with Skia Software and explains why. Renderer
+start, Yapfast restarts itself with Skia Software and explains why. Renderer
 selection does not change session storage, encryption or the native audio backend.
 
 ## Discord
 
-Talk can link a Discord account and replace the Discord app for everyday use.
+Yapfast can link a Discord account and replace the Discord app for everyday use.
 Discord doesn't allow third-party clients, so linking puts the account at risk.
-Talk says so before it shows the QR code. Nothing Discord-related appears until
+Yapfast says so before it shows the QR code. Nothing Discord-related appears until
 you link.
 
-Once linked, Talk shows your servers, channels, DMs and group DMs live. You can
+Once linked, Yapfast shows your servers, channels, DMs and group DMs live. You can
 send messages, reply, edit, react and attach files. Embeds, custom emoji,
 stickers, spoilers, unread markers, notifications and member lists work. You can
 join server voice channels and make or answer DM calls, with mute, deafen,
 per-person volume and DeepFilterNet noise suppression. Go Live screen sharing
 and stream watching work too. The friends page handles friend requests and
-adding by username, and Talk sets your status and custom status.
+adding by username, and Yapfast sets your status and custom status.
 
 Not there yet:
 
@@ -67,7 +67,7 @@ Not there yet:
 Use Discord in a browser for these until then. The
 [Discord plan](docs/discord.md) has the details and the order of work.
 
-Talk speaks to Discord the way its own apps do, as documented by
+Yapfast speaks to Discord the way its own apps do, as documented by
 [Discord Userdoccers](https://docs.discord.food), a community effort to
 document the user side of Discord's API. Thanks to everyone who writes it.
 
@@ -92,7 +92,7 @@ local preview messages with Enter or the Send button. "Back to sign in" opens re
 restores your saved session. Use `--data-dir PATH` for a separate test session.
 Passwords and recovery keys are entered in masked native fields.
 
-Real sending requires a verified device and an encrypted room. Verify Talk in
+Real sending requires a verified device and an encrypted room. Verify Yapfast in
 another client and press "Check again", or enter your existing recovery key.
 Join rooms using another Matrix client for now. Messages support Markdown,
 replies, reactions, editing, deletion and encrypted attachments. Messages written
@@ -105,9 +105,9 @@ Text channels and group DMs list their members on the right, grouped into admins
 moderators and members; the header's member count shows or hides the list.
 Only joined channels appear; standalone rooms outside Spaces
 are not shown in this navigation yet. Preview messages disappear
-when you leave the preview. Closing the window leaves Talk running in the
+when you leave the preview. Closing the window leaves Yapfast running in the
 system tray, with any call, where its icon opens it again or quits; without a
-tray it quits Talk ([the tray](docs/tray.md)). For Talk's icon on its window
+tray it quits Yapfast ([the tray](docs/tray.md)). For Yapfast's icon on its window
 and in the launcher, run `scripts/install-desktop-entry` once after a release
 build ([the app icon](docs/building.md#the-app-icon)).
 
@@ -128,7 +128,7 @@ lists what it covers.
 With the local stack running, check the desktop messaging backend with:
 
 ```sh
-cargo test --locked -p talk-core matrix_chat::tests::encrypted_chat_restore_send_retry_and_security_gates -- --ignored
+cargo test --locked -p yapfast-core matrix_chat::tests::encrypted_chat_restore_send_retry_and_security_gates -- --ignored
 ```
 
 This creates disposable accounts and checks session restoration, encrypted
@@ -194,7 +194,7 @@ Build a portable Windows x64 ZIP from this Linux checkout with:
 nix develop path:./nix#windows --command scripts/build-windows
 ```
 
-The package appears in `target/dist`. Extract it on Windows and open `talk.exe`.
+The package appears in `target/dist`. Extract it on Windows and open `yapfast.exe`.
 The sign-in screen defaults to `https://matrix.org`. See the
 [Windows beta guide](docs/windows-beta.md) for account and two-machine checks,
 and [building](docs/building.md) for native Windows prerequisites.
@@ -220,7 +220,7 @@ cargo run --locked -- --voice-demo
 ```
 
 The demo prints commands for two saved test accounts. Open them in separate
-processes, select **Talk voice test → Lounge**, and press **Join voice**. Each
+processes, select **Yapfast voice test → Lounge**, and press **Join voice**. Each
 joins muted. The gear button selects microphone and speakers. Press Unmute to
 talk, or stay muted and wait for a friend. The [voice guide](docs/voice.md) covers
 requirements, checks and the Windows test.

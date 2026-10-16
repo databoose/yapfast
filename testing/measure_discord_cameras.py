@@ -4,7 +4,7 @@
 Alice joins Lounge on testing/fake_discord.ts with Bob, Carol and Dave, whose
 cameras the fake turns on in turn: none, then 1 and 2, then all 3 and
 Alice's own, 4 in all. Then every camera goes off, and on and off once more.
-Only Talk's process is sampled.
+Only Yapfast's process is sampled.
 
 The fake sends each camera as the Annex B file given with --camera, at 30
 frames a second; make a 720p one with:
@@ -13,7 +13,7 @@ frames a second; make a 720p one with:
     -profile:v baseline -b:v 1500k -maxrate 1500k -bufsize 1500k -g 60 \\
     -x264-params aud=1 -bsf:v h264_mp4toannexb -f h264 camera-720p.h264
 
-Runs Talk through scripts/ui-session, which builds the Discord-only `fast`
+Runs Yapfast through scripts/ui-session, which builds the Discord-only `fast`
 build, on a private display with a private PulseAudio.
 """
 import argparse
@@ -36,7 +36,7 @@ parser.add_argument('--no-build', action='store_true', help="run the session's l
 args = parser.parse_args()
 renderers = args.renderer or ['software', 'gpu']
 args.output.mkdir(parents=True, exist_ok=True)
-ENVIRONMENT = dict(os.environ, TALK_CAMERA_TEST_PATTERN='1', FAKE_DISCORD_CAMERA=str(args.camera.resolve()))
+ENVIRONMENT = dict(os.environ, YAPFAST_CAMERA_TEST_PATTERN='1', FAKE_DISCORD_CAMERA=str(args.camera.resolve()))
 
 
 def session(*arguments):
@@ -45,7 +45,7 @@ def session(*arguments):
 
 
 def sample(name, notes):
-    pid = int((SESSION / 'talk.pid').read_text())
+    pid = int((SESSION / 'yapfast.pid').read_text())
     result = json.loads(subprocess.check_output(['python3', str(ROOT / 'scripts/measure-process'), str(pid),
                                                  '--seconds', str(args.seconds)], text=True))
     names = {}
@@ -53,7 +53,7 @@ def sample(name, notes):
         thread = Path(f'/proc/{pid}/task/{task}/comm').read_text().strip()
         names[thread] = names.get(thread, 0) + 1
 
-    # Anonymous memory, swapped or not, is what Talk itself holds; on a host
+    # Anonymous memory, swapped or not, is what Yapfast itself holds; on a host
     # short of memory the kernel drops shared-library pages from RSS and PSS.
     def field(path, key):
         return next(int(line.split()[1]) for line in Path(path).read_text().splitlines()
@@ -113,7 +113,7 @@ finally:
     keep_shots()
     (args.output / 'results.json').write_text(json.dumps({
         'recorded_on': time.strftime('%Y-%m-%d'),
-        'binary': str(ROOT / 'target/fast/talk'),
+        'binary': str(ROOT / 'target/fast/yapfast'),
         'os': f'{platform.system()} {platform.release()}', 'machine': platform.machine(),
         'isolation': 'scripts/ui-session: private headless Weston and PulseAudio',
         'remote_load': f'testing/fake_discord.ts; Bob, Carol and Dave film {args.camera.name} at 30 frames '

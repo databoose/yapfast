@@ -22,14 +22,14 @@ How to reproduce: run every command from the repository root. The isolated
 runs need `scripts/test-stack up` first; `nix-shell --impure
 experiments/frameworks/shell.nix` adds Weston, PulseAudio and the ALSA plugins
 to the development shell, and `scripts/run-framework-isolated` gives the run a
-private display, D-Bus and audio. The scripts measure `target/release/talk`
-unless `--exe` names another build, such as `target/fast/talk`; the networks
+private display, D-Bus and audio. The scripts measure `target/release/yapfast`
+unless `--exe` names another build, such as `target/fast/yapfast`; the networks
 comparison takes its builds from a folder instead. `TEST_BIN`
-below is the `talk-core` test binary that runs the other participants and
+below is the `yapfast-core` test binary that runs the other participants and
 seeds history. Build it with `nix develop path:./nix --command cargo test
---profile fast --locked -p talk-core --no-run --message-format short`, which
+--profile fast --locked -p yapfast-core --no-run --message-format short`, which
 prints its path on the `Executable unittests src/lib.rs
-(target/fast/deps/talk_core-HASH)` line.
+(target/fast/deps/yapfast_core-HASH)` line.
 
 `scripts/measure-process` samples once a second and reports the mean and the
 highest of those samples. For the process's lifetime peak, read `VmHWM` from
@@ -87,9 +87,9 @@ waiting in voice with `scripts/measure-process PID --seconds 30`.
 [Connected release client, 2026-10-03](2026-10-03-linux-connected.json) samples
 the Slint release build with a real account on the local stack, on a private
 headless Weston desktop with private PulseAudio null devices. Each profile
-warms up for 30 seconds, then samples Talk's process for 60 seconds at 1120×760.
+warms up for 30 seconds, then samples Yapfast's process for 60 seconds at 1120×760.
 A separate load process runs Bob and eight more accounts with generated tones,
-so only Talk's own memory is counted.
+so only Yapfast's own memory is counted.
 
 | Profile | GPU PSS | GPU RSS | GPU CPU | Software PSS | Software RSS | Software CPU |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ older or integrated GPUs, a large account, physical devices and game
 interference remain unmeasured. The client measured predates the Milestone 2
 chat features.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_connected.py --load-executable TEST_BIN --output .local/measure-connected'`.
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_connected.py --load-executable TEST_BIN --output .local/measure-connected'`.
 It measures both renderers unless `--renderer` names one.
 
 [Connected client after Milestone 2 and the UI overhaul, 2026-10-04](2026-10-04-linux-connected-overhaul.json)
@@ -142,7 +142,7 @@ Software. The cause of the increases was not profiled. Settled idle CPU stays
 below 0.4%, and the call profiles use no more CPU than before. Receiving
 messages in an empty channel took 1.47% with Software, against 0.60% before. In
 the seeded channel it took 0.67%. While a channel's history is shorter than the
-window, Talk anchors it to the bottom, so each new message moves every row.
+window, Yapfast anchors it to the bottom, so each new message moves every row.
 
 The ten-person call stays below 400 MiB. Idle PSS meets the 250 MiB target with
 both renderers, and so does Software RSS. GPU RSS is now 6.3 MiB over with an
@@ -154,11 +154,11 @@ Reproduce: the 2026-10-03 command above; add `--seed` for the seeded rows.
 
 [Joining a 20-person voice channel, 2026-10-05](2026-10-05-linux-voice-join-20.json)
 measures joins with one process per person (`testing/join_voice.py`). Alice runs
-the release Talk window, muted. The other 19 are separate release processes on
+the release Yapfast window, muted. The other 19 are separate release processes on
 the same voice stack. Each one publishes a tone in turn, sends digital silence
 with DTX the rest of the time, and decodes every stream it receives. People join
 12 s apart, so each arrival finds a settled call and rotates the media key. At
-full size one person leaves and rejoins three times. Talk, every participant,
+full size one person leaves and rejoins three times. Yapfast, every participant,
 Synapse and LiveKit share one host, so network latency is near zero.
 
 | Per join | Two peer connections | One peer connection |
@@ -181,28 +181,28 @@ The LiveKit connection took most of the join. With separate publisher and
 subscriber connections, the subscriber connected about one second after the
 publisher on every join. One peer connection removes that, and now the time to
 hear everyone is mostly key delivery through Matrix sync. In the 20-person call,
-the Talk window used 3.5% of one core and 243 MiB PSS (307 MiB RSS). Each
+the Yapfast window used 3.5% of one core and 243 MiB PSS (307 MiB RSS). Each
 headless participant used 3.6% and 26 MiB PSS (98 MiB RSS) without any UI.
 Steady state had no decryption failures and no participant who could not hear
 another. The 197 missing-key events came from audio that arrived just before its
-key during joins. Talk now shows a missing key only once it has lasted beyond the
+key during joins. Yapfast now shows a missing key only once it has lasted beyond the
 10 s grace period.
 
 On a real network every round trip adds latency, so absolute join times will be
 longer than here. Windows, real devices and a remote homeserver remain unmeasured.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/join.weston.log -- python3 testing/join_voice.py --participant-executable TEST_BIN --output .local/join-voice'`.
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/join.weston.log -- python3 testing/join_voice.py --participant-executable TEST_BIN --output .local/join-voice'`.
 Current code gives the one-peer-connection column.
 
 [A call with the window hidden or destroyed, 2026-10-05](2026-10-05-linux-window-background.json)
-measures what a tray could save (`testing/measure_background.py`). Talk has no
-tray yet, so a test-only window control (`TALK_UI_TEST_CONTROL`) hides the window,
-destroys it and creates it again while Talk stays in the call. Alice runs the
-release Talk window with GPU rendering, the sample conversation loaded, unmuted
+measures what a tray could save (`testing/measure_background.py`). Yapfast has no
+tray yet, so a test-only window control (`YAPFAST_UI_TEST_CONTROL`) hides the window,
+destroys it and creates it again while Yapfast stays in the call. Alice runs the
+release Yapfast window with GPU rendering, the sample conversation loaded, unmuted
 in a ten-person call. The other nine are headless participant processes, as in
 the join measurement. Each state settles for 30 s and is sampled for 60 s.
 
-| Talk in a ten-person call | PSS | RSS | CPU, one core |
+| Yapfast in a ten-person call | PSS | RSS | CPU, one core |
 | --- | --- | --- | --- |
 | Window open, voice view | 234 MiB | 305 MiB | 6.0% |
 | Window hidden | 234 MiB | 304 MiB | 5.8% |
@@ -214,20 +214,20 @@ the join measurement. Each state settles for 30 s and is sampled for 60 s.
 Hiding the window saves nothing. Slint keeps the whole component, its models and
 the renderer. Destroying it releases the component, but glibc keeps the freed
 heap, so memory does not drop until `malloc_trim` returns about 25 MiB. Most of
-Talk's memory is not tied to the window. Of the 234 MiB PSS with the window open,
-93 MiB is resident code from Talk's own binary (Skia, WebRTC, Slint and the Matrix
+Yapfast's memory is not tied to the window. Of the 234 MiB PSS with the window open,
+93 MiB is resident code from Yapfast's own binary (Skia, WebRTC, Slint and the Matrix
 SDK), 48 MiB is the GPU driver, and 86 MiB is heap and anonymous memory. Destroying
-the window unmaps neither the code nor the driver. Talk's anonymous memory falls
+the window unmaps neither the code nor the driver. Yapfast's anonymous memory falls
 from 98 MiB to 73 MiB after the trim. A headless participant with the same voice
 stack has 15 MiB. Its RSS counts the shared test binary in full, and its CPU leaves
 out audio devices and audio processing.
 
-So a tray that hides the window keeps Talk's full cost. Destroying the window
+So a tray that hides the window keeps Yapfast's full cost. Destroying the window
 and trimming the heap saves about a tenth. A small background process for the
 session and call, with the window in a separate process started on demand,
 would come close to the headless figures.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/background.weston.log -- python3 testing/measure_background.py --participant-executable TEST_BIN --people 10 --output .local/measure-background'`.
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/background.weston.log -- python3 testing/measure_background.py --participant-executable TEST_BIN --people 10 --output .local/measure-background'`.
 It renders with Skia GPU unless given `--renderer software`.
 
 [Where the memory goes: renderer and allocator, 2026-10-05](2026-10-05-linux-memory-renderer-allocator.json)
@@ -245,30 +245,30 @@ did not finish, so it could not profile the call itself.
 | GPU, arena cap built in | 238 MiB | 90 MiB | 78 MiB | 79 MiB | 2 | 5.5% |
 | Skia Software, glibc defaults | 131 MiB | 32 MiB | 18 MiB | 29 MiB | 43 | 5.6% |
 
-The renderer decides most of Talk's private memory. With GPU rendering the heap
+The renderer decides most of Yapfast's private memory. With GPU rendering the heap
 holds 78 MiB in use, against 18 MiB with Skia Software. The difference comes from
 the graphics driver and Skia's GPU state, not from the chat or the call. Hiding
 the window frees 24 MiB of that heap, but glibc keeps it, and it only goes back
 to the system after `malloc_trim`. In this voice view both renderers used the
 same CPU.
 
-glibc gave Talk's threads 47 arenas, which held 13 MiB more than was in use.
-Talk now caps them at two at startup unless `MALLOC_ARENA_MAX` is set. That
+glibc gave Yapfast's threads 47 arenas, which held 13 MiB more than was in use.
+Yapfast now caps them at two at startup unless `MALLOC_ARENA_MAX` is set. That
 removed the gap and 8 MiB of anonymous memory at the same CPU. PSS varies by
 about 10 MiB between runs of the same build, so the allocator columns are the
 better comparison. Lock contention in real-time audio threads was not measured
 beyond CPU and a clean call.
 
 Reproduce: the window command above three times, as is, with
-`--talk-env MALLOC_ARENA_MAX=2` and with `--renderer software`. The built-in cap
+`--yapfast-env MALLOC_ARENA_MAX=2` and with `--renderer software`. The built-in cap
 row is the first command on a build since the cap.
 
 [Scrolling a long history with each renderer, 2026-10-05](2026-10-05-linux-scroll-renderers.json)
 checks whether Skia Software keeps up with the GPU when it has to redraw
 (`testing/measure_scroll.py`). Bob posts the sample conversation and 300 more
-messages. Talk opens the channel and settles, then the private seat sends 60
+messages. Yapfast opens the channel and settles, then the private seat sends 60
 touchpad scroll events a second, changing direction every two seconds. Frame
-rates count the buffers Talk submitted to the compositor, not frames presented.
+rates count the buffers Yapfast submitted to the compositor, not frames presented.
 
 | Release build | Idle PSS | Scrolling PSS | Scrolling CPU | Buffers/s |
 | --- | --- | --- | --- | --- |
@@ -281,15 +281,15 @@ Skia Software used less CPU than the GPU at both sizes, and about 90 MiB less
 memory even with the window's pixel buffers about eight times larger. Both
 renderers submitted the same number of buffers. They stopped near 40 a second,
 below the 60 scroll events, so the input path or Slint's frame pacing sets that
-limit, not the renderer. Settled idle CPU stayed below 0.5% throughout. Talk now
+limit, not the renderer. Settled idle CPU stayed below 0.5% throughout. Yapfast now
 renders with Skia Software by default; `--renderer gpu` opts into the GPU.
 
 This harness found that scrolling up never left the newest message. When the
-list measured newly visible rows, Talk snapped back to the end before it saw the
+list measured newly visible rows, Yapfast snapped back to the end before it saw the
 scroll. The timeline now checks the position before following new messages, and
 `scrolling_up_leaves_the_latest_message` covers it.
 
-Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'TALK_FRAMEWORK_SURFACE_LOG=.local/measure-scroll-surface.ndjson scripts/run-framework-isolated --no-services --compositor-log .local/scroll.weston.log -- python3 testing/measure_scroll.py --fixture-executable TEST_BIN --output .local/measure-scroll --size 1120x760 --scale 1'`,
+Reproduce, with the test stack up and a release build: `nix-shell --impure experiments/frameworks/shell.nix --run 'YAPFAST_FRAMEWORK_SURFACE_LOG=.local/measure-scroll-surface.ndjson scripts/run-framework-isolated --no-services --compositor-log .local/scroll.weston.log -- python3 testing/measure_scroll.py --fixture-executable TEST_BIN --output .local/measure-scroll --size 1120x760 --scale 1'`,
 then `python3 testing/measure_scroll.py --frames .local/measure-scroll/results.json
 .local/measure-scroll-surface.ndjson` for the buffer rates. For the large rows,
 give `scripts/run-framework-isolated` `--width 3840 --height 2160 --scale 2` and
@@ -312,7 +312,7 @@ local checks and measurements use the `fast` profile; `release`, which is what
 people run, is for the shipped build's absolute numbers.
 
 Reproduce: build both profiles, then run the window command above and the
-scroll command with `--exe target/release/talk` and with `--exe target/fast/talk`.
+scroll command with `--exe target/release/yapfast` and with `--exe target/fast/yapfast`.
 
 [Matrix, Discord or both, 2026-10-06](2026-10-06-linux-networks.json) compares
 builds with only Matrix, only Discord, or both, made with the `matrix` and
@@ -343,14 +343,14 @@ Matrix-only and combined builds differ by 3 MiB, so Discord's connection costs
 little next to Matrix. Repeated, interleaved runs would pin both down.
 
 The test data is small on both sides: one server and 60 messages. A real
-Discord account's READY snapshot, which Talk keeps, and a real Matrix account's
+Discord account's READY snapshot, which Yapfast keeps, and a real Matrix account's
 stores both grow with the account. Voice isn't measured, because the fake has
 no voice server, and Discord calls also load libwebrtc's audio processing.
 
 Reproduce: with the test stack up, build each feature set with `--profile fast`
 (`--no-default-features --features desktop,matrix`, then `desktop,discord`,
-then the default) and copy each `target/fast/talk` to `target/networks/` as
-`talk-matrix`, `talk-discord` and `talk-combined`. Then `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
+then the default) and copy each `target/fast/yapfast` to `target/networks/` as
+`yapfast-matrix`, `yapfast-discord` and `yapfast-combined`. Then `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/networks.weston.log -- python3 testing/measure_networks.py --output .local/measure-networks --load-executable TEST_BIN'`.
 The script starts the fake Discord itself.
 
 [Startup payload and preview copies, 2026-10-09](2026-10-09-linux-startup-previews.json)
@@ -443,9 +443,9 @@ changes, both built with `nix develop path:./nix --command cargo build --locked
 through `scripts/ui-session start --discord --fake-args '--servers 100 --dms
 300 --images 3 --channels 12 --authors 60' --bin PATH`. For each run, open
 DMs with `scripts/ui-session do 'click 36 36'`, wait four seconds, and sample
-the PID in `.local/ui-session/talk.pid` with `scripts/measure-process PID
+the PID in `.local/ui-session/yapfast.pid` with `scripts/measure-process PID
 --seconds 5`. Repeat after opening the server with `'click 36 102'`. For
-allocator totals, set `TALK_UI_TEST_CONTROL` to a writable command file before
+allocator totals, set `YAPFAST_UI_TEST_CONTROL` to a writable command file before
 starting the private session and append `stats` after each sample. Use a fresh
 command file on each restart, and retain the same fake server and test data
 between runs with `scripts/ui-session relaunch`. The JSON records the build
@@ -529,9 +529,9 @@ with `nix develop path:./nix --command cargo build --locked --profile fast
 server with `'click 36 102'`. For chat switching, click sidebar rows at
 `x=180`, `y=148+36*index` for index 1 through 12, waiting one second each,
 and reopen #general at `(180,148)`. Move the pointer to `(550,25)` before
-captures. Sample `.local/ui-session/talk.pid` with `scripts/measure-process
+captures. Sample `.local/ui-session/yapfast.pid` with `scripts/measure-process
 PID --seconds 5`; allocator totals use the isolated test-control file as in
-the preceding record. Swap the saved binaries into `.local/ui-session/talk`
+the preceding record. Swap the saved binaries into `.local/ui-session/yapfast`
 by replacing the file and use `scripts/ui-session relaunch` to keep the same
 fake and display. Reset the fake's counters with `scripts/ui-session do
 'control media-requests'` before each relaunch. For the cold pair, remove only
@@ -540,13 +540,13 @@ the disposable `.local/ui-session/data/discord-pictures` cache before relaunch.
 Core, native UI and fake Discord integration regressions pass. The Matrix-only
 integration covers encrypted image metadata before viewport requests,
 preview decoding and release, forwarding and saved drafts against the local
-disposable test stack. The owner's live Talk process received no UI input
+disposable test stack. The owner's live Yapfast process received no UI input
 and was not restarted. Memory savings on that account are unmeasured.
 
 `scripts/check --fast` passed formatting, documentation links, Clippy for all
 network combinations, workspace tests (49 application, 129 core and 105
 protocol tests), desktop and headless builds and smoke checks. The private
-UI session was stopped and the Discord-only `target/fast/talk` rebuilt for
+UI session was stopped and the Discord-only `target/fast/yapfast` rebuilt for
 the owner's next launch.
 
 ## 2026-10-13: Discord server foundations
@@ -574,7 +574,7 @@ saving the binary outside `target`. For each run, start a fresh session with
 `scripts/ui-session start --discord --bin PATH --fake-args '--servers 100
 --dms 300 --images 3 --channels 12 --authors 60'`, then `scripts/ui-session
 do 'sleep 8' 'click 36 36' 'sleep 4' 'click 36 102' 'sleep 8' 'move 550 25'
-'sleep 4'`, and sample `.local/ui-session/talk.pid` with
+'sleep 4'`, and sample `.local/ui-session/yapfast.pid` with
 `scripts/measure-process PID --seconds 10`. Alternate the builds.
 
 ## 2026-10-13: jumping to a message
@@ -597,12 +597,12 @@ channel's first message.
 Means of three runs each. The jump grew the heap by 6.14 MiB before and by
 2.07 MiB after: two thirds less, because the timeline now holds about 25
 messages, and then what scrolling loads, rather than the 800 to 850 it
-loaded getting there. Talk's whole heap is small, as the rest of its memory
+loaded getting there. Yapfast's whole heap is small, as the rest of its memory
 is mapped code, fonts and Skia, so the peak RSS falls by less, 5.6 MiB. The
 second request is the window's first page `before` its oldest message,
 which comes back empty and shows the channel's start. Other worktrees' builds
 ran meanwhile and the host was swapping, so the sampled RSS and PSS fell
-whenever the kernel reclaimed Talk's file-backed pages; the record keeps
+whenever the kernel reclaimed Yapfast's file-backed pages; the record keeps
 them, but heap in use, which reclaim doesn't change, is the comparison.
 
 Reproduce: build each with `nix develop path:./nix --command cargo build
@@ -610,10 +610,10 @@ Reproduce: build each with `nix develop path:./nix --command cargo build
 saving the binary outside `target`. For each run, start a fresh session with
 `scripts/ui-session start --discord --bin PATH --fake-args '--extra 940'`,
 then `scripts/ui-session do 'sleep 8' 'click 36 102' 'sleep 8' 'move 550
-25' 'sleep 4'`, sample `.local/ui-session/talk.pid` with
+25' 'sleep 4'`, sample `.local/ui-session/yapfast.pid` with
 `scripts/measure-process PID --seconds 10`, and append `stats` to
 `.local/ui-session/window-control`, which prints glibc's `malloc_stats` to
-`.local/ui-session/talk.log`. Then `scripts/ui-session do 'control history'
+`.local/ui-session/yapfast.log`. Then `scripts/ui-session do 'control history'
 'click 774 24' 'sleep 2' 'move 700 125' 'sleep 1' 'click 735 128' 'sleep 20'
 'move 550 25' 'sleep 4'`, sample and print the statistics again, and read
 the requests with `scripts/ui-session do 'get history'`. Alternate the builds.
@@ -649,8 +649,8 @@ measures Alice's `fast` build in a five-person call on the local stack as the
 others turn their cameras on, then Alice, then everyone off, twice. The load
 accounts film the 640×360 test pattern; each tile shows about 245×137 at
 1120×760. The host was short of memory during the run: the kernel swapped part
-of Talk out and dropped its library pages, so RSS and PSS fell as cameras
-turned on. The table gives Talk's anonymous memory plus its swap, which those
+of Yapfast out and dropped its library pages, so RSS and PSS fell as cameras
+turned on. The table gives Yapfast's anonymous memory plus its swap, which those
 don't move, and CPU as a percentage of one core.
 
 | Profile | Software memory | Software CPU | GPU memory | GPU CPU | Threads |
@@ -668,7 +668,7 @@ its incoming stream and its frame decryptor. Remote cameras cost little
 memory, because each frame is decoded into WebRTC's own buffer and converted
 straight into the tile's. Alice's own camera costs about 16 MiB, nearly all
 of it LiveKit's VP8 simulcast encoder. CPU on this host was noisy: another
-Talk session shared it.
+Yapfast session shared it.
 
 Turning cameras off mutes the tracks and pauses the streams at the server, so
 CPU returns to the call's own, but the encoder and the idle decoders stay
@@ -679,7 +679,7 @@ the connection. Muting keeps the second round level. A later quick run with
 the camera source's pool emptied and the heap trimmed on camera-off returned
 3 MiB of it (53.4 to 50.4 MiB, Software).
 
-Reproduce, with the test stack up: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_cameras.py --load-executable TEST_BIN --output .local/measure-cameras'`.
+Reproduce, with the test stack up: `nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" --compositor-log .local/measure.weston.log -- python3 testing/measure_cameras.py --load-executable TEST_BIN --output .local/measure-cameras'`.
 
 ## 2026-10-13: Discord call cameras
 
@@ -738,7 +738,7 @@ The [record](2026-10-14-linux-thread-list.json) compares `8523e9b` with the
 list of threads at `8abb501`. Each active thread the service knows now
 keeps its newest message (its id, author and up to 200 bytes of text), its
 member count and three member ids: 48 bytes more in the thread, plus about
-300 bytes of text and ids, and only for active threads in servers Talk
+300 bytes of text and ids, and only for active threads in servers Yapfast
 subscribed to. The list keeps its archived pages, search results and the
 channel objects it found only while it's open. Both Discord-only `fast`
 builds ran on this change's fake with #general open, and each figure is
@@ -763,7 +763,7 @@ is bounded at 2 MiB by default. This isn't confirmed.
 Reproduce: start each build's binary with `scripts/ui-session start
 --discord --bin BUILD`, open #general, append `stats` to
 `.local/ui-session/window-control`, and read the in-use bytes from
-`.local/ui-session/talk.log`; for this change, open the list, scroll it to
+`.local/ui-session/yapfast.log`; for this change, open the list, scroll it to
 its end and read again, then close it and read again.
 
 ## 2026-10-14: Closing the window to the tray
@@ -774,7 +774,7 @@ in #general (`--servers 4 --dms 20 --images 4`), through
 `testing/measure_tray.py`: #general open and idle, then the window closed to
 the [tray](../tray.md), which drops it and trims the heap, sampled for a
 minute, then opened again from the tray; then the same in the Lounge call.
-Memory is anonymous memory plus swap, which is what Talk itself holds and
+Memory is anonymous memory plus swap, which is what Yapfast itself holds and
 close to the private bytes Windows reports. Heap in use is glibc's. Skia
 Software, the default renderer, is the mean of three runs (the range in
 brackets); Skia GPU is one run.
@@ -800,7 +800,7 @@ that a window made again doesn't, so after that a window costs about
 0.25% in the call, against 0.2–0.4% open. PSS fell by 6 MiB (Software) and
 24 MiB (GPU) on the first close.
 
-Real Windows is unmeasured: there Talk compacts the heap and empties the
+Real Windows is unmeasured: there Yapfast compacts the heap and empties the
 working set, which Task Manager's Memory column, the private working set,
 shows at once.
 

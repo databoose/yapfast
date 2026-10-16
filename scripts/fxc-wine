@@ -17,8 +17,8 @@ for index, argument in enumerate(args[:-1]):
         args[index + 1] = windows_path(args[index + 1])
 args[-1] = windows_path(args[-1])
 environment = os.environ.copy()
-environment["WINEPREFIX"] = os.environ["TALK_FXC_WINEPREFIX"]
+environment["WINEPREFIX"] = os.environ["YAPFAST_FXC_WINEPREFIX"]
 environment["WINEDEBUG"] = "-all"
 environment["WINEDLLOVERRIDES"] = "d3dcompiler_47=n"
-result = subprocess.run(["wine", os.environ["TALK_FXC_EXE"], *args], env=environment, timeout=60)
+result = subprocess.run(["wine", os.environ["YAPFAST_FXC_EXE"], *args], env=environment, timeout=60)
 sys.exit(result.returncode)

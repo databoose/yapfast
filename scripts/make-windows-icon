@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Draws packaging/windows/talk.ico from packaging/icon.svg, at each size
+# Draws packaging/windows/yapfast.ico from packaging/icon.svg, at each size
 # Windows asks for, from 16 px in the title bar to 256 px in Explorer.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -11,4 +11,4 @@ for size in "${sizes[@]}"; do
     magick -background none -density 1200 packaging/icon.svg -resize "${size}x${size}" "PNG32:$work/$size.png"
     pictures+=("$work/$size.png")
 done
-magick "${pictures[@]}" packaging/windows/talk.ico
+magick "${pictures[@]}" packaging/windows/yapfast.ico

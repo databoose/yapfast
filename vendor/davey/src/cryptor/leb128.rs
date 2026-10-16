@@ -16,7 +16,7 @@ pub fn read_leb128(slice: &[u8]) -> Option<(u64, usize)> {
   let mut size = 0;
 
   for &byte in slice {
-    // Talk: more than ten bytes overflow a u64.
+    // Yapfast: more than ten bytes overflow a u64.
     if shift >= 64 {
       return None;
     }

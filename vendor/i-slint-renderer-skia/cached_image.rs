@@ -38,7 +38,7 @@ pub(crate) fn as_skia_image(
     let image_inner: &ImageInner = (&image).into();
     match image_inner {
         ImageInner::None => None,
-        // Talk: a picture made in code, such as a video frame, which Slint
+        // Yapfast: a picture made in code, such as a video frame, which Slint
         // never caches, is read where it is rather than copied each time.
         ImageInner::EmbeddedImage { buffer, cache_key: ImageCacheKey::Invalid } => {
             borrowed_skia_image(buffer).or_else(|| image_buffer_to_skia_image(buffer))
@@ -107,14 +107,14 @@ pub(crate) fn as_skia_image(
 }
 
 std::thread_local! {
-    /// Talk: each Skia image that reads a Slint buffer in place, with the
+    /// Yapfast: each Skia image that reads a Slint buffer in place, with the
     /// buffer, which keeps the pixels alive and unchanged while the image
     /// lives: Slint copies a shared buffer before anyone writes to it.
     static BORROWED: core::cell::RefCell<Vec<(skia_safe::Image, SharedImageBuffer)>> =
         Default::default();
 }
 
-/// Talk: lets go of the buffers whose images nothing but [`BORROWED`] holds.
+/// Yapfast: lets go of the buffers whose images nothing but [`BORROWED`] holds.
 pub(crate) fn release_borrowed() {
     // An image whose count is one may go to another thread: skia-safe's
     // public way to ask whether anything else holds it.
@@ -122,7 +122,7 @@ pub(crate) fn release_borrowed() {
     BORROWED.with_borrow_mut(|borrowed| borrowed.retain(|(image, _)| !image.can_send()));
 }
 
-/// Talk: a Skia image reading an RGBA buffer's pixels in place.
+/// Yapfast: a Skia image reading an RGBA buffer's pixels in place.
 fn borrowed_skia_image(buffer: &SharedImageBuffer) -> Option<skia_safe::Image> {
     let (pixels, alpha_type) = match buffer {
         SharedImageBuffer::RGBA8(pixels) => (pixels, skia_safe::AlphaType::Unpremul),

@@ -12,12 +12,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-native_target = os.environ.get('TALK_SKIA_TARGET', 'linux')
+native_target = os.environ.get('YAPFAST_SKIA_TARGET', 'linux')
 pins = {
     'linux': ('x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan',
               '9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3'),
     'windows': ('x86_64-pc-windows-msvc-d3d-ganesh-gl-jpegd-jpege-pdf-static',
-                os.environ.get('TALK_SKIA_STATIC_SHA256')),
+                os.environ.get('YAPFAST_SKIA_STATIC_SHA256')),
 }
 suffix, source_sha256 = pins[native_target]
 if not source_sha256:
@@ -25,13 +25,13 @@ if not source_sha256:
 key = 'b7f043e0b1e2a850e702-' + suffix
 package = 'skia-binaries-' + key + '.tar.gz'
 old_symbol = 'jpeg_natural_order'
-new_symbol = 'talk_skia_jpeg_natural_order'
-target = Path(os.environ['TALK_SKIA_OUTPUT'])
+new_symbol = 'yapfast_skia_jpeg_natural_order'
+target = Path(os.environ['YAPFAST_SKIA_OUTPUT'])
 archive_path = target / package
 upstream_path = target / 'upstream' / package
-stamp_path = target / 'talk-skia-native.json'
+stamp_path = target / 'yapfast-skia-native.json'
 script_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-objcopy = os.environ.get('TALK_SKIA_OBJCOPY') or shutil.which('llvm-objcopy')
+objcopy = os.environ.get('YAPFAST_SKIA_OBJCOPY') or shutil.which('llvm-objcopy')
 if not objcopy:
     raise SystemExit('Pinned development shell must provide LLVM objcopy')
 objcopy_version = subprocess.check_output([objcopy, '--version'], text=True).strip()
@@ -51,7 +51,7 @@ if stamp_path.is_file() and archive_path.is_file() and upstream_path.is_file():
         raise SystemExit(0)
 
 def symbols(path):
-    result = subprocess.run([os.environ.get('TALK_SKIA_NM', 'nm'), '-A', str(path)], check=True, text=True, capture_output=True)
+    result = subprocess.run([os.environ.get('YAPFAST_SKIA_NM', 'nm'), '-A', str(path)], check=True, text=True, capture_output=True)
     # Ignore the varying archive path; preserve each member and its symbol table.
     return sorted(line[len(str(path)):] for line in result.stdout.splitlines())
 
@@ -136,7 +136,7 @@ target.parent.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='skia-native-prepare-', dir=target.parent) as temporary:
     temporary = Path(temporary)
     # Download from the upstream release, rather than modifying a Cargo build output.
-    source = Path(os.environ['TALK_SKIA_SOURCE']).read_bytes()
+    source = Path(os.environ['YAPFAST_SKIA_SOURCE']).read_bytes()
     if hashlib.sha256(source).hexdigest() != source_sha256:
         raise SystemExit('Pinned Skia native archive checksum mismatch')
     with tarfile.open(fileobj=io.BytesIO(source)) as archive:

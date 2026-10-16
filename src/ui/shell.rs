@@ -1,5 +1,5 @@
 //! The window, which closing to the tray drops and opening makes again, and
-//! the tray icon that keeps Talk running meanwhile, with its session, calls,
+//! the tray icon that keeps Yapfast running meanwhile, with its session, calls,
 //! notifications and sounds.
 
 use std::rc::Weak;
@@ -12,14 +12,14 @@ thread_local! {
     static SHELL: RefCell<Weak<Shell>> = const { RefCell::new(Weak::new()) };
 }
 
-/// Talk's window while it's open, and what makes it again.
+/// Yapfast's window while it's open, and what makes it again.
 pub(super) struct Shell {
-    window: RefCell<Option<TalkWindow>>,
+    window: RefCell<Option<YapfastWindow>>,
     pub(super) adapter: Rc<RefCell<Adapter>>,
-    /// Shown in every window: why Talk draws with Skia Software, if the GPU failed.
+    /// Shown in every window: why Yapfast draws with Skia Software, if the GPU failed.
     notice: SharedString,
     gpu: bool,
-    /// The renderer setting changed and Talk restarts to use it.
+    /// The renderer setting changed and Yapfast restarts to use it.
     restart: Cell<bool>,
     /// What the closed window showed that the application doesn't keep.
     view: RefCell<Option<View>>,
@@ -35,9 +35,9 @@ struct View {
 }
 
 impl Shell {
-    /// Takes the first window, bound and refreshed, and puts Talk in the tray.
+    /// Takes the first window, bound and refreshed, and puts Yapfast in the tray.
     pub(super) fn new(
-        window: TalkWindow,
+        window: YapfastWindow,
         adapter: Rc<RefCell<Adapter>>,
         notice: SharedString,
         gpu: bool,
@@ -68,12 +68,12 @@ impl Shell {
         shell
     }
 
-    /// Whether Talk ends to restart with another renderer.
+    /// Whether Yapfast ends to restart with another renderer.
     pub(super) fn restarting(&self) -> bool {
         self.restart.get()
     }
 
-    pub(super) fn window(&self) -> Option<TalkWindow> {
+    pub(super) fn window(&self) -> Option<YapfastWindow> {
         self.window
             .borrow()
             .as_ref()
@@ -81,8 +81,8 @@ impl Shell {
     }
 
     /// What every window does beyond its callbacks: closes to the tray, and
-    /// restarts Talk.
-    fn watch(self: &Rc<Self>, window: &TalkWindow) {
+    /// restarts Yapfast.
+    fn watch(self: &Rc<Self>, window: &YapfastWindow) {
         let shell = Rc::downgrade(self);
         window.window().on_close_requested(move || {
             let shell = shell.clone();
@@ -103,7 +103,7 @@ impl Shell {
         });
     }
 
-    /// The window's close button: Talk goes on in the tray, or without a tray
+    /// The window's close button: Yapfast goes on in the tray, or without a tray
     /// to show it, or with the setting off, quits.
     pub(super) fn close(&self) {
         let to_tray = {
@@ -147,7 +147,7 @@ impl Shell {
     }
 
     /// Brings the window to the front, making it again if it was closed.
-    pub(super) fn open(self: &Rc<Self>) -> Option<TalkWindow> {
+    pub(super) fn open(self: &Rc<Self>) -> Option<YapfastWindow> {
         if let Some(window) = self.window() {
             let _ = window.show();
             window.window().set_minimized(false);
@@ -174,8 +174,8 @@ impl Shell {
     /// Makes the window again, as the closed one was: the same size and place,
     /// the conversation scrolled to the same message, and everything else from
     /// the application's state.
-    fn make(self: &Rc<Self>) -> Result<TalkWindow, slint::PlatformError> {
-        let window = TalkWindow::new()?;
+    fn make(self: &Rc<Self>) -> Result<YapfastWindow, slint::PlatformError> {
+        let window = YapfastWindow::new()?;
         let view = self.view.borrow_mut().take();
         if let Some(view) = &view {
             let native = window.window();
@@ -276,8 +276,8 @@ impl Adapter {
             if ringing(state).next().is_none() || state.do_not_disturb() {
                 self.ringer = None;
             } else if self.ringer.is_none() {
-                self.ringer = talk_core::ring::Ringer::start(
-                    talk_core::ring::Tone::Incoming,
+                self.ringer = yapfast_core::ring::Ringer::start(
+                    yapfast_core::ring::Tone::Incoming,
                     state.voice.speaker.as_deref(),
                 )
                 .inspect_err(|error| tracing::warn!(%error, "could not ring"))
@@ -288,12 +288,12 @@ impl Adapter {
 
     /// The window's title, counting the mentions waiting, as a browser
     /// tab's does; every message in a DM counts as one.
-    pub(super) fn show_title(&self, window: &TalkWindow) {
+    pub(super) fn show_title(&self, window: &YapfastWindow) {
         let waiting: u64 = self.app.state.rooms.iter().map(|room| room.mentions).sum();
         let title = match waiting {
-            0 => "Talk".to_owned(),
-            1..=99 => format!("({waiting}) Talk"),
-            _ => "(99+) Talk".to_owned(),
+            0 => "Yapfast".to_owned(),
+            1..=99 => format!("({waiting}) Yapfast"),
+            _ => "(99+) Yapfast".to_owned(),
         };
         if window.get_window_title() != title.as_str() {
             window.set_window_title(title.into());

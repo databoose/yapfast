@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Installs Talk's desktop entry and icon for this user, so the launcher lists
-# Talk and the desktop shows its icon on the window, which Wayland takes only
-# from the entry. Runs the given executable, by default target/release/talk.
+# Installs Yapfast's desktop entry and icon for this user, so the launcher lists
+# Yapfast and the desktop shows its icon on the window, which Wayland takes only
+# from the entry. Runs the given executable, by default target/release/yapfast.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 id=io.github.yapfast.Yapfast
-executable=$(realpath "${1:-target/release/talk}")
-[ -x "$executable" ] || { echo "no executable at $executable; build Talk first" >&2; exit 1; }
+executable=$(realpath "${1:-target/release/yapfast}")
+[ -x "$executable" ] || { echo "no executable at $executable; build Yapfast first" >&2; exit 1; }
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 install -Dm644 packaging/icon.svg "$data/icons/hicolor/scalable/apps/$id.svg"
 mkdir -p "$data/applications"

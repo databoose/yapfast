@@ -8,20 +8,20 @@ GPUI package. Recheck the new UI on the tester's PC.
 
 ## Run the package
 
-1. Copy `target/dist/Talk-0.1.0-windows-x64.zip` to the tester's PC.
-2. Extract the whole ZIP, then double-click `talk.exe` in the extracted folder.
+1. Copy `target/dist/Yapfast-0.1.0-windows-x64.zip` to the tester's PC.
+2. Extract the whole ZIP, then double-click `yapfast.exe` in the extracted folder.
 3. Sign in as `bob`, using the password supplied privately by the account owner.
-4. Open **Talk beta**, then **general** for encrypted text or **Lounge** for voice.
+4. Open **Yapfast beta**, then **general** for encrypted text or **Lounge** for voice.
 
 The package needs no Rust or Visual Studio installation. It includes the native
-media code and Skia renderer. Opened from Explorer, Talk shows only its
-window and writes its diagnostics to `talk.log` in its data folder,
-`%LOCALAPPDATA%\Talk\Talk\data`, or the `--data-dir` folder. The log grows
+media code and Skia renderer. Opened from Explorer, Yapfast shows only its
+window and writes its diagnostics to `yapfast.log` in its data folder,
+`%LOCALAPPDATA%\Yapfast\Yapfast\data`, or the `--data-dir` folder. The log grows
 across starts and starts over past 4 MiB.
-Started from a console, as `run-talk.cmd` does, Talk writes there instead.
-If it closes immediately, run `run-talk.cmd` to keep the error visible.
-Talk renders with Skia Software. Use `run-talk.cmd --renderer gpu` to try the
-GPU; if it cannot start, Talk switches back to Skia Software and says so in the
+Started from a console, as `run-yapfast.cmd` does, Yapfast writes there instead.
+If it closes immediately, run `run-yapfast.cmd` to keep the error visible.
+Yapfast renders with Skia Software. Use `run-yapfast.cmd --renderer gpu` to try the
+GPU; if it cannot start, Yapfast switches back to Skia Software and says so in the
 window.
 
 Passwords, recovery keys and saved sessions are excluded from the package.
@@ -33,13 +33,13 @@ device verification and recovery are being tested.
 
 With Alice signed in on Linux and Bob on Windows:
 
-1. Exchange messages in general and confirm they survive restarting Talk.
+1. Exchange messages in general and confirm they survive restarting Yapfast.
 2. Alice joins Lounge, stays muted and waits. Bob joins later and should see Alice.
 3. Choose microphone and speakers in the voice settings. Use headphones.
 4. Unmute both people and confirm each can hear the other.
 5. Check mute, deafen, leaving, and rejoining. Browse general while voice stays connected.
 6. Choose a camera in the voice settings, try "Test video", then turn the camera
-   on in Lounge. Each should see the other's camera. Restart Talk and check the
+   on in Lounge. Each should see the other's camera. Restart Yapfast and check the
    camera is still chosen.
 7. Record Windows version, GPU/driver, audio devices, cameras, input/copy/paste behavior,
    window resizing, and any error text. Never include passwords or recovery keys.
@@ -64,12 +64,12 @@ by this confirmation.
 ## Discord voice on Windows
 
 Discord voice, the input meter and the Discord input sensitivity meter,
-ringing, Talk's sounds, and a watched stream's or a video's sound use WASAPI
-on Windows, in `crates/talk-core/src/audio_io/wasapi.rs`. Each stream is
-shared-mode and event-driven: the audio engine converts between Talk's 48 kHz
+ringing, Yapfast's sounds, and a watched stream's or a video's sound use WASAPI
+on Windows, in `crates/yapfast-core/src/audio_io/wasapi.rs`. Each stream is
+shared-mode and event-driven: the audio engine converts between Yapfast's 48 kHz
 and the device's format, and reading or writing waits for its event on the
 thread that already did the reading or writing on Linux, copying straight
-between Talk's buffers and the engine's. WebRTC's Windows device module names
+between Yapfast's buffers and the engine's. WebRTC's Windows device module names
 each device by its endpoint id (`{0.0.0.00000000}.{…}` for speakers,
 `{0.0.1.00000000}.{…}` for microphones), so the chosen device opens directly
 by that id; none is the console default. Go Live's sound is in
@@ -86,15 +86,15 @@ PulseAudio of null sinks, so nothing reached real speakers:
   WebRTC's echo cancellation and gain control with DeepFilterNet, gives the
   same bytes as on Linux.
 - `discord_audio::tests::a_call_sends_what_the_microphone_hears`, against
-  `testing/fake_discord.ts`: Talk joins the Lounge, unmutes, and the fake
+  `testing/fake_discord.ts`: Yapfast joins the Lounge, unmutes, and the fake
   receives 56–91 Opus packets that aren't silence from two seconds of beeps,
   with the speaking flag, in three runs out of three.
-- The rest of `talk-core`'s tests pass, except
+- The rest of `yapfast-core`'s tests pass, except
   `frames::tests::frames_pass_from_writer_to_reader`, which
   [Go Live on Windows](#go-live-on-windows) fixed.
 
 Run them from the Windows shell with `cargo xwin test --no-run --profile fast
---target x86_64-pc-windows-msvc -p talk-core --lib`, then run the test
+--target x86_64-pc-windows-msvc -p yapfast-core --lib`, then run the test
 executable under Wine with `PULSE_SERVER` naming the private PulseAudio.
 
 Wine's capture starts 0.3–1 s after it's opened, so the first moments a
@@ -106,30 +106,30 @@ communications ducking setting turns other sound down during a call.
 ## Go Live on Windows
 
 Sharing, watching and playing a video run in the stream worker, as on Linux:
-Talk starts its own executable with `--stream-worker`, which writes its logs
-where Talk does: Talk's console, or Talk's log file. The video frames reach
+Yapfast starts its own executable with `--stream-worker`, which writes its logs
+where Yapfast does: Yapfast's console, or Yapfast's log file. The video frames reach
 the window through a temporary file both processes map. Windows won't delete
-a mapped file, so there Talk creates it with `FILE_FLAG_DELETE_ON_CLOSE` and
+a mapped file, so there Yapfast creates it with `FILE_FLAG_DELETE_ON_CLOSE` and
 `FILE_ATTRIBUTE_TEMPORARY`, which keeps it in memory while it fits, and
 Windows removes it once both processes close it. On Linux it's still unlinked once the worker has it open.
 
-Windows has no screen sharing dialog for Talk to use, so the share menu
+Windows has no screen sharing dialog for Yapfast to use, so the share menu
 lists what there is to share above the resolution: the screens as pictures,
 two to a row, named "Entire screen" (or "Screen 1", "Screen 2", … with
-several), then each window with a title. Talk's own windows aren't listed.
+several), then each window with a title. Yapfast's own windows aren't listed.
 libwebrtc's capturers make the list, on a short-lived thread as the menu
 opens, and the worker finds the picked one by its id. The menu opens with
 the screens' names; their pictures come from a worker job (`Job::Glance`)
 that takes one frame of each screen, scaled down to its card, and exits, so
 capturing them takes memory only until they're in. A window closed after it was listed ends sharing with "That screen
-or window is gone." Without a pick, Talk shares the first screen, as before.
+or window is gone." Without a pick, Yapfast shares the first screen, as before.
 
 Go Live's sound comes from WASAPI process loopback: one stream of everything
-Windows plays except Talk's own process tree, the Talk window and its
+Windows plays except Yapfast's own process tree, the Yapfast window and its
 workers. It needs Windows 10's 2004 update or later. Unlike Linux, where
 each application is heard on its own and Discord's own client is left out,
 Windows mixes every other application into one stream and can leave out only
-Talk. Where Windows refuses process loopback, Talk shares without sound and
+Yapfast. Where Windows refuses process loopback, Yapfast shares without sound and
 logs why, as it does on Linux without a PulseAudio server.
 
 Checked under Wine 11.18 Staging on 2026-10-13:
@@ -148,14 +148,14 @@ Checked under Wine 11.18 Staging on 2026-10-13:
   "File not found" and sharing goes on without sound. On Linux the same test
   hears a tone played by another process (880 zero crossings for 880) and
   not the one it plays itself.
-- The Discord-only `talk.exe` (`--no-default-features --features
+- The Discord-only `yapfast.exe` (`--no-default-features --features
   desktop,discord`) on `scripts/ui-session --discord`, whose `--bin` was a
   script that unsets `DISPLAY`, so Wine uses its Wayland driver, starts
-  Notepad and Talk with `wine explorer /desktop=talk,1280x800`, and waits on
+  Notepad and Yapfast with `wine explorer /desktop=yapfast,1280x800`, and waits on
   `wineserver -w`. Without the Wine desktop, Weston's kiosk shell gives
-  Notepad the pointer from behind Talk. Talk joins the
+  Notepad the pointer from behind Yapfast. Yapfast joins the
   Lounge on the fake Discord, and the share menu opens above the button with
-  "Entire screen" and "Untitled - Notepad", leaving out Talk's console.
+  "Entire screen" and "Untitled - Notepad", leaving out Yapfast's console.
   Going live with Notepad starts the worker; the fake receives 1,064 H264
   frames at 1280×800 with 12 keyframes and none undecryptable, and no sound.
   Stopping ends the worker and leaves no frames file in the temporary folder.
@@ -171,7 +171,7 @@ virtual machine.
 Real Windows needs checking for: the window list's contents and titles,
 sharing a window that's minimized, moved to another screen or closed while
 shared, screens on mixed-DPI setups, Windows Graphics Capture's yellow
-border, process loopback hearing other applications and leaving out Talk's
+border, process loopback hearing other applications and leaving out Yapfast's
 own voices, and the worker's start-up time from a packaged build.
 
 ## Cameras on Windows
@@ -186,23 +186,23 @@ testsrc2=size=1280x720:rate=30 -pix_fmt bgr24 -f v4l2 /dev/videoN`. It also
 lists a USB webcam, which then fails to open.
 
 - `camera::tests::the_test_pattern_films_until_dropped` passes.
-- `films_a_real_camera` with `TALK_TEST_CAMERA` naming the loopback films 32–34
+- `films_a_real_camera` with `YAPFAST_TEST_CAMERA` naming the loopback films 32–34
   frames in a second at 1280×720. A frame dumped from it shows the picture
   the right way up, not mirrored, and in its colours.
-- The packaged `talk.exe` passes `--help` and `--smoke-test`, and
+- The packaged `yapfast.exe` passes `--help` and `--smoke-test`, and
   `--audio-devices` lists the test pattern, the webcam and the loopback.
-- The Discord-only `talk.exe` on `scripts/ui-session --discord`, through a
+- The Discord-only `yapfast.exe` on `scripts/ui-session --discord`, through a
   `--bin` script like Go Live's below. Settings list the cameras, "Test
-  video" shows the loopback, and the choice is still there after Talk
+  video" shows the loopback, and the choice is still there after Yapfast
   restarts. In a DM call with Bob on the fake Discord, the webcam that won't
   open says "Could not start your camera" and the call goes on. With the
   loopback, the fake receives 671 H264 frames at 1280×720 with 8 keyframes
   and none undecryptable; Bob's camera shows in his tile; turning the camera
-  off stops it, and the `talk-camera` thread and Wine's capture threads go.
-- The full `talk.exe` in a Matrix call on the local stack (`scripts/test-stack
+  off stops it, and the `yapfast-camera` thread and Wine's capture threads go.
+- The full `yapfast.exe` in a Matrix call on the local stack (`scripts/test-stack
   up`), signed in as a new account whose first device it is, so it's
   verified: the camera publishes a 1280×720 VP8 track with three simulcast
-  layers to LiveKit, and a Linux Talk in the same call shows it moving. The
+  layers to LiveKit, and a Linux Yapfast in the same call shows it moving. The
   Windows build shows the Linux participant's camera too.
 
 Only real Windows can check a real camera through DirectShow's kernel
@@ -219,19 +219,19 @@ The notification-area icon is `Shell_NotifyIconW` on a hidden window of the
 UI thread; see [the tray](tray.md#windows).
 
 Checked under Wine 11.18 Staging on 2026-10-14, with the Discord-only
-`fast` `talk.exe` on `scripts/ui-session --discord`, through a `--bin`
-script that runs it in `wine explorer /desktop=talk,1120x760` and sends its
+`fast` `yapfast.exe` on `scripts/ui-session --discord`, through a `--bin`
+script that runs it in `wine explorer /desktop=yapfast,1120x760` and sends its
 output to a file. Without the Wine desktop, winit can't create its window
 there (OS error 14007).
 
 - Closing the window drops it, and Wine's notification area, a window of its
   own in Weston's kiosk shell, shows the marigold logo with the unread dot.
 - A left click on the icon opens the window again.
-- A right click reaches Talk (`WM_RBUTTONDOWN`, `WM_RBUTTONUP`) and
+- A right click reaches Yapfast (`WM_RBUTTONDOWN`, `WM_RBUTTONUP`) and
   `TrackPopupMenu` runs, but Wine's Wayland driver never shows the menu,
   most likely because its owner is a window that was never shown. Until the
-  menu closes, its loop holds Talk's UI thread, as every Win32 menu does; on
-  Windows a click anywhere else closes it. So Open Talk, Disconnect and Quit
+  menu closes, its loop holds Yapfast's UI thread, as every Win32 menu does; on
+  Windows a click anywhere else closes it. So Open Yapfast, Disconnect and Quit
   in the menu are untested on Windows.
 
 [The tray](tray.md#windows) lists what to check on real Windows.
@@ -247,7 +247,7 @@ while dragged: animations stood still, and pictures that arrived waited.
 winit reports while Windows is moving or sizing the window
 (`GetGUIThreadInfo`, `GUI_INMOVESIZE`). Windows calls it from its own loop
 every 16 ms, and it advances Slint's timers and animations and redraws what
-animates, until the window stops moving. `TALK_LOG=talk=debug` logs when it
+animates, until the window stops moving. `YAPFAST_LOG=yapfast=debug` logs when it
 starts and stops.
 
 Wine doesn't reproduce the freeze. In its own desktop (`wine explorer
@@ -265,12 +265,12 @@ gives only GCC-style compilers) and whose symbols would clash with the libopus
 inside libwebrtc's archive. The Windows Nix shell now gives `opus2` an empty
 `opus.lib` through `LIBOPUS_LIB_DIR`, so it uses libwebrtc's copy and the
 executable holds one libopus. Linux is unchanged. Since Discord calls moved
-onto Talk's own voice connection, nothing builds `opus2`: Talk calls
-libwebrtc's libopus directly (`talk_discord::opus`), and the shell's empty
+onto Yapfast's own voice connection, nothing builds `opus2`: Yapfast calls
+libwebrtc's libopus directly (`yapfast_discord::opus`), and the shell's empty
 library is gone.
 
 `--smoke-test` now encodes 100 ms of a tone with Opus, now through
-`talk_discord::opus`, and decodes it again. It and `--help` passed under Wine 10.0 in a private prefix
+`yapfast_discord::opus`, and decodes it again. It and `--help` passed under Wine 10.0 in a private prefix
 without a display, for both the `fast` and the release build. The release
 executable is 211.3 MiB and the portable ZIP 141.3 MiB; Discord voice,
 DeepFilterNet's model and Go Live's codecs account for the growth since
@@ -342,7 +342,7 @@ symbol name. It checks runtime directives and symbols, and preserves every
 native section's code/data and relocations through the rename. The GPUI FXC/Wine
 shader build is no longer part of this client.
 
-A [one-line WebRTC patch](../vendor/webrtc-sys/README.talk.md) also fixes an
+A [one-line WebRTC patch](../vendor/webrtc-sys/README.yapfast.md) also fixes an
 MSVC class/struct declaration mismatch, matching the upstream resolution.
 
 The package contains dependency notices, original licenses, a source snapshot

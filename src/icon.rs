@@ -1,4 +1,4 @@
-//! Talk's icon on its window. Linux desktops find it from the window's app ID,
+//! Yapfast's icon on its window. Linux desktops find it from the window's app ID,
 //! which names the desktop entry in packaging/linux; Windows shows the
 //! executable's icon (build.rs) in Explorer, and the window loads the same one.
 
@@ -40,7 +40,7 @@ mod platform {
         GetSystemMetrics, SM_CXICON, SM_CXSMICON, SYSTEM_METRICS_INDEX,
     };
 
-    /// The icon in packaging/windows/talk.rc.
+    /// The icon in packaging/windows/yapfast.rc.
     const ICON: u16 = 1;
 
     /// The title bar's small icon and the taskbar's large one, each loaded at

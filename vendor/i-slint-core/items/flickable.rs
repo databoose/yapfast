@@ -49,15 +49,15 @@ const DECELERATION: f32 = 2000.;
 /// information to derive a fling velocity.
 /// The unit is: millisecond
 const WHEEL_SCROLL_DURATION: Duration = Duration::from_millis(180);
-/// Talk: how far the winit backend scrolls for one notch of a wheel, in logical pixels.
+/// Yapfast: how far the winit backend scrolls for one notch of a wheel, in logical pixels.
 const WHEEL_NOTCH: f32 = 60.;
-/// Talk: a wheel spun faster than this, in notches a second, scrolls farther for each notch,
+/// Yapfast: a wheel spun faster than this, in notches a second, scrolls farther for each notch,
 /// in proportion, so a hard spin crosses a long history quickly and a slow one keeps its
 /// precision.
 const WHEEL_ACCELERATION_START: f32 = 12.;
-/// Talk: the most a notch scales.
+/// Yapfast: the most a notch scales.
 const WHEEL_MOST_ACCELERATION: f32 = 6.;
-/// Talk: how long a notch counts towards the wheel's speed: its weight falls by e in this time.
+/// Yapfast: how long a notch counts towards the wheel's speed: its weight falls by e in this time.
 const WHEEL_SPEED_MEMORY: Duration = Duration::from_millis(200);
 /// The maximum duration between a move and a release event to start an animation
 /// If the duration is larger than this value, no animation will be executed because
@@ -151,10 +151,10 @@ impl Item for Flickable {
         self_rc: &ItemRc,
         _: &mut super::MouseCursorInner,
     ) -> InputEventFilterResult {
-        // Talk: a press selecting text in the rows keeps the pointer here once it has selected
+        // Yapfast: a press selecting text in the rows keeps the pointer here once it has selected
         // something, and wheels scroll it, as the text it began in may scroll away. Presses
         // that can't pan watch the moves after them, for one to begin selecting.
-        if let Some(selecting) = crate::talk_selection::drag_in(self_rc) {
+        if let Some(selecting) = crate::yapfast_selection::drag_in(self_rc) {
             return if selecting || matches!(event, MouseEvent::Wheel { .. }) {
                 InputEventFilterResult::Intercept
             } else {
@@ -174,7 +174,7 @@ impl Item for Flickable {
             }
         }
         if !self.accepts_pan_event(event) {
-            // Talk: watches the press, in case it starts selecting text.
+            // Yapfast: watches the press, in case it starts selecting text.
             if matches!(event, MouseEvent::Pressed { button: PointerEventButton::Left, .. }) {
                 return InputEventFilterResult::ForwardAndInterceptGrab;
             }
@@ -190,23 +190,23 @@ impl Item for Flickable {
         self_rc: &ItemRc,
         _: &mut super::MouseCursorInner,
     ) -> InputEventResult {
-        // Talk: carries on a press selecting text in the rows; see the filter above.
-        if crate::talk_selection::drag_in(self_rc).is_some() {
+        // Yapfast: carries on a press selecting text in the rows; see the filter above.
+        if crate::yapfast_selection::drag_in(self_rc).is_some() {
             let in_window = |position: LogicalPoint| {
                 self_rc.map_to_window(self_rc.geometry().origin + position.to_vector())
             };
             return match event {
                 MouseEvent::Moved { position, .. } => {
-                    crate::talk_selection::drag_to(window_adapter, in_window(*position));
+                    crate::yapfast_selection::drag_to(window_adapter, in_window(*position));
                     InputEventResult::GrabMouse
                 }
                 MouseEvent::Wheel { position, .. } => {
                     self.data.handle_mouse(self, event, window_adapter, self_rc);
-                    crate::talk_selection::drag_to(window_adapter, in_window(*position));
+                    crate::yapfast_selection::drag_to(window_adapter, in_window(*position));
                     InputEventResult::GrabMouse
                 }
                 MouseEvent::Released { button: PointerEventButton::Left, .. } => {
-                    crate::talk_selection::release(window_adapter);
+                    crate::yapfast_selection::release(window_adapter);
                     InputEventResult::EventAccepted
                 }
                 MouseEvent::Exit => InputEventResult::EventIgnored,
@@ -481,7 +481,7 @@ struct FlickableDataInner {
     /// before the animation is finished.
     running_animation: Option<(Instant, [Option<ConstantDecelerationParameters>; 2])>,
 
-    /// Talk: when the wheel's last notch came, the recent notches, each weighing less with
+    /// Yapfast: when the wheel's last notch came, the recent notches, each weighing less with
     /// time, and the way they turned, to tell how fast the wheel spins.
     wheel_notches: Option<(Instant, f32, euclid::Vector2D<f32, crate::lengths::LogicalPx>)>,
 }
@@ -651,7 +651,7 @@ impl FlickableDataInner {
         }
     }
 
-    /// Talk: scales a wheel's `delta` by how fast the wheel spins. Only whole notches count:
+    /// Yapfast: scales a wheel's `delta` by how fast the wheel spins. Only whole notches count:
     /// touchpads that send no phases scroll by less at a time, and keep their own pace.
     fn accelerate_wheel(&mut self, delta: LogicalVector) -> LogicalVector {
         let delta = delta.cast::<f32>();

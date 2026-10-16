@@ -11,7 +11,7 @@
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use slint::fontique_011::{fontique, shared_collection};
-use talk_core::chat::{CustomEmoji, Picture};
+use yapfast_core::chat::{CustomEmoji, Picture};
 
 use crate::emoji_font;
 
@@ -84,7 +84,7 @@ pub fn add<'a>(arrived: impl IntoIterator<Item = (&'a str, &'a Picture)>) -> boo
         if glyphs.is_empty() {
             return false;
         }
-        let family = format!("Talk Custom Emoji {}", registry.fonts);
+        let family = format!("Yapfast Custom Emoji {}", registry.fonts);
         let font = emoji_font::build(&family, &glyphs);
         let mut collection = shared_collection();
         let registered = collection.register_fonts(
@@ -192,7 +192,7 @@ mod tests {
         let picture = Picture {
             width: 4,
             height: 2,
-            rgba: talk_core::chat::Pixels::new(4, 2, [255, 0, 0, 255].repeat(8)),
+            rgba: yapfast_core::chat::Pixels::new(4, 2, [255, 0, 0, 255].repeat(8)),
             ..Default::default()
         };
         let png = square_png(&picture).expect("encodes");
@@ -216,7 +216,7 @@ mod tests {
         let red = Picture {
             width: 4,
             height: 4,
-            rgba: talk_core::chat::Pixels::new(4, 4, [255, 0, 0, 255].repeat(16)),
+            rgba: yapfast_core::chat::Pixels::new(4, 4, [255, 0, 0, 255].repeat(16)),
             ..Default::default()
         };
         let font = emoji_font::build("Probe Emoji", &[('\u{100000}', square_png(&red).unwrap())]);

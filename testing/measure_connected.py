@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure the connected desktop client on the private compositor.
 
-Alice runs the given Talk build against the local stack. A separate load
+Alice runs the given Yapfast build against the local stack. A separate load
 process hosts Bob and extra fixture accounts: it sends chat messages and joins
 voice with generated tones, which need no audio device. Alice's audio uses the
 private PulseAudio null sink. Only Alice's process is sampled.
@@ -25,13 +25,13 @@ ROOT = Path(__file__).resolve().parent.parent
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/release/talk')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/release/yapfast')
 parser.add_argument('--renderer', action='append', choices=['gpu', 'software'])
 parser.add_argument('--warmup', type=int, default=30, help='seconds before each sample')
 parser.add_argument('--seconds', type=int, default=60, help='sample length')
 parser.add_argument('--extra', type=int, default=8, help='load accounts besides Bob (8 makes ten people)')
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--load-executable', type=Path, help='prebuilt talk-core test binary for the load process')
+parser.add_argument('--load-executable', type=Path, help='prebuilt yapfast-core test binary for the load process')
 parser.add_argument('--seed', action='store_true',
                     help='post the sample conversation (Markdown, image, file, reply, reaction) before measuring')
 args = parser.parse_args()
@@ -41,14 +41,14 @@ WIDTH, HEIGHT = 1120, 760
 
 
 def test_binary():
-    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'talk-core', '--no-run', '--message-format=json'],
+    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'yapfast-core', '--no-run', '--message-format=json'],
                             check=True, capture_output=True, text=True, cwd=ROOT).stdout
     for line in output.splitlines():
         message = json.loads(line)
         if message.get('reason') == 'compiler-artifact' and message.get('executable') \
-                and message['target']['name'] == 'talk_core' and 'lib' in message['target']['kind']:
+                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
             return message['executable']
-    raise SystemExit('could not find the talk-core test executable')
+    raise SystemExit('could not find the yapfast-core test executable')
 
 
 def provision():
@@ -62,7 +62,7 @@ def provision():
 
 def capture(name):
     time.sleep(.3)
-    with tempfile.TemporaryDirectory(prefix='talk-measure-shot-') as folder:
+    with tempfile.TemporaryDirectory(prefix='yapfast-measure-shot-') as folder:
         subprocess.run(['weston-screenshooter'], env=dict(os.environ, XDG_PICTURES_DIR=folder),
                        check=True, timeout=10, capture_output=True)
         picture = next(Path(folder).glob('*.png'))
@@ -82,7 +82,7 @@ def locate_rail(picture):
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
     if best < HEIGHT - 80:
-        raise RuntimeError(f'Talk rail was not found; inspect {picture}')
+        raise RuntimeError(f'Yapfast rail was not found; inspect {picture}')
     x = next(x for x, count in enumerate(columns) if count >= best - 2)
     ys = [y for y in range(output_height)
           if pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target]
@@ -120,8 +120,8 @@ class Load:
         self.log = (fixture / 'load.log').open('ab')
         self.process = subprocess.Popen([executable, '--exact', 'matrix_voice::tests::load_participants', '--ignored',
                                          '--nocapture'], cwd=ROOT, stdout=self.log, stderr=self.log,
-                                        env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
-                                                 TALK_TEST_EXTRA_ACCOUNTS=str(args.extra)),
+                                        env=dict(os.environ, YAPFAST_TEST_VOICE_ROOT=str(fixture),
+                                                 YAPFAST_TEST_EXTRA_ACCOUNTS=str(args.extra)),
                                         start_new_session=True)
 
     def send(self, command, expect=None, timeout=240):
@@ -157,19 +157,19 @@ fixture = provision()
 print(f'Fixture {fixture}', flush=True)
 if args.seed:
     subprocess.run([executable, '--exact', 'matrix_chat::tests::fixture_conversation', '--ignored'], check=True, cwd=ROOT,
-                   env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture)), capture_output=True)
+                   env=dict(os.environ, YAPFAST_TEST_VOICE_ROOT=str(fixture)), capture_output=True)
 try:
     load = Load(executable, fixture)
     load.wait('ready', 600)
     for renderer in renderers:
-        environment = dict(os.environ, TALK_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}')
+        environment = dict(os.environ, YAPFAST_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}')
         log = (args.output / f'{renderer}.log').open('wb')
         process = subprocess.Popen([str(args.exe.resolve()), '--renderer', renderer, '--data-dir', str(fixture / 'alice')],
                                    env=environment, stdout=log, stderr=log, start_new_session=True)
         try:
             time.sleep(12)
             if process.poll() is not None:
-                raise RuntimeError(f'Talk exited during startup; see {renderer}.log')
+                raise RuntimeError(f'Yapfast exited during startup; see {renderer}.log')
             origin_x, origin_y = locate_rail(capture(f'{renderer}-startup'))
 
             def click(x, y):

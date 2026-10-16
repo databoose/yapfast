@@ -506,7 +506,7 @@ pub trait RenderText: RenderString {
     fn wrap(self: Pin<&Self>) -> TextWrap;
     fn overflow(self: Pin<&Self>) -> TextOverflow;
     fn is_markdown(self: Pin<&Self>) -> bool;
-    /// Talk: the selected bytes, the paragraphs counted as if joined by newlines, and the
+    /// Yapfast: the selected bytes, the paragraphs counted as if joined by newlines, and the
     /// colour behind them.
     fn selection(self: Pin<&Self>) -> Option<(core::ops::Range<usize>, Color)> {
         None

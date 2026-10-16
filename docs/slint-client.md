@@ -1,7 +1,7 @@
 # Slint desktop client
 
-On 2026-10-03, Talk's production desktop UI moved from GPUI to Slint 1.18.1.
-The Matrix/session/voice services and application model stay in `talk-core`.
+On 2026-10-03, Yapfast's production desktop UI moved from GPUI to Slint 1.18.1.
+The Matrix/session/voice services and application model stay in `yapfast-core`.
 The existing backend dependency pins, crypto stores and account directory format
 remain unchanged. `archive/gpui-before-slint` preserves the complete pre-migration
 state at `4bbc6ad`; the earlier main snapshot also has an archive branch.
@@ -29,14 +29,14 @@ No remote push is part of this migration.
   [themes](themes.md)), voice and audio, messages
   (text size, clock and link previews), notifications, sounds, Discord and advanced
   (the renderer, closing to the tray), closed by its close
-  button or Escape. Desktop notifications for DMs and mentions show while Talk isn't in
-  front; clicking one opens the conversation. Closing the window leaves Talk in the
+  button or Escape. Desktop notifications for DMs and mentions show while Yapfast isn't in
+  front; clicking one opens the conversation. Closing the window leaves Yapfast in the
   [tray](tray.md).
 
-`ui/talk.slint` defines the window, with its controls and parts in the other
+`ui/yapfast.slint` defines the window, with its controls and parts in the other
 files under `ui/`; `src/ui.rs` and the modules under `src/ui/` adapt application
-state and effects. The `talk-ui` crate compiles the interface. Its generated code
-is large, so it lives apart from the application: changing Talk's Rust code does
+state and effects. The `yapfast-ui` crate compiles the interface. Its generated code
+is large, so it lives apart from the application: changing Yapfast's Rust code does
 not recompile it. Backend events wake Slint's executor through the Tokio
 receiver. There is no idle polling timer. Stable widget models update changed
 rows, and shutdown cancels event reception before releasing the backend actor.
@@ -76,13 +76,13 @@ window at 2× scale.
 The GPU setting and `--renderer gpu` request Skia GPU through an explicit
 `skia-opengl` renderer.
 The generic `skia` renderer would silently substitute a software surface when
-OpenGL fails, so Talk owns the fallback instead:
+OpenGL fails, so Yapfast owns the fallback instead:
 
-- If window creation, the GPU surface or the event loop fails, Talk logs the
+- If window creation, the GPU surface or the event loop fails, Yapfast logs the
   technical reason, releases the session and runtime, and restarts itself with
   `--renderer software`. Linux replaces the process; Windows starts the new
   process and returns its exit code. The window shows a dismissible notice.
-- Three seconds after the event loop starts, Talk checks that the native window
+- Three seconds after the event loop starts, Yapfast checks that the native window
   exists. Slint 1.18 waits up to 500 ms for the desktop appearance query before
   creating the first window, and a GPU surface failure at that point is stored
   without stopping the event loop, which leaves a running process with no window.
@@ -91,7 +91,7 @@ OpenGL fails, so Talk owns the fallback instead:
   installed.
 - A GPU start that came from the setting turns the setting off, so later starts
   don't fail and restart again; the person can turn it back on. Without the
-  setting or the flag, Talk does not try the GPU at all.
+  setting or the flag, Yapfast does not try the GPU at all.
 
 `testing/probe_renderer_fallback.py` checks this policy on the private compositor.
 It hides every EGL vendor from libglvnd to simulate a missing OpenGL driver:
@@ -118,7 +118,7 @@ repacking. WebRTC codec code remains intact. Production Cargo disables implicit
 Skia source compilation; the separate Windows builder uses the pinned Nix inputs.
 
 The Windows package includes the Slint UI build sources and Skia notices.
-`run-talk.cmd --renderer software` selects the CPU mode. GPUI's FXC shader
+`run-yapfast.cmd --renderer software` selects the CPU mode. GPUI's FXC shader
 cross-build is no longer used.
 
 ## Validation and limits
@@ -185,12 +185,12 @@ nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework
 
 Use `--renderer software --size 800x560` for the minimum-size capture. GUI evidence
 lives under the ignored `.impeccable/review` directory, with binary hashes and
-assertion results in `actions.json`. The probe runs `target/debug/talk` unless
-`--exe` names another build. After `scripts/check`, `target/debug/talk`, or
-`target/fast/talk` after `scripts/check --fast`, is the desktop build. Add `--connected --long-name` to exercise long
+assertion results in `actions.json`. The probe runs `target/debug/yapfast` unless
+`--exe` names another build. After `scripts/check`, `target/debug/yapfast`, or
+`target/fast/yapfast` after `scripts/check --fast`, is the desktop build. Add `--connected --long-name` to exercise long
 labels against the local stack.
 
-For screenshots and checks by hand, `scripts/ui-session` runs Talk, or a
+For screenshots and checks by hand, `scripts/ui-session` runs Yapfast, or a
 Discord-only build against `testing/fake_discord.ts`, on the same kind of
 private display and drives it from the command line;
 [Seeing the app](building.md#seeing-the-app) shows it, and `--help` lists its

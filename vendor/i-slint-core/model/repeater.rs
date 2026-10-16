@@ -124,23 +124,23 @@ struct RepeaterInner<C: RepeatedItemTree> {
     instances: Vec<(RepeatedInstanceState, Option<ItemTreeRc<C>>)>,
     /// ListView-specific layout state (offset, cached heights, scroll position).
     layout_state: RepeaterLayoutState,
-    /// Talk: see `TalkHold`.
-    talk_hold: TalkHold,
+    /// Yapfast: see `YapfastHold`.
+    yapfast_hold: YapfastHold,
 }
 
-/// Talk: what `talk_anchor::hold` asks of a ListView's layout.
+/// Yapfast: what `yapfast_anchor::hold` asks of a ListView's layout.
 #[derive(Clone, Copy, Default, Debug)]
-struct TalkHold {
+struct YapfastHold {
     /// Rows went in above the instances, and the first instance's height then, when they went in
     /// right above it.
     added: Option<Option<Coord>>,
     /// The row that keeps its bottom edge where it is in the view, as its height changes, once
     /// rows went in right above it, until it isn't instantiated anymore.
-    anchor: Option<TalkAnchor>,
+    anchor: Option<YapfastAnchor>,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct TalkAnchor {
+struct YapfastAnchor {
     row: usize,
     /// Its bottom edge in the view, when `content-y` was `content_y`; scrolling moves it.
     bottom: Coord,
@@ -152,7 +152,7 @@ impl<C: RepeatedItemTree> Default for RepeaterInner<C> {
         RepeaterInner {
             instances: Default::default(),
             layout_state: Default::default(),
-            talk_hold: TalkHold::default(),
+            yapfast_hold: YapfastHold::default(),
         }
     }
 }
@@ -188,9 +188,9 @@ trait RepeaterInstanceOps {
     /// Height of the instance, or `None` if not yet created.
     fn height(&self, instance_idx: usize) -> Option<Coord>;
 
-    /// Talk: the height of the instance once the parts its data shows or hides are made, which
+    /// Yapfast: the height of the instance once the parts its data shows or hides are made, which
     /// otherwise happens when it's next visited, such as to draw it.
-    fn talk_settled_height(&self, instance_idx: usize) -> Option<Coord> {
+    fn yapfast_settled_height(&self, instance_idx: usize) -> Option<Coord> {
         self.height(instance_idx)
     }
 
@@ -246,8 +246,8 @@ pub trait ListViewProperties {
     /// Register the content properties as dependencies of the current
     /// binding evaluation without reading them.
     fn register_as_dependencies(&self);
-    /// Talk: set `content-y`, ending an animation of it.
-    fn talk_content_y_reset(&self, value: LogicalLength) {
+    /// Yapfast: set `content-y`, ending an animation of it.
+    fn yapfast_content_y_reset(&self, value: LogicalLength) {
         self.content_y_set(value);
     }
 }
@@ -284,7 +284,7 @@ impl ListViewProperties for TypedListViewProps<'_> {
             content_height.set(value);
         }
     }
-    fn talk_content_y_reset(&self, value: LogicalLength) {
+    fn yapfast_content_y_reset(&self, value: LogicalLength) {
         // A binding of its own replaces the animation's, then setting the value drops it.
         self.content_y.set_binding(move || value);
         self.content_y.set(value);
@@ -312,7 +312,7 @@ fn update_visible_instances(
     props: &dyn ListViewProperties,
     listview_width: LogicalLength,
     listview_height: LogicalLength,
-    talk: &mut TalkHold,
+    yapfast: &mut YapfastHold,
 ) -> bool {
     let zero = LogicalLength::default();
     let mut content_width_value = listview_width.get();
@@ -364,31 +364,31 @@ fn update_visible_instances(
     let one_and_a_half_screen = listview_height * 3 as Coord / 2 as Coord;
     #[allow(unused_mut)]
     let mut first_item_y = state.anchor_y;
-    // Talk: rows went in above, inside `talk_anchor::hold`. When they went in right above the
+    // Yapfast: rows went in above, inside `yapfast_anchor::hold`. When they went in right above the
     // first instance, it keeps its bottom edge where it was, as its top part can change with the
     // rows now before it, and goes on doing so as its height settles.
-    let added = talk.added.take();
+    let added = yapfast.added.take();
     if let Some(Some(height)) = added {
-        talk.anchor = Some(TalkAnchor {
+        yapfast.anchor = Some(YapfastAnchor {
             row: state.offset,
             bottom: state.anchor_y + state.previous_content_y + height,
             content_y: state.previous_content_y,
         });
     }
     let mut anchor_bottom = None;
-    if let Some(anchor) = talk.anchor {
+    if let Some(anchor) = yapfast.anchor {
         match anchor.row.checked_sub(state.offset).filter(|instance| *instance < ops.len()) {
             Some(instance) => {
                 let bottom = anchor.bottom + content_y_value - anchor.content_y;
                 let mut top = bottom;
                 for i in 0..=instance {
                     changed |= ops.ensure_updated(i, state.offset + i);
-                    top -= ops.talk_settled_height(i).unwrap_or(0 as Coord);
+                    top -= ops.yapfast_settled_height(i).unwrap_or(0 as Coord);
                 }
                 first_item_y = top - content_y_value;
                 anchor_bottom = Some(bottom);
             }
-            None => talk.anchor = None,
+            None => yapfast.anchor = None,
         }
     }
     let last_item_bottom = first_item_y + element_height * ops.len() as Coord;
@@ -495,7 +495,7 @@ fn update_visible_instances(
         props.content_height_set(LogicalLength::new(state.cached_item_height * row_count as Coord));
         props.content_width_set(LogicalLength::new(content_width_value));
         let new_content_y = -state.anchor_y + new_offset_y;
-        if let (Some(anchor), Some(bottom)) = (&mut talk.anchor, anchor_bottom) {
+        if let (Some(anchor), Some(bottom)) = (&mut yapfast.anchor, anchor_bottom) {
             anchor.bottom = bottom;
             anchor.content_y = new_content_y;
         }
@@ -505,9 +505,9 @@ fn update_visible_instances(
         // content_width and content_height, but the content_y is not yet consistent.
         // So the physics animations limit value may be inconsistent.
         if added.is_some() {
-            // Talk: rows went in above inside `talk_anchor::hold`. An animation, such as a
+            // Yapfast: rows went in above inside `yapfast_anchor::hold`. An animation, such as a
             // wheel's, would scroll on to where it was going regardless, moving the rows shown.
-            props.talk_content_y_reset(LogicalLength::new(new_content_y));
+            props.yapfast_content_y_reset(LogicalLength::new(new_content_y));
         } else if new_content_y != props.content_y_get_internal().get() {
             // If a physics animation is ongoing (e.g. due to a flick), we should not interrupt it.
             // The physics animation implements intercept_set, and is therefore not interrupted by
@@ -570,7 +570,7 @@ impl<C: RepeatedItemTree> RepeaterInstanceOps for RustRepeaterOps<'_, C> {
             .map(|x| x.as_pin_ref().item_geometry(0).height_length().get())
     }
 
-    fn talk_settled_height(&self, instance_idx: usize) -> Option<Coord> {
+    fn yapfast_settled_height(&self, instance_idx: usize) -> Option<Coord> {
         let instance = self.inner.borrow().instances[instance_idx].1.clone()?;
         let tree = vtable::VRc::into_dyn(instance.clone());
         // Visiting each item makes the parts of it that show or hide with its data.
@@ -638,27 +638,27 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
     /// Notify the peers that rows were added
     fn row_added(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
-        // Talk: the anchored row moves down with the rows that go in before it.
-        if let Some(anchor) = &mut inner.talk_hold.anchor {
+        // Yapfast: the anchored row moves down with the rows that go in before it.
+        if let Some(anchor) = &mut inner.yapfast_hold.anchor {
             if index <= anchor.row {
                 anchor.row += count;
             }
         }
-        // Talk: inside `talk_anchor::hold`, rows right above the first instance count as before it
+        // Yapfast: inside `yapfast_anchor::hold`, rows right above the first instance count as before it
         // too, and it remembers its height; see `update_visible_instances`.
-        let holding = crate::talk_anchor::holding();
+        let holding = crate::yapfast_anchor::holding();
         let held = holding
             && index == inner.layout_state.offset
             && inner.instances.first().is_some_and(|instance| instance.1.is_some());
-        if held && inner.talk_hold.added.flatten().is_none() {
-            inner.talk_hold.added = Some(
+        if held && inner.yapfast_hold.added.flatten().is_none() {
+            inner.yapfast_hold.added = Some(
                 inner.instances[0]
                     .1
                     .as_ref()
                     .map(|instance| instance.as_pin_ref().item_geometry(0).height_length().get()),
             );
-        } else if holding && index < inner.layout_state.offset && inner.talk_hold.added.is_none() {
-            inner.talk_hold.added = Some(None);
+        } else if holding && index < inner.layout_state.offset && inner.yapfast_hold.added.is_none() {
+            inner.yapfast_hold.added = Some(None);
         }
         if index < inner.layout_state.offset || held {
             if index + count <= inner.layout_state.offset || held {
@@ -691,9 +691,9 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
     /// Notify the peers that rows were removed
     fn row_removed(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
-        // Talk: the anchored row moves up with the rows removed before it, and the anchor ends
+        // Yapfast: the anchored row moves up with the rows removed before it, and the anchor ends
         // with the row.
-        inner.talk_hold.anchor = inner.talk_hold.anchor.and_then(|mut anchor| {
+        inner.yapfast_hold.anchor = inner.yapfast_hold.anchor.and_then(|mut anchor| {
             if index + count <= anchor.row {
                 anchor.row -= count;
             } else if index <= anchor.row {
@@ -735,8 +735,8 @@ impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
         self.is_dirty.set(true);
         let mut inner = self.inner.borrow_mut();
         inner.instances.clear();
-        // Talk: the rows the anchor counted are gone.
-        inner.talk_hold = TalkHold::default();
+        // Yapfast: the rows the anchor counted are gone.
+        inner.yapfast_hold = YapfastHold::default();
     }
 }
 
@@ -898,9 +898,9 @@ impl<C: RepeatedItemTree + 'static> Repeater<C> {
         let row_count = model.row_count();
 
         let data = self.data();
-        let (mut layout_state, mut talk) = {
+        let (mut layout_state, mut yapfast) = {
             let inner = data.inner.borrow();
-            (inner.layout_state.clone(), inner.talk_hold)
+            (inner.layout_state.clone(), inner.yapfast_hold)
         };
         let mut ops = RustRepeaterOps { inner: &data.inner, init: &init, model: &model };
         let changed = update_visible_instances(
@@ -910,12 +910,12 @@ impl<C: RepeatedItemTree + 'static> Repeater<C> {
             props,
             listview_width,
             listview_height,
-            &mut talk,
+            &mut yapfast,
         );
         {
             let mut inner = data.inner.borrow_mut();
             inner.layout_state = layout_state;
-            inner.talk_hold = talk;
+            inner.yapfast_hold = yapfast;
         }
 
         if changed {
@@ -1238,7 +1238,7 @@ mod ffi {
             &props,
             listview_width,
             listview_height,
-            &mut TalkHold::default(),
+            &mut YapfastHold::default(),
         )
     }
 }

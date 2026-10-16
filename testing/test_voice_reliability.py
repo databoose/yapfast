@@ -41,20 +41,20 @@ for tool in ('pactl', 'pw-play', 'parec', 'pasta', 'nft', 'ip', 'cargo'):
 
 
 def test_binary():
-    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'talk-core', '--no-run', '--message-format=json'],
+    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'yapfast-core', '--no-run', '--message-format=json'],
                             check=True, capture_output=True, text=True, cwd=ROOT).stdout
     for line in output.splitlines():
         message = json.loads(line)
         if message.get('reason') == 'compiler-artifact' and message.get('executable') \
-                and message['target']['name'] == 'talk_core' and 'lib' in message['target']['kind']:
+                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
             return message['executable']
-    raise SystemExit('could not find the talk-core test executable')
+    raise SystemExit('could not find the yapfast-core test executable')
 
 
-# Without a session bus the fixture uses Talk's private-file credential fallback.
+# Without a session bus the fixture uses Yapfast's private-file credential fallback.
 # This keeps disposable secrets out of the desktop keyring, and works inside
 # Bob's namespace, where D-Bus would see a different user ID.
-NO_BUS = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/talk-test-bus')
+NO_BUS = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/yapfast-test-bus')
 
 
 def provision():
@@ -69,7 +69,7 @@ def provision():
 NAMESPACE_MEDIA = """
 gateway=$(ip -4 route show default | awk '{print $3; exit}')
 nft -f - <<RULES
-table ip talk_test {
+table ip yapfast_test {
   chain output {
     type nat hook output priority -100;
     ip daddr 127.0.0.1 udp dport 50100-50120 dnat to $gateway
@@ -101,7 +101,7 @@ class Participant:
                        'sh', '-ec', NAMESPACE_MEDIA, 'namespace'] + command
         self.log = (fixture / f'{name}.log').open('ab')
         self.process = subprocess.Popen(command, cwd=ROOT, stdout=self.log, stderr=self.log,
-                                        env=dict(environment, TALK_TEST_PARTICIPANT=name),
+                                        env=dict(environment, YAPFAST_TEST_PARTICIPANT=name),
                                         start_new_session=True)
         self.isolated = isolated
 
@@ -204,7 +204,7 @@ def tone_file(fixture):
 
 def output_energy():
     """440 Hz amplitude reaching Alice's virtual speakers over three seconds."""
-    samples = subprocess.run(['timeout', '3s', 'parec', '--device=talk_reliability_output.monitor',
+    samples = subprocess.run(['timeout', '3s', 'parec', '--device=yapfast_reliability_output.monitor',
                               '--format=s16le', '--rate=48000', '--channels=1', '--latency-msec=50'],
                              capture_output=True).stdout
     values = struct.unpack(f'<{len(samples) // 2}h', samples[:len(samples) // 2 * 2])
@@ -224,16 +224,16 @@ participants = []
 report = {'date': time.strftime('%Y-%m-%d'), 'physical_audio': False, 'muted_participants': True}
 try:
     for module in (
-        ['module-null-sink', 'sink_name=talk_reliability_output', 'sink_properties=device.description=Talk_reliability_speakers'],
-        ['module-null-sink', 'sink_name=talk_reliability_input', 'sink_properties=device.description=Talk_reliability_input'],
+        ['module-null-sink', 'sink_name=yapfast_reliability_output', 'sink_properties=device.description=Yapfast_reliability_speakers'],
+        ['module-null-sink', 'sink_name=yapfast_reliability_input', 'sink_properties=device.description=Yapfast_reliability_input'],
     ):
         modules.append(subprocess.check_output(['pactl', 'load-module', *module], text=True).strip())
     executable = test_binary()
     fixture = provision()
     manifest = json.loads((fixture / 'rooms.json').read_text())
     alice_id, bob_id = manifest['alice'], manifest['bob']
-    environment = dict(NO_BUS, TALK_TEST_VOICE_ROOT=str(fixture),
-                       PULSE_SINK='talk_reliability_output', PULSE_SOURCE='talk_reliability_input.monitor')
+    environment = dict(NO_BUS, YAPFAST_TEST_VOICE_ROOT=str(fixture),
+                       PULSE_SINK='yapfast_reliability_output', PULSE_SOURCE='yapfast_reliability_input.monitor')
     print(f'Fixture {fixture}', flush=True)
 
     alice = Participant('alice', executable, fixture, environment, isolated=False)
@@ -308,7 +308,7 @@ try:
         # Bob publishes a generated tone. Alice leaving rotates Bob's key, and
         # her rejoin holds only the new index. A full LiveKit reconnect then
         # republishes Bob's microphone with a new frame cryptor at index 0.
-        tone = subprocess.Popen(['pw-play', '--volume=1.0', '--target=talk_reliability_input', str(tone_file(fixture))])
+        tone = subprocess.Popen(['pw-play', '--volume=1.0', '--target=yapfast_reliability_input', str(tone_file(fixture))])
         try:
             bob.send('unmute')
             bob.wait('unmuted', lambda state: not state['muted'], 30)
@@ -349,7 +349,7 @@ try:
     if 'unverified' not in args.skip:
         # A peer whose device is not cross-signed gets no media key under the
         # identity-based policy. Alice must say so, without muting herself.
-        unverified = Participant('unverified', executable, fixture, dict(environment, TALK_TEST_LOGIN_USER=bob_id),
+        unverified = Participant('unverified', executable, fixture, dict(environment, YAPFAST_TEST_LOGIN_USER=bob_id),
                                  isolated=False, test='matrix_voice::tests::unverified_participant')
         participants.append(unverified)
         unverified.wait('joined', lambda state: state['phase'] == 'Connected', 90)
@@ -413,7 +413,7 @@ try:
         # A homeserver without sticky events gets an actionable refusal.
         proxy = start_proxy(lambda features: {key: value for key, value in features.items() if 'msc4354' not in key})
         nosticky = Participant('nosticky', executable, fixture,
-                               dict(environment, TALK_TEST_LOGIN=f'http://127.0.0.1:{proxy.server_port} {alice_id}'),
+                               dict(environment, YAPFAST_TEST_LOGIN=f'http://127.0.0.1:{proxy.server_port} {alice_id}'),
                                isolated=False)
         participants.append(nosticky)
         nosticky.wait('ready', lambda state: state['phase'] == 'Disconnected', 90)

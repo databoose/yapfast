@@ -9048,128 +9048,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "talk"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "emojis",
- "i-slint-backend-testing",
- "i-slint-core",
- "image",
- "ksni",
- "libc",
- "memmap2",
- "qrcode",
- "rfd",
- "serde",
- "serde_json",
- "skia-safe",
- "slint",
- "talk-core",
- "talk-discord",
- "talk-ui",
- "tempfile",
- "tracing",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
- "webbrowser",
- "windows-sys 0.61.2",
- "wl-clipboard-rs",
- "zbus",
-]
-
-[[package]]
-name = "talk-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "cc",
- "chrono",
- "cxx",
- "deep_filter",
- "directories",
- "futures-util",
- "gif",
- "image",
- "keyring",
- "libpulse-binding",
- "libpulse-simple-binding",
- "livekit",
- "matrix-rtc-core",
- "matrix-rtc-livekit",
- "matrix-rtc-media",
- "matrix-sdk",
- "matrix-sdk-crypto",
- "matrix-sdk-ui",
- "memmap2",
- "mime",
- "ndarray",
- "nnnoiseless",
- "png",
- "pulldown-cmark",
- "rand 0.9.5",
- "realfft",
- "rustls",
- "serde",
- "serde_json",
- "talk-discord",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "webrtc-sys",
- "webrtc-sys-build",
- "windows",
- "windows-core",
-]
-
-[[package]]
-name = "talk-discord"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "base64 0.22.1",
- "chacha20poly1305 0.10.1",
- "chrono",
- "cookie_store",
- "davey",
- "flate2",
- "futures-util",
- "keyring",
- "openmls",
- "openmls_basic_credential",
- "openmls_rust_crypto",
- "rand 0.9.5",
- "reqwest 0.13.5",
- "rsa",
- "rustls",
- "serde",
- "serde_json",
- "serenity-voice-model",
- "sha2 0.10.9",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "tracing-subscriber",
- "url",
- "webrtc-sys",
-]
-
-[[package]]
-name = "talk-ui"
-version = "0.1.0"
-dependencies = [
- "slint",
- "slint-build",
-]
-
-[[package]]
 name = "tar"
 version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11217,6 +11095,128 @@ name = "xxhash-rust"
 version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
+
+[[package]]
+name = "yapfast"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "emojis",
+ "i-slint-backend-testing",
+ "i-slint-core",
+ "image",
+ "ksni",
+ "libc",
+ "memmap2",
+ "qrcode",
+ "rfd",
+ "serde",
+ "serde_json",
+ "skia-safe",
+ "slint",
+ "tempfile",
+ "tracing",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "webbrowser",
+ "windows-sys 0.61.2",
+ "wl-clipboard-rs",
+ "yapfast-core",
+ "yapfast-discord",
+ "yapfast-ui",
+ "zbus",
+]
+
+[[package]]
+name = "yapfast-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "cc",
+ "chrono",
+ "cxx",
+ "deep_filter",
+ "directories",
+ "futures-util",
+ "gif",
+ "image",
+ "keyring",
+ "libpulse-binding",
+ "libpulse-simple-binding",
+ "livekit",
+ "matrix-rtc-core",
+ "matrix-rtc-livekit",
+ "matrix-rtc-media",
+ "matrix-sdk",
+ "matrix-sdk-crypto",
+ "matrix-sdk-ui",
+ "memmap2",
+ "mime",
+ "ndarray",
+ "nnnoiseless",
+ "png",
+ "pulldown-cmark",
+ "rand 0.9.5",
+ "realfft",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webrtc-sys",
+ "webrtc-sys-build",
+ "windows",
+ "windows-core",
+ "yapfast-discord",
+]
+
+[[package]]
+name = "yapfast-discord"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "base64 0.22.1",
+ "chacha20poly1305 0.10.1",
+ "chrono",
+ "cookie_store",
+ "davey",
+ "flate2",
+ "futures-util",
+ "keyring",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
+ "rand 0.9.5",
+ "reqwest 0.13.5",
+ "rsa",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serenity-voice-model",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "webrtc-sys",
+]
+
+[[package]]
+name = "yapfast-ui"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
+]
 
 [[package]]
 name = "yazi"

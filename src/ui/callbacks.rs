@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>) {
+pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     super::gifs::bind(window, adapter);
     super::call_link::bind(window, adapter);
     // UI bindings can request images while refresh borrows the adapter.
@@ -580,7 +580,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     {
         let (adapter, weak) = (adapter.clone(), window.as_weak());
         window.on_new_thread(move |item, from| {
-            use talk_core::application::ThreadFrom;
+            use yapfast_core::application::ThreadFrom;
             let from = match from.as_str() {
                 "message" => ThreadFrom::Message,
                 "list" => ThreadFrom::List,
@@ -841,7 +841,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         // mention, or by the pointer when the link's place isn't known.
         if let Some(target) = mention::target(&link) {
             let Some(window) = weak.upgrade() else { return };
-            if let Some(rect) = i_slint_core::talk_selection::clicked_link() {
+            if let Some(rect) = i_slint_core::yapfast_selection::clicked_link() {
                 window.invoke_anchor_link(
                     rect.origin.x,
                     rect.origin.y,
@@ -964,15 +964,15 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         layout.unmute_on_join = window.get_unmute_on_join();
         layout.deafen_on_join = window.get_deafen_on_join();
         layout.level_voice = Some(window.get_level_voice());
-        talk_core::leveling::set_enabled(window.get_level_voice());
+        yapfast_core::leveling::set_enabled(window.get_level_voice());
         layout.noise_suppression = chosen(&SUPPRESSORS, window.get_noise_suppression());
         layout.noise_strength = chosen(&STRENGTHS, window.get_noise_strength());
-        talk_core::noise::set(layout.noise_suppression);
-        talk_core::noise::set_strength(layout.noise_strength);
+        yapfast_core::noise::set(layout.noise_suppression);
+        yapfast_core::noise::set_strength(layout.noise_strength);
         layout.reduce_room_echo = window.get_dereverb();
-        talk_core::noise::set_dereverb(layout.reduce_room_echo);
+        yapfast_core::noise::set_dereverb(layout.reduce_room_echo);
         layout.input_sensitivity = Some(window.get_sensitivity());
-        talk_core::noise::set_sensitivity(layout.sensitivity() as f32);
+        yapfast_core::noise::set_sensitivity(layout.sensitivity() as f32);
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_text = Some(window.get_notification_text());
@@ -1023,21 +1023,21 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     });
     window.on_volume_of(|person, stream| {
         let kind = if stream {
-            talk_core::volume::Kind::Stream
+            yapfast_core::volume::Kind::Stream
         } else {
-            talk_core::volume::Kind::Voice
+            yapfast_core::volume::Kind::Voice
         };
-        (talk_core::volume::get(kind, &person) * 100.0).round() as i32
+        (yapfast_core::volume::get(kind, &person) * 100.0).round() as i32
     });
     let state = adapter.clone();
     window.on_volume_changed(move |person, stream, percent, done| {
         let volume = percent as f32 / 100.0;
         let kind = if stream {
-            talk_core::volume::Kind::Stream
+            yapfast_core::volume::Kind::Stream
         } else {
-            talk_core::volume::Kind::Voice
+            yapfast_core::volume::Kind::Voice
         };
-        talk_core::volume::set(kind, &person, volume);
+        yapfast_core::volume::set(kind, &person, volume);
         // The drag's last step is remembered, rather than every one.
         if done {
             let mut adapter = state.borrow_mut();
@@ -1521,12 +1521,12 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         }
     });
     #[cfg(feature = "discord")]
-    window.set_share_lists(talk_core::stream_worker::LISTS_SOURCES);
+    window.set_share_lists(yapfast_core::stream_worker::LISTS_SOURCES);
     #[cfg(feature = "discord")]
     let weak = window.as_weak();
     #[cfg(feature = "discord")]
     window.on_list_share_sources(move || {
-        use talk_core::stream_worker::{Report, Source, Worker};
+        use yapfast_core::stream_worker::{Report, Source, Worker};
         // A picture fills a card in the share menu, in pixels.
         let scale = weak
             .upgrade()
@@ -1536,7 +1536,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
         // runs beside the window, and the menu opens when it's done.
         let weak = weak.clone();
         std::thread::spawn(move || {
-            let listed = talk_core::stream_worker::shareable();
+            let listed = yapfast_core::stream_worker::shareable();
             let (screens, windows): (Vec<_>, Vec<_>) = listed
                 .into_iter()
                 .partition(|listed| matches!(listed.source, Source::Display(_)));
@@ -1628,8 +1628,8 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             {
                 let picked =
                     SHAREABLE.with_borrow(|shareable| shareable.get(source as usize).copied());
-                talk_core::stream_worker::pick(
-                    picked.unwrap_or(talk_core::stream_worker::Source::Screen),
+                yapfast_core::stream_worker::pick(
+                    picked.unwrap_or(yapfast_core::stream_worker::Source::Screen),
                 );
             }
             #[cfg(not(feature = "discord"))]
@@ -1908,7 +1908,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 #[cfg(feature = "discord")]
                 if adapter.gate_meter.is_some() {
                     adapter.gate_meter =
-                        Some(talk_core::discord_audio::GateMeter::start(Some(&id)));
+                        Some(yapfast_core::discord_audio::GateMeter::start(Some(&id)));
                 }
                 adapter.action(&window, Action::Voice(voice::Command::Microphone(id)));
             }
@@ -2010,7 +2010,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             window.set_meter_note(SharedString::from(if !meter::AVAILABLE {
                 "The level meter isn't available on this system yet."
             } else if meter.failed() {
-                "Talk can't read this microphone. Check that it's connected, or choose another."
+                "Yapfast can't read this microphone. Check that it's connected, or choose another."
             } else {
                 ""
             }));
@@ -2023,7 +2023,7 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
             let mut adapter = state.borrow_mut();
             let microphone = adapter.app.state.voice.microphone.clone();
             adapter.gate_meter =
-                on.then(|| talk_core::discord_audio::GateMeter::start(microphone.as_deref()));
+                on.then(|| yapfast_core::discord_audio::GateMeter::start(microphone.as_deref()));
         });
         let state = adapter.clone();
         let weak = window.as_weak();
@@ -2032,10 +2032,10 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
                 window.set_gate_level(meter.level().max(-100.0));
                 window.set_gate_sending(meter.sending());
                 window.set_gate_meter_note(SharedString::from(
-                    if !talk_core::discord_audio::AVAILABLE {
+                    if !yapfast_core::discord_audio::AVAILABLE {
                         "Discord voice and its level aren't available on this system yet."
                     } else if meter.failed() {
-                        "Talk can't read this microphone. Check that it's connected, or choose another."
+                        "Yapfast can't read this microphone. Check that it's connected, or choose another."
                     } else {
                         ""
                     },
@@ -2048,17 +2048,17 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
 #[cfg(feature = "discord")]
 thread_local! {
     /// What the share menu lists to share, in its order.
-    static SHAREABLE: RefCell<Vec<talk_core::stream_worker::Source>> = const { RefCell::new(Vec::new()) };
+    static SHAREABLE: RefCell<Vec<yapfast_core::stream_worker::Source>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Films with the chosen camera into the voice settings' preview, which is
 /// about 400 by 225 points.
-fn start_camera_test(adapter: &mut Adapter, window: &TalkWindow) {
+fn start_camera_test(adapter: &mut Adapter, window: &YapfastWindow) {
     let scale = window.window().scale_factor();
-    let feed = talk_core::picture::Feed::new();
+    let feed = yapfast_core::picture::Feed::new();
     feed.show_at(Some(((400.0 * scale) as u32, (225.0 * scale) as u32)));
     let camera = adapter.app.state.voice.camera.clone();
-    match talk_core::camera::Camera::open(camera.as_deref(), Box::new(feed.sink())) {
+    match yapfast_core::camera::Camera::open(camera.as_deref(), Box::new(feed.sink())) {
         Ok(camera) => adapter.camera_test = Some((camera, feed)),
         Err(error) => window.set_camera_note(error.to_string().into()),
     }
@@ -2066,7 +2066,7 @@ fn start_camera_test(adapter: &mut Adapter, window: &TalkWindow) {
 
 /// Tells each camera in the call where its tile shows, or that it doesn't,
 /// so pictures are made only for tiles in sight, at their size.
-fn place_videos(adapter: &Adapter, window: &TalkWindow) {
+fn place_videos(adapter: &Adapter, window: &YapfastWindow) {
     let voice = &adapter.app.state.voice;
     let shown = window.get_grid_shown() && voice.active();
     let scale = window.window().scale_factor();

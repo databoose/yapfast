@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Talk's memory with only Matrix, only Discord, or both networks built in.
+"""Compare Yapfast's memory with only Matrix, only Discord, or both networks built in.
 
 Each build is a `fast` profile binary with different Cargo features (see
 docs/building.md); the comparison is between builds, so LTO isn't needed. All run against test data only: Matrix against the local
@@ -7,22 +7,22 @@ stack with a seeded fixture account, Discord against testing/fake_discord.ts.
 Both histories hold the same 60 messages with the same image, file and reply.
 The combined build is measured twice, once with each network's channel open.
 
-Each profile opens #general, warms up, samples Talk's process while idle, then
+Each profile opens #general, warms up, samples Yapfast's process while idle, then
 samples again while Bob posts a message every 2 s in the open channel. Voice
 isn't measured: the fake Discord has no voice server.
 
-Start the local stack (scripts/test-stack up). Copy target/fast/talk, built
-with each feature set, into --builds (target/networks) as talk-matrix,
-talk-discord and talk-combined; docs/measurements/README.md gives the builds.
-Find the talk-core test binary with
-`nix develop path:./nix --command cargo test --profile fast --locked -p talk-core --no-run --message-format short`
+Start the local stack (scripts/test-stack up). Copy target/fast/yapfast, built
+with each feature set, into --builds (target/networks) as yapfast-matrix,
+yapfast-discord and yapfast-combined; docs/measurements/README.md gives the builds.
+Find the yapfast-core test binary with
+`nix develop path:./nix --command cargo test --profile fast --locked -p yapfast-core --no-run --message-format short`
 (its "Executable unittests src/lib.rs" line), then run from the repository root:
 
     nix-shell --impure experiments/frameworks/shell.nix --run 'scripts/run-framework-isolated
-        --audio --no-services --alsa-plugins "$TALK_FRAMEWORK_ALSA_PLUGINS"
+        --audio --no-services --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS"
         --compositor-log .local/networks.weston.log --
         python3 testing/measure_networks.py --output .local/measure-networks
-        --load-executable target/fast/deps/talk_core-HASH'
+        --load-executable target/fast/deps/yapfast_core-HASH'
 
 (one line). Without --load-executable it runs `cargo test --no-run` itself,
 with the debug profile, inside the private session. This script starts
@@ -46,13 +46,13 @@ INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--builds', type=Path, default=ROOT / 'target/networks',
-                    help='folder with talk-matrix, talk-discord and talk-combined')
+                    help='folder with yapfast-matrix, yapfast-discord and yapfast-combined')
 parser.add_argument('--profile', action='append', choices=['matrix', 'discord', 'combined-discord', 'combined-matrix'])
 parser.add_argument('--renderer', default='software', choices=['gpu', 'software'])
 parser.add_argument('--warmup', type=int, default=20, help='seconds before each sample')
 parser.add_argument('--seconds', type=int, default=30, help='sample length')
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--load-executable', type=Path, help='prebuilt talk-core test binary for the Matrix load process')
+parser.add_argument('--load-executable', type=Path, help='prebuilt yapfast-core test binary for the Matrix load process')
 args = parser.parse_args()
 profiles = args.profile or ['matrix', 'discord', 'combined-discord', 'combined-matrix']
 args.output.mkdir(parents=True, exist_ok=True)
@@ -64,20 +64,20 @@ DISCORD_SERVER = 'discord:1400000000000000100'
 DISCORD_GENERAL = 'discord:1400000000000000100:1400000000000000102'
 # History length shared by both networks: four fixture messages and 56 more.
 EXTRA_MESSAGES = 56
-# Rail centres: Talk lists Matrix servers before Discord ones.
+# Rail centres: Yapfast lists Matrix servers before Discord ones.
 FIRST_SERVER, SECOND_SERVER = (36, 101), (36, 158)
 MATRIX_GENERAL = (141, 148)
 
 
 def test_binary():
-    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'talk-core', '--no-run', '--message-format=json'],
+    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'yapfast-core', '--no-run', '--message-format=json'],
                             check=True, capture_output=True, text=True, cwd=ROOT).stdout
     for line in output.splitlines():
         message = json.loads(line)
         if message.get('reason') == 'compiler-artifact' and message.get('executable') \
-                and message['target']['name'] == 'talk_core' and 'lib' in message['target']['kind']:
+                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
             return message['executable']
-    raise SystemExit('could not find the talk-core test executable')
+    raise SystemExit('could not find the yapfast-core test executable')
 
 
 def provision(executable):
@@ -91,7 +91,7 @@ def provision(executable):
 
 def capture(name):
     time.sleep(.3)
-    with tempfile.TemporaryDirectory(prefix='talk-measure-shot-') as folder:
+    with tempfile.TemporaryDirectory(prefix='yapfast-measure-shot-') as folder:
         subprocess.run(['weston-screenshooter'], env=dict(os.environ, XDG_PICTURES_DIR=folder),
                        check=True, timeout=10, capture_output=True)
         picture = next(Path(folder).glob('*.png'))
@@ -111,7 +111,7 @@ def locate_rail(picture):
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
     if best < HEIGHT - 80:
-        raise RuntimeError(f'Talk rail was not found; inspect {picture}')
+        raise RuntimeError(f'Yapfast rail was not found; inspect {picture}')
     x = next(x for x, count in enumerate(columns) if count >= best - 2)
     ys = [y for y in range(output_height)
           if pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target]
@@ -137,8 +137,8 @@ class Load:
         self.log = (fixture / 'load.log').open('ab')
         self.process = subprocess.Popen([executable, '--exact', 'matrix_voice::tests::load_participants', '--ignored',
                                          '--nocapture'], cwd=ROOT, stdout=self.log, stderr=self.log,
-                                        env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture),
-                                                 TALK_TEST_EXTRA_ACCOUNTS='0'),
+                                        env=dict(os.environ, YAPFAST_TEST_VOICE_ROOT=str(fixture),
+                                                 YAPFAST_TEST_EXTRA_ACCOUNTS='0'),
                                         start_new_session=True)
 
     def send(self, command, expect=None, timeout=240):
@@ -203,9 +203,9 @@ def remember_discord_channel(data):
 
 
 def measure(profile, executable, data, discord, load):
-    environment = dict(os.environ, TALK_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}')
+    environment = dict(os.environ, YAPFAST_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}')
     if profile != 'matrix':
-        environment['TALK_DISCORD_TEST_SERVER'] = DISCORD
+        environment['YAPFAST_DISCORD_TEST_SERVER'] = DISCORD
         remember_discord_channel(data)
     log = (args.output / f'{profile}.log').open('wb')
     process = subprocess.Popen([str(executable), '--renderer', args.renderer, '--data-dir', str(data)],
@@ -214,7 +214,7 @@ def measure(profile, executable, data, discord, load):
     try:
         time.sleep(12)
         if process.poll() is not None:
-            raise RuntimeError(f'Talk exited during startup; see {profile}.log')
+            raise RuntimeError(f'Yapfast exited during startup; see {profile}.log')
         origin_x, origin_y = locate_rail(capture(f'{profile}-startup'))
 
         def click(point):
@@ -259,7 +259,7 @@ def prewarm(executable, data):
     and the heap keeps that memory. One unmeasured run does it for every profile."""
     log = (args.output / 'prewarm.log').open('wb')
     process = subprocess.Popen([str(executable), '--renderer', args.renderer, '--data-dir', str(data)],
-                               env=dict(os.environ, TALK_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}'),
+                               env=dict(os.environ, YAPFAST_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}'),
                                stdout=log, stderr=log, start_new_session=True)
     try:
         time.sleep(12)
@@ -277,10 +277,10 @@ def prewarm(executable, data):
         log.close()
 
 
-builds = {name: (args.builds / f'talk-{name}').resolve() for name in ('matrix', 'discord', 'combined')}
+builds = {name: (args.builds / f'yapfast-{name}').resolve() for name in ('matrix', 'discord', 'combined')}
 for name, path in builds.items():
     if not path.exists():
-        raise SystemExit(f'missing {path}; copy each feature build of target/fast/talk there')
+        raise SystemExit(f'missing {path}; copy each feature build of target/fast/yapfast there')
 results = []
 load = discord = None
 executable = str(args.load_executable.resolve()) if args.load_executable else test_binary()
@@ -288,7 +288,7 @@ fixture = provision(builds['combined'])
 print(f'Fixture {fixture}', flush=True)
 subprocess.run([executable, '--exact', 'matrix_chat::tests::fixture_conversation', '--ignored'], check=True,
                cwd=ROOT, capture_output=True,
-               env=dict(os.environ, TALK_TEST_VOICE_ROOT=str(fixture), TALK_TEST_EXTRA_MESSAGES=str(EXTRA_MESSAGES)))
+               env=dict(os.environ, YAPFAST_TEST_VOICE_ROOT=str(fixture), YAPFAST_TEST_EXTRA_MESSAGES=str(EXTRA_MESSAGES)))
 try:
     discord = FakeDiscord(args.output / 'fake-discord.log')
     load = Load(executable, fixture)

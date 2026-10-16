@@ -918,7 +918,7 @@ impl Call {
         &self.membership_id
     }
 
-    /// Talk patch: move our senders back onto the active key index after
+    /// Yapfast patch: move our senders back onto the active key index after
     /// LiveKit republished them (`RoomEvent::LocalTrackRepublished`). A full
     /// reconnect creates new frame cryptors, which start at index 0.
     pub fn reassert_local_key_index(&self) {

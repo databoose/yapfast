@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure the desktop client in a Matrix call as cameras turn on.
 
-Alice runs the given Talk build against the local stack, in a call with Bob
+Alice runs the given Yapfast build against the local stack, in a call with Bob
 and three load accounts, which film the test pattern in turn: none, then 1, 2
 and 4 cameras. Then Alice turns her own camera on, and everyone's off again.
 Only Alice's process is sampled. The load process is the one in
@@ -26,18 +26,18 @@ ROOT = Path(__file__).resolve().parent.parent
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/fast/talk')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/fast/yapfast')
 parser.add_argument('--renderer', action='append', choices=['gpu', 'software'])
 parser.add_argument('--warmup', type=int, default=15, help='seconds before each sample')
 parser.add_argument('--seconds', type=int, default=20, help='sample length')
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--load-executable', type=Path, required=True, help='talk-core test binary for the load process')
+parser.add_argument('--load-executable', type=Path, required=True, help='yapfast-core test binary for the load process')
 args = parser.parse_args()
 renderers = args.renderer or ['software', 'gpu']
 args.output.mkdir(parents=True, exist_ok=True)
 WIDTH, HEIGHT = 1120, 760
 EXTRA = 3
-CAMERA = dict(os.environ, TALK_CAMERA_TEST_PATTERN='1')
+CAMERA = dict(os.environ, YAPFAST_CAMERA_TEST_PATTERN='1')
 
 
 def provision():
@@ -51,7 +51,7 @@ def provision():
 
 def capture(name):
     time.sleep(.3)
-    with tempfile.TemporaryDirectory(prefix='talk-measure-shot-') as folder:
+    with tempfile.TemporaryDirectory(prefix='yapfast-measure-shot-') as folder:
         subprocess.run(['weston-screenshooter'], env=dict(os.environ, XDG_PICTURES_DIR=folder),
                        check=True, timeout=10, capture_output=True)
         picture = next(Path(folder).glob('*.png'))
@@ -71,7 +71,7 @@ def locate_rail(picture):
                    for y in range(output_height)) for x in range(output_width)]
     best = max(columns)
     if best < HEIGHT - 80:
-        raise RuntimeError(f'Talk rail was not found; inspect {picture}')
+        raise RuntimeError(f'Yapfast rail was not found; inspect {picture}')
     x = next(x for x, count in enumerate(columns) if count >= best - 2)
     ys = [y for y in range(output_height)
           if pixels[(y * output_width + x) * 3:(y * output_width + x) * 3 + 3] == target]
@@ -85,10 +85,10 @@ def sample(pid, name, notes):
     for task in os.listdir(f'/proc/{pid}/task'):
         thread = Path(f'/proc/{pid}/task/{task}/comm').read_text().strip()
         names[thread] = names.get(thread, 0) + 1
-    # Anonymous memory is what Talk itself holds. On a host short of memory
+    # Anonymous memory is what Yapfast itself holds. On a host short of memory
     # the kernel drops shared-library pages from RSS and PSS mid-run, and
     # swaps some of the rest out.
-    # Swapped pages count too: they're Talk's, only elsewhere.
+    # Swapped pages count too: they're Yapfast's, only elsewhere.
     def field(path, key):
         return next(int(line.split()[1]) for line in Path(path).read_text().splitlines()
                     if line.startswith(key)) / 1024
@@ -109,8 +109,8 @@ class Load:
         self.process = subprocess.Popen([str(args.load_executable.resolve()), '--exact',
                                          'matrix_voice::tests::load_participants', '--ignored', '--nocapture'],
                                         cwd=ROOT, stdout=self.log, stderr=self.log,
-                                        env=dict(CAMERA, TALK_TEST_VOICE_ROOT=str(fixture),
-                                                 TALK_TEST_EXTRA_ACCOUNTS=str(EXTRA)),
+                                        env=dict(CAMERA, YAPFAST_TEST_VOICE_ROOT=str(fixture),
+                                                 YAPFAST_TEST_EXTRA_ACCOUNTS=str(EXTRA)),
                                         start_new_session=True)
 
     def send(self, command, expect, timeout=240):
@@ -145,14 +145,14 @@ try:
     load = Load(fixture)
     load.send('', 'ready', 600)  # Waits for the load accounts to sync.
     for renderer in renderers:
-        environment = dict(CAMERA, TALK_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}')
+        environment = dict(CAMERA, YAPFAST_UI_TEST_SIZE=f'{WIDTH}x{HEIGHT}')
         log = (args.output / f'{renderer}.log').open('wb')
         process = subprocess.Popen([str(args.exe.resolve()), '--renderer', renderer, '--data-dir', str(fixture / 'alice')],
                                    env=environment, stdout=log, stderr=log, start_new_session=True)
         try:
             time.sleep(12)
             if process.poll() is not None:
-                raise RuntimeError(f'Talk exited during startup; see {renderer}.log')
+                raise RuntimeError(f'Yapfast exited during startup; see {renderer}.log')
             origin_x, origin_y = locate_rail(capture(f'{renderer}-startup'))
 
             def click(x, y):

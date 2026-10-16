@@ -22,7 +22,7 @@ export component DiscordBadge inherits Rectangle {
 
 // Linking Discord by QR code: the risk to the account first, then the code to
 // scan with the phone app, then who scanned it while they confirm. The phase
-// is 0 before linking, 1 while Talk gets a code, 2 showing it, 3 once it's
+// is 0 before linking, 1 while Yapfast gets a code, 2 showing it, 3 once it's
 // scanned, 4 when linking failed, and 5 while Discord's captcha waits in the
 // browser.
 export component DiscordLinkPanel inherits VerticalLayout {
@@ -47,7 +47,7 @@ export component DiscordLinkPanel inherits VerticalLayout {
                     Image { source: @image-url("icons/triangle-alert.svg"); width: 18px; height: 18px; colorize: Theme.danger; }
                 }
                 Text {
-                    text: "Discord doesn't allow apps like Talk on personal accounts. Linking puts your account at some risk of being suspended.";
+                    text: "Discord doesn't allow apps like Yapfast on personal accounts. Linking puts your account at some risk of being suspended.";
                     color: Theme.text; font-size: 14px; wrap: word-wrap; horizontal-stretch: 1;
                 }
             }
@@ -65,7 +65,7 @@ export component DiscordLinkPanel inherits VerticalLayout {
         spacing: 8px;
         Text { text: "Solve the captcha in your browser"; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
         Text {
-            text: "Discord wants to check you're a person before it links your account. Talk opened the check in your browser; linking finishes once it's solved.";
+            text: "Discord wants to check you're a person before it links your account. Yapfast opened the check in your browser; linking finishes once it's solved.";
             color: Theme.secondary; font-size: 14px; wrap: word-wrap;
         }
         HorizontalLayout {
