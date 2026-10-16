@@ -719,7 +719,17 @@ impl Speaker {
             Some((sequence, _)) if *sequence == next => {
                 let (_, opus) = self.waiting.pop_front()?;
                 self.missing = 0;
-                self.decoder.decode(&opus, &mut self.pcm, false)
+                let decoded = self.decoder.decode(&opus, &mut self.pcm, false);
+                if decoded.is_err() {
+                    tracing::debug!(
+                        sequence = next,
+                        length = opus.len(),
+                        head = ?&opus[..opus.len().min(12)],
+                        tail = ?&opus[opus.len().saturating_sub(4)..],
+                        "an undecodable call audio packet"
+                    );
+                }
+                decoded
             }
             waiting => {
                 self.missing = self.missing.saturating_add(1);
