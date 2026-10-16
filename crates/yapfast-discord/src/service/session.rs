@@ -160,10 +160,13 @@ async fn connected_session(
     drop(ready);
     trim_startup_heap();
     tracker.keep_unavailable(&shared.snapshots.borrow().servers);
+    // Only what's kept of the earlier servers stays: held to the end of
+    // this function, they would last as long as the session.
     let earlier = shared.snapshots.borrow().servers.clone();
     for (guild, channel) in shared.viewing.iter().chain(&shared.beside) {
         tracker.keep_thread(&earlier, guild, channel);
     }
+    drop(earlier);
     if let Some((guild, channel)) = &shared.viewing {
         tracker.view(guild, Some(channel));
     }
