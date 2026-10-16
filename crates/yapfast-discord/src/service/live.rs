@@ -69,6 +69,29 @@ pub(super) fn live_events(
             })
             .collect(),
         Event::MessageReactionAdd => reaction(true).into_iter().collect(),
+        // One reaction added for each person listed under each emoji.
+        Event::MessageReactionAddMany => {
+            let Some(message) = data["message_id"].as_str() else {
+                return vec![];
+            };
+            data["reactions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|reaction| Some((message::emoji(&reaction["emoji"])?, reaction)))
+                .flat_map(|((key, emoji), reaction)| {
+                    let users = reaction["users"].as_array().into_iter().flatten();
+                    users.map(move |user| Live::Reaction {
+                        channel: channel(),
+                        message: message.to_owned(),
+                        key: key.clone(),
+                        emoji: emoji.clone(),
+                        me: *user == me,
+                        added: true,
+                    })
+                })
+                .collect()
+        }
         Event::MessageReactionRemove => reaction(false).into_iter().collect(),
         Event::MessageReactionRemoveAll | Event::MessageReactionRemoveEmoji => data["message_id"]
             .as_str()
@@ -152,5 +175,56 @@ pub(super) fn live_events(
             .into_iter()
             .collect(),
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_burst_of_reactions_adds_one_for_each_person() {
+        let data = json!({
+            "channel_id": "10",
+            "message_id": "20",
+            "guild_id": "1",
+            "reactions": [
+                {"users": ["2", "3"], "emoji": {"id": null, "name": "🎉"}},
+                {"users": ["4"], "emoji": {"id": "5", "name": "party"}},
+            ],
+        });
+        let names = RwLock::default();
+        let added: Vec<_> = live_events(
+            "3",
+            None,
+            &names,
+            &Event::MessageReactionAddMany,
+            &data,
+            None,
+        )
+        .into_iter()
+        .map(|live| match live {
+            Live::Reaction {
+                channel,
+                message,
+                key,
+                me,
+                added: true,
+                ..
+            } => (channel, message, key, me),
+            other => panic!("not an added reaction: {other:?}"),
+        })
+        .collect();
+        let reaction = |key: &str, me| ("10".to_owned(), "20".to_owned(), key.to_owned(), me);
+        assert_eq!(
+            added,
+            [
+                reaction("🎉", false),
+                reaction("🎉", true),
+                reaction(":party:", false)
+            ]
+        );
     }
 }

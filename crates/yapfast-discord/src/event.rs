@@ -44,6 +44,10 @@ events! {
     /// This account read a channel, here or on another device.
     MessageAck = "MESSAGE_ACK",
     MessageReactionAdd = "MESSAGE_REACTION_ADD",
+    /// Reactions several people added within moments, in one event: the
+    /// web client's capabilities, which Yapfast sends, ask for these in
+    /// place of a MESSAGE_REACTION_ADD each.
+    MessageReactionAddMany = "MESSAGE_REACTION_ADD_MANY",
     MessageReactionRemove = "MESSAGE_REACTION_REMOVE",
     MessageReactionRemoveAll = "MESSAGE_REACTION_REMOVE_ALL",
     MessageReactionRemoveEmoji = "MESSAGE_REACTION_REMOVE_EMOJI",
@@ -130,6 +134,7 @@ mod tests {
             ("MESSAGE_DELETE_BULK", Event::MessageDeleteBulk),
             ("MESSAGE_ACK", Event::MessageAck),
             ("MESSAGE_REACTION_ADD", Event::MessageReactionAdd),
+            ("MESSAGE_REACTION_ADD_MANY", Event::MessageReactionAddMany),
             ("MESSAGE_REACTION_REMOVE", Event::MessageReactionRemove),
             (
                 "MESSAGE_REACTION_REMOVE_ALL",
