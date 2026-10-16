@@ -104,6 +104,32 @@ pub fn parse_server(id: &str) -> Option<&str> {
     id.strip_prefix(PREFIX).filter(|guild| !guild.contains(':'))
 }
 
+/// A custom status or what someone is doing, as it shows: the address of the
+/// picture of the custom emoji it starts with, and its words. See
+/// `yapfast_discord::member_list::activity`.
+pub fn status_parts(status: &str) -> (Option<String>, &str) {
+    #[cfg(feature = "discord")]
+    if let Some((emoji, words)) = yapfast_discord::member_list::status_emoji(status) {
+        return (emoji_picture(&emoji.id), words);
+    }
+    (None, status)
+}
+
+/// The address of a custom emoji's picture; none in a build without Discord.
+pub fn emoji_picture(id: &str) -> Option<String> {
+    #[cfg(feature = "discord")]
+    return Some(yapfast_discord::ready::custom_emoji(
+        id,
+        false,
+        crate::chat::EMOJI_PICTURE_SIZE,
+    ));
+    #[cfg(not(feature = "discord"))]
+    {
+        let _ = id;
+        None
+    }
+}
+
 /// Who is in a voice channel or DM call.
 #[cfg(feature = "discord")]
 fn in_voice(snapshot: &Snapshot, channel: &str) -> Vec<VoicePerson> {

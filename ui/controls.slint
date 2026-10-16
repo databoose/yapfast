@@ -259,6 +259,39 @@ export component Avatar inherits Rectangle {
     }
 }
 
+// A custom status or what someone is doing: the picture of its custom emoji,
+// asked for as it shows, then its words.
+export component StatusText inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> emoji-url;
+    in property <color> color: Theme.muted;
+    in property <length> font-size: 13px;
+    in property <int> font-weight: 400;
+    in property <TextWrap> wrap: no-wrap;
+    property <image> emoji: root.emoji-url != "" ? PictureStore.picture(root.emoji-url, PictureStore.revision) : @image-url("");
+    function request-emoji() {
+        if root.emoji-url != "" && root.emoji.width == 0 {
+            PictureStore.request(root.emoji-url);
+        }
+    }
+    init => { root.request-emoji(); }
+    changed emoji-url => { root.request-emoji(); }
+    changed emoji => { root.request-emoji(); }
+    alignment: start; spacing: 4px;
+    // The emoji keeps its place while its picture is on the way.
+    if root.emoji-url != "": VerticalLayout {
+        alignment: start;
+        Image {
+            source: root.emoji; width: root.font-size * 1.25; height: root.font-size * 1.25;
+            image-fit: contain; accessible-role: none;
+        }
+    }
+    if root.text != "": Text {
+        text: root.text; color: root.color; font-size: root.font-size; font-weight: root.font-weight;
+        wrap: root.wrap; overflow: elide; horizontal-stretch: 1;
+    }
+}
+
 // A single-line text field. Long text scrolls to keep the cursor visible.
 export component TextField inherits Rectangle {
     in-out property <string> text;

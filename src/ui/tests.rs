@@ -4,6 +4,30 @@ fn message_row_plain(message: &ChatMessage) -> MessageRow {
     message_row(message, &HashSet::new())
 }
 
+#[cfg(feature = "discord")]
+#[test]
+fn statuses_show_their_custom_emoji_as_pictures() {
+    let (words, emoji) = activity_line(Some("<:pog:5>  back\nsoon"));
+    assert_eq!(words, "back soon");
+    assert!(emoji.ends_with("/emojis/5.png?size=64"), "{emoji}");
+    let (words, emoji) = activity_line(Some("☕ brb"));
+    assert_eq!((words.as_str(), emoji.as_str()), ("☕ brb", ""));
+
+    // The account's own status.
+    let mut status = yapfast_core::chat::CustomStatus {
+        text: "Shipping it".into(),
+        emoji: Some("pog".into()),
+        emoji_id: Some("5".into()),
+        expires_at_ms: None,
+    };
+    let (text, picture) = status_line(&status);
+    assert_eq!(text, "Shipping it");
+    assert!(picture.is_some_and(|url| url.ends_with("/emojis/5.png?size=64")));
+    status.emoji = Some("🍅".into());
+    status.emoji_id = None;
+    assert_eq!(status_line(&status), ("🍅 Shipping it".into(), None));
+}
+
 #[test]
 fn equal_lists_stay_so_rows_count_as_unchanged() {
     let shown = ModelRc::new(VecModel::from(vec![1, 2]));

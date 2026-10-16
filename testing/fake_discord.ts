@@ -347,6 +347,12 @@ const protoBytes = (field: number, bytes: Uint8Array) => {
   return new Uint8Array([...out, ...bytes]);
 };
 const text = (value: string) => new TextEncoder().encode(value);
+const protoFixed64 = (field: number, value: bigint) => {
+  const out = new Uint8Array(9);
+  out[0] = field << 3 | 1;
+  new DataView(out.buffer).setBigUint64(1, value, true);
+  return out;
+};
 let settings = Buffer.from(
   protoBytes(11, protoBytes(2, new Uint8Array([...protoBytes(1, text("Testing Yapfast")), ...protoBytes(3, text("🧪"))]))),
 ).toString("base64");
@@ -4461,6 +4467,13 @@ const GENERIC_CONTROLS = new Set([
   "reactor-removals", "thread-searches", "thread-creates", "typed", "acks", "invites",
 ]);
 
+/** A status's emoji as the env gives it, Unicode or `<:name:id>`, as Discord sends it. */
+function statusEmoji(emoji: string): { name: string; id: string | null; animated?: boolean } {
+  const custom = /^<(a?):(\w+):(\d+)>$/.exec(emoji);
+  if (!custom) return { name: emoji, id: null };
+  return { name: custom[2]!, id: custom[3]!, ...(custom[1] ? { animated: true } : {}) };
+}
+
 /** A presence as the env describes it. */
 function envPresence(person: { status?: Status; playing?: string; customStatus?: CustomStatus; mobile?: boolean }) {
   const status = person.status ?? "online";
@@ -4469,7 +4482,7 @@ function envPresence(person: { status?: Status; playing?: string; customStatus?:
     status,
     activities: [
       ...(custom
-        ? [{ type: 4, name: "Custom Status", ...(custom.text ? { state: custom.text } : {}), ...(custom.emoji ? { emoji: { name: custom.emoji, id: null } } : {}) }]
+        ? [{ type: 4, name: "Custom Status", ...(custom.text ? { state: custom.text } : {}), ...(custom.emoji ? { emoji: statusEmoji(custom.emoji) } : {}) }]
         : []),
       ...(person.playing ? [{ type: 0, name: person.playing }] : []),
     ],
@@ -4513,7 +4526,9 @@ function applyEnv({ env, dir }: { env: Env; dir: string }): World {
     ...(custom
       ? protoBytes(2, new Uint8Array([
           ...(custom.text ? protoBytes(1, text(custom.text)) : []),
-          ...(custom.emoji ? protoBytes(3, text(custom.emoji)) : []),
+          ...(custom.emoji ? (({ name, id }) => [
+            ...(id ? protoFixed64(2, BigInt(id)) : []), ...protoBytes(3, text(name)),
+          ])(statusEmoji(custom.emoji)) : []),
         ]))
       : []),
   ]);

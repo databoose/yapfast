@@ -32,6 +32,7 @@ export type Env = {
 };
 
 export type Status = "online" | "idle" | "dnd" | "offline";
+/** `emoji` is a Unicode emoji, or a custom one in Discord's markup, `<:talk:1400000000000000300>`. */
 export type CustomStatus = { text?: string; emoji?: string };
 
 export type Me = {

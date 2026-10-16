@@ -1,7 +1,7 @@
 import { ComboBox } from "std-widgets.slint";
 import { ScrollView } from "scrollview.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider, TextField } from "controls.slint";
+import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider, TextField, StatusText } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
 
@@ -202,6 +202,7 @@ export component SettingsScreen inherits Rectangle {
 export component AccountSettings inherits VerticalLayout {
     in property <string> account-name;
     in property <string> account-status;
+    in property <string> account-status-emoji;
     in property <string> account-initial;
     in property <color> account-tint;
     in property <image> account-picture;
@@ -225,7 +226,7 @@ export component AccountSettings inherits VerticalLayout {
             VerticalLayout {
                 alignment: center; spacing: 2px; horizontal-stretch: 1;
                 Text { text: root.account-name; color: Theme.text; font-size: 20px; font-weight: 700; overflow: elide; }
-                Label { text: root.account-status; wrap: no-wrap; overflow: elide; }
+                StatusText { text: root.account-status; emoji-url: root.account-status-emoji; }
             }
         }
     }

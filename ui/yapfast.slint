@@ -22,7 +22,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
-import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner } from "controls.slint";
+import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner, StatusText } from "controls.slint";
 import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, StreamView, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, ShareScreen, VolumeMenu } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
@@ -181,6 +181,8 @@ export component YapfastWindow inherits Window {
     in property <color> account-tint;
     in property <image> account-picture;
     in property <string> account-status;
+    /// The address of the picture of the custom emoji in the account's status.
+    in property <string> account-status-emoji;
     in property <string> storage;
     in property <string> notice;
     in-out property <string> graphics-notice;
@@ -224,6 +226,9 @@ export component YapfastWindow inherits Window {
     /// and their custom status or what they're doing.
     in property <string> room-presence;
     in property <string> room-activity;
+    /// The address of the picture of the custom emoji in the DM's status.
+    in property <string> room-activity-emoji;
+    property <bool> room-has-activity: root.room-activity != "" || root.room-activity-emoji != "";
     in property <[MemberRow]> roster;
     in property <string> roster-note;
     /// Whether the member list is wanted beside the conversation; Yapfast stores it.
@@ -1640,7 +1645,7 @@ export component YapfastWindow inherits Window {
                             VerticalLayout {
                                 alignment: center; padding-left: 6px; padding-right: 6px;
                                 Text { text: root.account-name; color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
-                                Text { text: root.account-status; color: Theme.muted; font-size: 13px; overflow: elide; }
+                                StatusText { text: root.account-status; emoji-url: root.account-status-emoji; }
                             }
                             account-touch := TouchArea {
                                 enabled: root.discord-linked; mouse-cursor: MouseCursor.pointer;
@@ -1722,7 +1727,7 @@ export component YapfastWindow inherits Window {
                             color: root.room-selected || root.requests-open || root.friends-open ? Theme.text : Theme.secondary;
                             font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center;
                             // The name gives way to what follows it, and fills the bar when nothing does.
-                            horizontal-stretch: (root.room-activity != "" && root.room-direct) || root.friends-open || root.has-topic ? 0 : 1;
+                            horizontal-stretch: (root.room-has-activity && root.room-direct) || root.friends-open || root.has-topic ? 0 : 1;
                         }
                         // A server channel's topic, after a rule, as Discord shows it:
                         // one line, cut short, and in full once clicked.
@@ -1749,7 +1754,7 @@ export component YapfastWindow inherits Window {
                             }
                         }
                         // What they're up to, as a bubble beside their name.
-                        if root.room-direct && root.room-activity != "": Middle {
+                        if root.room-direct && root.room-has-activity: Middle {
                             horizontal-stretch: 1;
                             HorizontalLayout {
                                 alignment: start;
@@ -1758,9 +1763,11 @@ export component YapfastWindow inherits Window {
                                     accessible-role: text; accessible-label: "Status: " + root.room-activity;
                                     HorizontalLayout {
                                         padding-left: 10px; padding-right: 10px;
-                                        Text {
-                                            text: root.room-activity; color: Theme.secondary; font-size: 13px; font-weight: 500;
-                                            overflow: elide; vertical-alignment: center;
+                                        Middle {
+                                            StatusText {
+                                                text: root.room-activity; emoji-url: root.room-activity-emoji;
+                                                color: Theme.secondary; font-weight: 500;
+                                            }
                                         }
                                     }
                                 }
@@ -2694,7 +2701,7 @@ export component YapfastWindow inherits Window {
         close => { root.settings-open = false; }
         refresh-devices => { root.refresh-devices(); }
         if root.settings-section == 0: AccountSettings {
-            account-name: root.account-name; account-status: root.account-status;
+            account-name: root.account-name; account-status: root.account-status; account-status-emoji: root.account-status-emoji;
             account-initial: root.account-initial; account-tint: root.account-tint; account-picture: root.account-picture;
             storage: root.storage; preview: root.preview; online: root.online; busy: root.busy; sending: root.sending;
             discord-linked: root.discord-linked; has-custom-status: root.has-custom-status;

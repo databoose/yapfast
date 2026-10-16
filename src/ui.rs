@@ -1856,15 +1856,19 @@ type Preview<'a> = (
 const STICKER_SIZE: i32 = 160;
 
 /// The line under a Discord DM in the list: the person's custom status or
-/// what they're doing on one line, or a group's size.
-fn dm_detail(room: &yapfast_core::chat::ChatRoom) -> String {
+/// what they're doing on one line, or a group's size; and the address of the
+/// picture of the status's custom emoji.
+fn dm_detail(room: &yapfast_core::chat::ChatRoom) -> (SharedString, SharedString) {
     if !room.direct || room.network != Network::Discord {
-        return String::new();
+        return Default::default();
     }
     if room.person.is_none() {
-        return format!("{} members", room.members);
+        return (
+            format!("{} members", room.members).into(),
+            SharedString::default(),
+        );
     }
-    room.activity.as_deref().map(one_line).unwrap_or_default()
+    activity_line(room.activity.as_deref())
 }
 
 /// A count with its noun, such as "1 member" or "12 members".

@@ -438,20 +438,20 @@ impl Adapter {
             .friends
             .iter()
             .filter(|friend| friend.name.to_lowercase().contains(friend_query.trim()))
-            .map(|friend| FriendRow {
-                id: friend.id.as_str().into(),
-                name: friend.name.as_str().into(),
-                initial: initial(&friend.name),
-                tint: tint(&friend.id),
-                picture: slint::Image::default(),
-                picture_url: friend.avatar.as_deref().unwrap_or_default().into(),
-                presence: presence_name(Some(friend.presence.unwrap_or(Presence::Offline))).into(),
-                activity: friend
-                    .activity
-                    .as_deref()
-                    .map(one_line)
-                    .unwrap_or_default()
-                    .into(),
+            .map(|friend| {
+                let (activity, activity_emoji) = activity_line(friend.activity.as_deref());
+                FriendRow {
+                    id: friend.id.as_str().into(),
+                    name: friend.name.as_str().into(),
+                    initial: initial(&friend.name),
+                    tint: tint(&friend.id),
+                    picture: slint::Image::default(),
+                    picture_url: friend.avatar.as_deref().unwrap_or_default().into(),
+                    presence: presence_name(Some(friend.presence.unwrap_or(Presence::Offline)))
+                        .into(),
+                    activity,
+                    activity_emoji,
+                }
             })
             .collect();
         let around: Vec<_> = friend_rows
@@ -555,6 +555,7 @@ impl Adapter {
                 } else {
                     String::new()
                 };
+                let (detail, detail_emoji) = dm_detail(room);
                 RoomRow {
                     id: room.id.clone().into(),
                     name: room.name.clone().into(),
@@ -626,7 +627,8 @@ impl Adapter {
                         presence_name(room.presence)
                     }
                     .into(),
-                    detail: dm_detail(room).into(),
+                    detail,
+                    detail_emoji,
                     thread: room.parent.is_some(),
                     ..Default::default()
                 }
@@ -700,11 +702,13 @@ impl Adapter {
             state,
             state.account_avatar.as_deref(),
         ));
-        let custom_status = state
+        let (custom_status, status_emoji) = state
             .custom_status
             .as_ref()
-            .filter(|_| state.online)
-            .map(status_line);
+            .filter(|_| state.online && !state.preview)
+            .map(status_line)
+            .unzip();
+        window.set_account_status_emoji(status_emoji.flatten().unwrap_or_default().into());
         window.set_account_status(
             if state.preview {
                 "Local only"
@@ -923,12 +927,10 @@ impl Adapter {
         window.set_room_name(room.map_or("", |room| room.name.as_str()).into());
         window.set_room_direct(room.is_some_and(|room| room.direct));
         window.set_room_presence(presence_name(room.and_then(|room| room.presence)).into());
-        window.set_room_activity(
-            room.and_then(|room| room.activity.as_deref())
-                .map(one_line)
-                .unwrap_or_default()
-                .into(),
-        );
+        let (activity, activity_emoji) =
+            activity_line(room.and_then(|room| room.activity.as_deref()));
+        window.set_room_activity(activity);
+        window.set_room_activity_emoji(activity_emoji);
         window.set_profile_available(state.one_to_one().is_some());
         window.set_room_request(room.is_some_and(|room| room.request));
         window.set_request_title(
@@ -1157,46 +1159,44 @@ impl Adapter {
             members
                 .iter()
                 .enumerate()
-                .map(|(index, member)| MemberRow {
-                    id: member.id.clone().into(),
-                    name: member.name.clone().into(),
-                    initial: initial(&member.name),
-                    tint: tint(&member.name),
-                    picture: slint::Image::default(),
-                    picture_url: member.avatar.as_deref().unwrap_or_default().into(),
-                    timed_out: member.timed_out_until.is_some_and(|until| until > now),
-                    presence: presence_name(member.presence).into(),
-                    color: role_color(member.color),
-                    has_color: member.color.is_some(),
-                    // One line under the name, as Discord shows it; the profile
-                    // keeps the status's own line breaks.
-                    activity: member
-                        .activity
-                        .as_deref()
-                        .map(one_line)
-                        .unwrap_or_default()
-                        .into(),
-                    // Discord names its groups; Matrix members group by role.
-                    heading: if let Some(group) = &member.group {
-                        if index == 0 || members[index - 1].group.as_ref() != Some(group) {
-                            group.to_uppercase().into()
+                .map(|(index, member)| {
+                    let (activity, activity_emoji) = activity_line(member.activity.as_deref());
+                    MemberRow {
+                        id: member.id.clone().into(),
+                        name: member.name.clone().into(),
+                        initial: initial(&member.name),
+                        tint: tint(&member.name),
+                        picture: slint::Image::default(),
+                        picture_url: member.avatar.as_deref().unwrap_or_default().into(),
+                        timed_out: member.timed_out_until.is_some_and(|until| until > now),
+                        presence: presence_name(member.presence).into(),
+                        color: role_color(member.color),
+                        has_color: member.color.is_some(),
+                        // One line under the name, as Discord shows it.
+                        activity,
+                        activity_emoji,
+                        // Discord names its groups; Matrix members group by role.
+                        heading: if let Some(group) = &member.group {
+                            if index == 0 || members[index - 1].group.as_ref() != Some(group) {
+                                group.to_uppercase().into()
+                            } else {
+                                SharedString::default()
+                            }
+                        } else if index == 0 || members[index - 1].role != member.role {
+                            let count = members
+                                .iter()
+                                .filter(|other| other.role == member.role)
+                                .count();
+                            let role = match member.role {
+                                Role::Admin => "ADMINS",
+                                Role::Moderator => "MODERATORS",
+                                Role::Member => "MEMBERS",
+                            };
+                            format!("{role} — {count}").into()
                         } else {
                             SharedString::default()
-                        }
-                    } else if index == 0 || members[index - 1].role != member.role {
-                        let count = members
-                            .iter()
-                            .filter(|other| other.role == member.role)
-                            .count();
-                        let role = match member.role {
-                            Role::Admin => "ADMINS",
-                            Role::Moderator => "MODERATORS",
-                            Role::Member => "MEMBERS",
-                        };
-                        format!("{role} — {count}").into()
-                    } else {
-                        SharedString::default()
-                    },
+                        },
+                    }
                 })
                 .collect(),
         );
@@ -2629,7 +2629,9 @@ impl Adapter {
             if let Some(room) = state.selected_room() {
                 data.presence = presence_name(room.presence.or(view.profile.presence)).into();
                 if let Some(activity) = &room.activity {
-                    data.activity = activity.as_str().into();
+                    let (emoji, activity) = yapfast_core::discord::status_parts(activity);
+                    data.activity = activity.into();
+                    data.activity_emoji = emoji.unwrap_or_default().into();
                 }
             }
             let shown = window.get_panel_profile();

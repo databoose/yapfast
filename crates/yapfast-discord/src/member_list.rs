@@ -8,7 +8,10 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use serde_json::Value;
 
-use crate::{message::Names, ready::Server};
+use crate::{
+    message::{self, CustomEmoji, Names},
+    ready::Server,
+};
 
 /// The rows Yapfast asks for, group headings included.
 pub const ROWS: usize = 100;
@@ -348,7 +351,9 @@ fn row(guild: &str, item: &Value, names: &mut Names, people: &mut HashMap<String
 }
 
 /// What Discord shows under a member's name: their custom status, else what
-/// they're playing, streaming, listening to, watching or competing in.
+/// they're playing, streaming, listening to, watching or competing in. A
+/// custom emoji starts the status in Discord's markup, `<:name:id>`; see
+/// [`status_emoji`].
 pub fn activity(activities: &Value) -> Option<String> {
     const CUSTOM: u64 = 4;
     let activities = activities.as_array()?;
@@ -356,13 +361,17 @@ pub fn activity(activities: &Value) -> Option<String> {
         .iter()
         .find(|activity| activity["type"] == CUSTOM)
     {
-        // A custom emoji is an image Yapfast doesn't fetch; a Unicode one is text.
         let emoji = &custom["emoji"];
-        let emoji = emoji["id"]
-            .is_null()
-            .then(|| emoji["name"].as_str())
-            .flatten();
-        let text: Vec<&str> = [emoji, custom["state"].as_str()]
+        let emoji = match (emoji["name"].as_str(), emoji["id"].as_str()) {
+            (name, Some(id)) => Some(format!(
+                "<{}:{}:{id}>",
+                if emoji["animated"] == true { "a" } else { "" },
+                name.unwrap_or("emoji"),
+            )),
+            (Some(name), None) => Some(name.to_owned()),
+            (None, None) => None,
+        };
+        let text: Vec<&str> = [emoji.as_deref(), custom["state"].as_str()]
             .into_iter()
             .flatten()
             .filter(|part| !part.is_empty())
@@ -382,6 +391,13 @@ pub fn activity(activities: &Value) -> Option<String> {
             _ => return None,
         })
     })
+}
+
+/// The custom emoji an [`activity`] starts with, and the words after it.
+pub fn status_emoji(activity: &str) -> Option<(CustomEmoji, &str)> {
+    let end = activity.strip_prefix('<')?.find('>')? + 2;
+    let emoji = message::custom_emoji(&activity[..end]).pop()?;
+    Some((emoji, activity[end..].trim_start()))
 }
 
 #[cfg(test)]
@@ -405,14 +421,34 @@ mod tests {
         );
         assert_eq!(
             activity(&json!([{"type": 4, "state": "hi", "emoji": {"name": "pog", "id": "5"}}])),
-            Some("hi".into()),
-            "custom emoji are left out"
+            Some("<:pog:5> hi".into())
+        );
+        assert_eq!(
+            activity(
+                &json!([{"type": 4, "emoji": {"name": "party", "id": "6", "animated": true}}])
+            ),
+            Some("<a:party:6>".into()),
+            "a custom emoji alone is a status"
         );
         assert_eq!(
             activity(&json!([{"type": 2, "name": "Spotify"}])),
             Some("Listening to Spotify".into())
         );
         assert_eq!(activity(&json!([])), None);
+    }
+
+    #[test]
+    fn takes_the_custom_emoji_off_a_status() {
+        let (emoji, words) = status_emoji("<:pog:5> back soon").expect("an emoji");
+        assert_eq!(
+            (emoji.name.as_str(), emoji.id.as_str(), words),
+            ("pog", "5", "back soon")
+        );
+        let (emoji, words) = status_emoji("<a:party:6>").expect("an emoji");
+        assert!(emoji.animated);
+        assert_eq!(words, "");
+        assert_eq!(status_emoji("☕ brb"), None);
+        assert_eq!(status_emoji("<3 you"), None);
     }
 
     #[test]

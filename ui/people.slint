@@ -1,6 +1,6 @@
 import { ScrollView, ListView } from "scrollview.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar } from "controls.slint";
+import { ActionButton, IconButton, Avatar, StatusText } from "controls.slint";
 import { StatusDot } from "rail.slint";
 
 /// A member of the open room. A heading starts each role's group.
@@ -11,8 +11,9 @@ export struct MemberRow {
     presence: string,
     /// The name's colour, from a coloured Discord role.
     color: color, has-color: bool,
-    /// A custom status or what they're doing, under the name.
-    activity: string,
+    /// A custom status or what they're doing, under the name, and the
+    /// address of its custom emoji's picture.
+    activity: string, activity-emoji: string,
     picture-url: string,
     /// Timed out in their Discord server, marked with a clock by the name.
     timed-out: bool,
@@ -85,8 +86,8 @@ export component MemberPanel inherits Rectangle {
                                 accessible-role: image; accessible-label: "Timed out";
                             }
                         }
-                        if member.activity != "": Text {
-                            text: member.activity; color: Theme.muted; font-size: 12px; overflow: elide;
+                        if member.activity != "" || member.activity-emoji != "": StatusText {
+                            text: member.activity; emoji-url: member.activity-emoji; font-size: 12px;
                             opacity: member.presence == "offline" ? 0.5 : 1;
                         }
                     }
@@ -116,7 +117,7 @@ export struct ProfileData {
     /// The banner picture, else its colour.
     banner: image, accent: color, has-accent: bool,
     /// As in MemberRow.
-    presence: string, activity: string,
+    presence: string, activity: string, activity-emoji: string,
     bio: styled-text, has-bio: bool,
     role-rows: [ProfileRoleRow], role-rows-large: [ProfileRoleRow],
     /// Dates: on Discord since, and in this server since.
@@ -332,9 +333,9 @@ export component ProfileCard inherits Rectangle {
                             if !root.large && !root.preview: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
                         }
                         if root.data.handle != "": Text { text: root.data.handle; color: Theme.secondary; font-size: 14px; font-weight: 500; overflow: elide; }
-                        if root.data.activity != "": Text {
-                            text: root.data.activity; color: Theme.secondary; font-size: 14px;
-                            wrap: word-wrap; overflow: elide; max-height: 40px;
+                        if root.data.activity != "" || root.data.activity-emoji != "": StatusText {
+                            text: root.data.activity; emoji-url: root.data.activity-emoji;
+                            color: Theme.secondary; font-size: 14px; wrap: word-wrap; max-height: 40px;
                         }
                     }
                     if root.data.friend > 0: HorizontalLayout {

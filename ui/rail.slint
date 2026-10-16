@@ -1,6 +1,6 @@
 import { ListView } from "scrollview.slint";
 import { Theme, Tip, Middle, Label } from "theme.slint";
-import { Avatar, PictureStore } from "controls.slint";
+import { Avatar, PictureStore, StatusText } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { PersonRow, LivePill } from "voice.slint";
 
@@ -45,9 +45,10 @@ export struct RoomRow {
     call: bool,
     /// A one-to-one Discord DM's other person: "online", "mobile", "idle",
     /// "dnd" or "offline", empty when unknown; and their custom status or what
-    /// they're doing, or a group DM's size.
+    /// they're doing, or a group DM's size, and the address of the picture of
+    /// the status's custom emoji.
     presence: string,
-    detail: string,
+    detail: string, detail-emoji: string,
     /// Its heading's category is collapsed; and the row is only that heading,
     /// for a category with nothing left showing.
     collapsed: bool,
@@ -334,6 +335,7 @@ export component ChannelRow inherits Rectangle {
     /// A DM person's presence, as RoomRow has it, and a line under the name.
     in property <string> presence;
     in property <string> detail;
+    in property <string> detail-emoji;
     /// A Discord thread, which the line from its channel marks in place of an icon.
     in property <bool> thread;
     callback clicked;
@@ -380,8 +382,8 @@ export component ChannelRow inherits Rectangle {
                 text: root.text; color: root.ink; font-size: 16px; font-weight: root.unread || root.selected ? 700 : 500;
                 vertical-alignment: center; overflow: elide;
             }
-            if root.detail != "": Text {
-                text: root.detail; color: Theme.muted; font-size: 12px; overflow: elide;
+            if root.detail != "" || root.detail-emoji != "": StatusText {
+                text: root.detail; emoji-url: root.detail-emoji; font-size: 12px;
             }
         }
         if root.call: Image {
@@ -727,7 +729,7 @@ export component RoomList inherits VerticalLayout {
                 icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
                 picture: room.picture; picture-url: room.picture-url; discord: room.discord;
                 selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
-                call: room.call; presence: room.presence; detail: room.detail;
+                call: room.call; presence: room.presence; detail: room.detail; detail-emoji: room.detail-emoji;
                 pinned: room.pinned && room.direct; muted: room.muted;
                 clicked => { root.select-room(room.id); }
                 context-menu(x, y) => { root.open-room-menu(room.id, x, y); }

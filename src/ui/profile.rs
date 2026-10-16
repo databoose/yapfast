@@ -17,20 +17,24 @@ pub(super) fn friend_offer(relation: Relation) -> i32 {
     }
 }
 
-/// The custom status as the account panel shows it: its emoji, then its words
-/// on one line.
-pub(super) fn status_line(status: &yapfast_core::chat::CustomStatus) -> String {
-    let emoji = match (&status.emoji, &status.emoji_id) {
-        (_, Some(id)) => custom_emoji::glyph(id).map(String::from),
-        (Some(emoji), None) => Some(emoji.clone()),
-        (None, None) => None,
-    };
+/// The custom status as the account panel shows it: its words on one line,
+/// after its emoji when that's Unicode, and the address of its custom emoji's
+/// picture.
+pub(super) fn status_line(status: &yapfast_core::chat::CustomStatus) -> (String, Option<String>) {
     let text = one_line(&status.text);
-    match emoji {
-        Some(emoji) if text.is_empty() => emoji,
-        Some(emoji) => format!("{emoji} {text}"),
-        None => text,
+    match (&status.emoji, &status.emoji_id) {
+        (_, Some(id)) => (text, yapfast_core::discord::emoji_picture(id)),
+        (Some(emoji), None) if text.is_empty() => (emoji.clone(), None),
+        (Some(emoji), None) => (format!("{emoji} {text}"), None),
+        (None, None) => (text, None),
     }
+}
+
+/// A custom status or what someone is doing, as a row shows it: its words on
+/// one line, and the address of its custom emoji's picture.
+pub(super) fn activity_line(activity: Option<&str>) -> (SharedString, SharedString) {
+    let (emoji, words) = activity.map_or((None, ""), yapfast_core::discord::status_parts);
+    (one_line(words).into(), emoji.unwrap_or_default().into())
 }
 
 /// The picker's key for the custom status's emoji: the emoji, or `name:id`.
@@ -82,6 +86,11 @@ pub(super) fn profile_data(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
+    // The profile keeps the status's own line breaks.
+    let (activity_emoji, activity) = profile
+        .activity
+        .as_deref()
+        .map_or((None, ""), yapfast_core::discord::status_parts);
     ProfileData {
         id: profile.id.clone().into(),
         name: profile.name.clone().into(),
@@ -93,7 +102,8 @@ pub(super) fn profile_data(
         accent: role_color(profile.accent),
         has_accent: profile.accent.is_some(),
         presence: presence_name(profile.presence).into(),
-        activity: profile.activity.clone().unwrap_or_default().into(),
+        activity: activity.into(),
+        activity_emoji: activity_emoji.unwrap_or_default().into(),
         bio: markdown(&profile.bio),
         has_bio: !profile.bio.trim().is_empty(),
         role_rows: role_rows(&profile.roles, PROFILE_CARD_WIDTH),
