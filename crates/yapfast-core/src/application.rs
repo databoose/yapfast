@@ -1437,14 +1437,12 @@ type TimelineArc = Arc<Vec<Arc<ChatMessage>>>;
 #[derive(Default)]
 pub struct Application {
     pub state: AppState,
-    /// The lists from Matrix and from Discord; `state` shows both.
+    /// The lists from Matrix; `state` shows them with Discord's.
     matrix_rooms: Vec<ChatRoom>,
     matrix_servers: Vec<ChatServer>,
-    discord_rooms: Vec<ChatRoom>,
-    discord_servers: Vec<ChatServer>,
     #[cfg(feature = "discord")]
     discord: Option<Arc<yapfast_discord::service::Snapshot>>,
-    /// What makes `discord_rooms` and `discord_servers` from `discord`.
+    /// Discord's lists, made from `discord`.
     #[cfg(feature = "discord")]
     discord_index: discord::Index,
     last_selected: HashMap<Navigation, String>,

@@ -143,21 +143,17 @@ impl Application {
         #[cfg(feature = "discord")]
         if let Some(snapshot) = &self.discord {
             let rung: Vec<String> = self
-                .discord_rooms
-                .iter()
+                .discord_index
+                .rooms()
                 .filter(|room| room.incoming)
                 .map(|room| room.id.clone())
                 .collect();
-            self.discord_index.update(
-                snapshot,
-                self.state.show_hidden_channels,
-                &mut self.discord_rooms,
-                &mut self.discord_servers,
-            );
+            self.discord_index
+                .update(snapshot, self.state.show_hidden_channels);
             // A call that starts ringing this account notifies once, unless
             // it's set to Do Not Disturb.
             let silent = self.state.do_not_disturb();
-            for room in &self.discord_rooms {
+            for room in self.discord_index.rooms() {
                 if room.incoming
                     && !silent
                     && !rung.contains(&room.id)
@@ -489,8 +485,6 @@ impl Application {
             self.discord = None;
             self.discord_index = discord::Index::default();
         }
-        self.discord_rooms.clear();
-        self.discord_servers.clear();
         self.state.discord_linked = false;
         self.state.discord_online = false;
         self.state.discord_user = None;

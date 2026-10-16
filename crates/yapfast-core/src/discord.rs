@@ -181,9 +181,11 @@ fn voice_person(member: &yapfast_discord::service::VoiceMember) -> VoicePerson {
 /// `show_hidden`.
 pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<ChatServer>) {
     let mut index = Index::default();
-    let (mut rooms, mut servers) = (Vec::new(), Vec::new());
-    index.update(snapshot, show_hidden, &mut rooms, &mut servers);
-    (rooms, servers)
+    index.update(snapshot, show_hidden);
+    (
+        index.rooms().cloned().collect(),
+        index.servers().cloned().collect(),
+    )
 }
 
 /// [`index`], kept between snapshots: each server's rooms are made again
@@ -193,6 +195,8 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
 #[cfg(feature = "discord")]
 #[derive(Default)]
 pub struct Index {
+    /// The DMs, made again for each snapshot.
+    dms: Vec<ChatRoom>,
     servers: Vec<Indexed>,
 }
 
@@ -272,15 +276,21 @@ impl Indexed {
 
 #[cfg(feature = "discord")]
 impl Index {
-    /// Lists `snapshot` into `rooms` and `servers`, changing only the rows
-    /// that differ from what they held.
-    pub fn update(
-        &mut self,
-        snapshot: &Snapshot,
-        show_hidden: bool,
-        rooms: &mut Vec<ChatRoom>,
-        servers: &mut Vec<ChatServer>,
-    ) {
+    /// The DMs, then each server's rooms, as listed from the last snapshot.
+    pub fn rooms(&self) -> impl Iterator<Item = &ChatRoom> {
+        self.dms
+            .iter()
+            .chain(self.servers.iter().flat_map(|indexed| &indexed.rooms))
+    }
+
+    /// The servers, as listed from the last snapshot.
+    pub fn servers(&self) -> impl Iterator<Item = &ChatServer> {
+        self.servers.iter().map(|indexed| &indexed.server)
+    }
+
+    /// Lists `snapshot`, making again only the servers that changed; see
+    /// [`Self::rooms`] and [`Self::servers`].
+    pub fn update(&mut self, snapshot: &Snapshot, show_hidden: bool) {
         let premium = snapshot
             .account
             .as_ref()
@@ -325,13 +335,21 @@ impl Index {
                     });
             self.servers.push(indexed);
         }
-        let dms = dm_rooms(snapshot, premium, me);
-        chat::sync_list(
-            rooms,
-            dms.iter()
-                .chain(self.servers.iter().flat_map(|indexed| &indexed.rooms)),
-        );
-        chat::sync_list(servers, self.servers.iter().map(|indexed| &indexed.server));
+        self.dms = dm_rooms(snapshot, premium, me);
+    }
+
+    /// [`Self::update`], into lists that change only where they differ.
+    #[cfg(test)]
+    fn update_into(
+        &mut self,
+        snapshot: &Snapshot,
+        show_hidden: bool,
+        rooms: &mut Vec<ChatRoom>,
+        servers: &mut Vec<ChatServer>,
+    ) {
+        self.update(snapshot, show_hidden);
+        chat::sync_list(rooms, self.rooms());
+        chat::sync_list(servers, self.servers());
     }
 }
 
@@ -932,8 +950,8 @@ mod tests {
         };
         let mut kept = Index::default();
         let (mut rooms, mut servers) = (Vec::new(), Vec::new());
-        kept.update(&first, false, &mut rooms, &mut servers);
-        kept.update(&viewing, false, &mut rooms, &mut servers);
+        kept.update_into(&first, false, &mut rooms, &mut servers);
+        kept.update_into(&viewing, false, &mut rooms, &mut servers);
         assert_eq!(rooms[3].name, "thread 42");
         // A channel's second thread is in it too, not in its first.
         assert_eq!(
@@ -1069,9 +1087,9 @@ mod tests {
         ];
         let mut kept = Index::default();
         let (mut rooms, mut servers) = (Vec::new(), Vec::new());
-        kept.update(&first, false, &mut rooms, &mut servers);
+        kept.update_into(&first, false, &mut rooms, &mut servers);
         for snapshot in &changes {
-            kept.update(snapshot, false, &mut rooms, &mut servers);
+            kept.update_into(snapshot, false, &mut rooms, &mut servers);
             let (new_rooms, new_servers) = index(snapshot, false);
             assert!(rooms == new_rooms && servers == new_servers);
             let folders: Vec<_> = servers

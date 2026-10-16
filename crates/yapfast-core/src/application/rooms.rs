@@ -737,13 +737,18 @@ impl Application {
     /// Shows the Matrix and Discord lists together, leaving a server or
     /// conversation that disappeared.
     pub(super) fn show_lists(&mut self) -> Vec<Effect> {
+        #[cfg(feature = "discord")]
+        let (discord_rooms, discord_servers) =
+            (self.discord_index.rooms(), self.discord_index.servers());
+        #[cfg(not(feature = "discord"))]
+        let (discord_rooms, discord_servers) = (std::iter::empty(), std::iter::empty());
         chat::sync_list(
             &mut self.state.rooms,
-            self.matrix_rooms.iter().chain(&self.discord_rooms),
+            self.matrix_rooms.iter().chain(discord_rooms),
         );
         chat::sync_list(
             &mut self.state.servers,
-            self.matrix_servers.iter().chain(&self.discord_servers),
+            self.matrix_servers.iter().chain(discord_servers),
         );
         if let Navigation::Server(id) = &self.state.navigation
             && !self.state.servers.iter().any(|server| &server.id == id)
