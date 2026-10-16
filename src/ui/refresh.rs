@@ -2437,16 +2437,8 @@ impl Adapter {
                     .map(|person| PersonRow {
                         id: person.id.clone().into(),
                         local: person.local,
-                        name: if person.local {
-                            "You".into()
-                        } else {
-                            display_part(&person.user).into()
-                        },
-                        initial: initial(if person.local {
-                            display_part(account)
-                        } else {
-                            display_part(&person.user)
-                        }),
+                        name: display_part(&person.user).into(),
+                        initial: initial(display_part(&person.user)),
                         tint: tint(display_part(if person.local {
                             account
                         } else {
