@@ -422,6 +422,18 @@ of display fonts that carry a few monochrome emoji, so emoji in message text
 draw in color too; symbols the UI typeface lacks that have an emoji form, such as ♥,
 then show as emoji. Windows uses "Segoe UI Emoji".
 
+On Windows, fontique falls back by script, with a sample of each script, and
+its sans-serif and UI lists are only Arial and Segoe UI. Emoji, most symbols
+and the styled letters of Unicode's mathematical alphabets that Discord names
+use, such as 𝓯𝓪𝓷𝓬𝔂, are all of the Common script, so they showed as boxes.
+Yapfast puts Segoe UI Emoji, Segoe UI, Segoe UI Symbol, Cambria Math and Segoe
+UI Historic at the front of both lists (`emoji::WINDOWS_FALLBACK`). Under Wine
+10.0 on 2026-10-16, with free fonts renamed to those names standing in for
+them, the styled letters, small capitals, ✗ and text faces such as
+( ͡° ͜ʖ ͡°) drew where they had been boxes. Wine draws no emoji from the
+bitmap font standing in for Segoe UI Emoji, so color emoji in message text
+need a check on real Windows.
+
 Linux native checks cover sign-in, restoration, device trust, encrypted sending,
 local preview input, Enter submission, room switching, draft retention, DM and
 name filtering, sign-out, and resize. The navigation refinement checks switching

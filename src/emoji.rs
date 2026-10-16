@@ -4,6 +4,11 @@
 //! renderer draws nothing for the COLRv1 build, and fontconfig may prefer it to
 //! the bitmap (CBDT) build that it draws in color. Yapfast registers an installed
 //! bitmap emoji font under its own family name and uses that one.
+//!
+//! On Windows, text falls back to fonts by script, and emoji, most symbols and
+//! the styled letters of Unicode's mathematical alphabets that names use, such
+//! as 𝓯𝓪𝓷𝓬𝔂, are all of the "Common" script, which no font is picked for. So
+//! Yapfast puts the fonts Windows ships for them in the fallback itself.
 
 use std::sync::{Arc, OnceLock};
 
@@ -24,6 +29,7 @@ pub fn family() -> &'static str {
     static FAMILY: OnceLock<&'static str> = OnceLock::new();
     FAMILY.get_or_init(|| {
         if cfg!(windows) {
+            prefer_families(&mut shared_collection(), &WINDOWS_FALLBACK);
             "Segoe UI Emoji"
         } else if cfg!(target_os = "macos") {
             "Apple Color Emoji"
@@ -308,6 +314,44 @@ pub fn rows(
     (rows, sections)
 }
 
+/// The fonts every Windows 10 and 11 has for what Segoe UI and Arial, its
+/// usual fallback, lack: color emoji first, as on Linux, then text, symbols
+/// and arrows, the mathematical alphabets, and historic scripts.
+const WINDOWS_FALLBACK: [&str; 5] = [
+    "Segoe UI Emoji",
+    "Segoe UI",
+    "Segoe UI Symbol",
+    "Cambria Math",
+    "Segoe UI Historic",
+];
+
+/// Put the installed ones of `names` first, in their order, in the generic
+/// families text falls back through after the UI typeface.
+fn prefer_families(collection: &mut fontique::Collection, names: &[&str]) {
+    let preferred: Vec<_> = names
+        .iter()
+        .filter_map(|name| collection.family_by_name(name))
+        .map(|family| family.id())
+        .collect();
+    if preferred.len() < names.len() {
+        tracing::warn!(
+            ?names,
+            found = preferred.len(),
+            "some fallback fonts aren't installed"
+        );
+    }
+    for generic in [
+        fontique::GenericFamily::SansSerif,
+        fontique::GenericFamily::SystemUi,
+    ] {
+        let rest: Vec<_> = collection
+            .generic_families(generic)
+            .filter(|family| !preferred.contains(family))
+            .collect();
+        collection.set_generic_families(generic, preferred.iter().copied().chain(rest));
+    }
+}
+
 /// Register the first installed emoji font with color bitmaps and no COLR
 /// table, and make text fall back to it for emoji.
 fn register_bitmap_font() -> bool {
@@ -570,5 +614,38 @@ mod tests {
         let mut collection = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\0\x10".to_vec();
         collection.extend(font(&[b"CBDT"]));
         assert!(has_color_bitmaps(&collection, 0));
+    }
+
+    #[test]
+    fn installed_fallback_fonts_lead_both_generic_families() {
+        let mut collection = fontique::Collection::new(fontique::CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        });
+        let mut register = |name: &str| {
+            let font = include_bytes!("../ui/fonts/AtkinsonHyperlegibleNext-Regular.ttf");
+            let registered = collection.register_fonts(
+                fontique::Blob::new(Arc::new(font.to_vec())),
+                Some(fontique::FontInfoOverride {
+                    family_name: Some(name),
+                    ..Default::default()
+                }),
+            );
+            registered.first().expect("a family").0
+        };
+        let (symbols, emoji, arial) = (register("Symbols"), register("Emoji"), register("Arial"));
+        let sans = fontique::GenericFamily::SansSerif;
+        collection.set_generic_families(sans, [arial, symbols].into_iter());
+
+        prefer_families(&mut collection, &["Emoji", "Not installed", "Symbols"]);
+
+        let order = |collection: &mut fontique::Collection, generic| {
+            collection.generic_families(generic).collect::<Vec<_>>()
+        };
+        assert_eq!(order(&mut collection, sans), [emoji, symbols, arial]);
+        assert_eq!(
+            order(&mut collection, fontique::GenericFamily::SystemUi),
+            [emoji, symbols]
+        );
     }
 }
