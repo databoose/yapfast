@@ -9,13 +9,21 @@
 #ifndef AppVersion
   #error Compile through scripts/package-windows.py, which defines AppVersion and SourceDir
 #endif
+; The full preview defines Edition and FileSuffix; the Discord release neither.
+; Both share the AppId, so installing one replaces the other.
+#ifdef Edition
+  #define DisplayName "Yapfast (" + Edition + ")"
+#else
+  #define DisplayName "Yapfast"
+  #define FileSuffix ""
+#endif
 
 [Setup]
 ; Windows knows an installed Yapfast by this; never change it.
 AppId={{19FF8D53-8D7E-4E66-91BB-E2F5BE307E9A}
 AppName=Yapfast
 AppVersion={#AppVersion}
-AppVerName=Yapfast {#AppVersion}
+AppVerName={#DisplayName} {#AppVersion}
 AppPublisher=Yapfast
 AppPublisherURL=https://yapfast.app
 AppSupportURL=https://github.com/yapfast/yapfast/issues
@@ -28,10 +36,10 @@ DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-OutputBaseFilename=Yapfast-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=Yapfast-{#AppVersion}{#FileSuffix}-windows-x64-setup
 SetupIconFile=yapfast.ico
 UninstallDisplayIcon={app}\yapfast.exe
-UninstallDisplayName=Yapfast
+UninstallDisplayName={#DisplayName}
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes

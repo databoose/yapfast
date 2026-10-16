@@ -186,9 +186,10 @@ Build a portable Windows x64 ZIP from this Linux checkout with:
 nix develop path:./nix#windows --command scripts/build-windows
 ```
 
-The ZIP and an installer appear in `target/dist`. Run the installer, or extract
-the ZIP on Windows and open `yapfast.exe`.
-The sign-in screen defaults to `https://matrix.org`. See the
+The ZIP and an installer appear in `target/dist/discord`. Run the installer, or
+extract the ZIP on Windows and open `yapfast.exe`. That is the Discord-only
+release; `scripts/build-windows full` builds the full preview with Matrix into
+`target/dist/full`, whose sign-in screen defaults to `https://matrix.org`. See the
 [Windows guide](docs/windows-beta.md) for two-machine checks,
 and [building](docs/building.md) for native Windows prerequisites.
 

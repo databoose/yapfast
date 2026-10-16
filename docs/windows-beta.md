@@ -1,15 +1,19 @@
 # Windows
 
 The portable package targets Intel/AMD PCs running 64-bit Windows 10 or 11.
-The homeserver is prefilled as `https://matrix.org` and remains editable.
+It comes in two flavours. The release is Discord-only; the full preview adds
+Matrix, with the homeserver prefilled as `https://matrix.org` and editable,
+and goes out as a separate pre-release. Both install as the same app, so
+installing one replaces the other, and both keep one data folder.
 The current build uses Slint with Skia. Its cross-build and command-line checks
 are recorded below. The 2026-10-02 manual and Wine reports describe the previous
 GPUI package. Recheck the new UI on the tester's PC.
 
 ## Run the package
 
-`target/dist` holds the portable ZIP and an installer,
-`Yapfast-0.1.0-windows-x64-setup.exe`. The installer needs no administrator
+`target/dist/discord` holds the release's portable ZIP and installer,
+`Yapfast-0.1.0-windows-x64-setup.exe`; `target/dist/full` the preview's,
+`Yapfast-0.1.0-full-preview-windows-x64-setup.exe`. The installer needs no administrator
 rights: it installs for the current user into `%LOCALAPPDATA%\Programs\Yapfast`,
 adds Yapfast to the Start menu, optionally to the desktop, and starts it when
 the person signs in unless they untick that. Settings → Advanced turns that
@@ -19,10 +23,12 @@ data folder. Neither is signed, so SmartScreen warns before either runs.
 
 For the ZIP:
 
-1. Copy `target/dist/Yapfast-0.1.0-windows-x64.zip` to the tester's PC.
+1. Copy `target/dist/discord/Yapfast-0.1.0-windows-x64.zip`, or the full
+   preview's ZIP, to the tester's PC.
 2. Extract the whole ZIP, then double-click `yapfast.exe` in the extracted folder.
-3. Sign in with a Matrix account. Voice needs a homeserver that offers MatrixRTC
-   (see [voice](voice.md)).
+3. Link Discord by its QR code, or, in the full preview, sign in with a Matrix
+   account. Matrix voice needs a homeserver that offers MatrixRTC (see
+   [voice](voice.md)).
 4. Open an encrypted room for text, or a voice channel for voice.
 
 The package needs no Rust or Visual Studio installation. It includes the native
@@ -337,10 +343,13 @@ were checked. The package includes no saved sessions, passwords or recovery keys
 On this NixOS host, from the project folder:
 
 ```sh
-nix develop path:./nix#windows --command scripts/build-windows
+nix develop path:./nix#windows --command scripts/build-windows        # Discord release
+nix develop path:./nix#windows --command scripts/build-windows full   # full preview
 ```
 
-This installs the pinned Rust toolchain's Windows target, cross-compiles with
+Both flavours build to the same `yapfast.exe`, so each run packages straight
+away; the packaging script tells them apart by the Matrix SDK's source paths
+and refuses the wrong one. This installs the pinned Rust toolchain's Windows target, cross-compiles with
 cargo-xwin and Clang, then packages the executable. The first run downloads the
 Microsoft CRT/SDK and compiles the C++ media bindings. Cargo uses two jobs.
 
@@ -357,12 +366,15 @@ A [one-line WebRTC patch](../vendor/webrtc-sys/README.yapfast.md) also fixes an
 MSVC class/struct declaration mismatch, matching the upstream resolution.
 
 The package contains dependency notices, original licenses and build hashes.
-The source snapshot, `Yapfast-VERSION-source.zip`, sits beside the packages in
-`target/dist` rather than in them, and goes on the release page with them:
-`SOURCE.txt` in each package names that page and `BUILD.json` the snapshot's
-SHA-256, which the AGPL dependencies' source offer rests on, so a release's
-snapshot stays up as long as its packages do. `target/dist/SHA256SUMS.txt`
-covers the snapshot, the ZIP and the installer. The snapshot holds only what
-git tracks, plus the exact upstream source of the AGPL MatrixRTC crates, so it
-excludes `.local`, ignored private material, account credentials, sessions,
+The source snapshot, `Yapfast-VERSION-source.zip` (the full preview's
+`Yapfast-VERSION-full-preview-source.zip`), sits beside the packages in
+`target/dist/FLAVOUR` rather than in them, and goes on the release page with
+them, tag `vVERSION` or `vVERSION-full-preview`: `SOURCE.txt` in each package
+names that page and `BUILD.json` the snapshot's SHA-256, which the AGPL
+dependencies' source offer rests on, so a release's snapshot stays up as long
+as its packages do. `SHA256SUMS.txt` in each folder covers the snapshot, the
+ZIP and the installer. The notices and `THIRD-PARTY.json` list only the crates
+the flavour builds. The snapshot holds only what git tracks; the full
+preview's adds the exact upstream source of the AGPL MatrixRTC crates, which
+the Discord release doesn't build. It excludes `.local`, ignored private material, account credentials, sessions,
 logs and the Wine prefixes.

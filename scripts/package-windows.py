@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Package the Windows executable, build inputs and dependency notices, as a
-portable ZIP and an Inno Setup installer."""
+portable ZIP and an Inno Setup installer.
+
+The Discord flavour is the release; the full one, with Matrix, goes out as a
+separate preview. Both install as the same app, so one replaces the other."""
 import argparse
 import hashlib
 import json
@@ -23,6 +26,12 @@ INNO_SETUP_VERSION = "7.1.0"
 INNO_SETUP_URL = ("https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/"
                   f"innosetup-{INNO_SETUP_VERSION}-x64.exe")
 INNO_SETUP_SHA256 = "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
+# Cargo features, the suffix of file names and release tag, and the name the
+# installer shows, for each flavour scripts/build-windows builds.
+FLAVOURS = {
+    "discord": {"features": ["--no-default-features", "--features", "desktop,discord"], "suffix": "", "edition": None},
+    "full": {"features": [], "suffix": "-full-preview", "edition": "full preview"},
+}
 
 
 def digest(path):
@@ -76,7 +85,7 @@ def inno_setup():
     return prefix
 
 
-def compile_installer(package, version, output):
+def compile_installer(package, version, flavour, output):
     """Compiles packaging/windows/yapfast.iss over the ZIP's files."""
     prefix = inno_setup()
     environment = wine_environment(prefix)
@@ -86,6 +95,8 @@ def compile_installer(package, version, output):
                                        timeout=60).strip()
 
     definitions = [f"/DAppVersion={version}", f"/DSourceDir={windows_path(package)}"]
+    if FLAVOURS[flavour]["edition"]:
+        definitions += [f"/DEdition={FLAVOURS[flavour]['edition']}", f"/DFileSuffix={FLAVOURS[flavour]['suffix']}"]
     license_path = ROOT / "LICENSE"
     if license_path.is_file():
         definitions.append(f"/DLicenseFile={windows_path(license_path)}")
@@ -93,15 +104,19 @@ def compile_installer(package, version, output):
                     f"/O{windows_path(output)}", windows_path(ROOT / "packaging/windows/yapfast.iss")],
                    env=environment, check=True, timeout=1800)
     subprocess.run(["wineserver", "-w"], env=environment, check=True, timeout=120)
-    return output / f"Yapfast-{version}-windows-x64-setup.exe"
+    return output / f"Yapfast-{version}{FLAVOURS[flavour]['suffix']}-windows-x64-setup.exe"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path, default=ROOT / "target" / TARGET / "release/yapfast.exe")
-    parser.add_argument("--output", type=Path, default=ROOT / "target/dist")
+    parser.add_argument("--flavour", choices=FLAVOURS, default="discord",
+                        help="the features the executable was built with (default: discord)")
+    parser.add_argument("--output", type=Path, help="default: target/dist/FLAVOUR")
     parser.add_argument("--no-installer", action="store_true", help="make only the portable ZIP")
     args = parser.parse_args()
+    flavour = FLAVOURS[args.flavour]
+    output = args.output or ROOT / "target/dist" / args.flavour
     executable = args.exe.resolve()
     newest_input = max(path.stat().st_mtime for path in
                        [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "build.rs",
@@ -124,18 +139,25 @@ def main():
     contents = executable.read_bytes()
     if any(str(Path.home()).encode(encoding) in contents for encoding in ("utf-8", "utf-16-le")):
         raise SystemExit(f"{executable} names {Path.home()}; build it with scripts/build-windows")
+    # Both flavours build to the same path; the Matrix SDK's source paths
+    # tell which one is there.
+    if (b"/matrix-rust-sdk-" in contents) != (args.flavour == "full"):
+        raise SystemExit(f"{executable} isn't the {args.flavour} flavour; run scripts/build-windows {args.flavour}")
     del contents
+    # Only the packages this flavour's features build.
     metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", TARGET],
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", TARGET,
+         *flavour["features"]],
         cwd=ROOT, timeout=30,
     ))
     version = next(package["version"] for package in metadata["packages"] if package["name"] == "yapfast")
-    args.output.mkdir(parents=True, exist_ok=True)
-    archive_path = args.output / f"Yapfast-{version}-windows-x64.zip"
-    source_path = args.output / f"Yapfast-{version}-source.zip"
+    output.mkdir(parents=True, exist_ok=True)
+    base = f"Yapfast-{version}{flavour['suffix']}"
+    archive_path = output / f"{base}-windows-x64.zip"
+    source_path = output / f"{base}-source.zip"
     with tempfile.TemporaryDirectory(prefix="yapfast-windows-package-") as temporary:
         temporary = Path(temporary)
-        source = temporary / f"Yapfast-{version}-source"
+        source = temporary / f"{base}-source"
         source.mkdir()
         # Only what the repository tracks: the folders also hold private,
         # ignored material.
@@ -144,33 +166,54 @@ def main():
         for name in filter(None, tracked):
             (source / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, source / name)
-        # Include the exact upstream RTC source used by the AGPL dependencies.
-        rtc = next(package for package in metadata["packages"] if package["name"] == "matrix-rtc-core")
-        rtc_root = Path(rtc["manifest_path"]).parent.parent.parent
-        shutil.copytree(rtc_root, source / "upstream/matrix-rust-rtc", ignore=shutil.ignore_patterns(".git", "target", "node_modules"))
+        # Include the exact upstream RTC source used by the AGPL dependencies,
+        # which only the Matrix flavour builds.
+        rtc = next((package for package in metadata["packages"] if package["name"] == "matrix-rtc-core"), None)
+        if rtc:
+            rtc_root = Path(rtc["manifest_path"]).parent.parent.parent
+            shutil.copytree(rtc_root, source / "upstream/matrix-rust-rtc",
+                            ignore=shutil.ignore_patterns(".git", "target", "node_modules"))
         zip_directory(source, source_path)
 
-        package = temporary / f"Yapfast-{version}-windows-x64"
+        package = temporary / f"{base}-windows-x64"
         package.mkdir()
         shutil.copy2(executable, package / "yapfast.exe")
         # The source snapshot goes beside the packages, on the release page,
         # rather than into every install; SOURCE.txt says where.
-        source_url = f"https://github.com/yapfast/yapfast/releases/tag/v{version}"
+        source_url = f"https://github.com/yapfast/yapfast/releases/tag/v{version}{flavour['suffix']}"
         (package / "SOURCE.txt").write_text(
-            f"The source code of this build of Yapfast {version}, with the exact source of\n"
-            "the libraries it includes under the AGPL, is published with it:\n\n"
+            f"The source code of this build of Yapfast {version}"
+            + (", with the exact source of\nthe libraries it includes under the AGPL," if rtc else "")
+            + " is published with it:\n\n"
             f"  {source_url}\n  {source_path.name}, SHA-256 in BUILD.json\n\n"
             "and in the repository, https://github.com/yapfast/yapfast. The licenses folder\n"
             "holds every dependency's own license and notices.\n",
             encoding="utf-8", newline="\r\n",
         )
+        if args.flavour == "discord":
+            first_steps = (
+                "3. Link your Discord account: Yapfast shows a QR code, which Discord on\n"
+                "   your phone scans (Settings, Scan QR Code). Discord doesn't allow apps\n"
+                "   like Yapfast on personal accounts; linking puts your account at some\n"
+                "   risk of being suspended.\n"
+                "4. Open a channel, or a voice channel to talk. Voice starts muted.\n\n"
+                "No account or saved session is included.\n"
+            )
+            secrets = "password or Discord token"
+        else:
+            first_steps = (
+                "3. Sign in with your Matrix account; the homeserver is editable.\n"
+                "   Or link Discord, which shows a QR code for Discord on your phone.\n"
+                "4. Open a room, or a voice channel to talk. Voice starts muted.\n\n"
+                "Passwords, recovery keys and saved sessions are not included.\n"
+            )
+            secrets = "password or recovery key"
+        edition = f" ({flavour['edition']})" if flavour["edition"] else ""
         (package / "README.txt").write_text(
-            "Yapfast for 64-bit Windows 10/11\n\n"
+            f"Yapfast{edition} for 64-bit Windows 10/11\n\n"
             "1. Extract the entire ZIP to a folder.\n"
             "2. Double-click yapfast.exe.\n"
-            "3. Sign in with your Matrix account; the homeserver is editable.\n"
-            "4. Open a room, or a voice channel to talk. Voice starts muted.\n\n"
-            "Passwords, recovery keys and saved sessions are not included.\n"
+            + first_steps +
             "No Rust, Visual Studio, or separate app installation is required.\n"
             "Yapfast writes diagnostics to yapfast.log in its data folder,\n"
             "%LOCALAPPDATA%\\Yapfast\\Yapfast\\data, or to the console run-yapfast.cmd opens.\n"
@@ -179,7 +222,7 @@ def main():
             "Voice: select a voice channel, Join voice, choose devices, then Unmute.\n"
             "Use headphones for the first two-machine audio test.\n"
             "If anything fails, record the error text, Windows version, GPU and\n"
-            "audio device model. Never send your password or recovery key in logs.\n\n"
+            f"audio device model. Never send your {secrets} in logs.\n\n"
             "If Yapfast closes immediately, run run-yapfast.cmd to keep its error visible.\n\n"
             "Yapfast switches to software rendering if the GPU cannot start.\n"
             "To choose it yourself, run run-yapfast.cmd --renderer software.\n"
@@ -240,7 +283,8 @@ def main():
         shutil.copy2(webrtc / "LICENSE.md", licenses / "libwebrtc-LICENSE.md")
         (package / "THIRD-PARTY.json").write_text(json.dumps(dependencies, indent=2) + "\n", encoding="utf-8")
         build = {
-            "version": version, "target": TARGET,
+            "version": version, "flavour": args.flavour, "target": TARGET,
+            "cargo_features": " ".join(flavour["features"]) or "default",
             "rustc": subprocess.check_output(["rustc", "--version"], text=True, timeout=10).strip(),
             "cargo_xwin": subprocess.check_output(["cargo", "xwin", "--version"], text=True, timeout=10).strip(),
             "ui_framework": "Slint 1.18.1",
@@ -251,17 +295,18 @@ def main():
             "skia_source_archive_sha256": "8401d0de878582a03abc1029bb62330aea58cda89904ae6ab187302e6d48ba5d",
             "skia_runtime": "MT_StaticRelease",
             "skia_archive_prepared_sha256": digest(skia_archive),
-            "homeserver_default": "https://matrix.org",
             "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
             "executable_sha256": digest(executable),
             "source_archive_sha256": digest(source_path),
             "webrtc_tag": "webrtc-51ef663",
             "webrtc_archive_sha256": "0a56a5c91b3b7b4222082b8a09388d16a802cde22d67295beb24c55700755b30",
         }
+        if rtc:
+            build["homeserver_default"] = "https://matrix.org"
         (package / "BUILD.json").write_text(json.dumps(build, indent=2) + "\n", encoding="utf-8")
         zip_directory(package, archive_path)
-        installer_path = None if args.no_installer else compile_installer(package, version, args.output.resolve())
-    hashes = args.output / "SHA256SUMS.txt"
+        installer_path = None if args.no_installer else compile_installer(package, version, args.flavour, output.resolve())
+    hashes = output / "SHA256SUMS.txt"
     artifacts = [archive_path, source_path, *([installer_path] if installer_path else [])]
     hashes.write_text("".join(f"{digest(path)}  {path.name}\n" for path in artifacts), encoding="utf-8")
     print(f"Packaged {archive_path} ({archive_path.stat().st_size / 1024 / 1024:.1f} MiB)")
