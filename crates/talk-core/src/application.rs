@@ -1030,6 +1030,11 @@ pub enum Action {
         index: usize,
         path: PathBuf,
     },
+    /// Copy the picture of the attachment at `index` of an item.
+    CopyAttachment {
+        item: String,
+        index: usize,
+    },
     /// Show an item's image attachment large.
     ViewImage {
         item: String,
@@ -1419,6 +1424,8 @@ pub enum Effect {
     StopDiscordLink,
     /// Open this web page in the browser.
     OpenPage(String),
+    /// Put this picture, a file as it was downloaded, on the clipboard.
+    CopyPicture(Vec<u8>),
     /// Film for a preview call with the camera with this id, or the first,
     /// into this feed; or stop filming.
     PreviewCamera(Option<(Option<String>, crate::picture::Feed)>),
@@ -1911,6 +1918,7 @@ impl Application {
             Action::Unstage(index) => self.unstage(index),
             Action::ToggleSpoiler(index) => self.toggle_spoiler(index),
             Action::SaveAttachment { item, index, path } => self.save_attachment(item, index, path),
+            Action::CopyAttachment { item, index } => self.copy_attachment(item, index),
             Action::ViewImage { item, index } => self.view_image(item, index),
             Action::PlayVideo {
                 item,
@@ -2680,6 +2688,11 @@ impl Application {
                     });
                 }
             }
+            // Asked for just now, from the conversation or the thread beside it.
+            Event::Copied(picture) => match picture {
+                Ok(picture) => return vec![Effect::CopyPicture(picture)],
+                Err(error) => self.state.notice = Some(error.into()),
+            },
             Event::Trust { trusted, error } => {
                 self.state.busy = false;
                 self.state.trusted = trusted;

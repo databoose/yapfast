@@ -158,6 +158,26 @@ impl Application {
         })]
     }
 
+    pub(super) fn copy_attachment(&mut self, item: String, index: usize) -> Vec<Effect> {
+        if self.state.preview
+            || !self
+                .state
+                .message(&item)
+                .and_then(|message| message.attachments.get(index))
+                .is_some_and(|attachment| attachment.url.is_some())
+        {
+            return vec![];
+        }
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
+        vec![Effect::Backend(Command::CopyAttachment {
+            room,
+            item,
+            index,
+        })]
+    }
+
     pub(super) fn play_video(
         &mut self,
         item: String,

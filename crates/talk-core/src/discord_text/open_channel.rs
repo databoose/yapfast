@@ -1048,6 +1048,39 @@ impl OpenChannel {
         });
     }
 
+    /// Downloads an attachment's picture for the clipboard: a GIF that plays
+    /// from a video gives its still.
+    pub fn copy(
+        &mut self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+        item: &str,
+        index: usize,
+    ) {
+        let room = self.room.clone();
+        let Some(url) = self.attachment(item, index).map(|attachment| {
+            attachment
+                .still_url
+                .as_deref()
+                .unwrap_or(&attachment.url)
+                .to_owned()
+        }) else {
+            let _ = done.send(Done::Copied {
+                room,
+                picture: Err("This picture is no longer available."),
+            });
+            return;
+        };
+        let (discord, done) = (discord.clone(), done.clone());
+        self.tasks.spawn(async move {
+            let picture = discord
+                .download(&url, MAX_PREVIEW_DOWNLOAD_BYTES)
+                .await
+                .map_err(|_| "Talk couldn't copy this picture. Save it instead.");
+            let _ = done.send(Done::Copied { room, picture });
+        });
+    }
+
     /// Downloads an image attachment at viewing size, through Discord's media
     /// proxy, and decodes it for the viewer.
     pub fn view_image(
@@ -1202,6 +1235,7 @@ impl OpenChannel {
                         preview_failed: false,
                         placement: Placement::Message,
                         gif: None,
+                        url: None,
                         spoiler: file.spoiler,
                         video: false,
                     })
@@ -1283,6 +1317,12 @@ impl OpenChannel {
                     spoiler: attachment.spoiler,
                     video: attachment.video_url.is_some(),
                     gif: super::gifs::favorite_gif(attachment),
+                    url: Some(
+                        attachment
+                            .link_url
+                            .clone()
+                            .unwrap_or_else(|| attachment.url.clone()),
+                    ),
                 }
             })
             .collect();

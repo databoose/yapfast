@@ -668,6 +668,7 @@ fn pictures_on_their_way_hold_their_place_as_skeletons() {
         gif: None,
         spoiler: false,
         video: false,
+        url: None,
     };
     let row = message_row_plain(&ChatMessage {
         attachments: vec![attachment("wide.png", false)],
@@ -710,6 +711,7 @@ fn a_selection_copies_the_pictures_it_runs_through() {
                 gif: None,
                 spoiler: false,
                 video: false,
+                url: None,
             }],
             ..Default::default()
         },
@@ -2608,6 +2610,7 @@ fn closing_the_viewer_lets_go_of_its_picture() {
             gif: None,
             spoiler: false,
             video: false,
+            url: None,
         }],
         ..Default::default()
     })]);
@@ -2622,6 +2625,45 @@ fn closing_the_viewer_lets_go_of_its_picture() {
     adapter.refresh(&window);
     assert!(!window.get_viewer_open());
     assert_eq!(window.get_viewer_image().size().width, 0);
+}
+
+#[test]
+fn a_pictures_menu_links_to_it_when_it_has_an_address() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = TalkWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    let file = |url: Option<&str>| talk_core::chat::Attachment {
+        name: "a.png".into(),
+        size: None,
+        image: true,
+        dimensions: None,
+        preview: None,
+        preview_failed: false,
+        placement: talk_core::chat::Placement::Message,
+        gif: None,
+        spoiler: false,
+        video: false,
+        url: url.map(Into::into),
+    };
+    adapter.borrow_mut().app.state.messages = Arc::new(vec![Arc::new(ChatMessage {
+        item: "i0".into(),
+        attachments: vec![file(None), file(Some("https://cdn.example/a.png"))],
+        ..Default::default()
+    })]);
+    assert_eq!(window.invoke_attachment_link("i0".into(), 0), "");
+    assert_eq!(
+        window.invoke_attachment_link("i0".into(), 1),
+        "https://cdn.example/a.png"
+    );
+    assert_eq!(window.invoke_attachment_link("i0".into(), 2), "");
+    assert_eq!(window.invoke_attachment_link("i0".into(), -1), "");
 }
 
 /// A Discord server with a category holding #general, and #rules outside

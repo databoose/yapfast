@@ -5,6 +5,8 @@
 #![cfg_attr(all(windows, feature = "desktop"), windows_subsystem = "windows")]
 
 #[cfg(feature = "desktop")]
+mod copy;
+#[cfg(feature = "desktop")]
 mod custom_emoji;
 #[cfg(feature = "desktop")]
 mod drop;

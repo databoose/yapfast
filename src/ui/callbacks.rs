@@ -1118,6 +1118,32 @@ pub(super) fn bind_callbacks(window: &TalkWindow, adapter: &Rc<RefCell<Adapter>>
     let state = adapter.clone();
     window.on_paste_into_composer(move || state.borrow_mut().paste());
     let state = adapter.clone();
+    window.on_copy_attachment(move |item, index| {
+        let mut adapter = state.borrow_mut();
+        if let (Ok(index), Some(window)) = (usize::try_from(index), adapter.window.upgrade()) {
+            let item = item.into();
+            adapter.action(&window, Action::CopyAttachment { item, index });
+        }
+    });
+    let state = adapter.clone();
+    window.on_attachment_link(move |item, index| {
+        let adapter = state.borrow();
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| {
+                adapter
+                    .app
+                    .state
+                    .message(&item)?
+                    .attachments
+                    .get(index)?
+                    .url
+                    .as_deref()
+            })
+            .unwrap_or_default()
+            .into()
+    });
+    let state = adapter.clone();
     window.on_save_attachment(move |item, index| {
         let item = item.to_string();
         let index = usize::try_from(index).unwrap_or_default();

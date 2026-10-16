@@ -110,6 +110,10 @@ pub enum Done {
         name: String,
         result: Result<(), &'static str>,
     },
+    Copied {
+        room: String,
+        picture: Result<Vec<u8>, &'static str>,
+    },
     /// An action failed; the reason is for the person.
     Failed { room: String, message: String },
     /// Someone may have stopped typing.

@@ -1540,6 +1540,7 @@ impl Adapter {
                     self.link_discord();
                 }
                 Effect::OpenPage(page) => browser::open(&page),
+                Effect::CopyPicture(picture) => crate::copy::picture(picture),
                 Effect::StopDiscordLink => {
                     #[cfg(feature = "discord")]
                     {

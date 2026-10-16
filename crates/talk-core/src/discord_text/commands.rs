@@ -82,6 +82,7 @@ pub fn command(
         | Command::Retry { room, .. }
         | Command::Cancel { room, .. }
         | Command::SaveAttachment { room, .. }
+        | Command::CopyAttachment { room, .. }
         | Command::ViewImage { room, .. }
         | Command::VisibleMessages { room, .. }
         | Command::Earlier(room)
@@ -246,6 +247,7 @@ pub fn command(
         Command::SaveAttachment {
             item, index, path, ..
         } => channel.save(discord, done, &item, index, path),
+        Command::CopyAttachment { item, index, .. } => channel.copy(discord, done, &item, index),
         Command::ViewImage { item, index, .. } => channel.view_image(discord, done, item, index),
         Command::Earlier(room) if !channel.earlier(discord, done) => {
             let _ = events.send(Event::HistoryLoaded {
@@ -358,6 +360,7 @@ pub fn finished(
         | Done::Picture { room, .. }
         | Done::Image { room, .. }
         | Done::Saved { room, .. }
+        | Done::Copied { room, .. }
         | Done::Failed { room, .. } => room.clone(),
         Done::Typing { room } => {
             channels.typing_changed(room, events);
@@ -396,6 +399,9 @@ pub fn finished(
         }
         (Done::Saved { name, result, .. }, _) => {
             let _ = events.send(Event::Saved { room, name, result });
+        }
+        (Done::Copied { picture, .. }, _) => {
+            let _ = events.send(Event::Copied(picture));
         }
         (
             Done::Image {

@@ -106,6 +106,12 @@ pub(super) fn found(
                 spoiler: attachment.spoiler,
                 video: attachment.video_url.is_some(),
                 gif: super::gifs::favorite_gif(attachment),
+                url: Some(
+                    attachment
+                        .link_url
+                        .clone()
+                        .unwrap_or_else(|| attachment.url.clone()),
+                ),
             })
             .collect(),
         mentions: mentions(discord, server, &message.content),

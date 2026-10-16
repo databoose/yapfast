@@ -150,7 +150,7 @@ pub enum Reply {
 pub struct Attachment {
     pub name: String,
     pub size: Option<u64>,
-    pub url: String,
+    pub url: Arc<str>,
     pub image: bool,
     /// The image's width and height.
     pub dimensions: Option<(u32, u32)>,
@@ -170,7 +170,7 @@ pub struct Attachment {
     /// which Discord's client keeps it among the favourites by: a GIF's page,
     /// or the picture's own address.
     #[serde(default, alias = "page_url")]
-    pub link_url: Option<String>,
+    pub link_url: Option<Arc<str>>,
     /// It moves: Discord marks it animated, or it's a GIF.
     #[serde(default)]
     pub animated: bool,
@@ -426,7 +426,7 @@ pub fn parse(value: &Value) -> Option<Message> {
             let image = kind.starts_with("image/");
             // The media proxy makes a video's poster from its first frame.
             let video = kind.starts_with("video/");
-            let url: String = attachment["url"].as_str()?.into();
+            let url: Arc<str> = attachment["url"].as_str()?.into();
             let name = attachment["filename"].as_str()?;
             Some(Attachment {
                 name: name.into(),
@@ -444,7 +444,7 @@ pub fn parse(value: &Value) -> Option<Message> {
                 view_url: image
                     .then(|| scaled_url(attachment, VIEW_WIDTH, VIEW_HEIGHT, true))
                     .flatten(),
-                video_url: video.then(|| url.clone()),
+                video_url: video.then(|| url.to_string()),
                 link_url: None,
                 animated: image && animated(attachment),
                 url,
@@ -503,7 +503,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         attachments.push(Attachment {
             name: name.into(),
             size: None,
-            url: url.clone(),
+            url: url.as_str().into(),
             image: true,
             dimensions: Some((STICKER_SIZE, STICKER_SIZE)),
             preview_url: Some(url.clone()),
@@ -1336,7 +1336,7 @@ mod tests {
             .attachments
             .iter()
             .filter(|attachment| attachment.shown == Shown::Sticker)
-            .map(|attachment| (attachment.name.as_str(), attachment.url.as_str()))
+            .map(|attachment| (attachment.name.as_str(), &*attachment.url))
             .collect();
         assert_eq!(
             stickers,

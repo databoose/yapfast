@@ -229,7 +229,7 @@ fn closed_channels_keep_metadata_without_pinning_previews() {
         attachments: vec![talk_discord::message::Attachment {
             name: "a.png".into(),
             size: None,
-            url: String::new(),
+            url: "".into(),
             image: true,
             dimensions: None,
             preview_url: Some(format!("preview/{id}")),
@@ -278,7 +278,7 @@ fn changes_render_again_only_the_messages_they_change() {
         attachments: vec![talk_discord::message::Attachment {
             name: "a.png".into(),
             size: None,
-            url: String::new(),
+            url: "".into(),
             image: true,
             dimensions: None,
             preview_url: Some("preview/9".into()),
@@ -1019,6 +1019,98 @@ async fn a_file_marked_as_a_spoiler_arrives_as_one() {
     assert!(sent.spoiler && sent.name == "SPOILER_plot.txt");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and TALK_DISCORD_TEST_SERVER"]
+async fn a_sent_picture_has_a_link_and_downloads_to_copy() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    command(
+        Command::Open(room.clone()),
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| matches!(event, Event::Timeline { .. }).then_some(()),
+    )
+    .await;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("copied.png");
+    let picture = b"\x89PNG not really".to_vec();
+    std::fs::write(&path, &picture).unwrap();
+    command(
+        Command::Send {
+            room: room.clone(),
+            body: String::new(),
+            reply: None,
+            options: Default::default(),
+            files: vec![OutgoingFile {
+                path,
+                spoiler: false,
+            }],
+        },
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    let (item, url) = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| match event {
+            Event::Timeline { messages, .. } => messages
+                .iter()
+                .find(|message| {
+                    message.delivery == Delivery::Sent
+                        && message
+                            .attachments
+                            .iter()
+                            .any(|file| file.name == "copied.png")
+                })
+                .map(|message| (message.item.clone(), message.attachments[0].url.clone())),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(url.is_some_and(|url| url.ends_with("copied.png")));
+    command(
+        Command::CopyAttachment {
+            room,
+            item,
+            index: 0,
+        },
+        Ok(&discord),
+        &mut channels,
+        &done,
+        &events,
+    );
+    let copied = until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| match event {
+            Event::Copied(copied) => Some(copied.clone()),
+            _ => None,
+        },
+    )
+    .await;
+    assert_eq!(copied, Ok(picture));
+}
+
 #[test]
 fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
@@ -1088,7 +1180,7 @@ async fn previews_follow_the_view_and_share_cache_across_channels() {
         attachments: vec![talk_discord::message::Attachment {
             name: "a.png".into(),
             size: None,
-            url: String::new(),
+            url: "".into(),
             image: true,
             dimensions: Some((720, 540)),
             preview_url: Some(format!(
