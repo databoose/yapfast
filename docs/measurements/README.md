@@ -453,7 +453,7 @@ owner's account. The follow-up read-only process sample was 229 MiB RSS,
 215 MiB PSS and 138 MiB anonymous memory. It received no input. The isolated
 test session was stopped and the previously optimized binary restored.
 
-Reproduce: save a Discord-only build of commit `411853e` and one with these
+Reproduce: save a Discord-only build of commit `fa88771` and one with these
 changes, both built with `nix develop path:./nix --command cargo build --locked
 --profile fast --no-default-features --features desktop,discord`. Start each
 through `scripts/ui-session start --discord --fake-args '--servers 100 --dms
@@ -481,7 +481,7 @@ the fake server; the tests themselves both reported success.
 ## 2026-10-09: viewport media and lazy avatars
 
 The follow-up record compares commit
-`052e39b`, which includes the preceding startup fixes, with viewport-driven
+`fa3c205`, which includes the preceding startup fixes, with viewport-driven
 media loading and shared decoded previews. It implements the four proposals
 above. The Discord-only `fast` builds use the same private 1120×760 software
 renderer display and fake account: 100 servers, 300 DMs, 12 extra channels,
@@ -536,7 +536,7 @@ with the previous opportunistic sweep and now passes using the testing clock.
 Another regression covers a temporary Matrix message ID becoming its server
 ID without changing the row count or scroll position.
 
-Reproduce with Discord-only builds of `052e39b` and this change. Build each
+Reproduce with Discord-only builds of `fa3c205` and this change. Build each
 with `nix develop path:./nix --command cargo build --locked --profile fast
 --no-default-features --features desktop,discord`, saving the binary outside
 `target`. Start the baseline using `scripts/ui-session start --discord
@@ -568,7 +568,7 @@ the owner's next launch.
 ## 2026-10-13: Discord server foundations
 
 The record compares commit
-`14f9fc6` with the server foundations: members' roles held once as shared
+`bb26acf` with the server foundations: members' roles held once as shared
 `Arc<[String]>` that member list rows and `ChatMember` point at, rather than
 a second copy in each listed member; one shared notification settings
 object per server; server pins and search; and menus with a submenu per row.
@@ -577,7 +577,7 @@ Discord-only `fast` builds ran on the busy fake account with the server's
 
 | Build | RSS, mean of 3 (range) | PSS, mean of 3 |
 | --- | --- | --- |
-| `14f9fc6` | 108.2 MiB (106.6–110.6) | 88.9 MiB |
+| `bb26acf` | 108.2 MiB (106.6–110.6) | 88.9 MiB |
 | This change | 106.6 MiB (105.0–107.0) | 87.0 MiB |
 
 The difference is inside the spread between runs of one build, so the change
@@ -595,8 +595,8 @@ do 'sleep 8' 'click 36 36' 'sleep 4' 'click 36 102' 'sleep 8' 'move 550 25'
 
 ## 2026-10-13: jumping to a message
 
-The record compares commit `ab62c15`
-with `2a4b9cb`, whose jumps load the messages around the one jumped to, as a
+The record compares commit `fa68b5f`
+with `7c58d05`, whose jumps load the messages around the one jumped to, as a
 window of older messages, rather than every page between the newest message
 and it. The measured build lacked three fixes made after it, none on this
 path: Matrix's live timeline keeping a window's first messages, history
@@ -607,8 +607,8 @@ channel's first message.
 
 | Build | Requests per jump | Heap in use, #general | Heap in use after the jump | Heap held after the jump | Peak RSS |
 | --- | --- | --- | --- | --- | --- |
-| `ab62c15` | 16–17 pages `before` | 7.78 MiB | 13.92 MiB (13.76–14.21) | 17.29 MiB | 94.6 MiB |
-| `2a4b9cb` | 1 `around`, 1 `before` | 7.78 MiB | 9.85 MiB (9.57–10.04) | 11.34 MiB | 89.0 MiB |
+| `fa68b5f` | 16–17 pages `before` | 7.78 MiB | 13.92 MiB (13.76–14.21) | 17.29 MiB | 94.6 MiB |
+| `7c58d05` | 1 `around`, 1 `before` | 7.78 MiB | 9.85 MiB (9.57–10.04) | 11.34 MiB | 89.0 MiB |
 
 Means of three runs each. The jump grew the heap by 6.14 MiB before and by
 2.07 MiB after: two thirds less, because the timeline now holds about 25
@@ -636,7 +636,7 @@ the requests with `scripts/ui-session do 'get history'`. Alternate the builds.
 
 ## 2026-10-13: Discord server channel header
 
-The record compares `ab62c15`
+The record compares `fa68b5f`
 with the server channel's header: each channel's topic held once as an
 `Option<Arc<str>>` the server's snapshots share, rendered for the open
 channel only and sent again only when it changes; the notification bell; and
@@ -646,7 +646,7 @@ menu opens. Discord-only `fast` builds ran on the busy fake account with
 
 | Build | RSS, mean of 3 (range) | RSS peak, mean of 3 | PSS, mean of 3 |
 | --- | --- | --- | --- |
-| `ab62c15` | 106.2 MiB (100.6–111.6) | 109.4 MiB | 85.4 MiB |
+| `fa68b5f` | 106.2 MiB (100.6–111.6) | 109.4 MiB | 85.4 MiB |
 | This change | 105.1 MiB (101.4–107.8) | 107.1 MiB | 85.6 MiB |
 
 The difference is inside the spread between runs of one build. A topic costs
@@ -727,8 +727,8 @@ Reproduce: `python3 testing/measure_discord_cameras.py --camera CAMERA.h264
 
 ## 2026-10-13: Discord server and channel menus
 
-The record compares `ab62c15` with
-the server and channel menus stacked on it, measured at `c4275b9` before
+The record compares `fa68b5f` with
+the server and channel menus stacked on it, measured at `6cf4aa2` before
 they were rebased onto the channel header: a server's menu and header
 dropdown, category menus, invites, making, changing and deleting channels
 and categories, and leaving a server. Menu rows are built only when a menu
@@ -739,7 +739,7 @@ with the server's #general and its member list open.
 
 | Build | RSS, mean of 3 (range) | PSS, mean of 3 |
 | --- | --- | --- |
-| `ab62c15` | 107.1 MiB (106.0–109.2) | 87.7 MiB |
+| `fa68b5f` | 107.1 MiB (106.0–109.2) | 87.7 MiB |
 | This change | 106.8 MiB (106.4–107.1) | 87.3 MiB |
 
 The difference is inside the spread between runs of one build, so the
@@ -749,8 +749,8 @@ Reproduce: as for the server foundations above, with each build's binary.
 
 ## 2026-10-14: A Discord channel's list of threads
 
-The record compares `ba8ae24` with the
-list of threads at `91b1381`. Each active thread the service knows now
+The record compares `97b92df` with the
+list of threads at `cb6b8ae`. Each active thread the service knows now
 keeps its newest message (its id, author and up to 200 bytes of text), its
 member count and three member ids: 48 bytes more in the thread, plus about
 300 bytes of text and ids, and only for active threads in servers Yapfast
@@ -762,7 +762,7 @@ with other builds on the host.
 
 | Build and state | Heap in use, mean of 3 |
 | --- | --- |
-| `ba8ae24`, #general | 7.05 MiB |
+| `97b92df`, #general | 7.05 MiB |
 | This change, #general | 7.17 MiB (one run 7.40, as `main` gave in an earlier run) |
 | This change, list open with all 30 archived threads loaded | +2.52 MiB |
 | This change, after the list closes | +1.91 MiB |

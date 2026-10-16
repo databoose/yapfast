@@ -7,15 +7,9 @@ Yapfast binary by the Slint compiler. `LICENSE-OFL.txt` is their SIL Open Font
 License 1.1, which permits embedding, modifying and redistributing them,
 including in a public repository.
 
-Satoshi by Indian Type Foundry, the second choice, kept here but not embedded:
-its imports are commented out at the top of `ui/yapfast.slint`. Downloaded
-unmodified from Fontshare (https://www.fontshare.com/fonts/satoshi) on
-2026-10-03, in the static TTF styles Regular, Italic, Medium, Bold, Bold Italic
-and Black.
-
-`LICENSE-FFL.txt` is Satoshi's ITF Free Font License 2.0. It permits embedding
-the fonts in desktop applications. It forbids modifying, subsetting or
-converting the files, and forbids redistributing them on their own, including
-through a publicly accessible repository. Yapfast's repository is private; remove
-the Satoshi files, or replace them with a download step, before publishing the
-source.
+Satoshi by Indian Type Foundry was the second choice. Its ITF Free Font License
+2.0 forbids redistributing the files through a public repository, so they
+aren't here. To try it, download the static TTF styles Regular, Italic, Medium,
+Bold, Bold Italic and Black from Fontshare
+(https://www.fontshare.com/fonts/satoshi) into this folder, and follow the
+comment at the top of `ui/yapfast.slint`.

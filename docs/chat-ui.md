@@ -362,7 +362,7 @@ The window follows Discord's arrangement:
 
 Atkinson Hyperlegible Next (SIL Open Font License, embedded in the binary; see
 `ui/fonts/README.md`) sets all text in four weights. Satoshi, the second choice,
-stays in `ui/fonts` with its imports commented out. The palette is layered graphite with one
+isn't distributed; `ui/fonts/README.md` says how to switch back. The palette is layered graphite with one
 marigold accent for selection and primary actions, red only for mentions and
 destructive actions, and green only for live voice. Avatars get one of eight
 tints from the person's name.
