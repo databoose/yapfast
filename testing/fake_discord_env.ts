@@ -26,6 +26,9 @@ export type Env = {
   groups?: Group[];
   /** Servers, as the server list shows them, top first. */
   servers?: Server[];
+  /** The GIF picker's Favorites, first first: picture files, .gif or .webp,
+   *  each kept as a Tenor page whose picture it is. */
+  favoriteGifs?: string[];
 };
 
 export type Status = "online" | "idle" | "dnd" | "offline";

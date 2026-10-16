@@ -3179,12 +3179,28 @@ function favoriteGifs(origin: string): string {
       ...protoNumber(3, width), ...protoNumber(4, height), ...protoNumber(5, order)]);
     return protoBytes(1, new Uint8Array([...protoBytes(1, text(url)), ...protoBytes(2, gif)]));
   };
-  const gifs = new Uint8Array([
-    ...entry("https://klipy.com/gifs/hello-9000", `${origin}/_gifs/hello.gif`, 220, 165, 1),
-    ...entry(linkedGif("wave", "webp"), `${origin}/_gifs/wave.webp`, 220, 165, 2),
-  ]);
+  const gifs = envFavorites
+    ? new Uint8Array(envFavorites.flatMap((gif, i) => [
+      ...entry(gif.url, `${origin}/_favorites/${i}.${gif.extension}`, gif.media.width!, gif.media.height!, envFavorites.length - i),
+    ]))
+    : new Uint8Array([
+      ...entry("https://klipy.com/gifs/hello-9000", `${origin}/_gifs/hello.gif`, 220, 165, 1),
+      ...entry(linkedGif("wave", "webp"), `${origin}/_gifs/wave.webp`, 220, 165, 2),
+    ]);
   return Buffer.from(protoBytes(2, gifs)).toString("base64");
 }
+
+// An env's favourite GIFs, each a Tenor page by its file's name, served
+// from /_favorites/N.gif; sent, one carries a gifv embed of its picture.
+// The picker shows the highest order first, so the env's first gets it.
+const envFavorites = env?.env.favoriteGifs?.map((path, i) => {
+  const name = path.split("/").pop()!.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return {
+    url: `https://tenor.com/view/${name}-gif-${9200 + i}`,
+    extension: path.split(".").pop()!.toLowerCase(),
+    media: readMedia(env.dir, path),
+  };
+});
 
 /** A direct link to a GIF provider's file, as a favourite may be kept by. */
 function linkedGif(name: string, extension: string): string {
@@ -3336,6 +3352,19 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         reply: reply && byId.has(reply) ? reply : undefined,
         files: attached,
       });
+      // An env's favourite GIF comes with its embed, so a recording doesn't
+      // show its link for the moment before the embed would come.
+      const favorite = envFavorites?.findIndex((gif) => gif.url === message.content.trim()) ?? -1;
+      if (favorite >= 0) {
+        const gif = envFavorites![favorite]!;
+        message.embeds = () => [{
+          type: "gifv", url: gif.url, provider: { name: "Tenor", url: "https://tenor.co" },
+          thumbnail: {
+            url: gif.url, proxy_url: `${origin}/_favorites/${favorite}.${gif.extension}`,
+            width: gif.media.width, height: gif.media.height, content_type: gif.media.contentType,
+          },
+        }];
+      }
       readStates.set(m[1]!, { last: message.id, mentions: 0 });
       dispatch("MESSAGE_CREATE", dispatched(message, origin));
       // A GIF the picker sent gets its embed a moment later, as Discord's
@@ -4913,6 +4942,11 @@ const server = Bun.serve<SocketData>({
       const file = Bun.file(new URL(`gifs/${gif[1]}.${gif[2]}`, fixtures));
       if (!(await file.exists())) return notFound();
       return new Response(file, { headers: { "content-type": `image/${gif[2]}` } });
+    }
+    const favorite = req.method === "GET" ? path.match(/^\/_favorites\/(\d+)\.(gif|webp)$/) : null;
+    const favoriteGif = favorite && envFavorites?.[Number(favorite[1])];
+    if (favoriteGif) {
+      return new Response(favoriteGif.media.data, { headers: { "content-type": favoriteGif.media.contentType } });
     }
     if (path === "/_control/gif-selects") return Response.json(gifSelects);
     if (req.method === "GET" && path.startsWith("/media/attachments/")) {
