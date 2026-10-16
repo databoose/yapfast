@@ -704,8 +704,8 @@ struct Layout {
     strip_tracking: Option<bool>,
     /// When animations play.
     animate: Animate,
-    /// Joining a call turns the microphone on.
-    unmute_on_join: bool,
+    /// Joining a call turns the microphone on; on unless turned off.
+    unmute_on_join: Option<bool>,
     /// Joining a call deafens.
     deafen_on_join: bool,
     /// Your voice is evened out in calls; on unless turned off.
@@ -884,7 +884,7 @@ impl Layout {
         window.set_animate(choice(&ANIMATES, self.animate));
         ANIMATE.set(self.animate);
         show_motion(window);
-        window.set_unmute_on_join(self.unmute_on_join);
+        window.set_unmute_on_join(self.unmute_on_join.unwrap_or(true));
         window.set_deafen_on_join(self.deafen_on_join);
         window.set_level_voice(self.level_voice.unwrap_or(true));
         yapfast_core::leveling::set_enabled(self.level_voice.unwrap_or(true));
@@ -1696,17 +1696,14 @@ impl Adapter {
                 Sound::Undeafen
             }
         } else if layout.deafen_on_join {
-            (layout.deafen_on_join, layout.unmute_on_join) = (false, true);
+            (layout.deafen_on_join, layout.unmute_on_join) = (false, Some(true));
             Sound::Undeafen
         } else {
-            layout.unmute_on_join = !layout.unmute_on_join;
-            if layout.unmute_on_join {
-                Sound::Unmute
-            } else {
-                Sound::Mute
-            }
+            let unmute = !layout.unmute_on_join.unwrap_or(true);
+            layout.unmute_on_join = Some(unmute);
+            if unmute { Sound::Unmute } else { Sound::Mute }
         };
-        window.set_unmute_on_join(layout.unmute_on_join);
+        window.set_unmute_on_join(layout.unmute_on_join.unwrap_or(true));
         window.set_deafen_on_join(layout.deafen_on_join);
         layout.write(&self.root);
         self.play(sound);

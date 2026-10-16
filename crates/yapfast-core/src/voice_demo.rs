@@ -115,6 +115,9 @@ pub async fn provision() -> Result<PathBuf> {
         "cargo run --locked -- --data-dir {}",
         root.join("bob").display()
     );
-    println!("Select Yapfast voice test, then Lounge, and Join voice. Both accounts start muted.");
+    println!(
+        "Select Yapfast voice test, then Lounge, and Join voice. Both join with the microphone on; \
+         mute one, or use headphones."
+    );
     Ok(root)
 }

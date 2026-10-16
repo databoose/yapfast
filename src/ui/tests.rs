@@ -323,7 +323,7 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
         twelve_hour_clock: true,
         text_size: Some(2),
         link_previews: Some(false),
-        unmute_on_join: true,
+        unmute_on_join: Some(true),
         noise_suppression: yapfast_core::noise::Suppressor::RNNoise,
         noise_strength: yapfast_core::noise::Strength::Light,
         input_sensitivity: Some(-45),
@@ -420,7 +420,7 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
 fn each_sounds_own_volume_counts_only_while_adjusting_each() {
     i_slint_backend_testing::init_no_event_loop();
     let defaults: Layout = serde_json::from_str("{}").unwrap();
-    assert_eq!(defaults.sound_set, SoundSet::Felt);
+    assert_eq!(defaults.sound_set, SoundSet::NewKalimba);
     assert_eq!(defaults.sound_gain(Sound::Join), 1.0);
     let mut layout = Layout {
         sound_set: SoundSet::Rhodes,
@@ -435,7 +435,7 @@ fn each_sounds_own_volume_counts_only_while_adjusting_each() {
 
     let window = YapfastWindow::new().unwrap();
     layout.apply(&window);
-    assert_eq!(window.get_sound_set(), 2);
+    assert_eq!(window.get_sound_set(), 3);
     assert_eq!(window.get_sound_volume(), 50);
     assert!(window.get_adjust_each_sound());
     let each: Vec<i32> = window.get_each_sound().iter().collect();
@@ -491,7 +491,7 @@ fn sound_settings_are_remembered() {
     )
     .unwrap();
     bind_callbacks(&window, &adapter);
-    window.set_sound_set(3);
+    window.set_sound_set(4);
     window.set_sound_volume(40);
     window.set_adjust_each_sound(true);
     window.invoke_preferences_changed();
@@ -1258,6 +1258,8 @@ fn the_input_caret_opens_its_menu_and_measures_only_while_open() {
     .unwrap();
     bind_callbacks(&window, &adapter);
     window.invoke_explore_preview();
+    // Joined muted, so only the caret could unmute it.
+    window.set_unmute_on_join(false);
     window.show().unwrap();
     window
         .window()
@@ -1922,13 +1924,15 @@ fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
     window.invoke_send();
     assert_eq!(window.get_messages().row_count(), count + 1);
     assert!(window.get_draft().is_empty());
-    // Out of a call, the toggles change how the next one starts, and are kept.
+    // Calls start with the microphone on unless that's turned off. Out of a
+    // call, the toggles change how the next one starts, and are kept.
+    assert!(window.get_unmute_on_join() && !window.get_deafen_on_join());
     window.invoke_toggle_deafen();
     assert!(window.get_deafen_on_join() && adapter.borrow().layout.deafen_on_join);
     window.invoke_toggle_mute();
     assert!(window.get_unmute_on_join() && !window.get_deafen_on_join());
     window.invoke_toggle_mute();
-    assert!(!window.get_unmute_on_join() && !adapter.borrow().layout.unmute_on_join);
+    assert!(!window.get_unmute_on_join() && adapter.borrow().layout.unmute_on_join == Some(false));
     let voice_room = rooms.iter().find(|room| room.voice).unwrap();
     // Clicking a voice channel joins it.
     window.invoke_select_room(voice_room.id.clone().into());

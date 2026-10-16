@@ -157,8 +157,8 @@ cargo run --locked -- --voice-demo
 
 The demo prints commands for two saved test accounts. Open them in separate
 processes, select **Yapfast voice test → Lounge**, and press **Join voice**.
-Each joins muted. The gear button selects microphone and speakers. Press
-Unmute to talk, or stay muted and wait for a friend. The
+Each joins with the microphone on, so mute one, or use headphones. The gear
+button selects microphone and speakers. The
 [voice guide](voice.md) covers requirements, checks and the Windows test.
 
 ## Windows

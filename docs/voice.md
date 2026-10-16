@@ -148,10 +148,10 @@ the one it watches, plays the call's join or leave an octave higher, quicker
 and quieter, as Discord's client sounds a stream's viewers; a call sound at the
 same moment wins, and a stream starting or ending makes no viewer sound.
 
-`sounds.rs` makes each sound as it plays. The six sets are Felt piano, Soft
-marimba, Mellow Rhodes, Glow, New Kalimba and Flute, all in F major pentatonic
-so any two sound well together. The first four are synthesized; New Kalimba and
-Flute play the same notes on one recorded note each, made with ElevenLabs'
+`sounds.rs` makes each sound as it plays. The six sets are New Kalimba, the
+default, Felt piano, Soft marimba, Mellow Rhodes, Glow and Flute, all in F major
+pentatonic so any two sound well together. Felt piano, Soft marimba, Mellow
+Rhodes and Glow are synthesized; New Kalimba and Flute play the same notes on one recorded note each, made with ElevenLabs'
 sound generator and kept as 24 kHz samples in `crates/yapfast-core/sounds/`
 (38 KB each), played faster or slower for each note. They play on the call's speakers through
 `audio_io.rs`, on Linux and Windows, like ringing. Settings › Sounds chooses
@@ -215,9 +215,10 @@ cargo run --locked -- --voice-demo
 The demo creates two disposable cross-signed accounts, a Matrix Space, an encrypted
 text channel and an encrypted voice channel. It prints two commands with separate
 data directories. Run each in a separate terminal. Select **Yapfast voice test** in
-the server rail, then **Lounge → Join voice**. Both accounts join muted. Select
-devices using the gear button, then unmute one account. Use separate machines
-or headphones for a conversation; two windows on one computer share its audio.
+the server rail, then **Lounge → Join voice**. Both accounts join with the
+microphone on, as Yapfast does unless Settings → Voice & video turns that off, so mute
+one. Select devices using the gear button. Use separate machines or headphones
+for a conversation; two windows on one computer share its audio.
 
 List native devices without publishing a microphone:
 

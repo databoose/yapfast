@@ -17,7 +17,7 @@ remain unchanged. The GPUI client is in the history before that date.
   preserved send retries. New messages follow the bottom when already there;
   loading earlier history retains the reading position. Unencrypted rooms remain
   readable; the core continues to require a trusted device for sending.
-- Persistent voice view and controls: join muted, wait alone, participants,
+- Persistent voice view and controls: join unmuted or muted, wait alone, participants,
   leave, mute/deafen, native device selection and explicit channel-switch
   confirmation. Browsing text, DMs or another server retains the backend session
   and voice connection. Preview voice never opens an audio device.

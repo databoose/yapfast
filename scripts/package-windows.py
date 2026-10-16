@@ -196,7 +196,7 @@ def main():
                 "   your phone scans (Settings, Scan QR Code). Discord doesn't allow apps\n"
                 "   like Yapfast on personal accounts; linking puts your account at some\n"
                 "   risk of being suspended.\n"
-                "4. Open a channel, or a voice channel to talk. Voice starts muted.\n\n"
+                "4. Open a channel, or a voice channel to talk.\n\n"
                 "No account or saved session is included.\n"
             )
             secrets = "password or Discord token"
@@ -204,7 +204,7 @@ def main():
             first_steps = (
                 "3. Sign in with your Matrix account; the homeserver is editable.\n"
                 "   Or link Discord, which shows a QR code for Discord on your phone.\n"
-                "4. Open a room, or a voice channel to talk. Voice starts muted.\n\n"
+                "4. Open a room, or a voice channel to talk.\n\n"
                 "Passwords, recovery keys and saved sessions are not included.\n"
             )
             secrets = "password or recovery key"
@@ -219,7 +219,7 @@ def main():
             "%LOCALAPPDATA%\\Yapfast\\Yapfast\\data, or to the console run-yapfast.cmd opens.\n"
             "Windows stores session secrets in Credential Manager and app data\n"
             "under your Windows user profile. Keep the first verified session.\n\n"
-            "Voice: select a voice channel, Join voice, choose devices, then Unmute.\n"
+            "Voice: select a voice channel and Join voice; the gear chooses devices.\n"
             "Use headphones for the first two-machine audio test.\n"
             "If anything fails, record the error text, Windows version, GPU and\n"
             f"audio device model. Never send your {secrets} in logs.\n\n"

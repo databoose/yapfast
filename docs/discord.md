@@ -187,7 +187,8 @@ Scope for the beta:
   RNNoise, rather than WebRTC's, as described under Microphone below.
 
 Clicking a voice channel joins through the same voice dock and one-call rule
-as Matrix voice. Calls start muted, mute and deafen show in Discord, and a
+as Matrix voice. Calls start with the microphone on unless Settings turns
+that off, mute and deafen show in Discord, and a
 voice gate sends audio only during speech. The owner and a friend talked
 through it on 2026-10-06. Audio goes through `audio_io.rs`, PulseAudio on
 Linux and WASAPI on Windows, and libwebrtc's processing module; see the

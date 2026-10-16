@@ -961,7 +961,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         layout.animate = chosen(&ANIMATES, window.get_animate());
         ANIMATE.set(layout.animate);
         show_motion(&window);
-        layout.unmute_on_join = window.get_unmute_on_join();
+        layout.unmute_on_join = Some(window.get_unmute_on_join());
         layout.deafen_on_join = window.get_deafen_on_join();
         layout.level_voice = Some(window.get_level_voice());
         yapfast_core::leveling::set_enabled(window.get_level_voice());

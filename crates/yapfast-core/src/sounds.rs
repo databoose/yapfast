@@ -17,8 +17,10 @@ const TAU: f32 = std::f32::consts::TAU;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoundSet {
-    /// A muffled piano.
+    /// A recorded kalimba's pluck.
     #[default]
+    NewKalimba,
+    /// A muffled piano.
     Felt,
     /// A low marimba under a soft mallet.
     Marimba,
@@ -26,8 +28,6 @@ pub enum SoundSet {
     Rhodes,
     /// Three sine waves a little apart, which shimmer.
     Glow,
-    /// A recorded kalimba's pluck.
-    NewKalimba,
     /// A recorded breathy wooden flute, shaped into a struck note.
     Flute,
 }
@@ -35,11 +35,11 @@ pub enum SoundSet {
 impl SoundSet {
     /// In the order Settings lists them, which `layout.json` doesn't depend on.
     pub const ALL: [Self; 6] = [
+        Self::NewKalimba,
         Self::Felt,
         Self::Marimba,
         Self::Rhodes,
         Self::Glow,
-        Self::NewKalimba,
         Self::Flute,
     ];
 

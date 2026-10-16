@@ -2343,10 +2343,17 @@ impl Adapter {
                 "You're here alone. Stay as long as you like; others can join later.".into()
             } else if voice_here {
                 "Voice stays connected while you browse other conversations.".into()
-            } else if !present.is_empty() {
-                format!("{} here. Join muted and hang out.", who_is_here(present))
             } else {
-                "Join muted and hang out. The channel stays here when empty.".into()
+                let join = if joins_muted(window) {
+                    "Join muted and hang out."
+                } else {
+                    "Join and hang out."
+                };
+                if present.is_empty() {
+                    format!("{join} The channel stays here when empty.")
+                } else {
+                    format!("{} here. {join}", who_is_here(present))
+                }
             }
             .into(),
         );
@@ -2494,15 +2501,17 @@ impl Adapter {
                 Some(name) => {
                     window.set_switch_joins(false);
                     format!(
-                        "You're already in {}. Leave it and join {target} to watch {name}'s stream? You'll join muted.",
-                        voice.name
+                        "You're already in {}. Leave it and join {target} to watch {name}'s stream?{}",
+                        voice.name,
+                        joining_muted(window)
                     )
                 }
                 None => {
                     window.set_switch_joins(false);
                     format!(
-                        "You're already in {}. Leave it and join {target}? You'll join muted.",
-                        voice.name
+                        "You're already in {}. Leave it and join {target}?{}",
+                        voice.name,
+                        joining_muted(window)
                     )
                 }
             }
@@ -2967,6 +2976,21 @@ pub(super) fn with_empty_categories(
 }
 
 /// A custom emoji and its picture, once that has arrived.
+/// Whether the next call joins with the microphone off: unmuting on joining
+/// is turned off, or deafening on joining is on.
+fn joins_muted(window: &YapfastWindow) -> bool {
+    !window.get_unmute_on_join() || window.get_deafen_on_join()
+}
+
+/// What a prompt to switch calls adds when the next one joins muted.
+fn joining_muted(window: &YapfastWindow) -> &'static str {
+    if joins_muted(window) {
+        " You'll join muted."
+    } else {
+        ""
+    }
+}
+
 fn arrived<'a>(
     state: &'a AppState,
     emoji: &'a yapfast_core::chat::CustomEmoji,
