@@ -162,6 +162,12 @@ scripts/check --fast
 Memory is a feature here. Changes keep it lean, and a change that saves memory
 says by how much.
 
+## License
+
+Yapfast is free software under the [GNU General Public License](LICENSE),
+version 3 or later. The full preview also includes MatrixRTC libraries under
+the AGPL. Every release carries its dependencies' own licenses.
+
 ## Thanks
 
 Yapfast speaks to Discord the way its own apps do, as documented by

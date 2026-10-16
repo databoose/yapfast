@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false
+license = "GPL-3.0-or-later"
 description = "Yapfast's compiled Slint interface, kept apart so Rust changes elsewhere do not recompile it"
 
 [lib]

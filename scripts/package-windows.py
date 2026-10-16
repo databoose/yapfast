@@ -178,6 +178,7 @@ def main():
         package = temporary / f"{base}-windows-x64"
         package.mkdir()
         shutil.copy2(executable, package / "yapfast.exe")
+        shutil.copy2(ROOT / "LICENSE", package / "LICENSE.txt")
         # The source snapshot goes beside the packages, on the release page,
         # rather than into every install; SOURCE.txt says where.
         source_url = f"https://github.com/yapfast/yapfast/releases/tag/v{version}{flavour['suffix']}"
@@ -227,8 +228,9 @@ def main():
             "Yapfast switches to software rendering if the GPU cannot start.\n"
             "To choose it yourself, run run-yapfast.cmd --renderer software.\n"
             "To retry the GPU after a fallback, run run-yapfast.cmd --renderer gpu.\n\n"
-            "Dependency notices and original licenses are included; SOURCE.txt says\n"
-            "where this build's source code is published.\n",
+            "Yapfast is free software under the GNU General Public License, version 3\n"
+            "or later, in LICENSE.txt. Dependency notices and original licenses are\n"
+            "included; SOURCE.txt says where this build's source code is published.\n",
             encoding="utf-8",
         )
         (package / "run-yapfast.cmd").write_text(
