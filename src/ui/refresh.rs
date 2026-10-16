@@ -244,12 +244,17 @@ impl Adapter {
     /// linking Discord.
     fn show_workspace(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
-        window.set_workspace(state.preview || state.account.is_some());
+        let workspace = state.preview || state.account.is_some();
+        window.set_workspace(workspace);
         window.set_preview(state.preview);
         window.set_busy(state.busy);
         window.set_trusted(state.trusted);
         window.set_online(state.online);
-        window.set_restore_available(yapfast_core::chat::can_restore(&self.root));
+        // Only the sign-in screen offers it, and finding out reads the OS
+        // credential store or the disk.
+        if !workspace {
+            window.set_restore_available(yapfast_core::chat::can_restore(&self.root));
+        }
         window.set_dms_selected(state.navigation == Navigation::DirectMessages);
         window.set_dms_unread(
             state
