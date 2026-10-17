@@ -18,6 +18,8 @@
     in {
       packages.${system} = rec {
         yapfast = import ./nix/package.nix { inherit pkgs; };
+        # The AppDir and runtime scripts/package-linux.py packs into the AppImage.
+        appdir = import ./nix/appimage.nix { inherit pkgs yapfast; };
         default = yapfast;
       };
     };

@@ -5,7 +5,6 @@ portable ZIP and an Inno Setup installer.
 The Discord flavour is the release; the full one, with Matrix, goes out as a
 separate preview. Both install as the same app, so one replaces the other."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,14 +12,11 @@ import shutil
 import struct
 import subprocess
 import tempfile
-import tarfile
 import urllib.parse
-import zipfile
 
-ROOT = Path(__file__).resolve().parents[1]
+from release_package import ROOT, dependency_notices, digest, names_home, source_snapshot, zip_directory
+
 TARGET = "x86_64-pc-windows-msvc"
-SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "README.md", "LICENSE", ".gitignore")
-SOURCE_DIRECTORIES = (".cargo", "src", "ui", "packaging", "crates", "scripts", "nix", "vendor", "testing", "docs")
 # Inno Setup's compiler, run under Wine; installed once into its own prefix.
 INNO_SETUP_VERSION = "7.1.0"
 INNO_SETUP_URL = ("https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/"
@@ -32,24 +28,6 @@ FLAVOURS = {
     "discord": {"features": ["--no-default-features", "--features", "desktop,discord"], "suffix": "", "edition": None},
     "full": {"features": [], "suffix": "-full-preview", "edition": "full preview"},
 }
-
-
-def digest(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def zip_directory(source, destination):
-    # Nix inputs use an epoch timestamp, which predates ZIP's 1980 minimum.
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as archive:
-        for path in sorted(source.rglob("*")):
-            if path.is_file():
-                archive.write(path, source.name + "/" + path.relative_to(source).as_posix())
-
-
-def license_file(path):
-    name = path.name.upper()
-    return path.is_file() and name.startswith(("LICENSE", "COPYING", "NOTICE", "OFL"))
 
 
 def wine_environment(prefix):
@@ -134,10 +112,8 @@ def main():
         pe = stream.read(6)
         if pe[:4] != b"PE\0\0" or struct.unpack_from("<H", pe, 4)[0] != 0x8664:
             raise SystemExit("Expected an AMD64 Windows PE executable")
-    # Panic messages and C's asserts hold source paths; built without
-    # scripts/release-env they name this machine's home folder.
     contents = executable.read_bytes()
-    if any(str(Path.home()).encode(encoding) in contents for encoding in ("utf-8", "utf-16-le")):
+    if names_home(contents):
         raise SystemExit(f"{executable} names {Path.home()}; build it with scripts/build-windows")
     # Both flavours build to the same path; the Matrix SDK's source paths
     # tell which one is there.
@@ -157,23 +133,7 @@ def main():
     source_path = output / f"{base}-source.zip"
     with tempfile.TemporaryDirectory(prefix="yapfast-windows-package-") as temporary:
         temporary = Path(temporary)
-        source = temporary / f"{base}-source"
-        source.mkdir()
-        # Only what the repository tracks: the folders also hold private,
-        # ignored material.
-        tracked = subprocess.check_output(["git", "ls-files", "-z", "--", *SOURCE_FILES, *SOURCE_DIRECTORIES],
-                                          cwd=ROOT, timeout=30).decode().split("\0")
-        for name in filter(None, tracked):
-            (source / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(ROOT / name, source / name)
-        # Include the exact upstream RTC source used by the AGPL dependencies,
-        # which only the Matrix flavour builds.
-        rtc = next((package for package in metadata["packages"] if package["name"] == "matrix-rtc-core"), None)
-        if rtc:
-            rtc_root = Path(rtc["manifest_path"]).parent.parent.parent
-            shutil.copytree(rtc_root, source / "upstream/matrix-rust-rtc",
-                            ignore=shutil.ignore_patterns(".git", "target", "node_modules"))
-        zip_directory(source, source_path)
+        rtc = source_snapshot(metadata, base, temporary, source_path)
 
         package = temporary / f"{base}-windows-x64"
         package.mkdir()
@@ -238,28 +198,6 @@ def main():
             'if errorlevel 1 (\n  echo Yapfast exited with an error.\n  pause\n)\n',
             encoding="utf-8", newline="\r\n",
         )
-        dependencies = []
-        licenses = package / "licenses"
-        licenses.mkdir()
-        for item in sorted(metadata["packages"], key=lambda value: (value["name"], value["version"])):
-            if item["name"] == "yapfast":
-                continue
-            directory = Path(item["manifest_path"]).parent
-            target = licenses / (item["name"] + "-" + item["version"])
-            files = set()
-            for parent in (directory, directory.parent, directory.parent.parent):
-                files.update(path for path in parent.iterdir() if license_file(path))
-            files.update(path for path in directory.rglob("*") if license_file(path))
-            copied = []
-            for index, path in enumerate(sorted(files)):
-                target.mkdir(exist_ok=True)
-                name = f"{index}-{path.name}"
-                shutil.copy2(path, target / name)
-                copied.append((target / name).relative_to(package).as_posix())
-            dependencies.append({
-                "name": item["name"], "version": item["version"], "license": item["license"],
-                "source": item["source"], "repository": item["repository"], "license_files": copied,
-            })
         skia_location = os.environ.get("SKIA_BINARIES_URL")
         if not skia_location:
             archives = list((ROOT / ".local/windows/skia-static-production/prepared").glob("*-static.tar.gz"))
@@ -270,19 +208,9 @@ def main():
         if skia_url.scheme != "file":
             raise SystemExit("Packaging requires the pinned local Skia archive")
         skia_archive = Path(urllib.parse.unquote(skia_url.path))
-        with tarfile.open(skia_archive) as native:
-            for member in native.getmembers():
-                if member.isfile() and Path(member.name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE")):
-                    with native.extractfile(member) as notice:
-                        (licenses / ("skia-native-" + Path(member.name).name)).write_bytes(notice.read())
-        skia_source = Path(os.environ["YAPFAST_SKIA_WINDOWS_SOURCE"])
-        for notice in skia_source.rglob("*"):
-            if license_file(notice):
-                destination = licenses / "skia-source" / notice.relative_to(skia_source)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(notice, destination)
-        webrtc = Path(os.environ["LK_CUSTOM_WEBRTC"])
-        shutil.copy2(webrtc / "LICENSE.md", licenses / "libwebrtc-LICENSE.md")
+        dependencies = dependency_notices(metadata, package, package / "licenses", skia_archive,
+                                          Path(os.environ["YAPFAST_SKIA_WINDOWS_SOURCE"]),
+                                          Path(os.environ["LK_CUSTOM_WEBRTC"]))
         (package / "THIRD-PARTY.json").write_text(json.dumps(dependencies, indent=2) + "\n", encoding="utf-8")
         build = {
             "version": version, "flavour": args.flavour, "target": TARGET,

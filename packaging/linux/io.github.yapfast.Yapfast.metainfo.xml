@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centers and AppImage catalogs show for Yapfast. -->
+<component type="desktop-application">
+  <id>io.github.yapfast.Yapfast</id>
+  <name>Yapfast</name>
+  <summary>A Discord client without the web browser</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.yapfast">
+    <name>wiredtenshi</name>
+  </developer>
+  <description>
+    <p>
+      Yapfast talks to Discord's API itself and draws its own window with Slint
+      and Skia, so it runs in about 40 MB of RAM, where Discord's own app takes 800.
+    </p>
+    <p>
+      Servers, DMs, threads, forums, friends, voice, screen sharing and GIFs are
+      all there, laid out the way Discord lays them out.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.yapfast.Yapfast.desktop</launchable>
+  <url type="homepage">https://yapfast.com</url>
+  <url type="bugtracker">https://github.com/yapfast/yapfast/issues</url>
+  <url type="vcs-browser">https://github.com/yapfast/yapfast</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/yapfast/yapfast/main/docs/images/yapfast.png</image>
+      <caption>A group DM, with the server list, the conversation and its members</caption>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+    <content_attribute id="social-contacts">intense</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-10-16"/>
+  </releases>
+</component>

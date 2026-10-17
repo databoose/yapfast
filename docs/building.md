@@ -18,6 +18,7 @@ The repository's own `flake.nix` builds no shell, only the package that
 release build, from `nix/package.nix`. It shares libwebrtc, Skia and the
 system libraries with the development shell through `nix/native.nix`, and pins
 the same nixpkgs in its own `flake.lock`. `nix build` puts it in `result`.
+It also builds the AppDir that the [AppImage](#linux-appimage) is packed from.
 `nix/package.nix` holds one hash per Git dependency's repository and commit,
 in `outputHashes`. Moving a Git dependency to another commit needs a new
 hash there; a `nix build` with the old one prints it.
@@ -315,9 +316,10 @@ and Clang's `-ffile-prefix-map`. On Windows it takes `cargo xwin env`'s
 environment and adds the C flags to it, since `cargo xwin build` sets the
 `CFLAGS_<target>` the `cc` crate reads first; `scripts/build-windows` uses it.
 `scripts/package-windows.py` refuses an executable holding the home folder's
-path in UTF-8 or UTF-16. A Linux release needs the same, and the dev shell's
-linker also writes a RUNPATH of `$PWD/outputs/out/lib` and Nix store folders
-into the binary, which a package for other distributions has to replace.
+path in UTF-8 or UTF-16. A Linux build from the dev shell needs the same, and
+its linker also writes a RUNPATH of `$PWD/outputs/out/lib` and Nix store
+folders into the binary; the [AppImage](#linux-appimage) avoids both by
+building in the Nix sandbox.
 GPUI's FXC shader build is no longer used.
 
 The supported build route for this migration is the Linux MSVC cross-build.
@@ -331,6 +333,62 @@ Before accepting the Windows build, check text entry, selection, copy/paste,
 keyboard focus, navigation, both renderers, resizing, normal close, and reopen
 on the tester's actual GPU.
 Windows execution has not been demonstrated by a Linux build.
+
+## Linux AppImage
+
+`scripts/build-appimage` makes the Linux release in `target/dist/linux`:
+`Yapfast-VERSION-x86_64.AppImage`, its `.zsync` file, the source snapshot and
+`SHA256SUMS.txt`. All four go on the release page. AppImageUpdate, and AppImage
+managers such as Gear Lever, find a newer release through the `.zsync` file,
+named by the update information in the runtime:
+`gh-releases-zsync|yapfast|yapfast|latest|Yapfast-*-x86_64.AppImage.zsync`.
+The first build compiles every dependency in the Nix sandbox; packing takes
+about 10 seconds after that.
+
+Nix builds the binary, `nix/package.nix`'s Discord-only release build, and
+`nix/appimage.nix` puts it in an AppDir with the desktop file, the icons and
+the AppStream metainfo, `packaging/linux/io.github.yapfast.Yapfast.metainfo.xml`.
+It sets the binary's interpreter to `/lib64/ld-linux-x86-64.so.2` and removes
+Nix's RUNPATH, so the binary runs on the host's loader, glibc and libstdc++, as
+one built on a distribution would. That's what lets the host's GPU driver,
+Mesa or NVIDIA's, load into it: a driver needs the glibc it was built for, and
+NVIDIA's must match the kernel module, so neither can come in the AppImage.
+Nothing else is bundled either. Besides the C and C++ runtimes, the binary
+links only GLib, PulseAudio's client, fontconfig and FreeType, which every
+desktop has, and it loads EGL, Vulkan, Wayland, X11 and PipeWire at runtime.
+
+The derivation fails if the binary links anything else, or asks for a glibc
+newer than 2.39 or a libstdc++ newer than GCC 14's. That covers Ubuntu 24.04,
+Fedora 40, Debian 13 and anything newer. nixpkgs' glibc is newer than that, so
+a nixpkgs update can raise what the binary asks for. Raise the floors in
+`nix/appimage.nix` only knowing which distributions that drops. Older ones,
+such as Ubuntu 22.04, would need a build against their own glibc.
+
+`scripts/package-linux.py`, which runs in the development shell, adds the
+licenses and notices, `THIRD-PARTY.json`, `SOURCE.txt` and `BUILD.json` to
+`usr/share/doc/yapfast`, as the Windows package has them, through the helpers
+in `scripts/release_package.py` that both packaging scripts use. Skia's
+prebuilt Linux archive carries only Skia's own license, so the notices of its
+third-party code come from the pinned Skia source,
+`nix build path:./nix#skia-source`. Then it packs the AppDir with mksquashfs
+(zstd level 19, 1 MiB blocks, fixed owners and times, so the same AppDir packs
+to the same file) behind AppImage's official type-2 runtime, pinned by hash.
+The runtime is static: it mounts the image with FUSE 3's `fusermount3` and
+needs no libfuse, and `--appimage-extract-and-run` runs it without FUSE at all.
+The flake sees only the files Git tracks, so add a new file under `nix/` or
+`packaging/` before building.
+
+It was checked in containers, on `scripts/ui-session`'s private display with
+the fake Discord and the GPU renderer:
+
+- Ubuntu 24.04 with Mesa.
+- Ubuntu 24.04 with NVIDIA's 580.119.02 driver, on an RTX 3090.
+- Fedora 42 with Mesa, without FUSE.
+
+Each run loaded that distribution's loader, glibc, libstdc++, EGL and Wayland
+libraries, and drew the window with Skia GL. Mesa had no driver for the NVIDIA
+card, so in the Mesa containers it drew on llvmpipe. X11, voice, screen
+sharing and the tray haven't been tried from the AppImage.
 
 ## The app icon
 

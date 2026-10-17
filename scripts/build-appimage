@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Builds the Linux release's AppImage into target/dist/linux: Nix builds the
+# binary and its AppDir (nix/appimage.nix), and scripts/package-linux.py adds
+# the dependencies' notices and packs it.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+exec nix develop path:./nix --command python3 scripts/package-linux.py "$@"

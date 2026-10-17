@@ -42,6 +42,9 @@
         '') windowsSkiaDependencies}
       '';
     in {
+      # scripts/package-linux.py copies the notices of Skia's third-party
+      # code from here; the prebuilt Linux archive carries only Skia's own.
+      packages.${system}.skia-source = windowsSkiaSource;
       devShells.${system} = {
         default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
@@ -51,6 +54,8 @@
             passt nftables iproute2
             # Runs testing/fake_discord.ts.
             bun
+            # scripts/package-linux.py packs the AppImage and its update file.
+            squashfsTools zsync
           ];
           buildInputs = libraries;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libraries;
