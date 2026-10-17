@@ -1,0 +1,111 @@
+# Maintainer: the Yapfast maintainers <https://github.com/yapfast/yapfast/issues>
+#
+# Builds the Discord-only release the way nix/package.nix does, with Arch's toolchain.
+
+pkgname=yapfast
+pkgver=0.1.0.r10.g892e1d0
+pkgrel=1
+_commit=892e1d08276c82634afe1809d2e496a58f0b1678
+_id=io.github.yapfast.Yapfast
+# The prebuilt native parts nix/native.nix pins.
+_webrtc=webrtc-51ef663
+_skia=skia-binaries-b7f043e0b1e2a850e702-$CARCH-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz
+pkgdesc='Native Discord client that stays light on memory'
+arch=(x86_64)
+url='https://github.com/yapfast/yapfast'
+license=(GPL-3.0-or-later)
+# The binary links glib2, fontconfig, freetype2, libpulse, libstdc++, libgcc and glibc. Its one ld-linux entry is
+# real: it imports __tls_get_addr from the loader, which namcap reports as an unused library.
+# The rest is loaded at runtime with dlopen, so namcap reports it as "may not be needed": wayland and libxkbcommon
+# on Wayland; libx11, libxcb, libxcursor, libxi and libxkbcommon-x11 on X11 (libx11 also on Wayland); libglvnd and
+# vulkan-icd-loader for Skia's GPU renderer; alsa-lib for libwebrtc's audio. nix/native.nix lists the same
+# libraries, and openssl, which the build does not use (it uses rustls).
+depends=(
+  fontconfig freetype2 glib2 glibc hicolor-icon-theme libgcc libpulse libstdc++
+  wayland libxkbcommon
+  libx11 libxcb libxcursor libxi libxkbcommon-x11
+  libglvnd vulkan-icd-loader
+  alsa-lib
+)
+# libwebrtc loads these at runtime for screen sharing (nix/native.nix).
+optdepends=(
+  'pipewire: screen sharing through the desktop portal'
+  'libdrm: screen sharing through the desktop portal'
+  'mesa: screen sharing through the desktop portal (libgbm)'
+  'libxcomposite: screen sharing on X11'
+  'libxdamage: screen sharing on X11'
+  'libxext: screen sharing on X11'
+  'libxfixes: screen sharing on X11'
+  'libxrandr: screen sharing on X11'
+)
+makedepends=(cargo clang cmake curl llvm21 pkgconf protobuf python)
+# webrtc-sys compiles C++ with cc; Arch's LTO flags would leave it unlinkable.
+options=(!lto)
+source=(
+  "$pkgname-$_commit.tar.gz::https://github.com/yapfast/yapfast/archive/$_commit.tar.gz"
+  "$_webrtc-linux-x64-release.zip::https://github.com/livekit/rust-sdks/releases/download/$_webrtc/webrtc-linux-x64-release.zip"
+  "https://github.com/rust-skia/skia-binaries/releases/download/0.153.3/$_skia"
+)
+noextract=("$_skia")
+sha256sums=('685c1802876dd210d80301db73f906d9833e632c400a69a54ca982be0873a62b'
+            'dce9d9414cd8e2cc9a471c054481851b257ad2a879112ce5be56369b4fefdaed'
+            '9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3')
+
+prepare() {
+  cd "$pkgname-$_commit"
+  export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/.cargo"
+  cargo fetch --locked --target host-tuple
+  # The Skia archive with its JPEG table renamed, as nix/native.nix prepares it. The helper pins
+  # LLVM 21.1.7; Arch's llvm21 is a later 21.x, and the helper itself checks that only the one
+  # symbol changed and no code, data or relocation byte did.
+  sed "s/'LLVM version 21.1.7\\\\n'/'LLVM version 21.'/" nix/prepare-skia-native.py > "$srcdir/prepare-skia.py"
+  grep -q "'LLVM version 21.'" "$srcdir/prepare-skia.py"
+  YAPFAST_SKIA_SOURCE="$srcdir/$_skia" YAPFAST_SKIA_OUTPUT="$srcdir/skia" \
+    YAPFAST_SKIA_OBJCOPY=/usr/lib/llvm21/bin/llvm-objcopy YAPFAST_SKIA_NM=/usr/lib/llvm21/bin/llvm-nm \
+    python "$srcdir/prepare-skia.py"
+}
+
+build() {
+  cd "$pkgname-$_commit"
+  export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/.cargo" CARGO_TARGET_DIR=target
+  export CC=clang CXX=clang++ PROTOC=/usr/bin/protoc
+  export LK_CUSTOM_WEBRTC="$srcdir/linux-x64-release"
+  export SKIA_BINARIES_URL="file://$srcdir/skia/$_skia"
+  # Rust's panic locations and C's __FILE__ would name the build directory, the builder's home
+  # among them (as scripts/release-env notes); map it to makepkg's debug source path, whatever its
+  # debug option says.
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
+  export CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
+  # With makepkg's debug option, yapfast-debug gets full debug info for yapfast's own crates and line
+  # tables (file:line in backtraces) for the dependencies, which shrinks the binary makepkg has to split
+  # and strip. makepkg's -C debuginfo=2 would apply to every crate, so it is taken out of RUSTFLAGS; the
+  # release profile strips at link time (Cargo.toml), so that is turned off too.
+  local _debug=()
+  if check_option debug y; then
+    RUSTFLAGS=$(sed -E 's/(^| )-C ?debuginfo=[^ ]*//g' <<<"$RUSTFLAGS")
+    export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=false
+    local _crate
+    for _crate in yapfast yapfast-core yapfast-discord yapfast-ui; do
+      _debug+=(--config "profile.release.package.$_crate.debug=\"full\"")
+    done
+  fi
+  cargo build --frozen "${_debug[@]}" --release --no-default-features --features desktop,discord
+  # Slint's generated source, which yapfast-debug ships, still names the build directory: it includes
+  # the UI's icons and fonts by absolute path, and no remap flag reaches file contents. Rewriting it
+  # would break the next build in the same directory. The binary holds the bytes, not the paths.
+  # yapfast-debug copies the crates' sources with their modes, and some crates ship files readable by their
+  # owner only. namcap on yapfast-debug also reports "Referenced library ... is an uninstalled dependency"
+  # for words in those Rust sources (version strings, "README.md"); it reads source text as library names.
+  chmod -R a+rX "$CARGO_HOME/registry/src"
+}
+
+# No check(): upstream's tests need a display and its fake Discord server (nix/package.nix).
+
+package() {
+  cd "$pkgname-$_commit"
+  install -Dm755 target/release/yapfast -t "$pkgdir/usr/bin"
+  install -Dm644 packaging/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_id.svg"
+  install -Dm644 "packaging/linux/$_id.desktop" -t "$pkgdir/usr/share/applications"
+  install -Dm644 "packaging/linux/$_id.metainfo.xml" -t "$pkgdir/usr/share/metainfo"
+}
