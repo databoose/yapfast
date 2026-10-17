@@ -13,17 +13,19 @@ records the first memory pass on a larger fake Discord account, and
 [viewport media and lazy avatars](#2026-10-09-viewport-media-and-lazy-avatars)
 the pass after it.
 
-Measurements use `fast` builds, as the owner decided on 2026-10-06, unless the
+Measurements use `measure` builds, as the owner decided on 2026-10-06, unless the
 question is the shipped build's absolute number; then use `release`. The
 2026-10-05 profile comparison found the
-two equivalent.
+two equivalent. Until 2026-10-17 the `measure` profile was named `fast`; the
+`fast` profile now leaves the Slint interface unoptimized, so don't measure
+with it.
 
 How to reproduce: run every command from the repository root. The isolated
 runs need `scripts/test-stack up` first; `nix-shell --impure
 testing/display/shell.nix` adds Weston, PulseAudio and the ALSA plugins
 to the development shell, and `scripts/run-framework-isolated` gives the run a
 private display, D-Bus and audio. The scripts measure `target/release/yapfast`
-unless `--exe` names another build, such as `target/fast/yapfast`; the networks
+unless `--exe` names another build, such as `target/measure/yapfast`; the networks
 comparison takes its builds from a folder instead. `TEST_BIN`
 below is the `yapfast-core` test binary that runs the other participants and
 seeds history. Build it with `nix develop path:./nix --command cargo test

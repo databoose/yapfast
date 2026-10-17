@@ -141,10 +141,13 @@ Development builds omit debug symbols for dependencies; the app keeps line
 tables. They optimize DeepFilterNet's crates and turn off tract-core's debug
 assertions, which reject its model; see Cargo.toml. Release builds strip
 symbols and use no LTO, which made both platforms' binaries bigger for no
-measured speed. Use them for builds people run. The `fast` profile optimizes
-like release, keeps symbols and builds incrementally. Use it for tests, local runs and
-[measurements](measurements/README.md): `cargo build --profile fast` or
-`cargo test --profile fast`.
+measured speed. Use them for builds people run. The `measure` profile
+optimizes like release, keeps symbols and builds incrementally. Use it for
+[measurements](measurements/README.md) and profiling: `cargo build --profile
+measure`. The `fast` profile is `measure` with the Slint interface
+unoptimized, which cuts a rebuild after a `.slint` edit from two minutes to
+about 35 seconds. Use it for tests, local runs and checks: `cargo build
+--profile fast` or `cargo test --profile fast`.
 
 ### Dependency sources
 
@@ -428,7 +431,7 @@ output.
 
 ## Initial resource measurement
 
-After a `fast` build, open `target/fast/yapfast` inside the Nix shell; measure
+After a `measure` build, open `target/measure/yapfast` inside the Nix shell; measure
 `release` only for the shipped build's absolute numbers. Leave it inactive for
 at least 15 seconds, then sample its PID on Linux. `scripts/ui-session` writes
 the PID of the Yapfast it runs to `.local/ui-session/yapfast.pid`.

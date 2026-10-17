@@ -159,9 +159,18 @@ opt-level = 3
 lto = "off"
 strip = true
 
-# Optimized like release, with incremental builds: for tests, local runs and
-# quick checks. Builds people use, and measurements, stay release.
-[profile.fast]
+# Optimized like release, with symbols and incremental builds: for
+# measurements and profiling. Builds people use stay release.
+[profile.measure]
 inherits = "release"
 strip = false
 incremental = true
+
+# Like measure with the Slint interface unoptimized: for tests, local runs and
+# checks. A one-line edit to a .slint file rebuilt yapfast-ui in 122 s at
+# opt-level 3, 113 s at 1 and 36 s at 0.
+[profile.fast]
+inherits = "measure"
+
+[profile.fast.package.yapfast-ui]
+opt-level = 0
