@@ -55,6 +55,7 @@ static SUPPRESSOR: AtomicU8 = AtomicU8::new(0);
 static LIMIT: AtomicU32 = AtomicU32::new(FULL.to_bits());
 static SENSITIVITY: AtomicU32 = AtomicU32::new(DEFAULT_SENSITIVITY.to_bits());
 static DEREVERB: AtomicBool = AtomicBool::new(false);
+static DECLICK: AtomicBool = AtomicBool::new(true);
 
 /// Chooses the suppressor for every call; a call going on switches at its
 /// next block.
@@ -109,6 +110,18 @@ pub(crate) fn dereverb() -> bool {
     DEREVERB.load(Ordering::Relaxed)
 }
 
+/// Takes what DeepFilterNet leaves of clicks out of every call's microphone,
+/// as [`crate::declick`] does; on unless this says otherwise. A call going on
+/// takes it at its next block.
+pub fn set_declick(on: bool) {
+    DECLICK.store(on, Ordering::Relaxed);
+}
+
+#[cfg(feature = "discord")]
+pub(crate) fn declick() -> bool {
+    DECLICK.load(Ordering::Relaxed)
+}
+
 #[cfg(feature = "discord")]
 pub(crate) use denoise::{BLOCK, Denoiser};
 
@@ -148,7 +161,12 @@ mod denoise {
         clean: Vec<f32>,
         /// RNNoise's output is a block behind: the input it lines up with.
         previous: Vec<f32>,
+        /// Takes clicks out of DeepFilterNet's output while asked to.
+        declicker: Option<crate::declick::Declicker>,
     }
+
+    /// How far DeepFilterNet's output is behind its input, in samples.
+    const DEEP_FILTER_NET_LAG: usize = 3 * BLOCK;
 
     enum Network {
         DeepFilterNet(Box<DfTract>),
@@ -180,6 +198,7 @@ mod denoise {
                 noisy: vec![0.0; BLOCK],
                 clean: vec![0.0; BLOCK],
                 previous: vec![0.0; BLOCK],
+                declicker: None,
             };
             denoiser.limit(limit);
             denoiser
@@ -213,10 +232,19 @@ mod denoise {
 
         /// Takes the noise out of 10 ms of mono, in 16-bit range, in place,
         /// and returns whether it's speech. DeepFilterNet's output is 30 ms
-        /// behind its input, RNNoise's 10 ms.
+        /// behind its input, 31 with the declicker, RNNoise's 10 ms.
         pub(crate) fn block(&mut self, block: &mut [f32]) -> bool {
             match &mut self.network {
                 Network::DeepFilterNet(network) => {
+                    if super::declick() {
+                        self.declicker
+                            .get_or_insert_with(|| {
+                                crate::declick::Declicker::new(DEEP_FILTER_NET_LAG)
+                            })
+                            .input(block);
+                    } else {
+                        self.declicker = None;
+                    }
                     for (value, sample) in self.noisy.iter_mut().zip(block.iter()) {
                         *value = sample / FULL_SCALE;
                     }
@@ -232,6 +260,9 @@ mod denoise {
                     };
                     for (sample, value) in block.iter_mut().zip(&self.clean) {
                         *sample = value * FULL_SCALE;
+                    }
+                    if let Some(declicker) = &mut self.declicker {
+                        declicker.output(block);
                     }
                     snr >= SPEECH_SNR
                 }
@@ -349,6 +380,9 @@ mod tests {
         let (before, started) = (resident(), Instant::now());
         let limit =
             std::env::var("YAPFAST_NOISE_LIMIT").map_or(FULL, |limit| limit.parse().unwrap());
+        if std::env::var("YAPFAST_DECLICK").is_ok_and(|value| value == "off") {
+            set_declick(false);
+        }
         let mut denoisers = vec![Denoiser::new(Suppressor::DeepFilterNet, limit)];
         println!(
             "DeepFilterNet loaded in {:?}, taking {:.1} MiB",

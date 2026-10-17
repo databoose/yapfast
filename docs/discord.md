@@ -481,8 +481,8 @@ recorded mouse clicks and office chair creaks in the pauses of speech over a
 quiet room (a one-off test, from Wikimedia Commons recordings), one block
 opened the gate on 7 of 33 clicks, two on 4, and three on none, and on one
 creak of 11. On the mixes below, three cost at most 0.2 points of speech sent.
-Clicks while speaking still go out: DeepFilterNet turns them down only 8-13 dB
-under speech, rather than about 40 in pauses. Levels are RMS over the block, after gain
+Under speech, DeepFilterNet turns clicks down only 8-13 dB, rather than about
+40 in pauses; the declicker, below, takes out more. Levels are RMS over the block, after gain
 control. "Input sensitivity in Discord calls" sets it from -80 to 0 dBFS
 (`input_sensitivity`); behind its handle, the microphone's level goes from
 green through orange at -18 dBFS to red at -6, with whether the gate is open.
@@ -500,6 +500,25 @@ start such as an "h" isn't cut off; speech goes out that much later until the
 gate closes. It stays shut for the first 200 ms after the microphone opens,
 while the suppressor learns the noise. Opus stays at 128 kbps in its music
 mode, as songbird sent it.
+
+The declicker (`crates/yapfast-core/src/declick.rs`, on unless
+`noise::set_declick` turns it off) takes out what DeepFilterNet leaves of mouse
+clicks while someone speaks. A click is a burst above 4 kHz whose band above
+12 kHz jumps at least 25 dB within half a millisecond and comes within 15 dB of
+the whole signal; an "s" or a "t" comes on slower and is weaker up there. It's
+found in DeepFilterNet's input, and when it comes out 30 ms later the band
+above 4 kHz is held for up to 30 ms to the level it had just before. A
+linear-phase filter splits the bands, which puts the output 1 ms later; one
+that shifts phase left much of a click between 4 and 10 kHz. With recorded
+mouse clicks over speech (a one-off test, as above), measured over the 10 ms
+from each of 121 transients, the band above 4 kHz came out louder than without
+the click for 9% of them rather than 23%, and quieter, by 4.3 dB at the median
+rather than 2, for 75% rather than 60%. It found 107 of the transients. On eight
+other readers' recordings it turned the band down 1.2 times a minute (0-3 each),
+and never on the mixes' two readers; PESQ on the mixes below moved by at most 0.01. It
+costs 11 µs a block. Rebuilding the click's samples from the speech around them
+(least-squares AR interpolation) did worse: at 48 kHz an order of 32 spans less
+than a pitch period, and a 1 ms gap in speech came back only 7 dB below it.
 
 "Take out your room's echo in Discord calls" (`reduce_room_echo`, off unless
 turned on) is for a voice that sounds far away in a bare room: the reverb the
@@ -555,7 +574,7 @@ speech. Results on 2026-10-12, with the `fast` profile on a 12-core desktop CPU:
 | Time per 10 ms block, suppressor alone, mean (p99) | 0.043 ms (0.05) | 0.34 ms (0.46) |
 | Time per block, the whole microphone | 0.06 ms | 0.35 ms |
 | Microphone thread in a call, fake Discord | 1.4% of a core | 5.9% of a core |
-| Output behind input | 10 ms | 30 ms |
+| Output behind input | 10 ms | 31 ms |
 | Memory | | 39 MiB more, loaded in 0.2 s |
 | PESQ, clean speech | 4.53 | 4.53 |
 | PESQ, typing (unprocessed 1.61) | 1.99 | 3.05 |
@@ -570,9 +589,9 @@ speech. Results on 2026-10-12, with the `fast` profile on a 12-core desktop CPU:
 The gate's rows are from 2026-10-17, with the gate opening on three blocks in
 a row.
 
-DeepFilterNet is 20 ms later than RNNoise. Both lag by half their 20 ms
-window, 10 ms, and DeepFilterNet also looks two blocks ahead. With the gate's
-100 ms, speech goes out 130 ms late. The speech it doesn't send is mostly the first second after
+DeepFilterNet is 21 ms later than RNNoise. Both lag by half their 20 ms
+window, 10 ms, DeepFilterNet also looks two blocks ahead, and the declicker
+adds 1 ms. With the gate's 100 ms, speech goes out 131 ms late. The speech it doesn't send is mostly the first second after
 the microphone opens, while its normalization and WebRTC's gain control
 settle, and 10-50 ms at the quiet ends of words. These are mixes, not a
 microphone in a room, and nothing compared Krisp.

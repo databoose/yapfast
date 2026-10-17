@@ -623,6 +623,9 @@ fn processes_a_recording() {
     if std::env::var("YAPFAST_DEREVERB").is_ok_and(|value| value == "on") {
         crate::noise::set_dereverb(true);
     }
+    if std::env::var("YAPFAST_DECLICK").is_ok_and(|value| value == "off") {
+        crate::noise::set_declick(false);
+    }
     if std::env::var("YAPFAST_LEVELING").is_ok_and(|value| value == "off") {
         crate::leveling::set_enabled(false);
     }

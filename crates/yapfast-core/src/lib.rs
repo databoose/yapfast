@@ -23,6 +23,8 @@ pub mod cli;
 pub mod clip;
 pub mod clock;
 #[cfg(feature = "discord")]
+mod declick;
+#[cfg(feature = "discord")]
 pub mod decode;
 #[cfg(feature = "discord")]
 mod dereverb;
