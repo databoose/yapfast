@@ -182,6 +182,8 @@ export component YapfastWindow inherits Window {
     in property <string> account-presence;
     in property <color> account-tint;
     in property <image> account-picture;
+    /// The account is speaking in the call, unmuted, as its own row there shows.
+    in property <bool> account-speaking;
     in property <string> account-status;
     /// The address of the picture of the custom emoji in the account's status.
     in property <string> account-status-emoji;
@@ -1640,7 +1642,7 @@ export component YapfastWindow inherits Window {
                         padding-right: 8px; spacing: 2px;
                         Rectangle {
                             width: 58px;
-                            Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; }
+                            Avatar { x: 19px; y: (parent.height - self.height) / 2; size: 34px; initial: root.account-initial; tint: root.account-tint; picture: root.account-picture; speaking: root.account-speaking; }
                             if root.account-presence != "": StatusDot {
                                 x: 40px; y: parent.height / 2 + 3px; presence: root.account-presence; ring: Theme.panel;
                             }
