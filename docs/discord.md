@@ -471,9 +471,18 @@ since it counts what's left of the noise against clean speech:
 | Pauses sent with typing | 6.3-6.4% | 6.3-6.4% | 6.5-11% | 81-86% |
 | Times typing opened the gate in pauses, each mix | 0 | 0 | 0-2 | 17-19 |
 
-The voice gate opens on a block the suppressor takes for speech that's louder
-than the input sensitivity, -60 dBFS unless changed, or on any block 18 dB
-louder still, and holds 400 ms. Levels are RMS over the block, after gain
+The voice gate opens on three blocks in a row that the suppressor takes for
+speech and that are louder than the input sensitivity, -60 dBFS unless
+changed, or that are 18 dB louder still. While open, each such block holds it
+another 400 ms. Until 2026-10-17 one block opened it. What DeepFilterNet
+leaves of a mouse click comes out over two blocks, since its frames overlap,
+louder than the sensitivity, and its estimate takes it for speech. With
+recorded mouse clicks and office chair creaks in the pauses of speech over a
+quiet room (a one-off test, from Wikimedia Commons recordings), one block
+opened the gate on 7 of 33 clicks, two on 4, and three on none, and on one
+creak of 11. On the mixes below, three cost at most 0.2 points of speech sent.
+Clicks while speaking still go out: DeepFilterNet turns them down only 8-13 dB
+under speech, rather than about 40 in pauses. Levels are RMS over the block, after gain
 control. "Input sensitivity in Discord calls" sets it from -80 to 0 dBFS
 (`input_sensitivity`); behind its handle, the microphone's level goes from
 green through orange at -18 dBFS to red at -6, with whether the gate is open.
@@ -554,9 +563,12 @@ speech. Results on 2026-10-12, with the `fast` profile on a 12-core desktop CPU:
 | PESQ, hiss (1.72) | 2.88 | 3.49 |
 | PESQ, typing and fan (1.52) | 1.93 | 2.78 |
 | Typing left in pauses, mean and loudest block | -47, -29 dBFS | -79, -53 dBFS |
-| Pauses sent with typing, the gate's 400 ms hold included | 70-83% | 6.3-6.4% |
-| Times typing opened the gate in pauses, five typing mixes | 3-11 each | 0 |
-| Speech sent, all mixes | 99.8-100% | 99.1-100% |
+| Pauses sent with typing, the gate's 400 ms hold included | 58-81% | 6.3-6.4% |
+| Times typing opened the gate in pauses, five typing mixes | 2-5 each | 0 |
+| Speech sent, all mixes | 99.6-100% | 99.0-100% |
+
+The gate's rows are from 2026-10-17, with the gate opening on three blocks in
+a row.
 
 DeepFilterNet is 20 ms later than RNNoise. Both lag by half their 20 ms
 window, 10 ms, and DeepFilterNet also looks two blocks ahead. With the gate's

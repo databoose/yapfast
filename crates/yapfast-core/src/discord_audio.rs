@@ -163,8 +163,13 @@ fn decibels(samples: &[i16]) -> f32 {
 
 /// The gate opens on a block the suppressor takes for speech that's louder
 /// than the sensitivity, in RMS dBFS after processing, or on any block this
-/// many dB louder still.
+/// many dB louder still, once [`OPEN_AFTER`] such blocks come in a row.
 const NOT_SPEECH: f32 = 18.0;
+/// What's left of a click comes out of DeepFilterNet louder than the
+/// sensitivity, over two blocks since its frames overlap, and its speech
+/// estimate takes it for speech: one such block opened the gate on 7 of 33
+/// mouse clicks, two on 4. While open, one block holds it.
+const OPEN_AFTER: u32 = 3;
 /// It stays open this many 10 ms blocks after the last that would open it.
 const GATE_HOLD: u32 = 40;
 /// Blocks kept from before the gate opens and sent when it does: a word's
@@ -181,6 +186,8 @@ struct Gate {
     sensitivity: f32,
     hold: u32,
     heard: u32,
+    /// How many blocks in a row would have opened it.
+    opening: u32,
     /// The last blocks while shut, oldest first.
     before: VecDeque<[f32; BLOCK]>,
     /// What the last block sends.
@@ -193,6 +200,7 @@ impl Default for Gate {
             sensitivity: crate::noise::DEFAULT_SENSITIVITY,
             hold: 0,
             heard: 0,
+            opening: 0,
             before: VecDeque::with_capacity(BEFORE_OPENING),
             sent: Vec::with_capacity(BEFORE_OPENING + 1),
         }
@@ -216,7 +224,12 @@ impl Gate {
         } else {
             self.sensitivity + NOT_SPEECH
         };
-        if warm && level > floor {
+        self.opening = if warm && level > floor {
+            self.opening.saturating_add(1)
+        } else {
+            0
+        };
+        if self.opening >= OPEN_AFTER || (self.opening > 0 && was_open) {
             self.hold = GATE_HOLD;
         } else {
             self.hold = self.hold.saturating_sub(1);
@@ -751,17 +764,23 @@ mod tests {
             );
             assert!(!gate.is_open());
         }
-        // A soft start the suppressor hears as speech opens it, with the 100 ms
-        // before.
+        // A soft start the suppressor hears as speech opens it after a few
+        // blocks, with the 100 ms before.
+        let opened = 15 + OPEN_AFTER - 1;
+        for index in 15..opened {
+            assert!(gate.block(&block(index as f32), -50.0, true).is_empty());
+        }
         let firsts: Vec<f32> = gate
-            .block(&block(15.0), -50.0, true)
+            .block(&block(opened as f32), -50.0, true)
             .iter()
             .map(|samples| samples[0])
             .collect();
         assert!(gate.is_open());
         assert_eq!(
             firsts,
-            (5..=15).map(|index| index as f32).collect::<Vec<_>>()
+            (opened - BEFORE_OPENING as u32..=opened)
+                .map(|index| index as f32)
+                .collect::<Vec<_>>()
         );
         // Then one block at a time, through a pause shorter than the hold.
         for index in 0..GATE_HOLD - 1 {
@@ -771,7 +790,32 @@ mod tests {
         assert!(!gate.is_open());
         // Loud noise opens it whatever the suppressor says; quiet noise doesn't.
         assert!(gate.block(&block(0.0), -55.0, false).is_empty());
-        assert_eq!(gate.block(&block(1.0), -30.0, false).len(), 3);
+        for _ in 1..OPEN_AFTER {
+            assert!(gate.block(&block(1.0), -30.0, false).is_empty());
+        }
+        // With the block that shut it and the quiet noise.
+        assert_eq!(
+            gate.block(&block(1.0), -30.0, false).len(),
+            OPEN_AFTER as usize + 2
+        );
+    }
+
+    #[test]
+    fn a_click_alone_doesnt_open_the_gate() {
+        let mut gate = Gate::default();
+        let block = [0.0; BLOCK];
+        for _ in 0..WARM_UP {
+            gate.block(&block, -100.0, false);
+        }
+        // Blocks taken for speech, or loud ones, one fewer than open it, then
+        // quiet.
+        for (level, speech) in [(-40.0, true), (-20.0, false)] {
+            for _ in 1..OPEN_AFTER {
+                assert!(gate.block(&block, level, speech).is_empty());
+            }
+            assert!(gate.block(&block, -70.0, false).is_empty());
+            assert!(!gate.is_open());
+        }
     }
 
     #[test]
@@ -784,11 +828,17 @@ mod tests {
         for _ in 0..WARM_UP {
             gate.block(&block, -100.0, false);
         }
-        // Speech must be louder than the sensitivity, and other sounds 18 dB
-        // louder still.
-        assert!(gate.block(&block, -35.0, true).is_empty());
-        assert!(gate.block(&block, -15.0, false).is_empty());
-        assert!(!gate.block(&block, -25.0, true).is_empty());
+        // Enough blocks of each to open it. Speech must be louder than the
+        // sensitivity, and other sounds 18 dB louder still.
+        let opens = |gate: &mut Gate, level, speech| {
+            for _ in 1..OPEN_AFTER {
+                gate.block(&block, level, speech);
+            }
+            !gate.block(&block, level, speech).is_empty()
+        };
+        assert!(!opens(&mut gate, -35.0, true));
+        assert!(!opens(&mut gate, -15.0, false));
+        assert!(opens(&mut gate, -25.0, true));
         let mut gate = Gate {
             sensitivity: -30.0,
             ..Gate::default()
@@ -796,7 +846,7 @@ mod tests {
         for _ in 0..WARM_UP {
             gate.block(&block, -100.0, false);
         }
-        assert!(!gate.block(&block, -10.0, false).is_empty());
+        assert!(opens(&mut gate, -10.0, false));
     }
 
     /// Joins the fake Discord's Lounge, unmutes, and beeps where the
