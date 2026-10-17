@@ -73,8 +73,15 @@ Yapfast starts with Windows and waits in the system tray, so messages and
 calls reach you. Untick that in the installer, or turn it off later in
 **Settings → Advanced**.
 
-**Linux** works today, but there's no package yet: [build it
-yourself](#build-it-yourself). **macOS** isn't supported.
+**Linux** works today, though no distribution packages it yet. With
+[Nix](https://nixos.org), one command builds the Discord-only app the
+releases ship and adds it to your launcher:
+
+```sh
+nix profile add github:yapfast/yapfast#yapfast
+```
+
+It compiles from source, which takes a few minutes. Or [build it yourself](#build-it-yourself). **macOS** isn't supported.
 
 ## Features
 

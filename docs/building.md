@@ -13,6 +13,15 @@ Three Nix shells cover the work:
 - `nix develop path:./nix#windows` cross-builds for Windows; see the
   [Windows beta guide](windows-beta.md).
 
+The repository's own `flake.nix` builds no shell, only the package that
+`nix profile add github:yapfast/yapfast#yapfast` installs: the Discord-only
+release build, from `nix/package.nix`. It shares libwebrtc, Skia and the
+system libraries with the development shell through `nix/native.nix`, and pins
+the same nixpkgs in its own `flake.lock`. `nix build` puts it in `result`.
+`nix/package.nix` holds one hash per Git dependency's repository and commit,
+in `outputHashes`. Moving a Git dependency to another commit needs a new
+hash there; a `nix build` with the old one prints it.
+
 ## Dependencies
 
 Yapfast pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
