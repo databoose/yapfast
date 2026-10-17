@@ -273,6 +273,35 @@ dragged by its title bar. So check on real Windows: while the window is
 held by its title bar, still and moving, "… is typing" should keep pulsing
 and its dots rising; the same while resizing by a border.
 
+## The window's size and place
+
+Yapfast starts where it was left; see [Layout and look](chat-ui.md#layout-and-look).
+Slint makes the native window only once its event loop runs, and shows it
+straight away, so there's no window to give `SetWindowPlacement` before it
+shows. Yapfast gives Slint the size and place before `show()` instead, and
+keeps the un-maximized ones itself while the window is maximized.
+`MonitorFromRect` and `GetMonitorInfoW` check them against the monitors.
+
+Checked under Wine 10.0 on 2026-10-18, with the Discord-only `fast`
+`yapfast.exe` on `scripts/ui-session --discord --size 1500x950`, through a
+`--bin` script that runs a rootful `Xwayland :58 -geometry 1500x950`, then
+`wine explorer /desktop=yapfast,1500x950` on Wine's X11 driver, again each
+time Yapfast ends. Under Wine's Wayland driver, Weston's kiosk shell ignores
+moves and resizes.
+
+- Moved by its title bar and resized by its corner to 895×624 at (200, 105),
+  then killed, Yapfast started there at that size.
+- Maximized and killed, it started maximized; un-maximized, it went back to
+  895×624 at (200, 105).
+- Closed to the tray and opened from the icon, it came back in the same place.
+- With `layout.json` naming 2400×1600 at (3000, 2000), off the 1500×950
+  desktop, it started at (0, 0) at 1492×916, its frame filling the desktop.
+
+Check on real Windows: two monitors at different scales, starting on the
+one that isn't the primary, maximized and not; a monitor unplugged while
+Yapfast is closed; a window snapped to half the screen, which comes back at
+the snapped size; and the taskbar at the top or the left.
+
 ## Build validation on 2026-10-13
 
 The first cross-build since Discord voice, Go Live's native codecs and

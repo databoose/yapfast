@@ -47,6 +47,7 @@ mod messages;
 #[cfg(windows)]
 mod move_loop;
 mod pictures;
+mod placement;
 mod profile;
 mod refresh;
 mod shell;
@@ -85,14 +86,14 @@ pub fn run(
     gpu_failure: Option<String>,
     background: bool,
 ) -> Result<Exit> {
-    let plan = {
+    let (plan, placement) = {
         let mut layout = Layout::read(&root);
         let plan = graphics::plan(renderer, layout.gpu_rendering, gpu_failure);
         if plan.forget_gpu {
             layout.gpu_rendering = false;
             layout.write(&root);
         }
-        plan
+        (plan, layout.window)
     };
     decode_into_slint_buffers();
     pictures::make_frames_in_slint_buffers();
@@ -126,6 +127,9 @@ pub fn run(
         Ok(window) => window,
         Err(error) => return failed(error, "could not create the Yapfast window"),
     };
+    if let Some(placement) = &placement {
+        placement::place(&window, placement);
+    }
     if !hidden && let Err(error) = window.show() {
         return failed(error, "could not show Yapfast");
     }
@@ -178,6 +182,7 @@ pub fn run(
     let late_gpu_failure = shell.gpu_failure();
     drop(shell);
     let mut adapter = adapter.borrow_mut();
+    placement::flush(&adapter);
     // The icon goes before Yapfast does, not when Windows next looks at it.
     adapter.tray = None;
     adapter.stop_backend();
@@ -270,6 +275,7 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
         let dropped = Rc::new(RefCell::new(Vec::new()));
         let mut hovering = false;
         let mut made = false;
+        let placing = Rc::new(Cell::new(false));
         let weak = window.as_weak();
         window
             .window()
@@ -340,9 +346,22 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                         }
                     }
                 }
-                #[cfg(windows)]
                 if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+                    #[cfg(windows)]
                     move_loop::moved(&weak);
+                    // Once for the events a move or resize sends together.
+                    if !placing.replace(true) {
+                        let (weak, adapter, placing) =
+                            (weak.clone(), adapter.clone(), placing.clone());
+                        slint::Timer::single_shot(Duration::ZERO, move || {
+                            placing.set(false);
+                            if let (Some(adapter), Some(window)) =
+                                (adapter.upgrade(), weak.upgrade())
+                            {
+                                placement::moved(&mut adapter.borrow_mut(), &window);
+                            }
+                        });
+                    }
                 }
                 // Moving to a display of another density: Slint takes its scale,
                 // and then the zoom goes back on top.
@@ -752,6 +771,8 @@ struct Layout {
     custom_themes: Vec<theme::Custom>,
     /// Closing the window leaves Yapfast in the system tray; on unless turned off.
     close_to_tray: Option<bool>,
+    /// Where the window was when Yapfast last ran, and how big.
+    window: Option<placement::Placement>,
 }
 
 /// Yapfast's sounds start as they're made: 12 dB under full scale at the loudest.
@@ -1156,6 +1177,8 @@ struct Adapter {
     topic_shown: Option<Arc<yapfast_core::chat::Topic>>,
     /// Shows pictures that arrived, together with those that follow them closely.
     pictures_due: slint::Timer,
+    /// Writes the layout once the window holds still after moving or resizing.
+    placement_due: slint::Timer,
     /// Stream ticks without a new picture of a video that isn't playing,
     /// after which they stop until the video changes.
     video_quiet: Cell<u32>,
@@ -1342,6 +1365,7 @@ impl Adapter {
                 forum_shown: None,
                 topic_shown: None,
                 pictures_due: slint::Timer::default(),
+                placement_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),
                 video_cell: Cell::new((0, 0)),
                 pictures: HashMap::new(),

@@ -28,11 +28,9 @@ pub(super) struct Shell {
     view: RefCell<Option<View>>,
 }
 
-/// Where a closed window was, and where its timeline was scrolled to.
+/// Where a closed window's timeline was scrolled to; the layout keeps where
+/// the window was.
 struct View {
-    size: slint::PhysicalSize,
-    position: slint::PhysicalPosition,
-    maximized: bool,
     /// The message at the top of the timeline, unless the newest showed.
     top: Option<SharedString>,
 }
@@ -197,15 +195,14 @@ impl Shell {
         let Some(window) = self.window.borrow_mut().take() else {
             return;
         };
-        let native = window.window();
         let top = window.get_top_item();
         *self.view.borrow_mut() = Some(View {
-            size: native.size(),
-            position: native.position(),
-            maximized: native.is_maximized(),
             top: (!window.invoke_timeline_at_end() && !top.is_empty()).then_some(top),
         });
-        self.adapter.borrow_mut().detach();
+        let mut adapter = self.adapter.borrow_mut();
+        placement::moved(&mut adapter, &window);
+        adapter.detach();
+        drop(adapter);
         // A shown window keeps itself alive; hide it, then drop the last handle.
         let weak = window.as_weak();
         if let Err(error) = window.hide() {
@@ -251,14 +248,8 @@ impl Shell {
     fn make(self: &Rc<Self>) -> Result<YapfastWindow, slint::PlatformError> {
         let window = YapfastWindow::new()?;
         let view = self.view.borrow_mut().take();
-        if let Some(view) = &view {
-            let native = window.window();
-            if view.maximized {
-                native.set_maximized(true);
-            } else {
-                native.set_size(view.size);
-                native.set_position(view.position);
-            }
+        if let Some(placement) = &self.adapter.borrow().layout.window {
+            placement::place(&window, placement);
         }
         window.show()?;
         self.confirm_gpu(&window);

@@ -220,6 +220,18 @@ display's scale factor by it, so the window lays out in fewer logical pixels,
 and zooming in stops before those would fall below the window's 800×560
 minimum, which would make it grow.
 
+The window starts at the size it had when Yapfast last ran, maximized if it
+was, and on Windows in the same place (`window` in `layout.json`,
+`src/ui/placement.rs`). Yapfast writes it a second after the window stops
+moving or resizing, and as it quits, so a Windows shutdown that ends Yapfast
+without closing it keeps it too. Maximized, it keeps the size and place
+un-maximizing returns to. On Windows a place whose title bar would show on no
+monitor, as after one was unplugged, is dropped and Windows chooses one, and a
+size larger than the monitor's work area shrinks to fit it. Linux keeps only
+the size: Wayland doesn't let a window choose its place, and an X11 place could
+be on a monitor that's gone. A window made again from the tray comes back
+from the same record.
+
 The window follows Discord's arrangement:
 
 - A 72px server rail. Each server is a circle that becomes a rounded square,
