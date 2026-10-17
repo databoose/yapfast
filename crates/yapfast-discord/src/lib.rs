@@ -12,6 +12,7 @@ pub mod cookies;
 mod dave;
 pub mod embed;
 pub mod event;
+pub mod forum;
 pub mod gateway;
 pub mod gifs;
 pub mod limits;

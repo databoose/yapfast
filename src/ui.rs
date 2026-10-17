@@ -993,6 +993,8 @@ struct Models {
     pins: Rc<VecModel<FoundRow>>,
     /// The open channel's list of its threads.
     thread_rows: Rc<VecModel<ThreadRow>>,
+    /// The open forum's posts.
+    post_rows: Rc<VecModel<PostRow>>,
     /// The Reactions window's reactions, and who reacted with the chosen one.
     reaction_pills: Rc<VecModel<ReactionPill>>,
     reactor_rows: Rc<VecModel<ReactorRow>>,
@@ -1040,6 +1042,7 @@ impl Models {
         window.set_new_dm_people(ModelRc::from(self.new_dm_people.clone()));
         window.set_pins(ModelRc::from(self.pins.clone()));
         window.set_thread_rows(ModelRc::from(self.thread_rows.clone()));
+        window.set_post_rows(ModelRc::from(self.post_rows.clone()));
         window.set_reaction_pills(ModelRc::from(self.reaction_pills.clone()));
         window.set_reactor_rows(ModelRc::from(self.reactor_rows.clone()));
         window.set_search_results(ModelRc::from(self.search_results.clone()));
@@ -1071,6 +1074,7 @@ struct Icons {
     dm: slint::Image,
     text: slint::Image,
     thread: slint::Image,
+    forum: slint::Image,
     voice: slint::Image,
     lock: slint::Image,
     read: slint::Image,
@@ -1146,6 +1150,8 @@ struct Adapter {
     /// The same for the list of threads, and the minute it was built in,
     /// as its rows say how long ago each was active.
     threads_shown: Option<u64>,
+    /// The same for the open forum's posts.
+    forum_shown: Option<u64>,
     /// The topic the header shows, so it's styled again only once it changes.
     topic_shown: Option<Arc<yapfast_core::chat::Topic>>,
     /// Shows pictures that arrived, together with those that follow them closely.
@@ -1244,6 +1250,9 @@ impl Adapter {
             thread: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/messages-square.svg"
             ))?,
+            forum: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/message-square-text.svg"
+            ))?,
             voice: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/volume-2.svg"))?,
             lock: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/lock.svg"))?,
             read: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/check.svg"))?,
@@ -1330,6 +1339,7 @@ impl Adapter {
                 sidebar: None,
                 picker_shown: None,
                 threads_shown: None,
+                forum_shown: None,
                 topic_shown: None,
                 pictures_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),

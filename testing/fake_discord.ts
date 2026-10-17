@@ -189,6 +189,15 @@
 // client joins a thread (the docs say PUT, which works too), and DELETE,
 // which leaves it, answer as Discord does; GET /_control/thread-members
 // lists each request's method and `location`.
+// #ideas is a forum, whose posts are threads with tags: Bob's welcome,
+// pinned; Carol's dark theme idea, which Alice is in, with reactions and
+// replies; Dave's crash report, with a screenshot; Bob's newest, which Alice
+// never opened, posted after she last read the forum; and three older,
+// archived ones. A post's first message has its id. POST
+// /channels/{id}/post-data gives posts' first messages, as Discord's client
+// asks for its cards, and GET /_control/post-data lists each request's ids;
+// searching a forum's threads gives theirs too. POST /_control/forum-post
+// makes Carol post in it.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -243,6 +252,8 @@ const LOUNGE = "1400000000000000103";
 // A bot makes a room for whoever joins Create Room and moves them there.
 const CREATE_ROOM = "1400000000000000104";
 const ALICES_ROOM = "1400000000000000105";
+// #ideas, a forum: its posts are threads.
+const FORUM = "1400000000000000106";
 const MODS = "1400000000000000110";
 // Only those who may mention everyone can mention Bots.
 const BOTS = "1400000000000000111";
@@ -788,6 +799,7 @@ type Message = {
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
+  [FORUM, []],
   [LOUNGE, []],
   [DM_BOB, []],
   [WEEKEND, []],
@@ -853,8 +865,9 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     tts: false,
     timestamp: iso(timeOf(message.id)),
     edited_timestamp: message.edited ? iso(message.edited) : null,
-    // HAS_THREAD, once a thread started from it.
-    flags: threads.has(message.id) ? 1 << 5 : 0,
+    // HAS_THREAD, once a thread started from it; a forum post's first
+    // message has the post's id, and isn't one.
+    flags: threads.has(message.id) && message.channel !== message.id ? 1 << 5 : 0,
     components: [],
   };
   if (message.nonce) wire.nonce = message.nonce;
@@ -878,7 +891,7 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     }));
   }
   const thread = threads.get(message.id);
-  if (thread && !nested) wire.thread = wireThread(thread);
+  if (thread && !nested && message.channel !== message.id) wire.thread = wireThread(thread);
   if (message.starter && !nested) {
     const original = byId.get(message.starter);
     wire.message_reference = { type: 0, channel_id: original?.channel, message_id: message.starter, guild_id: GUILD };
@@ -1143,6 +1156,8 @@ type Thread = {
   autoArchive: number; archiveChanged: number;
   /** Who is in it, and since when, in Unix milliseconds. */
   members: Map<string, number>;
+  /** A forum post's tags, by id, and whether it's pinned to the top. */
+  tags?: string[]; pinned?: boolean;
 };
 const threads = new Map<string, Thread>();
 
@@ -1157,11 +1172,13 @@ function wireThreadMember(thread: Thread) {
 /** A thread's channel object, with Alice's member when she's in it. */
 function wireThread(thread: Thread) {
   const list = messages.get(thread.id)!;
-  // Discord doesn't count a thread's first message, the one it was started from.
-  const count = list.filter((message) => message.type !== 21).length;
+  // Discord doesn't count a thread's first message: the one it was started
+  // from, or a forum post's own, whose id is the post's.
+  const count = list.filter((message) => message.type !== 21 && message.id !== thread.id).length;
   return {
     id: thread.id, type: thread.type, guild_id: GUILD, parent_id: thread.parent, owner_id: thread.owner.id,
-    name: thread.name, flags: 0, rate_limit_per_user: 0,
+    name: thread.name, flags: thread.pinned ? 1 << 1 : 0, rate_limit_per_user: 0,
+    ...(thread.parent === FORUM ? { applied_tags: thread.tags ?? [] } : {}),
     last_message_id: list.at(-1)?.id ?? null,
     message_count: count, total_message_sent: count, member_count: thread.members.size,
     member_ids_preview: [...thread.members.keys()].slice(0, 5),
@@ -1235,6 +1252,54 @@ for (let index = 0; index < 30; index++) {
   post(thread.id, owner, `Wrapping up ${thread.name}`, created + 3_600_000, { id: snowflake(created + 3_600_000, 901) });
 }
 
+// #ideas's tags, one moderated with a custom emoji.
+const FORUM_TAGS = [
+  { id: "1400000000000000140", name: "Feature", moderated: false, emoji_id: null, emoji_name: "🚀" },
+  { id: "1400000000000000141", name: "Bug", moderated: false, emoji_id: null, emoji_name: "🐛" },
+  { id: "1400000000000000142", name: "Question", moderated: false, emoji_id: null, emoji_name: "❓" },
+  { id: "1400000000000000143", name: "Done", moderated: true, emoji_id: EMOJI_TALK, emoji_name: null },
+];
+const [FEATURE, BUG, QUESTION, DONE] = FORUM_TAGS.map((tag) => tag.id) as [string, string, string, string];
+
+/** Starts a post in #ideas: a thread with its first message, whose id is
+ *  the post's, as Discord makes one. */
+function makePost(name: string, owner: User, created: number, content: string, extra: Partial<Thread> = {}, id = nextId(created)): Thread {
+  const thread = makeThread(id, name, owner, created, [owner.id], { parent: FORUM, ...extra });
+  post(id, owner, content, created, { id });
+  return thread;
+}
+
+// #ideas's posts: Bob's welcome, pinned; Carol's, which Alice is in, with
+// reactions and replies; Dave's, with a screenshot and two tags; Bob's
+// newest, made after Alice last read the forum, which she never opened;
+// and older, archived ones.
+const forumWelcome = makePost("Welcome to #ideas", users.bob, HISTORY_START + 1_000, "Read the guidelines before posting.", { pinned: true });
+const darkTheme = makePost("Dark theme for the sidebar", users.carol, HISTORY_START + 2_000, "The sidebar could follow the system theme.", { tags: [FEATURE] });
+byId.get(darkTheme.id)!.reactions.push(
+  { name: "👍", id: null, users: new Set([users.bob.id, users.dave.id, ALICE]) },
+  { name: "talk", id: EMOJI_TALK, users: new Set([users.bob.id]) },
+);
+darkTheme.members.set(ALICE, HISTORY_START + 2_500);
+post(darkTheme.id, users.bob, "Yes please", HISTORY_START + 3_000);
+const darkThemeRead = post(darkTheme.id, users.dave, "Same", HISTORY_START + 4_000);
+const screenshotDraw = (w: number, h: number) =>
+  png(w, h, (x, y) => [40 + Math.floor((120 * x) / w), 60, 90 + Math.floor((100 * y) / h), 255]);
+const gifCrash = makePost("Crash when pasting a GIF", users.dave, HISTORY_START + 5_000, "Pasting a GIF from the browser closes the app.", { tags: [BUG, QUESTION] });
+byId.get(gifCrash.id)!.files.push(addFile({
+  id: snowflake(HISTORY_START + 5_000, 7), channel: gifCrash.id, filename: "crash.png", contentType: "image/png",
+  data: screenshotDraw(400, 300), width: 400, height: 300, draw: screenshotDraw,
+}));
+post(gifCrash.id, users.carol, "Can't reproduce on Linux", HISTORY_START + 6_000);
+const shortcuts = makePost("Keyboard shortcut list?", users.bob, HISTORY_START + 7_000, "Is there a list of the shortcuts somewhere?", { tags: [QUESTION] });
+for (let index = 0; index < 3; index++) {
+  const created = HISTORY_START - (index + 1) * 86_400_000;
+  // Dated ids, as the counter has moved past these days.
+  makePost(`Old idea ${index + 1}`, users.carol, created, `Idea ${index + 1}, done long ago.`, { tags: [DONE, FEATURE], archived: true }, snowflake(created, 960));
+}
+
+/** Each POST /channels/{id}/post-data's ids, as GET /_control/post-data lists them. */
+const postDataRequests: string[][] = [];
+
 /** Whether Alice may see a thread: a private one only once she's in it. */
 const visibleThread = (thread: Thread) => thread.type !== 12 || thread.members.has(ALICE);
 
@@ -1291,6 +1356,9 @@ const readStates = new Map<string, { last: string; mentions: number }>([
   [GENERAL, { last: general[Math.max(0, general.length - 1 - Number(args.unread))]!.id, mentions: 0 }],
   [DM_BOB, { last: readBob.id, mentions: 2 }],
   [plans.id, { last: plansRead.id, mentions: 0 }],
+  // Alice read #ideas before Bob's newest post, and Carol's post she's in.
+  [FORUM, { last: gifCrash.id, mentions: 0 }],
+  [darkTheme.id, { last: darkThemeRead.id, mentions: 0 }],
   [REQUEST_ERIN, { last: readBob.id, mentions: 1 }],
   [SPAM_FRANK, { last: readBob.id, mentions: 1 }],
 ]);
@@ -1485,6 +1553,22 @@ function guildChannel(id: string, name: string, type: number, position: number, 
       ? { topic: (id === GENERAL ? generalTopic : null) as string | null, nsfw: false, rate_limit_per_user: 0, last_message_id: messages.get(id)?.at(-1)?.id ?? null }
       : {}),
     ...(type === 2 ? { bitrate: 64000, user_limit: 0, rtc_region: null, last_message_id: null } : {}),
+    ...(type === 15 ? forumFields() : {}),
+  };
+}
+
+/** What #ideas has as a forum, as Discord gives a forum channel. */
+function forumFields() {
+  const posts = [...threads.values()].filter((thread) => thread.parent === FORUM);
+  return {
+    topic: "One idea per post. Search before posting." as string | null,
+    nsfw: false, rate_limit_per_user: 0, default_thread_rate_limit_per_user: 0,
+    // A forum's newest message is its newest post.
+    last_message_id: posts.map((thread) => thread.id).sort((a, b) => (BigInt(a) > BigInt(b) ? 1 : -1)).at(-1) ?? null,
+    available_tags: FORUM_TAGS,
+    default_reaction_emoji: { emoji_id: null, emoji_name: "👍" },
+    default_sort_order: null, default_forum_layout: 1, default_tag_setting: "match_some",
+    default_auto_archive_duration: 4320, template: "",
   };
 }
 type GuildChannel = ReturnType<typeof guildChannel>;
@@ -1504,6 +1588,7 @@ function guildChannels(): GuildChannel[] {
   return [
     channel(CATEGORY, "Channels", 4, 0, null),
     channel(GENERAL, "general", 0, 0, CATEGORY),
+    channel(FORUM, "ideas", 15, 1, CATEGORY),
     channel(LOUNGE, "Lounge", 2, 1, CATEGORY),
     channel(CREATE_ROOM, "Create Room", 2, 2, CATEGORY),
     ...(roomMade ? [channel(ALICES_ROOM, "Alice's room", 2, 3, CATEGORY)] : []),
@@ -3706,7 +3791,39 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       members: page.filter((thread) => thread.members.has(ALICE)).map(wireThreadMember),
       has_more: offset + limit < found.length,
       total_results: found.length,
+      // A forum post's first message, which has its id.
+      first_messages: page
+        .map((thread) => messages.get(thread.id)!.find((message) => message.id === thread.id))
+        .filter((message) => message !== undefined)
+        .map((message) => ({ ...wireMessage(message, origin), guild_id: GUILD })),
+      most_recent_messages: page
+        .map((thread) => messages.get(thread.id)!.at(-1))
+        .filter((message) => message !== undefined)
+        .map((message) => ({ ...wireMessage(message, origin), guild_id: GUILD })),
     });
+  }
+
+  // A forum's posts' first and newest messages, and who started them, as
+  // Discord's client asks for its cards: at most ten.
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/post-data$/))) {
+    const forum = m[1]!;
+    if (forum !== FORUM) return notFound("Unknown Channel", 10003);
+    const body = await req.json() as { thread_ids?: unknown };
+    const ids = Array.isArray(body.thread_ids) ? body.thread_ids.filter((id): id is string => typeof id === "string") : [];
+    if (!ids.length || ids.length > 10) {
+      return json({ message: "Invalid Form Body", code: 50035, errors: { thread_ids: { _errors: [{ code: "BASE_TYPE_BAD_LENGTH", message: "Must be between 1 and 10 in length." }] } } }, 400);
+    }
+    postDataRequests.push(ids);
+    const answer: Record<string, unknown> = {};
+    for (const id of ids) {
+      const thread = threads.get(id);
+      if (!thread || thread.parent !== forum || !visibleThread(thread)) continue;
+      const list = messages.get(id)!;
+      const first = list.find((message) => message.id === id);
+      const wire = (message: Message | undefined) => (message ? { ...wireMessage(message, origin), guild_id: GUILD } : null);
+      answer[id] = { first_message: wire(first), most_recent_message: wire(list.at(-1)), owner: { ...member(thread.owner), guild_id: GUILD } };
+    }
+    return json({ threads: answer });
   }
 
   // A server's messages, in the channels `channel_id` names or in all of
@@ -5378,6 +5495,19 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/thread-members") {
       return Response.json(threadMemberRequests);
+    }
+    if (req.method === "GET" && path === "/_control/post-data") {
+      return Response.json(postDataRequests);
+    }
+    // Carol posts in #ideas, as Discord tells of a new post: THREAD_CREATE,
+    // then its first message.
+    if (req.method === "POST" && path === "/_control/forum-post") {
+      const now = Date.now();
+      const thread = makePost("Emoji picker search", users.carol, now, "Searching emoji by keyword would help.", { tags: [FEATURE] });
+      const { member: _member, ...wire } = wireThread(thread) as Record<string, unknown>;
+      dispatch("THREAD_CREATE", { ...wire, newly_created: true });
+      dispatch("MESSAGE_CREATE", dispatched(byId.get(thread.id)!, url.origin));
+      return Response.json(thread.id);
     }
     if (req.method === "POST" && path === "/_control/thread-archive") {
       plans.archived = !url.searchParams.has("open");

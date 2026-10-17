@@ -6145,6 +6145,7 @@ fn a_channels_threads_list_as_discords_client_lists_them() {
         query: None,
         offset: 0,
         result: Ok((vec![listed("40", 250), listed("41", 150)], true)),
+        starters: vec![],
     });
     let sections = app.thread_sections().unwrap();
     assert_eq!(rooms(&sections.joined), ["30"]);
@@ -6170,6 +6171,7 @@ fn a_channels_threads_list_as_discords_client_lists_them() {
         query: None,
         offset: 25,
         result: Ok((vec![listed("42", 100)], false)),
+        starters: vec![],
     });
     assert_eq!(
         rooms(&app.thread_sections().unwrap().older),
@@ -6188,6 +6190,7 @@ fn a_channels_threads_list_as_discords_client_lists_them() {
         query: Some("book".into()),
         offset: 0,
         result: Ok((vec![listed("31", 310)], false)),
+        starters: vec![],
     });
     let search = app.state.thread_list().unwrap().search.as_ref().unwrap();
     assert!(matches!(&search.found, Some(Ok(found)) if found.len() == 1));
@@ -6799,4 +6802,186 @@ fn the_gif_picker_searches_sends_and_keeps_favorites() {
         saved.as_slice(),
         [Command::Discord(DiscordCommand::SetFavoriteGifs(favorites))] if favorites.len() == 1
     ));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_forum_shows_its_posts_as_discords_client_does() {
+    use chat::{ListedThread, PostStarter};
+    use yapfast_discord::{
+        ready::{self, permission},
+        service::{Snapshot, Status},
+    };
+    let bits = |bits: u64| bits.to_string();
+    let post = |id: &str, name: &str, last: &str, flags: u64, tags: &[&str]| {
+        serde_json::json!({
+            "id": id, "type": 11, "name": name, "parent_id": "15", "guild_id": "10",
+            "last_message_id": last, "flags": flags, "applied_tags": tags, "message_count": 2,
+            "thread_metadata": {"archived": false, "locked": false},
+        })
+    };
+    let snapshot = |posts: &[serde_json::Value]| {
+        let mut server = ready::server(&serde_json::json!({
+            "id": "10", "owner_id": "99", "properties": {"name": "Test"},
+            "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": bits(
+                permission::VIEW_CHANNEL | permission::SEND_MESSAGES
+                    | permission::READ_MESSAGE_HISTORY | permission::SEND_MESSAGES_IN_THREADS)}],
+            "channels": [
+                {"id": "11", "type": 0, "name": "general", "position": 0},
+                {"id": "15", "type": 15, "name": "ideas", "position": 1,
+                 "available_tags": [
+                     {"id": "7", "name": "Bug", "emoji_id": null, "emoji_name": "🐛"},
+                     {"id": "8", "name": "Idea", "emoji_id": "9", "emoji_name": "idea"},
+                 ],
+                 "default_reaction_emoji": {"emoji_id": null, "emoji_name": "👍"}},
+            ],
+            "threads": posts,
+        }))
+        .unwrap();
+        // Read up to the joined post, which she opened; the newest she never
+        // opened.
+        for channel in server.text_channels.iter_mut().chain(&mut server.threads) {
+            channel.last_read = 45;
+            if let Some(thread) = channel.thread.as_deref_mut() {
+                thread.opened = channel.id == "45";
+                thread.joined = channel.id == "45";
+            }
+        }
+        discord_event(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            servers: vec![Arc::new(server)],
+            ..Default::default()
+        })
+    };
+    let posts = vec![
+        post("40", "Welcome", "41", 2, &[]),
+        post("45", "Joined", "60", 0, &["7"]),
+        post("50", "Newest", "50", 0, &["8", "7"]),
+    ];
+    let mut app = Application::default();
+    app.apply(snapshot(&posts));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let ideas = "discord:10:15".to_owned();
+    let room = |id: &str| format!("discord:10:{id}");
+    assert!(
+        app.state
+            .rooms
+            .iter()
+            .any(|listed| listed.id == ideas && listed.forum)
+    );
+
+    // Opening it shows its posts in place of messages: it asks for older
+    // ones and for the first messages of the cards on top, pinned first.
+    let effects = app.dispatch(Action::SelectRoom(ideas.clone()));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::Open(_))))
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Discord(DiscordCommand::ViewForum { room })) if *room == ideas
+    )));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Discord(DiscordCommand::Threads { room, query: None, offset: 0 }))
+            if *room == ideas
+    )));
+    let asked: Vec<_> = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Backend(Command::Discord(DiscordCommand::Posts { posts, .. })) => {
+                Some(posts.clone())
+            }
+            _ => None,
+        })
+        .expect("first messages asked for");
+    assert_eq!(asked, [room("40"), room("45"), room("50")]);
+    assert!(app.state.room_ready);
+    // A forum has no list of threads, pins or member list.
+    assert_eq!(app.state.threads_channel(), None);
+    assert!(!app.state.lists_members());
+
+    let shown = app.forum_posts().unwrap();
+    let names: Vec<_> = shown
+        .active
+        .iter()
+        .map(|post| post.thread.name.as_str())
+        .collect();
+    assert_eq!(names, ["Welcome", "Joined", "Newest"]);
+    let news: Vec<_> = shown.active.iter().map(|post| post.new).collect();
+    assert_eq!(news, [false, false, true], "only one made since, unopened");
+    let tags: Vec<_> = shown.active[2]
+        .tags
+        .iter()
+        .map(|tag| tag.name.as_str())
+        .collect();
+    assert_eq!(tags, ["Bug", "Idea"], "in the forum's order");
+    assert!(shown.active[0].thread.pinned);
+
+    // Their first messages come; one Discord didn't answer for was deleted,
+    // and nothing more is asked for.
+    let starter = |text: &str| PostStarter {
+        text: text.into(),
+        ..Default::default()
+    };
+    let effects = app.apply(Event::Posts {
+        room: ideas.clone(),
+        result: Ok(vec![
+            (room("40"), Some(starter("Hello"))),
+            (room("45"), Some(starter("Idea"))),
+        ]),
+    });
+    assert!(effects.is_empty());
+    let shown = app.forum_posts().unwrap();
+    assert_eq!(shown.active[0].starter, Some(Some(starter("Hello"))));
+    assert_eq!(shown.active[2].starter, Some(None));
+
+    // Older posts come with their own first messages.
+    app.apply(Event::Threads {
+        room: ideas.clone(),
+        query: None,
+        offset: 0,
+        result: Ok((
+            vec![ListedThread {
+                room: room("30"),
+                name: "Old".into(),
+                archived: true,
+                last: 30,
+                ..Default::default()
+            }],
+            true,
+        )),
+        starters: vec![(room("30"), Some(starter("Long ago")))],
+    });
+    let shown = app.forum_posts().unwrap();
+    assert_eq!(shown.older.len(), 1);
+    assert_eq!(shown.older[0].starter, Some(Some(starter("Long ago"))));
+    // Scrolled near the end, the next page of older posts loads.
+    assert!(
+        app.dispatch(Action::MorePosts)
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                Effect::Backend(Command::Discord(DiscordCommand::Threads { offset: 25, .. }))
+            ))
+    );
+
+    // A post made while it shows wants its first message.
+    let mut more = posts.clone();
+    more.push(post("55", "Brand new", "55", 0, &[]));
+    let effects = app.apply(snapshot(&more));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Discord(DiscordCommand::Posts { posts, .. })) if *posts == [room("55")]
+    )));
+
+    // Another room forgets it all.
+    let effects = app.dispatch(Action::SelectRoom(room("11")));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Backend(Command::Discord(DiscordCommand::CloseThreads))
+    )));
+    assert!(app.state.forum.is_none());
 }

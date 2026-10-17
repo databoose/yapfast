@@ -76,6 +76,8 @@ pub struct ChatRoom {
     pub activity: Option<String>,
     /// A Discord thread's channel, by room id: the thread lists under it.
     pub parent: Option<String>,
+    /// A Discord forum, whose posts show in place of messages.
+    pub forum: bool,
 }
 
 /// The most files one message carries, as Discord allows.
@@ -642,6 +644,49 @@ pub struct ListedThread {
     pub members: u32,
     /// The avatars of a few of them.
     pub member_avatars: Vec<String>,
+    /// A forum post's tags, by id, and whether it's pinned to the top.
+    pub tags: Vec<String>,
+    pub pinned: bool,
+    /// Its messages after the first, as Discord counts them.
+    pub replies: u64,
+    /// This account opened it, and has messages there to read.
+    pub opened: bool,
+    pub unread: bool,
+    /// When it started, in Unix milliseconds.
+    pub created_ms: u64,
+}
+
+/// A forum post's first message, as its card shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PostStarter {
+    pub author: ThreadPerson,
+    /// Its text on one line, mentions and custom emoji as text.
+    pub text: String,
+    /// The reaction most given, and how many gave it.
+    pub reaction: Option<(ShownEmoji, u64)>,
+    /// The address of its first picture, as a thumbnail, and whether it's a
+    /// spoiler.
+    pub picture: Option<String>,
+    pub spoiler: bool,
+}
+
+/// Forum posts' first messages, by room id; none where it was deleted.
+pub type PostStarters = Vec<(String, Option<PostStarter>)>;
+
+/// An emoji as a forum shows it on a tag or a reaction: a Unicode one's
+/// text, or the address of a custom one's picture, with its name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ShownEmoji {
+    pub text: String,
+    pub picture: Option<String>,
+}
+
+/// A tag a Discord forum's posts may take.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ForumTag {
+    pub id: String,
+    pub name: String,
+    pub emoji: Option<ShownEmoji>,
 }
 
 /// Someone a thread's row names.
@@ -1549,6 +1594,17 @@ pub enum DiscordCommand {
     },
     /// The list of threads closed: forget what it found.
     CloseThreads,
+    /// A Discord forum, by its room id, shows: hear of its posts as they
+    /// come.
+    ViewForum {
+        room: String,
+    },
+    /// The first messages of a Discord forum's posts, by room id, as their
+    /// cards show them, at most ten; [`Event::Posts`] follows.
+    Posts {
+        room: String,
+        posts: Vec<String>,
+    },
     /// Start a thread in a Discord server channel, by its room id: from its
     /// `message`, by item, or from none, a `private` one or not, from
     /// `location` in Discord's client, such as "Message".
@@ -1963,6 +2019,14 @@ pub enum Event {
         query: Option<String>,
         offset: u32,
         result: Result<(Vec<ListedThread>, bool), String>,
+        /// In a forum, its posts' first messages.
+        starters: PostStarters,
+    },
+    /// [`DiscordCommand::Posts`]'s first messages in the forum `room`, or
+    /// why they didn't come.
+    Posts {
+        room: String,
+        result: Result<PostStarters, String>,
     },
     /// What [`DiscordCommand::Search`] found: a page of messages, the newest
     /// first, and how many in all; or why it couldn't search.

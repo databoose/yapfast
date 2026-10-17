@@ -13,7 +13,8 @@ impl Application {
         let Some(room) = self
             .state
             .conversation_that(|can| can.pins)
-            .filter(|_| shown)
+            // A forum's messages are its posts'.
+            .filter(|room| shown && !room.forum)
             .map(|room| room.id.clone())
         else {
             return vec![];

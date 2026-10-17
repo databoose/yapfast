@@ -198,6 +198,7 @@ impl Adapter {
         self.show_header(window);
         self.show_dm_tools(window);
         self.show_threads(window);
+        self.show_forum(window);
         self.show_new_thread(window);
         self.show_members(window);
         self.show_invite(window);
@@ -569,6 +570,8 @@ impl Adapter {
                         self.icons.lock.clone()
                     } else if room.voice {
                         self.icons.voice.clone()
+                    } else if room.forum {
+                        self.icons.forum.clone()
                     } else if room.direct {
                         self.icons.dm.clone()
                     } else {
@@ -924,6 +927,76 @@ impl Adapter {
         self.models.thread_rows.set_vec(rows);
     }
 
+    /// The open Discord forum's posts, in place of messages.
+    fn show_forum(&mut self, window: &YapfastWindow) {
+        let state = &self.app.state;
+        let forum = state.forum();
+        window.set_room_forum(state.selected_room().is_some_and(|room| room.forum));
+        let Some(forum) = forum else {
+            if self.forum_shown.take().is_some() {
+                self.models.post_rows.set_vec(Vec::new());
+                window.set_posts_query(SharedString::default());
+            }
+            return;
+        };
+        let room = &forum.list.room;
+        window.set_posts_searchable(
+            self.app
+                .may(room, yapfast_core::chat::Permission::ReadHistory),
+        );
+        let posts = self.app.forum_posts().unwrap_or_default();
+        let info = self.app.forum_info(room).unwrap_or_default();
+        let cards = posts.active.len() + posts.older.len();
+        window.set_posts_more(forum.wants_more(cards));
+        window.set_posts_loading(forum.loading());
+        window.set_posts_searching(posts.found.is_some());
+        let (note, empty) = match &posts.found {
+            Some(None) => ("Searching...".to_owned(), false),
+            Some(Some(Err(error))) => (error.clone(), false),
+            Some(Some(Ok(found))) => (String::new(), found.is_empty()),
+            None if cards == 0 && forum.list.loading => ("Loading posts...".into(), false),
+            None if cards == 0 => (
+                forum.list.error.clone().unwrap_or_default(),
+                forum.list.error.is_none(),
+            ),
+            None => (String::new(), false),
+        };
+        window.set_posts_note(note.into());
+        window.set_posts_empty(empty);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |now| now.as_millis() as u64);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        (&posts, room, now / 60_000).hash(&mut hasher);
+        let shown = hasher.finish();
+        if self.forum_shown == Some(shown) {
+            return;
+        }
+        self.forum_shown = Some(shown);
+        let row = |post| post_row(post, &info, now);
+        let rows: Vec<PostRow> = match &posts.found {
+            Some(Some(Ok(found))) => found.iter().map(row).collect(),
+            _ => {
+                let mut rows: Vec<PostRow> = posts.active.iter().map(row).collect();
+                let older = posts
+                    .older
+                    .iter()
+                    .map(row)
+                    .enumerate()
+                    .map(|(index, mut row)| {
+                        if index == 0 {
+                            row.heading = "OLDER POSTS".into();
+                        }
+                        row
+                    });
+                rows.extend(older);
+                rows
+            }
+        };
+        self.models.post_rows.set_vec(rows);
+    }
+
     /// The open conversation's header.
     fn show_header(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
@@ -960,10 +1033,13 @@ impl Adapter {
             .and_then(|parent| state.rooms.iter().find(|listed| listed.id == parent));
         window.set_room_parent(parent.map_or("", |parent| parent.name.as_str()).into());
         window.set_room_parent_id(parent.map_or("", |parent| parent.id.as_str()).into());
+        window.set_room_parent_forum(parent.is_some_and(|parent| parent.forum));
         window.set_room_icon(if room.is_some_and(|room| room.parent.is_some()) {
             self.icons.thread.clone()
         } else if room.is_some_and(|room| room.voice) {
             self.icons.voice.clone()
+        } else if room.is_some_and(|room| room.forum) {
+            self.icons.forum.clone()
         } else if room.is_some_and(|room| room.direct) {
             self.icons.dm.clone()
         } else {
@@ -972,6 +1048,8 @@ impl Adapter {
         // Discord counts a channel's members only once its list comes.
         window.set_members(
             room.map_or(SharedString::default(), |room| match room.members {
+                // A forum has no member list.
+                _ if room.forum => SharedString::default(),
                 0 => "Members".into(),
                 1 => "1 member".into(),
                 count => format!("{count} members").into(),
@@ -1009,7 +1087,11 @@ impl Adapter {
     fn show_dm_tools(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
         let twelve_hour = self.layout.twelve_hour_clock;
-        window.set_can_pin(state.conversation_that(|can| can.pins).is_some());
+        window.set_can_pin(
+            state
+                .conversation_that(|can| can.pins)
+                .is_some_and(|room| !room.forum),
+        );
         window.set_can_search(state.conversation_that(|can| can.search).is_some());
         window.set_can_add_people(
             state.discord_online && state.dm_that(|can| can.group_dms).is_some(),
@@ -3165,6 +3247,85 @@ fn thread_row(thread: &yapfast_core::chat::ListedThread, now: u64) -> ThreadRow 
                 .map(|avatar| SharedString::from(avatar.as_str()))
                 .collect::<Vec<_>>(),
         )),
+    }
+}
+
+/// A forum post as its card shows it, as Discord's client does: its first
+/// three tags, its first message's author and text, its top reaction or the
+/// forum's own, its replies, and when it was last active, or made when the
+/// forum sorts by that.
+fn post_row(
+    post: &yapfast_core::application::ForumPost,
+    info: &yapfast_core::application::ForumInfo,
+    now: u64,
+) -> PostRow {
+    const TAGS: usize = 3;
+    let thread = &post.thread;
+    let tag = |name: &str, emoji: Option<&yapfast_core::chat::ShownEmoji>| PostTag {
+        name: name.into(),
+        emoji: emoji
+            .filter(|emoji| emoji.picture.is_none())
+            .map_or(SharedString::default(), |emoji| emoji.text.as_str().into()),
+        emoji_url: emoji
+            .and_then(|emoji| emoji.picture.as_deref())
+            .unwrap_or_default()
+            .into(),
+    };
+    let tags: Vec<PostTag> = post
+        .tags
+        .iter()
+        .take(TAGS)
+        .map(|shown| tag(&shown.name, shown.emoji.as_ref()))
+        .collect();
+    let starter = post.starter.as_ref();
+    let first = starter.and_then(Option::as_ref);
+    let (person, text) = match starter {
+        Some(Some(first)) => (Some(&first.author), first.text.as_str()),
+        Some(None) => (None, "Original message was deleted"),
+        None => (None, ""),
+    };
+    let reaction = match first.and_then(|first| first.reaction.as_ref()) {
+        Some((emoji, count)) => Some((tag("", Some(emoji)), count.to_string())),
+        // A post without reactions offers the forum's own.
+        None if first.is_some() => info
+            .reaction
+            .as_ref()
+            .map(|emoji| (tag("", Some(emoji)), String::new())),
+        None => None,
+    };
+    let at = if info.by_creation {
+        thread.created_ms
+    } else {
+        thread.active_ms
+    };
+    PostRow {
+        room: thread.room.as_str().into(),
+        heading: SharedString::default(),
+        name: thread.name.as_str().into(),
+        pinned: thread.pinned,
+        new: post.new,
+        unread: thread.unread,
+        tags: ModelRc::new(VecModel::from(tags)),
+        more_tags: match post.tags.len().saturating_sub(TAGS) {
+            0 => SharedString::default(),
+            more => format!("+{more}").into(),
+        },
+        person: person.map_or("", |person| person.name.as_str()).into(),
+        color: role_color(person.and_then(|person| person.color)),
+        has_color: person.is_some_and(|person| person.color.is_some()),
+        text: text.into(),
+        has_reaction: reaction.is_some(),
+        reaction_count: reaction
+            .as_ref()
+            .map_or(SharedString::default(), |(_, count)| count.as_str().into()),
+        reaction: reaction.map(|(emoji, _)| emoji).unwrap_or_default(),
+        replies: thread.replies.to_string().into(),
+        time: ago(at, now).into(),
+        picture_url: first
+            .and_then(|first| first.picture.as_deref())
+            .unwrap_or_default()
+            .into(),
+        spoiler: first.is_some_and(|first| first.spoiler),
     }
 }
 

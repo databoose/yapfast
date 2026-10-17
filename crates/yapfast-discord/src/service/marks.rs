@@ -43,6 +43,9 @@ struct ChannelMarks {
     last_read: u64,
     /// A thread gone quiet; see [`crate::ready::Thread::quiet_at`].
     quiet: bool,
+    /// A thread this account has a read state of its own in; see
+    /// [`crate::ready::Thread::opened`].
+    opened: bool,
 }
 
 /// Whether `channel` is a thread gone quiet at `now`, in Unix milliseconds.
@@ -75,6 +78,7 @@ impl Marks {
                 mentions,
                 last_read: unreads.last_read(&server.id, &channel.id),
                 quiet: false,
+                opened: false,
             });
         }
         for channel in &server.voice_channels {
@@ -86,6 +90,7 @@ impl Marks {
                 mentions: channel.mentions,
                 last_read: channel.last_read,
                 quiet: false,
+                opened: false,
             });
         }
         for thread in &server.threads {
@@ -99,6 +104,7 @@ impl Marks {
                 mentions,
                 last_read: unreads.last_read(&server.id, &thread.id),
                 quiet: quiet(thread, now),
+                opened: unreads.opened(&thread.id),
             });
         }
         Self {
@@ -128,6 +134,7 @@ impl Marks {
                 unreads.channel(&server.id, channel, marks.access);
             marks.last_read = unreads.last_read(&server.id, &channel.id);
             marks.quiet = quiet(channel, now);
+            marks.opened = channel.thread.is_some() && unreads.opened(&channel.id);
         }
         Self {
             muted: unreads.server_muted(&server.id),
@@ -159,6 +166,7 @@ impl Marks {
             channel.last_read = marks.last_read;
             if let Some(thread) = channel.thread.as_deref_mut() {
                 thread.quiet = marks.quiet;
+                thread.opened = marks.opened;
             }
         }
         marked

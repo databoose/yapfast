@@ -565,7 +565,10 @@ pub fn parse(value: &Value) -> Option<Message> {
                         ..Default::default()
                     })
             }
-            _ => ThreadLink::of(&value["thread"]),
+            // A forum post's first message has the post's id, and links
+            // to no thread but the one it's in.
+            _ => ThreadLink::of(&value["thread"])
+                .filter(|thread| value["channel_id"].as_str() != Some(thread.id.as_str())),
         },
         pinned: value["pinned"].as_bool().unwrap_or(false),
         forwarded,
@@ -1364,6 +1367,13 @@ mod tests {
             "author": {"id": "2"}, "referenced_message": null}))
             .is_none()
         );
+        // A forum post's first message has the post's id, and links to no
+        // thread but the one it's in.
+        let post = parse(&json!({"id": "800", "type": 0, "channel_id": "800",
+            "author": {"id": "2", "username": "bob"}, "content": "An idea",
+            "thread": {"id": "800", "name": "Idea"}}))
+        .unwrap();
+        assert!(post.thread.is_none());
     }
 
     #[test]

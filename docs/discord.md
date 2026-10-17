@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio and cameras on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, leaving servers | Forums, pinning messages, forwarding, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Posting in forums, pinning messages, forwarding, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1598,6 +1598,56 @@ refuses a second thread on a message (160004) and a name outside 1 to 100
 characters (50035), and `/_control/thread-creates` lists what each request
 sent.
 
+### Forums
+
+A forum (type 15) lists among the text channels, by its position, with its
+own icon, and shows its posts in place of messages, as Discord's client
+does (`application/forum.rs`, `ForumPanel`). Its posts are public threads
+whose parent is the forum, so everything above holds for them: posts the
+account is in list under the forum in the sidebar, the active ones come
+with THREAD_LIST_SYNC once the server is subscribed (with `threads`, but
+no channel, since a forum has no member list), and archived ones come a
+page of 25 at a time from `GET /channels/{id}/threads/search`, as a
+channel's list of threads asks. The service keeps the forum's tags
+(`available_tags`), whether a post must take one (flag 16), its default
+sort order and its default reaction, and each post's `applied_tags` and
+whether it's pinned (flag 2). A post's first message has the post's own id
+and isn't counted in its `message_count`.
+
+The forum shows its active posts, the pinned one first, then by latest
+message, or by when they were made if the forum sorts by creation, then
+"Older posts", the archived ones by latest message, then what a search of
+their titles finds while one shows. Each card shows, as Discord's list
+layout does: a pin for a pinned post and its first three tags, "+N" for
+more; its title, bright when the account opened it and has messages to
+read there, and "NEW" for a post made since the forum was last read that
+the account never opened (it has no read state of its own); the first
+message's author in their role colour and its text, or "Original message
+was deleted"; the reaction most given, with super reactions, or the
+forum's default reaction without a count; the replies; how long ago it was
+last active, or made; and its first picture, a 72px thumbnail from a file
+or an embed. Clicking a card opens the post beside the forum, as Discord's
+does, and Shift-click in its place.
+
+First messages, as Discord's client gets them: an archived page or a
+search brings its posts' `first_messages`; the active posts' come from
+`POST /channels/{id}/post-data` with `{"thread_ids": [...]}`, at most ten at
+a time, which answers with each post's `first_message`, `most_recent_message`
+and `owner`. Yapfast asks for the first 25 cards' when the forum opens and
+for 25 more each time the list scrolls near its end, one request at a time,
+as Discord's client asks for the cards it shows. The cards, pages and first
+messages are kept only while the forum shows. Opening the forum marks it
+read, which acknowledges its newest message, as Discord's client does; a
+forum's newest message is its newest post, so a post made since makes it
+unread (THREAD_CREATE with `newly_created`).
+
+The fake's #ideas has a pinned welcome, "Dark theme for the sidebar",
+which Alice is in, with reactions and replies, a crash report with a
+screenshot and two tags, a newer post she never opened, and three archived
+ones. It answers `post-data` (`/_control/post-data` lists each request's
+ids), gives first messages with a forum's search, and `/_control/forum-post`
+makes Carol post.
+
 ### Editing one's server profile
 
 Edit server profile, in a server's menu, its header's dropdown and one's
@@ -1897,7 +1947,8 @@ Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 
 In rough order. The browser covers these until then.
 
-- Joining and leaving threads from their menus, and forum channels.
+- Posting in forums, sorting and filtering a forum's posts by tag, its
+  gallery layout, and media channels.
 - Pinning and unpinning messages.
 - Forwarding Discord messages, which Discord marks as forwarded, rather than
   sending their text again.

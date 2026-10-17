@@ -20,6 +20,7 @@ mod aside;
 mod calls;
 mod compose;
 mod discord_account;
+mod forum;
 mod gifs;
 mod header;
 mod members;
@@ -34,6 +35,7 @@ mod server_profile;
 mod session;
 mod threads;
 
+pub use forum::{ForumInfo, ForumPost, ForumPosts, ForumView};
 pub use gifs::{GifPicker, GifPicture, GifView};
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
@@ -446,6 +448,8 @@ pub struct AppState {
     pub search: Option<Search>,
     /// The open Discord channel's list of its threads.
     pub threads: Option<ThreadList>,
+    /// The Discord forum on screen.
+    pub forum: Option<ForumView>,
     /// The "New Thread" form beside the open Discord channel.
     pub new_thread: Option<NewThread>,
     /// The reaction the pointer stayed over, by item and key, who the
@@ -547,7 +551,7 @@ impl AppState {
     /// one-to-one DMs don't.
     pub fn lists_members(&self) -> bool {
         self.selected_room()
-            .is_some_and(|room| !room.voice && !(room.direct && room.members <= 2))
+            .is_some_and(|room| !room.voice && !room.forum && !(room.direct && room.members <= 2))
     }
 
     /// The open one-to-one DM, whose other person has a profile.
@@ -1177,6 +1181,10 @@ pub enum Action {
     SearchThreads(String),
     /// Load the list's next page of archived threads.
     MoreThreads,
+    /// Search the forum's posts by title; an empty query shows them all.
+    SearchPosts(String),
+    /// The forum's list of posts scrolled near its end: load more of them.
+    MorePosts,
     /// Open the "New Thread" form beside the open channel: from a message,
     /// by item, or from none.
     NewThread {
@@ -2034,6 +2042,8 @@ impl Application {
             Action::ShowThreads(shown) => self.show_threads(shown),
             Action::SearchThreads(query) => self.search_threads(query),
             Action::MoreThreads => self.more_threads(),
+            Action::SearchPosts(query) => self.search_posts(query),
+            Action::MorePosts => self.more_posts(),
             Action::NewThread { message, from } => self.open_new_thread(message, from),
             Action::WriteNewThread { name, body } => {
                 self.write_new_thread(name, body);
@@ -2504,7 +2514,9 @@ impl Application {
                 query,
                 offset,
                 result,
-            } => self.threads_came(room, query, offset, result),
+                starters,
+            } => return self.threads_came(room, query, offset, result, starters),
+            Event::Posts { room, result } => return self.posts_came(room, result),
             Event::ThreadStarted { room, result } => return self.thread_started(room, result),
             Event::Found {
                 place,

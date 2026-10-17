@@ -36,6 +36,7 @@ import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfile
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
+import { PostTag, PostRow, ForumPanel } from "forum.slint";
 
 // Rust sees these, besides YapfastWindow.
 export { Theme, Badges } from "theme.slint";
@@ -191,6 +192,8 @@ export component YapfastWindow inherits Window {
     /// A Discord thread's channel: its name, and its room id to go back to.
     in property <string> room-parent;
     in property <string> room-parent-id;
+    /// The thread's channel is a forum, and the thread one of its posts.
+    in property <bool> room-parent-forum;
     in property <image> room-icon;
     in property <bool> room-direct;
     in property <string> room-initial;
@@ -623,6 +626,18 @@ export component YapfastWindow inherits Window {
     callback more-threads;
     /// Open a thread from the list: in place of the channel, or beside it.
     callback open-listed-thread(string, bool);
+    // The open Discord forum's posts, in place of messages; see ForumPanel.
+    in property <bool> room-forum;
+    in property <[PostRow]> post-rows;
+    in property <string> posts-note;
+    in property <bool> posts-empty;
+    in property <bool> posts-searching;
+    in property <bool> posts-searchable;
+    in-out property <string> posts-query;
+    in property <bool> posts-more;
+    in property <bool> posts-loading;
+    callback search-posts(string);
+    callback more-posts;
     // Starting a thread; see NewThreadPanel.
     /// Threads can start from the open channel's messages.
     in property <bool> can-start-threads;
@@ -1714,7 +1729,10 @@ export component YapfastWindow inherits Window {
                             }
                         }
                         // A thread follows its channel, which leads back to it.
-                        if root.room-parent != "" && root.room-selected: Image { source: @image-url("icons/hash.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
+                        if root.room-parent != "" && root.room-selected: Image {
+                            source: root.room-parent-forum ? @image-url("icons/message-square-text.svg") : @image-url("icons/hash.svg");
+                            width: 22px; image-fit: contain; colorize: Theme.muted;
+                        }
                         if root.room-parent != "" && root.room-selected: parent-name := Text {
                             text: root.room-parent; font-size: 16px; font-weight: 700; vertical-alignment: center;
                             color: parent-touch.has-hover ? Theme.text : Theme.secondary;
@@ -2002,12 +2020,23 @@ export component YapfastWindow inherits Window {
                                 }
                             }
                         }
+                        // A forum's posts, in place of its messages.
+                        if root.room-forum && !root.voice-room: ForumPanel {
+                            vertical-stretch: 1;
+                            rows: root.post-rows; note: root.posts-note; empty: root.posts-empty;
+                            searching: root.posts-searching; searchable: root.posts-searchable;
+                            query <=> root.posts-query;
+                            more: root.posts-more; loading: root.posts-loading;
+                            search(text) => { root.search-posts(text); }
+                            more-posts => { root.more-posts(); }
+                            open(room, beside) => { root.open-listed-thread(room, beside); }
+                        }
                         // Text conversation.
                         Rectangle {
-                            visible: !root.voice-room;
+                            visible: !root.voice-room && !root.room-forum;
                             min-height: 0px;
-                            max-height: root.voice-room ? 0px : 100000px;
-                            vertical-stretch: root.voice-room ? 0 : 1;
+                            max-height: root.voice-room || root.room-forum ? 0px : 100000px;
+                            vertical-stretch: root.voice-room || root.room-forum ? 0 : 1;
                             // Up and Down step through messages; R replies, E edits, Delete deletes,
                             // C copies, F forwards, + reacts, Enter opens the menu, Escape returns
                             // to the composer.
@@ -2353,9 +2382,9 @@ export component YapfastWindow inherits Window {
                         }
                         // Composer.
                         VerticalLayout {
-                            visible: !root.voice-room && root.room-selected;
+                            visible: !root.voice-room && !root.room-forum && root.room-selected;
                             min-height: 0px;
-                            max-height: root.voice-room || !root.room-selected ? 0px : 100000px;
+                            max-height: root.voice-room || root.room-forum || !root.room-selected ? 0px : 100000px;
                             padding-left: 16px; padding-right: 16px; padding-top: 0px; padding-bottom: 0px;
                             spacing: 0px; vertical-stretch: 0;
                             if root.room-request: RequestBar {

@@ -615,14 +615,19 @@ impl Tracker {
                 else {
                     return false;
                 };
-                // Its first message, which points at the one it was started
-                // from, isn't counted.
-                if *event == Event::MessageCreate && data["type"] != 21 {
-                    thread.messages += 1;
-                    thread.sent(data);
+                // Its first message isn't counted: one pointing at the
+                // message it was started from, or a forum post's own, which
+                // has the post's id.
+                let starter = data["type"] == 21;
+                let counted = !starter && data["id"].as_str() != Some(channel);
+                if *event == Event::MessageCreate {
+                    thread.messages += u64::from(counted);
+                    if !starter {
+                        thread.sent(data);
+                    }
                     // A message opens an archived thread again.
                     thread.archived = false;
-                } else {
+                } else if counted {
                     thread.messages = thread.messages.saturating_sub(1);
                 }
                 true
@@ -2201,6 +2206,36 @@ mod tests {
         );
         assert_eq!(quiet(&mut tracker), [false, false]);
         assert_eq!(tracker.next_quiet(now), Some(now + 23 * hour));
+    }
+
+    #[test]
+    fn a_forum_posts_first_message_isnt_a_reply() {
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [{"id": "10", "properties": {"name": "Test", "owner_id": "1"},
+                "channels": [{"id": "15", "name": "ideas", "type": 15, "position": 0}]}],
+            "merged_members": [[{"user_id": "1", "roles": []}]],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let post = json!({"id": "600", "type": 11, "name": "Idea", "parent_id": "15",
+            "guild_id": "10", "owner_id": "2", "message_count": 0,
+            "thread_metadata": {"archived": false, "locked": false}});
+        assert!(tracker.apply(&Event::ThreadCreate, &post));
+        let message = |id: &str| {
+            json!({"id": id, "type": 0, "channel_id": "600", "guild_id": "10",
+                   "author": {"id": "2"}, "content": "An idea"})
+        };
+        let counted = |tracker: &Tracker| {
+            let details = tracker.servers[0].threads[0].thread.as_deref().unwrap();
+            (details.messages, details.last_message)
+        };
+        // Its first message has its id: the newest, but not a reply.
+        tracker.apply(&Event::MessageCreate, &message("600"));
+        assert_eq!(counted(&tracker), (0, 600));
+        tracker.apply(&Event::MessageCreate, &message("601"));
+        assert_eq!(counted(&tracker), (1, 601));
+        tracker.apply(&Event::MessageDelete, &message("600"));
+        assert_eq!(counted(&tracker).0, 1);
     }
 
     #[test]

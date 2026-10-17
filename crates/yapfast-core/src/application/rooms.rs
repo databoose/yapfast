@@ -596,6 +596,7 @@ impl Application {
         };
         let voice_room = room.voice;
         let locked = room.locked;
+        let forum = room.forum;
         // Where the "New" divider goes, from before showing the room reads it.
         let read_marker = (room.unread > 0 || room.mentions > 0)
             .then(|| room.last_read.clone())
@@ -659,6 +660,7 @@ impl Application {
         // The list of threads goes, as the popout does in Discord's client,
         // and so does a new thread's form.
         let mut effects = self.close_threads();
+        effects.extend(self.close_forum());
         self.state.new_thread = None;
         if self.state.preview {
             if !voice_room {
@@ -667,6 +669,12 @@ impl Application {
             }
         } else if voice_room {
             effects.push(Effect::Backend(Command::CloseRoom));
+        } else if forum && !locked {
+            // Its posts show in place of messages, which it has none of.
+            self.state.room_ready = true;
+            effects.push(Effect::Backend(Command::CloseRoom));
+            effects.extend(self.show_forum(id));
+            effects.extend(self.mark_discord_read());
         } else if locked {
             // Discord would refuse its messages, and refusals count against
             // the account, so Yapfast doesn't ask.
@@ -706,6 +714,7 @@ impl Application {
 
     fn close_room(&mut self) -> Vec<Effect> {
         let mut effects = self.close_threads();
+        effects.extend(self.close_forum());
         self.remember_view();
         self.state.selected = None;
         self.state.confirm_delete = None;

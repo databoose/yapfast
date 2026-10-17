@@ -39,6 +39,8 @@ pub const PAGE: usize = 50;
 /// How many archived threads a page of a channel's list of threads holds,
 /// as Discord's client asks for them.
 pub const THREAD_PAGE: u32 = 25;
+/// How many posts' messages Discord's client asks a forum for at a time.
+pub const POSTS_PER_ASK: usize = 10;
 
 /// Which of a channel's messages a page holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -639,6 +641,16 @@ impl Api {
             None => format!("/channels/{channel}/threads"),
         };
         self.json(with_json(self.request(Method::POST, &path), body))
+            .await
+    }
+
+    /// The first and newest messages of a forum's posts, and who started
+    /// them, by post: `{"threads": {id: {"first_message", ...}}}`. Discord's
+    /// client asks for at most [`POSTS_PER_ASK`] at a time.
+    pub async fn post_data(&self, forum: &str, posts: &[&str]) -> Result<Value> {
+        let path = format!("/channels/{forum}/post-data");
+        let body = serde_json::json!({ "thread_ids": posts });
+        self.json(with_json(self.request(Method::POST, &path), &body))
             .await
     }
 

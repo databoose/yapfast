@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::{
-    api::{Api, PAGE, Span},
-    cache, limits,
+    api::{self, Api, PAGE, Span},
+    cache, forum, limits,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
     notifications::Change,
@@ -170,7 +170,13 @@ pub struct ThreadPage {
     pub threads: Vec<ready::Channel>,
     /// Discord has more after these.
     pub more: bool,
+    /// In a forum, each post's first message, by post, as its card shows
+    /// it; none where it was deleted.
+    pub starters: Starters,
 }
+
+/// Forum posts' first messages, by post id; none for one deleted.
+pub type Starters = Vec<(String, Option<forum::Starter>)>;
 
 /// Someone who reacted to a message, as a list of them shows them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1471,27 +1477,118 @@ impl Discord {
 
     async fn thread_page(&self, guild: &str, answer: &Value, found: &[Value]) -> ThreadPage {
         let threads = self.listed_page(guild, answer, found);
-        let owners: HashSet<String> = {
-            let names = self.read_names();
-            threads
+        // A forum's posts come with their first messages.
+        let forum = {
+            let snapshot = self.snapshots.borrow();
+            let parent = threads.first().and_then(|thread| thread.parent.as_deref());
+            snapshot
+                .servers
                 .iter()
-                .filter_map(|thread| thread.thread.as_ref()?.owner.clone())
-                .filter(|owner| !names.knows_member(guild, owner))
-                .collect()
+                .find(|server| server.id == guild)
+                .and_then(|server| server.channel(parent?))
+                .is_some_and(|parent| parent.forum.is_some())
         };
-        if !owners.is_empty() {
-            let (reply, arrived) = oneshot::channel();
-            let _ = self.requests.send(Request::Members {
-                guild: guild.into(),
-                users: owners.into_iter().collect(),
-                reply: Some(reply),
-            });
-            let _ = tokio::time::timeout(SEARCH_TIMEOUT, arrived).await;
-        }
+        let starters = match forum {
+            true => {
+                let first = answer["first_messages"].as_array();
+                let posts = threads.iter().map(|thread| {
+                    let message = first
+                        .into_iter()
+                        .flatten()
+                        .find(|message| message["channel_id"].as_str() == Some(thread.id.as_str()));
+                    (thread.id.as_str(), message)
+                });
+                self.starters(guild, posts)
+            }
+            false => vec![],
+        };
+        let people = threads
+            .iter()
+            .filter_map(|thread| thread.thread.as_ref()?.owner.as_deref())
+            .chain(
+                starters
+                    .iter()
+                    .filter_map(|(_, starter)| Some(starter.as_ref()?.author.as_str())),
+            );
+        self.ask_members(guild, people).await;
         ThreadPage {
             threads,
             more: answer["has_more"].as_bool().unwrap_or(false),
+            starters,
         }
+    }
+
+    /// The first messages of a forum's posts, by id, at most
+    /// [`api::POSTS_PER_ASK`] of them, as their cards show them; the names
+    /// of those who wrote them come first, if they come soon.
+    pub async fn posts(&self, guild: &str, forum: &str, posts: &[&str]) -> Result<Starters> {
+        let posts = &posts[..posts.len().min(api::POSTS_PER_ASK)];
+        let answer = self.api.post_data(forum, posts).await?;
+        let Some(found) = answer["threads"].as_object() else {
+            bail!("could not understand Discord's answer");
+        };
+        {
+            let mut names = self.write_names();
+            for data in found.values() {
+                if data["owner"].is_object() {
+                    names.learn_member(guild, &data["owner"]);
+                }
+            }
+        }
+        let starters = self.starters(
+            guild,
+            posts.iter().map(|post| {
+                let message =
+                    Some(&found[*post]["first_message"]).filter(|first| first.is_object());
+                (*post, message)
+            }),
+        );
+        let authors = starters
+            .iter()
+            .filter_map(|(_, starter)| Some(starter.as_ref()?.author.as_str()));
+        self.ask_members(guild, authors).await;
+        Ok(starters)
+    }
+
+    /// Posts' first messages as their cards show them, learning their
+    /// authors' names.
+    fn starters<'a>(
+        &self,
+        guild: &str,
+        posts: impl Iterator<Item = (&'a str, Option<&'a Value>)>,
+    ) -> Starters {
+        let mut names = self.write_names();
+        posts
+            .map(|(post, message)| {
+                let starter = message.and_then(|message| {
+                    names.learn_message(Some(guild), message);
+                    forum::Starter::of(message)
+                });
+                (post.to_owned(), starter)
+            })
+            .collect()
+    }
+
+    /// Asks Discord for the server profiles of those of `people` Yapfast
+    /// doesn't know there, waiting a while for them.
+    async fn ask_members<'a>(&self, guild: &str, people: impl Iterator<Item = &'a str>) {
+        let unknown: HashSet<String> = {
+            let names = self.read_names();
+            people
+                .filter(|person| !names.knows_member(guild, person))
+                .map(str::to_owned)
+                .collect()
+        };
+        if unknown.is_empty() {
+            return;
+        }
+        let (reply, arrived) = oneshot::channel();
+        let _ = self.requests.send(Request::Members {
+            guild: guild.into(),
+            users: unknown.into_iter().collect(),
+            reply: Some(reply),
+        });
+        let _ = tokio::time::timeout(SEARCH_TIMEOUT, arrived).await;
     }
 
     /// The threads of a page Discord gave, this account's thread members

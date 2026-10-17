@@ -1,8 +1,8 @@
 Lucide icons. The accompanying LICENSE (ISC) applies to these SVG files.
 Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
 
-- hash, headphones, message-circle, messages-square, mic, mic-off, settings and
-  volume-2 were carried forward from gpui-kit-assets 0.7.0.
+- hash, headphones, message-circle, message-square-text, messages-square, mic,
+  mic-off, settings and volume-2 were carried forward from gpui-kit-assets 0.7.0.
 - ban, bell, bell-off, check, chevron-down, circle-plus, clipboard-paste, copy, copy-plus, download, eye, eye-off, file, folder-plus, headphone-off, history, inbox, lock, log-out, pencil,
   phone, phone-off, pin, pin-off, refresh-cw, reply, screen-share, screen-share-off, send-horizontal,
   palette, scissors, smile-plus, square-pen, sticky-note, text-select, trash-2, triangle-alert, user, user-minus, user-pen, user-plus, users and x come unmodified from

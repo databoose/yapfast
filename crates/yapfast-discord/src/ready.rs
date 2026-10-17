@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::{
     client,
+    forum::{self, Forum, GUILD_FORUM},
     notifications::{Level, Mute, Notifications},
 };
 
@@ -215,6 +216,10 @@ pub struct Channel {
     /// channel's `default_auto_archive_duration` says; 0 when it doesn't.
     #[serde(default)]
     pub archive_after: u16,
+    /// What a forum has besides, whose messages are its posts' own; none
+    /// for another channel.
+    #[serde(default)]
+    pub forum: Option<Box<Forum>>,
 }
 
 /// What a thread has that a channel doesn't; see
@@ -261,6 +266,15 @@ pub struct Thread {
     /// [`MEMBER_PREVIEW`], which a list of threads shows.
     #[serde(default)]
     pub member_preview: Vec<String>,
+    /// A forum post's tags, by id, and whether it's pinned to the top.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub pinned: bool,
+    /// This account has a read state of its own here: it opened or joined
+    /// it. A forum post it never opened shows as new, rather than unread.
+    #[serde(skip)]
+    pub opened: bool,
     /// Its newest message, as a list of threads shows it, while Yapfast knows
     /// it: Discord sends it with a server's active threads, and Yapfast follows
     /// the messages that come after.
@@ -573,7 +587,8 @@ impl Server {
         }
         self.forget(id);
         match channel["type"].as_u64() {
-            Some(GUILD_TEXT | GUILD_ANNOUNCEMENT) => {
+            // A forum lists among the text channels, as in Discord's client.
+            Some(GUILD_TEXT | GUILD_ANNOUNCEMENT | GUILD_FORUM) => {
                 if let Some(channel) = parse_channel(channel) {
                     self.text_channels.push(channel);
                 }
@@ -1105,6 +1120,8 @@ pub fn parse_thread(value: &Value) -> Option<Channel> {
             .and_then(|count| u32::try_from(count).ok())
             .unwrap_or_default(),
         member_preview: member_preview(&value["member_ids_preview"]).unwrap_or_default(),
+        tags: forum::applied_tags(value),
+        pinned: forum::pinned(value),
         ..Default::default()
     };
     if value["member"].is_object() {
@@ -1130,6 +1147,7 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
             .as_u64()
             .and_then(|minutes| u16::try_from(minutes).ok())
             .unwrap_or_default(),
+        forum: forum::parse(channel),
         ..Default::default()
     })
 }

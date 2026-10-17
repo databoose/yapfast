@@ -2582,6 +2582,7 @@ async fn talks_to_the_fake_server() {
 
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
     joins_and_leaves_threads_as_discords_client_does(&discord, server).await;
+    shows_a_forum_as_discords_client_does(&discord, server, &guild).await;
     marks_quiet_threads_as_discords_client_does(&discord, server).await;
     lists_who_reacted_as_discords_client_does(&discord, server, &guild, &general).await;
     finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
@@ -2670,6 +2671,146 @@ async fn joins_and_leaves_threads_as_discords_client_does(discord: &Discord, ser
         self::control(server, "GET", "/_control/thread-members", ""),
         r#"["POST Context Menu","DELETE Toolbar Overflow"]"#
     );
+}
+
+/// A forum's posts and what their cards show, as Discord's client loads
+/// them; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn shows_a_forum_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use yapfast_discord::forum::Emoji;
+    // The forum lists among the text channels, and its active posts came
+    // with the server's threads.
+    let snapshot = snapshot_where(discord, |snapshot| {
+        snapshot.servers[0]
+            .threads
+            .iter()
+            .any(|thread| thread.name == "Keyboard shortcut list?")
+    })
+    .await;
+    let listed = &snapshot.servers[0];
+    let forum = listed
+        .text_channels
+        .iter()
+        .find(|channel| channel.name == "ideas")
+        .expect("the forum lists");
+    let details = forum.forum.as_deref().expect("as a forum");
+    let tags: Vec<_> = details.tags.iter().map(|tag| tag.name.as_str()).collect();
+    assert_eq!(tags, ["Feature", "Bug", "Question", "Done"]);
+    assert!(details.tags[3].moderated);
+    assert_eq!(details.reaction, Some(Emoji::Unicode("👍".into())));
+    assert!(!details.require_tag && !details.by_creation);
+    let post = |name: &str| {
+        listed
+            .threads
+            .iter()
+            .find(|thread| thread.name == name)
+            .unwrap_or_else(|| panic!("{name} lists"))
+    };
+    let details = |name: &str| post(name).thread.as_deref().unwrap();
+    let active: Vec<_> = listed
+        .threads
+        .iter()
+        .filter(|thread| thread.parent.as_deref() == Some(forum.id.as_str()))
+        .map(|thread| thread.name.as_str())
+        .collect();
+    assert_eq!(
+        active,
+        [
+            "Keyboard shortcut list?",
+            "Crash when pasting a GIF",
+            "Dark theme for the sidebar",
+            "Welcome to #ideas"
+        ]
+    );
+    assert!(details("Welcome to #ideas").pinned);
+    assert_eq!(
+        details("Crash when pasting a GIF").tags,
+        [details_tag(forum, 1), details_tag(forum, 2)]
+    );
+    let dark = details("Dark theme for the sidebar");
+    assert!(dark.joined && dark.opened);
+    // Its first message isn't counted.
+    assert_eq!(dark.messages, 2);
+    assert!(!details("Keyboard shortcut list?").opened);
+
+    // Their first messages, as their cards show them.
+    let ids: Vec<&str> = active.iter().map(|name| post(name).id.as_str()).collect();
+    let starters = discord.posts(guild, &forum.id, &ids).await.unwrap();
+    let starter = |name: &str| {
+        let id = &post(name).id;
+        starters
+            .iter()
+            .find(|(post, _)| post == id)
+            .and_then(|(_, starter)| starter.clone())
+            .unwrap_or_else(|| panic!("{name}'s first message"))
+    };
+    let dark = starter("Dark theme for the sidebar");
+    assert_eq!(dark.content, "The sidebar could follow the system theme.");
+    assert_eq!(dark.reaction, Some((Emoji::Unicode("👍".into()), 3)));
+    assert!(dark.picture.is_none());
+    let crash = starter("Crash when pasting a GIF");
+    let picture = crash.picture.expect("its screenshot");
+    assert!(
+        picture.contains("/crash.png?format=webp&width=144&height=108"),
+        "{picture}"
+    );
+    assert!(!crash.spoiler);
+    assert!(starter("Keyboard shortcut list?").reaction.is_none());
+    assert_eq!(
+        self::control(server, "GET", "/_control/post-data", ""),
+        format!("[{}]", serde_json::to_string(&ids).unwrap())
+    );
+
+    // Older posts come a page at a time, with their first messages.
+    let page = discord.threads(guild, &forum.id, None, 0).await.unwrap();
+    let older: Vec<_> = page
+        .threads
+        .iter()
+        .map(|thread| thread.name.as_str())
+        .collect();
+    assert_eq!(older, ["Old idea 1", "Old idea 2", "Old idea 3"]);
+    let first = page
+        .starters
+        .iter()
+        .map(|(_, starter)| starter.as_ref().map(|starter| starter.content.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        first,
+        [
+            Some("Idea 1, done long ago."),
+            Some("Idea 2, done long ago."),
+            Some("Idea 3, done long ago.")
+        ]
+    );
+
+    // Read, the forum has nothing new until someone posts.
+    discord.mark_read(guild, &forum.id, true);
+    let unread = |snapshot: &Snapshot| {
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .any(|channel| channel.name == "ideas" && channel.unread)
+    };
+    snapshot_where(discord, |snapshot| !unread(snapshot)).await;
+    post_control(server, "/_control/forum-post", "");
+    let snapshot = snapshot_where(discord, |snapshot| {
+        unread(snapshot)
+            && snapshot.servers[0]
+                .threads
+                .iter()
+                .any(|thread| thread.name == "Emoji picker search")
+    })
+    .await;
+    let new = snapshot.servers[0]
+        .threads
+        .iter()
+        .find(|thread| thread.name == "Emoji picker search")
+        .unwrap();
+    assert_eq!(new.thread.as_deref().unwrap().tags, [details_tag(forum, 0)]);
+}
+
+/// The id of a forum's `index`th tag.
+fn details_tag(forum: &yapfast_discord::ready::Channel, index: usize) -> String {
+    forum.forum.as_deref().unwrap().tags[index].id.clone()
 }
 
 /// A channel's list of threads, as Discord's client fills it; part of

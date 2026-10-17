@@ -96,6 +96,92 @@ pub struct ThreadSearch {
     pub found: Option<Result<Vec<ListedThread>, String>>,
 }
 
+impl ThreadList {
+    /// A list of a channel's threads, by room id, that loads its archived
+    /// ones with `archived`, from the first page.
+    pub(super) fn open(room: String, archived: bool) -> (Self, Vec<Effect>) {
+        let list = Self {
+            room: room.clone(),
+            loading: archived,
+            ..Self::default()
+        };
+        let effects = match archived {
+            true => vec![Effect::Backend(Command::Discord(DiscordCommand::Threads {
+                room,
+                query: None,
+                offset: 0,
+            }))],
+            false => vec![],
+        };
+        (list, effects)
+    }
+
+    /// Searches the threads' names; an empty query shows the list again.
+    pub(super) fn search(&mut self, query: String) -> Vec<Effect> {
+        let query = query.trim().to_owned();
+        if query.is_empty() {
+            self.search = None;
+            return vec![];
+        }
+        self.search = Some(ThreadSearch {
+            query: query.clone(),
+            found: None,
+        });
+        vec![Effect::Backend(Command::Discord(DiscordCommand::Threads {
+            room: self.room.clone(),
+            query: Some(query),
+            offset: 0,
+        }))]
+    }
+
+    /// Loads the next page of archived threads, unless one is on its way,
+    /// there are no more, or a search shows.
+    pub(super) fn more(&mut self) -> Vec<Effect> {
+        if !self.more || self.loading || self.search.is_some() {
+            return vec![];
+        }
+        self.loading = true;
+        self.error = None;
+        vec![Effect::Backend(Command::Discord(DiscordCommand::Threads {
+            room: self.room.clone(),
+            query: None,
+            offset: self.next,
+        }))]
+    }
+
+    /// Takes a page, if it's the one asked for.
+    pub(super) fn came(
+        &mut self,
+        query: Option<String>,
+        offset: u32,
+        result: Result<(Vec<ListedThread>, bool), String>,
+    ) {
+        match query {
+            Some(query) => {
+                if let Some(search) = self.search.as_mut().filter(|search| search.query == query) {
+                    search.found = Some(result.map(|(threads, _)| threads));
+                }
+            }
+            None if self.loading && self.next == offset => {
+                self.loading = false;
+                match result {
+                    Ok((threads, more)) => {
+                        for thread in threads {
+                            if !self.archived.iter().any(|known| known.room == thread.room) {
+                                self.archived.push(thread);
+                            }
+                        }
+                        self.more = more;
+                        self.next = offset + THREAD_PAGE;
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            None => {}
+        }
+    }
+}
+
 /// What a list of threads shows, as Discord's client groups it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ThreadSections {
@@ -116,13 +202,20 @@ impl ThreadSections {
 impl AppState {
     /// The channel whose threads the header's Threads button lists: the
     /// open Discord server text or announcement channel, or the channel of
-    /// the open thread.
+    /// the open thread; not a forum.
     pub fn threads_channel(&self) -> Option<&str> {
         let room = self.conversation_that(|can| can.threads)?;
         if room.direct || !self.discord_online {
             return None;
         }
-        Some(room.parent.as_deref().unwrap_or(&room.id))
+        let channel = room.parent.as_deref().unwrap_or(&room.id);
+        // A forum's posts show in it, and its posts have no threads.
+        let forum = room.forum
+            || self
+                .rooms
+                .iter()
+                .any(|listed| listed.id == channel && listed.forum);
+        (!forum).then_some(channel)
     }
 
     /// The list of threads on screen.
@@ -195,18 +288,9 @@ impl Application {
         self.state.add_people = None;
         // Without its history, Discord's client lists only the active ones.
         let archived = self.may(&room, chat::Permission::ReadHistory);
-        self.state.threads = Some(ThreadList {
-            room: room.clone(),
-            loading: archived,
-            ..ThreadList::default()
-        });
-        if archived {
-            effects.push(Effect::Backend(Command::Discord(DiscordCommand::Threads {
-                room,
-                query: None,
-                offset: 0,
-            })));
-        }
+        let (list, asked) = ThreadList::open(room, archived);
+        self.state.threads = Some(list);
+        effects.extend(asked);
         effects
     }
 
@@ -223,79 +307,36 @@ impl Application {
     /// Searches the threads' names, as Enter in the list's search does; an
     /// empty query shows the list again.
     pub(super) fn search_threads(&mut self, query: String) -> Vec<Effect> {
-        let query = query.trim().to_owned();
-        let Some(list) = self.state.threads.as_mut() else {
-            return vec![];
-        };
-        if query.is_empty() {
-            list.search = None;
-            return vec![];
-        }
-        list.search = Some(ThreadSearch {
-            query: query.clone(),
-            found: None,
-        });
-        vec![Effect::Backend(Command::Discord(DiscordCommand::Threads {
-            room: list.room.clone(),
-            query: Some(query),
-            offset: 0,
-        }))]
+        self.state
+            .threads
+            .as_mut()
+            .map_or_else(Vec::new, |list| list.search(query))
     }
 
     /// Loads the next page of archived threads, as the list does when
     /// scrolled near its end.
     pub(super) fn more_threads(&mut self) -> Vec<Effect> {
-        let Some(list) = self
-            .state
+        self.state
             .threads
             .as_mut()
-            .filter(|list| list.more && !list.loading && list.search.is_none())
-        else {
-            return vec![];
-        };
-        list.loading = true;
-        list.error = None;
-        vec![Effect::Backend(Command::Discord(DiscordCommand::Threads {
-            room: list.room.clone(),
-            query: None,
-            offset: list.next,
-        }))]
+            .map_or_else(Vec::new, ThreadList::more)
     }
 
-    /// Takes a page for the list on screen, if it's the one it asked for.
+    /// Takes a page for the list on screen, or for the forum, if it's the
+    /// one it asked for.
     pub(super) fn threads_came(
         &mut self,
         room: String,
         query: Option<String>,
         offset: u32,
         result: Result<(Vec<ListedThread>, bool), String>,
-    ) {
-        let Some(list) = self.state.threads.as_mut().filter(|list| list.room == room) else {
-            return;
-        };
-        match query {
-            Some(query) => {
-                if let Some(search) = list.search.as_mut().filter(|search| search.query == query) {
-                    search.found = Some(result.map(|(threads, _)| threads));
-                }
-            }
-            None if list.loading && list.next == offset => {
-                list.loading = false;
-                match result {
-                    Ok((threads, more)) => {
-                        for thread in threads {
-                            if !list.archived.iter().any(|known| known.room == thread.room) {
-                                list.archived.push(thread);
-                            }
-                        }
-                        list.more = more;
-                        list.next = offset + THREAD_PAGE;
-                    }
-                    Err(error) => list.error = Some(error),
-                }
-            }
-            None => {}
+        starters: chat::PostStarters,
+    ) -> Vec<Effect> {
+        if let Some(list) = self.state.threads.as_mut().filter(|list| list.room == room) {
+            list.came(query, offset, result);
+            return vec![];
         }
+        self.forum_page_came(room, query, offset, result, starters)
     }
 
     /// The list of threads on screen, by section: the active ones from the
@@ -303,7 +344,12 @@ impl Application {
     /// with those the snapshot knows were archived since, as Discord's
     /// client merges them. `None` while no list shows.
     pub fn thread_sections(&self) -> Option<ThreadSections> {
-        let list = self.state.thread_list()?;
+        Some(self.sections(self.state.thread_list()?))
+    }
+
+    /// A list's threads by section, as [`Self::thread_sections`] gives
+    /// them.
+    pub(super) fn sections(&self, list: &ThreadList) -> ThreadSections {
         let mut sections = ThreadSections::default();
         let known = self.known_threads(&list.room);
         // Loaded pages reach back to the oldest of them; those the server
@@ -335,7 +381,7 @@ impl Application {
         ] {
             section.sort_by_key(|thread| std::cmp::Reverse(thread.last));
         }
-        Some(sections)
+        sections
     }
 
     /// Which threads this account may start in a Discord server's text or

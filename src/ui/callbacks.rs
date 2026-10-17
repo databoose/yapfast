@@ -648,6 +648,24 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         });
     }
     {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_search_posts(move |query| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::SearchPosts(query.into()));
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_more_posts(move || {
+            if let Some(window) = weak.upgrade() {
+                adapter.borrow_mut().action(&window, Action::MorePosts);
+            }
+        });
+    }
+    {
         let adapter = adapter.clone();
         let weak = window.as_weak();
         window.on_add_people_search(move || {

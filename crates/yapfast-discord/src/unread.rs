@@ -232,6 +232,14 @@ impl Unreads {
             }
             Event::ThreadCreate | Event::ThreadUpdate => {
                 self.learn_thread(data);
+                // A new post is a forum's newest message, as Discord counts
+                // it; elsewhere the notice in the channel comes after.
+                if data["newly_created"] == true
+                    && let (Some(parent), Some(id)) =
+                        (data["parent_id"].as_str(), snowflake(&data["id"]))
+                {
+                    self.newer(parent, id);
+                }
                 true
             }
             Event::ThreadListSync => {
@@ -385,6 +393,12 @@ impl Unreads {
         self.read_state(guild, channel).last
     }
 
+    /// Whether this account has a read state of its own in a channel: it
+    /// opened it, or for a thread, joined it.
+    pub fn opened(&self, channel: &str) -> bool {
+        self.reads.contains_key(channel)
+    }
+
     /// A channel's newest message, or 0 when none is known.
     pub fn last_message(&self, channel: &str) -> u64 {
         self.last_messages.get(channel).copied().unwrap_or_default()
@@ -412,6 +426,9 @@ impl Unreads {
             (channel.muted, channel.unread, channel.mentions) =
                 self.channel(&id, channel, channel.access);
             channel.last_read = self.last_read(&id, &channel.id);
+            if let Some(thread) = channel.thread.as_deref_mut() {
+                thread.opened = self.opened(&channel.id);
+            }
         }
     }
 

@@ -372,6 +372,7 @@ pub(super) fn command(
             (Ok(discord), Some((guild, channel))) => {
                 let (discord, events) = (discord.clone(), events.clone());
                 tokio::spawn(async move {
+                    let mut starters = vec![];
                     let result = match discord
                         .threads(&guild, &channel, query.as_deref(), offset)
                         .await
@@ -384,6 +385,7 @@ pub(super) fn command(
                                 .iter()
                                 .find(|server| server.id == guild)
                                 .map(|server| {
+                                    starters = post_starters(server, &names, &page.starters);
                                     page.threads
                                         .iter()
                                         .filter_map(|thread| {
@@ -404,6 +406,7 @@ pub(super) fn command(
                         query,
                         offset,
                         result,
+                        starters,
                     });
                 });
             }
@@ -413,6 +416,7 @@ pub(super) fn command(
                     query,
                     offset,
                     result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                    starters: vec![],
                 });
             }
         }
@@ -459,6 +463,52 @@ pub(super) fn command(
             }
             (discord, _) => {
                 let _ = events.send(Event::ThreadStarted {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::ViewForum { room }) = &command {
+        if let (Ok(discord), Some((guild, _))) = (discord, discord::parse_room(room)) {
+            // Its posts come with the server's threads; it has no member list.
+            discord.view(guild, None);
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::Posts { room, posts }) = command {
+        let place =
+            discord::parse_room(&room).map(|(guild, forum)| (guild.to_owned(), forum.to_owned()));
+        match (discord, place) {
+            (Ok(discord), Some((guild, forum))) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let ids: Vec<&str> = posts
+                        .iter()
+                        .filter_map(|post| Some(discord::parse_room(post)?.1))
+                        .collect();
+                    let result = match discord.posts(&guild, &forum, &ids).await {
+                        Ok(found) => {
+                            let snapshot = discord.snapshots().borrow().clone();
+                            let names = snapshot.names.read();
+                            Ok(snapshot
+                                .servers
+                                .iter()
+                                .find(|server| server.id == guild)
+                                .map(|server| post_starters(server, &names, &found))
+                                .unwrap_or_default())
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = format!("{error:#}"), "could not load posts");
+                            Err(format!("Couldn't load the posts: {error}"))
+                        }
+                    };
+                    let _ = events.send(Event::Posts { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::Posts {
                     room,
                     result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
                 });
@@ -1052,4 +1102,24 @@ fn change_person(
             let _ = events.send(Event::Error(format!("Could not {what}: {error}")));
         }
     });
+}
+
+/// Forum posts' first messages from Discord, by room id, as their cards
+/// show them.
+fn post_starters(
+    server: &yapfast_discord::ready::Server,
+    names: &yapfast_discord::message::Names,
+    starters: &yapfast_discord::service::Starters,
+) -> crate::chat::PostStarters {
+    starters
+        .iter()
+        .map(|(post, starter)| {
+            (
+                discord::room_id(&server.id, post),
+                starter
+                    .as_ref()
+                    .map(|starter| discord::post_starter(server, names, starter)),
+            )
+        })
+        .collect()
 }

@@ -475,6 +475,8 @@ impl Application {
         let mut effects = self.list_discord();
         effects.extend(self.mark_discord_read());
         effects.extend(self.mark_aside_read());
+        // Posts that came to the forum on screen want their first messages.
+        effects.extend(self.ask_starters());
         effects
     }
 

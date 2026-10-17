@@ -377,15 +377,10 @@ pub fn listed_thread(
         })
     };
     let recent = details.recent.as_deref().map(|recent| chat::RecentMessage {
-        author: person(&recent.author).unwrap_or_else(|| chat::ThreadPerson {
-            name: "Unknown".into(),
-            avatar: names.avatar(Some(&server.id), &recent.author),
-            color: None,
-        }),
-        text: chat::notification_text(&names.render(Some(server), &recent.content))
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
+        author: thread_person(server, names, &recent.author),
+        text: one_line(&chat::notification_text(
+            &names.render(Some(server), &recent.content),
+        )),
     });
     Some(chat::ListedThread {
         room: room_id(&server.id, &thread.id),
@@ -403,7 +398,85 @@ pub fn listed_thread(
             .iter()
             .map(|user| names.avatar(Some(&server.id), user))
             .collect(),
+        tags: details.tags.clone(),
+        pinned: details.pinned,
+        replies: details.messages,
+        opened: details.opened,
+        unread: details.opened && thread.unread,
+        created_ms: (thread.id.parse::<u64>().unwrap_or_default() >> 22) + DISCORD_EPOCH,
     })
+}
+
+/// Someone a forum's card or a list of threads names, as `names` knows
+/// them in `server`; "Unknown" for someone it doesn't.
+#[cfg(feature = "discord")]
+fn thread_person(
+    server: &yapfast_discord::ready::Server,
+    names: &yapfast_discord::message::Names,
+    user: &str,
+) -> chat::ThreadPerson {
+    chat::ThreadPerson {
+        name: names.name(&server.id, user).unwrap_or("Unknown").to_owned(),
+        avatar: names.avatar(Some(&server.id), user),
+        color: server.color(names.roles(&server.id, user)),
+    }
+}
+
+/// A forum post's first message, as its card shows it.
+#[cfg(feature = "discord")]
+pub fn post_starter(
+    server: &yapfast_discord::ready::Server,
+    names: &yapfast_discord::message::Names,
+    starter: &yapfast_discord::forum::Starter,
+) -> chat::PostStarter {
+    chat::PostStarter {
+        author: thread_person(server, names, &starter.author),
+        text: one_line(&chat::notification_text(
+            &names.render(Some(server), &starter.content),
+        )),
+        reaction: starter
+            .reaction
+            .as_ref()
+            .map(|(emoji, count)| (shown_emoji(emoji), *count)),
+        picture: starter.picture.clone(),
+        spoiler: starter.spoiler,
+    }
+}
+
+/// Text on one line, its runs of space as one.
+#[cfg(feature = "discord")]
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A forum's emoji as a tag or a card shows it.
+#[cfg(feature = "discord")]
+pub fn shown_emoji(emoji: &yapfast_discord::forum::Emoji) -> chat::ShownEmoji {
+    use yapfast_discord::forum::Emoji;
+    match emoji {
+        Emoji::Unicode(text) => chat::ShownEmoji {
+            text: text.clone(),
+            picture: None,
+        },
+        Emoji::Custom { id, name } => chat::ShownEmoji {
+            text: format!(":{name}:"),
+            picture: Some(yapfast_discord::ready::custom_emoji(id, false, 48)),
+        },
+    }
+}
+
+/// The tags a forum's posts may take, in its order.
+#[cfg(feature = "discord")]
+pub fn forum_tags(forum: &yapfast_discord::forum::Forum) -> Vec<chat::ForumTag> {
+    forum
+        .tags
+        .iter()
+        .map(|tag| chat::ForumTag {
+            id: tag.id.clone(),
+            name: tag.name.clone(),
+            emoji: tag.emoji.as_ref().map(shown_emoji),
+        })
+        .collect()
 }
 
 /// The item of the last message read in a channel, from its snowflake.
@@ -460,6 +533,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             presence: dm.presence.map(presence),
             activity: dm.activity.clone(),
             parent: None,
+            forum: false,
         })
         .collect()
 }
@@ -559,6 +633,7 @@ fn server_rooms(
                     Some(server.premium_tier),
                 ),
                 parent: None,
+                forum: false,
             }
         } else {
             ChatRoom {
@@ -597,6 +672,7 @@ fn server_rooms(
                     Some(server.premium_tier),
                 ),
                 parent: None,
+                forum: channel.forum.is_some(),
             }
         });
         channels.push(id);
@@ -660,6 +736,7 @@ fn thread_room(
         activity: None,
         upload_limit: yapfast_discord::api::upload_limit(premium, Some(server.premium_tier)),
         parent: Some(parent.id.clone()),
+        forum: false,
     }
 }
 

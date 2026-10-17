@@ -1184,6 +1184,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             presence: None,
             activity: None,
             parent: None,
+            forum: false,
         });
     }
     result.sort_by(|a, b| {
