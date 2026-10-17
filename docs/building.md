@@ -364,7 +364,8 @@ a nixpkgs update can raise what the binary asks for. Raise the floors in
 `nix/appimage.nix` only knowing which distributions that drops. Older ones,
 such as Ubuntu 22.04, would need a build against their own glibc.
 
-`scripts/package-linux.py`, which runs in the development shell, adds the
+`scripts/package-linux.py`, which runs in the development shell, with
+squashfs-tools and zsync added from the shell's nixpkgs, adds the
 licenses and notices, `THIRD-PARTY.json`, `SOURCE.txt` and `BUILD.json` to
 `usr/share/doc/yapfast`, as the Windows package has them, through the helpers
 in `scripts/release_package.py` that both packaging scripts use. Skia's
@@ -379,16 +380,21 @@ The flake sees only the files Git tracks, so add a new file under `nix/` or
 `packaging/` before building.
 
 It was checked in containers, on `scripts/ui-session`'s private display with
-the fake Discord and the GPU renderer:
+the fake Discord:
 
-- Ubuntu 24.04 with Mesa.
-- Ubuntu 24.04 with NVIDIA's 580.119.02 driver, on an RTX 3090.
-- Fedora 42 with Mesa, without FUSE.
+- Ubuntu 24.04 with Mesa, on Wayland and on X11 (a rootful Xwayland), with
+  both renderers.
+- Ubuntu 24.04 with NVIDIA's 580.119.02 driver, on an RTX 3090, on Wayland and
+  X11 with the GPU renderer.
+- Fedora 42 with Mesa, on Wayland with the GPU renderer, without FUSE.
 
-Each run loaded that distribution's loader, glibc, libstdc++, EGL and Wayland
-libraries, and drew the window with Skia GL. Mesa had no driver for the NVIDIA
-card, so in the Mesa containers it drew on llvmpipe. X11, voice, screen
-sharing and the tray haven't been tried from the AppImage.
+Each run loaded that distribution's loader, glibc, libstdc++, EGL and display
+libraries, and drew the window. Mesa had no driver for the NVIDIA card, so in
+the Mesa containers the GPU renderer drew on llvmpipe. In Ubuntu, voice
+played Bob's tone and sent speech played into the microphone, through the
+distribution's libpulse; Bob's stream played; text typed on X11 went out; and
+the tray icon, its menu and reopening from it worked on the session's bus.
+Screen sharing hasn't been tried from the AppImage.
 
 ## The app icon
 

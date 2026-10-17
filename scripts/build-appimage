@@ -4,4 +4,8 @@
 # the dependencies' notices and packs it.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-exec nix develop path:./nix --command python3 scripts/package-linux.py "$@"
+# The packing tools come from the development shell's nixpkgs, but stay out
+# of the shell itself, which every build runs in.
+exec nix develop path:./nix --command \
+  nix shell --inputs-from path:./nix nixpkgs#squashfsTools nixpkgs#zsync \
+  --command python3 scripts/package-linux.py "$@"

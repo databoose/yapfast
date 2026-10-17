@@ -54,8 +54,6 @@
             passt nftables iproute2
             # Runs testing/fake_discord.ts.
             bun
-            # scripts/package-linux.py packs the AppImage and its update file.
-            squashfsTools zsync
           ];
           buildInputs = libraries;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libraries;
