@@ -7,7 +7,8 @@ native Matrix, Discord and voice backend.
 [`crates/yapfast-discord`](../crates/yapfast-discord) holds the Discord protocol:
 login, the gateway, the HTTP API and voice. [`crates/yapfast-ui`](../crates/yapfast-ui)
 compiles `ui/yapfast.slint` and the files it imports in its `build.rs`, so editing
-any `.slint` file rebuilds only that crate.
+any `.slint` file rebuilds only that crate, and in a
+[live-preview build](building.md#seeing-the-app) nothing at all.
 
 ```mermaid
 flowchart LR

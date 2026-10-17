@@ -12,6 +12,11 @@ description = "Yapfast's compiled Slint interface, kept apart so Rust changes el
 # crate on every `cargo test` for none.
 doctest = false
 
+[features]
+# Loads ui/ at runtime and reloads it on each save, for UI work; see
+# docs/building.md.
+live-preview = ["slint/live-preview"]
+
 [dependencies]
 slint.workspace = true
 

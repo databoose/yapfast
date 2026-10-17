@@ -225,6 +225,17 @@ lists every option and command. `start --tray` adds a stand-in tray on the
 session's bus; see [the tray](tray.md#testing). The scripted probes are in
 [the Slint client's validation notes](slint-client.md#validation-and-limits).
 
+For UI work, `start --live` builds with the `live-preview` feature. Slint then
+generates a wrapper around its interpreter instead of compiled code: the window
+loads `ui/*.slint` at startup and reloads them under a second after each save,
+keeping its state. An edit that took a two-minute rebuild of
+`crates/yapfast-ui` shows without one. Slint's watcher misses a save that
+renames a new file over the old one, as `sed -i`, Claude's Edit tool and some
+editors' atomic saves do; `touch` the file after such a save. Rust
+changes, and properties or callbacks that Rust code starts using, still need
+`relaunch`. The interpreter is slower and bigger than compiled code, so
+measurements and footage of motion come from a normal build.
+
 For demo footage, the session records its display at 60 frames a second:
 
 ```sh
