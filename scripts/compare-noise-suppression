@@ -59,9 +59,9 @@ for mix in clean typing fan hiss typing_fan typing_hiss quiet_typing_fan quiet_t
   for suppressor in deepfilternet rnnoise off; do
     YAPFAST_SUPPRESSOR=$suppressor YAPFAST_AUDIO_IN="$work/mixes/$mix.s16" \
       YAPFAST_AUDIO_OUT="$out/chain/${mix}_$suppressor.s16" \
-      "$tests" --exact discord_audio::linux::processes_a_recording --ignored --nocapture \
+      "$tests" --exact discord_audio::processes_a_recording --ignored --nocapture \
       >"$out/chain/${mix}_$suppressor.log"
-    echo "whole microphone, $suppressor: $(grep -o '[0-9.]*µs a block' "$out/chain/${mix}_$suppressor.log")"
+    echo "whole microphone, $suppressor: $(grep -oE '[0-9.]+[µm]s a block' "$out/chain/${mix}_$suppressor.log")"
   done
 done
 echo
