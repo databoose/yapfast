@@ -242,6 +242,11 @@ struct Media {
     pcm: Vec<f32>,
     packet: Vec<u8>,
     sequence: u16,
+    /// Goes on 20 ms every tick, sending or not, as a microphone's clock
+    /// does. WebRTC's jitter buffer, which plays this account in Discord's
+    /// clients, takes a pause the timestamps don't show for packets arriving
+    /// that much late, raises its delay to match, and holds back the start of
+    /// what comes after the pause.
     timestamp: u32,
     /// Whether op 5 says this account is speaking, and the silent frames
     /// still to send since it stopped.
@@ -361,6 +366,12 @@ impl Media {
                     },
                     due = ticks.tick() => {
                         if due.elapsed() > STALLED {
+                            // The ticks a stall skips pass in the timestamp
+                            // all the same.
+                            let skipped = due.elapsed().as_millis() / 20;
+                            self.timestamp = self
+                                .timestamp
+                                .wrapping_add(skipped as u32 * FRAME as u32);
                             ticks.reset();
                         }
                         self.send(connection, sending).await?;
@@ -458,7 +469,7 @@ impl Media {
     }
 
     /// Sends 20 ms of the microphone while it plays, then five silent
-    /// frames when it stops.
+    /// frames when it stops. Each call is a tick.
     async fn send(
         &mut self,
         connection: &mut Connection,
@@ -519,6 +530,7 @@ impl Media {
                 .await?;
             }
         }
+        self.timestamp = self.timestamp.wrapping_add(FRAME as u32);
         Ok(())
     }
 
@@ -536,7 +548,6 @@ impl Media {
             payload,
         );
         self.sequence = self.sequence.wrapping_add(1);
-        self.timestamp = self.timestamp.wrapping_add(FRAME as u32);
         let clear = rtp::rtp_clear_len(&packet).unwrap_or(packet.len());
         connection.transport.seal(&mut packet, clear)?;
         connection.udp.send(&packet).await?;

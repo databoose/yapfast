@@ -315,7 +315,16 @@ voice server now exchanges audio both ways to test it.
 A call's connection sends Opus as songbird did, stereo at 128 kbit/s in its
 music mode, 20 ms a packet, with five silent frames when the microphone
 pauses, as Discord's clients do. It marks speaking with op 5 when
-it starts. Received audio waits in a jitter buffer per speaker: playing
+it starts. The RTP timestamp goes on 20 ms every tick, sending or not, as a
+microphone's clock does. Until 2026-10-17 it went on only with each packet
+sent. WebRTC's jitter buffer (NetEq), which Discord's clients play others
+through, compares packets' arrival times with their timestamps over the last
+2 s of timestamps, so after a pause every packet looked as late as the pause
+was long. Its target delay rose to match, and after a long concealment it
+waits until half its target is buffered before playing: the start of speech
+after a pause was held back, by up to half the pause. That's from NetEq's source
+(`decision_logic.cc`, `packet_arrival_history.cc`); a real call hasn't
+confirmed it yet. Received audio waits in a jitter buffer per speaker: playing
 starts once 60 ms has arrived, a missing packet plays as Opus's loss
 concealment (or from the next packet's forward error correction), and a
 speaker who stays silent for 100 ms drops out of the mix until they speak
