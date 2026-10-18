@@ -309,7 +309,10 @@ impl Application {
             || self.focusing
             || self.state.loading_history
             || self.state.history_start
-            || self.state.selected_room().is_none_or(|room| room.voice)
+            || self
+                .state
+                .selected_room()
+                .is_none_or(|room| room.voice && room.network != Network::Discord)
         {
             return vec![];
         }
@@ -583,7 +586,7 @@ impl Application {
         let Some(room) = self
             .state
             .selected_room()
-            .filter(|room| !room.voice && !room.locked)
+            .filter(|room| (!room.voice || room.network == Network::Discord) && !room.locked)
             .map(|room| room.id.clone())
         else {
             self.seeking = None;

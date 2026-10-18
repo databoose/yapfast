@@ -268,6 +268,9 @@ export component YapfastWindow inherits Window {
     in property <bool> room-ready;
     in property <bool> room-encrypted;
     in property <bool> voice-room;
+    in property <bool> voice-text;
+    property <string> voice-chat-room;
+    property <bool> voice-panel: root.voice-room && !(root.voice-text && root.voice-chat-room == root.room-id);
     in property <bool> composer-enabled;
     /// The selected conversation is a Discord message request, introduced by
     /// the title; it's answered instead of written to.
@@ -541,7 +544,7 @@ export component YapfastWindow inherits Window {
     in property <bool> camera-starting;
     in property <bool> call-video;
     /// The call's grid of tiles is on screen.
-    out property <bool> grid-shown: root.voice-here && !root.watching && !root.own-stream-shown && (root.voice-room || root.call-shown) && !root.settings-open;
+    out property <bool> grid-shown: root.voice-here && !root.watching && !root.own-stream-shown && (root.voice-panel || root.call-shown) && !root.settings-open;
     /// This account's own shared screen shows large in place of the grid, as a
     /// watched stream does, until it's closed, sharing stops or watching starts.
     property <bool> own-stream-shown;
@@ -1155,7 +1158,7 @@ export component YapfastWindow inherits Window {
     out property <bool> unread-below: root.unread-index >= 0 && root.bottom-index >= 0 && root.unread-index > root.bottom-index;
     // Earlier messages load as the timeline nears its top, a page at a time,
     // until the first message. After a failure they wait for Retry.
-    property <bool> wants-earlier: root.room-ready && !root.preview && !root.busy && !root.voice-room
+    property <bool> wants-earlier: root.room-ready && !root.preview && !root.busy && !root.voice-panel
         && root.messages.length > 0 && !root.loading-history && !root.history-start && !root.history-failed
         && -timeline.content-y < timeline.height;
     changed wants-earlier => { if self.wants-earlier { root.earlier(); } }
@@ -1689,8 +1692,9 @@ export component YapfastWindow inherits Window {
                                 rooms: root.rooms; dms-selected: root.dms-selected; discord-linked: root.discord-linked; preview: root.preview;
                                 friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
                                 voice-channel: root.voice-channel; participants: root.participants; sidebar-empty: root.sidebar-empty;
-                                select-room(id) => { root.select-room(id); }
+                                select-room(id) => { root.voice-chat-room = ""; root.select-room(id); }
                                 open-voice(id) => { root.open-conversation(id); }
+                                open-chat(id) => { root.voice-chat-room = id; root.open-conversation(id); }
                                 open-friends => { root.open-friends(); }
                                 open-requests => { root.open-requests(); }
                                 open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
@@ -1914,6 +1918,14 @@ export component YapfastWindow inherits Window {
                                 clicked => { root.befriend(root.dm-person); }
                             }
                         }
+                        if root.voice-text: Middle {
+                            IconButton {
+                                icon: root.voice-panel ? @image-url("icons/message-square-text.svg") : @image-url("icons/volume-2.svg");
+                                label: root.voice-panel ? "Open chat" : "Show voice channel";
+                                tip-side: 2;
+                                clicked => { root.voice-chat-room = root.voice-panel ? root.room-id : ""; }
+                            }
+                        }
                         if root.can-call: Middle {
                             IconButton {
                                 icon: @image-url("icons/phone.svg"); label: root.call-going ? "Join the call" : "Start a call";
@@ -2064,22 +2076,22 @@ export component YapfastWindow inherits Window {
                         if root.notice != "": Banner { text: root.notice; dismissed => { root.dismiss-notice(); } }
                         // Voice channel: a stage of participants, or an invitation to join.
                         // A DM's call shows the same above its messages.
-                        if root.voice-room || root.call-shown: Rectangle {
+                        if root.voice-panel || root.call-shown: Rectangle {
                             // Above a DM's messages, a call takes less than half the room,
                             // more while watching a stream, and little while offering to join.
-                            vertical-stretch: root.voice-room ? 1 : !root.voice-here ? 0 : root.watching || root.own-stream-shown ? 1.8 : 0.8;
-                            min-height: root.voice-room ? 0px : root.voice-here ? 260px : 210px;
-                            max-height: root.voice-room || root.voice-here ? 100000px : 210px;
+                            vertical-stretch: root.voice-panel ? 1 : !root.voice-here ? 0 : root.watching || root.own-stream-shown ? 1.8 : 0.8;
+                            min-height: root.voice-panel ? 0px : root.voice-here ? 260px : 210px;
+                            max-height: root.voice-panel || root.voice-here ? 100000px : 210px;
                             background: Theme.stage;
-                            if !root.voice-here && !root.voice-room: CallInvite {
+                            if !root.voice-here && !root.voice-panel: CallInvite {
                                 call-people: root.call-people; call-note: root.call-note; call-incoming: root.call-incoming;
                                 call-room: root.call-room; can-join: root.can-join;
                                 answer-call(room, accept) => { root.answer-call(room, accept); }
                             }
-                            if !root.voice-room: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
-                            if !root.voice-here && root.voice-room: JoinVoice {
+                            if !root.voice-panel: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
+                            if !root.voice-here && root.voice-panel: JoinVoice {
                                 room-name: root.room-name; voice-description: root.voice-description; preview: root.preview;
-                                room-encrypted: root.room-encrypted; voice-active: root.voice-active; can-join: root.can-join;
+                                room-encrypted: root.voice-text || root.room-encrypted; voice-active: root.voice-active; can-join: root.can-join;
                                 join-voice => { root.join-voice(); }
                             }
                             if root.voice-here: VerticalLayout {
@@ -2123,7 +2135,7 @@ export component YapfastWindow inherits Window {
                             }
                         }
                         // A forum's posts, in place of its messages.
-                        if root.room-forum && !root.voice-room: ForumPanel {
+                        if root.room-forum && !root.voice-panel: ForumPanel {
                             vertical-stretch: 1;
                             rows: root.post-rows; note: root.posts-note; empty: root.posts-empty;
                             searching: root.posts-searching; searchable: root.posts-searchable;
@@ -2154,10 +2166,10 @@ export component YapfastWindow inherits Window {
                         }
                         // Text conversation.
                         Rectangle {
-                            visible: !root.voice-room && !root.room-forum;
+                            visible: !root.voice-panel && !root.room-forum;
                             min-height: 0px;
-                            max-height: root.voice-room || root.room-forum ? 0px : 100000px;
-                            vertical-stretch: root.voice-room || root.room-forum ? 0 : 1;
+                            max-height: root.voice-panel || root.room-forum ? 0px : 100000px;
+                            vertical-stretch: root.voice-panel || root.room-forum ? 0 : 1;
                             // Up and Down step through messages; R replies, E edits, Delete deletes,
                             // C copies, F forwards, + reacts, Enter opens the menu, Escape returns
                             // to the composer.
@@ -2477,7 +2489,7 @@ export component YapfastWindow inherits Window {
                             // last message leaves under it, so the timeline doesn't move.
                             // Its text lines up with the messages' (16px, a 40px avatar
                             // and 16px in), and it breathes gently while they type.
-                            if root.typing != "" && root.room-selected && !root.voice-room: Rectangle {
+                            if root.typing != "" && root.room-selected && !root.voice-panel: Rectangle {
                                 x: 72px - 4px; y: parent.height - self.height;
                                 width: min(parent.width - 72px - 12px, typing-text.preferred-width + 8px); height: 20px;
                                 background: Theme.chat;
@@ -2489,7 +2501,7 @@ export component YapfastWindow inherits Window {
                                 }
                             }
                             // Under the avatars, three dots rise and brighten in turn.
-                            if root.typing != "" && root.room-selected && !root.voice-room: Rectangle {
+                            if root.typing != "" && root.room-selected && !root.voice-panel: Rectangle {
                                 x: 36px - self.width / 2; y: parent.height - self.height;
                                 width: 32px; height: 20px;
                                 background: Theme.chat;
@@ -2504,9 +2516,9 @@ export component YapfastWindow inherits Window {
                         }
                         // Composer.
                         VerticalLayout {
-                            visible: !root.voice-room && !root.room-forum && root.room-selected;
+                            visible: !root.voice-panel && !root.room-forum && root.room-selected;
                             min-height: 0px;
-                            max-height: root.voice-room || root.room-forum || !root.room-selected ? 0px : 100000px;
+                            max-height: root.voice-panel || root.room-forum || !root.room-selected ? 0px : 100000px;
                             padding-left: 16px; padding-right: 16px; padding-top: 0px; padding-bottom: 0px;
                             spacing: 0px; vertical-stretch: 0;
                             if root.room-request: RequestBar {
@@ -2796,7 +2808,7 @@ export component YapfastWindow inherits Window {
     // The stream being watched, or this account's own, in a corner while the call
     // is off screen; see StreamPip. It starts at the top right of the conversation
     // and stays in the corner it's dragged nearest.
-    property <bool> call-on-screen: root.voice-here && (root.voice-room || root.call-shown) && !root.settings-open;
+    property <bool> call-on-screen: root.voice-here && (root.voice-panel || root.call-shown) && !root.settings-open;
     property <bool> pip-left;
     property <bool> pip-bottom;
     if root.workspace && root.voice-active && (root.watching || root.sharing) && !root.call-on-screen && !root.settings-open: StreamPip {

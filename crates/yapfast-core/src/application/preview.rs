@@ -183,6 +183,7 @@ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> 
         muted: false,
         last_read: None,
         locked: false,
+        join_locked: false,
         read_only: false,
         slowed: false,
         category: String::new(),

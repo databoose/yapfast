@@ -601,7 +601,7 @@ impl AppState {
     /// room from a verified device, or a Discord channel that allows it while
     /// Discord is connected.
     pub fn writable(&self, room: &ChatRoom) -> bool {
-        if room.voice {
+        if room.voice && room.network != Network::Discord {
             false
         } else if room.network == Network::Discord {
             self.discord_online && !room.locked && !room.read_only
@@ -964,15 +964,19 @@ impl AppState {
         self.search.as_ref().filter(|search| search.place == place)
     }
 
-    /// The selected conversation, when it's a DM, group DM or text channel
+    /// The selected conversation, including a Discord voice channel's chat,
     /// this account may read, whose network lets it do what `can` asks, and
     /// not a message request.
     pub fn conversation_that(
         &self,
         can: impl Fn(&crate::network::Capabilities) -> bool,
     ) -> Option<&ChatRoom> {
-        self.selected_room()
-            .filter(|room| !room.voice && !room.locked && !room.request && can(&room.capabilities))
+        self.selected_room().filter(|room| {
+            (!room.voice || room.network == Network::Discord)
+                && !room.locked
+                && !room.request
+                && can(&room.capabilities)
+        })
     }
 
     /// Who is in the selected DM besides this account, as far as Yapfast knows:
@@ -1025,6 +1029,7 @@ impl AppState {
                     && (room.voice
                         || (room.direct && room.capabilities.dm_calls && !room.request))
                     && !room.locked
+                    && !room.join_locked
                     && if room.network == Network::Discord {
                         self.discord_online && !self.busy
                     } else {
@@ -2990,7 +2995,10 @@ impl Application {
         let Some(room) = self.state.selected.clone() else {
             return;
         };
-        let text = self.state.selected_room().is_some_and(|room| !room.voice);
+        let text = self
+            .state
+            .selected_room()
+            .is_some_and(|room| !room.voice || room.network == Network::Discord);
         if !text
             || !self.state.room_ready
             || self.state.preview

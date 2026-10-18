@@ -215,7 +215,11 @@ impl Adapter {
         self.show_voice(window);
         self.show_video(window);
         let state = &self.app.state;
-        if changes.selection && state.selected_room().is_some_and(|room| !room.voice) {
+        if changes.selection
+            && state
+                .selected_room()
+                .is_some_and(|room| !room.voice || room.network == Network::Discord)
+        {
             window.invoke_focus_composer();
         } else if changes.reset && !state.preview && state.account.is_none() {
             window.invoke_focus_sign_in();
@@ -554,13 +558,14 @@ impl Adapter {
                     unread: room.unread > 0,
                     badge: mention_badge(room),
                     voice: room.voice,
+                    chat: room.voice && room.network == Network::Discord && !room.locked,
                     direct: room.direct,
                     initial: initial(&room.name),
                     tint: tint(&room.id),
                     picture: slint::Image::default(),
                     picture_url: room.avatar.as_deref().unwrap_or_default().into(),
                     discord: room.direct && room.network == Network::Discord,
-                    locked: room.locked,
+                    locked: room.locked || room.join_locked,
                     person: room.person.is_some(),
                     pinned: if room.direct {
                         state.pinned.contains(&room.id)
@@ -2056,6 +2061,9 @@ impl Adapter {
         let state = &self.app.state;
         let room = state.selected_room();
         window.set_voice_room(room.is_some_and(|room| room.voice));
+        window.set_voice_text(
+            room.is_some_and(|room| room.voice && room.network == Network::Discord),
+        );
         window.set_room_encrypted(room.is_some_and(|room| room.encrypted));
         window.set_room_ready(state.room_ready);
         window.set_draft(state.draft().into());

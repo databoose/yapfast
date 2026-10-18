@@ -57,9 +57,11 @@ pub struct ChatRoom {
     /// may not be loaded: a Discord `d:` item, ordered by its snowflake, or
     /// a Matrix `e:` event from its read receipt.
     pub last_read: Option<String>,
-    /// Listed, but this account may not join it, such as a Discord channel
+    /// Listed, but this account may not read it, such as a Discord channel
     /// its roles keep it out of.
     pub locked: bool,
+    /// Voice connection is forbidden, independently of reading its text chat.
+    pub join_locked: bool,
     /// Readable, but this account may not send here, such as a Discord
     /// announcement channel.
     pub read_only: bool,

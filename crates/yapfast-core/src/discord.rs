@@ -511,6 +511,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             muted: dm.muted,
             last_read: read_item(dm.last_read),
             locked: false,
+            join_locked: false,
             // Replying waits until the request is accepted.
             read_only: dm.request,
             slowed: false,
@@ -622,19 +623,26 @@ fn server_rooms(
                 name: channel.name.clone(),
                 direct: false,
                 voice: true,
-                // Discord requires DAVE end-to-end encryption in voice calls.
-                encrypted: true,
+                // Text messages in voice channels aren't end-to-end encrypted.
+                encrypted: false,
                 members: snapshot
                     .voice
                     .get(&channel.id)
                     .map_or(0, |members| members.len() as u64),
-                unread: 0,
-                mentions: 0,
-                muted: false,
-                last_read: None,
-                locked: channel.access != Access::Join,
-                read_only: false,
-                slowed: false,
+                unread: u64::from(channel.unread),
+                mentions: channel.mentions,
+                muted: channel.muted,
+                last_read: read_item(channel.last_read),
+                locked: channel.access == Access::Hidden,
+                join_locked: channel.access != Access::Join,
+                read_only: !server.roles.is_empty()
+                    && server.channel_permissions(
+                        channel,
+                        snapshot.user_id.as_deref().unwrap_or_default(),
+                        &server.my_roles,
+                    ) & yapfast_discord::ready::permission::SEND_MESSAGES
+                        == 0,
+                slowed: server.slowed(channel, me, &server.my_roles),
                 category,
                 request: false,
                 person: None,
@@ -675,6 +683,7 @@ fn server_rooms(
                 muted: channel.muted,
                 last_read: read_item(channel.last_read),
                 locked: channel.access == Access::Hidden,
+                join_locked: false,
                 read_only: channel.access == Access::Locked,
                 slowed: server.slowed(channel, me, &server.my_roles),
                 category,
@@ -745,6 +754,7 @@ fn thread_room(
         muted: thread.muted,
         last_read: read_item(thread.last_read),
         locked: false,
+        join_locked: false,
         // Locked, or this account may not write in threads here.
         read_only: thread.access == Access::Locked,
         slowed: server.slowed(thread, me, &server.my_roles),
@@ -1275,7 +1285,7 @@ mod tests {
         assert!(rooms[1].read_only && !rooms[1].locked);
         assert_eq!(rooms[2].id, "discord:10:11");
         assert!(rooms[2].voice && !rooms[2].locked);
-        assert!(rooms[3].locked);
+        assert!(rooms[3].join_locked && !rooms[3].locked);
         assert_eq!(rooms.len(), 4, "hidden channels stay hidden");
         assert_eq!(servers[0].id, "discord:10");
         assert_eq!(servers[0].icon.as_deref(), Some("icon.png"));

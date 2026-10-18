@@ -1,6 +1,6 @@
 import { ListView } from "scrollview.slint";
 import { Theme, Tip, Middle, Label } from "theme.slint";
-import { Avatar, PictureStore, StatusText, VoiceSpot } from "controls.slint";
+import { Avatar, PictureStore, StatusText, VoiceSpot, IconButton } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { PersonRow, LivePill } from "voice.slint";
 
@@ -35,6 +35,7 @@ export struct ServerRow {
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
+    chat: bool,
     /// A DM's avatar or group icon, and whether it's a Discord DM.
     picture: image, discord: bool,
     picture-url: string,
@@ -343,6 +344,8 @@ export component StatusDot inherits Rectangle {
 
 // A channel or DM in the sidebar.
 export component ChannelRow inherits Rectangle {
+    in property <bool> chat;
+    callback open-chat;
     in property <string> text;
     in property <string> label: root.text;
     in property <image> icon;
@@ -473,8 +476,15 @@ export component ChannelRow inherits Rectangle {
                         badge-text := Text { text: root.badge; color: Theme.on-danger; font-size: 11px; font-weight: 700; }
                     }
                 }
+                if root.chat: Rectangle { width: 28px; }
             }
         }
+    }
+    if root.chat: IconButton {
+        x: parent.width - self.width - 8px; y: (parent.height - self.height) / 2;
+        icon: @image-url("icons/message-square-text.svg"); label: "Open chat";
+        size: 28px; glyph: 18px;
+        clicked => { root.open-chat(); }
     }
 }
 
@@ -697,6 +707,7 @@ export component RoomList inherits VerticalLayout {
     callback select-room(string);
     /// A DM person's voice channel was clicked: its room id.
     callback open-voice(string);
+    callback open-chat(string);
     callback open-friends;
     callback open-requests;
     /// A conversation's menu was asked for: its id, and where in the window.
@@ -787,6 +798,8 @@ export component RoomList inherits VerticalLayout {
                     + (room.pinned ? ", pinned" : "") + (room.muted ? ", muted" : "")
                     + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                 icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                chat: room.chat;
+                open-chat => { root.open-chat(room.id); }
                 picture: room.picture; picture-url: room.picture-url; discord: room.discord;
                 selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                 call: room.call; presence: room.presence; detail: room.detail; detail-emoji: room.detail-emoji;

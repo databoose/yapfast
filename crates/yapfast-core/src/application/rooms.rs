@@ -594,7 +594,7 @@ impl Application {
         else {
             return vec![];
         };
-        let voice_room = room.voice;
+        let voice_room = room.voice && room.network != Network::Discord;
         let locked = room.locked;
         let forum = room.forum;
         // Where the "New" divider goes, from before showing the room reads it.

@@ -1609,6 +1609,51 @@ fn clicking_a_voice_channel_joins_it_and_asks_before_leaving_another() {
 }
 
 #[test]
+fn discord_voice_chat_opens_without_joining_and_can_send_and_load_history() {
+    let mut app = connected();
+    let id = "discord:10:11";
+    let mut room = preview_room(id, "Lounge", false, 3);
+    room.voice = true;
+    room.encrypted = false;
+    room.join_locked = true;
+    app.state.discord_online = true;
+    app.state.rooms.push(room);
+    app.state.servers[0].channels.push(id.into());
+
+    let effects = app.dispatch(Action::Open(id.into()));
+    assert!(effects.iter().any(|effect| matches!(
+        effect, Effect::Backend(Command::Open(room)) if room == id
+    )));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::Voice(_))))
+    );
+    assert!(!app.state.can_join_voice(id));
+    assert!(!app.state.room_ready);
+    app.apply(Event::Timeline {
+        room: id.into(),
+        messages: timeline(vec![]),
+    });
+    assert!(app.state.can_write());
+    app.dispatch(Action::SetDraft("Hello from voice chat".into()));
+    assert!(matches!(
+        send_command(app.dispatch(Action::Send)),
+        Command::Send { room, body, .. } if room == id && body == "Hello from voice chat"
+    ));
+    assert!(app.dispatch(Action::Earlier).iter().any(|effect| matches!(
+        effect, Effect::Backend(Command::Earlier(room)) if room == id
+    )));
+    app.state
+        .rooms
+        .iter_mut()
+        .find(|room| room.id == id)
+        .unwrap()
+        .read_only = true;
+    assert!(!app.state.can_write());
+}
+
+#[test]
 fn menus_offer_what_fits_their_conversation_or_server() {
     use MenuChoice::*;
     let mut app = connected();
