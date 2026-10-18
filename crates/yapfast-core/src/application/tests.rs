@@ -504,6 +504,84 @@ fn discord_forwards_skip_the_note_in_slowmode_and_take_silent() {
 }
 
 #[test]
+fn discord_forwards_list_places_as_discords_dialog_does() {
+    let mut app = connected();
+    let place = |guild: &str, id: &str, name: &str| ChatRoom {
+        id: crate::discord::room_id(guild, id),
+        name: name.into(),
+        network: Network::Discord,
+        capabilities: Network::Discord.capabilities(),
+        direct: guild == "@me",
+        ..preview_room("x", id, false, 3)
+    };
+    app.state.rooms = vec![
+        ChatRoom {
+            person: Some("1".into()),
+            ..place("@me", "20", "Bob")
+        },
+        place("@me", "21", "weekend plans"),
+        place("10", "11", "general"),
+        place("10", "12", "games"),
+        place("10", "13", "game-night"),
+        place("10", "14", "chat"),
+    ];
+    let id = |channel| crate::discord::room_id("10", channel);
+    let (games, chat) = (id("12"), id("14"));
+    app.state.discord_online = true;
+    app.state.places_used.visit(&games, crate::clock::now_ms());
+    app.state.places_used.visit(&chat, crate::clock::now_ms());
+    app.state.selected = Some(chat);
+    let mut sent = message("d:5", false);
+    sent.can_forward = true;
+    app.state.messages = Arc::new(timeline(vec![sent]));
+    let effects = app.dispatch(Action::StartForward("d:5".into()));
+    assert!(matches!(
+        effects[..],
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::PlacesUsed
+        ))]
+    ));
+    let now = crate::clock::now_ms();
+    let used = |total, days: &[u64]| crate::chat::PlaceUses {
+        total,
+        recent: days.iter().map(|days| now - days * 86_400_000).collect(),
+    };
+    app.apply(Event::PlacesUsed(Ok(vec![
+        ("11".into(), used(50, &[0, 0, 0, 0, 0])),
+        ("20".into(), used(1, &[0])),
+        ("13".into(), used(2, &[30])),
+    ])));
+    let listed = |app: &Application| -> Vec<String> {
+        app.state
+            .forward_places()
+            .iter()
+            .map(|room| room.name.clone())
+            .collect()
+    };
+    // Those opened lately, then those used most; not the message's own.
+    assert_eq!(listed(&app), ["games", "general", "Bob", "game-night"]);
+    app.dispatch(Action::SearchForward("night".into()));
+    assert_eq!(listed(&app), ["game-night"]);
+    // Choosing clears the search, and lists those chosen first.
+    app.dispatch(Action::ChooseForward(id("13")));
+    assert_eq!(app.state.forwarding.as_ref().unwrap().query, "");
+    assert_eq!(listed(&app), ["game-night", "games", "general", "Bob"]);
+    // A search ranks by the name, then by how much a place is used, which
+    // opening it here counts too.
+    app.dispatch(Action::SearchForward("g".into()));
+    assert_eq!(listed(&app), ["general", "games", "game-night"]);
+    app.dispatch(Action::SearchForward("@b".into()));
+    assert_eq!(listed(&app), ["Bob"]);
+    app.dispatch(Action::SearchForward("#e".into()));
+    assert_eq!(listed(&app), ["general", "games", "game-night"]);
+    app.dispatch(Action::SearchForward("e".into()));
+    assert_eq!(
+        listed(&app),
+        ["general", "games", "game-night", "weekend plans"]
+    );
+}
+
+#[test]
 fn room_membership_loss_moves_selection_and_server_loss_returns_to_dms() {
     let mut app = connected();
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));

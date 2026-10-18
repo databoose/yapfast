@@ -709,7 +709,10 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     let weak = window.as_weak();
     window.on_forward_search(move || {
         if let Some(window) = weak.upgrade() {
-            state.borrow_mut().refresh(&window);
+            let query = window.get_forward_query().into();
+            state
+                .borrow_mut()
+                .action(&window, Action::SearchForward(query));
         }
     });
     let state = adapter.clone();

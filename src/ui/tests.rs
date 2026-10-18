@@ -1531,8 +1531,16 @@ fn forwarding_and_frequent_reactions_reach_the_window() {
         (games.initial.as_str(), games.place.as_str()),
         ("F", "Friends")
     );
+    // Choosing clears the search.
     window.invoke_forward_choose("games".into());
-    assert!(window.get_forward_targets().row_data(0).unwrap().chosen);
+    assert_eq!(window.get_forward_query(), "");
+    let targets = window.get_forward_targets();
+    assert!(targets.row_count() > 1);
+    assert!(
+        targets
+            .iter()
+            .any(|target| target.id == "games" && target.chosen)
+    );
     assert_eq!(window.get_forward_chosen(), 1);
     assert_eq!(window.get_forward_limit(), 5);
     window.invoke_close_forward();

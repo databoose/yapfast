@@ -1247,6 +1247,33 @@ or opens the dialog again with those it failed in chosen, the message
 added kept, and Discord's reason, so Send retries them. If the forward went
 but the message added didn't, a notice says where.
 
+The dialog lists places in the order Discord's client does. Before a
+search, it lists those chosen, the latest first, as they were when the
+search last changed; then the last eight conversations opened this
+session; then those this account uses most. It shows fifteen at most, and
+not the conversation the message is in, unless it's chosen. "Uses most" is
+Discord's frecency: `guild_and_channel_frecency`, field 12 of the
+`FrecencyUserSettings` that GET `/users/@me/settings-proto/2` returns,
+fetched when a Discord message is first forwarded and kept up to date by
+USER_SETTINGS_PROTO_UPDATE. It maps each channel's id to how often it
+was used and the times of the last ten uses. A use counts 100 on its day,
+70 a day later, 50 at two or three days, 30 up to a week, then 10; a
+place's frecency is its uses in all times that sum, over the number of
+recent uses. Each conversation opened in Yapfast counts as a use, added
+again to each count that comes, as Discord's client does until it saves
+its own. Yapfast doesn't save them.
+
+A search lists every place whose name matches, ranked as Discord's search
+ranks them. A channel or group DM scores 10 for its whole name, 7 for its
+start, 5 for a part, 3 when each word is in its name or server's name,
+and 1 for its letters in order; a dash in a channel's name matches a
+space. A person's DM scores 10 for the start of their name, 1 for its
+letters in order. Each score is raised by up to double for a place used
+most, and a person's by 0.2 more for a friend and 0.1 for the DM. `@`
+searches people only, `#` channels only. Choosing a place clears the
+search. Discord's search also finds people with no DM yet and opens one
+to forward to; Yapfast lists only DMs that exist.
+
 Discord's client also greys out a channel where the original's files,
 embeds or stickers couldn't be posted, and an age-restricted one. Yapfast
 lists those, and Discord's refusal shows when the forward fails there.

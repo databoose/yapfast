@@ -91,8 +91,8 @@ impl Application {
             return vec![];
         };
         // Matrix forwards only from a verified device.
-        let allowed =
-            self.state.preview || self.state.trusted || Network::of(&room) == Network::Discord;
+        let discord = Network::of(&room) == Network::Discord;
+        let allowed = self.state.preview || self.state.trusted || discord;
         self.state.forwarding = self
             .state
             .message(&item)
@@ -106,6 +106,17 @@ impl Application {
                 item,
                 ..Default::default()
             });
+        // Discord's dialog ranks places by how much they're used, which
+        // Discord's settings count.
+        if self.state.forwarding.is_some()
+            && discord
+            && !self.state.preview
+            && self.state.places_used.ask()
+        {
+            return vec![Effect::Backend(Command::Discord(
+                DiscordCommand::PlacesUsed,
+            ))];
+        }
         vec![]
     }
 
@@ -123,7 +134,25 @@ impl Application {
                 forwarding.chosen.remove(at);
             } else if allowed && forwarding.chosen.len() < FORWARD_LIMIT {
                 forwarding.chosen.push(target);
+                // Choosing one clears the search, as in Discord's dialog,
+                // which then lists those chosen first.
+                if !forwarding.query.is_empty() {
+                    forwarding.query.clear();
+                    forwarding.pinned = forwarding.chosen.clone();
+                }
             }
+        }
+        vec![]
+    }
+
+    /// Searches the forward dialog's places for `query`. Those chosen by
+    /// then list first once it's empty again.
+    pub(super) fn search_forward(&mut self, query: String) -> Vec<Effect> {
+        if let Some(forwarding) = &mut self.state.forwarding
+            && forwarding.query != query
+        {
+            forwarding.query = query;
+            forwarding.pinned = forwarding.chosen.clone();
         }
         vec![]
     }
@@ -447,6 +476,9 @@ impl Application {
             "The message couldn't be forwarded to {unforwarded}: {why}"
         ));
         forwarding.chosen = failed.into_iter().map(|(id, _)| id).collect();
+        // They list first, as Discord's dialog opens again with them chosen.
+        forwarding.query.clear();
+        forwarding.pinned = forwarding.chosen.clone();
         // Another forward's dialog, opened since, stays.
         if self.state.forwarding.is_none() {
             self.state.forwarding = Some(forwarding);

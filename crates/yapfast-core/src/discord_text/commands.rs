@@ -565,6 +565,11 @@ pub fn live(
         ));
         return;
     }
+    if let Ok(Live::PlacesUsed(places)) = &event {
+        let places = account::places_used(places.clone());
+        let _ = events.send(Event::PlacesUsed(Ok(places)));
+        return;
+    }
     if let Ok(Live::Notify { guild, message }) = &event {
         let _ = events.send(Event::Notify(notification(
             discord,

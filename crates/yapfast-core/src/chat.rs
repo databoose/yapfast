@@ -1454,6 +1454,14 @@ pub struct GifCategory {
     pub src: String,
 }
 
+/// How often a Discord server or channel was used: in all, and when lately,
+/// in Unix milliseconds, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaceUses {
+    pub total: u32,
+    pub recent: Vec<u64>,
+}
+
 /// A favourite GIF, as Discord's settings keep it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FavoriteGif {
@@ -1511,6 +1519,9 @@ pub enum DiscordCommand {
     },
     /// Fetch the account's favourite GIFs; [`Event::FavoriteGifs`] follows.
     FavoriteGifs,
+    /// Fetch which servers and channels the account used, and when, as
+    /// Discord's clients count them; [`Event::PlacesUsed`] follows.
+    PlacesUsed,
     /// Keep these as the account's favourite GIFs, in place of the old.
     SetFavoriteGifs(Vec<FavoriteGif>),
     /// Download a GIF's picture and decode it to fit `width` by `height`;
@@ -1953,6 +1964,9 @@ pub enum Event {
     /// The favourite GIFs as Yapfast last saw them, to show until Discord's
     /// come.
     KeptFavoriteGifs(Vec<FavoriteGif>),
+    /// The Discord servers and channels the account used, by id, as fetched
+    /// or as another client counted them; or why they couldn't be fetched.
+    PlacesUsed(Result<Vec<(String, PlaceUses)>, String>),
     /// A GIF's picture, or none when it failed.
     GifPicture {
         url: String,

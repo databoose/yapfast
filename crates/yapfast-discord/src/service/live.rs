@@ -142,14 +142,13 @@ pub(super) fn live_events(
         }
         // Answers to the member requests history makes.
         Event::GuildMembersChunk => vec![Live::Names],
-        // The favourite GIFs, changed here or by another client.
+        // The favourite GIFs and the places used, changed here or by
+        // another client.
         Event::UserSettingsProtoUpdate if data["settings"]["type"] == 2 => {
-            data["settings"]["proto"]
-                .as_str()
-                .and_then(crate::gifs::read_favorites)
-                .map(Live::FavoriteGifs)
-                .into_iter()
-                .collect()
+            let proto = data["settings"]["proto"].as_str().unwrap_or_default();
+            let favorites = crate::gifs::read_favorites(proto).map(Live::FavoriteGifs);
+            let places = crate::frecency::read_places(proto).map(Live::PlacesUsed);
+            favorites.into_iter().chain(places).collect()
         }
         Event::StreamCreate | Event::StreamUpdate => data["stream_key"]
             .as_str()

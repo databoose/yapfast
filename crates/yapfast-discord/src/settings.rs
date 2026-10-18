@@ -452,7 +452,7 @@ pub(crate) fn fields(mut data: &[u8]) -> impl Iterator<Item = (u64, Field<'_>)> 
     })
 }
 
-fn varint(data: &mut &[u8]) -> Option<u64> {
+pub(crate) fn varint(data: &mut &[u8]) -> Option<u64> {
     let mut value = 0u64;
     for shift in (0..64).step_by(7) {
         let (&byte, rest) = data.split_first()?;

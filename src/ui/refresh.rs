@@ -1834,8 +1834,12 @@ impl Adapter {
         update_model(&self.models.new_dm_people, people);
         let forwarding = state.forwarding.as_ref();
         window.set_forward_open(forwarding.is_some());
+        // Choosing a place clears the search.
+        let query = forwarding.map_or("", |forwarding| forwarding.query.as_str());
+        if window.get_forward_query() != query {
+            window.set_forward_query(query.into());
+        }
         if forwarding.is_some() != self.forwarding {
-            window.set_forward_query(SharedString::default());
             window.set_forward_note(
                 forwarding
                     .map(|forwarding| forwarding.note.as_str())
@@ -1843,7 +1847,6 @@ impl Adapter {
                     .into(),
             );
         }
-        let forward_query = window.get_forward_query().to_lowercase();
         window.set_forward_preview(
             forwarding
                 .map(|forwarding| forwarding.quote.as_str())
@@ -1862,10 +1865,10 @@ impl Adapter {
         let discord =
             forwarding.is_some_and(|forwarding| Network::of(&forwarding.room) == Network::Discord);
         window.set_forward_empty(
-            if !forward_query.is_empty() {
+            if discord {
+                "We searched far and wide. Unfortunately, no results were found."
+            } else if !query.is_empty() {
                 "No conversations match."
-            } else if discord {
-                "There's nowhere to forward to."
             } else {
                 "There's nowhere to forward to yet. Yapfast forwards Matrix messages only into encrypted conversations."
             }
@@ -1897,12 +1900,8 @@ impl Adapter {
             &self.models.forward_targets,
             forwarding.map_or_else(Vec::new, |forwarding| {
                 state
-                    .rooms
-                    .iter()
-                    .filter(|room| {
-                        state.can_forward_to(&forwarding.room, room)
-                            && room.name.to_lowercase().contains(&forward_query)
-                    })
+                    .forward_places()
+                    .into_iter()
                     .map(|room| {
                         // A channel shows its server's icon, as Discord's dialog does.
                         let server = state

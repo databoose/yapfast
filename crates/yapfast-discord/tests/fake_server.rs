@@ -2985,6 +2985,22 @@ async fn finds_gifs_as_discords_client_does(
         control(server, "GET", "/_control/gif-selects", "").contains(r#""id":"9102","q":"dance""#)
     );
 
+    // The same settings count the places Alice used, which rank where the
+    // Forward To dialog lists them: Weekend plans and #general.
+    let places = discord.places_used().await.unwrap();
+    let uses: Vec<_> = places
+        .iter()
+        .map(|(id, uses)| (id.as_str(), uses.total, uses.recent.len()))
+        .collect();
+    assert_eq!(
+        uses,
+        [
+            ("1400000000000000121", 12, 3),
+            ("1400000000000000102", 3, 2)
+        ]
+    );
+    assert!(places[0].1.recent.is_sorted());
+
     // Two favourites, kept by another client: one by its page, one by a
     // direct link to its file.
     let mut favorites = discord.favorite_gifs().await.unwrap();

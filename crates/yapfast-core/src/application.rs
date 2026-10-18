@@ -21,6 +21,7 @@ mod calls;
 mod compose;
 mod discord_account;
 mod forum;
+mod forward_places;
 mod gifs;
 mod header;
 mod members;
@@ -257,6 +258,29 @@ pub struct Forwarding {
     /// Why it couldn't be forwarded to those chosen, after a try that
     /// failed there.
     pub error: Option<String>,
+    /// What the dialog's search looks for.
+    pub query: String,
+    /// Those chosen when the search last changed, which list first while
+    /// it's empty; see [`AppState::forward_places`].
+    pub pinned: Vec<String>,
+}
+
+/// The Discord conversations this account used, which rank where a message
+/// is forwarded; see [`AppState::forward_places`].
+#[derive(Default)]
+pub struct PlacesUsed {
+    /// By Discord server or channel id, as Discord's clients counted them,
+    /// with this session's uses added.
+    uses: HashMap<String, chat::PlaceUses>,
+    /// This session's uses, by channel id, added again to each count that
+    /// comes.
+    pending: Vec<(String, u64)>,
+    /// The Discord conversations opened this session, the latest first, up
+    /// to eight.
+    visited: Vec<String>,
+    /// Discord's counts came, or were asked for.
+    fresh: bool,
+    asked: bool,
 }
 
 /// A forward sent, until each conversation it went to answers.
@@ -467,6 +491,7 @@ pub struct AppState {
     pub confirm_delete: Option<String>,
     /// A message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
+    pub places_used: PlacesUsed,
     pub new_dm: Option<NewDm>,
     /// The selected DM's pinned messages, a search of it, and adding friends
     /// to it, each while it's open.
@@ -1054,6 +1079,8 @@ pub enum Action {
     StartForward(String),
     /// Choose a conversation to forward that message to, or leave it out.
     ChooseForward(String),
+    /// Search the conversations it may go to.
+    SearchForward(String),
     /// Forward it to those chosen, with this message added.
     Forward(String),
     CloseForward,
@@ -1950,6 +1977,7 @@ impl Application {
             Action::PinMessage(item) => self.pin_message(item),
             Action::StartForward(item) => self.start_forward(item),
             Action::ChooseForward(target) => self.choose_forward(target),
+            Action::SearchForward(query) => self.search_forward(query),
             Action::Forward(note) => self.forward(note),
             Action::CloseForward => {
                 self.state.forwarding = None;
@@ -2542,6 +2570,7 @@ impl Application {
             Event::GifSuggestions { query, terms } => self.gif_suggestions_came(query, terms),
             Event::FavoriteGifs(result) => return self.favorite_gifs_came(result),
             Event::KeptFavoriteGifs(favorites) => self.kept_favorite_gifs_came(favorites),
+            Event::PlacesUsed(result) => self.state.places_used.came(result),
             Event::GifPicture { url, picture } => self.gif_picture_came(url, picture),
             Event::Reactors {
                 item,

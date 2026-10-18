@@ -113,8 +113,9 @@
 // ten GIFs, made by testing/make-gif-fixtures and served from /_gifs/; a
 // search for "nothing" finds none. GET /_control/gif-selects lists what POST
 // /gifs/select reported. Alice's favourite GIFs, two to start with, are in
-// /users/@me/settings-proto/2, and a sent GIF's page unfurls into a gifv
-// embed a moment later, a direct link to a GIF's file into an image embed.
+// /users/@me/settings-proto/2, with the places she used, and a sent GIF's
+// page unfurls into a gifv embed a moment later, a direct link to a GIF's
+// file into an image embed.
 // Alice's custom status, "Testing Yapfast", is in her settings; PATCH
 // /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
 // presence her session last sent with op 3. POST /users/@me/relationships sends
@@ -3332,7 +3333,31 @@ function favoriteGifs(origin: string): string {
       ...entry("https://klipy.com/gifs/hello-9000", `${origin}/_gifs/hello.gif`, 220, 165, 1),
       ...entry(linkedGif("wave", "webp"), `${origin}/_gifs/wave.webp`, 220, 165, 2),
     ]);
-  return Buffer.from(protoBytes(2, gifs)).toString("base64");
+  return Buffer.from(new Uint8Array([...protoBytes(2, gifs), ...placesUsed()])).toString("base64");
+}
+
+// Alice's guild_and_channel_frecency, which ranks where the Forward To
+// dialog lists places: Weekend plans used most, today, and #general a few
+// days ago.
+function placesUsed(): Uint8Array {
+  const varint = (value: bigint) => {
+    const out: number[] = [];
+    for (; value >= 0x80n; value >>= 7n) out.push(Number(value & 0x7fn) | 0x80);
+    out.push(Number(value));
+    return out;
+  };
+  const day = 86_400_000;
+  const place = (id: string, total: number, ago: number[]) => {
+    const key = new Uint8Array(8);
+    new DataView(key.buffer).setBigUint64(0, BigInt(id), true);
+    const recent = ago.flatMap((ms) => varint(BigInt(Date.now() - ms)));
+    const item = new Uint8Array([...protoNumber(1, total), ...protoBytes(2, new Uint8Array(recent))]);
+    return protoBytes(1, new Uint8Array([(1 << 3) | 1, ...key, ...protoBytes(2, item)]));
+  };
+  return protoBytes(12, new Uint8Array([
+    ...place(WEEKEND, 12, [3 * day, 2 * 3_600_000, 600_000]),
+    ...place(GENERAL, 3, [4 * day, 3 * day]),
+  ]));
 }
 
 // An env's favourite GIFs, each a Tenor page by its file's name, served

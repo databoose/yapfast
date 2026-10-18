@@ -228,6 +228,25 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::PlacesUsed) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .places_used()
+                        .await
+                        .map(places_used)
+                        .map_err(|error| error.to_string());
+                    let _ = events.send(Event::PlacesUsed(result));
+                });
+            }
+            Err(why) => {
+                let _ = events.send(Event::PlacesUsed(Err(why.into())));
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::SetCustomStatus(custom)) = command {
         match discord {
             Ok(discord) => {
@@ -1120,6 +1139,22 @@ fn post_starters(
                     .as_ref()
                     .map(|starter| discord::post_starter(server, names, starter)),
             )
+        })
+        .collect()
+}
+
+/// The places used as [`Event::PlacesUsed`] carries them.
+pub(super) fn places_used(
+    places: Vec<(String, yapfast_discord::frecency::Uses)>,
+) -> Vec<(String, crate::chat::PlaceUses)> {
+    places
+        .into_iter()
+        .map(|(id, uses)| {
+            let uses = crate::chat::PlaceUses {
+                total: uses.total,
+                recent: uses.recent,
+            };
+            (id, uses)
         })
         .collect()
 }
