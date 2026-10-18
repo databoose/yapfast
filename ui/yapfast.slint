@@ -30,7 +30,7 @@ import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggest
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer } from "messages.slint";
 import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
-import { FriendRequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
+import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
@@ -46,7 +46,7 @@ export { PictureStore, Motion } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
 export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData } from "people.slint";
-export { FriendRequestRow, FriendRow } from "friends.slint";
+export { RequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow, ReactionPill, ReactorRow } from "dialogs.slint";
 export { FoundRow, PickRow } from "header.slint";
 export { GifTile, GifFavorites } from "gifs.slint";
@@ -574,11 +574,12 @@ export component YapfastWindow inherits Window {
     /// The prompt joins a call from none, to watch a stream; it stays set
     /// while the prompt fades.
     in property <bool> switch-joins;
-    /// Discord friend requests, message requests and spam, on the requests
-    /// screen, which the top of the DM list opens.
-    in property <[FriendRequestRow]> friend-requests;
-    in property <[RoomRow]> message-requests;
-    in property <[RoomRow]> spam-rooms;
+    /// Discord friend requests and message requests, each person's together,
+    /// on the requests screen, which the top of the DM list opens: those
+    /// waiting for an answer, those this account sent, and spam.
+    in property <[RequestRow]> requests-incoming;
+    in property <[RequestRow]> requests-sent;
+    in property <[RequestRow]> requests-spam;
     in property <bool> requests-open;
     /// The Discord friends list, the friends around in it, and how many
     /// friends there are before its search.
@@ -2339,9 +2340,9 @@ export component YapfastWindow inherits Window {
                             }
                             if root.requests-open: RequestsScreen {
                                 width: parent.width; height: parent.height;
-                                friend-requests: root.friend-requests;
-                                message-requests: root.message-requests;
-                                spam: root.spam-rooms;
+                                incoming: root.requests-incoming;
+                                sent: root.requests-sent;
+                                spam: root.requests-spam;
                                 accept(id) => { root.befriend(id); }
                                 remove(id) => { root.remove-friend-request(id); }
                                 open(id) => { root.select-room(id); }

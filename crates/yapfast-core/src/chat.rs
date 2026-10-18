@@ -81,6 +81,17 @@ pub struct ChatRoom {
     pub parent: Option<String>,
     /// A Discord forum, whose posts show in place of messages.
     pub forum: bool,
+    /// A Discord message request's latest message, when it's known.
+    pub preview: Option<Box<RequestPreview>>,
+}
+
+/// A Discord message request's latest message, as the requests list shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RequestPreview {
+    /// Plain text on one line, or what files it carries.
+    pub text: String,
+    /// When it came, in Unix milliseconds.
+    pub at: u64,
 }
 
 /// The most files one message carries, as Discord allows.

@@ -212,6 +212,7 @@ async fn connected_session(
         join: VoiceJoin::new(),
         streams: StreamOpenings::new(),
         searches: MemberSearches::default(),
+        previews: mpsc::unbounded_channel(),
     };
     if let Err(error) = session.connect().await {
         return Ended::Failed(error);
@@ -256,6 +257,8 @@ struct Session<'a> {
     /// and the wait for it.
     away_change: Option<u64>,
     away_changes: Pin<Box<Sleep>>,
+    /// Discord's answers when asked for message requests' latest messages.
+    previews: (mpsc::UnboundedSender<Value>, mpsc::UnboundedReceiver<Value>),
 }
 
 impl Session<'_> {
@@ -263,6 +266,7 @@ impl Session<'_> {
         // This session shows the status the settings hold, as Discord's own apps do.
         self.show_presence().await?;
         self.shared.lists.publish_group(&self.tracker);
+        self.ask_previews();
         self.shared
             .lists
             .connect(&self.tracker, &mut self.gateway)
@@ -306,6 +310,12 @@ impl Session<'_> {
                 () = self.shared.lists.went_stale(), if self.shared.lists.unsent() => {
                     // The list on screen went stale without Discord sending it.
                     self.shared.lists.refresh(&mut self.gateway).await
+                }
+                Some(found) = self.previews.1.recv() => {
+                    if self.tracker.put_previews(&found) {
+                        self.publisher.changed();
+                    }
+                    Ok(())
                 }
                 () = self.acks.send_when_due(), if self.acks.waiting() => Ok(()),
                 () = self.streams.timed_out(), if self.streams.waiting() => Ok(()),
@@ -514,6 +524,20 @@ impl Session<'_> {
         ) {
             let _ = self.shared.live.send(live);
         }
+        // A message request shows its latest message.
+        let previewed = match (event, &message) {
+            (Event::MessageCreate | Event::MessageUpdate, Some(message)) => {
+                self.tracker.preview(message)
+            }
+            (Event::MessageDelete, _) => self.tracker.unpreview(
+                data["channel_id"].as_str().unwrap_or_default(),
+                data["id"].as_str().unwrap_or_default(),
+            ),
+            _ => false,
+        };
+        if previewed {
+            self.publisher.changed();
+        }
         if *event == Event::MessageCreate
             && self.tracker.notifies(data)
             && let Some(message) = message
@@ -523,6 +547,7 @@ impl Session<'_> {
         }
         if applied.unwrap_or_else(|| self.tracker.apply(event, data)) {
             self.publisher.changed();
+            self.ask_previews();
         }
         // Names took the change in, so what shows the member follows.
         if matches!(event, Event::GuildMemberUpdate | Event::GuildMemberRemove) {
@@ -553,6 +578,28 @@ impl Session<'_> {
 
     /// Sends the gateway this session's presence when it changed, and
     /// waits for the next time being away changes it.
+    /// Asks Discord for the latest message of each message request that
+    /// shows none, 25 at a time, as its requests list does.
+    fn ask_previews(&mut self) {
+        let wanted = self.tracker.previews_wanted();
+        if wanted.is_empty() {
+            return;
+        }
+        let (api, found) = (self.shared.api.clone(), self.previews.0.clone());
+        tokio::spawn(async move {
+            for channels in wanted.chunks(25) {
+                match api.request_previews(channels).await {
+                    Ok(answer) => {
+                        let _ = found.send(answer);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not load message requests' messages");
+                    }
+                }
+            }
+        });
+    }
+
     async fn show_presence(&mut self) -> Result<()> {
         let (away, next) = Away::after(
             self.shared.inactive.map(|(since, _)| since),

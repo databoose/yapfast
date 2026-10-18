@@ -398,6 +398,20 @@ impl Api {
         self.json(self.request(Method::GET, &path)).await
     }
 
+    /// The message that each of up to 25 message requests is waiting with,
+    /// as Discord's requests list shows it: `[{channel_id, message_preview}]`.
+    pub async fn request_previews(&self, channels: &[String]) -> Result<Value> {
+        let query: Vec<_> = channels
+            .iter()
+            .map(|channel| format!("channel_ids={channel}"))
+            .collect();
+        let path = format!(
+            "/users/@me/message-requests/supplemental-data?{}",
+            query.join("&")
+        );
+        self.json(self.request(Method::GET, &path)).await
+    }
+
     /// Accepts a message request, which makes it an ordinary DM.
     pub async fn accept_request(&self, channel: &str) -> Result<()> {
         let path = format!("/channels/{channel}/recipients/@me");

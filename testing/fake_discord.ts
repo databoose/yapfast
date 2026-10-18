@@ -72,8 +72,9 @@
 // that mentions Bob, links #general and a page; POST /_control/topic sets
 // it to the body, or with none takes it away, and CHANNEL_UPDATE says so. Erin, who shares no
 // server with her, sent a message request, and Frank one Discord marked as
-// spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them.
-// Erin also sent her a friend request; see "relationships" below.
+// spam; PUT and DELETE /channels/{id}/recipients/@me accept and ignore them,
+// and GET /users/@me/message-requests/supplemental-data gives their latest
+// messages. Erin also sent her a friend request; see "relationships" below.
 // POST /_control/call makes Bob call her; see "DM calls" below.
 // Bob and Carol are her friends; POST /users/@me/channels opens a DM, as with
 // Carol, whom she has none with yet, or with several people makes a group DM,
@@ -3893,6 +3894,19 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       total_results: found.length,
       messages: found.slice(offset, offset + 25).map((message) => [{ ...wireMessage(message, origin), guild_id: guild }]),
     });
+  }
+
+  // Each message request's latest message, for the requests list: 1 to 25
+  // channel_ids, repeated. A channel that isn't a request is left out.
+  if (method === "GET" && path === "/users/@me/message-requests/supplemental-data") {
+    const asked = url.searchParams.getAll("channel_ids");
+    if (asked.length < 1 || asked.length > 25) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    return json(
+      asked.flatMap((id) => {
+        const last = privates.get(id)?.request ? messages.get(id)?.at(-1) : undefined;
+        return last ? [{ channel_id: id, message_preview: wireMessage(last, origin) }] : [];
+      }),
+    );
   }
 
   // Accepting a message request makes it a DM; ignoring it closes the DM.

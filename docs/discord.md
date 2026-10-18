@@ -1887,15 +1887,30 @@ presence of those who are friends. Yapfast downloads the pictures of the first
 
 Friend requests, message requests and spam have their own screen. A
 "Requests" entry below Friends at the top of the DM list opens it in place of the
-conversation, with a badge counting the incoming friend requests (spam
-excluded) and message requests. Message requests come from people outside the
-account's DMs. Those Discord marks as spam are listed too, under "Spam", so a
-person Discord misjudged can still be found. The entry stays highlighted
-while a request from the screen is open. Opening one shows its messages with Accept and Ignore in place of the
+conversation, with a badge counting the people waiting for an answer: an
+incoming friend request (spam excluded), a message request, or both.
+Message requests come from people outside the account's DMs. The screen
+lists each person once, under "Requests": their friend request, with Accept
+and Ignore, and under it the latest message of their message request, which
+opens the conversation; an unread one is marked New. Discord's own client
+keeps the two apart, friend requests under Friends and message requests on a
+screen of their own; Yapfast puts them together, as one person's asking.
+Friend requests this account sent follow under "Sent". Those Discord marks
+as spam, friend requests and message requests alike, fold away under
+"Spam", so a person Discord misjudged can still be found. The entry stays
+highlighted while a request from the screen is open. Opening one shows its messages with Accept and Ignore in place of the
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Yapfast never opens a request on its
 own when it picks a conversation.
+
+A request's message comes as Discord's client loads it:
+`GET /users/@me/message-requests/supplemental-data` with up to 25
+`channel_ids`, repeated, answers `[{channel_id, message_preview}]` with a
+message object each. Yapfast asks once for each request it hasn't a message
+for, after connecting and when a request arrives; MESSAGE_CREATE and
+MESSAGE_UPDATE in a request replace it with a newer one, and deleting the
+one shown asks again.
 
 The pen in the DM list's header starts a DM: it lists the account's friends
 (from READY's relationships), then anyone else Yapfast knows by name, and
@@ -1920,7 +1935,7 @@ The person beside the pen, in the same header, adds a friend by username: `POST
 that name), 80000 (they take no requests from strangers) and 80007 (already
 friends) get their own words.
 
-Friend requests come first on the requests screen, from READY's
+Friend requests show on the requests screen, from READY's
 relationships (type 3 sent to this account, 4 sent by it) and kept current by
 RELATIONSHIP_ADD and RELATIONSHIP_REMOVE. One sent to this account is
 accepted with the check or ignored with the cross; one it sent is cancelled

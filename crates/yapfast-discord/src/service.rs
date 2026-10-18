@@ -120,6 +120,20 @@ pub struct Conversation {
     pub presence: Option<Presence>,
     #[serde(skip)]
     pub activity: Option<String>,
+    /// A message request's latest message, as the requests list shows it.
+    #[serde(default)]
+    pub preview: Option<Preview>,
+}
+
+/// A message request's latest message, in short.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Preview {
+    /// Its snowflake, which says when it came.
+    pub id: String,
+    /// Discord Markdown, its mentions as names.
+    pub text: String,
+    /// How many files it carries, said when it has no text.
+    pub files: usize,
 }
 
 /// A friend request, sent to this account or by it.

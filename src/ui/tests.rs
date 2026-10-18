@@ -3958,3 +3958,103 @@ fn the_thread_beside_keeps_its_rows_when_a_new_layout_builds_them_again() {
     adapter.borrow_mut().refresh(&window);
     assert_eq!(window.get_aside_messages().row_count(), 3);
 }
+
+#[cfg(feature = "discord")]
+#[test]
+fn requests_list_someone_once_with_their_message() {
+    use yapfast_core::chat::{ChatRoom, FriendRequest, RequestPreview};
+    use yapfast_core::network::Network;
+    let request = |id: &str, name: &str, incoming, spam| FriendRequest {
+        id: id.into(),
+        name: name.into(),
+        avatar: None,
+        incoming,
+        spam,
+    };
+    let room = |id: &str, person: &str, category: &str| ChatRoom {
+        id: id.into(),
+        network: Network::Discord,
+        capabilities: Network::Discord.capabilities(),
+        name: person.into(),
+        direct: true,
+        voice: false,
+        encrypted: false,
+        members: 2,
+        unread: 1,
+        mentions: 0,
+        muted: false,
+        last_read: None,
+        locked: false,
+        read_only: true,
+        slowed: false,
+        category: category.into(),
+        request: true,
+        person: Some(person.into()),
+        people: Vec::new(),
+        ringing: Vec::new(),
+        incoming: false,
+        avatar: None,
+        upload_limit: 0,
+        presence: None,
+        activity: None,
+        parent: None,
+        forum: false,
+        preview: Some(Box::new(RequestPreview {
+            text: format!("Hi from {person}"),
+            at: 1_700_000_000_000,
+        })),
+    };
+    let mut state = AppState::default();
+    state.friend_requests = vec![
+        request("erin", "Erin", true, false),
+        request("dave", "Dave", false, false),
+        request("zed", "Zed", true, true),
+    ];
+    let asked = [
+        room("dm-erin", "erin", "Message requests"),
+        room("dm-gil", "gil", "Message requests"),
+    ];
+    let spam = [room("dm-frank", "frank", "Spam")];
+    let rows = refresh::request_rows(
+        &state,
+        &asked.iter().collect::<Vec<_>>(),
+        &spam.iter().collect::<Vec<_>>(),
+        false,
+    );
+    let listed = |rows: &[RequestRow]| -> Vec<(String, i32, String, String)> {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.id.to_string(),
+                    row.friend,
+                    row.room.to_string(),
+                    row.message.to_string(),
+                )
+            })
+            .collect()
+    };
+    let row = |id: &str, friend, room: &str, message: &str| {
+        (id.into(), friend, room.into(), message.into())
+    };
+    // Erin's friend request and message share a row; Gil only wrote.
+    assert_eq!(
+        listed(&rows.incoming),
+        [
+            row("erin", 1, "dm-erin", "Hi from erin"),
+            row("gil", 0, "dm-gil", "Hi from gil")
+        ]
+    );
+    assert!(
+        rows.incoming
+            .iter()
+            .all(|row| row.unread && !row.time.is_empty())
+    );
+    assert_eq!(listed(&rows.sent), [row("dave", 2, "", "")]);
+    assert_eq!(
+        listed(&rows.spam),
+        [
+            row("zed", 1, "", ""),
+            row("frank", 0, "dm-frank", "Hi from frank")
+        ]
+    );
+}

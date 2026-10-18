@@ -408,31 +408,6 @@ impl Adapter {
             .collect();
         let direct = state.navigation == Navigation::DirectMessages;
         // Friend requests, message requests and spam have their own screen.
-        let requests: Vec<_> = state
-            .friend_requests
-            .iter()
-            .map(|request| FriendRequestRow {
-                id: request.id.as_str().into(),
-                name: request.name.as_str().into(),
-                initial: initial(&request.name),
-                tint: tint(&request.id),
-                picture: slint::Image::default(),
-                picture_url: request.avatar.as_deref().unwrap_or_default().into(),
-                incoming: request.incoming,
-                detail: match (request.incoming, request.spam) {
-                    (true, true) => "Maybe spam",
-                    (true, false) => "Incoming request",
-                    (false, _) => "Request sent",
-                }
-                .into(),
-            })
-            .collect();
-        let incoming = state
-            .friend_requests
-            .iter()
-            .filter(|request| request.incoming && !request.spam)
-            .count();
-        update_model(&self.models.friend_requests, requests);
         let waiting = |name: &str| {
             state
                 .scoped_rooms()
@@ -440,12 +415,16 @@ impl Adapter {
                 .collect::<Vec<_>>()
         };
         let (message_requests, spam) = (waiting(discord::REQUESTS), waiting(discord::SPAM));
-        let unanswered = incoming + message_requests.len();
-        window.set_requests_badge(if unanswered > 0 {
-            unanswered.to_string().into()
-        } else {
-            SharedString::default()
-        });
+        let requests = request_rows(
+            state,
+            &message_requests,
+            &spam,
+            self.layout.twelve_hour_clock,
+        );
+        window.set_requests_badge(count_badge(requests.incoming.len() as u64));
+        update_model(&self.models.requests_incoming, requests.incoming);
+        update_model(&self.models.requests_sent, requests.sent);
+        update_model(&self.models.requests_spam, requests.spam);
         // The friends list, those around first; filtered by the screen's search.
         let friend_query = window.get_friend_filter().to_lowercase();
         let friend_rows: Vec<_> = state
@@ -489,25 +468,6 @@ impl Adapter {
                             .any(|room| &room.id == selected)
                     })),
         );
-        let dm_icon = self.icons.dm.clone();
-        let request_row = |room: &&yapfast_core::chat::ChatRoom| RoomRow {
-            id: room.id.clone().into(),
-            name: room.name.clone().into(),
-            icon: dm_icon.clone(),
-            direct: true,
-            initial: initial(&room.name),
-            tint: tint(&room.id),
-            picture: slint::Image::default(),
-            picture_url: room.avatar.as_deref().unwrap_or_default().into(),
-            discord: true,
-            person: room.person.is_some(),
-            unread: room.unread > 0,
-            ..Default::default()
-        };
-        let rows: Vec<_> = message_requests.iter().map(&request_row).collect();
-        update_model(&self.models.message_requests, rows);
-        let rows: Vec<_> = spam.iter().map(&request_row).collect();
-        update_model(&self.models.spam_rooms, rows);
         if direct {
             listed.retain(|room| {
                 room.category != discord::REQUESTS && room.category != discord::SPAM
@@ -3407,4 +3367,89 @@ pub(super) fn ago(at_ms: u64, now_ms: u64) -> String {
         seconds if seconds < 365 * 86400 => ">30d ago".into(),
         _ => ">1y ago".into(),
     }
+}
+
+/// The requests screen's rows: those waiting for this account's answer,
+/// the friend requests it sent, and spam.
+pub(super) struct RequestRows {
+    pub(super) incoming: Vec<RequestRow>,
+    pub(super) sent: Vec<RequestRow>,
+    pub(super) spam: Vec<RequestRow>,
+}
+
+/// Friend requests and message requests as the requests screen lists them,
+/// someone's friend request and message request on one row.
+pub(super) fn request_rows(
+    state: &AppState,
+    message_requests: &[&yapfast_core::chat::ChatRoom],
+    spam: &[&yapfast_core::chat::ChatRoom],
+    twelve_hour: bool,
+) -> RequestRows {
+    let mut rows = RequestRows {
+        incoming: Vec::new(),
+        sent: Vec::new(),
+        spam: Vec::new(),
+    };
+    let rooms = || message_requests.iter().chain(spam);
+    let with_room = |row: &mut RequestRow, room: &yapfast_core::chat::ChatRoom| {
+        row.room = room.id.as_str().into();
+        row.unread = room.unread > 0;
+        if let Some(preview) = &room.preview {
+            row.message = preview.text.as_str().into();
+            let seconds = preview.at / 1000;
+            let today = yapfast_core::clock::date(yapfast_core::clock::now_ms() / 1000);
+            row.time = if yapfast_core::clock::date(seconds) == today {
+                yapfast_core::clock::time_on(seconds, twelve_hour)
+            } else {
+                yapfast_core::clock::day(seconds)
+            }
+            .into();
+        }
+    };
+    for request in &state.friend_requests {
+        let mut row = RequestRow {
+            id: request.id.as_str().into(),
+            name: request.name.as_str().into(),
+            initial: initial(&request.name),
+            tint: tint(&request.id),
+            picture_url: request.avatar.as_deref().unwrap_or_default().into(),
+            friend: if request.incoming { 1 } else { 2 },
+            ..Default::default()
+        };
+        let room = rooms().find(|room| room.person.as_deref() == Some(request.id.as_str()));
+        if let Some(room) = room {
+            with_room(&mut row, room);
+        }
+        let spammed = request.spam || room.is_some_and(|room| room.category == discord::SPAM);
+        match () {
+            () if spammed => rows.spam.push(row),
+            // A message waits for an answer, whoever asked to be friends.
+            () if request.incoming || room.is_some() => rows.incoming.push(row),
+            () => rows.sent.push(row),
+        }
+    }
+    let befriending = |room: &&&yapfast_core::chat::ChatRoom| {
+        !state
+            .friend_requests
+            .iter()
+            .any(|request| room.person.as_deref() == Some(request.id.as_str()))
+    };
+    for (list, rooms) in [
+        (&mut rows.incoming, message_requests),
+        (&mut rows.spam, spam),
+    ] {
+        for room in rooms.iter().filter(befriending) {
+            let mut row = RequestRow {
+                id: room.person.as_deref().unwrap_or(&room.id).into(),
+                name: room.name.as_str().into(),
+                initial: initial(&room.name),
+                tint: tint(&room.id),
+                picture_url: room.avatar.as_deref().unwrap_or_default().into(),
+                ..Default::default()
+            };
+            with_room(&mut row, room);
+            list.push(row);
+        }
+    }
+    rows
 }

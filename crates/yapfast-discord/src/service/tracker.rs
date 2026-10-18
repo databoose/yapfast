@@ -2,14 +2,14 @@
 //! and settings, kept current from dispatched events.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
 
 use serde_json::Value;
 
 use super::{
-    Account, Conversation, DO_NOT_DISTURB, Friend, FriendRequest, Live, Snapshot, Status,
+    Account, Conversation, DO_NOT_DISTURB, Friend, FriendRequest, Live, Preview, Snapshot, Status,
     VoiceMember, VoiceServer,
     marks::{Marks, Published},
     now_ms, server,
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     event::Event,
     member_list::{self, ListedMember, Presence},
-    message::Names,
+    message::{Message, Names},
     ready::{self, PRIVATE, Private, Server},
     settings::{self, CustomStatus},
     stream::{self, StreamServer},
@@ -90,6 +90,10 @@ pub(super) struct Tracker {
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
+    /// Each message request's latest message, by channel id, and the
+    /// requests whose message was asked of Discord.
+    previews: HashMap<String, Preview>,
+    previews_asked: HashSet<String>,
     /// The RTC server of each stream this account shares or watches, by key.
     streams: HashMap<String, String>,
     /// The channel or thread on screen, and a thread beside it, each of
@@ -131,6 +135,8 @@ impl Tracker {
             custom_status: None,
             afk_timeout: settings::AFK_TIMEOUT,
             requests: HashMap::new(),
+            previews: HashMap::new(),
+            previews_asked: HashSet::new(),
             streams: HashMap::new(),
             viewing: None,
             beside: None,
@@ -813,6 +819,83 @@ impl Tracker {
         self.private.push(private);
     }
 
+    /// Message requests whose latest message is neither known nor asked
+    /// for, which count as asked for now. Previews of what's no longer a
+    /// request go.
+    pub(super) fn previews_wanted(&mut self) -> Vec<String> {
+        let requests: HashSet<&str> = self
+            .private
+            .iter()
+            .filter(|private| private.request)
+            .map(|private| private.id.as_str())
+            .collect();
+        self.previews.retain(|id, _| requests.contains(id.as_str()));
+        let wanted: Vec<String> = requests
+            .into_iter()
+            .filter(|id| !self.previews.contains_key(*id) && !self.previews_asked.contains(*id))
+            .map(str::to_owned)
+            .collect();
+        self.previews_asked.extend(wanted.iter().cloned());
+        wanted
+    }
+
+    /// Takes in Discord's supplemental data for message requests,
+    /// `[{channel_id, message_preview}]`; returns whether a preview changed.
+    pub(super) fn put_previews(&mut self, found: &Value) -> bool {
+        let mut changed = false;
+        for entry in found.as_array().into_iter().flatten() {
+            if let Some(message) = crate::message::parse(&entry["message_preview"]) {
+                changed |= self.preview(&message);
+            }
+        }
+        changed
+    }
+
+    /// Keeps a message in a message request as its preview, unless a newer
+    /// one is; returns whether the preview changed.
+    pub(super) fn preview(&mut self, message: &Message) -> bool {
+        let channel = &message.channel_id;
+        if !self
+            .private
+            .iter()
+            .any(|private| private.id == *channel && private.request)
+        {
+            return false;
+        }
+        if self
+            .previews
+            .get(channel)
+            .is_some_and(|known| known.id.parse::<u64>().ok() > message.id.parse().ok())
+        {
+            return false;
+        }
+        let text = self
+            .names
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .render(None, &message.content);
+        let preview = Preview {
+            id: message.id.clone(),
+            text,
+            files: message.attachments.len(),
+        };
+        self.previews.insert(channel.clone(), preview.clone()) != Some(preview)
+    }
+
+    /// A message request's preview was deleted: it's asked for again.
+    pub(super) fn unpreview(&mut self, channel: &str, id: &str) -> bool {
+        if !self
+            .previews
+            .get(channel)
+            .is_some_and(|known| known.id == id)
+        {
+            return false;
+        }
+        self.previews.remove(channel);
+        self.previews_asked.remove(channel);
+        true
+    }
+
     /// Learns a friend's presence; returns whether it changed.
     fn presence(&mut self, user: Option<&str>, data: &Value) -> bool {
         let Some(user) = user else {
@@ -1149,6 +1232,10 @@ impl Tracker {
                         elsewhere: false,
                     })
                     .collect();
+                let preview = private
+                    .request
+                    .then(|| self.previews.get(&private.id).cloned())
+                    .flatten();
                 Conversation {
                     id: private.id,
                     name: title,
@@ -1168,6 +1255,7 @@ impl Tracker {
                     ringing,
                     presence: known.map(|(presence, _)| *presence),
                     activity: known.and_then(|(_, activity)| activity.clone()),
+                    preview,
                 }
             })
             .collect()
@@ -2048,6 +2136,44 @@ mod tests {
             "requests count no mentions, and spam isn't unread"
         );
 
+        // Each request is asked for its message once, and shows the newest
+        // it knows; a deleted one is asked for again.
+        let mut wanted = tracker.previews_wanted();
+        wanted.sort();
+        assert_eq!(wanted, ["20", "21"]);
+        assert!(tracker.previews_wanted().is_empty());
+        let message = |id: &str, content: &str| {
+            crate::message::parse(&json!({
+                "id": id, "channel_id": "20", "content": content,
+                "author": {"id": "2", "username": "ann"},
+            }))
+            .unwrap()
+        };
+        assert!(tracker.preview(&message("502", "Later")));
+        assert!(
+            tracker.put_previews(&json!([{"channel_id": "20", "message_preview": {
+                "id": "503", "channel_id": "20", "content": "Latest", "author": {"id": "2"},
+            }}]))
+        );
+        assert!(
+            !tracker.preview(&message("500", "Hello")),
+            "an older message stays out"
+        );
+        let previewed = |tracker: &mut Tracker| {
+            let snapshot = tracker.snapshot();
+            let dm = snapshot
+                .conversations
+                .iter()
+                .find(|dm| dm.id == "20")
+                .unwrap();
+            dm.preview.as_ref().map(|preview| preview.text.clone())
+        };
+        assert_eq!(previewed(&mut tracker).as_deref(), Some("Latest"));
+        assert!(tracker.unpreview("20", "503"));
+        assert_eq!(previewed(&mut tracker), None);
+        assert_eq!(tracker.previews_wanted(), ["20"]);
+        assert!(tracker.preview(&message("504", "Again")));
+
         // Accepting makes it a DM; ignoring removes it.
         tracker.apply(
             &Event::ChannelUpdate,
@@ -2058,6 +2184,12 @@ mod tests {
         assert_eq!(snapshot.conversations.len(), 1);
         assert!(!snapshot.conversations[0].request);
         assert_eq!(snapshot.conversations[0].mentions, 1);
+        assert_eq!(
+            snapshot.conversations[0].preview, None,
+            "a DM shows no request's message"
+        );
+        assert!(tracker.previews_wanted().is_empty());
+        assert!(!tracker.preview(&message("505", "Hi")));
     }
 
     #[test]

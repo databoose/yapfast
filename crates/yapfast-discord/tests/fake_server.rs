@@ -1055,6 +1055,17 @@ async fn talks_to_the_fake_server() {
     discord.add_to_group(&group, &[bob_id]).await.unwrap();
     snapshot_where(&discord, |snapshot| people_in(snapshot) == Some(4)).await;
 
+    // Each request shows its latest message, as Discord's requests list
+    // loads it, and stops once it's answered.
+    snapshot_where(&discord, |snapshot| {
+        snapshot.conversations.iter().any(|dm| {
+            dm.id == erin
+                && dm.preview.as_ref().is_some_and(|preview| {
+                    preview.text.starts_with("Hi Alice, Bob gave me your name")
+                })
+        })
+    })
+    .await;
     // A request can be read before answering it. Accepting Erin's makes it
     // a DM; ignoring the spam removes it.
     let asked = discord
@@ -1073,7 +1084,7 @@ async fn talks_to_the_fake_server() {
         snapshot
             .conversations
             .iter()
-            .any(|dm| dm.id == erin && !dm.request && dm.mentions == 1)
+            .any(|dm| dm.id == erin && !dm.request && dm.mentions == 1 && dm.preview.is_none())
             && !snapshot.conversations.iter().any(|dm| dm.id == frank)
     })
     .await;

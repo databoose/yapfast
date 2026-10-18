@@ -535,6 +535,17 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             activity: dm.activity.clone(),
             parent: None,
             forum: false,
+            preview: dm.preview.as_ref().map(|preview| {
+                Box::new(chat::RequestPreview {
+                    text: match (preview.text.trim(), preview.files) {
+                        ("", 0) => String::new(),
+                        ("", 1) => "Sent a file".into(),
+                        ("", files) => format!("Sent {files} files"),
+                        (text, _) => one_line(&chat::notification_text(text)),
+                    },
+                    at: yapfast_discord::message::snowflake_ms(&preview.id),
+                })
+            }),
         })
         .collect()
 }
@@ -637,6 +648,7 @@ fn server_rooms(
                 ),
                 parent: None,
                 forum: false,
+                preview: None,
             }
         } else {
             ChatRoom {
@@ -677,6 +689,7 @@ fn server_rooms(
                 ),
                 parent: None,
                 forum: channel.forum.is_some(),
+                preview: None,
             }
         });
         channels.push(id);
@@ -743,6 +756,7 @@ fn thread_room(
         upload_limit: yapfast_discord::api::upload_limit(premium, Some(server.premium_tier)),
         parent: Some(parent.id.clone()),
         forum: false,
+        preview: None,
     }
 }
 

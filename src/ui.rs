@@ -1000,9 +1000,10 @@ impl Layout {
 struct Models {
     servers: Rc<VecModel<ServerRow>>,
     rooms: Rc<VecModel<RoomRow>>,
-    /// Discord's message requests and spam, on the requests screen.
-    message_requests: Rc<VecModel<RoomRow>>,
-    spam_rooms: Rc<VecModel<RoomRow>>,
+    /// Discord friend requests and message requests, on the requests screen.
+    requests_incoming: Rc<VecModel<RequestRow>>,
+    requests_sent: Rc<VecModel<RequestRow>>,
+    requests_spam: Rc<VecModel<RequestRow>>,
     messages: Rc<VecModel<MessageRow>>,
     /// The messages of the thread beside the open channel.
     aside_messages: Rc<VecModel<MessageRow>>,
@@ -1040,8 +1041,7 @@ struct Models {
     participant_frames: Rc<VecModel<slint::Image>>,
     /// Who is in the open DM's call, shown above its messages.
     call_people: Rc<VecModel<PersonRow>>,
-    /// Discord friend requests, and friends: all of them, and those around.
-    friend_requests: Rc<VecModel<FriendRequestRow>>,
+    /// Discord friends: all of them, and those around.
     friends: Rc<VecModel<FriendRow>>,
     friends_online: Rc<VecModel<FriendRow>>,
     microphones: Rc<VecModel<SharedString>>,
@@ -1054,8 +1054,9 @@ impl Models {
     fn attach(&self, window: &YapfastWindow) {
         window.set_servers(ModelRc::from(self.servers.clone()));
         window.set_rooms(ModelRc::from(self.rooms.clone()));
-        window.set_message_requests(ModelRc::from(self.message_requests.clone()));
-        window.set_spam_rooms(ModelRc::from(self.spam_rooms.clone()));
+        window.set_requests_incoming(ModelRc::from(self.requests_incoming.clone()));
+        window.set_requests_sent(ModelRc::from(self.requests_sent.clone()));
+        window.set_requests_spam(ModelRc::from(self.requests_spam.clone()));
         window.set_messages(ModelRc::from(self.messages.clone()));
         window.set_aside_messages(ModelRc::from(self.aside_messages.clone()));
         window.set_roster(ModelRc::from(self.roster.clone()));
@@ -1081,7 +1082,6 @@ impl Models {
         window.set_watch_viewers(ModelRc::from(self.watch_viewers.clone()));
         window.set_participant_frames(ModelRc::from(self.participant_frames.clone()));
         window.set_call_people(ModelRc::from(self.call_people.clone()));
-        window.set_friend_requests(ModelRc::from(self.friend_requests.clone()));
         window.set_friends(ModelRc::from(self.friends.clone()));
         window.set_friends_online(ModelRc::from(self.friends_online.clone()));
         window.set_microphones(ModelRc::from(self.microphones.clone()));
