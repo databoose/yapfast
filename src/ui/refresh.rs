@@ -1903,27 +1903,34 @@ impl Adapter {
                         state.can_forward_to(&forwarding.room, room)
                             && room.name.to_lowercase().contains(&forward_query)
                     })
-                    .map(|room| ForwardRow {
-                        id: room.id.clone().into(),
-                        name: room.name.clone().into(),
-                        place: if room.direct {
-                            "Direct message".into()
-                        } else {
-                            state
-                                .servers
-                                .iter()
-                                .find(|server| server.channels.contains(&room.id))
-                                .map_or("Channel".into(), |server| server.name.clone().into())
-                        },
-                        icon: if room.direct {
-                            self.icons.dm.clone()
-                        } else {
-                            self.icons.text.clone()
-                        },
-                        direct: room.direct,
-                        initial: initial(&room.name),
-                        tint: tint(&room.id),
-                        chosen: forwarding.chosen.contains(&room.id),
+                    .map(|room| {
+                        // A channel shows its server's icon, as Discord's dialog does.
+                        let server = state
+                            .servers
+                            .iter()
+                            .find(|server| !room.direct && server.channels.contains(&room.id));
+                        ForwardRow {
+                            id: room.id.clone().into(),
+                            name: room.name.clone().into(),
+                            place: match server {
+                                _ if room.direct => "Direct message".into(),
+                                Some(server) => server.name.clone().into(),
+                                None => "Channel".into(),
+                            },
+                            icon: if room.direct {
+                                self.icons.dm.clone()
+                            } else {
+                                self.icons.text.clone()
+                            },
+                            avatar: room.direct || server.is_some(),
+                            initial: initial(server.map_or(&room.name, |server| &server.name)),
+                            tint: tint(server.map_or(&room.id, |server| &server.id)),
+                            picture_url: server
+                                .map_or(room.avatar.as_deref(), |server| server.icon.as_deref())
+                                .unwrap_or_default()
+                                .into(),
+                            chosen: forwarding.chosen.contains(&room.id),
+                        }
                     })
                     .collect()
             }),

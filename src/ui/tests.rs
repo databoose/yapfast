@@ -1525,6 +1525,12 @@ fn forwarding_and_frequent_reactions_reach_the_window() {
     window.set_forward_query("gam".into());
     window.invoke_forward_search();
     assert_eq!(window.get_forward_targets().row_count(), 1);
+    let games = window.get_forward_targets().row_data(0).unwrap();
+    assert!(games.avatar, "a channel shows its server's icon");
+    assert_eq!(
+        (games.initial.as_str(), games.place.as_str()),
+        ("F", "Friends")
+    );
     window.invoke_forward_choose("games".into());
     assert!(window.get_forward_targets().row_data(0).unwrap().chosen);
     assert_eq!(window.get_forward_chosen(), 1);

@@ -13,7 +13,10 @@ export struct ContactRow {
 
 /// A conversation a message can be forwarded to.
 export struct ForwardRow {
-    id: string, name: string, place: string, icon: image, direct: bool, initial: string, tint: color,
+    id: string, name: string, place: string, icon: image, initial: string, tint: color,
+    /// Shown as an avatar: a DM's person or group icon, or a channel's
+    /// server icon; otherwise as the channel icon.
+    avatar: bool, picture-url: string,
     /// Chosen to forward the message to.
     chosen: bool,
 }
@@ -274,8 +277,8 @@ export component ForwardDialog inherits Rectangle {
                             }
                             HorizontalLayout {
                                 padding-left: 8px; padding-right: 8px; spacing: 12px;
-                                if target.direct: Middle { Avatar { size: 32px; initial: target.initial; tint: target.tint; } }
-                                if !target.direct: Middle {
+                                if target.avatar: Middle { Avatar { size: 32px; initial: target.initial; tint: target.tint; picture-url: target.picture-url; } }
+                                if !target.avatar: Middle {
                                     Rectangle {
                                         width: 32px; height: 32px; border-radius: 16px; background: Theme.field;
                                         Image { source: target.icon; width: 18px; height: 18px; colorize: Theme.secondary; }
