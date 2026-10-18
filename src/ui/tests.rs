@@ -2687,6 +2687,83 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
 }
 
 #[test]
+fn friends_in_a_servers_voice_channel_show_where() {
+    use yapfast_core::chat::{ChatRoom, ChatServer, VoicePerson};
+    let person = |id: &str| VoicePerson {
+        id: id.into(),
+        name: id.into(),
+        ..Default::default()
+    };
+    let room = |id: &str, voice: bool, direct: bool, people: Vec<VoicePerson>| ChatRoom {
+        id: id.into(),
+        network: Network::Discord,
+        capabilities: Network::Discord.capabilities(),
+        name: id.into(),
+        direct,
+        voice,
+        encrypted: false,
+        members: 0,
+        unread: 0,
+        mentions: 0,
+        muted: false,
+        last_read: None,
+        locked: false,
+        read_only: false,
+        slowed: false,
+        category: String::new(),
+        request: false,
+        person: None,
+        people,
+        ringing: Vec::new(),
+        incoming: false,
+        avatar: None,
+        upload_limit: 0,
+        presence: None,
+        activity: None,
+        parent: None,
+        forum: false,
+        preview: None,
+    };
+    let mut state = AppState::default();
+    state.rooms = vec![
+        room("lounge", true, false, vec![person("ann"), person("bob")]),
+        room("general", false, false, Vec::new()),
+        // A DM call isn't a server's voice channel.
+        room("dm", true, true, vec![person("cat")]),
+    ];
+    state.servers = vec![ChatServer {
+        id: "Alpha".into(),
+        name: "Alpha".into(),
+        channels: vec!["lounge".into(), "general".into()],
+        discord: true,
+        muted: false,
+        unavailable: false,
+        icon: None,
+        folder: None,
+        hide_muted: false,
+        pinned: Vec::new(),
+    }];
+    let rooms_by_id = state
+        .rooms
+        .iter()
+        .map(|room| (room.id.as_str(), room))
+        .collect();
+    let places = refresh::voice_places(&state, &rooms_by_id);
+    let mut found: Vec<_> = places
+        .iter()
+        .map(|(&user, place)| (user, place.room, place.channel, place.server))
+        .collect();
+    found.sort_unstable();
+    assert_eq!(
+        found,
+        [
+            ("ann", "lounge", "lounge", "Alpha"),
+            ("bob", "lounge", "lounge", "Alpha"),
+        ]
+    );
+}
+
+#[test]
 fn a_call_shows_on_its_servers_icon_and_its_closed_folder() {
     let folder = yapfast_core::chat::ServerFolder {
         id: "discord-folder:7".into(),

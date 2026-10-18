@@ -2361,6 +2361,7 @@ export component YapfastWindow inherits Window {
                                 filter <=> root.friend-filter;
                                 filter-edited => { root.friend-filter-edited(); }
                                 message(id) => { root.message-friend(id); }
+                                open-voice(id) => { root.open-conversation(id); }
                                 add-friend => { root.open-add-friend(); }
                                 open-friend-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
                             }

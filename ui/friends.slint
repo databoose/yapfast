@@ -156,20 +156,26 @@ export struct FriendRow {
     /// custom emoji's picture.
     activity: string, activity-emoji: string,
     picture-url: string,
+    /// The server voice channel they're in, by room id, with its name and
+    /// its server's; the room is empty when they're in none.
+    voice-room: string, voice-channel: string, voice-server: string,
 }
 
 // A friend in the friends list. Clicking it opens your DM with them.
 export component FriendItem inherits Rectangle {
     in property <FriendRow> friend;
     callback message;
+    /// Their voice channel was clicked, to go to it.
+    callback open-voice;
     /// A right click: where to open their menu in the window.
     callback context-menu(length, length);
+    property <bool> in-voice: root.friend.voice-room != "";
     property <string> status: root.friend.presence == "dnd" ? "Do Not Disturb" : root.friend.presence == "idle" ? "Idle" : root.friend.presence == "online" || root.friend.presence == "mobile" ? "Online" : "Offline";
     property <brush> surface: pointer.has-hover ? Theme.hover : Theme.chat;
     height: 62px; border-radius: 8px;
     background: pointer.has-hover ? Theme.hover : transparent;
     accessible-role: button;
-    accessible-label: root.friend.name + ", " + root.status + (root.friend.activity != "" ? ", " + root.friend.activity : "") + ", message";
+    accessible-label: root.friend.name + ", " + root.status + (root.in-voice ? ", in " + root.friend.voice-channel + " in " + root.friend.voice-server : "") + (root.friend.activity != "" ? ", " + root.friend.activity : "") + ", message";
     accessible-action-default => { root.message(); }
     // Rows are ruled apart, as in Discord's list; hovering a row hides its rule.
     if !pointer.has-hover: Rectangle { x: 10px; y: 0px; width: parent.width - 20px; height: 1px; background: Theme.line; }
@@ -194,8 +200,33 @@ export component FriendItem inherits Rectangle {
         VerticalLayout {
             alignment: center; spacing: 1px; horizontal-stretch: 1;
             Text { text: root.friend.name; color: Theme.text; font-size: 16px; font-weight: 700; overflow: elide; }
-            if root.friend.activity != "" || root.friend.activity-emoji != "": StatusText { text: root.friend.activity; emoji-url: root.friend.activity-emoji; }
-            if root.friend.activity == "" && root.friend.activity-emoji == "": Text { text: root.status; color: Theme.muted; font-size: 13px; overflow: elide; }
+            // The voice channel they're in comes before what they're doing,
+            // as in Discord's Active Now; clicking it goes there.
+            if root.in-voice: HorizontalLayout {
+                alignment: start;
+                Rectangle {
+                    accessible-role: button;
+                    accessible-label: "Go to " + root.friend.voice-channel + " in " + root.friend.voice-server;
+                    accessible-action-default => { root.open-voice(); }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Image {
+                            source: @image-url("icons/volume-2.svg"); width: 14px; height: 14px;
+                            y: (parent.height - self.height) / 2; colorize: Theme.live;
+                        }
+                        Text {
+                            text: root.friend.voice-channel + " — " + root.friend.voice-server;
+                            color: voice-pointer.has-hover ? Theme.text : Theme.muted; font-size: 13px; overflow: elide;
+                        }
+                    }
+                    voice-pointer := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.open-voice(); }
+                    }
+                }
+            }
+            if !root.in-voice && (root.friend.activity != "" || root.friend.activity-emoji != ""): StatusText { text: root.friend.activity; emoji-url: root.friend.activity-emoji; }
+            if !root.in-voice && root.friend.activity == "" && root.friend.activity-emoji == "": Text { text: root.status; color: Theme.muted; font-size: 13px; overflow: elide; }
         }
         Middle {
             IconButton {
@@ -216,6 +247,8 @@ export component FriendsScreen inherits Rectangle {
     in-out property <string> filter;
     callback filter-edited;
     callback message(string);
+    /// A friend's voice channel was clicked: its room id.
+    callback open-voice(string);
     callback add-friend;
     /// A friend's menu was asked for: their id, and where in the window.
     callback open-friend-menu(string, length, length);
@@ -256,6 +289,7 @@ export component FriendsScreen inherits Rectangle {
                 FriendItem {
                     friend: friend;
                     message => { root.message(friend.id); }
+                    open-voice => { root.open-voice(friend.voice-room); }
                     context-menu(x, y) => { root.open-friend-menu(friend.id, x, y); }
                 }
             }

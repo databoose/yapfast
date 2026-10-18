@@ -421,12 +421,14 @@ impl Adapter {
         update_model(&self.models.requests_spam, requests.spam);
         // The friends list, those around first; filtered by the screen's search.
         let friend_query = window.get_friend_filter().to_lowercase();
+        let in_voice = voice_places(state, &rooms_by_id);
         let friend_rows: Vec<_> = state
             .friends
             .iter()
             .filter(|friend| friend.name.to_lowercase().contains(friend_query.trim()))
             .map(|friend| {
                 let (activity, activity_emoji) = activity_line(friend.activity.as_deref());
+                let voice = in_voice.get(friend.id.as_str());
                 FriendRow {
                     id: friend.id.as_str().into(),
                     name: friend.name.as_str().into(),
@@ -438,6 +440,9 @@ impl Adapter {
                         .into(),
                     activity,
                     activity_emoji,
+                    voice_room: voice.map_or("", |place| place.room).into(),
+                    voice_channel: voice.map_or("", |place| place.channel).into(),
+                    voice_server: voice.map_or("", |place| place.server).into(),
                 }
             })
             .collect();
@@ -3010,6 +3015,40 @@ pub(super) fn rail_rows(
 }
 
 /// The voice channel of the call going on, if there is one.
+/// A server voice channel someone is in, as the friends list names it.
+pub(super) struct VoicePlace<'a> {
+    pub room: &'a str,
+    pub channel: &'a str,
+    pub server: &'a str,
+}
+
+/// Who is in a voice channel of a server this account is in, by user id.
+/// DM calls stay out: Discord's friends list shows only servers' channels.
+pub(super) fn voice_places<'a>(
+    state: &'a AppState,
+    rooms_by_id: &HashMap<&str, &'a yapfast_core::chat::ChatRoom>,
+) -> HashMap<&'a str, VoicePlace<'a>> {
+    let mut places = HashMap::new();
+    for server in &state.servers {
+        for channel in &server.channels {
+            let Some(room) = rooms_by_id.get(channel.as_str()).filter(|room| room.voice) else {
+                continue;
+            };
+            for person in &room.people {
+                places.insert(
+                    person.id.as_str(),
+                    VoicePlace {
+                        room: &room.id,
+                        channel: &room.name,
+                        server: &server.name,
+                    },
+                );
+            }
+        }
+    }
+    places
+}
+
 fn call_room(state: &AppState) -> Option<&str> {
     state
         .voice
