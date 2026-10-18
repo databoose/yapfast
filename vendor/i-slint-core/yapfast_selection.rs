@@ -545,6 +545,31 @@ fn copied() -> Option<String> {
     })
 }
 
+/// The selection as copied, if it covers part of the row at `point`, in window coordinates, or
+/// is in a text there outside any list: for a menu opened there to copy it.
+pub fn copied_at(point: LogicalPoint) -> Option<String> {
+    let (scope, rows) = SELECTION.with(|selection| {
+        let selection = selection.borrow();
+        let selection = selection.as_ref()?;
+        Some((selection.scope.upgrade()?, selection.start.row..=selection.end.row))
+    })?;
+    if !window_rect(&scope).contains(point) {
+        return None;
+    }
+    if is_flickable(&scope) {
+        scope.visit_descendants(|item| {
+            if item.downcast::<StyledTextItem>().is_some() {
+                let (_, row_root, row) = place(item);
+                if rows.contains(&row) && window_rect(&row_root).contains(point) {
+                    return core::ops::ControlFlow::Break(());
+                }
+            }
+            core::ops::ControlFlow::Continue(())
+        })?;
+    }
+    copied()
+}
+
 /// Copies the selection, unless the focus is in a text input with a selection of its own, which
 /// copies that instead. Returns whether it copied.
 pub(crate) fn copy(window: &WindowInner) -> bool {

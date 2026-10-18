@@ -540,6 +540,8 @@ export component EmojiPicker inherits Rectangle {
 // picture or video adds what can be done with that.
 export component MessageMenu inherits Rectangle {
     in property <MessageRow> menu-message;
+    /// Text selected in the message, as copied; empty for none.
+    in property <string> selection;
     /// The picture or video right-clicked, by its index in the message's
     /// attachments; -1 for none.
     in property <int> media-index: -1;
@@ -616,6 +618,10 @@ export component MessageMenu inherits Rectangle {
         if root.menu-message.body != "": MenuItem {
             text: "Copy text"; icon: @image-url("icons/copy.svg");
             clicked => { root.copy-text(root.menu-message.body); }
+        }
+        if root.selection != "": MenuItem {
+            text: "Copy selection"; icon: @image-url("icons/text-select.svg");
+            clicked => { root.copy-text(root.selection); }
         }
         if root.menu-message.can-pin && root.menu-message.delivery == "": MenuItem {
             text: root.menu-message.pinned ? "Unpin message" : "Pin message";

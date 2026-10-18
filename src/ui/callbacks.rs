@@ -1163,6 +1163,11 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             adapter.action(&window, Action::CopyAttachment { item, index });
         }
     });
+    window.on_selection_at(|x, y| {
+        i_slint_core::yapfast_selection::copied_at(i_slint_core::lengths::LogicalPoint::new(x, y))
+            .unwrap_or_default()
+            .into()
+    });
     let state = adapter.clone();
     window.on_attachment_link(move |item, index| {
         let adapter = state.borrow();

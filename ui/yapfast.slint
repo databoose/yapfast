@@ -965,6 +965,9 @@ export component YapfastWindow inherits Window {
     callback copy-attachment(string, int);
     /// An attachment's address on the web, or empty when it has none.
     pure callback attachment-link(string, int) -> string;
+    /// The text selected in the message at this point in the window, as
+    /// copied, or empty when none is.
+    pure callback selection-at(length, length) -> string;
     callback view-image(string, int);
     callback step-image(int);
     callback close-image();
@@ -1340,8 +1343,11 @@ export component YapfastWindow inherits Window {
     property <int> menu-media: -1;
     property <bool> menu-video;
     property <string> menu-link;
+    // Read as the menu opens: the press on its item clears the selection.
+    property <string> menu-selection;
     function open-message-menu(message: MessageRow, media: int, video: bool) {
         root.menu-message = message;
+        root.menu-selection = root.selection-at(root.anchor-x, root.anchor-y);
         root.menu-aside = false;
         root.menu-media = media;
         root.menu-video = video;
@@ -1506,7 +1512,7 @@ export component YapfastWindow inherits Window {
             ? root.anchor-y + root.anchor-height + (root.anchor-pointer ? 0px : 4px) : max(8px, root.anchor-y - self.height - 4px);
         close-policy: PopupClosePolicy.close-on-click-outside;
         menu-content := MessageMenu {
-            menu-message: root.menu-message; menu-can-react: root.menu-can-react; menu-reactions: root.menu-reactions;
+            menu-message: root.menu-message; selection: root.menu-selection; menu-can-react: root.menu-can-react; menu-reactions: root.menu-reactions;
             can-start-thread: root.can-start-threads && !root.menu-aside;
             start-thread(item) => { root.new-thread(item, "message"); message-menu.close(); }
             view-thread(room) => { root.open-aside(room); message-menu.close(); }
