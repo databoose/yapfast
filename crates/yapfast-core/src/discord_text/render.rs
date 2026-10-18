@@ -443,6 +443,7 @@ pub(super) fn chat_profile(
         // What the member list knows; the profile doesn't say.
         presence: None,
         activity: None,
+        activities: Default::default(),
     }
 }
 
@@ -489,6 +490,7 @@ pub(super) fn chat_member(member: ListedMember) -> ChatMember {
         presence: Some(discord::presence(member.presence)),
         color: member.color,
         activity: member.activity,
+        activities: member.activities,
         roles: member.roles,
         timed_out_until: member.timed_out_until,
     }

@@ -195,6 +195,7 @@ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> 
         upload_limit: 50 * 1024 * 1024,
         presence: None,
         activity: None,
+        activities: Default::default(),
         parent: None,
         forum: false,
         preview: None,
@@ -230,6 +231,7 @@ pub(super) fn preview_members(room: &str) -> Vec<ChatMember> {
             presence: None,
             color: None,
             activity: None,
+            activities: Default::default(),
             roles: Default::default(),
             timed_out_until: None,
         })

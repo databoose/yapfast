@@ -1888,13 +1888,34 @@ function readySupplemental() {
   };
 }
 
+// Factorio, as Discord knows the game: Bob plays it, and its icon comes
+// from GET /applications/public and the CDN's /app-icons/.
+const FACTORIO = "1400000000000000900";
+const applications: Record<string, { id: string; name: string; icon: string | null }> = {
+  [FACTORIO]: { id: FACTORIO, name: "Factorio", icon: "factorioicon" },
+};
+// Bob has played for 42 minutes when the fake starts, and Carol is 80 seconds
+// into an eight-minute song, its cover on /spotify/.
+const fakeStarted = Date.now();
+
 // Who is around and what they're doing, as their presence says.
 const presences: Record<string, { status: string; activities: unknown[]; client_status?: Record<string, string> }> = {
   [users.alice.id]: { status: "online", activities: [] },
-  [users.bob.id]: { status: "dnd", activities: [{ type: 0, name: "Factorio" }] },
+  [users.bob.id]: {
+    status: "dnd",
+    activities: [{ type: 0, name: "Factorio", application_id: FACTORIO, timestamps: { start: fakeStarted - 42 * 60_000 } }],
+  },
   [users.carol.id]: {
     status: "idle",
-    activities: [{ type: 4, name: "Custom Status", state: "back later\nafter dinner, probably", emoji: { name: "🌙", id: null } }],
+    activities: [
+      { type: 4, name: "Custom Status", state: "back later\nafter dinner, probably", emoji: { name: "🌙", id: null } },
+      {
+        type: 2, name: "Spotify", details: "Weightless", state: "Marconi Union", sync_id: "6kkwzB6hXLIONkEk9JciA6",
+        party: { id: `spotify:${users.carol.id}` }, flags: 48,
+        timestamps: { start: fakeStarted - 80_000, end: fakeStarted - 80_000 + 8 * 60_000 },
+        assets: { large_image: "spotify:ab67616d0000b273fake", large_text: "Distance" },
+      },
+    ],
   },
   [users.dave.id]: { status: "offline", activities: [] },
 };
@@ -4016,6 +4037,10 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       setTimeout(() => relationships.get(user.id) === 4 && befriend(user, 1), FRIEND_ACCEPT_MS);
     }
   };
+  // Applications' public objects, as the client asks for activities' icons.
+  if (method === "GET" && path === "/applications/public") {
+    return json(url.searchParams.getAll("application_ids").flatMap((id) => applications[id] ?? []));
+  }
   if (method === "POST" && path === "/users/@me/relationships") {
     if (where() !== "Add Friend") return json({ message: "Invalid Form Body", code: 50035 }, 400);
     const body: any = await req.json().catch(() => ({}));
@@ -5211,6 +5236,10 @@ const server = Bun.serve<SocketData>({
     }
     // Discord's CDN: server icons, avatars and banners, and those uploaded
     // as they came.
+    // Activities' pictures: games' icons and assets, and Spotify's covers.
+    if (req.method === "GET" && /^\/(app-icons\/\d+\/[a-z0-9]+\.png|app-assets\/\d+\/[a-z0-9]+\.png|spotify\/[A-Za-z0-9]+)$/.test(path)) {
+      return new Response(picture(path), { headers: { "content-type": "image/png" } });
+    }
     if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
       const uploaded = uploadedPictures.get(path.slice(path.lastIndexOf("/") + 1, -".png".length));
       if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });

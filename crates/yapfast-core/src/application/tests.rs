@@ -269,6 +269,7 @@ fn members_belong_to_the_selected_text_room() {
         presence: None,
         color: None,
         activity: None,
+        activities: Default::default(),
         roles: Default::default(),
         timed_out_until: None,
     };
@@ -1692,6 +1693,7 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
                 nickname: Some("Annie".into()),
                 presence: None,
                 activity: None,
+                activities: Default::default(),
             }]
         } else {
             vec![]
@@ -2608,6 +2610,7 @@ fn member(id: &str, name: &str) -> ChatMember {
         presence: None,
         color: None,
         activity: None,
+        activities: Default::default(),
         roles: Default::default(),
         timed_out_until: None,
     }
@@ -3325,6 +3328,7 @@ fn matrix_profiles_show_what_the_member_list_knows() {
             presence: None,
             color: None,
             activity: None,
+            activities: Default::default(),
             roles: Default::default(),
             timed_out_until: None,
         }]),
@@ -3445,6 +3449,7 @@ fn discord_friends_are_listed_and_messaged() {
         nickname: None,
         presence,
         activity: None,
+        activities: Default::default(),
     };
     let snapshot = |dms: &[(&str, &str)]| Snapshot {
         status: Status::Online,
@@ -3453,6 +3458,7 @@ fn discord_friends_are_listed_and_messaged() {
         friend_list: vec![
             Friend {
                 activity: Some("making tea".into()),
+                activities: Default::default(),
                 ..friend("2", "Ann", Some(Discord::Idle))
             },
             friend("3", "Bob", None),
@@ -3480,6 +3486,7 @@ fn discord_friends_are_listed_and_messaged() {
             avatar: Some("2.png".into()),
             presence: Some(chat::Presence::Idle),
             activity: Some("making tea".into()),
+            activities: Default::default(),
         }
     );
     let effects = app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
@@ -4725,6 +4732,7 @@ fn discord_dms(extra: Vec<yapfast_discord::service::Conversation>) -> Applicatio
         nickname: None,
         presence: None,
         activity: None,
+        activities: Default::default(),
     };
     let mut conversations = vec![
         Conversation {

@@ -2686,6 +2686,33 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
     assert!(open[1].open && open[3].tint == open[1].tint);
 }
 
+#[cfg(feature = "discord")]
+#[test]
+fn a_profile_shows_activities_as_discord_cards() {
+    let activities = yapfast_discord::activity::activities(&serde_json::json!([
+        {"type": 2, "name": "Spotify", "details": "Weightless", "state": "Marconi Union",
+         "timestamps": {"start": 1_700_000_000_000_u64, "end": 1_700_000_480_000_u64},
+         "assets": {"large_image": "spotify:abc", "large_text": "Distance"}},
+        {"type": 0, "name": "Factorio", "state": "In a party", "party": {"size": [2, 4]}},
+    ]));
+    let rows: Vec<ActivityRow> = profile::activity_rows(&activities).iter().collect();
+    let spotify = &rows[0];
+    assert_eq!(spotify.heading, "LISTENING TO SPOTIFY");
+    assert_eq!(
+        (
+            spotify.name.as_str(),
+            spotify.details.as_str(),
+            spotify.state.as_str()
+        ),
+        ("Weightless", "by Marconi Union", "on Distance")
+    );
+    assert_eq!(spotify.end - spotify.start, 480);
+    assert_eq!(rows[1].state, "In a party (2 of 4)");
+    // The line under the name goes when it only names one of them.
+    assert!(profile::names_an_activity("Playing Factorio", &activities));
+    assert!(!profile::names_an_activity("Playing Chess", &activities));
+}
+
 #[test]
 fn friends_in_a_servers_voice_channel_show_where() {
     use yapfast_core::chat::{ChatRoom, ChatServer, VoicePerson};
@@ -2720,6 +2747,7 @@ fn friends_in_a_servers_voice_channel_show_where() {
         upload_limit: 0,
         presence: None,
         activity: None,
+        activities: Default::default(),
         parent: None,
         forum: false,
         preview: None,
@@ -4161,6 +4189,7 @@ fn requests_list_someone_once_with_their_message() {
         upload_limit: 0,
         presence: None,
         activity: None,
+        activities: Default::default(),
         parent: None,
         forum: false,
         preview: Some(Box::new(RequestPreview {

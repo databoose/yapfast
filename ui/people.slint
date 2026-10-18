@@ -1,6 +1,6 @@
 import { ScrollView, ListView } from "scrollview.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar, StatusText } from "controls.slint";
+import { ActionButton, IconButton, Avatar, StatusText, PictureStore } from "controls.slint";
 import { StatusDot } from "rail.slint";
 
 /// A member of the open room. A heading starts each role's group.
@@ -110,6 +110,28 @@ export struct ProfileServerRow {
 }
 /// A friend a profile's person shares with this account; presence as in MemberRow.
 export struct ProfileFriendRow { id: string, name: string, initial: string, tint: color, picture: image, presence: string }
+/// One of someone's activities, as their profile's card shows it.
+export struct ActivityRow {
+    /// "PLAYING", "LISTENING TO SPOTIFY" and the like.
+    heading: string,
+    /// The game or app, or a Hang status's words, after its emoji's picture.
+    name: string, name-emoji: string,
+    details: string, state: string,
+    /// The addresses of its large and small pictures, and what they name.
+    large-url: string, large-text: string, small-url: string, small-text: string,
+    /// When it started and when it ends, in ActivityClock's seconds; 0 when
+    /// Discord didn't say.
+    start: int, end: int,
+    /// A stream's address.
+    url: string,
+}
+
+/// Now, for activities' timers: seconds since 2020 began, kept current
+/// once a second while a profile with a timed activity shows.
+export global ActivityClock {
+    in property <int> now;
+}
+
 export struct ProfileData {
     id: string, name: string, initial: string, tint: color, picture: image,
     /// A Discord username or Matrix ID, then pronouns when they give them.
@@ -118,6 +140,8 @@ export struct ProfileData {
     banner: image, accent: color, has-accent: bool,
     /// As in MemberRow.
     presence: string, activity: string, activity-emoji: string,
+    /// What they're doing, in full: games, music, streams.
+    activities: [ActivityRow],
     bio: styled-text, has-bio: bool,
     role-rows: [ProfileRoleRow], role-rows-large: [ProfileRoleRow],
     /// Dates: on Discord since, and in this server since.
@@ -132,6 +156,93 @@ export struct ProfileData {
 
 export component ProfileHeading inherits Text {
     color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+}
+
+// An activity's picture: square with rounded corners, asked for as it shows.
+component ActivityPicture inherits Rectangle {
+    in property <string> url;
+    in property <string> label;
+    in property <length> size;
+    property <image> picture: root.url != "" ? PictureStore.picture(root.url, PictureStore.revision) : @image-url("");
+    function request() {
+        if root.url != "" && root.picture.width == 0 {
+            PictureStore.request(root.url);
+        }
+    }
+    init => { root.request(); }
+    changed url => { root.request(); }
+    changed picture => { root.request(); }
+    width: root.size; height: root.size;
+    border-radius: root.size / 6; clip: true;
+    background: Theme.raised;
+    accessible-role: image;
+    accessible-label: root.label;
+    Image { source: root.picture; width: root.size; height: root.size; image-fit: cover; }
+}
+
+// One of someone's activities on their profile, as Discord's card shows it:
+// its pictures, its lines, and how long it's run or how far it's got.
+export component ActivityCard inherits VerticalLayout {
+    in property <ActivityRow> activity;
+    callback open-link(string);
+    property <bool> timed: root.activity.start > 0 || root.activity.end > 0;
+    // A song, with its start and end, shows how far it's got on a bar.
+    property <bool> bar: root.activity.start > 0 && root.activity.end > root.activity.start;
+    property <int> length: root.activity.end - root.activity.start;
+    property <int> played: max(0, min(self.length, ActivityClock.now - root.activity.start));
+    /// `0:42`, `12:05` or `1:02:03`.
+    pure function clock(seconds: int) -> string {
+        let hours = floor(seconds / 3600);
+        let minutes = Math.mod(floor(seconds / 60), 60);
+        let rest = Math.mod(seconds, 60);
+        (hours > 0 ? hours + ":" + (minutes < 10 ? "0" : "") : "") + minutes + ":" + (rest < 10 ? "0" : "") + rest
+    }
+    spacing: 8px;
+    ProfileHeading { text: root.activity.heading; }
+    HorizontalLayout {
+        spacing: 12px;
+        if root.activity.large-url != "": Rectangle {
+            width: 64px; height: 64px;
+            ActivityPicture { size: 64px; url: root.activity.large-url; label: root.activity.large-text; }
+            if root.activity.small-url != "": Rectangle {
+                x: 44px; y: 44px; width: 26px; height: 26px; border-radius: 13px; background: Theme.sidebar;
+                Rectangle {
+                    width: 22px; height: 22px; border-radius: 11px; clip: true;
+                    ActivityPicture { size: 22px; border-radius: 11px; url: root.activity.small-url; label: root.activity.small-text; }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            StatusText { text: root.activity.name; emoji-url: root.activity.name-emoji; color: Theme.text; font-size: 14px; font-weight: 700; }
+            if root.activity.details != "": Text { text: root.activity.details; color: Theme.secondary; font-size: 13px; overflow: elide; }
+            if root.activity.state != "": Text { text: root.activity.state; color: Theme.secondary; font-size: 13px; overflow: elide; }
+            if root.timed && !root.bar: Text {
+                text: root.activity.start > 0
+                    ? root.clock(max(0, ActivityClock.now - root.activity.start)) + " elapsed"
+                    : root.clock(max(0, root.activity.end - ActivityClock.now)) + " left";
+                color: Theme.muted; font-size: 12px;
+            }
+        }
+    }
+    if root.bar: VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: 4px; border-radius: 2px; background: Theme.raised;
+            Rectangle {
+                x: 0px; width: parent.width * root.played / max(1, root.length);
+                border-radius: 2px; background: Theme.text;
+            }
+        }
+        HorizontalLayout {
+            Text { text: root.clock(root.played); color: Theme.muted; font-size: 12px; }
+            Text { text: root.clock(root.length); color: Theme.muted; font-size: 12px; horizontal-alignment: right; }
+        }
+    }
+    if root.activity.url != "": HorizontalLayout {
+        alignment: start;
+        ActionButton { text: "Watch stream"; small: true; clicked => { root.open-link(root.activity.url); } }
+    }
 }
 
 // A server a profile lists as mutual, as a card: what it is, and a way in.
@@ -345,6 +456,10 @@ export component ProfileCard inherits Rectangle {
                             text: root.data.friend == 1 ? "Send friend request" : root.data.friend == 2 ? "Friend request sent" : "Accept friend request";
                             clicked => { root.befriend(); }
                         }
+                    }
+                    for activity in root.data.activities: ActivityCard {
+                        activity: activity;
+                        open-link(url) => { root.open-link(url); }
                     }
                     if root.data.has-bio: VerticalLayout {
                         spacing: 6px;

@@ -398,6 +398,17 @@ impl Api {
         self.json(self.request(Method::GET, &path)).await
     }
 
+    /// Applications' public objects, with their names and icons, as the
+    /// client fetches them for activities: `[{id, name, icon, ...}]`.
+    pub async fn public_applications(&self, ids: &[&str]) -> Result<Value> {
+        let query: Vec<_> = ids
+            .iter()
+            .map(|id| format!("application_ids={id}"))
+            .collect();
+        let path = format!("/applications/public?{}", query.join("&"));
+        self.json(self.request(Method::GET, &path)).await
+    }
+
     /// The message that each of up to 25 message requests is waiting with,
     /// as Discord's requests list shows it: `[{channel_id, message_preview}]`.
     pub async fn request_previews(&self, channels: &[String]) -> Result<Value> {
@@ -1143,7 +1154,11 @@ impl Api {
         let test_file = client::test_server()
             .and_then(|server| url.strip_prefix(server))
             .is_some_and(|path| path.starts_with('/'));
-        if !discord_file(url) && !test_file && !crate::gifs::provider_media(url) {
+        if !discord_file(url)
+            && !test_file
+            && !crate::gifs::provider_media(url)
+            && !crate::activity::outside_picture(url)
+        {
             bail!("not a Discord file");
         }
         let _turn = self.downloads.acquire().await?;
@@ -1178,7 +1193,11 @@ impl Api {
         let test_file = client::test_server()
             .and_then(|server| url.strip_prefix(server))
             .is_some_and(|path| path.starts_with('/'));
-        if !discord_file(url) && !test_file && !crate::gifs::provider_media(url) {
+        if !discord_file(url)
+            && !test_file
+            && !crate::gifs::provider_media(url)
+            && !crate::activity::outside_picture(url)
+        {
             bail!("not a Discord file");
         }
         let mut response = self

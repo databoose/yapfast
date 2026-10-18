@@ -1216,6 +1216,8 @@ struct Adapter {
     window: slint::Weak<YapfastWindow>,
     away: away::Away,
     call_timer: call_timer::CallTimer,
+    /// Ticks ActivityClock while a profile on screen times an activity.
+    activity_clock: slint::Timer,
     navigation: Navigation,
     /// Whether the forward dialog was open at the last refresh.
     forwarding: bool,
@@ -1427,6 +1429,7 @@ impl Adapter {
                 window: window.as_weak(),
                 away: away::Away::default(),
                 call_timer: call_timer::CallTimer::default(),
+                activity_clock: slint::Timer::default(),
                 navigation: Navigation::default(),
                 forwarding: false,
                 selection_version: 0,

@@ -15,6 +15,7 @@ use super::{
     now_ms, server,
 };
 use crate::{
+    activity::{self, Activities},
     event::Event,
     member_list::{self, ListedMember, Presence},
     message::{Message, Names},
@@ -30,6 +31,15 @@ const FRIEND: u64 = 1;
 const BLOCKED: u64 = 2;
 const INCOMING_REQUEST: u64 = 3;
 const OUTGOING_REQUEST: u64 = 4;
+
+/// What Discord says of a friend or a DM's person.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Known {
+    presence: Presence,
+    /// Their custom status, else what they're doing, on one line.
+    activity: Option<String>,
+    activities: Activities,
+}
 
 struct VoiceEntry {
     channel: String,
@@ -68,8 +78,9 @@ pub(super) struct Tracker {
     pub(super) unreads: Unreads,
     /// DMs and group DMs.
     private: Vec<Private>,
-    /// What friends are doing, for group DM member lists.
-    presences: HashMap<String, (Presence, Option<String>)>,
+    /// What friends and DM people are doing: whether they're around, the
+    /// line under their name, and their activities in full.
+    presences: HashMap<String, Known>,
     /// The account's friends, by user id.
     friends: Vec<String>,
     /// Those this account blocked, by user id.
@@ -901,10 +912,11 @@ impl Tracker {
         let Some(user) = user else {
             return false;
         };
-        let presence = (
-            Presence::parse(data),
-            member_list::activity(&data["activities"]),
-        );
+        let presence = Known {
+            presence: Presence::parse(data),
+            activity: member_list::activity(&data["activities"]),
+            activities: activity::activities(&data["activities"]),
+        };
         self.presences.insert(user.to_owned(), presence.clone()) != Some(presence)
     }
 
@@ -922,8 +934,11 @@ impl Tracker {
         let heading = format!("Members — {}", group.recipients.len() + 1);
         let mut members: Vec<_> = people
             .map(|user| {
-                let (presence, activity) = if *user == self.me {
-                    (Presence::Online, None)
+                let known = if *user == self.me {
+                    Known {
+                        presence: Presence::Online,
+                        ..Known::default()
+                    }
                 } else {
                     self.presences.get(user).cloned().unwrap_or_default()
                 };
@@ -933,9 +948,10 @@ impl Tracker {
                     username: names.username(user).map(str::to_owned),
                     avatar: names.avatar(None, user),
                     group: heading.clone(),
-                    presence,
+                    presence: known.presence,
                     color: None,
-                    activity,
+                    activity: known.activity,
+                    activities: known.activities,
                     roles: Arc::default(),
                     timed_out_until: None,
                 }
@@ -1168,8 +1184,11 @@ impl Tracker {
                     }),
                     nickname,
                     avatar: names.avatar(None, user),
-                    presence: known.map(|(presence, _)| *presence),
-                    activity: known.and_then(|(_, activity)| activity.clone()),
+                    presence: known.map(|known| known.presence),
+                    activity: known.and_then(|known| known.activity.clone()),
+                    activities: known
+                        .map(|known| known.activities.clone())
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -1253,8 +1272,11 @@ impl Tracker {
                     muted: private.muted,
                     call,
                     ringing,
-                    presence: known.map(|(presence, _)| *presence),
-                    activity: known.and_then(|(_, activity)| activity.clone()),
+                    presence: known.map(|known| known.presence),
+                    activity: known.and_then(|known| known.activity.clone()),
+                    activities: known
+                        .map(|known| known.activities.clone())
+                        .unwrap_or_default(),
                     preview,
                 }
             })

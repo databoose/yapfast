@@ -2137,7 +2137,28 @@ card lists their roles in role order, when they joined Discord and the server,
 and the servers and friends the account shares with them. Profiles are kept for
 five minutes, at most 32 of them. Presence and activity come from the member
 list, since the profile doesn't carry them. When Discord refuses, the card
-keeps what the member list knew and says so. Matrix members and one-to-one
+keeps what the member list knew and says so.
+
+The profile shows each of the person's activities as a card, as Discord's
+does: what they're playing, streaming, listening to, watching or competing
+in, or their Hang status, headed by what it is ("LISTENING TO SPOTIFY"), with
+its large picture and the small one on its corner, its details and state, and
+their party's size as "(2 of 4)". A game with a start shows how long it has
+run, "42:10 elapsed"; one with only an end, how long is left; a song with
+both, a bar with how far it's got and how long it is. A Spotify song is
+titled by the song, then "by" the artist and "on" the album; a stream has
+"Watch stream". The line under the name goes when it only names one of
+these. The activities come with the presence, from READY's
+`merged_presences`, PRESENCE_UPDATE and the member list, and the DM panel
+follows them live. Their pictures resolve as Discord's client does: an
+application's asset from `/app-assets/`, `mp:` keys through the media proxy,
+and `spotify:`, `youtube:` and `twitch:` keys from those services' image
+hosts, which downloads allow for this alone; keys with anything but plain
+characters show no picture. A game Discord detected has no pictures, so its
+card shows the game's icon, which Yapfast asks for once per game with `GET
+/applications/public?application_ids={id}` and downloads from
+`/app-icons/`. Application pictures stay in the picture cache. The timers
+tick once a second, and only while a profile with one shows. Matrix members and one-to-one
 Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 
 ### Later

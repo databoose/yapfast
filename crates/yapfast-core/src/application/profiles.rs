@@ -28,6 +28,7 @@ impl Application {
             avatar: member.avatar.clone(),
             presence: member.presence,
             activity: member.activity.clone(),
+            activities: member.activities.clone(),
             // Discord's roles come with the profile too.
             roles: role
                 .filter(|_| !discord)
@@ -80,6 +81,9 @@ impl Application {
                 .or_else(|| listed.and_then(|listed| listed.avatar.clone())),
             presence: friend.and_then(|friend| friend.presence),
             activity: friend.and_then(|friend| friend.activity.clone()),
+            activities: friend
+                .map(|friend| friend.activities.clone())
+                .unwrap_or_default(),
             ..Default::default()
         };
         // Their DM's profile is their own; elsewhere, the open
@@ -160,11 +164,13 @@ impl Application {
         {
             view.loading = false;
             match &result {
-                // Presence comes from the member list; the profile doesn't carry it.
+                // Presence and activities come from the member list; the
+                // profile doesn't carry them.
                 Ok(profile) => {
                     view.profile = Profile {
                         presence: profile.presence.or(view.profile.presence),
                         activity: profile.activity.clone().or(view.profile.activity.take()),
+                        activities: std::mem::take(&mut view.profile.activities),
                         ..profile.clone()
                     };
                 }
@@ -189,6 +195,7 @@ pub(super) fn dm_profile(room: &ChatRoom, person: String) -> Profile {
         avatar: room.avatar.clone(),
         presence: room.presence,
         activity: room.activity.clone(),
+        activities: room.activities.clone(),
         id: person,
         ..Default::default()
     }

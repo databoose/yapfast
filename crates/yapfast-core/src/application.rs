@@ -708,6 +708,7 @@ impl AppState {
                 presence: None,
                 color: message.color,
                 activity: None,
+                activities: Default::default(),
                 roles: Default::default(),
                 timed_out_until: None,
             });
@@ -731,6 +732,7 @@ impl AppState {
                 presence: None,
                 color: None,
                 activity: None,
+                activities: Default::default(),
                 roles: Default::default(),
                 timed_out_until: None,
             });
@@ -754,6 +756,7 @@ impl AppState {
             presence: None,
             color: None,
             activity: None,
+            activities: Default::default(),
             roles: Default::default(),
             timed_out_until: None,
         })

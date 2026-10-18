@@ -431,6 +431,7 @@ impl Application {
                 avatar: Some(friend.avatar.clone()),
                 presence: friend.presence.map(discord::presence),
                 activity: friend.activity.clone(),
+                activities: friend.activities.clone(),
             })
             .collect();
         self.state.custom_status =

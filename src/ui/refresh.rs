@@ -2692,10 +2692,15 @@ impl Adapter {
             if let Some(room) = state.selected_room() {
                 data.presence = presence_name(room.presence.or(view.profile.presence)).into();
                 if let Some(activity) = &room.activity {
-                    let (emoji, activity) = yapfast_core::discord::status_parts(activity);
+                    let (emoji, activity) = if names_an_activity(activity, &room.activities) {
+                        (None, "")
+                    } else {
+                        yapfast_core::discord::status_parts(activity)
+                    };
                     data.activity = activity.into();
                     data.activity_emoji = emoji.unwrap_or_default().into();
                 }
+                data.activities = activity_rows(&room.activities);
             }
             let shown = window.get_panel_profile();
             if let Some(data) = changed_profile(&shown, data) {
@@ -2704,6 +2709,7 @@ impl Adapter {
         }
         let Some(view) = &state.profile else {
             window.set_profile_member(SharedString::default());
+            self.tick_activities(window);
             return;
         };
         window.set_profile_large(view.large);
@@ -2716,6 +2722,7 @@ impl Adapter {
         if let Some(data) = changed_profile(&window.get_profile(), data) {
             window.set_profile(data);
         }
+        self.tick_activities(window);
     }
 
     /// The image viewer: the full image once it arrives, the preview until then.

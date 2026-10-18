@@ -25,6 +25,18 @@ pub const FOUND_PICTURES: usize = 4;
 pub const VIEW_WIDTH: u32 = 1920;
 pub const VIEW_HEIGHT: u32 = 1200;
 
+/// What someone is doing on Discord: a game, music, a stream or a Hang
+/// status, shared as the gateway parsed it.
+#[cfg(feature = "discord")]
+pub use yapfast_discord::activity::{Activities, Activity, Kind as ActivityKind};
+
+/// Only Discord says what people are doing.
+#[cfg(not(feature = "discord"))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Activity {}
+#[cfg(not(feature = "discord"))]
+pub type Activities = Arc<[Activity]>;
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ChatRoom {
     pub id: String,
@@ -77,6 +89,8 @@ pub struct ChatRoom {
     /// Discord says, and their custom status or what they're doing.
     pub presence: Option<Presence>,
     pub activity: Option<String>,
+    /// What they're doing, in full, as their profile shows it.
+    pub activities: Activities,
     /// A Discord thread's channel, by room id: the thread lists under it.
     pub parent: Option<String>,
     /// A Discord forum, whose posts show in place of messages.
@@ -137,6 +151,7 @@ pub struct Friend {
     /// what they're doing.
     pub presence: Option<Presence>,
     pub activity: Option<String>,
+    pub activities: Activities,
 }
 
 /// A file waiting in the composer to go with the next message.
@@ -490,6 +505,7 @@ pub struct Profile {
     pub bio: String,
     pub presence: Option<Presence>,
     pub activity: Option<String>,
+    pub activities: Activities,
     /// Their roles, highest first: Discord roles in this server, or Matrix
     /// room roles above member.
     pub roles: Vec<ProfileRole>,
@@ -552,8 +568,10 @@ pub struct ChatMember {
     pub presence: Option<Presence>,
     /// The RGB colour of their name, from their highest coloured Discord role.
     pub color: Option<u32>,
-    /// Their custom status, else what they're doing, from Discord.
+    /// Their custom status, else what they're doing, from Discord, and
+    /// what they're doing in full.
     pub activity: Option<String>,
+    pub activities: Activities,
     /// Their Discord roles' ids, as far as they're known, shared with what
     /// learned them; empty for Matrix. See [`crate::application::Application::server_roles`].
     pub roles: Arc<[String]>,

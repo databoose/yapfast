@@ -533,6 +533,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             upload_limit: yapfast_discord::api::upload_limit(premium, None),
             presence: dm.presence.map(presence),
             activity: dm.activity.clone(),
+            activities: dm.activities.clone(),
             parent: None,
             forum: false,
             preview: dm.preview.as_ref().map(|preview| {
@@ -642,6 +643,7 @@ fn server_rooms(
                 avatar: None,
                 presence: None,
                 activity: None,
+                activities: Default::default(),
                 upload_limit: yapfast_discord::api::upload_limit(
                     premium,
                     Some(server.premium_tier),
@@ -683,6 +685,7 @@ fn server_rooms(
                 avatar: None,
                 presence: None,
                 activity: None,
+                activities: Default::default(),
                 upload_limit: yapfast_discord::api::upload_limit(
                     premium,
                     Some(server.premium_tier),
@@ -753,6 +756,7 @@ fn thread_room(
         avatar: None,
         presence: None,
         activity: None,
+        activities: Default::default(),
         upload_limit: yapfast_discord::api::upload_limit(premium, Some(server.premium_tier)),
         parent: Some(parent.id.clone()),
         forum: false,

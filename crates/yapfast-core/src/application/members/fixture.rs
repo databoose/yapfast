@@ -89,6 +89,7 @@ pub fn member_server(alice: &[&str]) -> Application {
             nickname: None,
             presence: None,
             activity: None,
+            activities: Default::default(),
         }],
         names: SharedNames::new(Arc::new(RwLock::new(names))),
         voice: [(
@@ -135,6 +136,7 @@ pub fn member_server(alice: &[&str]) -> Application {
         presence: None,
         color: None,
         activity: None,
+        activities: Default::default(),
         roles: Default::default(),
         timed_out_until: None,
     };

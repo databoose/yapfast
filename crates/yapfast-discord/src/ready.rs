@@ -1205,12 +1205,12 @@ pub fn display_name(user: &Value) -> Option<&str> {
 }
 
 /// Discord's CDN, or the test server.
-fn cdn() -> &'static str {
+pub(crate) fn cdn() -> &'static str {
     client::test_server().unwrap_or("https://cdn.discordapp.com")
 }
 
 /// Discord's media proxy, or the test server.
-fn media() -> &'static str {
+pub(crate) fn media() -> &'static str {
     client::test_server().unwrap_or("https://media.discordapp.net")
 }
 

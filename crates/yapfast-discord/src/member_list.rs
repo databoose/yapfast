@@ -9,6 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use serde_json::Value;
 
 use crate::{
+    activity::{Activities, activities},
     message::{self, CustomEmoji, Names},
     ready::Server,
 };
@@ -31,6 +32,8 @@ pub struct ListedMember {
     pub color: Option<u32>,
     /// Their custom status, else what they're doing, as Discord shows it.
     pub activity: Option<String>,
+    /// What they're doing, in full, as their profile shows it.
+    pub activities: Activities,
     /// Their roles' ids, shared with [`Names`]; empty outside a server.
     pub roles: Arc<[String]>,
     /// When their timeout ends, in Unix milliseconds, while they're timed
@@ -79,6 +82,10 @@ struct Person {
     roles: Arc<[String]>,
     presence: Presence,
     activity: Option<String>,
+    /// Not saved: a game is over by the next start, and the line above
+    /// says enough until Discord sends the presence again.
+    #[serde(skip)]
+    activities: Activities,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -267,9 +274,13 @@ impl MemberList {
         };
         let presence = Presence::parse(data);
         let activity = activity(&data["activities"]);
-        let changed = person.presence != presence || person.activity != activity;
+        let activities = activities(&data["activities"]);
+        let changed = person.presence != presence
+            || person.activity != activity
+            || person.activities != activities;
         person.presence = presence;
         person.activity = activity;
+        person.activities = activities;
         changed
     }
 
@@ -302,6 +313,7 @@ impl MemberList {
                         presence: person.presence,
                         color: server.and_then(|server| server.color(&person.roles)),
                         activity: person.activity,
+                        activities: person.activities,
                         roles: person.roles,
                         timed_out_until: names.timed_out_until(&self.guild, user),
                     });
@@ -345,6 +357,7 @@ fn row(guild: &str, item: &Value, names: &mut Names, people: &mut HashMap<String
             roles: names.shared_roles(guild, user).unwrap_or_default(),
             presence: Presence::parse(presence),
             activity: activity(&presence["activities"]),
+            activities: activities(&presence["activities"]),
         },
     );
     Row::Member(user.to_owned())
@@ -356,8 +369,8 @@ fn row(guild: &str, item: &Value, names: &mut Names, people: &mut HashMap<String
 /// [`status_emoji`].
 pub fn activity(activities: &Value) -> Option<String> {
     const CUSTOM: u64 = 4;
-    let activities = activities.as_array()?;
     if let Some(custom) = activities
+        .as_array()?
         .iter()
         .find(|activity| activity["type"] == CUSTOM)
     {
@@ -380,17 +393,9 @@ pub fn activity(activities: &Value) -> Option<String> {
             return Some(text.join(" "));
         }
     }
-    activities.iter().find_map(|activity| {
-        let name = activity["name"].as_str()?;
-        Some(match activity["type"].as_u64()? {
-            0 => format!("Playing {name}"),
-            1 => format!("Streaming {}", activity["details"].as_str().unwrap_or(name)),
-            2 => format!("Listening to {name}"),
-            3 => format!("Watching {name}"),
-            5 => format!("Competing in {name}"),
-            _ => return None,
-        })
-    })
+    crate::activity::activities(activities)
+        .iter()
+        .find_map(crate::activity::Activity::line)
 }
 
 /// The custom emoji an [`activity`] starts with, and the words after it.
