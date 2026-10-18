@@ -13,6 +13,9 @@ export struct ServerRow {
     unavailable: bool,
     /// Mentions waiting in its channels, such as "3" or "99+"; empty for none.
     badge: string,
+    /// This account is in a call in one of its voice channels; on a closed
+    /// folder, in one of its servers'.
+    call: bool,
     picture-url: string,
     /// A folder of servers rather than a server: `id` is the folder's, `name`
     /// its tooltip, and `selected`, `unread` and `badge` sum up its servers.
@@ -64,6 +67,25 @@ export struct RoomRow {
     thread-continues: bool,
 }
 
+// A call going on in a server: a white speaker on green, on a thin ring of
+// the rail's colour, at the top right of its icon. The speaker is drawn bold,
+// and a dark copy of it a pixel lower is its shadow, which the light green
+// needs at this size.
+component CallBubble inherits Rectangle {
+    width: 20px; height: 20px; border-radius: self.width / 2;
+    background: Theme.rail;
+    Rectangle {
+        width: 16px; height: 16px; border-radius: self.width / 2;
+        background: Theme.live;
+        Image {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2 + 1px;
+            source: @image-url("icons/volume-2-bold.svg"); width: 12px; height: 12px;
+            colorize: #000000; opacity: 0.45;
+        }
+        Image { source: @image-url("icons/volume-2-bold.svg"); width: 12px; height: 12px; colorize: #ffffff; }
+    }
+}
+
 // A server or the DM home: a circle that becomes a squircle, with a pill at the rail edge.
 export component RailItem inherits Rectangle {
     in property <string> label;
@@ -90,6 +112,8 @@ export component RailItem inherits Rectangle {
     in property <bool> unread;
     /// Mentions waiting, at the bottom right as in Discord; empty for none.
     in property <string> badge;
+    /// In a call here, shown at the top right.
+    in property <bool> call;
     /// Marks a Discord server.
     in property <bool> discord;
     callback clicked;
@@ -140,6 +164,7 @@ export component RailItem inherits Rectangle {
         x: 12px - 2px; y: (parent.height - 48px) / 2 - 2px;
         size: 16px; ring: Theme.rail;
     }
+    if root.call: CallBubble { x: 12px + 48px + 3px - self.width; y: (parent.height - 48px) / 2 - 3px; }
     // The mention count, on a ring of the rail's colour.
     if root.badge != "": Rectangle {
         x: 12px + 48px + 4px - self.width; y: (parent.height + 48px) / 2 + 4px - self.height;
@@ -197,6 +222,8 @@ component FolderItem inherits Rectangle {
     in property <bool> selected;
     in property <bool> unread;
     in property <string> badge;
+    /// In a call in one of its servers, shown at the top right while closed.
+    in property <bool> call;
     callback clicked;
     width: 72px; height: 48px;
     accessible-role: button;
@@ -237,6 +264,7 @@ component FolderItem inherits Rectangle {
         x: 12px - 2px; y: (parent.height - 48px) / 2 - 2px;
         size: 16px; ring: Theme.rail;
     }
+    if root.call && !root.open: CallBubble { x: 12px + 48px + 3px - self.width; y: (parent.height - 48px) / 2 - 3px; }
     if root.badge != "" && !root.open: Rectangle {
         x: 12px + 48px + 4px - self.width; y: (parent.height + 48px) / 2 + 4px - self.height;
         width: max(16px, badge-text.preferred-width + 8px) + 6px; height: 16px + 6px; border-radius: self.height / 2;
@@ -563,11 +591,11 @@ export component ServerRail inherits Rectangle {
                 }
                 if server.folder: FolderItem {
                     y: 0px;
-                    label: server.name + " folder, " + (server.open ? "open" : "closed")
+                    label: server.name + " folder, " + (server.open ? "open" : "closed") + (server.call && !server.open ? ", in a call" : "")
                         + (server.badge != "" ? ", " + server.badge + " mentions" : server.unread ? ", unread" : "");
                     tip: server.name;
                     open: server.open; tint: server.tint; servers: server.preview;
-                    selected: server.selected; unread: server.unread; badge: server.badge;
+                    selected: server.selected; unread: server.unread; badge: server.badge; call: server.call;
                     clicked => { root.toggle-folder(server.id); }
                 }
                 if server.dm: RailItem {
@@ -584,9 +612,11 @@ export component ServerRail inherits Rectangle {
                     y: 0px;
                     initial: server.initial; picture: server.picture; picture-url: server.picture-url;
                     label: server.name + (server.discord && root.matrix-build ? ", Discord" : "") + (server.unavailable ? ", unavailable" : "")
+                        + (server.call ? ", in a call" : "")
                         + (server.badge != "" ? ", " + server.badge + " mentions" : server.unread ? ", unread" : "");
                     tip: server.unavailable ? server.name + " (unavailable in a Discord outage)" : server.discord && root.matrix-build ? server.name + " (Discord)" : server.name;
                     selected: server.selected; unread: server.unread; badge: server.badge; discord: server.discord;
+                    call: server.call;
                     opacity: server.unavailable ? 0.5 : 1;
                     clicked => { root.navigate-server(server.id); }
                     context-menu(x, y) => { root.open-server-menu(server.id, x, y); }

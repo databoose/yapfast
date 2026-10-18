@@ -390,14 +390,8 @@ impl Adapter {
             .iter()
             .map(|room| (room.id.as_str(), room))
             .collect();
-        // Unread DMs come and go above the servers, so the rows keep their
-        // places by id rather than all moving down one.
-        let mut rail = unread_dm_rows(state);
-        rail.push(ServerRow {
-            divider: true,
-            ..Default::default()
-        });
-        rail.extend(rail_rows(state, &rooms_by_id, &self.layout.open_folders));
+        self.rail_call = call_room(state).map(str::to_owned);
+        let rail = rail(state, &rooms_by_id, &self.layout.open_folders);
         update_model_by_id(&self.models.servers, rail, |row| row.id.clone());
         let mut listed_text = false;
         let mut listed_voice = false;
@@ -2263,7 +2257,19 @@ impl Adapter {
     /// ringing, and the devices.
     fn show_voice(&mut self, window: &YapfastWindow) {
         self.ring();
+        // The server of a call shows it on the rail, so the rail follows a
+        // call that starts, ends or moves; other voice events leave it be.
         let state = &self.app.state;
+        if self.rail_call.as_deref() != call_room(state) {
+            self.rail_call = call_room(state).map(str::to_owned);
+            let rooms_by_id = state
+                .rooms
+                .iter()
+                .map(|room| (room.id.as_str(), room))
+                .collect();
+            let rail = rail(state, &rooms_by_id, &self.layout.open_folders);
+            update_model_by_id(&self.models.servers, rail, |row| row.id.clone());
+        }
         let timed = matches!(state.voice.phase, Phase::Connected | Phase::Reconnecting)
             .then(|| state.voice.room.clone())
             .flatten();
@@ -2881,6 +2887,23 @@ pub(super) fn unread_dm_rows(state: &AppState) -> Vec<ServerRow> {
         .collect()
 }
 
+/// The whole rail: unread DMs, a line, then the servers and folders. Unread
+/// DMs come and go above the servers, so the model keeps rows by id rather
+/// than all moving down one.
+fn rail(
+    state: &AppState,
+    rooms_by_id: &HashMap<&str, &yapfast_core::chat::ChatRoom>,
+    open_folders: &std::collections::BTreeSet<String>,
+) -> Vec<ServerRow> {
+    let mut rail = unread_dm_rows(state);
+    rail.push(ServerRow {
+        divider: true,
+        ..Default::default()
+    });
+    rail.extend(rail_rows(state, rooms_by_id, open_folders));
+    rail
+}
+
 /// The rail's rows: each server, and each folder with its servers after it
 /// while it's open.
 pub(super) fn rail_rows(
@@ -2905,12 +2928,19 @@ pub(super) fn rail_rows(
     let selected = |server: &yapfast_core::chat::ChatServer| {
         state.navigation == Navigation::Server(server.id.clone())
     };
+    let call = call_room(state);
+    let in_call = |server: &yapfast_core::chat::ChatServer| {
+        call.is_some_and(|room| server.channels.iter().any(|channel| channel == room))
+    };
     let mut rows = Vec::with_capacity(state.servers.len());
     let mut servers = state.servers.iter().peekable();
     while let Some(server) = servers.next() {
         let Some(folder) = &server.folder else {
             let (unread, mentions) = marks(server);
-            rows.push(server_row(server, selected(server), unread, mentions));
+            rows.push(ServerRow {
+                call: in_call(server),
+                ..server_row(server, selected(server), unread, mentions)
+            });
             continue;
         };
         let mut inside = vec![server];
@@ -2945,6 +2975,7 @@ pub(super) fn rail_rows(
             selected: inside.iter().any(|server| selected(server)),
             unread,
             badge: count_badge(mentions),
+            call: inside.iter().any(|server| in_call(server)),
             discord: true,
             folder: true,
             open,
@@ -2969,12 +3000,22 @@ pub(super) fn rail_rows(
                     nested: true,
                     last: index == last,
                     tint,
+                    call: in_call(server),
                     ..server_row(server, selected(server), unread, mentions)
                 });
             }
         }
     }
     rows
+}
+
+/// The voice channel of the call going on, if there is one.
+fn call_room(state: &AppState) -> Option<&str> {
+    state
+        .voice
+        .active()
+        .then_some(state.voice.room.as_deref())
+        .flatten()
 }
 
 /// Discord's colour for a folder that wasn't given one.

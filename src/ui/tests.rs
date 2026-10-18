@@ -2687,6 +2687,65 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
 }
 
 #[test]
+fn a_call_shows_on_its_servers_icon_and_its_closed_folder() {
+    let folder = yapfast_core::chat::ServerFolder {
+        id: "discord-folder:7".into(),
+        name: None,
+        color: None,
+    };
+    let server = |id: &str, channel: &str, folder: Option<&yapfast_core::chat::ServerFolder>| {
+        yapfast_core::chat::ChatServer {
+            id: id.into(),
+            name: id.into(),
+            channels: vec![channel.into()],
+            discord: true,
+            muted: false,
+            unavailable: false,
+            icon: None,
+            folder: folder.cloned(),
+            hide_muted: false,
+            pinned: Vec::new(),
+        }
+    };
+    let mut state = AppState::default();
+    state.servers = vec![
+        server("Alpha", "alpha-lounge", None),
+        server("Bravo", "bravo-lounge", Some(&folder)),
+    ];
+    let calls = |state: &AppState, open: &[&str]| -> Vec<(String, bool)> {
+        let open = open.iter().map(|&id| id.to_owned()).collect();
+        refresh::rail_rows(state, &HashMap::new(), &open)
+            .iter()
+            .map(|row| (row.id.to_string(), row.call))
+            .collect()
+    };
+    let none = [("Alpha".into(), false), ("discord-folder:7".into(), false)];
+    assert_eq!(calls(&state, &[]), none);
+    // A voice channel chosen but not joined yet shows nothing.
+    state.voice.room = Some("bravo-lounge".into());
+    assert_eq!(calls(&state, &[]), none);
+    state.voice.phase = yapfast_core::voice::Phase::Connected;
+    assert_eq!(
+        calls(&state, &[]),
+        [("Alpha".into(), false), ("discord-folder:7".into(), true)]
+    );
+    // Open, the folder leaves it to the server.
+    assert_eq!(
+        calls(&state, &["discord-folder:7"]),
+        [
+            ("Alpha".into(), false),
+            ("discord-folder:7".into(), true),
+            ("Bravo".into(), true),
+        ]
+    );
+    state.voice.room = Some("alpha-lounge".into());
+    assert_eq!(
+        calls(&state, &[]),
+        [("Alpha".into(), true), ("discord-folder:7".into(), false)]
+    );
+}
+
+#[test]
 fn closing_the_viewer_lets_go_of_its_picture() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

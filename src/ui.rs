@@ -1233,6 +1233,9 @@ struct Adapter {
     aside_restyle: bool,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
+    /// The voice channel of the call the rail last showed, so a voice event
+    /// builds the rail again only when the call moves.
+    rail_call: Option<String>,
     /// A hash of what the friends picker's rows were built from, so they're
     /// built again only once that changes.
     picker_shown: Option<u64>,
@@ -1431,6 +1434,7 @@ impl Adapter {
                 messages: Arc::new(Vec::new()),
                 rows: Vec::new(),
                 sidebar: None,
+                rail_call: None,
                 picker_shown: None,
                 threads_shown: None,
                 forum_shown: None,
