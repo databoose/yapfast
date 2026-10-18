@@ -730,7 +730,7 @@ struct Layout {
     /// Your voice is evened out in calls; on unless turned off.
     level_voice: Option<bool>,
     /// What takes out noise in Discord calls, and how far; DeepFilterNet,
-    /// fully, unless changed.
+    /// at Medium, unless changed.
     noise_suppression: yapfast_core::noise::Suppressor,
     noise_strength: yapfast_core::noise::Strength,
     /// Discord calls take the room's reverb out of the microphone.

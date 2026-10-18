@@ -455,7 +455,21 @@ then only tells the gate which blocks are speech. Yapfast keeps the choice in
 block, after DeepFilterNet's 0.2 s load if switching to it.
 
 "Noise suppression strength" limits how far noise is turned down: Full takes
-out all it can, Medium at most 30 dB and Light 20 dB (`noise_strength`). libDF
+out all it can, Medium at most 30 dB and Light 20 dB (`noise_strength`, Medium
+unless changed). Until 2026-10-18 Full was the default, and it cut people's
+laughs: DeepFilterNet takes high-pitched giggles (a pitch of 440-760 Hz) for
+noise, with its SNR estimate at -15 dB as for typing, and puts out silence for
+them. Low laughs (120-170 Hz) and mumbling came through at 73-100% at every
+strength. Over two rooms, Full sent 0-31% of two giggles, Medium 47-66% and
+Light 85-100%, with sighs and breathy laughs in step (a one-off test, with
+Wikimedia Commons recordings). With mouse clicks and chair creaks in the
+pauses of speech, as below, one more of 11 creaks opened the gate at Medium
+and Light, and no click did; over a minute of steady loud creaking, the gate opened 4
+times at Full, 11-13 at Medium and 23-24 at Light. libDF's threshold for
+silencing a block, a pitch detector and RNNoise's speech probability as a
+second opinion didn't save the giggles: the network's own gains silence them,
+and the last two found at most half of each while firing on typing over a
+hum. libDF
 mixes the microphone back into its output spectrum to keep to the limit;
 RNNoise's output gets the same mix of the input it lines up with, a block
 earlier. Below 20 dB, typing that DeepFilterNet left got past the gate's level

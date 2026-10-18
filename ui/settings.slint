@@ -370,7 +370,7 @@ export component VoiceSettings inherits VerticalLayout {
             current <=> root.noise-strength;
             chosen => { root.preferences-changed(); }
         }
-        Label { text: "Medium and Light leave a little of the room's sound in, which can sound more natural, and let a little more noise through."; }
+        Label { text: "Full takes out the most noise, but can cut off giggles and breathy laughs. Medium and Light leave a little of the room's sound in, which can sound more natural, and let a little more noise through."; }
     }
     if root.discord: SettingsSwitch {
         text: "Take out your room's echo in Discord calls";

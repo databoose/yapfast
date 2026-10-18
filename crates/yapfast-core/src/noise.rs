@@ -25,16 +25,19 @@ pub enum Suppressor {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Strength {
-    /// Takes out all the noise it can.
-    #[default]
+    /// Takes out all the noise it can, and with it high-pitched giggles and
+    /// breathy laughs, which DeepFilterNet takes for noise.
     Full,
+    /// Sends about half of such a laugh, and as little typing in pauses as
+    /// Full does.
+    #[default]
     Medium,
     Light,
 }
 
 impl Strength {
     /// The attenuation limit, in dB.
-    fn limit(self) -> f32 {
+    const fn limit(self) -> f32 {
         match self {
             Strength::Full => FULL,
             Strength::Medium => 30.0,
@@ -52,7 +55,7 @@ const FULL: f32 = 100.0;
 pub const DEFAULT_SENSITIVITY: f32 = -60.0;
 
 static SUPPRESSOR: AtomicU8 = AtomicU8::new(0);
-static LIMIT: AtomicU32 = AtomicU32::new(FULL.to_bits());
+static LIMIT: AtomicU32 = AtomicU32::new(Strength::Medium.limit().to_bits());
 static SENSITIVITY: AtomicU32 = AtomicU32::new(DEFAULT_SENSITIVITY.to_bits());
 static DEREVERB: AtomicBool = AtomicBool::new(false);
 static DECLICK: AtomicBool = AtomicBool::new(true);
