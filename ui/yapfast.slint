@@ -405,8 +405,11 @@ export component YapfastWindow inherits Window {
     /// The picker's sidebar: the grid's headings with no query.
     in property <[EmojiSection]> emoji-sections;
     in-out property <string> emoji-query;
-    /// The forward dialog, open while Yapfast forwards a message of the open room.
+    /// The forward dialog, open while Yapfast forwards a message.
     in property <bool> forward-open;
+    /// Messages here that can be forwarded offer it: Matrix forwards only
+    /// from a verified device.
+    in property <bool> forward-allowed;
     /// A masked link that was clicked, while Yapfast asks before opening it,
     /// and the site it goes to.
     in property <string> leaving-link;
@@ -491,6 +494,12 @@ export component YapfastWindow inherits Window {
     in property <string> forward-preview;
     in property <[ForwardRow]> forward-targets;
     in-out property <string> forward-query;
+    in-out property <string> forward-note;
+    in property <int> forward-chosen;
+    in property <int> forward-limit;
+    in property <string> forward-empty;
+    in property <string> forward-slowmode;
+    in property <string> forward-error;
     /// The platform's color emoji font, so reactions do not fall back to outline glyphs.
     in property <string> emoji-font;
     in-out property <string> homeserver: "https://matrix.org";
@@ -941,7 +950,8 @@ export component YapfastWindow inherits Window {
     callback pin-message(string);
     callback emoji-search(string);
     callback start-forward(string);
-    callback forward-to(string);
+    callback forward-choose(string);
+    callback forward-send(string);
     callback forward-search;
     callback close-forward;
     callback visit-leaving-link;
@@ -1501,7 +1511,7 @@ export component YapfastWindow inherits Window {
             start-thread(item) => { root.new-thread(item, "message"); message-menu.close(); }
             view-thread(room) => { root.open-aside(room); message-menu.close(); }
             view-reactions(item) => { root.view-reactions(item, ""); message-menu.close(); }
-            emoji-font: root.emoji-font; composer-enabled: root.composer-enabled; trusted: root.trusted; preview: root.preview;
+            emoji-font: root.emoji-font; composer-enabled: root.composer-enabled; forward-allowed: root.forward-allowed; preview: root.preview;
             react(item, key) => { root.react(item, key); message-menu.close(); }
             open-picker(item) => { root.open-picker(item); message-menu.close(); }
             edit(item) => { root.edit(item); root.focus-composer-of-menu(); message-menu.close(); }
@@ -2080,7 +2090,7 @@ export component YapfastWindow inherits Window {
                                     if (event.text == "c" || event.text == "C") && root.keyed-message.body != "" {
                                         root.copy-text(root.keyed-message.body); return accept;
                                     }
-                                    if (event.text == "f" || event.text == "F") && root.keyed-message.can-forward && (root.trusted || root.preview) {
+                                    if (event.text == "f" || event.text == "F") && root.keyed-message.can-forward && root.forward-allowed {
                                         root.start-forward(root.keyed-message.item); return accept;
                                     }
                                     return reject;
@@ -3111,9 +3121,13 @@ export component YapfastWindow inherits Window {
     // Forwarding a message; see ForwardDialog.
     if root.forward-open: ForwardDialog {
         forward-preview: root.forward-preview; forward-targets: root.forward-targets;
-        forward-query <=> root.forward-query;
+        forward-query <=> root.forward-query; forward-note <=> root.forward-note;
+        forward-chosen: root.forward-chosen; forward-limit: root.forward-limit;
+        forward-empty: root.forward-empty; forward-slowmode: root.forward-slowmode;
+        forward-error: root.forward-error;
         forward-search => { root.forward-search(); }
-        forward-to(id) => { root.forward-to(id); }
+        forward-choose(id) => { root.forward-choose(id); }
+        forward-send(note) => { root.forward-send(note); }
         close-forward => { root.close-forward(); }
     }
     // A masked link, before it opens; see LeavingDialog.

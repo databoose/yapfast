@@ -373,6 +373,7 @@ impl Tracker {
                 known.icon = update.icon;
                 known.premium_tier = update.premium_tier;
                 known.default_level = update.default_level;
+                known.forwarding_disabled = update.forwarding_disabled;
                 self.sort_servers();
                 true
             }

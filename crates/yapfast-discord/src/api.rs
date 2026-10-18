@@ -33,6 +33,9 @@ pub struct Sending<'a> {
 
 /// The message flag of `@silent`: no push or desktop notifications.
 const SUPPRESS_NOTIFICATIONS: u64 = 1 << 12;
+/// The type of a message reference that forwards the message, rather than
+/// replying to it.
+const FORWARD: u64 = 1;
 /// The most messages one history request returns.
 pub const PAGE: usize = 50;
 
@@ -332,15 +335,54 @@ impl Api {
             .await
     }
 
-    /// Sends a message of text alone from a menu, such as the link Invite
-    /// to Server sends, saying so as Discord's client does.
-    pub async fn send_from_menu(&self, channel: &str, content: &str, nonce: &str) -> Result<Value> {
+    /// Sends a message of text alone from somewhere other than the
+    /// composer, saying where as Discord's client does: `context_menu` for
+    /// the link Invite to Server sends, `forwarding` for the message added
+    /// to a forward.
+    pub async fn send_from(
+        &self,
+        place: &str,
+        channel: &str,
+        content: &str,
+        nonce: &str,
+        silent: bool,
+    ) -> Result<Value> {
+        let mut body = message_body(content, nonce);
+        if silent {
+            body["flags"] = SUPPRESS_NOTIFICATIONS.into();
+        }
         let path = format!("/channels/{channel}/messages");
-        let request = with_json(
-            self.request(Method::POST, &path),
-            &message_body(content, nonce),
-        )
-        .header("X-Context-Properties", context("context_menu"));
+        let request = with_json(self.request(Method::POST, &path), &body)
+            .header("X-Context-Properties", context(place));
+        self.json(request).await
+    }
+
+    /// Forwards message `id` of `channel`, in server `guild` if any, to
+    /// `target`, as Discord's client does: a message with no content of its
+    /// own whose reference is a forward. Discord copies the original into
+    /// it.
+    pub async fn forward(
+        &self,
+        guild: Option<&str>,
+        channel: &str,
+        id: &str,
+        target: &str,
+        nonce: &str,
+        silent: bool,
+    ) -> Result<Value> {
+        let mut body = message_body("", nonce);
+        if silent {
+            body["flags"] = SUPPRESS_NOTIFICATIONS.into();
+        }
+        body["message_reference"] = json!({
+            "guild_id": guild,
+            "channel_id": channel,
+            "message_id": id,
+            "type": FORWARD,
+        });
+        let path = format!("/channels/{target}/messages");
+        let request = with_json(self.request(Method::POST, &path), &body)
+            .header("X-Context-Properties", context("forwarding"));
         self.json(request).await
     }
 

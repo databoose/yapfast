@@ -123,11 +123,16 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   32 tooltips' names while their counts stay, and the window's people only
   while it's open. Matrix rooms answer from the timeline, which holds every
   reaction's senders.
-- Forward a sent message to any encrypted DM or channel from a dialog with a
-  search field; each conversation can receive it once per forward. Yapfast sends
-  the message's current content as a new message, without its reply quote. An
-  encrypted attachment keeps its uploaded file, and its key travels in the new
-  encrypted event. Delete asks for confirmation, then
+- Forward a sent message from a dialog with a search field: choose up to five
+  conversations on the message's own network, add a message if you like, and
+  send; with one chosen, it opens. On Matrix, Yapfast forwards only into
+  encrypted conversations and sends the message's current content as a new
+  message, without its reply quote. An encrypted attachment keeps its uploaded
+  file, and its key travels in the new encrypted event. On Discord it forwards
+  as Discord's client does ([Forwarding](discord.md#forwarding)). The message
+  added goes after the forward as a message of its own. If a forward fails
+  somewhere, the dialog opens again with those conversations chosen and why.
+  Delete asks for confirmation, then
   redacts the message for everyone. Replies quote the original; edits are marked
   "(edited)". Reply and edit modes show above the composer, with Cancel.
   Cancelling an edit restores the draft it replaced.

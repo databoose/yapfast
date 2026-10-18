@@ -36,6 +36,23 @@ const FORWARD: u64 = 1;
 
 /// The message flag that hides its embeds.
 const SUPPRESS_EMBEDS: u64 = 1 << 2;
+/// The message flags Discord's client forwards a message with: crossposts,
+/// hidden embeds, threads, @silent, voice messages, forwards and the like,
+/// but not ephemeral or loading messages, or flags it doesn't know.
+const FORWARDABLE_FLAGS: u64 = 1 << 0
+    | 1 << 1
+    | SUPPRESS_EMBEDS
+    | 1 << 4
+    | 1 << 5
+    | 1 << 8
+    | 1 << 9
+    | 1 << 10
+    | 1 << 12
+    | 1 << 13
+    | 1 << 14
+    | 1 << 15
+    | 1 << 19
+    | 1 << 20;
 
 /// Sticker formats: PNG and APNG show as pictures, as do GIFs, but not Lottie.
 const STICKER_PNG: u64 = 1;
@@ -115,6 +132,10 @@ pub struct Message {
     /// shows as its own.
     #[serde(default)]
     pub forwarded: bool,
+    /// Can be forwarded, as Discord's client decides from the message
+    /// alone: written, and without a poll, a call or an activity.
+    #[serde(default)]
+    pub forwardable: bool,
 }
 
 /// A thread a message leads to, as the message carried it; the thread as
@@ -386,6 +407,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         message.channel_id = value["channel_id"].as_str().unwrap_or_default().into();
         message.nonce = None;
         message.editable = false;
+        message.forwardable = false;
         message.thread = None;
         return Some(message);
     }
@@ -572,6 +594,17 @@ pub fn parse(value: &Value) -> Option<Message> {
         },
         pinned: value["pinned"].as_bool().unwrap_or(false),
         forwarded,
+        forwardable: written(kind)
+            && value["flags"].as_u64().unwrap_or_default() & !FORWARDABLE_FLAGS == 0
+            && [
+                "poll",
+                "call",
+                "activity",
+                "activity_instance",
+                "shared_client_theme",
+            ]
+            .iter()
+            .all(|field| value[*field].is_null()),
     })
 }
 
@@ -1557,6 +1590,28 @@ mod tests {
         .unwrap();
         assert!(!reply.forwarded);
         assert_eq!(reply.content, "mine");
+    }
+
+    #[test]
+    fn forwards_what_discord_forwards() {
+        let forwardable = |extra: Value| {
+            let mut value = json!({"id": "1", "type": 0, "content": "hi", "author": {"id": "1"}});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            parse(&value).unwrap().forwardable
+        };
+        assert!(forwardable(json!({})));
+        assert!(forwardable(json!({"type": 19, "referenced_message": null})));
+        // A forward, a voice message and an @silent one forward again.
+        assert!(forwardable(
+            json!({"flags": (1 << 14) | (1 << 13) | (1 << 12)})
+        ));
+        // An ephemeral one doesn't, nor a poll, nor a notice.
+        assert!(!forwardable(json!({"flags": 1 << 6})));
+        assert!(!forwardable(json!({"poll": {"question": {"text": "?"}}})));
+        assert!(!forwardable(json!({"type": 6})));
     }
 
     #[test]

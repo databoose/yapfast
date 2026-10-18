@@ -51,6 +51,9 @@ pub struct ChatRoom {
     /// Readable, but this account may not send here, such as a Discord
     /// announcement channel.
     pub read_only: bool,
+    /// A Discord channel or thread whose slowmode this account waits out
+    /// between messages.
+    pub slowed: bool,
     /// The Discord category the channel is listed under, or for a message
     /// request "Message requests" or "Spam"; empty for none.
     pub category: String,
@@ -1286,11 +1289,15 @@ pub enum Command {
         item: String,
         body: String,
     },
-    /// Send an item of the open room again, as a new message in `target`.
+    /// Forward an item of the open room to `target`, then send `note` there
+    /// as a message of its own, if any. On Discord, `silent` notifies
+    /// nobody of either, as `@silent` does.
     Forward {
         room: String,
         item: String,
         target: String,
+        note: Option<String>,
+        silent: bool,
     },
     React {
         room: String,
@@ -1904,7 +1911,7 @@ impl Command {
             | Command::Later(room)
             | Command::Around { room, .. }
             | Command::Present(room) => network(room),
-            // Discord turns down forwarding from or to its channels.
+            // Forwarding doesn't cross networks; Discord says so.
             Command::Forward { room, target, .. } => match network(room) {
                 Route::Matrix => network(target),
                 route => route,
@@ -1917,6 +1924,15 @@ impl Command {
             }
         }
     }
+}
+
+/// What fell short of a forward to one conversation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForwardFailure {
+    /// The message wasn't forwarded there, and why.
+    Forward(String),
+    /// It was, but the message added to it wasn't sent, and why.
+    Note(String),
 }
 
 pub enum Event {
@@ -2161,10 +2177,11 @@ pub enum Event {
         limit: u32,
         result: Result<Vec<Reactor>, String>,
     },
-    /// The send queue of `room` accepted or refused a forwarded message.
+    /// A message was forwarded to `room`, with the message added to it, or
+    /// what fell short.
     Forwarded {
         room: String,
-        result: Result<(), &'static str>,
+        result: Result<(), ForwardFailure>,
     },
     /// A draft saved by an earlier run.
     Draft {
@@ -2852,6 +2869,8 @@ mod tests {
             room: room.clone(),
             item: "1".into(),
             target: target.clone(),
+            note: None,
+            silent: false,
         };
         for (command, route) in [
             (Command::Open(matrix.clone()), Route::Every),

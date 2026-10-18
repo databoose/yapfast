@@ -250,6 +250,14 @@ impl Adapter {
         window.set_preview(state.preview);
         window.set_busy(state.busy);
         window.set_trusted(state.trusted);
+        window.set_forward_allowed(
+            state.preview
+                || state.trusted
+                || state
+                    .selected
+                    .as_deref()
+                    .is_some_and(|room| Network::of(room) == Network::Discord),
+        );
         window.set_online(state.online);
         // Only the sign-in screen offers it, and finding out reads the OS
         // credential store or the disk.
@@ -1828,17 +1836,62 @@ impl Adapter {
         window.set_forward_open(forwarding.is_some());
         if forwarding.is_some() != self.forwarding {
             window.set_forward_query(SharedString::default());
+            window.set_forward_note(
+                forwarding
+                    .map(|forwarding| forwarding.note.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
         }
         let forward_query = window.get_forward_query().to_lowercase();
         window.set_forward_preview(
             forwarding
-                .and_then(|forwarding| state.message(&forwarding.item))
-                .map(|message| match message.attachments.first() {
-                    Some(attachment) if message.body.is_empty() => attachment.name.clone(),
-                    _ => yapfast_core::chat::plain_snippet(&message.body),
-                })
+                .map(|forwarding| forwarding.quote.as_str())
                 .unwrap_or_default()
                 .into(),
+        );
+        window.set_forward_limit(yapfast_core::application::FORWARD_LIMIT as i32);
+        window
+            .set_forward_chosen(forwarding.map_or(0, |forwarding| forwarding.chosen.len()) as i32);
+        window.set_forward_error(
+            forwarding
+                .and_then(|forwarding| forwarding.error.as_deref())
+                .unwrap_or_default()
+                .into(),
+        );
+        let discord =
+            forwarding.is_some_and(|forwarding| Network::of(&forwarding.room) == Network::Discord);
+        window.set_forward_empty(
+            if !forward_query.is_empty() {
+                "No conversations match."
+            } else if discord {
+                "There's nowhere to forward to."
+            } else {
+                "There's nowhere to forward to yet. Yapfast forwards Matrix messages only into encrypted conversations."
+            }
+            .into(),
+        );
+        // As Discord's client warns, the message added doesn't go where
+        // slowmode would hold it.
+        let slowed: Vec<String> = forwarding
+            .into_iter()
+            .flat_map(|forwarding| &forwarding.chosen)
+            .filter_map(|id| state.rooms.iter().find(|room| room.id == *id))
+            .filter(|room| room.slowed)
+            .map(|room| state.destination(room))
+            .collect();
+        window.set_forward_slowmode(
+            match slowed.as_slice() {
+                [] => String::new(),
+                [one] => {
+                    format!("The message you added will not be sent to slowmode channel: {one}.")
+                }
+                many => format!(
+                    "The message you added will not be sent to slowmode channels: {}.",
+                    many.join(", ")
+                ),
+            }
+            .into(),
         );
         update_model(
             &self.models.forward_targets,
@@ -1847,7 +1900,7 @@ impl Adapter {
                     .rooms
                     .iter()
                     .filter(|room| {
-                        state.can_forward_to(room)
+                        state.can_forward_to(&forwarding.room, room)
                             && room.name.to_lowercase().contains(&forward_query)
                     })
                     .map(|room| ForwardRow {
@@ -1870,7 +1923,7 @@ impl Adapter {
                         direct: room.direct,
                         initial: initial(&room.name),
                         tint: tint(&room.id),
-                        sent: forwarding.sent.contains(&room.id),
+                        chosen: forwarding.chosen.contains(&room.id),
                     })
                     .collect()
             }),

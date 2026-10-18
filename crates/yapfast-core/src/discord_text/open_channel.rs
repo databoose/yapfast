@@ -1167,12 +1167,18 @@ impl OpenChannel {
                     != 0
             })
         });
+        let may_forward = server.as_deref().is_none_or(|server| {
+            server
+                .channel(&self.channel)
+                .is_some_and(|channel| server.forwards_from(channel, &me, &server.my_roles))
+        });
         let rendering = Rendering {
             names: discord.names_version(),
             me: me.clone(),
             blocked: snapshot.blocked.clone(),
             server: server.clone(),
             may_pin,
+            may_forward,
         };
         if !rendering.alike(&self.rendered_with) {
             self.rendered.clear();
@@ -1407,7 +1413,7 @@ impl OpenChannel {
             can_edit: own && message.editable,
             can_delete: own,
             can_react: ordinary,
-            can_forward: false,
+            can_forward: message.forwardable && self.rendered_with.may_forward,
             pinned: message.pinned,
             can_pin: ordinary && self.rendered_with.may_pin,
             thread: self.thread_link(server, message),
@@ -1479,6 +1485,8 @@ pub(super) struct Rendering {
     pub(super) server: Option<Arc<yapfast_discord::ready::Server>>,
     /// This account may pin messages here: anyone may in a DM.
     pub(super) may_pin: bool,
+    /// This account may forward messages from here: anyone may from a DM.
+    pub(super) may_forward: bool,
 }
 
 impl Rendering {
@@ -1510,6 +1518,7 @@ impl Rendering {
             && self.me == other.me
             && self.blocked == other.blocked
             && self.may_pin == other.may_pin
+            && self.may_forward == other.may_forward
             && server
     }
 }

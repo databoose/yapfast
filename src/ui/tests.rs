@@ -1525,10 +1525,23 @@ fn forwarding_and_frequent_reactions_reach_the_window() {
     window.set_forward_query("gam".into());
     window.invoke_forward_search();
     assert_eq!(window.get_forward_targets().row_count(), 1);
-    window.invoke_forward_to("games".into());
-    assert!(window.get_forward_targets().row_data(0).unwrap().sent);
+    window.invoke_forward_choose("games".into());
+    assert!(window.get_forward_targets().row_data(0).unwrap().chosen);
+    assert_eq!(window.get_forward_chosen(), 1);
+    assert_eq!(window.get_forward_limit(), 5);
     window.invoke_close_forward();
     assert!(!window.get_forward_open());
+    // Opened again, it starts afresh; sending closes it and opens the one
+    // conversation chosen.
+    window.invoke_start_forward(message.item.clone());
+    assert_eq!(window.get_forward_chosen(), 0);
+    assert_eq!(window.get_forward_query(), "");
+    window.invoke_forward_choose("games".into());
+    window.invoke_forward_send("see you there".into());
+    assert!(!window.get_forward_open());
+    let shown = window.get_messages();
+    let last = shown.row_data(shown.row_count() - 1).unwrap();
+    assert_eq!(last.body, "see you there");
 
     window.invoke_emoji_search("pizza".into());
     assert_eq!(window.get_emoji_rows().row_count(), 1);

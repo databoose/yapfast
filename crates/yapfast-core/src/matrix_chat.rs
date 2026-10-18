@@ -57,9 +57,9 @@ use tokio::{
 use crate::{
     chat::{
         Attachment, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, Delivery,
-        Direction, Event, History, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES, Notification,
-        Picture, Placement, Reaction, Reactor, Reply, Role, RoomIndex, Start, decode_preview,
-        decode_view, notification_text, plain_snippet, sort_members,
+        Direction, Event, ForwardFailure, History, MAX_MESSAGE_BYTES, MAX_PREVIEW_DOWNLOAD_BYTES,
+        Notification, Picture, Placement, Reaction, Reactor, Reply, Role, RoomIndex, Start,
+        decode_preview, decode_view, notification_text, plain_snippet, sort_members,
     },
     matrix_media,
     network::Network,
@@ -547,8 +547,14 @@ impl Matrix {
                     .map_err(Into::into);
                 let _ = events.send(Event::EditResult { room, item, result });
             }
-            Command::Forward { room, item, target } => {
-                let result = forward(session, open.as_ref(), &room, &item, &target).await;
+            Command::Forward {
+                room,
+                item,
+                target,
+                note,
+                ..
+            } => {
+                let result = forward(session, open.as_ref(), &room, &item, &target, note).await;
                 let _ = events.send(Event::Forwarded {
                     room: target,
                     result,
@@ -1173,6 +1179,7 @@ async fn room_index(client: &Client) -> RoomIndex {
                 .map(|receipt| format!("e:{}", receipt.event_id)),
             locked: false,
             read_only: false,
+            slowed: false,
             category: String::new(),
             request: false,
             person,
@@ -1399,15 +1406,47 @@ fn mentioned(body: &str) -> Mentions {
 }
 
 /// Forward a message's current content, without its reply or edit relations,
-/// into another joined encrypted room. An attachment keeps its encrypted file,
-/// whose key travels inside the new, encrypted event.
+/// into another joined encrypted room, then `note` as a message of its own.
+/// An attachment keeps its encrypted file, whose key travels inside the new,
+/// encrypted event.
 async fn forward(
     session: &Session,
     open: Option<&OpenRoom>,
     room: &str,
     item: &str,
     target: &str,
-) -> Result<(), &'static str> {
+    note: Option<String>,
+) -> Result<(), ForwardFailure> {
+    let target = forward_message(session, open, room, item, target)
+        .await
+        .map_err(|why| ForwardFailure::Forward(why.into()))?;
+    let Some(note) = note else {
+        return Ok(());
+    };
+    check_text(&note).map_err(|why| ForwardFailure::Note(why.into()))?;
+    let mut content = RoomMessageEventContent::text_markdown(&note);
+    content.mentions = Some(mentioned(&note));
+    target
+        .send_queue()
+        .send(content.into())
+        .await
+        .map(|_| ())
+        .map_err(|_| {
+            ForwardFailure::Note(
+                "Yapfast could not queue the message you added. Check your connection.".into(),
+            )
+        })
+}
+
+/// Queues a copy of a message's current content in `target`, which it
+/// gives back.
+async fn forward_message(
+    session: &Session,
+    open: Option<&OpenRoom>,
+    room: &str,
+    item: &str,
+    target: &str,
+) -> Result<matrix_sdk::Room, &'static str> {
     if !session.device_is_trusted().await.unwrap_or(false) {
         return Err(
             "Verify this device before forwarding. Use your recovery key or another Matrix client.",
@@ -1442,10 +1481,10 @@ async fn forward(
         .send_queue()
         .send(RoomMessageEventContent::new(content).into())
         .await
-        .map(|_| ())
         .map_err(
             |_| "Yapfast could not queue the forwarded message. Check your connection and retry.",
-        )
+        )?;
+    Ok(target)
 }
 
 fn mime_for(path: &Path) -> mime::Mime {
@@ -3134,18 +3173,25 @@ mod tests {
                 std::fs::read(&picture).unwrap()
             );
             // Forwarding sends the reply's text, without its quote, and the
-            // encrypted image again, into another room, where both decrypt. The
-            // deleted message can't be forwarded.
+            // encrypted image again, with a message added to it, into another
+            // room, where both decrypt. The deleted message can't be forwarded.
             commands
                 .send(Command::Forward {
                     room: room.clone(),
                     item: original.item.clone(),
                     target: other.to_string(),
+                    note: Some("not sent".into()),
+                    silent: false,
                 })
                 .unwrap();
             receive(&mut events, |event| match event {
                 Event::Forwarded { result, .. } => {
-                    assert_eq!(result, Err("This message can't be forwarded."));
+                    assert_eq!(
+                        result,
+                        Err(ForwardFailure::Forward(
+                            "This message can't be forwarded.".into()
+                        ))
+                    );
                     Some(())
                 }
                 _ => None,
@@ -3157,6 +3203,8 @@ mod tests {
                         room: room.clone(),
                         item: item.clone(),
                         target: other.to_string(),
+                        note: (item == &sent.item).then(|| "have a look".into()),
+                        silent: false,
                     })
                     .unwrap();
                 receive(&mut events, |event| match event {
@@ -3187,6 +3235,9 @@ mod tests {
                 messages
                     .iter()
                     .any(|m| m.body == "plain reply" && m.delivery == Delivery::Sent)
+                    && messages
+                        .iter()
+                        .any(|m| m.body == "have a look" && m.delivery == Delivery::Sent)
                     && messages.iter().any(|m| {
                         m.delivery == Delivery::Sent
                             && m.item.starts_with("e:")

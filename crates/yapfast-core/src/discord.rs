@@ -512,6 +512,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             locked: false,
             // Replying waits until the request is accepted.
             read_only: dm.request,
+            slowed: false,
             category: match (dm.request, dm.spam) {
                 (_, true) => SPAM,
                 (true, false) => REQUESTS,
@@ -546,6 +547,7 @@ fn server_rooms(
     show_hidden: bool,
     premium: u8,
 ) -> (Vec<ChatRoom>, ChatServer) {
+    let me = snapshot.user_id.as_deref().unwrap_or_default();
     let text = server.text_channels.iter().map(|channel| (false, channel));
     let voice = server.voice_channels.iter().map(|channel| (true, channel));
     let mut listed: Vec<_> = text
@@ -619,6 +621,7 @@ fn server_rooms(
                 last_read: None,
                 locked: channel.access != Access::Join,
                 read_only: false,
+                slowed: false,
                 category,
                 request: false,
                 person: None,
@@ -658,6 +661,7 @@ fn server_rooms(
                 last_read: read_item(channel.last_read),
                 locked: channel.access == Access::Hidden,
                 read_only: channel.access == Access::Locked,
+                slowed: server.slowed(channel, me, &server.my_roles),
                 category,
                 request: false,
                 person: None,
@@ -679,7 +683,7 @@ fn server_rooms(
         // Each thread's channel is the room listed before the first of them.
         let parent = rooms.len() - 1;
         for thread in threads.remove(channel.id.as_str()).into_iter().flatten() {
-            let room = thread_room(server, thread, &rooms[parent], premium);
+            let room = thread_room(server, thread, &rooms[parent], me, premium);
             channels.push(room.id.clone());
             rooms.push(room);
         }
@@ -706,6 +710,7 @@ fn thread_room(
     server: &yapfast_discord::ready::Server,
     thread: &yapfast_discord::ready::Channel,
     parent: &ChatRoom,
+    me: &str,
     premium: u8,
 ) -> ChatRoom {
     ChatRoom {
@@ -725,6 +730,7 @@ fn thread_room(
         locked: false,
         // Locked, or this account may not write in threads here.
         read_only: thread.access == Access::Locked,
+        slowed: server.slowed(thread, me, &server.my_roles),
         category: parent.category.clone(),
         request: false,
         person: None,
@@ -1237,7 +1243,7 @@ mod tests {
         );
         assert_eq!(rooms[0].id, "discord:10:21");
         assert!(rooms.iter().all(|room| room.network == Network::Discord));
-        assert!(rooms[0].capabilities.categories && !rooms[0].capabilities.forward);
+        assert!(rooms[0].capabilities.categories && rooms[0].capabilities.forward);
         assert_eq!(
             rooms[2].people[0].name, "Ann",
             "who is in voice shows without joining"

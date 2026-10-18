@@ -8,7 +8,7 @@ use std::{
 use crate::{
     chat::{
         self, ChatMember, ChatMessage, ChatRoom, ChatServer, Command, Contact, DiscordCommand,
-        Event, MentionGroup, Picture, Profile, ProfileRole, Reaction, Reply, Role,
+        Event, ForwardFailure, MentionGroup, Picture, Profile, ProfileRole, Reaction, Reply, Role,
     },
     discord,
     mention::{self, Candidate, Target},
@@ -236,11 +236,37 @@ pub struct AddPeople {
 /// The most people in a Discord group DM, this account included.
 pub const GROUP_LIMIT: usize = 10;
 
-/// A message being forwarded, and the conversations it went to.
+/// The most conversations a message is forwarded to at once, as Discord's
+/// client allows.
+pub const FORWARD_LIMIT: usize = 5;
+
+/// A message being forwarded, while its dialog is open.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Forwarding {
+    /// The room the message is in, and its item there.
+    pub room: String,
     pub item: String,
-    pub sent: Vec<String>,
+    /// What the dialog shows of it: its text, or its first file's name.
+    pub quote: String,
+    /// The conversations chosen, in the order chosen, up to
+    /// [`FORWARD_LIMIT`].
+    pub chosen: Vec<String>,
+    /// The message added to it when it was last sent, which the dialog
+    /// shows again after a failure.
+    pub note: String,
+    /// Why it couldn't be forwarded to those chosen, after a try that
+    /// failed there.
+    pub error: Option<String>,
+}
+
+/// A forward sent, until each conversation it went to answers.
+struct ForwardSent {
+    forwarding: Forwarding,
+    waiting: Vec<String>,
+    /// Where it wasn't forwarded, and why.
+    failed: Vec<(String, String)>,
+    /// Where the message added to it wasn't sent, and why.
+    notes_unsent: Vec<(String, String)>,
 }
 
 /// An image attachment shown large, and the message's other images to step to.
@@ -439,7 +465,7 @@ pub struct AppState {
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
     pub confirm_delete: Option<String>,
-    /// The selected room's message being forwarded, while its dialog is open.
+    /// A message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
     pub new_dm: Option<NewDm>,
     /// The selected DM's pinned messages, a search of it, and adding friends
@@ -816,12 +842,18 @@ impl AppState {
     /// `#general`, `@Sam` for a DM, `"Plans"` for a thread, and a group DM
     /// or voice channel by its name alone.
     pub fn upload_destination(&self) -> String {
-        let Some(room) = self.selected_room() else {
-            return String::new();
-        };
+        self.selected_room()
+            .map(|room| self.destination(room))
+            .unwrap_or_default()
+    }
+
+    /// A conversation's name as Discord's client names it where a message
+    /// goes: `#general`, `@Sam` for a DM, `"Plans"` for a thread, and a
+    /// group DM or voice channel by its name alone.
+    pub fn destination(&self, room: &ChatRoom) -> String {
         if room.parent.is_some() {
             format!("\"{}\"", room.name)
-        } else if self.one_to_one().is_some() {
+        } else if room.direct && room.members <= 2 && room.person.is_some() {
             format!("@{}", room.name)
         } else if room.direct || room.voice {
             room.name.clone()
@@ -836,10 +868,15 @@ impl AppState {
             .is_some_and(|room| room.capabilities.spoilers)
     }
 
-    /// Whether a message can be forwarded into this conversation from this
-    /// device. Forwarding doesn't cross into Discord yet.
-    pub fn can_forward_to(&self, room: &ChatRoom) -> bool {
-        !self.busy && room.capabilities.forward && self.writable(room)
+    /// Whether a message of room `from` can be forwarded into this
+    /// conversation from this device: one of the same network that it may
+    /// write in, other than a forum, whose posts start with their own title.
+    pub fn can_forward_to(&self, from: &str, room: &ChatRoom) -> bool {
+        !self.busy
+            && room.network == Network::of(from)
+            && room.capabilities.forward
+            && !room.forum
+            && self.writable(room)
     }
 
     /// How this Discord account stands with a Discord user.
@@ -1015,7 +1052,9 @@ pub enum Action {
     PinMessage(String),
     /// Open the forward dialog for a message of the selected room.
     StartForward(String),
-    /// Forward that message into a conversation.
+    /// Choose a conversation to forward that message to, or leave it out.
+    ChooseForward(String),
+    /// Forward it to those chosen, with this message added.
     Forward(String),
     CloseForward,
     ConfirmDelete,
@@ -1466,6 +1505,8 @@ pub struct Application {
     reaction_uses: HashMap<String, u32>,
     /// Pictures asked for once; they aren't asked for again.
     requested_pictures: HashSet<String>,
+    /// Forwards sent, until each conversation they went to answers.
+    forwards: Vec<ForwardSent>,
     /// The selected room's timeline with the blocked messages
     /// [`AppState::hide_blocked`] left out, to show them again.
     /// Kept with the timeline shown from it, so it's used only while that
@@ -1908,7 +1949,8 @@ impl Application {
             Action::RequestDelete(item) => self.request_delete(item),
             Action::PinMessage(item) => self.pin_message(item),
             Action::StartForward(item) => self.start_forward(item),
-            Action::Forward(target) => self.forward(target),
+            Action::ChooseForward(target) => self.choose_forward(target),
+            Action::Forward(note) => self.forward(note),
             Action::CloseForward => {
                 self.state.forwarding = None;
                 vec![]
@@ -2686,14 +2728,7 @@ impl Application {
                     Err(error) => self.state.notice = Some(error),
                 }
             }
-            Event::Forwarded { room, result } => {
-                if let Err(error) = result {
-                    if let Some(forwarding) = &mut self.state.forwarding {
-                        forwarding.sent.retain(|sent| sent != &room);
-                    }
-                    self.state.notice = Some(error.into());
-                }
-            }
+            Event::Forwarded { room, result } => self.forwarded(room, result),
             Event::Draft { room, body } => {
                 // Text typed since opening the room wins over the saved draft.
                 if self.state.drafts.get(&room).is_none_or(String::is_empty)

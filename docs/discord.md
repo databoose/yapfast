@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio and cameras on real Windows; Discord's push-to-talk; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Posting in forums, pinning messages, forwarding, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Posting in forums, pinning messages, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1213,6 +1213,45 @@ below the screen, which load again; growing downwards it keeps its oldest,
 which are above the rows on screen and would move them if they went, until
 it joins the newest messages.
 
+### Forwarding
+
+Forward, in a message's menu or with F on it, opens "Forward To", as
+Discord's client has it: a search of the conversations the message can go
+to, a checkbox on each, the message as a quote, and "Add an optional
+message...". Up to five can be chosen, after which the rest grey out and
+the heading says "Maximum 5 places at once." Send, or Enter in the
+message field, closes the dialog and forwards to each in parallel; with
+one chosen, that conversation opens.
+
+Each forward is `POST /channels/{target}/messages` with no content and a
+`message_reference` of type 1 (FORWARD) naming the original's message,
+channel and server, with `X-Context-Properties` of `{"location":
+"forwarding"}`, as Discord's client sends it. Discord copies the original
+into the new message's `message_snapshots`, which Yapfast shows under
+"Forwarded". Discord takes no text with a forward (error 160011), so the
+message added goes after it as one of its own, with the same location, to
+each conversation the forward reached. A slowmode channel this account
+doesn't bypass gets the forward alone, as the dialog warns, since the
+second message would wait out the slowmode. `@silent` at the start of the
+message added notifies nobody of either.
+
+Messages forward as Discord's client allows: those written, by a person or
+an app's command, with no poll, call or activity, and none of the flags it
+doesn't forward, such as an ephemeral answer; forwards and voice messages
+forward again. In a server, the account needs Read Message History in the
+channel, and the server mustn't list `FORWARDING_DISABLED` among its
+features. Targets are the DMs, group DMs, channels and threads this account
+may send in, but not forums, whose posts start with a title, nor Matrix
+rooms. Once each conversation answers, Yapfast says "Message forwarded.",
+or opens the dialog again with those it failed in chosen, the message
+added kept, and Discord's reason, so Send retries them. If the forward went
+but the message added didn't, a notice says where.
+
+Discord's client also greys out a channel where the original's files,
+embeds or stickers couldn't be posted, and an age-restricted one. Yapfast
+lists those, and Discord's refusal shows when the forward fails there.
+Mentions and custom emoji in the message added go as typed.
+
 ### Notification settings
 
 Discord keeps the account's notification settings per server, and one set
@@ -1829,7 +1868,7 @@ while a request from the screen is open. Opening one shows its messages with Acc
 composer: replying waits for accepting, as in Discord. Accepting makes it an
 ordinary DM; ignoring removes it, and the sender isn't told. Requests count
 no mentions, spam isn't marked unread, and Yapfast never opens a request on its
-own when it picks a conversation. Forwarding is still open.
+own when it picks a conversation.
 
 The pen in the DM list's header starts a DM: it lists the account's friends
 (from READY's relationships), then anyone else Yapfast knows by name, and
@@ -2004,8 +2043,6 @@ In rough order. The browser covers these until then.
 - Posting in forums, sorting and filtering a forum's posts by tag, its
   gallery layout, and media channels.
 - Pinning and unpinning messages.
-- Forwarding Discord messages, which Discord marks as forwarded, rather than
-  sending their text again.
 - Making and changing server folders.
 - Joining servers by invite.
 - A server's privacy settings: direct messages, message requests and

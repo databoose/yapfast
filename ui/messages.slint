@@ -551,7 +551,9 @@ export component MessageMenu inherits Rectangle {
     in property <[EmojiCell]> menu-reactions;
     in property <string> emoji-font;
     in property <bool> composer-enabled;
-    in property <bool> trusted;
+    /// Forward shows on messages that can be forwarded: Matrix forwards only
+    /// from a verified device.
+    in property <bool> forward-allowed;
     in property <bool> preview;
     out property <length> content-height: menu-content.preferred-height;
     callback react(string, string);
@@ -597,7 +599,7 @@ export component MessageMenu inherits Rectangle {
             text: "Reply"; icon: @image-url("icons/reply.svg");
             clicked => { root.reply(root.menu-message.item); }
         }
-        if root.menu-message.can-forward && (root.trusted || root.preview): MenuItem {
+        if root.menu-message.can-forward && root.forward-allowed: MenuItem {
             text: "Forward"; icon: @image-url("icons/forward.svg");
             clicked => { root.start-forward(root.menu-message.item); }
         }

@@ -87,12 +87,43 @@ impl Application {
     }
 
     pub(super) fn start_forward(&mut self, item: String) -> Vec<Effect> {
-        if self.state.preview || self.state.trusted {
-            self.state.forwarding = self
-                .state
-                .message(&item)
-                .filter(|message| message.can_forward)
-                .map(|_| Forwarding { item, sent: vec![] });
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
+        // Matrix forwards only from a verified device.
+        let allowed =
+            self.state.preview || self.state.trusted || Network::of(&room) == Network::Discord;
+        self.state.forwarding = self
+            .state
+            .message(&item)
+            .filter(|message| allowed && message.can_forward)
+            .map(|message| Forwarding {
+                quote: match message.attachments.first() {
+                    Some(attachment) if message.body.is_empty() => attachment.name.clone(),
+                    _ => chat::plain_snippet(&message.body),
+                },
+                room,
+                item,
+                ..Default::default()
+            });
+        vec![]
+    }
+
+    /// Chooses a conversation to forward to, up to [`FORWARD_LIMIT`] of
+    /// them, or leaves one chosen out.
+    pub(super) fn choose_forward(&mut self, target: String) -> Vec<Effect> {
+        let allowed = self.state.forwarding.as_ref().is_some_and(|forwarding| {
+            self.state
+                .rooms
+                .iter()
+                .any(|room| room.id == target && self.state.can_forward_to(&forwarding.room, room))
+        });
+        if let Some(forwarding) = &mut self.state.forwarding {
+            if let Some(at) = forwarding.chosen.iter().position(|id| *id == target) {
+                forwarding.chosen.remove(at);
+            } else if allowed && forwarding.chosen.len() < FORWARD_LIMIT {
+                forwarding.chosen.push(target);
+            }
         }
         vec![]
     }
@@ -260,52 +291,166 @@ impl Application {
         ))]
     }
 
-    pub(super) fn forward(&mut self, target: String) -> Vec<Effect> {
-        let (Some(forwarding), Some(source)) =
-            (self.state.forwarding.clone(), self.state.selected.clone())
+    /// Forwards the message to the conversations chosen, then `note` to
+    /// each as a message of its own, as Discord's client does: the dialog
+    /// closes, and with one conversation chosen, it opens. Discord's slowmode
+    /// channels get the forward alone.
+    pub(super) fn forward(&mut self, note: String) -> Vec<Effect> {
+        let Some(mut forwarding) = self
+            .state
+            .forwarding
+            .take_if(|forwarding| !forwarding.chosen.is_empty())
         else {
             return vec![];
         };
-        let Some(message) = self.state.message(&forwarding.item).cloned() else {
-            return vec![];
-        };
-        if forwarding.sent.contains(&target)
-            || !self
+        // Discord's `@silent` at the start notifies nobody of either.
+        let silent_note = note
+            .strip_prefix("@silent")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            .filter(|_| Network::of(&forwarding.room) == Network::Discord);
+        let silent = silent_note.is_some();
+        let added = silent_note.unwrap_or(&note).trim();
+        let mut effects = vec![];
+        for target in &forwarding.chosen {
+            let slowed = self
                 .state
                 .rooms
                 .iter()
-                .any(|room| room.id == target && self.state.can_forward_to(room))
-        {
-            return vec![];
+                .any(|room| room.id == *target && room.slowed);
+            let note = (!added.is_empty() && !slowed).then(|| added.to_owned());
+            if self.state.preview {
+                self.forward_sample(&forwarding, target, note);
+            } else {
+                effects.push(Effect::Backend(Command::Forward {
+                    room: forwarding.room.clone(),
+                    item: forwarding.item.clone(),
+                    target: target.clone(),
+                    note,
+                    silent,
+                }));
+            }
         }
-        if let Some(forwarding) = &mut self.state.forwarding {
-            forwarding.sent.push(target.clone());
+        if let [target] = forwarding.chosen.as_slice() {
+            effects.extend(self.dispatch(Action::Open(target.clone())));
         }
+        forwarding.note = note;
+        forwarding.error = None;
         if self.state.preview {
+            self.state.notice = Some("Message forwarded.".into());
+        } else {
+            self.forwards.push(ForwardSent {
+                waiting: forwarding.chosen.clone(),
+                failed: vec![],
+                notes_unsent: vec![],
+                forwarding,
+            });
+        }
+        effects
+    }
+
+    /// Adds the forward to the preview's samples of `target`, with `note`.
+    fn forward_sample(&mut self, forwarding: &Forwarding, target: &str, note: Option<String>) {
+        let Some(message) = self
+            .samples
+            .get(&forwarding.room)
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message.item == forwarding.item)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let sample = |body: String, formatted, attachments, forwarded| {
             let item = uuid::Uuid::new_v4().to_string();
-            let messages = self.samples.entry(target.clone()).or_default();
-            messages.push(Arc::new(ChatMessage {
+            Arc::new(ChatMessage {
                 id: item.clone(),
                 item,
                 author: "You".into(),
                 sender: "You".into(),
                 time: "Local preview".into(),
                 own: true,
-                body: message.body,
-                formatted: message.formatted,
-                attachments: message.attachments,
+                body,
+                formatted,
+                attachments,
+                forwarded,
                 ..sample_actions()
-            }));
-            if target == source {
-                self.state.messages = Arc::new(messages.clone());
-            }
-            return vec![];
+            })
+        };
+        let messages = self.samples.entry(target.to_owned()).or_default();
+        messages.push(sample(
+            message.body.clone(),
+            message.formatted,
+            message.attachments.clone(),
+            true,
+        ));
+        if let Some(note) = note {
+            messages.push(sample(note, true, vec![], false));
         }
-        vec![Effect::Backend(Command::Forward {
-            room: source,
-            item: forwarding.item,
-            target,
-        })]
+        if self.state.selected.as_deref() == Some(target) {
+            self.state.messages = Arc::new(messages.clone());
+        }
+    }
+
+    /// Notes a forward's result in one conversation. Once each of them has
+    /// answered, the dialog opens again for those it failed in, with why.
+    pub(super) fn forwarded(&mut self, room: String, result: Result<(), ForwardFailure>) {
+        let Some(at) = self
+            .forwards
+            .iter()
+            .position(|sent| sent.waiting.contains(&room))
+        else {
+            return;
+        };
+        let sent = &mut self.forwards[at];
+        sent.waiting.retain(|waiting| *waiting != room);
+        match result {
+            Ok(()) => {}
+            Err(ForwardFailure::Forward(why)) => sent.failed.push((room, why)),
+            Err(ForwardFailure::Note(why)) => sent.notes_unsent.push((room, why)),
+        }
+        if !sent.waiting.is_empty() {
+            return;
+        }
+        let ForwardSent {
+            mut forwarding,
+            failed,
+            notes_unsent,
+            ..
+        } = self.forwards.remove(at);
+        let places = |rooms: &[(String, String)]| {
+            rooms
+                .iter()
+                .map(|(id, _)| {
+                    self.state
+                        .rooms
+                        .iter()
+                        .find(|room| room.id == *id)
+                        .map_or_else(|| id.clone(), |room| self.state.destination(room))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let (unsent, unforwarded) = (places(&notes_unsent), places(&failed));
+        if let Some((_, why)) = notes_unsent.first() {
+            self.state.notice = Some(format!(
+                "Forwarded, but the message you added didn't go to {unsent}: {why}"
+            ));
+        } else if failed.is_empty() {
+            self.state.notice = Some("Message forwarded.".into());
+        }
+        let Some((_, why)) = failed.first() else {
+            return;
+        };
+        forwarding.error = Some(format!(
+            "The message couldn't be forwarded to {unforwarded}: {why}"
+        ));
+        forwarding.chosen = failed.into_iter().map(|(id, _)| id).collect();
+        // Another forward's dialog, opened since, stays.
+        if self.state.forwarding.is_none() {
+            self.state.forwarding = Some(forwarding);
+        }
     }
 
     pub(super) fn queue_action(

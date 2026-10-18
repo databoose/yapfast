@@ -376,7 +376,8 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     bind_item!(on_retry, Action::Retry);
     bind_item!(on_cancel_send, Action::CancelSend);
     bind_item!(on_start_forward, Action::StartForward);
-    bind_item!(on_forward_to, Action::Forward);
+    bind_item!(on_forward_choose, Action::ChooseForward);
+    bind_item!(on_forward_send, Action::Forward);
     bind!(on_open_new_dm, Action::OpenNewDm);
     bind!(on_open_add_friend, Action::OpenAddFriend);
     bind!(on_open_requests, Action::OpenDmScreen(DmScreen::Requests));

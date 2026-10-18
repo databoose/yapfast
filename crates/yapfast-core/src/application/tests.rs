@@ -348,45 +348,159 @@ fn frequent_reactions_follow_use_and_fill_with_defaults() {
 }
 
 #[test]
-fn forwarding_sends_a_message_once_to_each_writable_conversation() {
+fn forwarding_sends_a_message_to_the_conversations_chosen() {
     let mut app = Application::default();
     app.dispatch(Action::Preview);
     let item = app.state.messages[1].item.clone();
+    let body = app.state.messages[1].body.clone();
     app.dispatch(Action::StartForward(item.clone()));
-    assert!(app.dispatch(Action::Forward("games".into())).is_empty());
-    app.dispatch(Action::Forward("games".into()));
-    app.dispatch(Action::Forward("lounge".into()));
-    assert_eq!(app.state.forwarding.as_ref().unwrap().sent, ["games"]);
-    app.dispatch(Action::Forward("general".into()));
-    assert_eq!(
-        app.state.messages.last().unwrap().body,
-        app.state.messages[1].body
-    );
-    app.dispatch(Action::CloseForward);
-    app.dispatch(Action::SelectRoom("games".into()));
-    assert!(app.state.messages.last().unwrap().body.contains("co-op"));
+    // Choosing again leaves it out; a voice channel can't be chosen.
+    app.dispatch(Action::ChooseForward("games".into()));
+    app.dispatch(Action::ChooseForward("general".into()));
+    app.dispatch(Action::ChooseForward("general".into()));
+    app.dispatch(Action::ChooseForward("lounge".into()));
+    assert_eq!(app.state.forwarding.as_ref().unwrap().chosen, ["games"]);
+    // With one chosen, the dialog closes and the conversation opens, with
+    // the forward and the message added after it.
+    app.dispatch(Action::Forward("  for you ".into()));
+    assert!(app.state.forwarding.is_none());
+    assert_eq!(app.state.selected.as_deref(), Some("games"));
+    let [.., forward, note] = app.state.messages.as_slice() else {
+        panic!("no forward");
+    };
+    assert!(forward.forwarded && forward.body == body);
+    assert_eq!(note.body, "for you");
+    assert_eq!(app.state.notice.as_deref(), Some("Message forwarded."));
 
     let mut app = connected();
     let mut sent = message("e:$bob", false);
     sent.can_forward = true;
+    sent.body = "Hello there".into();
     app.apply(Event::Timeline {
         room: "dm".into(),
         messages: timeline(vec![sent]),
     });
     app.dispatch(Action::StartForward("e:$bob".into()));
-    assert!(matches!(
-        app.dispatch(Action::Forward("general".into())).as_slice(),
-        [Effect::Backend(Command::Forward { room, item, target })]
-            if room == "dm" && item == "e:$bob" && target == "general"
-    ));
+    assert_eq!(app.state.forwarding.as_ref().unwrap().quote, "Hello there");
+    // Up to five, within the message's network, and nothing goes until Send.
+    let general = app.state.rooms[1].clone();
+    for id in ["c1", "c2", "c3", "c4", "c5"] {
+        app.state.rooms.push(ChatRoom {
+            id: id.into(),
+            ..general.clone()
+        });
+    }
+    app.state.rooms.push(ChatRoom {
+        id: crate::discord::room_id("10", "11"),
+        network: Network::Discord,
+        ..general.clone()
+    });
+    assert!(
+        !app.state
+            .can_forward_to("dm", app.state.rooms.last().unwrap())
+    );
+    for id in ["general", "c1", "c2", "c3", "c4", "c5"] {
+        assert!(app.dispatch(Action::ChooseForward(id.into())).is_empty());
+    }
+    assert_eq!(
+        app.state.forwarding.as_ref().unwrap().chosen,
+        ["general", "c1", "c2", "c3", "c4"]
+    );
+    for id in ["c2", "c3", "c4"] {
+        app.dispatch(Action::ChooseForward(id.into()));
+    }
+    let effects = app.dispatch(Action::Forward("look".into()));
+    let targets: Vec<_> = effects
+        .iter()
+        .map(|effect| match effect {
+            Effect::Backend(Command::Forward {
+                room,
+                item,
+                target,
+                note,
+                silent: false,
+            }) if room == "dm" && item == "e:$bob" && note.as_deref() == Some("look") => {
+                target.as_str()
+            }
+            _ => panic!("not a forward"),
+        })
+        .collect();
+    assert_eq!(targets, ["general", "c1"]);
+    assert_eq!(app.state.selected.as_deref(), Some("dm"), "two stay closed");
+    // Once both answer, the dialog opens again for where it failed, with
+    // the message added and why.
     app.apply(Event::Forwarded {
         room: "general".into(),
-        result: Err("refused"),
+        result: Err(ForwardFailure::Forward("refused".into())),
     });
-    assert!(app.state.forwarding.as_ref().unwrap().sent.is_empty());
-    assert_eq!(app.state.notice.as_deref(), Some("refused"));
+    assert!(app.state.forwarding.is_none());
+    app.apply(Event::Forwarded {
+        room: "c1".into(),
+        result: Ok(()),
+    });
+    let forwarding = app.state.forwarding.as_ref().unwrap();
+    assert_eq!(forwarding.chosen, ["general"]);
+    assert_eq!(forwarding.note, "look");
+    assert_eq!(
+        forwarding.error.as_deref(),
+        Some("The message couldn't be forwarded to #general: refused")
+    );
+    // The message added falling short says so, and doesn't forward again.
+    let effects = app.dispatch(Action::Forward(String::new()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Forward { note: None, .. }), ..]
+    ));
+    assert_eq!(app.state.selected.as_deref(), Some("general"));
+    app.apply(Event::Forwarded {
+        room: "general".into(),
+        result: Err(ForwardFailure::Note("too fast".into())),
+    });
+    assert!(app.state.forwarding.is_none());
+    assert_eq!(
+        app.state.notice.as_deref(),
+        Some("Forwarded, but the message you added didn't go to #general: too fast")
+    );
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));
     assert!(app.state.forwarding.is_none());
+}
+
+#[test]
+fn discord_forwards_skip_the_note_in_slowmode_and_take_silent() {
+    let mut app = connected();
+    let channel = |id: &str, slowed| ChatRoom {
+        id: crate::discord::room_id("10", id),
+        network: Network::Discord,
+        capabilities: Network::Discord.capabilities(),
+        slowed,
+        ..preview_room("x", id, false, 3)
+    };
+    app.state.rooms = vec![
+        channel("11", false),
+        channel("12", true),
+        channel("13", false),
+    ];
+    app.state.discord_online = true;
+    app.state.selected = Some(app.state.rooms[0].id.clone());
+    let mut sent = message("d:5", false);
+    sent.can_forward = true;
+    app.state.messages = Arc::new(timeline(vec![sent]));
+    // A Discord message forwards without Matrix's verified device.
+    app.state.trusted = false;
+    app.dispatch(Action::StartForward("d:5".into()));
+    app.dispatch(Action::ChooseForward(app.state.rooms[1].id.clone()));
+    app.dispatch(Action::ChooseForward(app.state.rooms[2].id.clone()));
+    let notes: Vec<_> = app
+        .dispatch(Action::Forward("@silent see this".into()))
+        .into_iter()
+        .map(|effect| match effect {
+            Effect::Backend(Command::Forward {
+                note, silent: true, ..
+            }) => note,
+            _ => panic!("not a forward"),
+        })
+        .collect();
+    assert_eq!(notes, [None, Some("see this".into())]);
 }
 
 #[test]

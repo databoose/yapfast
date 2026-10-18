@@ -2,9 +2,10 @@
 //! events, carried out on the channels.
 
 use super::{
-    render::{chat_member, mention_groups, notification, publish, send_topic},
+    render::{chat_member, mention_groups, notification, publish, send_topic, sent_id},
     *,
 };
+use crate::chat::ForwardFailure;
 
 /// Why a Discord command fails for a room that isn't Discord's.
 pub(super) const NOT_DISCORD: &str = "That isn't a Discord room.";
@@ -89,13 +90,14 @@ pub fn command(
         | Command::Later(room)
         | Command::Around { room, .. }
         | Command::Present(room) => room.clone(),
-        Command::Forward { room, target, .. }
-            if Network::of(room) == Network::Discord || Network::of(target) == Network::Discord =>
-        {
-            let _ = events.send(Event::Forwarded {
-                room: target.clone(),
-                result: Err("Yapfast can't forward Discord messages yet."),
-            });
+        Command::Forward {
+            room,
+            item,
+            target,
+            note,
+            silent,
+        } => {
+            forward(discord, room, item, target, note, *silent, events);
             return;
         }
         _ => return,
@@ -652,4 +654,73 @@ pub fn live(
         }
         Err(_) => channel.refresh(discord, done),
     }
+}
+
+/// Forwards a Discord message to another Discord conversation, as Discord's
+/// client does, then sends `note` there. Discord turns down a forward
+/// between networks.
+fn forward(
+    discord: Result<&Discord, &str>,
+    room: &str,
+    item: &str,
+    target: &str,
+    note: &Option<String>,
+    silent: bool,
+    events: &UnboundedSender<Event>,
+) {
+    let fail = |why: String| {
+        let _ = events.send(Event::Forwarded {
+            room: target.to_owned(),
+            result: Err(ForwardFailure::Forward(why)),
+        });
+    };
+    let discord = match discord {
+        Ok(discord) => discord,
+        Err(why) => return fail(why.into()),
+    };
+    let (Some((guild, channel)), Some((target_guild, target_channel))) =
+        (discord::parse_room(room), discord::parse_room(target))
+    else {
+        return fail("Forwarding doesn't cross between Discord and Matrix.".into());
+    };
+    let Some(id) = sent_id(item) else {
+        return fail("You can forward that message once it has been sent.".into());
+    };
+    // Checked first, so a message too long to add isn't forwarded without it.
+    if note
+        .as_ref()
+        .is_some_and(|note| note.chars().count() > MAX_CHARS)
+    {
+        return fail("The message you added is over 2,000 characters.".into());
+    }
+    let (discord, events) = (discord.clone(), events.clone());
+    let (source, place) = (
+        [guild, channel, id].map(str::to_owned),
+        [target_guild, target_channel].map(str::to_owned),
+    );
+    let (room, note) = (target.to_owned(), note.clone());
+    tokio::spawn(async move {
+        let [guild, channel, id] = &source;
+        let [target_guild, target] = &place;
+        let mut result = discord
+            .forward((guild, channel, id), (target_guild, target), silent)
+            .await
+            .map_err(|error| {
+                tracing::warn!(error = format!("{error:#}"), "could not forward a message");
+                ForwardFailure::Forward(error.to_string())
+            });
+        if let (Ok(()), Some(note)) = (&result, note) {
+            result = discord
+                .send_forward_note((target_guild, target), &note, silent)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        error = format!("{error:#}"),
+                        "could not send a forward's note"
+                    );
+                    ForwardFailure::Note(error.to_string())
+                });
+        }
+        let _ = events.send(Event::Forwarded { room, result });
+    });
 }

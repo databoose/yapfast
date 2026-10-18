@@ -900,6 +900,42 @@ impl Discord {
         message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
     }
 
+    /// Forwards message `id` of `channel`, in `guild`, to `target`, in
+    /// `target_guild`, as Discord's client does; `silent` notifies nobody.
+    /// The gateway shows it.
+    pub async fn forward(
+        &self,
+        (guild, channel, id): (&str, &str, &str),
+        (target_guild, target): (&str, &str),
+        silent: bool,
+    ) -> Result<()> {
+        let nonce = crate::message::nonce();
+        let sent = self
+            .api
+            .forward(server(guild), channel, id, target, &nonce, silent)
+            .await?;
+        self.write_names()
+            .learn_message(server(target_guild), &sent);
+        Ok(())
+    }
+
+    /// Sends the text added to a forward after it, as a message of its own:
+    /// Discord takes no text with a forward.
+    pub async fn send_forward_note(
+        &self,
+        (guild, channel): (&str, &str),
+        note: &str,
+        silent: bool,
+    ) -> Result<()> {
+        let nonce = crate::message::nonce();
+        let sent = self
+            .api
+            .send_from("forwarding", channel, note, &nonce, silent)
+            .await?;
+        self.write_names().learn_message(server(guild), &sent);
+        Ok(())
+    }
+
     pub async fn edit(&self, channel: &str, id: &str, content: &str) -> Result<Message> {
         let value = self.api.edit(channel, id, content).await?;
         message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
@@ -1324,7 +1360,10 @@ impl Discord {
         let dm = self.dm_with(user).await?;
         let link = format!("https://discord.gg/{code}");
         let nonce = crate::message::nonce();
-        let sent = self.api.send_from_menu(&dm, &link, &nonce).await?;
+        let sent = self
+            .api
+            .send_from("context_menu", &dm, &link, &nonce, false)
+            .await?;
         self.write_names().learn_message(None, &sent);
         Ok(())
     }

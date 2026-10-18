@@ -1,4 +1,5 @@
 use super::{open_channel::*, render::*, *};
+use crate::chat::ForwardFailure;
 
 fn message(id: &str, nonce: Option<&str>) -> Message {
     Message {
@@ -353,6 +354,7 @@ fn messages_render_again_once_what_they_show_changes() {
         blocked: vec![],
         server,
         may_pin: false,
+        may_forward: false,
     };
     let shown = rendering(1, server("general", false));
     assert!(
@@ -377,6 +379,13 @@ fn messages_render_again_once_what_they_show_changes() {
             ..rendering(1, server("general", false))
         }),
         "may pin"
+    );
+    assert!(
+        !shown.alike(&Rendering {
+            may_forward: true,
+            ..rendering(1, server("general", false))
+        }),
+        "may forward"
     );
 }
 
@@ -1348,4 +1357,74 @@ async fn a_server_channels_pins_and_search_show_its_members() {
     assert!(refused.contains("nobody"), "{refused}");
     let refused = found(run(Some(search("in:nowhere"))).await).unwrap_err();
     assert!(refused.contains("#nowhere"), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and YAPFAST_DISCORD_TEST_SERVER"]
+async fn forwards_with_the_message_added_and_refuses_what_cant_go() {
+    let discord = fake_discord().await;
+    let (done, _finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let mut live = discord.live();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    let latest = discord
+        .history(FAKE_GUILD, FAKE_GENERAL, yapfast_discord::api::Span::Latest)
+        .await
+        .unwrap();
+    let original = latest
+        .messages
+        .iter()
+        .rfind(|message| message.forwardable && !message.content.is_empty())
+        .unwrap();
+    let mut forward = |item: String, target: &str, note: Option<String>| {
+        let command = Command::Forward {
+            room: room.clone(),
+            item,
+            target: target.into(),
+            note,
+            silent: false,
+        };
+        self::command(command, Ok(&discord), &mut channels, &done, &events);
+    };
+    let mut answer = async || {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Event::Forwarded { result, .. } = received.recv().await.unwrap() {
+                    return result;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for Discord")
+    };
+    forward(
+        format!("d:{}", original.id),
+        &room,
+        Some("look at this".into()),
+    );
+    assert_eq!(answer().await, Ok(()));
+    // The forward first, then the message added; other tests post too.
+    let mut shown = vec![];
+    while shown.len() < 2 {
+        match live.recv().await {
+            Ok(Live::Created(message)) if message.forwarded => shown.push(message),
+            Ok(Live::Created(message)) if message.content == "look at this" => shown.push(message),
+            _ => {}
+        }
+    }
+    assert!(shown[0].forwarded && shown[0].content == original.content);
+    assert_eq!(shown[1].content, "look at this");
+    // Nothing goes with a message added too long, nor into Matrix.
+    forward(
+        format!("d:{}", original.id),
+        &room,
+        Some("a".repeat(MAX_CHARS + 1)),
+    );
+    assert!(matches!(answer().await, Err(ForwardFailure::Forward(_))));
+    forward(format!("d:{}", original.id), "!room:example.org", None);
+    assert!(matches!(answer().await, Err(ForwardFailure::Forward(_))));
+    // Nor a message Discord doesn't have.
+    forward("d:1".into(), &room, None);
+    assert!(matches!(answer().await, Err(ForwardFailure::Forward(_))));
 }

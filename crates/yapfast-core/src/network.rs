@@ -36,8 +36,7 @@ impl Network {
                 threads: false,
             },
             Self::Discord => Capabilities {
-                // Discord turns down forwarding from or to its channels.
-                forward: false,
+                forward: true,
                 spoilers: true,
                 categories: true,
                 dm_calls: true,
@@ -54,7 +53,7 @@ impl Network {
 /// than asking which network the room is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Capabilities {
-    /// Messages can be forwarded into it, and from it.
+    /// Messages can be forwarded into it, and from it, within its network.
     pub forward: bool,
     /// Its messages hide text between `||` until clicked.
     pub spoilers: bool,

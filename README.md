@@ -126,8 +126,8 @@ test it on.
 
 - Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from
   its menu, and accept or ignore message requests.
-- Messages you can send, reply to, edit, react to, pin and attach files to,
-  with Markdown, embeds, custom emoji, stickers and spoilers.
+- Messages you can send, reply to, edit, react to, pin, forward and attach
+  files to, with Markdown, embeds, custom emoji, stickers and spoilers.
 - Threads: start one from a message, browse a channel's threads, join or leave
   one, and read it beside its channel.
 - Forums: browse the posts as cards, with their tags, first message, top
@@ -162,8 +162,6 @@ test it on.
 - Making and changing server folders, and joining a server by invite.
 - A list of the people you blocked.
 - Leaving a group DM.
-- Forwarding as Discord does. Yapfast shows forwarded messages, but forwards by
-  sending the text again.
 - Animated custom emoji in messages, which show their first frame.
 - Captchas, sort of. If Discord asks for one while you link, Yapfast opens it
   in your browser, but I haven't hit one against real Discord yet, so who

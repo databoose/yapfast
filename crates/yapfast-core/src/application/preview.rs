@@ -184,6 +184,7 @@ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> 
         last_read: None,
         locked: false,
         read_only: false,
+        slowed: false,
         category: String::new(),
         request: false,
         person: (direct && members <= 2).then(|| format!("@{id}:preview.local")),

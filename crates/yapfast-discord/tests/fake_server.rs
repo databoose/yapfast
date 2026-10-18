@@ -668,6 +668,53 @@ async fn talks_to_the_fake_server() {
     // showed it, does what was asked.
     discord.delete(&general, &sent.id).await.unwrap();
 
+    // Forwarding, as Discord's client does: a message of its own that
+    // carries the original, then the message added as another.
+    discord
+        .forward((&guild, &general, &message.id), (&guild, &general), false)
+        .await
+        .unwrap();
+    let forward = live_where(&mut live, |event| match event {
+        Live::Created(forward) if forward.forwarded => Some(forward),
+        _ => None,
+    })
+    .await;
+    assert_eq!(forward.content, message.content);
+    assert!(!forward.editable && forward.forwardable);
+    discord
+        .send_forward_note((&guild, &general), "look at this", false)
+        .await
+        .unwrap();
+    live_where(&mut live, |event| match event {
+        Live::Created(note) if note.content == "look at this" => Some(()),
+        _ => None,
+    })
+    .await;
+    let forwards: serde_json::Value = serde_json::from_str(
+        &control
+            .get(format!("{server}/_control/forwards"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(forwards[0]["target"], general.as_str());
+    // {"location":"forwarding"}
+    assert_eq!(
+        forwards[0]["context"],
+        "eyJsb2NhdGlvbiI6ImZvcndhcmRpbmcifQ=="
+    );
+    // A message Discord doesn't have isn't forwarded.
+    assert!(
+        discord
+            .forward((&guild, &general, "1"), (&guild, &general), false)
+            .await
+            .is_err()
+    );
+
     // DMs and message requests, the latest first; each unread message in a
     // DM counts as a mention, and requests count none.
     let listed: Vec<_> = snapshot

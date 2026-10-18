@@ -64,6 +64,9 @@ pub mod permission {
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
     /// Pinning messages and unpinning them, which `MANAGE_MESSAGES` once gave.
     pub const PIN_MESSAGES: u64 = 1 << 51;
+    /// Sending without waiting out a channel's slowmode, which
+    /// `MANAGE_MESSAGES` and `MANAGE_CHANNELS` give too.
+    pub const BYPASS_SLOWMODE: u64 = 1 << 52;
     /// Every permission, as the owner and administrators hold.
     pub const ALL: u64 = u64::MAX;
 }
@@ -117,6 +120,10 @@ pub struct Server {
     /// `default_message_notifications`.
     #[serde(default)]
     pub default_level: Level,
+    /// The server turned forwarding its messages off, a feature it lists
+    /// as `FORWARDING_DISABLED`.
+    #[serde(default)]
+    pub forwarding_disabled: bool,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -220,6 +227,10 @@ pub struct Channel {
     /// for another channel.
     #[serde(default)]
     pub forum: Option<Box<Forum>>,
+    /// How many seconds each member waits between messages here, as
+    /// `rate_limit_per_user` says; 0 without slowmode.
+    #[serde(default)]
+    pub slowmode: u32,
 }
 
 /// What a thread has that a channel doesn't; see
@@ -574,6 +585,28 @@ impl Server {
         } else {
             Access::Join
         }
+    }
+
+    /// Whether `user`, holding `roles`, waits out `channel`'s slowmode
+    /// between messages, as those who may bypass it don't.
+    pub fn slowed(&self, channel: &Channel, user: &str, roles: &[String]) -> bool {
+        use permission::{BYPASS_SLOWMODE, MANAGE_CHANNELS, MANAGE_MESSAGES};
+        channel.slowmode > 0
+            && self.channel_permissions(channel, user, roles)
+                & (BYPASS_SLOWMODE | MANAGE_MESSAGES | MANAGE_CHANNELS)
+                == 0
+    }
+
+    /// Whether `user`, holding `roles`, may forward `channel`'s messages, as
+    /// Discord's client allows: the server lets its messages be forwarded,
+    /// and they may read the channel's history. Without the server's roles,
+    /// only the first is known.
+    pub fn forwards_from(&self, channel: &Channel, user: &str, roles: &[String]) -> bool {
+        !self.forwarding_disabled
+            && (self.roles.is_empty()
+                || self.channel_permissions(channel, user, roles)
+                    & permission::READ_MESSAGE_HISTORY
+                    != 0)
     }
 
     /// Adds or replaces a channel or thread from a channel object.
@@ -1042,6 +1075,12 @@ pub fn server(guild: &Value) -> Option<Server> {
             .or_else(|| Level::from(&guild["default_message_notifications"]))
             .unwrap_or_default(),
         unavailable: guild["unavailable"].as_bool().unwrap_or(false),
+        forwarding_disabled: guild["features"]
+            .as_array()
+            .or_else(|| guild["properties"]["features"].as_array())
+            .into_iter()
+            .flatten()
+            .any(|feature| feature.as_str() == Some("FORWARDING_DISABLED")),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {
@@ -1148,6 +1187,10 @@ fn parse_channel(channel: &Value) -> Option<Channel> {
             .and_then(|minutes| u16::try_from(minutes).ok())
             .unwrap_or_default(),
         forum: forum::parse(channel),
+        slowmode: channel["rate_limit_per_user"]
+            .as_u64()
+            .and_then(|seconds| u32::try_from(seconds).ok())
+            .unwrap_or_default(),
         ..Default::default()
     })
 }
@@ -1421,6 +1464,42 @@ mod tests {
             Access::Join,
             "administrators too"
         );
+    }
+
+    #[test]
+    fn slowmode_and_forwarding_follow_permissions_and_features() {
+        use permission::{MANAGE_MESSAGES, READ_MESSAGE_HISTORY};
+        let mut server = server(&json!({
+            "id": "10", "properties": {"name": "Test", "features": ["FORWARDING_DISABLED"]},
+        }))
+        .unwrap();
+        assert!(server.forwarding_disabled);
+        server.forwarding_disabled = false;
+        server.roles = HashMap::from([
+            ("10".into(), VIEW_CHANNEL | READ_MESSAGE_HISTORY),
+            ("20".into(), MANAGE_MESSAGES),
+        ])
+        .into();
+        let slow =
+            parse_channel(&json!({"id": "11", "type": 0, "rate_limit_per_user": 30})).unwrap();
+        assert_eq!(slow.slowmode, 30);
+        assert!(server.slowed(&slow, "1", &[]));
+        assert!(
+            !server.slowed(&slow, "1", &["20".into()]),
+            "moderators bypass it"
+        );
+        assert!(server.forwards_from(&slow, "1", &[]));
+        let unread = Channel {
+            overwrites: vec![Overwrite {
+                id: "10".into(),
+                member: false,
+                allow: 0,
+                deny: READ_MESSAGE_HISTORY,
+            }]
+            .into(),
+            ..Default::default()
+        };
+        assert!(!server.forwards_from(&unread, "1", &[]));
     }
 
     #[test]

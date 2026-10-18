@@ -3475,6 +3475,23 @@ async function api(req: Request, path: string, origin: string): Promise<Response
           dispatch("THREAD_UPDATE", wireThread(thread));
         }
       }
+      // A forward carries a copy of the original, and nothing of its own.
+      if (body.message_reference?.type === 1) {
+        const ref = body.message_reference;
+        if (body.content || body.attachments?.length) {
+          return json({ message: "Forward messages cannot have additional content", code: 160011 }, 400);
+        }
+        const original = byId.get(ref.message_id);
+        if (!original || original.channel !== ref.channel_id) return notFound("Unknown Message", 10008);
+        forwards.push({ target: m[1]!, context: req.headers.get("X-Context-Properties") ?? "" });
+        const forward = post(m[1]!, users.alice, "", Date.now(), {
+          nonce: body.nonce ? String(body.nonce) : undefined,
+          forward: original.id,
+        });
+        readStates.set(m[1]!, { last: forward.id, mentions: 0 });
+        dispatch("MESSAGE_CREATE", dispatched(forward, origin));
+        return json(wireMessage(forward, origin));
+      }
       const reply = body.message_reference?.message_id;
       const attached: File[] = [];
       for (const attachment of body.attachments ?? []) {
@@ -4643,7 +4660,7 @@ const ENV_IDS = 1_450_000_000_000_000_000n;
  *  the account's own session and calls. The rest name the fixture's people
  *  and channels. */
 const GENERIC_CONTROLS = new Set([
-  "media-requests", "history", "gif-selects", "nitro", "server-profile", "health", "presence", "logouts",
+  "media-requests", "history", "forwards", "gif-selects", "nitro", "server-profile", "health", "presence", "logouts",
   "voice-identifies", "voice-changes", "call-audio", "call-video", "voice-link", "voice-drop", "voice-move",
   "stream-move", "sessions", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
@@ -5077,6 +5094,8 @@ function withDeviceCookie(req: Request, response: Response) {
 const mediaRequests = { avatars: 0, previews: 0 };
 // The query of each request for a channel's messages, oldest first.
 const historyRequests: string[] = [];
+// Each forward's channel and its X-Context-Properties, oldest first.
+const forwards: { target: string; context: string }[] = [];
 const server = Bun.serve<SocketData>({
   hostname: args.host,
   port: Number(args.port),
@@ -5095,6 +5114,7 @@ const server = Bun.serve<SocketData>({
       if (req.method === "POST") historyRequests.length = 0;
       return Response.json(historyRequests);
     }
+    if (path === "/_control/forwards") return Response.json(forwards);
     if (req.method === "GET") {
       if (/^\/(icons|avatars|banners|embed\/avatars|guilds)\//.test(path)) mediaRequests.avatars++;
       if (/^\/(attachments|media\/attachments|external)\//.test(path)) mediaRequests.previews++;
