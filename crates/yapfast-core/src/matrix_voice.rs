@@ -1721,7 +1721,7 @@ mod tests {
             let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", stalled.local_addr().unwrap());
             let mut cancelling = ReceiverProcess(std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "voice::tests::cancel_pending_join", "--ignored", "--nocapture"])
+                .args(["--exact", "matrix_voice::tests::cancel_pending_join", "--ignored", "--nocapture"])
                 .env("YAPFAST_TEST_VOICE_ROOT", &root).env("YAPFAST_RTC_AUTHORIZATION_URL", url).spawn().unwrap());
             let (pending_request, _) = tokio::time::timeout(Duration::from_secs(25), stalled.accept()).await.unwrap().unwrap();
             wait(&mut first, |state| state.participants.len() == 2).await;
@@ -1740,7 +1740,7 @@ mod tests {
             // Each client needs its own process: LiveKit shares an ADM within
             // one process, unlike two friends running Yapfast on separate machines.
             let mut receiver = ReceiverProcess(std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "voice::tests::native_receiver", "--ignored", "--nocapture"])
+                .args(["--exact", "matrix_voice::tests::native_receiver", "--ignored", "--nocapture"])
                 .env("YAPFAST_TEST_VOICE_ROOT", &root).spawn().unwrap());
             receiver_ack(&root, "ready").await;
             wait(&mut first, |state| state.participants.len() == 2).await;
