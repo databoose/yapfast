@@ -333,6 +333,7 @@ async fn connected(
         let mut checks = tokio::time::interval(KEY_CHECK_INTERVAL);
         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut volumes = crate::volume::changes();
+        let mut talk = crate::push_to_talk::changes();
         // The volume each remote audio track plays at, by track id.
         let mut volumes_set: HashMap<String, f32> = HashMap::new();
         let mut filming: Option<Filming> = None;
@@ -346,6 +347,15 @@ async fn connected(
         // encrypts frame by frame with the call's keys.
         state.end_to_end = true;
         loop {
+            // In push-to-talk the microphone's track is off while the key is
+            // up: it sends silence, so nobody hears it or sees it speak, and
+            // others don't see it muted. Muting turns it off on its own.
+            if let Some(track) = &microphone && !state.muted {
+                let sending = crate::push_to_talk::sending();
+                if track.rtc_track().enabled() != sending {
+                    track.rtc_track().set_enabled(sending);
+                }
+            }
             let people = roster.borrow_and_update().clone();
             let now = Instant::now();
             seen.retain(|member, _| people.iter().any(|person| &person.member_id == member));
@@ -511,6 +521,7 @@ async fn connected(
                     }
                 }
                 changed = roster.changed() => if changed.is_err() { bail!("Voice ended. Join again to reconnect."); },
+                () = crate::push_to_talk::changed(&mut talk) => {}
                 // Device trust can change while connected, for example after
                 // verifying someone in another client.
                 _ = checks.tick() => device_problems.clear(),
@@ -1761,6 +1772,23 @@ mod tests {
             );
             receiver_command(&root, "undeafen").await;
             assert!(output_energy().await > signal * 0.25);
+            // In push to talk the microphone is silent until the key is held.
+            crate::push_to_talk::set_on(true);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let key_up = output_energy().await;
+            assert!(
+                key_up < signal * 0.05,
+                "push to talk sent with the key up: {key_up} vs {signal}"
+            );
+            crate::push_to_talk::hold(true);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let key_held = output_energy().await;
+            assert!(
+                key_held > signal * 0.25,
+                "push to talk didn't send with the key held: {key_held} vs {signal}"
+            );
+            crate::push_to_talk::hold(false);
+            crate::push_to_talk::set_on(false);
             first.command(Command::Mute(true));
             wait(&mut first, |state| state.muted).await;
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1787,6 +1815,7 @@ mod tests {
                     "cancel_stalled_join_milliseconds":cancel_milliseconds, "cancelled_membership_removed":true,
                     "joined_muted":true, "late_join":true, "native_encrypted_audio":true,
                     "received_440hz_amplitude":signal, "reverse_440hz_amplitude":reverse, "deafened_amplitude":deafened,
+                    "push_to_talk_key_up_amplitude":key_up, "push_to_talk_key_held_amplitude":key_held,
                     "mute":true, "deafen":true, "clean_leave":true
                 }))
                 .unwrap(),

@@ -137,7 +137,8 @@ test it on.
   clips, so they're there the moment it opens, and you're done sitting there
   cringing while the GOATed GIF loads.
 - Voice channels and DM calls, with mute, deafen, a volume for each person,
-  noise suppression, echo removal, and a voice gate you can tune. Go Live, watch
+  noise suppression, echo removal, and a voice gate you can tune, or
+  push-to-talk on any key you like, held in any app. Go Live, watch
   other people's streams and turn on your camera. The call stays up while you
   read other channels.
 - Friends: requests, adding by username, nicknames, notes, profile cards, your
@@ -157,7 +158,7 @@ test it on.
 ### Not there yet
 
 - Posting in forums, and media channels.
-- Push-to-talk and the soundboard.
+- The soundboard.
 - Polls, activities and server settings.
 - Making and changing server folders, and joining a server by invite.
 - A list of the people you blocked.
@@ -203,7 +204,7 @@ memory before you've opened a single channel. Yapfast draws with Slint, on the
 processor by default (WAY lighter) or the GPU if you ask. It also does Matrix
 (from source, for now), DeepFilterNet noise suppression on top of RNNoise,
 voice gates, and the cached GIF picker. It's still missing a few things, like
-posting in forums, polls and push-to-talk.
+posting in forums and polls.
 
 **Did you use AI to write it?** Yep. Opus 5.5 wrote most of the code, and 6.1
 Sol and 6 Astra did adversarial review and helped with the nastiest bugs

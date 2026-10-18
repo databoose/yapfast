@@ -142,6 +142,7 @@ pub fn run(
     bind_callbacks(&window, &adapter);
     watch_window(&window, &adapter);
     adapter.borrow_mut().watch_away();
+    adapter.borrow_mut().watch_talk_key(&window);
     adapter.borrow_mut().refresh(&window);
     if preview {
         adapter.borrow_mut().action(&window, Action::Preview);
@@ -244,7 +245,13 @@ const ZOOM_NOTE: Duration = Duration::from_millis(1200);
 /// with Ctrl and +, - and 0 or the scroll wheel, keeping the level in the
 /// layout, and takes files dropped on it.
 fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
-    use slint::winit_030::{EventResult, winit::event::WindowEvent};
+    use slint::winit_030::{
+        EventResult,
+        winit::{
+            event::{ElementState, WindowEvent},
+            keyboard::{Key, NamedKey},
+        },
+    };
     let saved = zoom::saved(adapter.borrow().layout.zoom);
     let adapter = Rc::downgrade(adapter);
     let (to, weak) = (adapter.clone(), window.as_weak());
@@ -375,6 +382,32 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                             zoom::apply(window.window(), base.get(), level.get());
                         }
                     });
+                }
+                crate::push_to_talk::window_event(event);
+                // While recording the push-to-talk key, the next key becomes
+                // it, and Escape stops; either way only the recorder sees it.
+                if let WindowEvent::KeyboardInput { event: key, .. } = event
+                    && key.state == ElementState::Pressed
+                    && let Some(window) = weak.upgrade()
+                    && window.get_talk_recording()
+                {
+                    if !key.repeat {
+                        window.set_talk_recording(false);
+                        let recorded = (key.logical_key != Key::Named(NamedKey::Escape))
+                            .then(|| crate::push_to_talk::Keybind::recorded(key))
+                            .flatten();
+                        if let Some(recorded) = recorded {
+                            let (adapter, weak) = (adapter.clone(), weak.clone());
+                            slint::Timer::single_shot(Duration::ZERO, move || {
+                                if let (Some(adapter), Some(window)) =
+                                    (adapter.upgrade(), weak.upgrade())
+                                {
+                                    adapter.borrow_mut().set_talk_key(&window, recorded);
+                                }
+                            });
+                        }
+                    }
+                    return EventResult::PreventDefault;
                 }
                 let step = match keys.event(event) {
                     zoom::Outcome::Pass => return EventResult::Propagate,
@@ -737,6 +770,12 @@ struct Layout {
     reduce_room_echo: bool,
     /// The quietest speech Discord calls send, in dBFS; -60 unless changed.
     input_sensitivity: Option<i32>,
+    /// Whether calls send the voice the gate hears or only while a key is
+    /// held, the key, and how long the microphone sends after it comes up,
+    /// in ms; Discord's 20 unless changed.
+    input_mode: InputMode,
+    push_to_talk_key: Option<crate::push_to_talk::Keybind>,
+    push_to_talk_release_delay: Option<u32>,
     /// How loud people sound in calls, and their streams, by Discord or
     /// Matrix user id; see [`yapfast_core::volume`]. Unlisted people are as they
     /// come.
@@ -789,6 +828,17 @@ const STRENGTHS: [yapfast_core::noise::Strength; 3] = [
     yapfast_core::noise::Strength::Medium,
     yapfast_core::noise::Strength::Light,
 ];
+
+/// How calls decide when to send the microphone, as Discord's Input Mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputMode {
+    #[default]
+    VoiceActivity,
+    PushToTalk,
+}
+
+const INPUT_MODES: [InputMode; 2] = [InputMode::VoiceActivity, InputMode::PushToTalk];
 
 /// When GIFs, animated emoji and stickers play. Held still, an animation
 /// decodes no frame past the one showing.
@@ -847,6 +897,13 @@ impl Layout {
         self.input_sensitivity
             .unwrap_or(yapfast_core::noise::DEFAULT_SENSITIVITY as i32)
             .clamp(-80, 0)
+    }
+
+    /// How long the microphone sends after the push-to-talk key comes up, in ms.
+    fn release_delay(&self) -> u32 {
+        self.push_to_talk_release_delay
+            .unwrap_or(yapfast_core::push_to_talk::DEFAULT_RELEASE_DELAY)
+            .min(yapfast_core::push_to_talk::MOST_RELEASE_DELAY)
     }
 
     fn read(root: &std::path::Path) -> Self {
@@ -918,6 +975,17 @@ impl Layout {
         let sensitivity = self.sensitivity();
         window.set_sensitivity(sensitivity);
         yapfast_core::noise::set_sensitivity(sensitivity as f32);
+        window.set_input_mode(choice(&INPUT_MODES, self.input_mode));
+        yapfast_core::push_to_talk::set_on(self.input_mode == InputMode::PushToTalk);
+        window.set_talk_key(
+            self.push_to_talk_key
+                .as_ref()
+                .map(|key| key.name.as_str())
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_talk_delay(self.release_delay() as i32);
+        yapfast_core::push_to_talk::set_release_delay(self.release_delay());
         for (person, volume) in &self.volumes {
             yapfast_core::volume::set(yapfast_core::volume::Kind::Voice, person, *volume);
         }
@@ -1238,6 +1306,9 @@ struct Adapter {
     /// show the voice gate's sensitivity.
     #[cfg(feature = "discord")]
     gate_meter: Option<yapfast_core::discord_audio::GateMeter>,
+    /// Watches the push-to-talk key while push to talk is on and it's set,
+    /// with or without the window.
+    talk_key: Option<crate::push_to_talk::Watcher>,
     /// Previews of the pictures waiting in the composer, by file; `None` while
     /// one is read, or when it can't be.
     thumbnails: HashMap<PathBuf, Option<pictures::Thumbnail>>,
@@ -1395,6 +1466,7 @@ impl Adapter {
                 tiles: None,
                 #[cfg(feature = "discord")]
                 gate_meter: None,
+                talk_key: None,
                 thumbnails: HashMap::new(),
                 pasted: None,
                 #[cfg(feature = "discord")]
@@ -1411,10 +1483,49 @@ impl Adapter {
         }))
     }
 
+    /// Starts, changes or stops watching the push-to-talk key as settings
+    /// say, and shows where it works.
+    fn watch_talk_key(&mut self, window: &YapfastWindow) {
+        let wanted = self
+            .layout
+            .push_to_talk_key
+            .as_ref()
+            .filter(|_| self.layout.input_mode == InputMode::PushToTalk);
+        if self
+            .talk_key
+            .as_ref()
+            .map(crate::push_to_talk::Watcher::key)
+            != wanted
+        {
+            // The old one goes first, ending its portal session.
+            self.talk_key = None;
+            self.talk_key = wanted.cloned().map(|key| {
+                let weak = window.as_weak();
+                crate::push_to_talk::Watcher::start(key, &self.runtime, move |reach| {
+                    let _ = weak.upgrade_in_event_loop(move |window| {
+                        window.set_talk_note(reach.note().into());
+                    });
+                })
+            });
+        }
+        let note = self.talk_key.as_ref().map(|watcher| watcher.reach().note());
+        window.set_talk_note(note.unwrap_or_default().into());
+    }
+
+    /// Makes a recorded key the push-to-talk key.
+    fn set_talk_key(&mut self, window: &YapfastWindow, key: crate::push_to_talk::Keybind) {
+        tracing::info!(key = key.name, "push-to-talk key recorded");
+        window.set_talk_key(key.name.as_str().into());
+        self.layout.push_to_talk_key = Some(key);
+        self.layout.write(&self.root);
+        self.watch_talk_key(window);
+    }
+
     /// Present the existing models and state in a new window.
     fn attach(&mut self, window: &YapfastWindow) {
         self.models.attach(window);
         self.layout.apply(window);
+        self.watch_talk_key(window);
         // The theme being edited goes unsaved with the old window, and rows
         // may carry its mention colour; the refresh after attaching builds
         // them again.

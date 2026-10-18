@@ -278,6 +278,16 @@ export component VoiceSettings inherits VerticalLayout {
     in property <bool> gate-sending;
     /// Why the gate's level can't be shown, if it can't.
     in property <string> gate-meter-note;
+    /// How calls send the microphone: 0 voice activity, 1 push to talk.
+    in-out property <int> input-mode;
+    /// The push-to-talk key's name, empty while there's none, and whether
+    /// the next key pressed becomes it.
+    in property <string> talk-key;
+    in-out property <bool> talk-recording;
+    /// How long the microphone keeps sending after the key comes up, in ms.
+    in-out property <int> talk-delay: 20;
+    /// Where the key works: in every app, or only in Yapfast and why.
+    in property <string> talk-note;
     /// Discord is linked, so its calls' noise suppression shows.
     in property <bool> discord;
     callback select-microphone(int);
@@ -285,6 +295,8 @@ export component VoiceSettings inherits VerticalLayout {
     callback select-camera(int);
     callback refresh-devices;
     callback preferences-changed;
+    /// Starts or stops recording the push-to-talk key.
+    callback record-talk-key(bool);
     spacing: 16px;
     SettingsTitle { text: "Voice & video"; }
     HorizontalLayout {
@@ -378,7 +390,60 @@ export component VoiceSettings inherits VerticalLayout {
         checked <=> root.dereverb;
         toggled => { root.preferences-changed(); }
     }
-    if root.discord: VerticalLayout {
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "INPUT MODE"; }
+        Choices {
+            label: "Input mode"; options: ["Voice activity", "Push to talk"];
+            current <=> root.input-mode;
+            chosen => { root.preferences-changed(); }
+        }
+        Label {
+            text: root.input-mode == 0 ? "Yapfast sends your voice when it hears you speak."
+                : "Yapfast sends your microphone only while you hold a key.";
+        }
+    }
+    if root.input-mode == 1: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "PUSH TO TALK KEYBIND"; }
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Rectangle {
+                width: 200px; height: 36px; border-radius: 8px; background: Theme.sunken;
+                border-width: root.talk-recording ? 2px : 0px; border-color: Theme.accent;
+                accessible-role: text;
+                accessible-label: "Push to talk keybind";
+                accessible-value: root.talk-key != "" ? root.talk-key : "No keybind set";
+                Text {
+                    x: 12px; width: parent.width - 24px; overflow: elide; font-size: 14px;
+                    text: root.talk-recording ? "Press a key..." : root.talk-key != "" ? root.talk-key : "No keybind set";
+                    color: root.talk-key != "" && !root.talk-recording ? Theme.text : Theme.muted;
+                    font-weight: root.talk-key != "" && !root.talk-recording ? 600 : 400;
+                }
+            }
+            ActionButton {
+                text: root.talk-recording ? "Stop recording" : root.talk-key == "" ? "Record keybind" : "Edit keybind";
+                danger: root.talk-recording;
+                clicked => { root.record-talk-key(!root.talk-recording); }
+            }
+        }
+        Label {
+            text: root.talk-recording ? "Press the key to hold while you talk. Escape stops without changing it."
+                : root.talk-key == "" ? "Push to talk is on, but no keybind is set, so your microphone sends nothing."
+                : root.talk-note;
+        }
+    }
+    if root.input-mode == 1: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "PUSH TO TALK RELEASE DELAY"; }
+        VolumeSlider {
+            label: "Push to talk release delay"; value <=> root.talk-delay; maximum: 2000; step: 10; full-mark: false;
+            shown: self.value >= 1000 ? (self.value / 1000).to-fixed(2) + " s" : self.value + " ms";
+            committed => { root.preferences-changed(); }
+        }
+        Label { text: "How long your microphone keeps sending after you let go of the key, so the end of a word isn't cut off."; }
+    }
+    if root.discord && root.input-mode == 0: VerticalLayout {
         spacing: 8px;
         SettingsHeading { text: "INPUT SENSITIVITY IN DISCORD CALLS"; }
         SensitivitySlider {

@@ -7,7 +7,7 @@ recorded on 2026-10-06.
 | Area | Works on Linux | Open |
 | --- | --- | --- |
 | [Linking](#account-linking) | QR code from Settings, or the sign-in of a build without Matrix; unlinking; Discord's captcha, in the browser | A captcha solved against real Discord |
-| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio and cameras on real Windows; Discord's push-to-talk; soundboard |
+| [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Posting in forums, pinning messages, server settings and privacy |
@@ -618,6 +618,60 @@ To hear the processing, run a recording through it: raw mono 16-bit 48 kHz in
 out and `YAPFAST_LEVELING=off` turns leveling off. `YAPFAST_AUDIO_FAR`, in the same
 format and as long, is what the speakers played, for echo cancellation;
 `YAPFAST_AUDIO_ECHOED` then gets the microphone with only echo cancelled.
+
+### Push to talk
+
+Settings → Voice & video → Input mode chooses voice activity or push to talk,
+as Discord's Input Mode does (`input_mode` in `layout.json`). In push to talk
+the microphone sends only while a key is held, and for a release delay after
+it comes up: 20 ms unless changed, from 0 to 2 s, Discord's default and its
+slider's range (`push_to_talk_release_delay`). As in Discord's client, the
+voice gate and its sensitivity don't apply then, so the sensitivity setting
+hides, and its meter doesn't run; noise suppression and the rest of the
+processing still do. With the key up nothing is sent and the track pauses,
+as when the gate shuts, so Discord, the call's speaking ring and the account
+panel's show the account not speaking. Muting still wins.
+
+Discord has no default key, and neither does Yapfast. "Record keybind" takes
+the next key pressed, and Escape stops without changing it; until there's a
+key, settings say the microphone sends nothing. Yapfast keeps the key by its
+scan code (`push_to_talk_key`), so it's the same key on any keyboard layout,
+with its name and, for the portal below, its keysym. One key, without
+modifiers; mouse buttons can't be recorded.
+
+`crates/yapfast-core/src/push_to_talk.rs` keeps the mode, whether the key is
+down and the delay in atomics. The microphone reads them each 10 ms block,
+allocating nothing, and counts the delay in blocks. Matrix calls take the mode
+too, though their microphone is LiveKit's device module rather than this
+processing: while the key is up their track is disabled, which sends silence
+without showing others a mute, so LiveKit's active speakers, which ring the
+account, leave it out. `matrix_voice`'s
+`persistent_encrypted_voice_and_native_audio` checks it between two
+processes on the local stack: the other side heard a 440 Hz tone at an
+amplitude of 0.0 with the key up and 195.6 with it held, against 198.2
+unmuted in voice activation.
+
+`src/push_to_talk.rs` hears the key in other apps where the desktop lets it:
+
+| Desktop | How | Checked |
+| --- | --- | --- |
+| Wayland | The xdg-desktop-portal GlobalShortcuts portal: Yapfast binds one shortcut, offering the key as its preferred trigger, and holds it from Activated to Deactivated. The desktop may ask to approve it or give it another key; settings show the shortcut it gave. KDE Plasma, Hyprland and GNOME from 48 have the portal | Against a stand-in portal on a private bus (`the_portal_binds_the_key_and_holds_it`); not on a real desktop |
+| X11 | XInput 2's raw key events on the root window, which come whatever window has the focus and leave the key to it | Under Xvfb, with xdotool typing (`x11_hears_the_key_whatever_has_the_focus`) |
+| Windows | A low-level keyboard hook (`WH_KEYBOARD_LL`) on a thread of its own, which sees the key's release, unlike `RegisterHotKey`, and passes every key on | Under Wine 10.0, with `SendInput` typing (`the_hook_hears_the_key_go_down_and_up`); not on real Windows, where Windows may keep keys typed into a program running as administrator, such as some games, from the hook, as Discord warns of its own |
+
+Where none of these works, as on a wlroots desktop such as Sway, which has no
+GlobalShortcuts, the window's own key events stand in, so the key works while
+Yapfast is in front, and settings say so, as Discord's browser client does.
+Losing the focus lets the key go. The watcher runs while push to talk is on
+and a key is set, in calls or not, and with the window closed to the tray:
+a thread blocked on the X server or in the hook's message loop, or the
+portal's task on the network runtime. Its crates, zbus, x11rb with XInput,
+xkeysym and futures-util, were already in the lock file through
+notifications and winit.
+The ignored tests above, and `push_to_talk_sends_only_while_the_key_is_held`
+against the fake Discord, which checks that beeps with the key up send
+nothing and with it held do, run by hand; see their comments for what each
+needs.
 
 ### Screen sharing
 
@@ -2089,7 +2143,8 @@ In rough order. The browser covers these until then.
 - Joining servers by invite.
 - A server's privacy settings: direct messages, message requests and
   activity status from its members.
-- Discord's push-to-talk, and its voice settings.
+- Discord's voice settings beyond those above, and push-to-talk's sounds,
+  mouse buttons or key combinations as its key, and more than one key.
 - The soundboard.
 - Polls, activities, and server administration.
 - [Mirroring into Matrix](#mirroring-into-matrix).

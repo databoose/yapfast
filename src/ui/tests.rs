@@ -417,6 +417,34 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
 }
 
 #[test]
+fn push_to_talk_keeps_its_mode_key_and_release_delay() {
+    i_slint_backend_testing::init_no_event_loop();
+    let defaults: Layout = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults.input_mode, InputMode::VoiceActivity);
+    assert_eq!(defaults.release_delay(), 20, "Discord's default");
+    let layout: Layout = serde_json::from_value(serde_json::json!({
+        "input_mode": "push_to_talk",
+        "push_to_talk_key": { "scancode": 47, "name": "V", "trigger": "v" },
+        "push_to_talk_release_delay": 5000,
+    }))
+    .unwrap();
+    assert_eq!(layout.release_delay(), 2000, "Discord's slider ends at 2 s");
+    let window = YapfastWindow::new().unwrap();
+    layout.apply(&window);
+    assert_eq!(window.get_input_mode(), 1);
+    assert_eq!(window.get_talk_key(), "V");
+    assert_eq!(window.get_talk_delay(), 2000);
+    assert!(yapfast_core::push_to_talk::on());
+    let saved = serde_json::to_value(&layout).unwrap();
+    assert_eq!(saved["input_mode"], "push_to_talk");
+    assert_eq!(saved["push_to_talk_key"]["scancode"], 47);
+    assert_eq!(saved["push_to_talk_key"]["trigger"], "v");
+    defaults.apply(&window);
+    assert!(!yapfast_core::push_to_talk::on());
+    assert_eq!(window.get_talk_key(), "");
+}
+
+#[test]
 fn each_sounds_own_volume_counts_only_while_adjusting_each() {
     i_slint_backend_testing::init_no_event_loop();
     let defaults: Layout = serde_json::from_str("{}").unwrap();

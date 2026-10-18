@@ -968,6 +968,12 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             state.borrow_mut().delete_theme(&window);
         }
     });
+    let weak = window.as_weak();
+    window.on_record_talk_key(move |on| {
+        if let Some(window) = weak.upgrade() {
+            window.set_talk_recording(on);
+        }
+    });
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_preferences_changed(move || {
@@ -995,6 +1001,10 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         yapfast_core::noise::set_dereverb(layout.reduce_room_echo);
         layout.input_sensitivity = Some(window.get_sensitivity());
         yapfast_core::noise::set_sensitivity(layout.sensitivity() as f32);
+        layout.input_mode = chosen(&INPUT_MODES, window.get_input_mode());
+        yapfast_core::push_to_talk::set_on(layout.input_mode == InputMode::PushToTalk);
+        layout.push_to_talk_release_delay = Some(window.get_talk_delay().max(0) as u32);
+        yapfast_core::push_to_talk::set_release_delay(layout.release_delay());
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_text = Some(window.get_notification_text());
@@ -1005,6 +1015,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         layout.gpu_rendering = window.get_gpu_rendering();
         layout.close_to_tray = Some(window.get_close_to_tray());
         adapter.layout.write(&adapter.root);
+        adapter.watch_talk_key(&window);
         let start = window.get_start_on_sign_in();
         if AUTOSTART.get() && start != autostart::enabled() {
             match autostart::set(start) {

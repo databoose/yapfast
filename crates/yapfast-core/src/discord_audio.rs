@@ -248,6 +248,21 @@ impl Gate {
         self.sent.push(*samples);
         &self.sent
     }
+
+    /// Takes the next block in push-to-talk, which sends it while `open`
+    /// rather than when it hears speech, as Discord's does.
+    fn pass(&mut self, samples: &[f32; BLOCK], open: bool) -> &[[f32; BLOCK]] {
+        self.heard = self.heard.saturating_add(1);
+        self.opening = 0;
+        // Back in voice activation, the next block decides.
+        self.hold = u32::from(open);
+        self.before.clear();
+        self.sent.clear();
+        if open {
+            self.sent.push(*samples);
+        }
+        &self.sent
+    }
 }
 
 /// The playback side's copy of what it played, for echo cancellation.
@@ -432,6 +447,8 @@ struct Processing {
     gain: AudioProcessingModule,
     leveler: crate::leveling::Leveler,
     gate: Gate,
+    /// Sends instead of the gate in push-to-talk.
+    talk: crate::push_to_talk::Talk,
     /// The last block's level as the gate heard it, in RMS dBFS.
     level: f32,
     samples: [f32; BLOCK],
@@ -448,6 +465,7 @@ impl Processing {
             gain: AudioProcessingModule::new(false, true, false, false),
             leveler: crate::leveling::Leveler::default(),
             gate: Gate::default(),
+            talk: crate::push_to_talk::Talk::default(),
             level: f32::NEG_INFINITY,
             samples: [0.0; BLOCK],
         }
@@ -461,7 +479,8 @@ impl Processing {
     }
 
     /// Processes 10 ms of mono microphone in place, and returns the blocks
-    /// to send, as f32 in full scale: none while the gate is shut.
+    /// to send, as f32 in full scale: none while the gate is shut, or in
+    /// push-to-talk while the key is up.
     fn block(&mut self, block: &mut [i16]) -> &[[f32; BLOCK]] {
         let _ = self.echo.process_stream(block, SAMPLE_RATE as i32, 1);
         let chosen = crate::noise::chosen();
@@ -499,6 +518,13 @@ impl Processing {
         }
         for value in &mut self.samples {
             *value /= 32768.0;
+        }
+        if crate::push_to_talk::on() {
+            let sending = self.talk.block(
+                crate::push_to_talk::held(),
+                crate::push_to_talk::release_delay_ms(),
+            );
+            return self.gate.pass(&self.samples, sending);
         }
         self.gate.sensitivity = crate::noise::sensitivity();
         self.gate.block(&self.samples, level, speech)
@@ -861,16 +887,63 @@ mod tests {
     #[test]
     #[ignore = "needs testing/fake_discord.ts, YAPFAST_DISCORD_TEST_SERVER and sound devices"]
     fn a_call_sends_what_the_microphone_hears() {
-        use crate::voice::{Command, Phase, State};
-        let server = yapfast_discord::client::test_server().expect("YAPFAST_DISCORD_TEST_SERVER");
         // A beep isn't speech, but it's loud enough to open the gate anyway
         // with the suppressor off, which would take a steady tone out.
         crate::noise::set(crate::noise::Suppressor::Off);
+        let call = in_the_lounge(async |server| {
+            tokio::task::spawn_blocking(beep).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            newest(&spoken(server))
+        });
+        assert_eq!(call["undecryptable"], 0);
+        assert!(call["voiced"].as_u64().unwrap() > 50, "too little was sent");
+        // Once the beeps stop, it says it stopped, as Discord's clients do.
+        assert_eq!(call["spoke"], true, "it should say it's speaking");
+    }
+
+    /// As [`a_call_sends_what_the_microphone_hears`], in push-to-talk: beeps
+    /// with the key up send nothing, and with it held they're sent, and the
+    /// call says it's speaking until the key comes up. Run it alone, with
+    /// `--exact`: it turns push-to-talk on for the process.
+    #[test]
+    #[ignore = "needs testing/fake_discord.ts, YAPFAST_DISCORD_TEST_SERVER and sound devices"]
+    fn push_to_talk_sends_only_while_the_key_is_held() {
+        crate::noise::set(crate::noise::Suppressor::Off);
+        crate::push_to_talk::set_on(true);
+        crate::push_to_talk::set_release_delay(crate::push_to_talk::DEFAULT_RELEASE_DELAY);
+        let (up, held) = in_the_lounge(async |server| {
+            tokio::task::spawn_blocking(beep).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let up = newest(&spoken(server));
+            crate::push_to_talk::hold(true);
+            tokio::task::spawn_blocking(beep).await.unwrap();
+            crate::push_to_talk::hold(false);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            (up, newest(&spoken(server)))
+        });
+        crate::push_to_talk::set_on(false);
+        eprintln!("with the key up the fake heard {up}, held {held}");
+        assert_eq!(
+            up["voiced"].as_u64().unwrap_or(0),
+            0,
+            "sent with the key up"
+        );
+        assert_ne!(up["spoke"], true, "said it spoke with the key up");
+        assert!(held["voiced"].as_u64().unwrap() > 50, "too little was sent");
+        assert_eq!(held["spoke"], true, "it should say it's speaking");
+        assert_eq!(held["speaking"], 0, "it should say it stopped with the key");
+    }
+
+    /// Joins the fake Discord's Lounge, unmutes, runs `during` with the
+    /// fake's address, and leaves.
+    fn in_the_lounge<T>(during: impl AsyncFnOnce(&str) -> T) -> T {
+        use crate::voice::{Command, Phase, State};
+        let server = yapfast_discord::client::test_server().expect("YAPFAST_DISCORD_TEST_SERVER");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let sent = runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async {
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             let discord =
                 yapfast_discord::service::Discord::start(yapfast_discord::token::load().unwrap())
@@ -910,35 +983,34 @@ mod tests {
                     states.borrow().error
                 );
                 commands.send(Command::Mute(false)).unwrap();
-                tokio::task::spawn_blocking(beep).await.unwrap();
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                let sent = spoken(server);
+                let result = during(server).await;
                 commands.send(Command::Leave).unwrap();
-                sent
+                result
             };
             tokio::pin!(call);
             // The call ending first is a failure to join.
-            let sent = tokio::select! {
+            let result = tokio::select! {
                 ended = &mut call => panic!("the call ended: {ended:?}"),
-                sent = speak => sent,
+                result = speak => result,
             };
             call.await.unwrap();
             // Long enough for leaving to reach the fake before the process ends.
             tokio::time::sleep(Duration::from_millis(500)).await;
-            sent
-        }));
+            result
+        }))
+    }
+
+    /// What the fake heard from the newest call, the one with the highest
+    /// SSRC.
+    fn newest(sent: &serde_json::Value) -> serde_json::Value {
         eprintln!("the fake heard {sent}");
-        // This call is the newest the fake heard, by SSRC.
-        let (_, call) = sent
-            .as_object()
+        sent.as_object()
             .unwrap()
             .iter()
             .max_by_key(|(ssrc, _)| ssrc.parse::<u32>().unwrap())
-            .expect("the fake heard no call");
-        assert_eq!(call["undecryptable"], 0);
-        assert!(call["voiced"].as_u64().unwrap() > 50, "too little was sent");
-        // Once the beeps stop, it says it stopped, as Discord's clients do.
-        assert_eq!(call["spoke"], true, "it should say it's speaking");
+            .expect("the fake heard no call")
+            .1
+            .clone()
     }
 
     /// Two seconds of beeps on the default speakers.

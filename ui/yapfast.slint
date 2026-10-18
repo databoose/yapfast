@@ -760,6 +760,13 @@ export component YapfastWindow inherits Window {
     in-out property <float> gate-level: -100;
     in-out property <bool> gate-sending;
     in-out property <string> gate-meter-note;
+    /// Push to talk: see VoiceSettings.
+    in-out property <int> input-mode;
+    in-out property <string> talk-key;
+    in-out property <bool> talk-recording;
+    in-out property <int> talk-delay: 20;
+    in-out property <string> talk-note;
+    callback record-talk-key(bool);
     in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
     in-out property <bool> notification-text: true;
@@ -1150,7 +1157,7 @@ export component YapfastWindow inherits Window {
     changed input-open => { root.input-level = 0; root.meter-note = ""; root.metering(root.input-open); }
     Timer { interval: 50ms; running: root.input-open; triggered => { root.meter-tick(); } }
     // The Discord gate's meter runs while voice settings show it.
-    property <bool> gate-metered: root.settings-open && root.settings-section == 1 && root.discord-linked;
+    property <bool> gate-metered: root.settings-open && root.settings-section == 1 && root.discord-linked && root.input-mode == 0;
     // Cameras stop making pictures for a grid that left the screen.
     changed grid-shown => { root.stream-tick(); }
     // The camera films for the preview only while the voice settings show it.
@@ -2800,6 +2807,9 @@ export component YapfastWindow inherits Window {
             unmute-on-join <=> root.unmute-on-join; level-voice <=> root.level-voice;
             noise-suppression <=> root.noise-suppression; noise-strength <=> root.noise-strength; dereverb <=> root.dereverb; discord: root.discord-linked;
             sensitivity <=> root.sensitivity; gate-level: root.gate-level; gate-sending: root.gate-sending; gate-meter-note: root.gate-meter-note;
+            input-mode <=> root.input-mode; talk-key: root.talk-key; talk-recording <=> root.talk-recording;
+            talk-delay <=> root.talk-delay; talk-note: root.talk-note;
+            record-talk-key(on) => { root.record-talk-key(on); }
             select-microphone(index) => { root.select-microphone(index); }
             select-speaker(index) => { root.select-speaker(index); }
             select-camera(index) => { root.select-camera(index); }

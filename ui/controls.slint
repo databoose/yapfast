@@ -808,22 +808,28 @@ export component DeviceMenu inherits Rectangle {
 // How loud something sounds, from 0% to `maximum`: a marigold fill up to the
 // value. Above 100%, as Discord allows for people, a mark shows 100%, and a
 // drag snaps to it nearby. Dragging reports each step through `changed` and the
-// last through `committed`; the arrow keys move 5% at a time.
+// last through `committed`; the arrow keys move 5% at a time. Other amounts
+// set `shown`, `step` and `full-mark`.
 export component VolumeSlider inherits Rectangle {
     in property <string> label;
     in-out property <int> value: 100;
     in property <int> maximum: 200;
+    /// The value as the slider says it.
+    in property <string> shown: root.value + "%";
+    in property <int> step: 5;
+    /// Marks 100% and snaps to it.
+    in property <bool> full-mark: root.maximum > 100;
     callback changed(int);
     callback committed(int);
     height: column.preferred-height;
     accessible-role: slider;
     accessible-label: root.label;
-    accessible-value: root.value;
+    accessible-value: root.shown;
     accessible-value-minimum: 0;
     accessible-value-maximum: root.maximum;
-    accessible-value-step: 5;
-    accessible-action-increment => { root.step(5); }
-    accessible-action-decrement => { root.step(-5); }
+    accessible-value-step: root.step;
+    accessible-action-increment => { root.move(root.step); }
+    accessible-action-decrement => { root.move(-root.step); }
     forward-focus: focus;
     function set(value: int) {
         let clamped = max(0, min(root.maximum, value));
@@ -832,19 +838,19 @@ export component VolumeSlider inherits Rectangle {
             root.changed(clamped);
         }
     }
-    function step(by: int) {
+    function move(by: int) {
         root.set(root.value + by);
         root.committed(root.value);
     }
     function point(x: length) {
         let value = round(max(0, min(1, x / track.width)) * root.maximum);
-        root.set(root.maximum > 100 && abs(value - 100) <= 4 ? 100 : value);
+        root.set(root.full-mark && abs(value - 100) <= 4 ? 100 : value);
     }
     column := VerticalLayout {
         spacing: 6px;
         HorizontalLayout {
             Text { text: root.label; color: Theme.secondary; font-size: 13px; font-weight: 600; horizontal-stretch: 1; }
-            Text { text: root.value + "%"; color: Theme.text; font-size: 13px; font-weight: 600; }
+            Text { text: root.shown; color: Theme.text; font-size: 13px; font-weight: 600; }
         }
         track := Rectangle {
             height: 18px;
@@ -853,7 +859,7 @@ export component VolumeSlider inherits Rectangle {
                 x: 0; y: (parent.height - self.height) / 2; width: parent.width * root.value / root.maximum; height: 4px;
                 border-radius: 2px; background: Theme.accent;
             }
-            if root.maximum > 100: Rectangle { x: parent.width * 100 / root.maximum - 1px; y: (parent.height - self.height) / 2; width: 2px; height: 10px; background: Theme.secondary; }
+            if root.full-mark: Rectangle { x: parent.width * 100 / root.maximum - 1px; y: (parent.height - self.height) / 2; width: 2px; height: 10px; background: Theme.secondary; }
             Rectangle {
                 x: parent.width * root.value / root.maximum - self.width / 2; y: (parent.height - self.height) / 2;
                 width: 14px; height: 14px; border-radius: 7px; background: Theme.text;
@@ -877,8 +883,8 @@ export component VolumeSlider inherits Rectangle {
     focus := FocusScope {
         width: 0; height: 0;
         key-pressed(event) => {
-            if event.text == Key.LeftArrow || event.text == Key.DownArrow { root.step(-5); return accept; }
-            if event.text == Key.RightArrow || event.text == Key.UpArrow { root.step(5); return accept; }
+            if event.text == Key.LeftArrow || event.text == Key.DownArrow { root.move(-root.step); return accept; }
+            if event.text == Key.RightArrow || event.text == Key.UpArrow { root.move(root.step); return accept; }
             return reject;
         }
     }

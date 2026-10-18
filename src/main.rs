@@ -25,6 +25,8 @@ mod notify;
 #[cfg(feature = "desktop")]
 mod paste;
 #[cfg(feature = "desktop")]
+mod push_to_talk;
+#[cfg(feature = "desktop")]
 mod tray;
 #[cfg(feature = "desktop")]
 mod ui;

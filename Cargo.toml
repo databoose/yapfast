@@ -17,7 +17,7 @@ default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["yapfast-core/matrix"]
 discord = ["yapfast-core/discord", "dep:qrcode"]
-desktop = ["dep:slint", "dep:yapfast-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:wayland-client", "dep:wayland-backend", "dep:ksni", "dep:windows-sys"]
+desktop = ["dep:slint", "dep:yapfast-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:wayland-client", "dep:wayland-backend", "dep:ksni", "dep:windows-sys", "dep:futures-util", "dep:x11rb", "dep:xkeysym"]
 # The desktop app with a window that reloads ui/ on each save, for UI work;
 # see docs/building.md.
 live-preview = ["desktop", "yapfast-ui/live-preview"]
@@ -65,6 +65,12 @@ wayland-client = { version = "0.31.15", optional = true }
 wayland-backend = { version = "0.3.17", features = ["client_system"], optional = true }
 # The tray icon, as a StatusNotifierItem on the same bus; pure Rust, on the zbus above.
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"], optional = true }
+# The push-to-talk key in any app: the GlobalShortcuts portal's signals as a
+# stream, XInput 2's raw key events on X11, and keysym names for the portal's
+# trigger. All three are already in the tree, through zbus and winit.
+futures-util = { workspace = true, optional = true }
+x11rb = { version = "0.13.2", default-features = false, features = ["xinput"], optional = true }
+xkeysym = { version = "0.2.1", optional = true }
 
 # The tray icon and giving memory back while the window is closed. Already in the tree
 # through winit.
@@ -89,6 +95,10 @@ yapfast-core = { path = "crates/yapfast-core", default-features = false, feature
 # Builds a Discord server's snapshot for the menus' tests.
 yapfast-discord = { path = "crates/yapfast-discord" }
 tempfile.workspace = true
+
+# Types keys for the push-to-talk hook's test.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 
 # testing/record_host.rs: Weston's capture protocol, and signals and poll; both
 # already in the tree.
