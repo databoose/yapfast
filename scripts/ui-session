@@ -42,6 +42,8 @@ do commands, run in order; the first error stops the rest:
   key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace
       delete space up down left right home end pageup pagedown f10 menu,
       a-z, 0-9)
+  keydown NAME|CODE | keyup NAME|CODE   holds a key down until keyup, as
+      push to talk's key is held
   type TEXT (US layout letters, digits and common punctuation)
   sleep SECONDS | pid
   shot NAME [X Y W H]   saves .local/ui-session/shots/NAME.png, cropped if asked

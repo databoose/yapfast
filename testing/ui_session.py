@@ -416,6 +416,10 @@ def perform(command):
     elif verb == 'key':
         press(rest)
         time.sleep(.2)
+    elif verb in ('keydown', 'keyup'):
+        code = int(rest) if rest.isdecimal() else KEYS[rest]
+        INPUT['send'](f'key {code} {int(verb == "keydown")}')
+        time.sleep(.1)
     elif verb == 'type':
         type_text(rest)
         time.sleep(.2)
