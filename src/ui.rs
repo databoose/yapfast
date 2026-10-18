@@ -243,6 +243,38 @@ fn prepare(window: &YapfastWindow) {
     copy_whole_messages(window);
 }
 
+/// Keeps the account menu's game name and elapsed time current.
+pub(super) fn refresh_game_activity(window: &YapfastWindow) {
+    let activity = yapfast_core::discord::game_activity();
+    let (name, duration) = match activity {
+        Some((name, Some(started))) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let minutes = now.saturating_sub(started) / 60_000;
+            let duration = if minutes == 0 {
+                "less than a minute".to_owned()
+            } else if minutes < 60 {
+                format!("{minutes} min")
+            } else {
+                let hours = minutes / 60;
+                let remaining = minutes % 60;
+                if remaining == 0 {
+                    format!("{hours} hr")
+                } else {
+                    format!("{hours} hr {remaining} min")
+                }
+            };
+            (name, duration)
+        }
+        Some((name, None)) => (name, String::new()),
+        None => (String::new(), String::new()),
+    };
+    window.set_game_activity_name(name.into());
+    window.set_game_activity_duration(duration.into());
+}
+
 /// The most backend events applied together before the window refreshes, so
 /// a long burst still lets the window keep up.
 const EVENT_BATCH: usize = 256;
@@ -771,6 +803,10 @@ struct Layout {
     /// Discord shows this account idle after 10 minutes nobody uses Yapfast;
     /// on unless turned off.
     show_idle: Option<bool>,
+    /// Share detected games and RPC activity; on unless turned off.
+    game_activity: Option<bool>,
+    /// Device-local executable (filename or full path) and displayed title.
+    game_executables: Vec<(String, String)>,
     /// Messages from people this account blocked don't show at all.
     hide_blocked: bool,
     /// A message that notifies while Yapfast isn't in front flashes the
@@ -956,6 +992,21 @@ impl Layout {
         layout
     }
 
+    fn apply_game_activity(&self, window: &YapfastWindow) {
+        let enabled = self.game_activity.unwrap_or(true);
+        window.set_game_activity_enabled(enabled);
+        window.set_game_executables(ModelRc::new(VecModel::from(
+            self.game_executables
+                .iter()
+                .map(|(executable, text)| GameExecutable {
+                    executable: executable.as_str().into(),
+                    text: text.as_str().into(),
+                })
+                .collect::<Vec<_>>(),
+        )));
+        discord::set_game_activity(enabled, self.game_executables.clone());
+    }
+
     /// A sound's own volume as a percentage: 100% unless adjusted.
     fn each_sound(&self, sound: Sound) -> u8 {
         self.each_sound
@@ -972,6 +1023,7 @@ impl Layout {
     }
 
     fn apply(&self, window: &YapfastWindow) {
+        self.apply_game_activity(window);
         window.set_show_idle(self.show_idle.unwrap_or(true));
         window.set_hide_blocked(self.hide_blocked);
         window.set_flash_taskbar(self.flash_taskbar.unwrap_or(true));
@@ -1325,6 +1377,8 @@ struct Adapter {
     pictures_due: slint::Timer,
     /// Writes the layout once the window holds still after moving or resizing.
     placement_due: slint::Timer,
+    /// Refreshes the current game and its elapsed time in the account menu.
+    game_activity_due: slint::Timer,
     /// Stream ticks without a new picture of a video that isn't playing,
     /// after which they stop until the video changes.
     video_quiet: Cell<u32>,
@@ -1540,6 +1594,7 @@ impl Adapter {
                 post_tags_shown: None,
                 pictures_due: slint::Timer::default(),
                 placement_due: slint::Timer::default(),
+                game_activity_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),
                 video_cell: Cell::new((0, 0)),
                 pictures: HashMap::new(),

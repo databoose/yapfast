@@ -644,6 +644,7 @@ impl Discord {
         cached.names = SharedNames::new(names.clone());
         let (snapshots, watcher) = watch::channel(Arc::new(cached));
         let (live, _) = broadcast::channel(LIVE_BACKLOG);
+        let activity = crate::own_activity::start(api.clone(), watcher.clone());
         tokio::spawn(cache::keep(watcher.clone(), names.clone()));
         tokio::spawn(session::run(
             token,
@@ -660,6 +661,7 @@ impl Discord {
                     Presence::parse(&presence),
                 ),
                 presence,
+                activity,
                 inactive: None,
                 viewing: None,
                 beside: None,
@@ -2771,7 +2773,7 @@ pub const DO_NOT_DISTURB: &str = "dnd";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Unix milliseconds now.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

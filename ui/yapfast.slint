@@ -28,7 +28,7 @@ import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, St
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer, Polls } from "messages.slint";
-import { SettingsRow, SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsRow, SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings, GameActivitySettings, GameExecutable } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog, PollAnswerDraft, PollDialog } from "dialogs.slint";
@@ -248,6 +248,8 @@ export component YapfastWindow inherits Window {
     /// The account is speaking in the call, unmuted, as its own row there shows.
     in property <bool> account-speaking;
     in property <string> account-status;
+    in property <string> game-activity-name;
+    in property <string> game-activity-duration;
     /// The address of the picture of the custom emoji in the account's status.
     in property <string> account-status-emoji;
     in property <string> storage;
@@ -326,6 +328,11 @@ export component YapfastWindow inherits Window {
     callback sync-discord-reads-toggled(bool);
     in-out property <bool> show-idle: true;
     callback show-idle-toggled(bool);
+    in-out property <bool> game-activity-enabled: true;
+    in property <[GameExecutable]> game-executables;
+    callback game-activity-toggled(bool);
+    callback save-game-executable(int, string, string) -> bool;
+    callback remove-game-executable(int);
     in-out property <bool> hide-blocked;
     callback hide-blocked-toggled(bool);
     in property <bool> room-selected;
@@ -889,7 +896,7 @@ export component YapfastWindow inherits Window {
     in property <color> incoming-tint;
     in property <image> incoming-picture;
     /// The settings screen covers the window, showing one section: 0 account, 1 voice and
-    /// audio, 2 messages, 3 notifications, 4 Discord, 5 sounds.
+    /// audio, 2 messages, 3 notifications, 4 Discord, 5 sounds, 8 game activity.
     in-out property <bool> settings-open;
     // Closing settings stops linking Discord there.
     changed settings-open => {
@@ -1534,6 +1541,7 @@ export component YapfastWindow inherits Window {
         close-policy: PopupClosePolicy.close-on-click-outside;
         status-menu-content := StatusMenu {
             status: root.discord-status; has-custom-status: root.has-custom-status;
+            game-name: root.game-activity-name; game-duration: root.game-activity-duration;
             choose(status) => { root.set-status(status); status-menu.close(); }
             custom-status => { root.open-status(); status-menu.close(); }
             edit-profile => { root.edit-profile(); status-menu.close(); }
@@ -3124,6 +3132,12 @@ export component YapfastWindow inherits Window {
             start-on-sign-in <=> root.start-on-sign-in; autostart-available: root.autostart-available;
             preferences-changed => { root.preferences-changed(); }
             restart => { root.restart(); }
+        }
+        if root.settings-section == 8: GameActivitySettings {
+            enabled: root.game-activity-enabled; executables: root.game-executables;
+            toggled(enabled) => { root.game-activity-toggled(enabled); }
+            save(index, executable, text) => { return root.save-game-executable(index, executable, text); }
+            remove(index) => { root.remove-game-executable(index); }
         }
         if root.settings-section == 4 && !root.discord-linked: DiscordLinkSettings {
             link-phase: root.link-phase; link-code: root.link-code; link-name: root.link-name; link-note: root.link-note;

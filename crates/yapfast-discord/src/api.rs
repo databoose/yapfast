@@ -361,6 +361,47 @@ impl Api {
         serde_json::from_value(body).context("could not understand Discord's answer")
     }
 
+    /// Stream the public game catalogue to a temporary file. Never attach the
+    /// account's token or retain a second, unfiltered JSON copy in memory.
+    pub(crate) async fn detectable_games(&self, file: std::fs::File) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        const LIMIT: u64 = 32 * 1024 * 1024;
+        let mut response = self
+            .execute(self.http.get(format!("{}/games/detectable", self.base)))
+            .await?;
+        let mut file = tokio::fs::File::from_std(file);
+        let mut size = 0;
+        while let Some(chunk) = response.chunk().await? {
+            size += chunk.len() as u64;
+            if size > LIMIT {
+                bail!("game catalogue exceeds 32 MiB");
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok(())
+    }
+
+    /// Public metadata used by the local Rich Presence bridge. No account
+    /// credentials go with requests on behalf of an IPC application.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn rpc_application(&self, id: &str) -> Result<Value> {
+        self.json(
+            self.http
+                .get(format!("{}/applications/{id}/rpc", self.base)),
+        )
+        .await
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn rpc_assets(&self, id: &str) -> Result<Value> {
+        self.json(
+            self.http
+                .get(format!("{}/oauth2/applications/{id}/assets", self.base)),
+        )
+        .await
+    }
+
     /// Up to [`PAGE`] messages of a channel, newest first, as [`Span`] says.
     pub async fn messages(&self, channel: &str, span: Span<'_>) -> Result<Vec<Value>> {
         let mut path = format!("/channels/{channel}/messages?limit={PAGE}");

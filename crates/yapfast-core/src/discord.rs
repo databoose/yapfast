@@ -32,6 +32,27 @@ pub(crate) const PREFIX: &str = "discord:";
 /// eight MiB cache across these channels and come back from disk after eviction.
 pub const KEPT_CHANNELS: usize = 40;
 pub const KEPT_MESSAGES: usize = 200;
+
+/// Device-wide game sharing preferences. Updates active Discord sessions too.
+pub fn set_game_activity(enabled: bool, executables: Vec<(String, String)>) {
+    #[cfg(feature = "discord")]
+    yapfast_discord::game_detection::preferences::set(enabled, executables);
+    #[cfg(not(feature = "discord"))]
+    let _ = (enabled, executables);
+}
+
+/// The current game activity and its start time in Unix milliseconds.
+pub fn game_activity() -> Option<(String, Option<u64>)> {
+    #[cfg(feature = "discord")]
+    {
+        yapfast_discord::current_game_activity()
+    }
+    #[cfg(not(feature = "discord"))]
+    {
+        None
+    }
+}
+
 /// The categories message requests are listed under in the DM list.
 pub const REQUESTS: &str = "Message requests";
 pub const SPAM: &str = "Spam";

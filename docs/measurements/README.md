@@ -823,3 +823,94 @@ shows at once.
 
 Reproduce: `python3 testing/measure_tray.py --output .local/measure-tray`,
 and with `--runs 1 --renderer gpu` for the GPU column.
+
+## 2026-10-18: Automatic game detection
+
+Measured with `yapfast-game-detection-probe`, the `measure` profile, Rust
+1.99.1, Linux x86_64 and the project's Nix shell through `nix-portable` with
+`NP_RUNTIME=proot`. Mount namespaces were unavailable. **These are proot
+measurements, not native timing claims for Linux, Windows or macOS.**
+
+Hardware: Intel Core i7-14700HX, 28 logical CPUs available (affinity 0–27),
+15.44 GiB system RAM. The command-line probe had no window, rendering,
+voice call or linked Discord session.
+
+Input: Discord's public `/api/v9/games/detectable` response, 13,016,515 bytes,
+24,725 games. The Linux/Wine index retained 11,155 executable rules. There
+were 631 visible processes. The catalogue and installed Steam manifests
+were loaded once, followed by 100 scans without production's 10-second sleeps.
+
+| Measurement | Result |
+| --- | ---: |
+| First scan, including Steam lookup | 181.4 ms wall time |
+| Mean subsequent scan | 123.4 ms wall time |
+| Subsequent scan p95 | 134.5 ms wall time |
+| RSS before catalogue/scanner initialization | 4,288 KiB |
+| RSS after scanning | 17,756 KiB |
+| Standalone RSS increase | 13,468 KiB (13.15 MiB) |
+| Whole probe CPU time, including catalogue loading | 0.69 s user + 4.37 s system |
+| Whole probe elapsed time | 12.66 s |
+
+The RSS increase includes catalogue indexes, sysinfo process records, detector
+caches, allocator retention and newly touched code. It is not an isolated
+measurement of Yapfast's incremental application RSS. CPU includes initialization
+and the execution environment; native measurements are needed for a CPU budget.
+Windows and macOS have path/matcher tests but were not run here.
+
+Production scans once every 15 seconds, without sampling CPU, memory, I/O or
+threads, retaining process file descriptors or running external tools. Command
+lines are read only for Wine/Proton and argument-dependent rules. Identities
+and unchanged activity are shared through `Arc`. Downloads are streamed and
+catalogue entries filtered during parsing. Turning off game sharing stops
+the detector and releases its records and indexes after any in-flight scan.
+
+Reproduce in the development shell:
+
+```sh
+cargo build --locked --profile measure -p yapfast-discord --bin yapfast-game-detection-probe
+target/measure/yapfast-game-detection-probe /path/to/discord-games.json 100
+```
+
+Use the same catalogue, comparable process/Steam workloads and a native shell
+for comparisons. The probe prints no process names or paths.
+
+## 2026-10-18: Streamed game catalogue and cached process matching
+
+This supersedes the detector result above. The same hardware, Rust 1.99.1,
+`measure` profile, 13,016,515-byte source catalogue and proot environment were
+used. The old probe was copied before editing, then compared with the new
+probe in consecutive runs without concurrent builds. Both retained 11,155
+rules and took 100 warm samples. Desktop process counts varied slightly.
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Visible processes | 624 | 630 |
+| RSS before initialization | 4,280 KiB | 4,224 KiB |
+| RSS after scans | 17,752 KiB | 10,172 KiB |
+| Standalone RSS increase | 13,472 KiB (13.16 MiB) | 5,948 KiB (5.81 MiB) |
+| Cold scan, excluding catalogue loading | 162.5 ms | 187.9 ms |
+| Mean warm scan | 114.6 ms | 117.6 ms |
+| Warm scan p95 | 147.5 ms | 158.5 ms |
+| Whole probe CPU time, including catalogue loading | 0.50 s user + 4.06 s system | 0.53 s user + 4.11 s system |
+| Whole probe elapsed | 11.81 s | 12.07 s |
+
+The measured RSS increase fell by 7,524 KiB (7.35 MiB), about 56%. Catalogue
+entries now feed the indexes and compact cache one at a time, without a
+complete intermediate `Vec<Game>`. Executable buckets initially reserve one
+rule instead of four. Warm scans skip name normalization and argument-rule
+lookup for unchanged processes; an unchanged Steam index no longer invalidates
+their match cache. Game selection consumes an iterator without a temporary
+candidate vector. Idle RPC clients release handshake JSON and packet buffers.
+
+The table measures standalone RSS, not the full application's incremental
+memory or an isolated allocation count. It does not measure the RPC buffer
+saving. The small CPU/wall-time differences, changing desktop workload and
+proot overhead do not establish a native speedup or native CPU budget. Timing
+remains dominated by process inspection in this environment; production runs
+one non-overlapping scan every 15 seconds, and none while sharing is disabled.
+
+Reproduce with the commands in the preceding record. To compare versions,
+copy the old executable before rebuilding, then run both with the same source
+file and 100 samples. `/home/bugsa/.nix-portable/busybox/bin/time -v` supplied
+the whole-process CPU times inside the Nix/proot shell; `/proc/self/status`
+supplied the probe's own RSS. Do not use the wrapper's peak RSS as the probe's.

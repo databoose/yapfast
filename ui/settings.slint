@@ -302,7 +302,8 @@ export component SettingsFrame inherits Rectangle {
 // This device's settings, in a SettingsFrame.
 export component SettingsScreen inherits Rectangle {
     /// The section showing: 0 account, 1 voice and video, 2 messages,
-    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance.
+    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance,
+    /// 8 game activity.
     in-out property <int> settings-section;
     in property <bool> discord-build;
     in property <bool> preview;
@@ -317,6 +318,7 @@ export component SettingsScreen inherits Rectangle {
         { text: "Notifications", icon: @image-url("icons/bell.svg"), id: 3 },
         { text: "Sounds", icon: @image-url("icons/volume-2.svg"), id: 5 },
         { text: "Discord", icon: @image-url("icons/discord.svg"), id: 4 },
+        { text: "Game activity", icon: @image-url("icons/play.svg"), id: 8 },
         { text: "Advanced", icon: @image-url("icons/settings.svg"), id: 6 },
     ];
     property <[SettingsRow]> without-discord: [
@@ -1104,7 +1106,56 @@ export component DiscordLinkSettings inherits VerticalLayout {
     }
 }
 
-// Settings: the linked Discord account.
+// A detected game's local name and executable.
+export struct GameExecutable { executable: string, text: string }
+
+// Settings: detected games and Rich Presence.
+export component GameActivitySettings inherits VerticalLayout {
+    in property <bool> enabled;
+    in property <[GameExecutable]> executables;
+    callback toggled(bool);
+    callback save(int, string, string) -> bool;
+    callback remove(int);
+    private property <string> executable-draft;
+    private property <string> text-draft;
+    private property <bool> invalid-game;
+    private property <int> editing-game: -1;
+    spacing: 16px;
+    SettingsTitle { text: "Game activity"; }
+    SettingsSwitch {
+        text: "Share game activity";
+        description: "Show what you're playing. Detects running games and accepts Rich Presence from games on Linux. Turning this off stops detection and RPC.";
+        checked: root.enabled;
+        toggled(enabled) => { root.toggled(enabled); }
+    }
+    SettingsHeading { text: "CUSTOM GAMES"; }
+    Label { text: "Add an executable name or full path and the text to show after Playing. Custom names take priority over automatic detection. Changes apply immediately."; }
+    for game[index] in root.executables: VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            Text { text: game.text; color: Theme.text; font-size: 15px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+            ActionButton { text: "Edit"; small: true; clicked => { root.editing-game = index; root.executable-draft = game.executable; root.text-draft = game.text; root.invalid-game = false; } }
+            ActionButton { text: "Remove"; small: true; clicked => { root.editing-game = -1; root.executable-draft = ""; root.text-draft = ""; root.remove(index); } }
+        }
+        Text { text: game.executable; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+    }
+    TextField { text <=> root.executable-draft; label: "Game executable"; placeholder: "Executable name or full path"; }
+    TextField { text <=> root.text-draft; label: "Game activity text"; placeholder: "Text after Playing (up to 128 characters)"; }
+    if root.invalid-game: Label { text: "Enter an executable and a name of up to 128 characters, without line breaks."; }
+    HorizontalLayout {
+        ActionButton {
+            text: root.editing-game < 0 ? "Add game" : "Save game"; enabled: root.executable-draft != "" && root.text-draft != "";
+            clicked => {
+                root.invalid-game = !root.save(root.editing-game, root.executable-draft, root.text-draft);
+                if !root.invalid-game { root.editing-game = -1; root.executable-draft = ""; root.text-draft = ""; }
+            }
+        }
+        if root.editing-game >= 0: ActionButton { text: "Cancel"; clicked => { root.editing-game = -1; root.executable-draft = ""; root.text-draft = ""; root.invalid-game = false; } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
+
+// Settings: Discord account and channel behavior.
 export component DiscordSettings inherits VerticalLayout {
     in property <bool> matrix-build;
     in property <bool> show-hidden-channels;

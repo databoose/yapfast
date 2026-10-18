@@ -1,0 +1,796 @@
+//! Lightweight game detection on Linux, Windows and macOS. Only executable
+//! identity is refreshed; no CPU, memory, I/O, environment or thread metrics.
+
+use crate::api::Api;
+use anyhow::Result;
+use serde::Serialize;
+use serde_json::{Value, json};
+use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use tokio::sync::watch;
+
+mod catalog;
+pub mod preferences;
+mod steam;
+use catalog::{Catalog, GameInfo};
+
+const INTERVAL: Duration = Duration::from_secs(15);
+const STEAM_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(crate) fn start(
+    api: Arc<Api>,
+    settings: watch::Receiver<preferences::Preferences>,
+) -> watch::Receiver<Option<Arc<Value>>> {
+    let (shown, receiver) = watch::channel(None);
+    tokio::spawn(async move {
+        let custom = std::env::var_os("YAPFAST_DISCORD_GAMES_FILE").map(PathBuf::from);
+        let isolated_cache = std::env::var_os("YAPFAST_DISCORD_GAMES_CACHE").is_some();
+        let disabled = std::env::var_os("YAPFAST_DISCORD_GAME_DETECTION").is_some_and(|v| v == "0")
+            || (crate::client::test_server().is_some() && custom.is_none() && !isolated_cache);
+        if disabled || !sysinfo::IS_SUPPORTED_SYSTEM {
+            shown.closed().await;
+            return;
+        }
+        if let Err(error) = run(api, custom, &shown, settings).await {
+            tracing::warn!(%error, "automatic game detection stopped");
+        }
+        shown.send_replace(None);
+    });
+    receiver
+}
+
+async fn run(
+    api: Arc<Api>,
+    custom: Option<PathBuf>,
+    shown: &watch::Sender<Option<Arc<Value>>>,
+    mut settings: watch::Receiver<preferences::Preferences>,
+) -> Result<()> {
+    let cache = std::env::var_os("YAPFAST_DISCORD_GAMES_CACHE")
+        .map(PathBuf::from)
+        .or_else(crate::cache::games_file);
+    let path = custom.clone().or_else(|| cache.clone());
+    let (initial, fresh) = tokio::task::spawn_blocking(move || {
+        let fresh = path.as_ref().is_some_and(|p| catalog::fresh(p));
+        let catalog = path.as_ref().and_then(|p| match Catalog::read(p) {
+            Ok(catalog) => Some(catalog),
+            Err(error) => {
+                tracing::debug!(%error, "no cached game catalogue");
+                None
+            }
+        });
+        let fresh = fresh && catalog.is_some();
+        (Arc::new(catalog.unwrap_or_default()), fresh)
+    })
+    .await?;
+    let mut detector = Detector::new(initial, steam::roots());
+    detector.set_executables(&settings.borrow_and_update().executables);
+    let mut ticks = tokio::time::interval(INTERVAL);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut due = !fresh && custom.is_none();
+    let mut refresh = Box::pin(catalog::refresh(&api, cache.clone()));
+    let mut next_refresh = Instant::now() + catalog::MAX_AGE;
+    loop {
+        tokio::select! {
+            biased;
+            () = shown.closed() => return Ok(()),
+            result = settings.changed() => {
+                if result.is_err() || !settings.borrow().enabled { return Ok(()); }
+                detector.set_executables(&settings.borrow_and_update().executables);
+                ticks.reset_immediately();
+            }
+            result = &mut refresh, if due => {
+                let success = result.is_ok();
+                match result {
+                    Ok(catalog) => detector.replace_catalog(catalog),
+                    Err(error) => tracing::warn!(%error, "could not refresh game catalogue; using cache"),
+                }
+                due = false;
+                next_refresh = Instant::now() + if success { catalog::MAX_AGE } else { Duration::from_secs(3600) };
+            }
+            _ = ticks.tick() => {
+                if custom.is_none() && !due && Instant::now() >= next_refresh {
+                    refresh = Box::pin(catalog::refresh(&api, cache.clone()));
+                    due = true;
+                }
+                let scanned = tokio::task::spawn_blocking(move || {
+                    let activity = detector.scan(crate::service::now_ms());
+                    (detector, activity)
+                }).await?;
+                detector = scanned.0;
+                shown.send_if_modified(|previous| {
+                    if *previous == scanned.1 { false } else { *previous = scanned.1; true }
+                });
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Identity {
+    pid: u32,
+    started: u64,
+}
+
+struct Known {
+    started: u64,
+    fingerprint: u64,
+    game: Option<Arc<GameInfo>>,
+    generation: u64,
+}
+
+struct Found {
+    identity: Identity,
+    game: Arc<GameInfo>,
+}
+
+struct Active {
+    found: Found,
+    missed: u8,
+    activity: Arc<Value>,
+}
+
+#[derive(Default)]
+struct Selection {
+    active: Option<Active>,
+}
+
+impl Selection {
+    fn update(
+        &mut self,
+        candidates: impl IntoIterator<Item = Found>,
+        now_ms: u64,
+    ) -> Option<Arc<Value>> {
+        let mut current_found = false;
+        let next = candidates
+            .into_iter()
+            .inspect(|found| {
+                current_found |= self.active.as_ref().is_some_and(|active| {
+                    found.identity == active.found.identity && found.game == active.found.game
+                });
+            })
+            .max_by_key(|f| (f.identity.started, f.identity.pid));
+        if let Some(active) = &mut self.active {
+            if current_found {
+                active.missed = 0;
+                return Some(active.activity.clone());
+            }
+            active.missed += 1;
+            if active.missed < 2 {
+                return Some(active.activity.clone());
+            }
+        }
+        self.active = next.map(|found| {
+            let started = found
+                .identity
+                .started
+                .checked_mul(1000)
+                .filter(|t| *t > 0 && *t <= now_ms)
+                .unwrap_or(now_ms);
+            let mut value = json!({"type":0,"name":found.game.name,"timestamps":{"start":started}});
+            if let Some(id) = &found.game.id {
+                value["application_id"] = json!(id.to_string());
+            }
+            Active {
+                found,
+                missed: 0,
+                activity: Arc::new(value),
+            }
+        });
+        self.active.as_ref().map(|active| active.activity.clone())
+    }
+}
+
+struct Detector {
+    system: System,
+    catalog: Arc<Catalog>,
+    steam: steam::Steam,
+    steam_roots: Vec<PathBuf>,
+    next_steam: Instant,
+    known: HashMap<u32, Known>,
+    selection: Selection,
+    generation: u64,
+    executables: Vec<(String, Arc<GameInfo>)>,
+}
+
+fn custom_match(
+    entries: &[(String, Arc<GameInfo>)],
+    path: &str,
+    windows: bool,
+) -> Option<Arc<GameInfo>> {
+    if entries.is_empty() {
+        return None;
+    }
+    let normalize = |s: &str| {
+        let mut path = s.replace('\\', "/").to_lowercase();
+        if path.starts_with("//?/unc/") {
+            path.replace_range(..8, "//");
+        } else if path.starts_with("//?/") {
+            path.drain(..4);
+        }
+        path
+    };
+    let actual = if windows {
+        std::borrow::Cow::Owned(normalize(path))
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    };
+    entries.iter().find_map(|(executable, game)| {
+        let expected = if windows {
+            std::borrow::Cow::Owned(normalize(executable))
+        } else {
+            std::borrow::Cow::Borrowed(executable.as_str())
+        };
+        let matches = if expected.contains('/') {
+            expected == actual
+        } else {
+            actual.rsplit('/').next() == Some(expected.as_ref())
+        };
+        matches.then(|| game.clone())
+    })
+}
+
+fn fingerprint(process: &sysinfo::Process) -> u64 {
+    let mut hash = DefaultHasher::new();
+    process.name().hash(&mut hash);
+    process.exe().hash(&mut hash);
+    hash.finish()
+}
+
+fn is_wine(process: &sysinfo::Process) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let name = process
+        .exe()
+        .and_then(|path| path.file_name())
+        .unwrap_or_else(|| process.name())
+        .to_string_lossy();
+    name.starts_with("wine")
+        || process
+            .name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".exe")
+}
+
+fn ignored(path: &str) -> bool {
+    let file = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    matches!(
+        file.as_str(),
+        "steam"
+            | "steam.exe"
+            | "steamwebhelper"
+            | "steamwebhelper.exe"
+            | "wine"
+            | "wine64"
+            | "wine-preloader"
+            | "wine64-preloader"
+            | "wineserver"
+            | "crashpad_handler"
+            | "crashpad_handler.exe"
+            | "unitycrashhandler64.exe"
+            | "unitycrashhandler32.exe"
+            | "explorer.exe"
+            | "services.exe"
+            | "winedevice.exe"
+            | "rundll32.exe"
+            | "conhost.exe"
+            | "start.exe"
+    ) || file.starts_with("easyanticheat")
+        || file.starts_with("eac_launcher")
+        || file.starts_with("battleye")
+        || file.starts_with("beservice")
+}
+
+fn wine_executable(args: &[std::ffi::OsString]) -> Option<String> {
+    args.iter()
+        .map(|arg| arg.to_string_lossy())
+        .find_map(|arg| {
+            let path = arg.trim_matches('"');
+            (!path.starts_with('-') && path.to_ascii_lowercase().ends_with(".exe"))
+                .then(|| path.to_owned())
+        })
+}
+
+impl Detector {
+    fn new(catalog: Arc<Catalog>, steam_roots: Vec<PathBuf>) -> Self {
+        // sysinfo normally caches an open /proc/<pid>/stat fd for each process.
+        // Detection runs infrequently, so keep no such per-process file handles.
+        #[cfg(target_os = "linux")]
+        sysinfo::set_open_files_limit(0);
+        Self {
+            system: System::new(),
+            catalog,
+            steam: steam::Steam::default(),
+            steam_roots,
+            next_steam: Instant::now(),
+            known: HashMap::new(),
+            selection: Selection::default(),
+            generation: 0,
+            executables: Vec::new(),
+        }
+    }
+
+    fn replace_catalog(&mut self, catalog: Arc<Catalog>) {
+        self.catalog = catalog;
+        self.generation = self.generation.wrapping_add(1);
+        self.next_steam = Instant::now();
+    }
+
+    fn set_executables(&mut self, entries: &[(String, String)]) {
+        self.executables = entries
+            .iter()
+            .filter(|(path, name)| !path.trim().is_empty() && !name.trim().is_empty())
+            .map(|(path, name)| {
+                (
+                    path.trim().to_owned(),
+                    Arc::new(GameInfo {
+                        id: None,
+                        name: name.trim().into(),
+                    }),
+                )
+            })
+            .collect();
+        self.generation = self.generation.wrapping_add(1);
+        self.selection = Selection::default();
+    }
+
+    fn scan(&mut self, now_ms: u64) -> Option<Arc<Value>> {
+        if Instant::now() >= self.next_steam {
+            let steam = steam::Steam::load(&self.steam_roots, &self.catalog);
+            if self.steam != steam {
+                self.steam = steam;
+                self.generation = self.generation.wrapping_add(1);
+            }
+            self.next_steam = Instant::now() + STEAM_INTERVAL;
+        }
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                // A launcher can exec() a game with the same PID/start time.
+                // One executable lookup per scan avoids stale sysinfo paths.
+                .with_exe(UpdateKind::Always)
+                .with_user(UpdateKind::OnlyIfNotSet),
+        );
+        let me = sysinfo::get_current_pid()
+            .ok()
+            .and_then(|pid| self.system.process(pid))
+            .and_then(|p| p.user_id())
+            .cloned();
+        // Fetch command lines only for new Wine processes or catalogue rules
+        // that explicitly require arguments. Never read process environments.
+        let arguments: Vec<_> = self
+            .system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                if me
+                    .as_ref()
+                    .zip(process.user_id())
+                    .is_some_and(|(me, other)| me != other)
+                {
+                    return None;
+                }
+                let known = self.known.get(&pid.as_u32());
+                let changed = known.is_none_or(|known| {
+                    known.started != process.start_time()
+                        || known.fingerprint != fingerprint(process)
+                });
+                // Warm scans do no name normalization or catalogue lookup for
+                // unchanged processes. A new catalogue can introduce an
+                // argument-dependent rule for an already running executable.
+                if !changed
+                    && (known.is_some_and(|known| known.generation == self.generation)
+                        || !process.cmd().is_empty())
+                {
+                    return None;
+                }
+                let needs = is_wine(process)
+                    || process
+                        .exe()
+                        .is_some_and(|path| self.catalog.needs_arguments(&path.to_string_lossy()));
+                needs.then_some(*pid)
+            })
+            .collect();
+        if !arguments.is_empty() {
+            self.system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&arguments),
+                false,
+                ProcessRefreshKind::nothing()
+                    .without_tasks()
+                    .with_cmd(UpdateKind::Always)
+                    .with_cwd(UpdateKind::Always),
+            );
+        }
+        self.known.retain(|pid, _| {
+            self.system
+                .process(sysinfo::Pid::from_u32(*pid))
+                .is_some_and(|process| {
+                    me.as_ref()
+                        .zip(process.user_id())
+                        .is_none_or(|(me, other)| me == other)
+                })
+        });
+        for (pid, process) in self.system.processes() {
+            if me
+                .as_ref()
+                .zip(process.user_id())
+                .is_some_and(|(me, other)| me != other)
+            {
+                continue;
+            }
+            let identity = Identity {
+                pid: pid.as_u32(),
+                started: process.start_time(),
+            };
+            let hash = fingerprint(process);
+            let known = self.known.entry(identity.pid).or_insert(Known {
+                started: u64::MAX,
+                fingerprint: 0,
+                game: None,
+                generation: u64::MAX,
+            });
+            if known.started != identity.started
+                || known.fingerprint != hash
+                || known.generation != self.generation
+            {
+                let wine = is_wine(process);
+                let path = if wine {
+                    wine_executable(process.cmd())
+                } else {
+                    process.exe().map(|p| p.to_string_lossy().into_owned())
+                };
+                known.game = path.and_then(|path| {
+                    custom_match(
+                        &self.executables,
+                        &path,
+                        wine || cfg!(target_os = "windows"),
+                    )
+                    .or_else(|| {
+                        (!ignored(&path))
+                            .then(|| {
+                                self.catalog
+                                    .matches(
+                                        &path,
+                                        process.cmd(),
+                                        wine || cfg!(target_os = "windows"),
+                                    )
+                                    .or_else(|| self.steam.matches(&path))
+                                    .or_else(|| {
+                                        wine.then(|| {
+                                            process.cwd().and_then(|p| {
+                                                self.steam.matches(&p.to_string_lossy())
+                                            })
+                                        })
+                                        .flatten()
+                                    })
+                            })
+                            .flatten()
+                    })
+                });
+                known.started = identity.started;
+                known.fingerprint = hash;
+                known.generation = self.generation;
+            }
+        }
+        self.selection.update(
+            self.known.iter().filter_map(|(&pid, known)| {
+                known.game.as_ref().map(|game| Found {
+                    identity: Identity {
+                        pid,
+                        started: known.started,
+                    },
+                    game: game.clone(),
+                })
+            }),
+            now_ms,
+        )
+    }
+}
+
+/// A standalone diagnostic used to measure real scans, without a Discord
+/// connection, CPU sampling, background sleeps or printing the process list.
+#[derive(Serialize)]
+pub struct Measurement {
+    pub rules: usize,
+    pub processes: usize,
+    pub samples: usize,
+    pub cold_scan_ms: f64,
+    pub warm_mean_ms: f64,
+    pub warm_p95_ms: f64,
+    pub rss_before_kib: Option<u64>,
+    pub rss_after_kib: Option<u64>,
+}
+
+fn rss_kib() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        status.lines().find_map(|line| {
+            line.strip_prefix("VmRSS:")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+pub fn measure(path: &Path, samples: usize) -> Result<Measurement> {
+    anyhow::ensure!(
+        (1..=1000).contains(&samples),
+        "samples must be between 1 and 1000"
+    );
+    let rss_before_kib = rss_kib();
+    let catalog = Arc::new(Catalog::read(path)?);
+    let rules = catalog.rule_count();
+    let mut detector = Detector::new(catalog, steam::roots());
+    let started = Instant::now();
+    detector.scan(crate::service::now_ms());
+    let cold_scan_ms = started.elapsed().as_secs_f64() * 1000.;
+    let mut timings = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = Instant::now();
+        detector.scan(crate::service::now_ms());
+        timings.push(started.elapsed().as_secs_f64() * 1000.);
+    }
+    timings.sort_by(f64::total_cmp);
+    Ok(Measurement {
+        rules,
+        processes: detector.system.processes().len(),
+        samples,
+        cold_scan_ms,
+        warm_mean_ms: timings.iter().sum::<f64>() / samples as f64,
+        warm_p95_ms: timings[(samples * 95 / 100).min(samples - 1)],
+        rss_before_kib,
+        rss_after_kib: rss_kib(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_executables_match_names_or_exact_paths() {
+        let title = Arc::new(GameInfo {
+            id: None,
+            name: "Custom".into(),
+        });
+        let names = vec![("Game.exe".into(), title.clone())];
+        assert!(custom_match(&names, "C:\\Games\\GAME.EXE", true).is_some());
+        assert!(custom_match(&names, "/games/game.exe", false).is_none());
+        assert!(custom_match(&names, "/games/OtherGame.exe", true).is_none());
+        let paths = vec![("C:\\Games\\Game.exe".into(), title.clone())];
+        assert!(custom_match(&paths, "\\\\?\\C:\\Games\\GAME.exe", true).is_some());
+        assert!(custom_match(&paths, "C:\\Other\\Game.exe", true).is_none());
+        let unc = vec![("\\\\server\\games\\game.exe".into(), title.clone())];
+        assert!(custom_match(&unc, "\\\\?\\UNC\\SERVER\\games\\GAME.exe", true).is_some());
+        let unix = vec![("/games/game".into(), title)];
+        assert!(custom_match(&unix, "/games/game", false).is_some());
+        assert!(custom_match(&unix, "/other/games/game", false).is_none());
+    }
+
+    fn found(pid: u32, started: u64, name: &str) -> Found {
+        Found {
+            identity: Identity { pid, started },
+            game: Arc::new(GameInfo {
+                id: Some(42),
+                name: name.into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn detection_is_stable_tolerates_one_miss_and_distinguishes_reused_pids() {
+        let mut state = Selection::default();
+        let first = state.update(vec![found(10, 100, "Game")], 300_000).unwrap();
+        assert_eq!(first["timestamps"]["start"], 100_000);
+        let unchanged = state
+            .update(
+                vec![found(10, 100, "Game"), found(20, 200, "Other")],
+                300_000,
+            )
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &unchanged),
+            "no new JSON while the game is unchanged"
+        );
+        assert_eq!(state.update(vec![], 300_000), Some(first.clone()));
+        assert_eq!(
+            state.update(vec![found(10, 100, "Game")], 300_000),
+            Some(first.clone())
+        );
+        assert_eq!(
+            state.update(vec![found(10, 200, "Game")], 300_000),
+            Some(first)
+        );
+        let restarted = state.update(vec![found(10, 200, "Game")], 300_000).unwrap();
+        assert_eq!(restarted["timestamps"]["start"], 200_000);
+        assert!(state.update(vec![], 300_000).is_some());
+        assert!(state.update(vec![], 300_000).is_none());
+    }
+
+    #[test]
+    fn ignores_runtime_helpers_launchers_and_anti_cheat() {
+        for path in [
+            "/usr/bin/wine64",
+            "C:\\Windows\\explorer.exe",
+            "/games/game/EasyAntiCheat_EOS.exe",
+            "/games/game/UnityCrashHandler64.exe",
+        ] {
+            assert!(ignored(path), "{path}");
+        }
+        assert!(!ignored("/games/Game/game.exe"));
+        assert!(!ignored("/games/Factorio/bin/x64/factorio"));
+    }
+
+    #[test]
+    fn wine_uses_the_game_executable_and_preserves_spaces() {
+        let args = [
+            "/usr/bin/wine64",
+            "--debug=helper.exe",
+            "\"C:\\Program Files\\Game\\Game.EXE\"",
+            "--fullscreen",
+        ]
+        .map(std::ffi::OsString::from);
+        assert_eq!(
+            wine_executable(&args).as_deref(),
+            Some("C:\\Program Files\\Game\\Game.EXE")
+        );
+        assert!(wine_executable(&[std::ffi::OsString::from("/usr/bin/wineserver")]).is_none());
+    }
+
+    #[test]
+    fn fixture_process() {
+        if std::env::var_os("YAPFAST_TEST_GAME_FIXTURE").is_none() {
+            return;
+        }
+        use std::io::Read;
+        let _ = std::io::stdin().read_exact(&mut [0_u8]);
+    }
+
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn scans_an_actual_game_process() {
+        // Hard-link the test binary so no shell, external game or duplicate
+        // large executable is needed. The fixture waits on its stdin pipe.
+        let executable = std::env::current_exe().unwrap();
+        let directory = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let name = if cfg!(target_os = "windows") {
+            "yapfast_fixture_game.exe"
+        } else {
+            "yapfast_fixture_game"
+        };
+        let game = directory.path().join(name);
+        std::fs::hard_link(&executable, &game).unwrap();
+        let mut child = Child(
+            std::process::Command::new(&game)
+                .args(["--exact", "game_detection::tests::fixture_process"])
+                .env("YAPFAST_TEST_GAME_FIXTURE", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let rules = directory.path().join("rules.json");
+        std::fs::write(
+            &rules,
+            serde_json::to_vec(&json!([{"id":"42", "name":"Native Fixture",
+            "executables":[{"os":catalog::host_os(),"name":name,"arguments":"--exact"}]}]))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut detector = Detector::new(Arc::new(Catalog::default()), Vec::new());
+        assert!(detector.scan(crate::service::now_ms()).is_none());
+        // A weekly catalogue update can add argument-dependent rules for a
+        // process that was already cached before its game became recognizable.
+        detector.replace_catalog(Arc::new(Catalog::read(&rules).unwrap()));
+        let shown = detector.scan(crate::service::now_ms()).unwrap();
+        assert_eq!(shown["name"], "Native Fixture");
+        assert_eq!(shown["application_id"], "42");
+        assert!(detector.system.cpus().is_empty(), "no CPU sampling");
+        detector.set_executables(&[(name.into(), "My custom title".into())]);
+        let shown = detector.scan(crate::service::now_ms()).unwrap();
+        assert_eq!(shown["name"], "My custom title");
+        assert!(shown.get("application_id").is_none());
+        detector.set_executables(&[(game.to_string_lossy().into_owned(), "Renamed live".into())]);
+        assert_eq!(
+            detector.scan(crate::service::now_ms()).unwrap()["name"],
+            "Renamed live"
+        );
+        detector.set_executables(&[]);
+        assert_eq!(
+            detector.scan(crate::service::now_ms()).unwrap()["name"],
+            "Native Fixture"
+        );
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        assert!(detector.scan(crate::service::now_ms()).is_some());
+        assert!(detector.scan(crate::service::now_ms()).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn recognizes_a_launcher_execing_a_game_without_changing_pid() {
+        use std::io::Write;
+        let executable = std::env::current_exe().unwrap();
+        let directory = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let game = directory.path().join("yf_exec_game");
+        std::fs::hard_link(&executable, &game).unwrap();
+        let mut child = Child(
+            // exec from a single-threaded shell, as real launch scripts do.
+            // proot crashes when libtest's worker thread execs a new image.
+            std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "read -r ready; exec \"$1\" --exact game_detection::tests::fixture_process",
+                    "yapfast-test-launcher",
+                ])
+                .arg(&game)
+                .env("YAPFAST_TEST_GAME_FIXTURE", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let rules = directory.path().join("rules.json");
+        std::fs::write(
+            &rules,
+            r#"[{"name":"Exec Game","executables":[{"os":"linux","name":"yf_exec_game"}]}]"#,
+        )
+        .unwrap();
+        let mut detector = Detector::new(Arc::new(Catalog::read(&rules).unwrap()), Vec::new());
+        assert!(detector.scan(crate::service::now_ms()).is_none());
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"ready\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(activity) = detector.scan(crate::service::now_ms()) {
+                assert_eq!(activity["name"], "Exec Game");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "did not refresh after exec(): child={:?}, process={:?}, kernel_exe={:?}, cmdline={:?}",
+                child.0.try_wait(),
+                detector
+                    .system
+                    .process(sysinfo::Pid::from_u32(child.0.id()))
+                    .map(|p| (p.name(), p.exe(), p.start_time())),
+                std::fs::read_link(format!("/proc/{}/exe", child.0.id())),
+                std::fs::read(format!("/proc/{}/cmdline", child.0.id()))
+                    .map(|s| String::from_utf8_lossy(&s).into_owned())
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}

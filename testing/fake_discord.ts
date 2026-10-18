@@ -2611,13 +2611,21 @@ function gatewayMessage(ws: Socket, text: string) {
       break;
     case 6: {
       // Resume: replay what the session missed, then RESUMED.
-      const session = parked.get(d.session_id);
+      // The new WebSocket can send RESUME before Bun dispatches the old
+      // connection's close callback. Sessions outlive their transport, so
+      // allow the handoff directly from that connection as well as parked.
+      const previous = [...sockets].find(other => other !== ws && other.data.identified && other.data.session === d.session_id);
+      const session = parked.get(d.session_id) ?? (previous ? { sequence: previous.data.sequence, missed: [] } : undefined);
       if (d.token !== apiToken || !session || d.seq !== session.sequence) {
-        console.error(`gateway: can't resume ${d.session_id} at ${d.seq}`);
+        console.error(`gateway: can't resume ${d.session_id} at ${d.seq} (parked sequence ${session?.sequence}, token matches: ${d.token === apiToken})`);
         send(ws, 9, false);
         return;
       }
       parked.delete(d.session_id);
+      if (previous) {
+        previous.data.identified = false;
+        previous.close(4000, "Session resumed on another connection");
+      }
       ws.data.session = d.session_id;
       ws.data.sequence = session.sequence;
       ws.data.identified = true;
@@ -3917,6 +3925,23 @@ function linkedGifEmbed(content: string, origin: string) {
 let frecencySettings: string | null = null;
 
 async function api(req: Request, path: string, origin: string): Promise<Response> {
+  if (req.method === "GET" && path === "/games/detectable") {
+    return json([{ id: "123456789012345680", name: "Detected Fixture",
+      description: "Discard this unrelated catalogue metadata when caching",
+      executables: [
+        { os: "linux", name: "yapfast_detected_game", is_launcher: false },
+        { os: "darwin", name: "yapfast_detected_game", is_launcher: false },
+        { os: "win32", name: "yapfast_detected_game.exe", is_launcher: false }
+      ], third_party_skus: [] }]);
+  }
+  // Public RPC metadata. Games normally omit their name and refer to image
+  // keys, which the desktop resolves before sending a Gateway presence.
+  if (req.method === "GET" && path === "/applications/123456789012345678/rpc") {
+    return json({ id: "123456789012345678", name: "Fixture Game" });
+  }
+  if (req.method === "GET" && path === "/oauth2/applications/123456789012345678/assets") {
+    return json([{ id: "123456789012345679", name: "game_cover", type: 1 }]);
+  }
   // A confirmed remote login's ticket, traded for the login without one.
   if (req.method === "POST" && path === "/users/@me/remote-auth/login") {
     const body: any = await req.json().catch(() => ({}));

@@ -549,6 +549,43 @@ fn the_renderer_setting_is_remembered() {
 }
 
 #[test]
+fn game_activity_settings_are_remembered_and_editable() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = YapfastWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    assert!(window.get_game_activity_enabled());
+    assert!(!window.invoke_save_game_executable(-1, "".into(), "Game".into()));
+    assert!(!window.invoke_save_game_executable(-1, "game".into(), "a".repeat(129).into()));
+    assert!(window.invoke_save_game_executable(-1, " /opt/my-game ".into(), " My game ".into()));
+    assert!(window.invoke_save_game_executable(0, "/opt/my-game".into(), "New title".into()));
+    assert_eq!(window.get_game_executables().row_count(), 1);
+    assert_eq!(
+        window.get_game_executables().row_data(0).unwrap().text,
+        "New title"
+    );
+    window.invoke_game_activity_toggled(false);
+    let saved = Layout::read(directory.path());
+    assert_eq!(saved.game_activity, Some(false));
+    assert_eq!(
+        saved.game_executables,
+        vec![("/opt/my-game".into(), "New title".into())]
+    );
+    saved.apply(&window);
+    assert!(!window.get_game_activity_enabled());
+    window.invoke_remove_game_executable(0);
+    assert!(Layout::read(directory.path()).game_executables.is_empty());
+    assert_eq!(window.get_game_executables().row_count(), 0);
+    window.invoke_game_activity_toggled(true);
+}
+
+#[test]
 fn sound_settings_are_remembered() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();
