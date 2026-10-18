@@ -412,11 +412,16 @@ impl Item for StyledTextItem {
                 InputEventResult::EventAccepted
             }
             #[cfg(feature = "shared-parley")]
-            MouseEvent::Moved { position, .. }
-            | MouseEvent::Pressed { position, .. }
-            | MouseEvent::Released { position, .. } => {
+            MouseEvent::Moved { position, .. } => {
                 point(position);
                 InputEventResult::EventAccepted
+            }
+            // Yapfast: other buttons go on to the items around the text, so a right click on a
+            // message's text opens the message's menu.
+            #[cfg(feature = "shared-parley")]
+            MouseEvent::Pressed { position, .. } | MouseEvent::Released { position, .. } => {
+                point(position);
+                InputEventResult::EventIgnored
             }
             MouseEvent::Exit => {
                 self.pressed.set(false);
