@@ -1621,6 +1621,7 @@ export component YapfastWindow inherits Window {
                                 friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
                                 voice-channel: root.voice-channel; participants: root.participants; sidebar-empty: root.sidebar-empty;
                                 select-room(id) => { root.select-room(id); }
+                                open-voice(id) => { root.open-conversation(id); }
                                 open-friends => { root.open-friends(); }
                                 open-requests => { root.open-requests(); }
                                 open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }

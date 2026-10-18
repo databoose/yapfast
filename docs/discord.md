@@ -1982,12 +1982,14 @@ the add-friend dialog. Discord sends presence for friends in READY's
 `merged_presences` and in PRESENCE_UPDATE, so the list keeps up with them.
 Clicking a friend, or the message button on their row, opens the DM with
 them, or starts one as the pen does and opens it once Discord lists it.
-A friend in a voice channel of a server this account is in shows a green
-speaker, the channel and the server in place of their status, as Discord's
-Active Now does; clicking that line goes to the channel without joining it.
-It comes from the voice states the channel list already keeps, so it shows
-only servers both share and channels this account sees. DM calls stay out,
-as in Discord.
+A friend in a voice channel of a server this account is in shows where, as
+Discord's Active Now does, both here and in their one-to-one DM's row: a
+green speaker, the channel and the server in place of "Online" or an empty
+line, or, beside a custom status or activity, the speaker alone, with the
+channel and server in its tooltip. Clicking it goes to the channel without
+joining it. It comes from the voice states the channel list already keeps,
+so it shows only servers both share and channels this account sees. DM
+calls stay out, as in Discord.
 
 The person beside the pen, in the same header, adds a friend by username: `POST
 /users/@me/relationships` with `{"username": ..., "discriminator": null}` and

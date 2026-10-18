@@ -292,6 +292,47 @@ export component StatusText inherits HorizontalLayout {
     }
 }
 
+// The server voice channel someone is in: a green speaker, then the channel
+// and its server; or, compact, the speaker alone with those in its tooltip,
+// for a line their status fills. Clicking it goes to the channel.
+export component VoiceSpot inherits Rectangle {
+    in property <string> channel;
+    in property <string> server;
+    in property <bool> compact;
+    in property <length> font-size: 13px;
+    callback clicked;
+    property <string> place: root.channel + " — " + root.server;
+    horizontal-stretch: 0;
+    accessible-role: button;
+    accessible-label: "Go to " + root.channel + " in " + root.server;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        spacing: 4px;
+        speaker := Image {
+            source: @image-url("icons/volume-2.svg"); width: root.font-size + 1px; height: self.width;
+            y: (parent.height - self.height) / 2; colorize: Theme.live;
+        }
+        if !root.compact: Text {
+            text: root.place; color: pointer.has-hover ? Theme.text : Theme.muted;
+            font-size: root.font-size; overflow: elide;
+        }
+    }
+    pointer := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { Tip.text = ""; root.clicked(); }
+        changed has-hover => {
+            if self.has-hover && root.compact {
+                Tip.text = root.place;
+                Tip.side = 0;
+                Tip.x = speaker.absolute-position.x + speaker.width / 2;
+                Tip.y = speaker.absolute-position.y;
+            } else if Tip.text == root.place {
+                Tip.text = "";
+            }
+        }
+    }
+}
+
 // A single-line text field. Long text scrolls to keep the cursor visible.
 export component TextField inherits Rectangle {
     in-out property <string> text;

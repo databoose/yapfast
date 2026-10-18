@@ -529,6 +529,11 @@ impl Adapter {
                     String::new()
                 };
                 let (detail, detail_emoji) = dm_detail(room);
+                let voice = room
+                    .person
+                    .as_deref()
+                    .filter(|_| room.network == Network::Discord)
+                    .and_then(|person| in_voice.get(person));
                 RoomRow {
                     id: room.id.clone().into(),
                     name: room.name.clone().into(),
@@ -604,6 +609,9 @@ impl Adapter {
                     .into(),
                     detail,
                     detail_emoji,
+                    voice_room: voice.map_or("", |place| place.room).into(),
+                    voice_channel: voice.map_or("", |place| place.channel).into(),
+                    voice_server: voice.map_or("", |place| place.server).into(),
                     thread: room.parent.is_some(),
                     ..Default::default()
                 }
