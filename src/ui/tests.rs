@@ -2691,6 +2691,7 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
 fn a_profile_shows_activities_as_discord_cards() {
     let activities = yapfast_discord::activity::activities(&serde_json::json!([
         {"type": 2, "name": "Spotify", "details": "Weightless", "state": "Marconi Union",
+         "sync_id": "6kkwzB6hXLIONkEk9JciA6",
          "timestamps": {"start": 1_700_000_000_000_u64, "end": 1_700_000_480_000_u64},
          "assets": {"large_image": "spotify:abc", "large_text": "Distance"}},
         {"type": 0, "name": "Factorio", "state": "In a party", "party": {"size": [2, 4]}},
@@ -2707,6 +2708,10 @@ fn a_profile_shows_activities_as_discord_cards() {
         ("Weightless", "by Marconi Union", "on Distance")
     );
     assert_eq!(spotify.end - spotify.start, 480);
+    assert_eq!(
+        spotify.link,
+        "https://open.spotify.com/track/6kkwzB6hXLIONkEk9JciA6"
+    );
     assert_eq!(rows[1].state, "In a party (2 of 4)");
     // The line under the name goes when it only names one of them.
     assert!(profile::names_an_activity("Playing Factorio", &activities));

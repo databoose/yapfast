@@ -122,8 +122,9 @@ export struct ActivityRow {
     /// When it started and when it ends, in ActivityClock's seconds; 0 when
     /// Discord didn't say.
     start: int, end: int,
-    /// A stream's address.
-    url: string,
+    /// A stream's address, and what the title opens, such as a Spotify
+    /// song's page.
+    url: string, link: string,
 }
 
 /// Now, for activities' timers: seconds since 2020 began, kept current
@@ -214,7 +215,22 @@ export component ActivityCard inherits VerticalLayout {
         }
         VerticalLayout {
             alignment: center; spacing: 2px; horizontal-stretch: 1;
-            StatusText { text: root.activity.name; emoji-url: root.activity.name-emoji; color: Theme.text; font-size: 14px; font-weight: 700; }
+            if root.activity.link == "": StatusText { text: root.activity.name; emoji-url: root.activity.name-emoji; color: Theme.text; font-size: 14px; font-weight: 700; }
+            // A song's title opens its page, as in Discord.
+            if root.activity.link != "": HorizontalLayout {
+                alignment: start;
+                Text {
+                    text: root.activity.name; color: title-pointer.has-hover ? Theme.link : Theme.text;
+                    font-size: 14px; font-weight: 700; overflow: elide;
+                    accessible-role: button;
+                    accessible-label: "Open " + root.activity.name;
+                    accessible-action-default => { root.open-link(root.activity.link); }
+                    title-pointer := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.open-link(root.activity.link); }
+                    }
+                }
+            }
             if root.activity.details != "": Text { text: root.activity.details; color: Theme.secondary; font-size: 13px; overflow: elide; }
             if root.activity.state != "": Text { text: root.activity.state; color: Theme.secondary; font-size: 13px; overflow: elide; }
             if root.timed && !root.bar: Text {

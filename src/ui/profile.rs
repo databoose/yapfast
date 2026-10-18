@@ -112,6 +112,7 @@ fn activity_row(activity: &yapfast_core::chat::Activity) -> ActivityRow {
         start: seconds(activity.start),
         end: seconds(activity.end),
         url: text(&activity.url),
+        link: text(&activity.link),
     }
 }
 

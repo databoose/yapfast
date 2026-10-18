@@ -51,6 +51,8 @@ pub struct Activity {
     pub small_text: Option<Box<str>>,
     /// A stream's address, such as its Twitch channel.
     pub url: Option<Box<str>>,
+    /// What its title opens: a Spotify song's page.
+    pub link: Option<Box<str>>,
     /// A Hang status's emoji: Unicode, or a custom one as `<:name:id>`.
     pub emoji: Option<Box<str>>,
 }
@@ -171,9 +173,26 @@ fn activity(activity: &Value) -> Option<Activity> {
             .filter(|text| !text.is_empty())
             .map(Box::from),
         url: text("url").filter(|url| url.starts_with("https://")),
+        link: spotify_link(activity),
         emoji,
         application_id,
     })
+}
+
+/// A Spotify song's or episode's page, from the activity's `sync_id`, as
+/// Discord's client opens it from the title.
+fn spotify_link(activity: &Value) -> Option<Box<str>> {
+    if activity["type"] != 2 || activity["name"] != "Spotify" {
+        return None;
+    }
+    let id = activity["sync_id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))?;
+    let kind = match activity["metadata"]["type"].as_str() {
+        Some("episode") => "episode",
+        _ => "track",
+    };
+    Some(format!("https://open.spotify.com/{kind}/{id}").into())
 }
 
 /// A timestamp, which Discord sends as a number or a string of one.
@@ -327,6 +346,7 @@ mod tests {
         ]));
         assert_eq!(parsed[0].heading(), "Listening to Spotify");
         assert!(parsed[0].spotify());
+        assert_eq!(parsed[0].link, None, "a song without its id links nowhere");
         assert_eq!(
             (parsed[0].start, parsed[0].end),
             (Some(1000), Some(181_000))
@@ -339,6 +359,29 @@ mod tests {
         assert_eq!(
             (&*parsed[2].name, parsed[2].emoji.as_deref()),
             ("Cooking", Some("🍳"))
+        );
+    }
+
+    #[test]
+    fn a_spotify_song_links_to_its_page() {
+        let parsed = activities(&json!([
+            {"type": 2, "name": "Spotify", "sync_id": "6kkwzB6hXLIONkEk9JciA6"},
+            {"type": 2, "name": "Spotify", "sync_id": "4rOoJ6Egrf8K2IrywzwOMk", "metadata": {"type": "episode"}},
+            {"type": 2, "name": "Spotify", "sync_id": "../x"},
+            {"type": 0, "name": "Spotify", "sync_id": "6kkwzB6hXLIONkEk9JciA6"},
+        ]));
+        let links: Vec<_> = parsed
+            .iter()
+            .map(|activity| activity.link.as_deref())
+            .collect();
+        assert_eq!(
+            links,
+            [
+                Some("https://open.spotify.com/track/6kkwzB6hXLIONkEk9JciA6"),
+                Some("https://open.spotify.com/episode/4rOoJ6Egrf8K2IrywzwOMk"),
+                None,
+                None,
+            ]
         );
     }
 

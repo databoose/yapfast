@@ -2146,8 +2146,10 @@ its large picture and the small one on its corner, its details and state, and
 their party's size as "(2 of 4)". A game with a start shows how long it has
 run, "42:10 elapsed"; one with only an end, how long is left; a song with
 both, a bar with how far it's got and how long it is. A Spotify song is
-titled by the song, then "by" the artist and "on" the album; a stream has
-"Watch stream". The line under the name goes when it only names one of
+titled by the song, then "by" the artist and "on" the album, and its title
+opens the song's page, `https://open.spotify.com/track/{sync_id}` (or
+`/episode/` when the activity's metadata says so); a stream has "Watch
+stream". The line under the name goes when it only names one of
 these. The activities come with the presence, from READY's
 `merged_presences`, PRESENCE_UPDATE and the member list, and the DM panel
 follows them live. Their pictures resolve as Discord's client does: an
