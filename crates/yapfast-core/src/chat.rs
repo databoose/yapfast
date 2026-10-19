@@ -389,6 +389,8 @@ pub enum Permission {
     CreatePrivateThreads,
     /// Remove others' reactions, among more.
     ManageMessages,
+    /// Post polls, besides sending messages.
+    SendPolls,
     /// Join a voice channel.
     Connect,
     /// Mute, deafen, and move or disconnect members in voice channels.
@@ -1245,6 +1247,23 @@ pub struct PollAnswer {
     pub mine: bool,
 }
 
+/// A Discord poll to post.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewPoll {
+    pub question: String,
+    pub answers: Vec<NewPollAnswer>,
+    /// How long it takes votes, in hours.
+    pub hours: u32,
+    pub multiselect: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewPollAnswer {
+    pub text: String,
+    /// The emoji itself, or a custom one's `name:id`, as a reaction takes it.
+    pub emoji: Option<String>,
+}
+
 impl Poll {
     /// Whether it takes votes no more at `now`, in seconds since the Unix epoch.
     pub fn closed(&self, now: u64) -> bool {
@@ -1388,6 +1407,11 @@ pub enum Command {
         room: String,
         item: String,
         answers: Vec<u64>,
+    },
+    /// Post a poll in a Discord conversation. [`Event::PollPosted`] follows.
+    SendPoll {
+        room: String,
+        poll: NewPoll,
     },
     /// Close this account's Discord poll now.
     EndPoll {
@@ -1997,6 +2021,7 @@ impl Command {
             | Command::React { room, .. }
             | Command::Reactors { room, .. }
             | Command::Vote { room, .. }
+            | Command::SendPoll { room, .. }
             | Command::EndPoll { room, .. }
             | Command::Voters { room, .. }
             | Command::RemoveReactor { room, .. }
@@ -2285,6 +2310,11 @@ pub enum Event {
         after: Option<String>,
         limit: u32,
         result: Result<Vec<Reactor>, String>,
+    },
+    /// [`Command::SendPoll`]'s poll went up in `room`, or why it didn't.
+    PollPosted {
+        room: String,
+        result: Result<(), String>,
     },
     /// A message was forwarded to `room`, with the message added to it, or
     /// what fell short.

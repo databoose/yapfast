@@ -31,6 +31,50 @@ pub struct Sending<'a> {
     pub silent: bool,
 }
 
+/// A poll to post, as Discord's "Create a Poll" dialog makes it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewPoll {
+    pub question: String,
+    pub answers: Vec<NewAnswer>,
+    /// How long it takes votes, in hours: up to 32 days'.
+    pub hours: u32,
+    pub multiselect: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewAnswer {
+    pub text: String,
+    /// The emoji itself, or a custom one's `name:id`, as a reaction takes it.
+    pub emoji: Option<String>,
+}
+
+impl NewPoll {
+    /// The poll as a message's `poll` field takes it. A custom emoji goes
+    /// by its id alone, as Discord's client sends it.
+    fn body(&self) -> Value {
+        let answers: Vec<Value> = self
+            .answers
+            .iter()
+            .map(|answer| {
+                let mut media = json!({"text": answer.text});
+                match answer.emoji.as_deref().map(|emoji| emoji.split_once(':')) {
+                    Some(Some((_, id))) => media["emoji"] = json!({"id": id, "name": ""}),
+                    Some(None) => media["emoji"] = json!({"name": answer.emoji}),
+                    None => {}
+                }
+                json!({"poll_media": media})
+            })
+            .collect();
+        json!({
+            "question": {"text": self.question},
+            "answers": answers,
+            "allow_multiselect": self.multiselect,
+            "duration": self.hours,
+            "layout_type": 1,
+        })
+    }
+}
+
 /// The message flag of `@silent`: no push or desktop notifications.
 const SUPPRESS_NOTIFICATIONS: u64 = 1 << 12;
 /// The type of a message reference that forwards the message, rather than
@@ -330,6 +374,15 @@ impl Api {
                 });
             }
         }
+        let path = format!("/channels/{channel}/messages");
+        self.json(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Posts a poll, a message with nothing else.
+    pub async fn send_poll(&self, channel: &str, poll: &NewPoll, nonce: &str) -> Result<Value> {
+        let mut body = message_body("", nonce);
+        body["poll"] = poll.body();
         let path = format!("/channels/{channel}/messages");
         self.json(with_json(self.request(Method::POST, &path), &body))
             .await
@@ -1480,6 +1533,39 @@ fn discord_file(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_poll_goes_as_discords_client_sends_it() {
+        use super::{NewAnswer, NewPoll};
+        let answer = |text: &str, emoji: Option<&str>| NewAnswer {
+            text: text.into(),
+            emoji: emoji.map(Into::into),
+        };
+        let poll = NewPoll {
+            question: "Lunch?".into(),
+            answers: vec![
+                answer("Pizza", Some("🍕")),
+                answer("Soup", Some("talk:77")),
+                answer("Salad", None),
+            ],
+            hours: 24,
+            multiselect: true,
+        };
+        assert_eq!(
+            poll.body(),
+            serde_json::json!({
+                "question": {"text": "Lunch?"},
+                "answers": [
+                    {"poll_media": {"text": "Pizza", "emoji": {"name": "🍕"}}},
+                    {"poll_media": {"text": "Soup", "emoji": {"id": "77", "name": ""}}},
+                    {"poll_media": {"text": "Salad"}},
+                ],
+                "allow_multiselect": true,
+                "duration": 24,
+                "layout_type": 1,
+            })
+        );
+    }
+
     #[test]
     fn downloads_that_may_work_later() {
         use super::{Refused, StatusCode, may_work_later};

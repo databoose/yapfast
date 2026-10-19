@@ -6431,6 +6431,155 @@ fn a_channels_threads_list_as_discords_client_lists_them() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn a_poll_is_made_in_discords_dialog_where_polls_may_go() {
+    use crate::chat::{NewPoll, NewPollAnswer};
+    use yapfast_discord::{
+        ready::{self, permission},
+        service::{Snapshot, Status},
+    };
+    let bits = |bits: u64| bits.to_string();
+    let server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99", "properties": {"name": "Test"},
+        "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": bits(
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES | permission::SEND_POLLS)}],
+        "channels": [
+            {"id": "11", "type": 0, "name": "general", "position": 0},
+            {"id": "14", "type": 0, "name": "quiet", "position": 1,
+             "permission_overwrites": [{"id": "10", "type": 0, "allow": "0",
+                                        "deny": bits(permission::SEND_POLLS)}]},
+        ],
+    }))
+    .unwrap();
+    let mut app = Application::default();
+    app.apply(Event::Discord(Arc::new(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        servers: vec![Arc::new(server)],
+        ..Default::default()
+    })));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let open = |app: &mut Application, room: &str| {
+        app.dispatch(Action::SelectRoom(room.into()));
+        app.apply(Event::Timeline {
+            room: room.into(),
+            messages: timeline(vec![]),
+        });
+    };
+    open(&mut app, "discord:10:14");
+    assert!(!app.can_create_polls(), "Send Polls is denied there");
+    app.dispatch(Action::OpenPollDraft);
+    assert!(app.state.poll_draft.is_none());
+    let general = "discord:10:11".to_owned();
+    open(&mut app, &general);
+    assert!(app.can_create_polls());
+
+    // It starts with two answers to fill, for a day.
+    app.dispatch(Action::OpenPollDraft);
+    let draft = |app: &Application| app.state.poll_draft.clone().unwrap();
+    assert_eq!(draft(&app).answers.len(), 2);
+    assert_eq!(POLL_HOURS[draft(&app).duration], 24);
+    assert!(!draft(&app).can_post(), "it has no question yet");
+    let edit = |app: &mut Application, edit: PollEdit| app.dispatch(Action::EditPoll(edit));
+    edit(&mut app, PollEdit::Question(" Lunch? ".into()));
+    edit(
+        &mut app,
+        PollEdit::Answer {
+            index: 1,
+            text: "Soup".into(),
+        },
+    );
+    assert!(draft(&app).can_post(), "one answer is enough");
+    edit(
+        &mut app,
+        PollEdit::Answer {
+            index: 0,
+            text: "x".repeat(56),
+        },
+    );
+    assert_eq!(
+        draft(&app).problem(),
+        Some("Answers can be at most 55 characters.")
+    );
+    assert!(!draft(&app).can_post());
+    edit(
+        &mut app,
+        PollEdit::Answer {
+            index: 0,
+            text: "Pizza".into(),
+        },
+    );
+    edit(
+        &mut app,
+        PollEdit::Emoji {
+            index: 0,
+            emoji: Some("🍕".into()),
+        },
+    );
+
+    // Ten answers at most, and one stays.
+    for _ in 0..10 {
+        edit(&mut app, PollEdit::AddAnswer);
+    }
+    assert_eq!(draft(&app).answers.len(), POLL_ANSWERS);
+    assert!(!draft(&app).can_add());
+    let ids: Vec<u32> = draft(&app).answers.iter().map(|answer| answer.id).collect();
+    edit(&mut app, PollEdit::RemoveAnswer(1));
+    let kept: Vec<u32> = draft(&app).answers.iter().map(|answer| answer.id).collect();
+    assert_eq!(
+        kept,
+        [&ids[..1], &ids[2..]].concat(),
+        "the others keep their ids"
+    );
+    edit(
+        &mut app,
+        PollEdit::Answer {
+            index: 1,
+            text: "Soup".into(),
+        },
+    );
+    edit(&mut app, PollEdit::Duration(6));
+    edit(&mut app, PollEdit::Multiselect(true));
+
+    // Posting leaves out the empty answers, and keeps the dialog till
+    // Discord answers.
+    let posted = app.dispatch(Action::PostPoll);
+    let expected = NewPoll {
+        question: "Lunch?".into(),
+        answers: vec![
+            NewPollAnswer {
+                text: "Pizza".into(),
+                emoji: Some("🍕".into()),
+            },
+            NewPollAnswer {
+                text: "Soup".into(),
+                emoji: None,
+            },
+        ],
+        hours: 336,
+        multiselect: true,
+    };
+    assert!(matches!(
+        posted.as_slice(),
+        [Effect::Backend(Command::SendPoll { room, poll })] if *room == general && *poll == expected
+    ));
+    assert!(draft(&app).posting && !draft(&app).can_post());
+    assert!(app.dispatch(Action::PostPoll).is_empty(), "once");
+    app.apply(Event::PollPosted {
+        room: general.clone(),
+        result: Err("no".into()),
+    });
+    assert_eq!(draft(&app).error.as_deref(), Some("no"));
+    assert!(!draft(&app).posting);
+    app.dispatch(Action::PostPoll);
+    app.apply(Event::PollPosted {
+        room: general.clone(),
+        result: Ok(()),
+    });
+    assert!(app.state.poll_draft.is_none());
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn a_thread_starts_from_discords_new_thread_form() {
     use yapfast_discord::{
         ready::{self, permission},

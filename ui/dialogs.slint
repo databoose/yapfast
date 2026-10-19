@@ -692,3 +692,171 @@ export component ReactionsDialog inherits Rectangle {
     changed reactors-more => { root.near-end(); }
     changed reactors-loading => { root.near-end(); }
 }
+
+/// An answer of the poll being made: its emoji, if it has one, and text.
+export struct PollAnswerDraft { id: int, text: string, emoji: EmojiCell }
+
+// Making a Discord poll, as Discord's "Create a Poll" dialog does: the
+// question, up to ten answers, each with an emoji if wanted, how long it
+// takes votes, and whether several answers may be picked. Clicking outside
+// or Escape closes it.
+export component PollDialog inherits Rectangle {
+    in-out property <string> question;
+    /// "12 / 300", as the question grows.
+    in property <string> question-count;
+    in property <[PollAnswerDraft]> answers;
+    /// Its place among the durations offered.
+    in property <int> duration;
+    in property <bool> multiselect;
+    in property <bool> can-add;
+    in property <bool> can-post;
+    in property <bool> posting;
+    /// What's too long, or why posting failed.
+    in property <string> problem;
+    in property <string> emoji-font;
+    callback question-edited(string);
+    callback answer-edited(int, string);
+    /// An answer's emoji is wanted from the picker, beside this place.
+    callback pick-emoji(int, length, length, length, length);
+    callback remove-emoji(int);
+    callback add-answer;
+    callback remove-answer(int);
+    callback choose-duration(int);
+    callback set-multiselect(bool);
+    callback post;
+    callback close;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(500px, root.width - 48px);
+        height: min(root.height - 48px, head.preferred-height + form.preferred-height + foot.preferred-height + 40px);
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: "Create a Poll";
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 20px; spacing: 0px;
+                head := HorizontalLayout {
+                    padding-bottom: 12px;
+                    Text { text: "Create a Poll"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    form := VerticalLayout {
+                        spacing: 8px; alignment: start;
+                        HorizontalLayout {
+                            Text { text: "QUESTION"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; horizontal-stretch: 1; }
+                            Text { text: root.question-count; color: Theme.muted; font-size: 12px; }
+                        }
+                        TextField {
+                            init => { self.focus-input(); }
+                            min-height: 40px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                            placeholder: "What question do you want to ask?"; label: "Question"; text <=> root.question;
+                            edited(text) => { root.question-edited(text); }
+                        }
+                        Text { text: "ANSWERS"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                        for answer[index] in root.answers: HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 40px; height: 40px; border-radius: 6px;
+                                background: emoji-touch.has-hover ? Theme.hover : Theme.sunken;
+                                accessible-role: button;
+                                accessible-label: answer.emoji.glyph != "" ? "Emoji, " + answer.emoji.name + ". Change it" : "Add emoji, answer " + (index + 1);
+                                accessible-action-default => { root.pick-emoji(index, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                                if answer.emoji.glyph != "": EmojiFace { emoji: answer.emoji; font: root.emoji-font; side: 22px; }
+                                if answer.emoji.glyph == "": Image {
+                                    source: @image-url("icons/smile-plus.svg"); width: 20px; colorize: Theme.secondary;
+                                }
+                                emoji-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.pick-emoji(index, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
+                                }
+                                // Taking the emoji off: a small badge on its corner.
+                                if answer.emoji.glyph != "": Rectangle {
+                                    x: parent.width - 12px; y: -6px; width: 18px; height: 18px; border-radius: 9px;
+                                    background: remove-emoji-touch.has-hover ? Theme.danger : Theme.faint;
+                                    border-width: 2px; border-color: Theme.raised;
+                                    accessible-role: button;
+                                    accessible-label: "Remove the emoji";
+                                    accessible-action-default => { root.remove-emoji(index); }
+                                    Image { source: @image-url("icons/x.svg"); width: 10px; colorize: Theme.text; }
+                                    remove-emoji-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.remove-emoji(index); }
+                                    }
+                                }
+                            }
+                            TextField {
+                                min-height: 40px; text-size: 15px; pad: 10px; fill: Theme.sunken;
+                                placeholder: "Type your answer"; label: "Answer " + (index + 1);
+                                text: answer.text;
+                                edited(text) => { root.answer-edited(index, text); }
+                            }
+                            if root.answers.length > 1: Middle {
+                                IconButton {
+                                    icon: @image-url("icons/trash-2.svg"); label: "Remove answer " + (index + 1); size: 32px; glyph: 18px;
+                                    clicked => { root.remove-answer(index); }
+                                }
+                            }
+                        }
+                        if root.can-add: HorizontalLayout {
+                            alignment: start;
+                            ActionButton {
+                                text: "Add another answer"; ghost: true; small: true; icon: @image-url("icons/circle-plus.svg");
+                                clicked => { root.add-answer(); }
+                            }
+                        }
+                        Text { text: "DURATION"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                        Choices {
+                            label: "Duration"; options: ["1 hour", "4 hours", "8 hours", "1 day", "3 days", "1 week", "2 weeks"];
+                            max-width: 460px; current: root.duration;
+                            chosen(index) => { root.choose-duration(index); }
+                        }
+                        // Discord's "Allow Multiple Answers", a checkbox.
+                        Rectangle {
+                            accessible-role: checkbox;
+                            accessible-checked: root.multiselect;
+                            accessible-label: "Allow Multiple Answers";
+                            accessible-action-default => { root.set-multiselect(!root.multiselect); }
+                            HorizontalLayout {
+                                spacing: 10px; padding-top: 4px;
+                                Middle {
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: root.multiselect ? Theme.accent : transparent;
+                                        border-width: root.multiselect ? 0px : 2px; border-color: Theme.faint;
+                                        if root.multiselect: Image { source: @image-url("icons/check.svg"); width: 14px; height: 14px; colorize: Theme.on-accent; }
+                                    }
+                                }
+                                Text { text: "Allow Multiple Answers"; color: Theme.text; font-size: 15px; vertical-alignment: center; horizontal-stretch: 1; }
+                            }
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.set-multiselect(!root.multiselect); }
+                            }
+                        }
+                    }
+                }
+                foot := VerticalLayout {
+                    spacing: 8px; padding-top: 12px;
+                    if root.problem != "": Text { text: root.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: end; spacing: 8px;
+                        ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
+                        ActionButton {
+                            text: root.posting ? "Posting..." : "Post"; primary: true; enabled: root.can-post;
+                            clicked => { root.post(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

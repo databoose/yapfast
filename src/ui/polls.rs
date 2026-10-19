@@ -3,7 +3,10 @@
 //! whether "Show results" was clicked, the adapter keeps among `revealed`,
 //! as `{item}/pick{id}` and `{item}/results`.
 
-use yapfast_core::chat::Poll;
+use yapfast_core::{
+    application::{PollEdit, QUESTION_LIMIT},
+    chat::Poll,
+};
 
 use super::*;
 
@@ -122,7 +125,86 @@ fn pick_key(item: &str, answer: u64) -> String {
     format!("{item}/pick{answer}")
 }
 
+impl Adapter {
+    /// The "Create a Poll" dialog. Its answers keep their places by id, so
+    /// one removed takes its field with it.
+    pub(super) fn show_poll_draft(&self, window: &YapfastWindow) {
+        let draft = self.app.state.poll_draft.as_ref();
+        // Opening it starts from an empty question.
+        if draft.is_some() && !window.get_poll_open() {
+            window.set_poll_question(SharedString::default());
+        }
+        window.set_poll_open(draft.is_some());
+        let Some(draft) = draft else {
+            if self.models.poll_answers.row_count() > 0 {
+                self.models.poll_answers.set_vec(Vec::new());
+            }
+            return;
+        };
+        window.set_poll_question_count(
+            format!("{} / {QUESTION_LIMIT}", draft.question.chars().count()).into(),
+        );
+        window.set_poll_duration(draft.duration as i32);
+        window.set_poll_multiselect(draft.multiselect);
+        window.set_poll_can_add(draft.can_add());
+        window.set_poll_can_post(draft.can_post());
+        window.set_poll_posting(draft.posting);
+        window.set_poll_problem(
+            draft
+                .error
+                .as_deref()
+                .or(draft.problem())
+                .unwrap_or_default()
+                .into(),
+        );
+        let rows = draft
+            .answers
+            .iter()
+            .map(|answer| PollAnswerDraft {
+                id: answer.id as i32,
+                text: answer.text.as_str().into(),
+                emoji: answer
+                    .emoji
+                    .as_deref()
+                    .map_or_else(EmojiCell::default, emoji::cell),
+            })
+            .collect();
+        update_model_by_id(&self.models.poll_answers, rows, |row| {
+            row.id.to_string().into()
+        });
+    }
+}
+
 pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
+    macro_rules! act {
+        ($callback:ident($($arg:ident),*) => $action:expr) => {{
+            let state = adapter.clone();
+            let weak = window.as_weak();
+            window.$callback(move |$($arg),*| {
+                if let Some(window) = weak.upgrade() {
+                    state.borrow_mut().action(&window, $action);
+                }
+            });
+        }};
+    }
+    let index = |index: i32| usize::try_from(index).unwrap_or(usize::MAX);
+    act!(on_open_poll() => Action::OpenPollDraft);
+    act!(on_poll_question_edited(text) => Action::EditPoll(PollEdit::Question(text.into())));
+    act!(on_poll_answer_edited(at, text) => Action::EditPoll(PollEdit::Answer {
+        index: index(at),
+        text: text.into(),
+    }));
+    act!(on_poll_answer_emoji(at, key) => Action::EditPoll(PollEdit::Emoji {
+        index: index(at),
+        emoji: Some(key.into()),
+    }));
+    act!(on_poll_add_answer() => Action::EditPoll(PollEdit::AddAnswer));
+    act!(on_poll_remove_answer(at) => Action::EditPoll(PollEdit::RemoveAnswer(index(at))));
+    act!(on_poll_duration_chosen(at) => Action::EditPoll(PollEdit::Duration(index(at))));
+    act!(on_poll_multiselect_set(on) => Action::EditPoll(PollEdit::Multiselect(on)));
+    act!(on_post_poll() => Action::PostPoll);
+    act!(on_close_poll() => Action::ClosePollDraft);
+
     let polls = window.global::<Polls>();
     // Changes what this device keeps of a poll, then shows it.
     let keep = |change: fn(&mut Adapter, &str, i32)| {

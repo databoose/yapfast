@@ -718,6 +718,7 @@ impl Adapter {
         let app = &self.app;
         let state = &app.state;
         window.set_can_start_threads(app.can_start_threads());
+        window.set_can_create_polls(app.can_create_polls());
         window.set_threads_can_create(state.thread_list().is_some_and(|list| {
             let (public, private) = app.thread_starts(&list.room);
             public || private
@@ -1760,6 +1761,7 @@ impl Adapter {
             _ => SharedString::default(),
         });
         self.show_person_dialog(window);
+        self.show_poll_draft(window);
         let editor = state.status_editor.as_ref();
         // Opening the dialog starts from the status there is.
         if editor.is_some() && !window.get_status_open() {

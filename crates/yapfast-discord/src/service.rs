@@ -965,6 +965,19 @@ impl Discord {
         message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
     }
 
+    /// Posts a poll in `channel`, of `guild`. The gateway shows it.
+    pub async fn send_poll(
+        &self,
+        guild: &str,
+        channel: &str,
+        poll: &crate::api::NewPoll,
+    ) -> Result<()> {
+        let nonce = crate::message::nonce();
+        let sent = self.api.send_poll(channel, poll, &nonce).await?;
+        self.write_names().learn_message(server(guild), &sent);
+        Ok(())
+    }
+
     /// Forwards message `id` of `channel`, in `guild`, to `target`, in
     /// `target_guild`, as Discord's client does; `silent` notifies nobody.
     /// The gateway shows it.

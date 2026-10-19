@@ -616,6 +616,7 @@ impl Application {
         self.state.selected = Some(id.clone());
         self.state.confirm_delete = None;
         self.state.confirm_end_poll = None;
+        self.state.poll_draft = None;
         self.state.forwarding = None;
         self.state.viewer = None;
         self.state.video = None;
@@ -724,6 +725,7 @@ impl Application {
         self.state.selected = None;
         self.state.confirm_delete = None;
         self.state.confirm_end_poll = None;
+        self.state.poll_draft = None;
         self.state.forwarding = None;
         self.state.viewer = None;
         self.state.video = None;

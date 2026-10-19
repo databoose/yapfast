@@ -46,6 +46,9 @@ pub use places::{
     ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
     SLOWMODES,
 };
+pub use polls::{
+    ANSWER_LIMIT, DraftAnswer, POLL_ANSWERS, POLL_HOURS, PollDraft, PollEdit, QUESTION_LIMIT,
+};
 pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_profile::{
@@ -492,6 +495,8 @@ pub struct AppState {
     pub confirm_delete: Option<String>,
     /// The message whose poll the user is asked to confirm closing now.
     pub confirm_end_poll: Option<String>,
+    /// The poll being made, while its dialog is open.
+    pub poll_draft: Option<PollDraft>,
     /// A message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
     pub places_used: PlacesUsed,
@@ -1084,6 +1089,11 @@ pub enum Action {
         item: String,
         answers: Vec<u64>,
     },
+    /// Open the "Create a Poll" dialog for the open Discord conversation.
+    OpenPollDraft,
+    EditPoll(PollEdit),
+    PostPoll,
+    ClosePollDraft,
     /// Ask to make sure before closing this account's poll, by item.
     AskEndPoll(String),
     CancelEndPoll,
@@ -1998,6 +2008,13 @@ impl Application {
             Action::React { item, key } => self.react(item, key),
             Action::RequestDelete(item) => self.request_delete(item),
             Action::Vote { item, answers } => self.vote(item, answers),
+            Action::OpenPollDraft => self.open_poll_draft(),
+            Action::EditPoll(edit) => self.edit_poll(edit),
+            Action::PostPoll => self.post_poll(),
+            Action::ClosePollDraft => {
+                self.state.poll_draft = None;
+                vec![]
+            }
             Action::AskEndPoll(item) => self.ask_end_poll(item),
             Action::CancelEndPoll => {
                 self.state.confirm_end_poll = None;
@@ -2789,6 +2806,7 @@ impl Application {
                 }
             }
             Event::Forwarded { room, result } => self.forwarded(room, result),
+            Event::PollPosted { room, result } => self.poll_posted(room, result),
             Event::Draft { room, body } => {
                 // Text typed since opening the room wins over the saved draft.
                 if self.state.drafts.get(&room).is_none_or(String::is_empty)

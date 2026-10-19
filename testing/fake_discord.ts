@@ -103,7 +103,8 @@
 // and with ?closed its time ran out. It answers with the message's id. POST
 // /_control/poll-vote?answer=N makes Carol vote for an answer of the newest
 // poll, or take her vote back, and GET /_control/poll-votes lists Alice's
-// votes. Votes, ending a poll and its voters answer as
+// votes. Alice may post polls, which GET /_control/polls lists as she sent
+// them. Votes, ending a poll and its voters answer as
 // Discord's do, with MESSAGE_POLL_VOTE_ADD and _REMOVE, and once a poll ends,
 // a MESSAGE_UPDATE and a "poll closed" notice (type 46).
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
@@ -396,8 +397,8 @@ const JOINED_AT = "2026-09-01T09:00:00.000000+00:00";
 const bit = (n: number) => 2 ** n;
 // Invite, view, send, embed, attach, read history, react, connect, speak,
 // voice activity, change one's own nickname, make public and private threads
-// and write in them: Discord's defaults for @everyone.
-const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38].reduce((sum, n) => sum + bit(n), 0);
+// and write in them, and post polls: Discord's defaults for @everyone.
+const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38, 49].reduce((sum, n) => sum + bit(n), 0);
 // Kick, ban, manage nicknames, manage roles, moderate members, and mute,
 // deafen and move members in voice.
 const MODERATION = [1, 2, 27, 28, 40, 22, 23, 24].reduce((sum, n) => sum + bit(n), 0);
@@ -1392,6 +1393,8 @@ const threadActivity = (thread: Thread) => BigInt(messages.get(thread.id)!.at(-1
 const reactorPages: string[] = [];
 /** Alice's votes, oldest first: the poll's message id and the answers. */
 const pollVotes: string[] = [];
+/** The polls Alice posted, as she sent them, as GET /_control/polls lists them. */
+const polls: unknown[] = [];
 /** Each reaction a moderator removed, as GET /_control/reactor-removals lists
  *  them: the message, the emoji and the user. */
 const reactorRemovals: string[] = [];
@@ -3620,6 +3623,33 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         dispatch("MESSAGE_CREATE", dispatched(forward, origin));
         return json(wireMessage(forward, origin));
       }
+      // A poll, as Discord takes it: a question, one to ten answers, and
+      // how many hours it takes votes, up to 32 days'.
+      let poll: Poll | undefined;
+      if (body.poll) {
+        const asked = body.poll;
+        const answers: any[] = asked.answers ?? [];
+        const question = asked.question?.text ?? "";
+        const hours = Number(asked.duration ?? 24);
+        if (!question || question.length > 300 || answers.length < 1 || answers.length > 10
+            || answers.some((answer) => !answer.poll_media?.text || answer.poll_media.text.length > 55)
+            || !(hours >= 1 && hours <= 768) || body.content) {
+          return json({ message: "Invalid Form Body", code: 50035 }, 400);
+        }
+        poll = {
+          question,
+          answers: answers.map((answer, index) => ({
+            id: index + 1,
+            text: answer.poll_media.text,
+            ...(answer.poll_media.emoji ? { emoji: { id: answer.poll_media.emoji.id ?? null, name: answer.poll_media.emoji.name ?? "" } } : {}),
+          })),
+          expiry: Date.now() + hours * 3_600_000,
+          multiselect: !!asked.allow_multiselect,
+          votes: new Map(),
+          finalized: false,
+        };
+        polls.push(asked);
+      }
       const reply = body.message_reference?.message_id;
       const attached: File[] = [];
       for (const attachment of body.attachments ?? []) {
@@ -3641,6 +3671,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         nonce: body.nonce ? String(body.nonce) : undefined,
         reply: reply && byId.has(reply) ? reply : undefined,
         files: attached,
+        poll,
       });
       // An env's favourite GIF comes with its embed, so a recording doesn't
       // show its link for the moment before the embed would come.
@@ -5854,6 +5885,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/poll-votes") {
       return Response.json(pollVotes);
+    }
+    if (req.method === "GET" && path === "/_control/polls") {
+      return Response.json(polls);
     }
     if (req.method === "GET" && path === "/_control/typed") {
       return Response.json(typed);

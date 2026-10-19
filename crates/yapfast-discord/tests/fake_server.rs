@@ -722,6 +722,49 @@ async fn talks_to_the_fake_server() {
         "{notice:?}"
     );
 
+    // Posting a poll, as Discord's "Create a Poll" dialog does.
+    let new_poll = yapfast_discord::api::NewPoll {
+        question: "Movie tonight?".into(),
+        answers: vec![
+            yapfast_discord::api::NewAnswer {
+                text: "Yes".into(),
+                emoji: Some("🍿".into()),
+            },
+            yapfast_discord::api::NewAnswer {
+                text: "No".into(),
+                emoji: None,
+            },
+        ],
+        hours: 4,
+        multiselect: false,
+    };
+    discord
+        .send_poll(&guild, &general, &new_poll)
+        .await
+        .unwrap();
+    let posted = live_where(&mut live, |event| match event {
+        Live::Created(message) => message
+            .poll
+            .filter(|poll| poll.question == "Movie tonight?"),
+        _ => None,
+    })
+    .await;
+    let answers: Vec<_> = posted
+        .answers
+        .iter()
+        .map(|answer| (answer.id, answer.text.as_str(), answer.emoji.clone()))
+        .collect();
+    assert_eq!(
+        answers,
+        [(1, "Yes", Some(("🍿".to_owned(), None))), (2, "No", None)]
+    );
+    let expiry = posted.expiry.unwrap();
+    let now = yapfast_discord::message::snowflake_ms(&yapfast_discord::message::nonce());
+    assert!(
+        expiry.abs_diff(now + 4 * 3_600_000) < 60_000,
+        "it takes votes for four hours"
+    );
+
     // Forwarding, as Discord's client does: a message of its own that
     // carries the original, then the message added as another.
     discord

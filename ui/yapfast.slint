@@ -31,7 +31,7 @@ import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiBut
 import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
-import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog } from "dialogs.slint";
+import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog, PollAnswerDraft, PollDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
@@ -47,7 +47,7 @@ export { StagedFile, MentionRow } from "composer.slint";
 export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer, PollAction, PollAnswerRow, PollCard, Polls } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData, ActivityRow, ActivityClock } from "people.slint";
 export { RequestRow, FriendRow } from "friends.slint";
-export { ContactRow, ForwardRow, ReactionPill, ReactorRow } from "dialogs.slint";
+export { ContactRow, ForwardRow, ReactionPill, ReactorRow, PollAnswerDraft } from "dialogs.slint";
 export { FoundRow, PickRow } from "header.slint";
 export { GifTile, GifFavorites } from "gifs.slint";
 
@@ -652,6 +652,32 @@ export component YapfastWindow inherits Window {
     in property <bool> posts-loading;
     callback search-posts(string);
     callback more-posts;
+    // Making a poll; see PollDialog.
+    /// Polls can be made in the open conversation.
+    in property <bool> can-create-polls;
+    in property <bool> poll-open;
+    in-out property <string> poll-question;
+    in property <string> poll-question-count;
+    in property <[PollAnswerDraft]> poll-answers;
+    in property <int> poll-duration;
+    in property <bool> poll-multiselect;
+    in property <bool> poll-can-add;
+    in property <bool> poll-can-post;
+    in property <bool> poll-posting;
+    in property <string> poll-problem;
+    callback open-poll;
+    callback poll-question-edited(string);
+    callback poll-answer-edited(int, string);
+    /// An answer's emoji, by its key, or with "" none.
+    callback poll-answer-emoji(int, string);
+    callback poll-add-answer;
+    callback poll-remove-answer(int);
+    callback poll-duration-chosen(int);
+    callback poll-multiselect-set(bool);
+    callback post-poll;
+    callback close-poll;
+    /// The answer whose emoji the picker is choosing.
+    property <int> poll-emoji-answer;
     // Starting a thread; see NewThreadPanel.
     /// Threads can start from the open channel's messages.
     in property <bool> can-start-threads;
@@ -1327,9 +1353,14 @@ export component YapfastWindow inherits Window {
                     text: "Upload a File"; icon: @image-url("icons/file.svg"); disabled: !root.can-attach;
                     clicked => { if root.can-attach { plus-menu.close(); root.attach(); } }
                 }
-                MenuItem {
+                // Closing the menu takes these away, so they act first.
+                if root.can-start-threads: MenuItem {
                     text: "Create Thread"; icon: @image-url("icons/messages-square.svg");
-                    clicked => { plus-menu.close(); root.new-thread("", "plus"); }
+                    clicked => { root.new-thread("", "plus"); plus-menu.close(); }
+                }
+                if root.can-create-polls: MenuItem {
+                    text: "Create Poll"; icon: @image-url("icons/chart-bar.svg");
+                    clicked => { root.open-poll(); plus-menu.close(); }
                 }
             }
         }
@@ -1376,6 +1407,8 @@ export component YapfastWindow inherits Window {
     function pick(cell: EmojiCell) {
         if root.react-item == "yapfast:status" {
             root.status-emoji = cell;
+        } else if root.react-item == "yapfast:poll" {
+            root.poll-answer-emoji(root.poll-emoji-answer, cell.key);
         } else if root.react-item == "yapfast:composer" {
             root.insert-emoji(cell.key);
         } else {
@@ -2465,11 +2498,11 @@ export component YapfastWindow inherits Window {
                                             // of uploading a file or starting a thread.
                                             IconButton {
                                                 icon: @image-url("icons/circle-plus.svg");
-                                                label: root.can-start-threads ? "More options" : "Attach files";
+                                                label: root.can-start-threads || root.can-create-polls ? "More options" : "Attach files";
                                                 glyph: 22px;
-                                                enabled: root.can-attach || root.can-start-threads;
+                                                enabled: root.can-attach || root.can-start-threads || root.can-create-polls;
                                                 clicked => {
-                                                    if root.can-start-threads {
+                                                    if root.can-start-threads || root.can-create-polls {
                                                         root.menu-x = self.absolute-position.x;
                                                         root.menu-y = self.absolute-position.y;
                                                         plus-menu.show();
@@ -3120,6 +3153,27 @@ export component YapfastWindow inherits Window {
         save-status => { root.save-status(); }
         clear-status => { root.clear-status(); }
         close-status => { root.close-status(); }
+    }
+    // Making a poll; see PollDialog.
+    if root.poll-open: PollDialog {
+        question <=> root.poll-question; question-count: root.poll-question-count;
+        answers: root.poll-answers; duration: root.poll-duration; multiselect: root.poll-multiselect;
+        can-add: root.poll-can-add; can-post: root.poll-can-post; posting: root.poll-posting;
+        problem: root.poll-problem; emoji-font: root.emoji-font;
+        question-edited(text) => { root.poll-question-edited(text); }
+        answer-edited(index, text) => { root.poll-answer-edited(index, text); }
+        pick-emoji(index, x, y, width, height) => {
+            root.poll-emoji-answer = index;
+            root.anchor(x, y, width, height, true);
+            root.open-picker("yapfast:poll");
+        }
+        remove-emoji(index) => { root.poll-answer-emoji(index, ""); }
+        add-answer => { root.poll-add-answer(); }
+        remove-answer(index) => { root.poll-remove-answer(index); }
+        choose-duration(index) => { root.poll-duration-chosen(index); }
+        set-multiselect(on) => { root.poll-multiselect-set(on); }
+        post => { root.post-poll(); }
+        close => { root.close-poll(); }
     }
     // Starting a DM; see NewDmDialog.
     if root.new-dm-open: NewDmDialog {

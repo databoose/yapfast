@@ -1089,6 +1089,8 @@ struct Models {
     /// The Reactions window's reactions, and who reacted with the chosen one.
     reaction_pills: Rc<VecModel<ReactionPill>>,
     reactor_rows: Rc<VecModel<ReactorRow>>,
+    /// The answers of the poll being made.
+    poll_answers: Rc<VecModel<PollAnswerDraft>>,
     search_results: Rc<VecModel<FoundRow>>,
     add_people: Rc<VecModel<PickRow>>,
     role_members: Rc<VecModel<MemberRow>>,
@@ -1136,6 +1138,7 @@ impl Models {
         window.set_post_rows(ModelRc::from(self.post_rows.clone()));
         window.set_reaction_pills(ModelRc::from(self.reaction_pills.clone()));
         window.set_reactor_rows(ModelRc::from(self.reactor_rows.clone()));
+        window.set_poll_answers(ModelRc::from(self.poll_answers.clone()));
         window.set_search_results(ModelRc::from(self.search_results.clone()));
         window.set_add_people(ModelRc::from(self.add_people.clone()));
         window.set_role_members(ModelRc::from(self.role_members.clone()));

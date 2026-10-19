@@ -62,6 +62,8 @@ pub mod permission {
     pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
     /// Timing members out.
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
+    /// Posting polls, besides sending messages.
+    pub const SEND_POLLS: u64 = 1 << 49;
     /// Pinning messages and unpinning them, which `MANAGE_MESSAGES` once gave.
     pub const PIN_MESSAGES: u64 = 1 << 51;
     /// Sending without waiting out a channel's slowmode, which
