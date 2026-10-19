@@ -1553,18 +1553,36 @@ impl Adapter {
     }
 
     /// The editor of this account's Discord profile, its main one or a
-    /// server's, with a preview of its profile card.
+    /// server's, as its profile card shows it.
     pub(super) fn show_profile_editor(&mut self, window: &YapfastWindow) {
         use yapfast_core::application::{BIO_LIMIT, NAME_LIMIT, PRONOUNS_LIMIT, ProfileText};
         let editor = self.app.state.profile_editor.as_ref();
-        // Its fields start from what Discord has, once that's here.
-        if let Some(editor) = editor
-            && (!window.get_profile_editor_open() || window.get_profile_editor_prompt().loading)
-        {
-            window.set_profile_editor_name(editor.name.as_str().into());
-            window.set_profile_editor_pronouns(editor.pronouns.as_str().into());
-            window.set_profile_editor_bio(editor.bio.as_str().into());
-            window.set_profile_editor_colour(editor.colour.as_str().into());
+        // Its texts follow the editor's: what Discord has once that's here,
+        // and again after Reset. Typing changes both alike.
+        if let Some(editor) = editor {
+            macro_rules! follow {
+                ($text:expr, $get:ident, $set:ident) => {
+                    if window.$get() != $text.as_str() {
+                        window.$set($text.as_str().into());
+                    }
+                };
+            }
+            follow!(
+                editor.name,
+                get_profile_editor_name,
+                set_profile_editor_name
+            );
+            follow!(
+                editor.pronouns,
+                get_profile_editor_pronouns,
+                set_profile_editor_pronouns
+            );
+            follow!(editor.bio, get_profile_editor_bio, set_profile_editor_bio);
+            follow!(
+                editor.colour,
+                get_profile_editor_colour,
+                set_profile_editor_colour
+            );
         }
         let Some(editor) = editor else {
             // Its pictures go with it.
@@ -1614,6 +1632,8 @@ impl Adapter {
                     fallback.map(|fallback| &fallback.pronouns),
                 ),
                 bio: written(&editor.bio, fallback.map(|fallback| &fallback.bio)),
+                created: fallback.and_then(|fallback| fallback.created.clone()),
+                joined: fallback.and_then(|fallback| fallback.joined.clone()),
                 ..Default::default()
             },
             large: false,
@@ -1646,37 +1666,30 @@ impl Adapter {
             String::new()
         };
         let left = BIO_LIMIT as i64 - editor.bio.chars().count() as i64;
-        let (title, detail, name_heading, name_placeholder, bio_placeholder) = if main {
+        let handle = fallback_text(fallback.map(|fallback| &fallback.handle));
+        let (title, detail, bio_placeholder) = if main {
             (
                 "Edit profile",
-                "How you show across Discord. Each server shows it unless your profile there says otherwise.".to_owned(),
-                "DISPLAY NAME",
-                fallback_text(fallback.map(|fallback| &fallback.handle)),
+                "Your profile".to_owned(),
                 "Tell everyone a bit about yourself",
             )
         } else {
             (
                 "Edit server profile",
-                format!(
-                    "How you show in {}. An empty field shows your main profile's.",
-                    editor.server_name
-                ),
-                "SERVER NICKNAME",
-                fallback_text(fallback.map(|fallback| &fallback.handle)),
+                format!("Your profile in {}", editor.server_name),
                 "Tell this server a bit about yourself",
             )
         };
-        let pronouns_placeholder = fallback
-            .map(|fallback| fallback.pronouns.as_str())
-            .filter(|pronouns| !pronouns.is_empty())
-            .unwrap_or("Add your pronouns");
         window.set_profile_editor_prompt(ProfileEditorPrompt {
             title: title.into(),
             detail: detail.into(),
             main,
-            name_heading: name_heading.into(),
-            name_placeholder: name_placeholder.into(),
-            pronouns_placeholder: pronouns_placeholder.into(),
+            name_placeholder: handle.as_str().into(),
+            pronouns_fallback: fallback
+                .map(|fallback| fallback.pronouns.as_str())
+                .unwrap_or_default()
+                .into(),
+            handle: handle.into(),
             bio_placeholder: bio_placeholder.into(),
             loading: editor.loading(),
             saving: editor.saving,

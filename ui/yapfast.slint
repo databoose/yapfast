@@ -165,6 +165,7 @@ export component YapfastWindow inherits Window {
     callback pick-profile-picture(int);
     callback reset-profile-picture(int);
     callback unlock-nitro;
+    callback undo-profile;
     callback save-profile;
     callback close-profile-editor;
     // Asks before leaving a Discord server, in a ChannelDialog.
@@ -3211,6 +3212,7 @@ export component YapfastWindow inherits Window {
         pick(kind) => { root.pick-profile-picture(kind); }
         reset(kind) => { root.reset-profile-picture(kind); }
         unlock-nitro => { root.unlock-nitro(); }
+        undo => { root.undo-profile(); }
         save => { root.save-profile(); }
         close => { root.close-profile-editor(); }
     }

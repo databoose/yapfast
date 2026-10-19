@@ -17,9 +17,9 @@ use crate::chat::{OwnProfile, PickedPicture, Pixels, ProfileChange, ProfilePictu
 /// square avatar, and a banner 17 by 6. One smaller goes at its own size.
 const AVATAR: (u32, u32) = (1024, 1024);
 const BANNER: (u32, u32) = (2400, 848);
-/// The preview's size: the profile card's 80px avatar and 300 by 105px
-/// banner, twice over for a high-density display.
-const AVATAR_PREVIEW: (u32, u32) = (160, 160);
+/// The preview's size: as the editor's card gets everyone's pictures, a
+/// 128px avatar for its 120px one, and a banner 600 wide.
+const AVATAR_PREVIEW: (u32, u32) = (128, 128);
 const BANNER_PREVIEW: (u32, u32) = (600, 212);
 
 /// Carries out a command about this account's own profile, or gives back

@@ -6381,6 +6381,15 @@ fn the_main_profile_is_edited_as_discords_profile_editor_does() {
     write(&mut app, ProfileText::Colour, "teal");
     assert!(app.dispatch(Action::SaveProfile).is_empty(), "not a colour");
     write(&mut app, ProfileText::Colour, "#00f");
+    // The bar's Reset puts back what Discord has.
+    app.dispatch(Action::UndoProfileEdits);
+    let editor = app.state.profile_editor.as_ref().unwrap();
+    assert_eq!((editor.name.as_str(), editor.bio.as_str()), ("Alice", "Hi"));
+    assert_eq!(editor.colour, "#ff0000");
+    assert!(editor.change().is_none());
+    write(&mut app, ProfileText::Name, "Ally");
+    write(&mut app, ProfileText::Bio, "Hello");
+    write(&mut app, ProfileText::Colour, "#00f");
     assert!(
         app.dispatch(Action::PickProfilePicture {
             kind: ProfilePicture::Banner,

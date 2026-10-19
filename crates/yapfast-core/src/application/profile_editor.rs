@@ -396,6 +396,29 @@ impl Application {
         }
     }
 
+    /// Puts back what Discord has, dropping a picture being read.
+    pub(super) fn undo_profile_edits(&mut self) {
+        let Some(editor) = self
+            .state
+            .profile_editor
+            .as_mut()
+            .filter(|editor| !editor.saving)
+        else {
+            return;
+        };
+        let Some(profile) = &editor.profile else {
+            return;
+        };
+        editor.name.clone_from(&profile.name);
+        editor.pronouns.clone_from(&profile.pronouns);
+        editor.bio.clone_from(&profile.bio);
+        editor.colour = colour_text(profile.accent);
+        editor.avatar = PictureEdit::Keep;
+        editor.banner = PictureEdit::Keep;
+        editor.reading = None;
+        editor.error = None;
+    }
+
     pub(super) fn save_profile(&mut self) -> Vec<Effect> {
         let Some(editor) = self
             .state

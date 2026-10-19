@@ -1,9 +1,9 @@
 // Dialogs a Discord server's, category's or channel's menu opens.
 import { ScrollView } from "scrollview.slint";
 import { Theme, Label, Middle } from "theme.slint";
-import { ActionButton, IconButton, TextField } from "controls.slint";
+import { ActionButton, Avatar, IconButton, MenuItem, TextField } from "controls.slint";
 import { Choices, SettingsSwitch } from "settings.slint";
-import { ProfileData, ProfileCard } from "people.slint";
+import { ProfileData, ProfileHeading } from "people.slint";
 
 // What an invite dialog shows: whom it invites where, and the link once
 // Discord made it.
@@ -226,15 +226,17 @@ export component ChannelDialog inherits Rectangle {
 // What the profile editor shows besides what's written in it, for the main
 // profile or one server's.
 export struct ProfileEditorPrompt {
-    /// "Edit profile" or "Edit server profile"; what it edits, and what
-    /// each empty field goes by.
+    /// "Edit profile" or "Edit server profile", and which profile it is,
+    /// as the corner of the banner says.
     title: string,
     detail: string,
     /// It edits the main profile, not a server's.
     main: bool,
-    name-heading: string,
+    /// The username, and the pronouns that show while none are written:
+    /// the main profile's in a server.
+    handle: string,
+    pronouns-fallback: string,
     name-placeholder: string,
-    pronouns-placeholder: string,
     bio-placeholder: string,
     /// Discord sends the profile; Discord takes the change.
     loading: bool,
@@ -275,16 +277,31 @@ export struct ProfileEditorPrompt {
     preview: ProfileData,
 }
 
-// A heading of the editor's, in Discord's words.
-component FieldHeading inherits Text {
-    color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+// A pencil, or a lock where Nitro is wanted, on a round dark badge: what
+// the profile editor shows over a picture that can be changed.
+component EditBadge inherits Rectangle {
+    in property <bool> locked;
+    width: 32px; height: 32px; border-radius: 16px;
+    background: #000000b3;
+    Image {
+        width: 16px; height: 16px; colorize: #ffffff;
+        source: root.locked ? @image-url("icons/lock.svg") : @image-url("icons/pencil.svg");
+    }
 }
 
-// This account's Discord profile, as Discord's editors have it. The main
-// profile: the display name, pronouns, avatar, the banner colour, or the
-// banner with Nitro, and the bio. A server's: the nickname and pronouns,
-// then the avatar, banner and bio, which take Nitro and show greyed under
-// its offer without it. A preview of the profile card shows beside them.
+// A small pencil button beside a text of the profile editor's.
+component EditPencil inherits IconButton {
+    icon: @image-url("icons/pencil.svg"); size: 26px; glyph: 15px; tint: Theme.muted;
+}
+
+// This account's Discord profile as its large card shows it, each part of
+// it editable in place, as Discord's editors allow: the main profile's
+// display name, pronouns, avatar, bio and banner colour, or banner with
+// Nitro; or a server's nickname and pronouns, and its avatar, banner and
+// bio with Nitro, locked under its offer without. A text turns into a field
+// when it or its pencil is clicked; a picture offers Change and Remove, or
+// Reset, when clicked. Once something changed, Discord's bar asks to save
+// it.
 export component ProfileEditorDialog inherits Rectangle {
     in property <ProfileEditorPrompt> prompt;
     in-out property <string> name;
@@ -299,183 +316,410 @@ export component ProfileEditorDialog inherits Rectangle {
     callback pick(int);
     callback reset(int);
     callback unlock-nitro;
+    /// Undo every change, as the bar's Reset does.
+    callback undo;
     callback save;
     callback close;
     property <bool> ready: !root.prompt.loading && !root.prompt.saving;
-    property <bool> bio-on: root.ready && root.prompt.bio-enabled;
+    /// The text being edited: 0 none, 1 the name, 2 the pronouns, 3 the bio.
+    property <int> editing;
+    /// The banner colour's field shows under the banner.
+    property <bool> colour-open;
+    property <bool> banner-editable: root.ready && (root.prompt.banner-enabled || root.prompt.colour-shown) && root.prompt.reading == "";
+    property <bool> banner-locked: root.prompt.banner-shown && !root.prompt.banner-enabled;
+    property <bool> avatar-editable: root.ready && root.prompt.avatar-enabled && root.prompt.reading == "";
+    property <length> banner-height: 210px;
+    property <length> avatar-size: 120px;
+    property <length> pad: 24px;
+    function stop-editing() {
+        root.editing = 0;
+        scope.focus();
+    }
+    function edit(field: int) {
+        root.editing = field;
+        root.colour-open = false;
+    }
+    function banner-clicked() {
+        if root.prompt.colour-shown {
+            root.colour-open = !root.colour-open;
+            root.editing = 0;
+        } else if root.prompt.banner-reset {
+            banner-menu.show();
+        } else {
+            root.pick(1);
+        }
+    }
+    function avatar-clicked() {
+        if root.prompt.avatar-reset {
+            avatar-menu.show();
+        } else {
+            root.pick(0);
+        }
+    }
     background: #00000099;
     TouchArea { clicked => { root.close(); } }
-    Rectangle {
-        width: min(760px, root.width - 48px); height: min(profile-content.preferred-height, root.height - 48px);
-        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+    property <length> bar-height: root.prompt.changed || root.prompt.saving ? 60px : 0px;
+    // Its top stays where a card of a usual height starts, so what's under
+    // the pointer stays put as the bar or the banner colour opens; it rises
+    // only to keep its end in the window.
+    card := Rectangle {
+        width: min(600px, root.width - 48px); height: min(card-content.preferred-height, root.height - 48px);
+        y: max(24px, min((root.height - 600px) / 2, root.height - 24px - self.height));
+        background: Theme.sidebar; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
         accessible-role: groupbox;
         accessible-label: root.prompt.title;
-        TouchArea { }
-        FocusScope {
+        // A click on the card, outside what's being edited, ends the editing.
+        TouchArea { clicked => { root.stop-editing(); root.colour-open = false; } }
+        scope := FocusScope {
             init => { self.focus(); }
             key-pressed(event) => {
-                if event.text == Key.Escape { root.close(); return accept; }
+                if event.text == Key.Escape {
+                    if root.editing != 0 || root.colour-open {
+                        root.stop-editing();
+                        root.colour-open = false;
+                    } else {
+                        root.close();
+                    }
+                    return accept;
+                }
                 return reject;
             }
-            profile-content := VerticalLayout {
-                padding: 20px; spacing: 12px;
-                HorizontalLayout {
-                    Text { text: root.prompt.title; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
-                }
-                if root.prompt.detail != "": Label { text: root.prompt.detail; }
-                HorizontalLayout {
-                    spacing: 20px;
+            Rectangle {
+                border-radius: 12px; clip: true;
+                card-content := VerticalLayout {
                     ScrollView {
-                        horizontal-stretch: 1;
-                        min-height: min(fields.preferred-height, 200px);
-                        preferred-height: fields.preferred-height;
-                        content-height: fields.preferred-height;
-                        fields := VerticalLayout {
-                            padding-right: 8px; spacing: 8px;
-                            FieldHeading { text: root.prompt.name-heading; }
-                            TextField {
-                                enabled: root.ready && root.prompt.name-enabled;
-                                min-height: 36px; text-size: 15px; pad: 10px;
-                                placeholder: root.prompt.loading ? "Loading..." : root.prompt.name-placeholder;
-                                label: root.prompt.main ? "Display name" : "Server nickname";
-                                text <=> root.name;
-                                edited(text) => { root.write(0, text); }
-                            }
-                            if !root.prompt.loading && !root.prompt.name-enabled: Label { text: "You don't have permission to change your nickname in this server."; }
-                            FieldHeading { text: "PRONOUNS"; }
-                            TextField {
-                                enabled: root.ready;
-                                min-height: 36px; text-size: 15px; pad: 10px;
-                                placeholder: root.prompt.pronouns-placeholder; label: "Pronouns";
-                                text <=> root.pronouns;
-                                edited(text) => { root.write(1, text); }
-                            }
-                            if root.prompt.too-long != "": Text { text: root.prompt.too-long; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
-                            // Discord's offer, over what Nitro unlocks.
-                            if root.prompt.offer: Rectangle {
-                                border-radius: 8px; background: Theme.sunken;
-                                height: offer.preferred-height;
-                                offer := HorizontalLayout {
-                                    padding: 12px; spacing: 12px;
-                                    Middle { Image { source: @image-url("icons/lock.svg"); width: 20px; height: 20px; colorize: Theme.accent; } }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1; spacing: 2px; alignment: center;
-                                        Text { text: "Make unique profiles for each server"; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
-                                        Label { text: "Customize your profile for every server, from avatar decorations to bios. Only with Nitro."; }
+                        vertical-stretch: 1;
+                        min-height: min(body.preferred-height, 240px);
+                        preferred-height: body.preferred-height;
+                        content-height: body.preferred-height;
+                        body := VerticalLayout {
+                            padding-bottom: root.pad; spacing: 0px;
+                            // The banner, with the avatar hanging over its lower edge.
+                            Rectangle {
+                                height: root.banner-height + root.avatar-size / 2 + 8px;
+                                banner := Rectangle {
+                                    y: 0px; height: root.banner-height;
+                                    background: root.prompt.preview.has-accent ? root.prompt.preview.accent : Theme.raised;
+                                    if root.prompt.preview.banner.width > 0: Image {
+                                        width: parent.width; height: parent.height; source: root.prompt.preview.banner; image-fit: cover;
                                     }
-                                    Middle {
-                                        ActionButton {
-                                            small: true; primary: true;
-                                            text: root.prompt.upgrade ? "Upgrade Nitro" : "Unlock with Nitro";
-                                            clicked => { root.unlock-nitro(); }
+                                    if banner-touch.has-hover && (root.banner-editable || root.banner-locked): Rectangle { background: #00000059; }
+                                    if banner-touch.has-hover && (root.banner-editable || root.banner-locked): EditBadge {
+                                        x: parent.width - self.width - 60px; y: 18px; locked: root.banner-locked;
+                                    }
+                                    if root.prompt.reading == "banner": Text {
+                                        text: "Reading..."; color: #ffffff; font-size: 14px; font-weight: 700;
+                                    }
+                                    banner-touch := TouchArea {
+                                        enabled: root.banner-editable || root.banner-locked;
+                                        mouse-cursor: root.banner-editable ? MouseCursor.pointer : MouseCursor.default;
+                                        clicked => { if root.banner-editable { root.banner-clicked(); } }
+                                    }
+                                    banner-menu := PopupWindow {
+                                        x: parent.width - 236px; y: 56px; width: 180px;
+                                        Rectangle {
+                                            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+                                            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+                                            VerticalLayout {
+                                                padding: 6px; spacing: 2px;
+                                                MenuItem { text: "Change Banner"; icon: @image-url("icons/image.svg"); clicked => { banner-menu.close(); root.pick(1); } }
+                                                MenuItem { text: root.prompt.reset-word + " Banner"; icon: @image-url("icons/x.svg"); danger: true; clicked => { banner-menu.close(); root.reset(1); } }
+                                            }
+                                        }
+                                    }
+                                }
+                                // What it edits, over the banner's corner.
+                                Rectangle {
+                                    x: 16px; y: 16px; width: detail-text.preferred-width + 20px; height: 28px; border-radius: 14px;
+                                    background: #000000b3;
+                                    detail-text := Text { text: root.prompt.detail; color: #ffffff; font-size: 13px; font-weight: 600; }
+                                }
+                                Rectangle {
+                                    x: parent.width - self.width - 16px; y: 16px; width: 36px; height: 36px;
+                                    IconButton {
+                                        icon: @image-url("icons/x.svg"); label: "Close"; size: 36px; glyph: 18px; radius: 18px;
+                                        fill: #000000b3; tint: #ffffff;
+                                        clicked => { root.close(); }
+                                    }
+                                }
+                                Rectangle {
+                                    x: root.pad - 6px; y: root.banner-height - root.avatar-size / 2 - 6px;
+                                    width: root.avatar-size + 12px; height: self.width; border-radius: self.width / 2;
+                                    background: Theme.sidebar;
+                                    Avatar { size: root.avatar-size; initial: root.prompt.preview.initial; tint: root.prompt.preview.tint; picture: root.prompt.preview.picture; }
+                                    if avatar-touch.has-hover && root.ready && root.prompt.reading != "avatar": Rectangle {
+                                        width: root.avatar-size; height: root.avatar-size; border-radius: root.avatar-size / 2;
+                                        background: #00000073;
+                                        EditBadge { locked: !root.prompt.avatar-enabled; }
+                                    }
+                                    if root.prompt.reading == "avatar": Rectangle {
+                                        width: root.avatar-size; height: root.avatar-size; border-radius: root.avatar-size / 2;
+                                        background: #00000099;
+                                        Text { text: "Reading..."; color: #ffffff; font-size: 13px; font-weight: 700; }
+                                    }
+                                    avatar-touch := TouchArea {
+                                        enabled: root.ready;
+                                        mouse-cursor: root.avatar-editable ? MouseCursor.pointer : MouseCursor.default;
+                                        clicked => { if root.avatar-editable { root.avatar-clicked(); } }
+                                    }
+                                    avatar-menu := PopupWindow {
+                                        x: 12px; y: parent.height - 4px; width: 180px;
+                                        Rectangle {
+                                            background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
+                                            drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+                                            VerticalLayout {
+                                                padding: 6px; spacing: 2px;
+                                                MenuItem { text: "Change Avatar"; icon: @image-url("icons/image.svg"); clicked => { avatar-menu.close(); root.pick(0); } }
+                                                MenuItem { text: root.prompt.reset-word + " Avatar"; icon: @image-url("icons/x.svg"); danger: true; clicked => { avatar-menu.close(); root.reset(0); } }
+                                            }
                                         }
                                     }
                                 }
                             }
-                            FieldHeading { text: "AVATAR"; }
-                            HorizontalLayout {
-                                spacing: 8px; alignment: start;
-                                ActionButton {
-                                    small: true; enabled: root.ready && root.prompt.avatar-enabled && root.prompt.reading == "";
-                                    text: root.prompt.reading == "avatar" ? "Reading..." : "Change Avatar";
-                                    clicked => { root.pick(0); }
-                                }
-                                if root.prompt.avatar-reset: ActionButton {
-                                    small: true; ghost: true; enabled: root.ready && root.prompt.avatar-enabled;
-                                    text: root.prompt.reset-word + " Avatar";
-                                    clicked => { root.reset(0); }
-                                }
-                            }
-                            if root.prompt.banner-shown: FieldHeading { text: "PROFILE BANNER"; }
-                            if root.prompt.banner-shown: HorizontalLayout {
-                                spacing: 8px; alignment: start;
-                                ActionButton {
-                                    small: true; enabled: root.ready && root.prompt.banner-enabled && root.prompt.reading == "";
-                                    text: root.prompt.reading == "banner" ? "Reading..." : "Change Banner";
-                                    clicked => { root.pick(1); }
-                                }
-                                if root.prompt.banner-reset: ActionButton {
-                                    small: true; ghost: true; enabled: root.ready && root.prompt.banner-enabled;
-                                    text: root.prompt.reset-word + " Banner";
-                                    clicked => { root.reset(1); }
-                                }
-                            }
-                            if root.prompt.banner-shown: Label { text: "Upload a PNG, JPG, or GIF under 10MB. Images should be at least 680x240."; }
-                            if root.prompt.colour-shown: FieldHeading { text: "BANNER COLOR"; }
-                            if root.prompt.colour-shown: HorizontalLayout {
-                                spacing: 10px; alignment: start;
-                                Middle {
-                                    Rectangle {
-                                        width: 36px; height: 36px; border-radius: 6px;
-                                        background: root.prompt.has-colour ? root.prompt.colour : Theme.sunken;
-                                        border-width: 1px; border-color: Theme.line;
+                            VerticalLayout {
+                                padding-left: root.pad; padding-right: root.pad; spacing: 16px;
+                                // The banner colour, opened by clicking the banner.
+                                if root.colour-open: Rectangle {
+                                    border-radius: 8px; background: Theme.sunken;
+                                    height: colour-box.preferred-height;
+                                    colour-box := VerticalLayout {
+                                    padding: 10px; spacing: 10px;
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Middle { Text { text: "Banner color"; color: Theme.text; font-size: 14px; font-weight: 600; } }
+                                        Middle {
+                                            Rectangle {
+                                                width: 28px; height: 28px; border-radius: 6px;
+                                                background: root.prompt.has-colour ? root.prompt.colour : Theme.raised;
+                                                border-width: 1px; border-color: Theme.line;
+                                            }
+                                        }
+                                        Middle {
+                                            TextField {
+                                                init => { self.focus-input(); }
+                                                width: 116px; min-height: 32px; text-size: 14px; pad: 8px;
+                                                fill: root.prompt.colour-wrong ? Theme.danger.with-alpha(0.16) : Theme.raised;
+                                                placeholder: "Default"; label: "Banner color";
+                                                text <=> root.colour;
+                                                edited(text) => { root.write(3, text); }
+                                                accepted => { root.colour-open = false; scope.focus(); }
+                                            }
+                                        }
+                                        if root.prompt.colour-wrong: Middle { Text { text: "Not a colour"; color: Theme.danger; font-size: 13px; } }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        if root.colour != "": Middle {
+                                            ActionButton {
+                                                small: true; ghost: true; text: "Default";
+                                                clicked => { root.colour = ""; root.write(3, ""); }
+                                            }
+                                        }
+                                    }
+                                    // A few to pick from, without typing.
+                                    HorizontalLayout {
+                                        spacing: 6px; alignment: start;
+                                        for swatch in [
+                                            { hex: "#5865f2", colour: #5865f2 }, { hex: "#3ba55d", colour: #3ba55d },
+                                            { hex: "#faa61a", colour: #faa61a }, { hex: "#ed4245", colour: #ed4245 },
+                                            { hex: "#eb459e", colour: #eb459e }, { hex: "#1abc9c", colour: #1abc9c },
+                                            { hex: "#9b59b6", colour: #9b59b6 }, { hex: "#607d8b", colour: #607d8b },
+                                            { hex: "#2c2f33", colour: #2c2f33 },
+                                        ]: Rectangle {
+                                            width: 26px; height: 26px; border-radius: 6px; background: swatch.colour;
+                                            border-width: root.colour == swatch.hex ? 2px : swatch-touch.has-hover ? 1px : 0px;
+                                            border-color: Theme.text;
+                                            accessible-role: button;
+                                            accessible-label: "Banner color " + swatch.hex;
+                                            accessible-action-default => { root.colour = swatch.hex; root.write(3, swatch.hex); }
+                                            swatch-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.colour = swatch.hex; root.write(3, swatch.hex); }
+                                            }
+                                        }
+                                    }
                                     }
                                 }
-                                Middle {
-                                    TextField {
-                                        width: 116px; min-height: 36px; text-size: 14px; pad: 8px;
-                                        enabled: root.ready;
-                                        fill: root.prompt.colour-wrong ? Theme.danger.with-alpha(0.16) : Theme.sunken;
-                                        placeholder: "Default"; label: "Banner color";
-                                        text <=> root.colour;
-                                        edited(text) => { root.write(3, text); }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    // The name, or its field.
+                                    if root.editing != 1: HorizontalLayout {
+                                        spacing: 6px; alignment: start;
+                                        Text {
+                                            text: root.prompt.loading ? "Loading..." : root.prompt.preview.name;
+                                            color: Theme.text; font-size: 26px; font-weight: 700; overflow: elide;
+                                            TouchArea {
+                                                enabled: root.ready && root.prompt.name-enabled;
+                                                mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                                                clicked => { root.edit(1); }
+                                            }
+                                        }
+                                        if root.ready && root.prompt.name-enabled: Middle {
+                                            EditPencil { label: root.prompt.main ? "Edit display name" : "Edit server nickname"; clicked => { root.edit(1); } }
+                                        }
+                                    }
+                                    if root.editing == 1: TextField {
+                                        init => { self.focus-input(); }
+                                        min-height: 40px; text-size: 22px; pad: 8px;
+                                        placeholder: root.prompt.name-placeholder;
+                                        label: root.prompt.main ? "Display name" : "Server nickname";
+                                        text <=> root.name;
+                                        edited(text) => { root.write(0, text); }
+                                        accepted => { root.stop-editing(); }
+                                    }
+                                    // The username, then the pronouns or their field.
+                                    HorizontalLayout {
+                                        spacing: 6px; alignment: start;
+                                        Middle { Text { text: root.prompt.handle + " ·"; color: Theme.secondary; font-size: 14px; font-weight: 500; } }
+                                        if root.editing != 2: Middle {
+                                            Text {
+                                                text: root.pronouns != "" ? root.pronouns : root.prompt.pronouns-fallback != "" ? root.prompt.pronouns-fallback : "Add pronouns";
+                                                color: root.pronouns != "" || root.prompt.pronouns-fallback != "" ? Theme.secondary : Theme.muted;
+                                                font-size: 14px; font-weight: 500; overflow: elide;
+                                                TouchArea {
+                                                    enabled: root.ready;
+                                                    mouse-cursor: MouseCursor.pointer;
+                                                    clicked => { root.edit(2); }
+                                                }
+                                            }
+                                        }
+                                        if root.editing != 2 && root.ready: Middle {
+                                            EditPencil { label: "Edit pronouns"; size: 22px; glyph: 13px; clicked => { root.edit(2); } }
+                                        }
+                                        if root.editing == 2: TextField {
+                                            init => { self.focus-input(); }
+                                            width: 220px; min-height: 30px; text-size: 14px; pad: 8px;
+                                            placeholder: root.prompt.pronouns-fallback != "" ? root.prompt.pronouns-fallback : "Add your pronouns";
+                                            label: "Pronouns";
+                                            text <=> root.pronouns;
+                                            edited(text) => { root.write(1, text); }
+                                            accepted => { root.stop-editing(); }
+                                        }
+                                    }
+                                    if root.prompt.too-long != "": Text { text: root.prompt.too-long; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                                }
+                                // Discord's offer, over what Nitro unlocks in a server.
+                                if root.prompt.offer: Rectangle {
+                                    border-radius: 8px; background: Theme.sunken;
+                                    height: offer.preferred-height;
+                                    offer := HorizontalLayout {
+                                        padding: 12px; spacing: 12px;
+                                        Middle { Image { source: @image-url("icons/lock.svg"); width: 20px; height: 20px; colorize: Theme.accent; } }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1; spacing: 2px; alignment: center;
+                                            Text { text: "Make unique profiles for each server"; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
+                                            Label { text: "Customize your profile for every server, from avatar decorations to bios. Only with Nitro."; }
+                                        }
+                                        Middle {
+                                            ActionButton {
+                                                small: true; primary: true;
+                                                text: root.prompt.upgrade ? "Upgrade Nitro" : "Unlock with Nitro";
+                                                clicked => { root.unlock-nitro(); }
+                                            }
+                                        }
                                     }
                                 }
-                                if root.colour != "": Middle {
-                                    ActionButton {
-                                        small: true; ghost: true; enabled: root.ready; text: "Default";
-                                        clicked => { root.colour = ""; root.write(3, ""); }
+                                // The bio: Markdown as it shows, or its field.
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    HorizontalLayout {
+                                        spacing: 6px; alignment: start;
+                                        Middle { ProfileHeading { text: "ABOUT ME"; } }
+                                        if root.editing != 3 && root.ready && root.prompt.bio-enabled: Middle {
+                                            EditPencil { label: "Edit bio"; size: 22px; glyph: 13px; clicked => { root.edit(3); } }
+                                        }
+                                        if !root.prompt.bio-enabled && !root.prompt.loading: Middle {
+                                            Image { source: @image-url("icons/lock.svg"); width: 13px; height: 13px; colorize: Theme.muted; }
+                                        }
+                                    }
+                                    if root.editing != 3: Rectangle {
+                                        height: bio-shown.preferred-height;
+                                        bio-shown := VerticalLayout {
+                                            if root.prompt.preview.has-bio: StyledText {
+                                                text: root.prompt.preview.bio; default-color: Theme.text; link-color: Theme.link;
+                                            }
+                                            if !root.prompt.preview.has-bio: Text {
+                                                text: root.prompt.bio-placeholder; color: Theme.muted; font-size: 14px; wrap: word-wrap;
+                                            }
+                                        }
+                                        TouchArea {
+                                            enabled: root.ready && root.prompt.bio-enabled;
+                                            mouse-cursor: self.enabled ? MouseCursor.text : MouseCursor.default;
+                                            clicked => { root.edit(3); }
+                                        }
+                                    }
+                                    if root.editing == 3: VerticalLayout {
+                                        spacing: 4px;
+                                        Rectangle {
+                                            height: 110px; border-radius: 6px; background: Theme.sunken;
+                                            border-width: 1px; border-color: Theme.accent.with-alpha(0.8);
+                                            Text {
+                                                x: 10px; y: 8px; width: parent.width - 20px;
+                                                visible: root.bio == "";
+                                                text: root.prompt.bio-placeholder; color: Theme.muted; font-size: 14px;
+                                                wrap: word-wrap; overflow: elide;
+                                            }
+                                            TextInput {
+                                                init => { self.focus(); }
+                                                x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
+                                                text <=> root.bio;
+                                                single-line: false; wrap: word-wrap;
+                                                font-size: 14px; color: Theme.text;
+                                                selection-background-color: Theme.accent.with-alpha(0.35);
+                                                selection-foreground-color: Theme.text;
+                                                accessible-label: "Bio";
+                                                edited => { root.write(2, self.text); }
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            Label { text: "You can use markdown and links if you'd like."; horizontal-stretch: 1; }
+                                            Text {
+                                                text: root.prompt.bio-left < 0 ? "Too long by " + (-root.prompt.bio-left) : root.prompt.bio-left + " left";
+                                                color: root.prompt.bio-left < 0 ? Theme.danger : Theme.muted; font-size: 12px;
+                                            }
+                                        }
+                                    }
+                                    if root.editing != 3 && root.prompt.bio-left < 0: Text {
+                                        text: "Too long by " + (-root.prompt.bio-left); color: Theme.danger; font-size: 12px;
                                     }
                                 }
-                                if root.prompt.colour-wrong: Middle { Text { text: "Not a colour"; color: Theme.danger; font-size: 13px; } }
-                            }
-                            FieldHeading { text: "BIO"; }
-                            Label { text: "You can use markdown and links if you'd like."; }
-                            Rectangle {
-                                height: 96px; border-radius: 6px; background: Theme.sunken;
-                                border-width: bio-input.has-focus ? 1px : 0px; border-color: Theme.accent.with-alpha(0.8);
-                                Text {
-                                    x: 10px; y: 8px; width: parent.width - 20px;
-                                    visible: root.bio == "";
-                                    text: root.prompt.bio-placeholder; color: root.bio-on ? Theme.muted : Theme.faint; font-size: 15px;
-                                    wrap: word-wrap; overflow: elide;
+                                if root.prompt.preview.created != "" || root.prompt.preview.joined != "": VerticalLayout {
+                                    spacing: 6px;
+                                    ProfileHeading { text: "MEMBER SINCE"; }
+                                    HorizontalLayout {
+                                        spacing: 24px; alignment: start;
+                                        if root.prompt.preview.created != "": VerticalLayout {
+                                            Text { text: root.prompt.preview.created; color: Theme.text; font-size: 14px; font-weight: 500; }
+                                            Text { text: "On Discord"; color: Theme.muted; font-size: 12px; }
+                                        }
+                                        if root.prompt.preview.joined != "": VerticalLayout {
+                                            Text { text: root.prompt.preview.joined; color: Theme.text; font-size: 14px; font-weight: 500; }
+                                            Text { text: "In this server"; color: Theme.muted; font-size: 12px; }
+                                        }
+                                    }
                                 }
-                                bio-input := TextInput {
-                                    x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
-                                    text <=> root.bio;
-                                    enabled: root.bio-on;
-                                    single-line: false; wrap: word-wrap;
-                                    font-size: 15px;
-                                    color: root.bio-on ? Theme.text : Theme.muted;
-                                    selection-background-color: Theme.accent.with-alpha(0.35);
-                                    selection-foreground-color: Theme.text;
-                                    accessible-label: "Bio";
-                                    edited => { root.write(2, self.text); }
-                                }
-                            }
-                            Text {
-                                text: root.prompt.bio-left < 0 ? "Too long by " + (-root.prompt.bio-left) : root.prompt.bio-left + " left";
-                                color: root.prompt.bio-left < 0 ? Theme.danger : Theme.muted; font-size: 12px;
-                                horizontal-alignment: right;
+                                if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
                             }
                         }
                     }
-                    VerticalLayout {
-                        width: 300px; spacing: 8px; alignment: start;
-                        FieldHeading { text: "PREVIEW"; }
-                        ProfileCard { preview: true; data: root.prompt.preview; limit: root.height - 220px; }
-                    }
-                }
-                if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
-                HorizontalLayout {
-                    alignment: end; spacing: 8px; padding-top: 4px;
-                    ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
-                    ActionButton {
-                        text: root.prompt.saving ? "Saving..." : "Save Changes"; primary: true;
-                        enabled: root.ready && root.prompt.changed && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
-                        clicked => { root.save(); }
+                    // Discord's bar, once there's something to save.
+                    if root.prompt.changed || root.prompt.saving: Rectangle {
+                        background: Theme.raised;
+                        height: root.bar-height;
+                        Rectangle { y: 0px; height: 1px; background: Theme.edge; }
+                        bar := HorizontalLayout {
+                            padding: 12px; padding-left: root.pad; spacing: 8px;
+                            Middle { Text { text: "Careful — you have unsaved changes!"; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; } }
+                            Rectangle { horizontal-stretch: 1; }
+                            ActionButton {
+                                text: "Reset"; ghost: true; enabled: root.ready;
+                                clicked => { root.stop-editing(); root.colour-open = false; root.undo(); }
+                            }
+                            ActionButton {
+                                text: root.prompt.saving ? "Saving..." : "Save Changes"; primary: true;
+                                enabled: root.ready && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
+                                clicked => { root.stop-editing(); root.save(); }
+                            }
+                        }
                     }
                 }
             }

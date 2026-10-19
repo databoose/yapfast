@@ -1429,6 +1429,8 @@ pub enum Action {
         path: PathBuf,
     },
     ResetProfilePicture(chat::ProfilePicture),
+    /// Undo every change in the profile editor, as its bar's Reset does.
+    UndoProfileEdits,
     SaveProfile,
     UnlockNitro,
     CloseProfileEditor,
@@ -2307,6 +2309,10 @@ impl Application {
             Action::PickProfilePicture { kind, path } => self.pick_profile_picture(kind, path),
             Action::ResetProfilePicture(kind) => {
                 self.reset_profile_picture(kind);
+                vec![]
+            }
+            Action::UndoProfileEdits => {
+                self.undo_profile_edits();
                 vec![]
             }
             Action::SaveProfile => self.save_profile(),

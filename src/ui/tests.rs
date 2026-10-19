@@ -3823,7 +3823,8 @@ fn edit_profile_opens_the_main_profile_editor() {
     }
     let prompt = window.get_profile_editor_prompt();
     assert_eq!(prompt.title, "Edit profile");
-    assert_eq!(prompt.name_heading, "DISPLAY NAME");
+    assert_eq!(prompt.detail, "Your profile");
+    assert_eq!(prompt.handle, "alice");
     assert!(prompt.main && !prompt.offer && prompt.bio_enabled && prompt.avatar_enabled);
     assert!(
         prompt.colour_shown && !prompt.banner_shown,

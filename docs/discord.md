@@ -1852,18 +1852,29 @@ account, opens Yapfast's version of the "Main Profile" tab of Discord's
 Profiles settings (`application/profile_editor.rs`, the dialog in
 `ui/server.slint`, which it shares with the [server
 profile's](#editing-ones-server-profile)). It reads the profile with `GET
-/users/@me/profile` and shows, in the client's order:
+/users/@me/profile` and edits the fields Discord's tab has:
 
-- Display Name, up to 32 characters, the username as its placeholder.
-  Left empty, the username shows.
+- Display Name, up to 32 characters. Left empty, the username shows.
 - Pronouns, up to 40.
 - Avatar, with Change Avatar and, when there's one, Remove Avatar, which
   goes back to Discord's default avatar.
 - Without Nitro, Banner Color: the colour the card's banner shows, as
-  `#rrggbb` in a field beside a swatch, "Default" for none. With Nitro,
-  Profile Banner, with Change Banner and Remove Banner, and Discord's hint
-  about its size, in its place.
+  `#rrggbb` or one of nine swatches, "Default" for none. With Nitro,
+  Profile Banner, with Change Banner and Remove Banner, in its place.
 - Bio, Markdown up to 190 characters, with what's left counted under it.
+
+Rather than Discord's form beside a preview, the editor is the large
+profile card itself, as it will show. A pencil beside the name, the
+pronouns after the username, and About Me turns each into a field in
+place, as does clicking the text; Enter, Escape or a click elsewhere on
+the card ends it. Hovering the avatar or banner darkens it under a
+pencil, and clicking it opens the file chooser, or a menu of Change and
+Remove when there's one to remove; without Nitro the banner opens the
+colour under it. A pill on the banner's corner says which profile it is.
+Once something changed, Discord's bar shows at the card's foot:
+"Careful — you have unsaved changes!", with Reset, which puts back what
+Discord has, and Save Changes. The card's top stays put as the bar or
+the colour opens.
 
 Discord's client checks the same Nitro as for server profiles: a banner
 takes `canUsePremiumProfileCustomization`, so `premium_type` 2, and an
@@ -1902,26 +1913,23 @@ and puts it back as it started with `POST /_control/profile-reset`.
 
 Edit server profile, in a server's menu, its header's dropdown and one's
 own entry in its member list, opens Yapfast's version of Discord's "Per-server
-Profiles" settings page (`application/profile_editor.rs`, the dialog in
-`ui/server.slint`). Discord's client offers it to everyone; it reads the
-profile with `GET /users/@me/profile?guild_id=...` and shows, in its
-order:
+Profiles" settings page (`application/profile_editor.rs`, the same card
+as the [main profile's](#editing-ones-main-profile)). Discord's client
+offers it to everyone; it reads the profile with `GET
+/users/@me/profile?guild_id=...` and edits:
 
-- Server Nickname, up to 32 characters, greyed with "You don't have
-  permission to change your nickname in this server." without Change
+- Server Nickname, up to 32 characters, with no pencil without Change
   Nickname or Manage Nicknames.
 - Pronouns, up to 40.
 - Avatar, with Change Avatar and Reset Avatar.
-- Profile Banner, with Change Banner and Reset Banner, and Discord's hint:
-  "Upload a PNG, JPG, or GIF under 10MB. Images should be at least
-  680x240."
+- Profile Banner, with Change Banner and Reset Banner.
 - Bio, Markdown up to 190 characters, with what's left counted under it.
 
-A profile card beside them previews the profile as the server will show
-it, the main profile's name, pronouns, bio, avatar and banner standing in
-for each field left empty, as Discord merges them: an empty text and a
-missing picture both go by the main profile. A Reset button shows only
-when the server has a picture of its own, as it stands or newly chosen.
+The card shows the profile as the server will, the main profile's name,
+pronouns, bio, avatar and banner standing in for each field left empty,
+as Discord merges them: an empty text and a missing picture both go by
+the main profile. Reset shows in a picture's menu only when the server
+has a picture of its own, as it stands or newly chosen.
 
 The nickname and pronouns are free. The avatar, banner and bio take
 Discord's full Nitro: the client checks `canUsePremiumProfileCustomization`,
@@ -1930,18 +1938,22 @@ Classic (1). Without it Discord still shows them, greyed, under an offer:
 "Make unique profiles for each server", "Customize your profile for every
 server, from avatar decorations to bios. Only with Nitro.", and "Unlock
 with Nitro", or "Upgrade Nitro" with a lesser Nitro, which opens
-`https://discord.com/nitro`. Yapfast shows them the same way.
+`https://discord.com/nitro`. Yapfast shows the offer under the name, and
+a lock in place of the pencil on each of them.
 
 Change Avatar and Change Banner use the file chooser attachments use. Yapfast
 reads the picture off the UI thread, as Discord's cropper sends it: the
 middle square of an avatar, at most 1024 pixels, and the middle 17 by 6 of
 a banner, at most 2400 by 848, from a PNG, JPG, GIF or WebP under 10 MB.
 It keeps only that file, a PNG where the picture has transparency and
-otherwise a JPEG, and a preview at the card's size, twice over; an
+otherwise a JPEG, and a preview at the size the card gets everyone's
+pictures in, 128 pixels square and 600 by 212; an
 animated GIF goes as it is, so it stays animated. The full decoded picture
 is dropped at once, and closing the editor drops the rest. With two
 4000 by 3000 photos chosen, the heap in use (window-control `stats`) went
-from 11.26 to 12.97 MiB and back to 11.28 once the editor closed.
+from 12.12 MiB with the editor open to 12.83, and back to 12.00 once it
+closed, the same each time. Previews twice that size kept 1.5 MiB after
+closing, held by the renderer.
 
 Save Changes sends what changed, as the client does, in up to two
 requests, each only with fields to send:
