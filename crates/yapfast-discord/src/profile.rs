@@ -52,20 +52,24 @@ pub struct MutualFriend {
     pub avatar: String,
 }
 
-/// This account's own profile in a server, as Discord's per-server profile
-/// editor changes it: what it set there, and the main profile it goes by
-/// where it set nothing. An empty text or no picture goes by the main one,
-/// as Discord's client shows them.
+/// This account's own profile as Discord's profile editors change it, in
+/// a server or its main one: what it set, and what shows where it set
+/// nothing. An empty text or no picture goes by `fallback`, as Discord's
+/// client shows them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ServerProfile {
-    pub nick: String,
+pub struct OwnProfile {
+    /// The server nickname, or the display name.
+    pub name: String,
     pub pronouns: String,
     pub bio: String,
-    /// The addresses of the server avatar and banner, when set.
+    /// The addresses of the avatar and banner, when set.
     pub avatar: Option<String>,
     pub banner: Option<String>,
-    /// Its profile outside any server.
-    pub main: Profile,
+    /// The main profile's banner colour.
+    pub accent: Option<u32>,
+    /// In a server, its profile outside any server; outside, the username
+    /// and Discord's default avatar.
+    pub fallback: Profile,
 }
 
 /// The largest picture Discord's client uploads as an avatar or banner.
@@ -73,12 +77,12 @@ pub const PICTURE_LIMIT: u64 = 10 * 1024 * 1024;
 
 /// This account's profile in `guild`, from the profile endpoint's answer
 /// for its own id with `guild_id`.
-pub fn parse_server(value: &Value, guild: &str) -> Option<ServerProfile> {
+pub fn parse_server(value: &Value, guild: &str) -> Option<OwnProfile> {
     let main = parse(value, None)?;
     let (server, member) = (&value["guild_member_profile"], &value["guild_member"]);
     let owned = |value: &Value| text(value).map(str::to_owned).unwrap_or_default();
-    Some(ServerProfile {
-        nick: owned(&member["nick"]),
+    Some(OwnProfile {
+        name: owned(&member["nick"]),
         pronouns: owned(&server["pronouns"]),
         bio: text(&server["bio"])
             .or_else(|| text(&member["bio"]))
@@ -89,8 +93,40 @@ pub fn parse_server(value: &Value, guild: &str) -> Option<ServerProfile> {
         banner: text(&server["banner"])
             .or_else(|| text(&member["banner"]))
             .map(|hash| ready::member_banner(guild, &main.user_id, hash)),
-        main,
+        accent: None,
+        fallback: main,
     })
+}
+
+/// This account's main profile, from the profile endpoint's answer for its
+/// own id without a server.
+pub fn parse_main(value: &Value) -> Option<OwnProfile> {
+    let profile = parse(value, None)?;
+    let (user, own) = (&value["user"], &value["user_profile"]);
+    let id = profile.user_id.clone();
+    let fallback = Profile {
+        name: profile.username.clone(),
+        avatar: ready::avatar(&id, None),
+        banner: None,
+        accent: None,
+        pronouns: None,
+        bio: None,
+        ..profile.clone()
+    };
+    Some(OwnProfile {
+        name: user["global_name"].as_str().unwrap_or_default().to_owned(),
+        pronouns: profile.pronouns.unwrap_or_default(),
+        bio: profile.bio.unwrap_or_default(),
+        avatar: text(&user["avatar"]).map(|hash| ready::avatar(&id, Some(hash))),
+        banner: profile.banner,
+        accent: color(&own["accent_color"]).or_else(|| color(&user["accent_color"])),
+        fallback,
+    })
+}
+
+/// A colour field that may be missing or null.
+fn color(value: &Value) -> Option<u32> {
+    value.as_u64().and_then(|color| u32::try_from(color).ok())
 }
 
 /// A text field that may be missing, null or empty.
@@ -122,7 +158,6 @@ pub fn parse(value: &Value, guild: Option<&str>) -> Option<Profile> {
             .or_else(|| text(&user["banner"]))
             .map(|hash| ready::banner(&id, hash)),
     };
-    let color = |value: &Value| value.as_u64().and_then(|color| u32::try_from(color).ok());
     Some(Profile {
         name,
         username: user["username"].as_str().unwrap_or_default().to_owned(),
@@ -237,7 +272,7 @@ mod tests {
         assert!(profile.mutual_friends[0].avatar.contains("/embed/avatars/"));
 
         let own = parse_server(&answer, "10").unwrap();
-        assert_eq!(own.nick, "Annie");
+        assert_eq!(own.name, "Annie");
         assert_eq!(own.pronouns, "", "the main profile's shows instead");
         assert_eq!(own.bio, "");
         assert_eq!(own.avatar, None);
@@ -247,8 +282,35 @@ mod tests {
                 .unwrap()
                 .ends_with("/guilds/10/users/1400000000000000200/banners/ghi.png?size=600")
         );
-        assert_eq!(own.main.name, "Ann");
-        assert_eq!(own.main.pronouns.as_deref(), Some("she/her"));
+        assert_eq!(own.fallback.name, "Ann");
+        assert_eq!(own.fallback.pronouns.as_deref(), Some("she/her"));
+
+        // Her main profile: what she set, over her username and Discord's
+        // default avatar.
+        let main = parse_main(&answer).unwrap();
+        assert_eq!(main.name, "Ann");
+        assert_eq!(main.pronouns, "she/her");
+        assert_eq!(main.bio, "Hi, I'm **Ann**");
+        assert!(
+            main.avatar
+                .as_deref()
+                .unwrap()
+                .contains("/avatars/1400000000000000200/abc.png")
+        );
+        assert!(
+            main.banner
+                .as_deref()
+                .unwrap()
+                .ends_with("/banners/1400000000000000200/def.png?size=600")
+        );
+        assert_eq!(
+            main.accent,
+            Some(16_711_680),
+            "the user's, as the profile's is null"
+        );
+        assert_eq!(main.fallback.name, "ann");
+        assert!(main.fallback.avatar.contains("/embed/avatars/"));
+        assert_eq!((main.fallback.bio, main.fallback.banner), (None, None));
 
         // Outside a server: their own banner and name.
         let profile = parse(&answer, None).unwrap();

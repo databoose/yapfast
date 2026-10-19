@@ -279,6 +279,19 @@ impl MemberLists {
         }
     }
 
+    /// Shows the list on screen again after USER_UPDATE changed this
+    /// account's display name or avatar, if it lists it.
+    pub(super) fn user_changed(&self, tracker: &Tracker, data: &Value) {
+        let user = data["id"].as_str();
+        if self
+            .shown
+            .as_ref()
+            .is_some_and(|list| user.is_some_and(|user| list.lists(user)))
+        {
+            self.publish(tracker);
+        }
+    }
+
     /// Shows the group DM's members again after an event that may change
     /// them. Server events, such as presences in a server, don't.
     pub(super) fn group_event(&self, tracker: &Tracker, event: &Dispatch) {
@@ -288,6 +301,7 @@ impl MemberLists {
                 event.event,
                 Event::ReadySupplemental
                     | Event::PresenceUpdate
+                    | Event::UserUpdate
                     | Event::ChannelUpdate
                     | Event::ChannelRecipientAdd
                     | Event::ChannelRecipientRemove

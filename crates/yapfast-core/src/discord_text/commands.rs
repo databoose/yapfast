@@ -69,7 +69,7 @@ pub fn command(
     ) else {
         return;
     };
-    let Some(command) = server_profile::command(command, discord, events) else {
+    let Some(command) = own_profile::command(command, discord, events) else {
         return;
     };
     let Some(command) = gifs::command(command, discord, events) else {

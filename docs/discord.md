@@ -12,7 +12,7 @@ recorded on 2026-10-06.
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
-| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
+| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
 
 The [later list](#later) has the rest.
@@ -1162,6 +1162,8 @@ an error.
   the settings below and sends it with opcode 3. Do Not Disturb holds back
   Yapfast's message notifications. Closing Yapfast takes the person offline, like
   closing the Discord app.
+- The same menu ends with Edit Profile, which opens the [main profile's
+  editor](#editing-ones-main-profile), as Edit profile in My account does.
 - The custom status shows under the account's name. "Change custom status" in
   that menu, or "Set a custom status" in My account, sets it: an emoji from the
   picker, words, and when it clears (never, 30 minutes, an hour, four hours,
@@ -1843,11 +1845,64 @@ makes Carol post. It takes Alice's posts as Discord does, refusing the
 moderated tag, and `/_control/forum-require-tag` (`?off`) makes the forum
 require a tag.
 
+### Editing one's main profile
+
+Edit Profile, in the account's menu bottom left, or Edit profile in My
+account, opens Yapfast's version of the "Main Profile" tab of Discord's
+Profiles settings (`application/profile_editor.rs`, the dialog in
+`ui/server.slint`, which it shares with the [server
+profile's](#editing-ones-server-profile)). It reads the profile with `GET
+/users/@me/profile` and shows, in the client's order:
+
+- Display Name, up to 32 characters, the username as its placeholder.
+  Left empty, the username shows.
+- Pronouns, up to 40.
+- Avatar, with Change Avatar and, when there's one, Remove Avatar, which
+  goes back to Discord's default avatar.
+- Without Nitro, Banner Color: the colour the card's banner shows, as
+  `#rrggbb` in a field beside a swatch, "Default" for none. With Nitro,
+  Profile Banner, with Change Banner and Remove Banner, and Discord's hint
+  about its size, in its place.
+- Bio, Markdown up to 190 characters, with what's left counted under it.
+
+Discord's client checks the same Nitro as for server profiles: a banner
+takes `canUsePremiumProfileCustomization`, so `premium_type` 2, and an
+animated avatar `canUseAnimatedAvatar`, so 1 or 2. A GIF avatar without
+it says "An animated avatar takes Nitro." where the client offers Nitro;
+the rest, the bio included, is free. The client's colour picker suggests
+colours from the avatar and has an eyedropper; Yapfast takes the hex.
+
+Save Changes sends what changed, in up to two requests, as the client
+does:
+
+1. `PATCH /users/@me` with `global_name` and `avatar`. A cleared display
+   name goes as `""`.
+2. `PATCH /users/@me/profile` with `bio`, `pronouns`, `banner` and
+   `accent_color`, an integer, or `null` for the default.
+
+Discord answers each with USER_UPDATE, which brings the new name and
+avatar to the account panel, messages and member lists. A picture goes
+as for server profiles: the same crop and size, as a data URI, or `null`
+to remove it. The client never sends the bio, pronouns or banner to
+`/users/@me`, though Discord's docs list them there.
+
+The client's tab also has Profile Widgets, an avatar decoration, a
+nameplate, a profile effect, a frame, display name styles and, with
+Nitro, a profile theme of two colours in place of the banner colour, then
+the Server Tag and badges. Yapfast leaves them out, as it shows none of
+them. Changing the username, in My Account with the password, is left
+for later.
+
+The fake keeps Alice's main profile: it takes both requests, answers
+each with USER_UPDATE, refuses a banner and an animated avatar with
+`PREMIUM_REQUIRED` without Nitro, shows hers at `GET /_control/profile`,
+and puts it back as it started with `POST /_control/profile-reset`.
+
 ### Editing one's server profile
 
 Edit server profile, in a server's menu, its header's dropdown and one's
 own entry in its member list, opens Yapfast's version of Discord's "Per-server
-Profiles" settings page (`application/server_profile.rs`, the dialog in
+Profiles" settings page (`application/profile_editor.rs`, the dialog in
 `ui/server.slint`). Discord's client offers it to everyone; it reads the
 profile with `GET /users/@me/profile?guild_id=...` and shows, in its
 order:

@@ -1124,14 +1124,17 @@ impl Discord {
         )
     }
 
-    /// This account's own profile in a server, for its per-server profile
-    /// editor, fetched afresh.
-    pub async fn server_profile(&self, guild: &str) -> Result<profile::ServerProfile> {
+    /// This account's own profile, for its editor, fetched afresh: in
+    /// `guild`, or its main one.
+    pub async fn own_profile(&self, guild: Option<&str>) -> Result<profile::OwnProfile> {
         let me = self.snapshots.borrow().user_id.clone();
         let me = me.ok_or_else(|| anyhow!("Discord hasn't said who this account is yet"))?;
-        let value = self.api.profile(&me, Some(guild)).await?;
-        profile::parse_server(&value, guild)
-            .ok_or_else(|| anyhow!("could not understand Discord's answer"))
+        let value = self.api.profile(&me, guild).await?;
+        match guild {
+            Some(guild) => profile::parse_server(&value, guild),
+            None => profile::parse_main(&value),
+        }
+        .ok_or_else(|| anyhow!("could not understand Discord's answer"))
     }
 
     /// Changes this account's profile in a server as Discord's client
@@ -1145,17 +1148,38 @@ impl Discord {
         member: &Value,
         profile: &Value,
     ) -> Result<()> {
-        let some = |body: &Value| body.as_object().is_some_and(|fields| !fields.is_empty());
         if some(member) {
             self.api.modify_member_me(guild, member).await?;
         }
         if some(profile) {
             self.api.modify_guild_profile(guild, profile).await?;
         }
-        let me = self.snapshots.borrow().user_id.clone();
-        self.lock_profiles()
-            .retain(|kept| kept.guild != guild || Some(&kept.user) != me.as_ref());
+        self.forget_own_profile(Some(guild));
         Ok(())
+    }
+
+    /// Changes this account's main profile as Discord's client does:
+    /// `user`'s fields, its display name and avatar, go to the user, then
+    /// `profile`'s, its bio, pronouns, banner and banner colour, to its
+    /// profile, each only when it has any. USER_UPDATE follows both.
+    pub async fn save_main_profile(&self, user: &Value, profile: &Value) -> Result<()> {
+        if some(user) {
+            self.api.modify_me(user).await?;
+        }
+        if some(profile) {
+            self.api.modify_profile_me(profile).await?;
+        }
+        self.forget_own_profile(None);
+        Ok(())
+    }
+
+    /// Drops this account's kept profiles, so they're fetched afresh: in
+    /// `guild`, or everywhere once the main profile changed.
+    fn forget_own_profile(&self, guild: Option<&str>) {
+        let me = self.snapshots.borrow().user_id.clone();
+        self.lock_profiles().retain(|kept| {
+            Some(&kept.user) != me.as_ref() || guild.is_some_and(|guild| kept.guild != guild)
+        });
     }
 
     fn lock_profiles(&self) -> std::sync::MutexGuard<'_, Vec<Kept>> {
@@ -2197,6 +2221,11 @@ impl Discord {
 /// The server a channel is in, or none for DMs.
 fn server(guild: &str) -> Option<&str> {
     (guild != PRIVATE).then_some(guild)
+}
+
+/// Whether a request body has any fields to send.
+fn some(body: &Value) -> bool {
+    body.as_object().is_some_and(|fields| !fields.is_empty())
 }
 
 /// The status that silences notifications, as [`Snapshot::presence`] gives it.

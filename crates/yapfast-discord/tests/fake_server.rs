@@ -2654,12 +2654,12 @@ async fn talks_to_the_fake_server() {
     // Her per-server profile: a nickname and pronouns anyone may set, the
     // rest only with Nitro. Her server avatar comes back with
     // GUILD_MEMBER_UPDATE; her banner, bio and pronouns with her profile.
-    let own = discord.server_profile(&guild).await.unwrap();
+    let own = discord.own_profile(Some(&guild)).await.unwrap();
     assert_eq!(
-        (own.nick.as_str(), own.avatar.as_deref(), own.bio.as_str()),
+        (own.name.as_str(), own.avatar.as_deref(), own.bio.as_str()),
         ("", None, "")
     );
-    assert_eq!(own.main.name, "Alice");
+    assert_eq!(own.fallback.name, "Alice");
     let none = serde_json::json!({});
     discord
         .save_server_profile(
@@ -2700,8 +2700,8 @@ async fn talks_to_the_fake_server() {
             .contains(&format!("/guilds/{guild}/users/{me}/avatars/"))
     })
     .await;
-    let own = discord.server_profile(&guild).await.unwrap();
-    assert_eq!(own.nick, "Ally");
+    let own = discord.own_profile(Some(&guild)).await.unwrap();
+    assert_eq!(own.name, "Ally");
     assert_eq!(own.pronouns, "she/her");
     assert_eq!(own.bio, "Here for #general.");
     assert!(
@@ -2721,9 +2721,9 @@ async fn talks_to_the_fake_server() {
         )
         .await
         .unwrap();
-    let own = discord.server_profile(&guild).await.unwrap();
+    let own = discord.own_profile(Some(&guild)).await.unwrap();
     assert_eq!(
-        (own.nick, own.pronouns, own.bio, own.avatar, own.banner),
+        (own.name, own.pronouns, own.bio, own.avatar, own.banner),
         (String::new(), String::new(), String::new(), None, None)
     );
     post_control(server, "/_control/nitro?off", "");
@@ -2735,6 +2735,7 @@ async fn talks_to_the_fake_server() {
     })
     .await;
 
+    edits_the_main_profile_as_discords_client_does(&discord, server).await;
     lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
     joins_and_leaves_threads_as_discords_client_does(&discord, server).await;
     shows_a_forum_as_discords_client_does(&discord, server, &guild).await;
@@ -2779,12 +2780,80 @@ async fn talks_to_the_fake_server() {
         })
         .await
         .expect("the refreshed login wasn't kept");
-        discord.server_profile(&guild).await.unwrap();
+        discord.own_profile(Some(&guild)).await.unwrap();
     }
 
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();
     assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");
+}
+
+/// Editing her main profile as Discord's client does, then putting it
+/// back; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn edits_the_main_profile_as_discords_client_does(discord: &Discord, server: &str) {
+    let own = discord.own_profile(None).await.unwrap();
+    assert_eq!(
+        (own.name.as_str(), own.bio.as_str(), own.accent),
+        ("Alice", "", None)
+    );
+    assert!(own.avatar.is_some());
+    assert_eq!(own.fallback.name, "alice", "her username");
+    let dot = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    discord
+        .save_main_profile(
+            &serde_json::json!({"global_name": "Ally", "avatar": dot}),
+            &serde_json::json!({"bio": "Hi, I'm **Ally**", "pronouns": "she/her", "accent_color": 0x5865f2}),
+        )
+        .await
+        .unwrap();
+    // USER_UPDATE renames the account and gives it the new avatar.
+    let renamed = |name: &'static str| {
+        move |snapshot: &Snapshot| {
+            snapshot
+                .account
+                .as_ref()
+                .is_some_and(|account| account.name == name)
+        }
+    };
+    let snapshot = snapshot_where(discord, renamed("Ally")).await;
+    assert!(!snapshot.account.as_ref().unwrap().avatar.contains("alice1"));
+    let own = discord.own_profile(None).await.unwrap();
+    assert_eq!(own.name, "Ally");
+    assert_eq!(own.bio, "Hi, I'm **Ally**");
+    assert_eq!(own.pronouns, "she/her");
+    assert_eq!(own.accent, Some(0x5865f2));
+    assert!(
+        discord
+            .save_main_profile(&serde_json::json!({}), &serde_json::json!({"banner": dot}))
+            .await
+            .is_err(),
+        "a banner takes Nitro"
+    );
+    // An empty display name goes by her username; no avatar, Discord's
+    // default.
+    discord
+        .save_main_profile(
+            &serde_json::json!({"global_name": "", "avatar": null}),
+            &serde_json::json!({"accent_color": null}),
+        )
+        .await
+        .unwrap();
+    let snapshot = snapshot_where(discord, renamed("alice")).await;
+    assert!(
+        snapshot
+            .account
+            .as_ref()
+            .unwrap()
+            .avatar
+            .contains("/embed/avatars/")
+    );
+    let own = discord.own_profile(None).await.unwrap();
+    assert_eq!(
+        (own.name.as_str(), own.avatar, own.accent),
+        ("", None, None)
+    );
+    post_control(server, "/_control/profile-reset", "");
+    snapshot_where(discord, renamed("Alice")).await;
 }
 
 /// What linking showed next.

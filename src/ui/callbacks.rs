@@ -414,8 +414,9 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         });
     }
     bind!(on_close_channel, Action::CloseChannelDialog);
-    bind!(on_save_server_profile, Action::SaveServerProfile);
-    bind!(on_close_server_profile, Action::CloseServerProfile);
+    bind!(on_edit_profile, Action::EditProfile);
+    bind!(on_save_profile, Action::SaveProfile);
+    bind!(on_close_profile_editor, Action::CloseProfileEditor);
     bind!(on_unlock_nitro, Action::UnlockNitro);
     let profile_picture = |kind: i32| {
         if kind == 1 {
@@ -427,16 +428,17 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();
-        window.on_write_server_profile(move |field, text| {
+        window.on_write_profile(move |field, text| {
             let field = match field {
-                0 => ProfileText::Nick,
+                0 => ProfileText::Name,
                 1 => ProfileText::Pronouns,
-                _ => ProfileText::Bio,
+                2 => ProfileText::Bio,
+                _ => ProfileText::Colour,
             };
             if let Some(window) = weak.upgrade() {
                 adapter.borrow_mut().action(
                     &window,
-                    Action::WriteServerProfile {
+                    Action::WriteProfile {
                         field,
                         text: text.into(),
                     },

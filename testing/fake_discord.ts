@@ -454,10 +454,19 @@ function wireUser(user: User) {
 // served back from the CDN as it came; the avatar, banner and bio need
 // Nitro, as on Discord: `--nitro`, or POST /_control/nitro (see below).
 // GET /_control/server-profile shows hers.
+// Alice changes her main profile as Discord's profile editor does: her
+// display name and avatar with PATCH /users/@me, and her bio, pronouns,
+// banner and banner colour with PATCH /users/@me/profile, each answered
+// with USER_UPDATE. An empty display name goes by her username, and null
+// takes a picture or colour away. The banner needs Nitro, and an animated
+// avatar Nitro or Classic, here `--nitro`. GET /_control/profile shows hers,
+// and POST /_control/profile-reset puts it back as it started.
 const memberRoles = new Map<string, string[]>();
 const memberNicks = new Map<string, string>();
 /** Server profiles by user: avatar and banner hashes, bio and pronouns. */
 const serverProfiles = new Map<string, { avatar: string | null; banner: string | null; bio: string; pronouns: string }>();
+/** Alice's main profile, which PATCH /users/@me/profile changes. */
+const aliceProfile = { bio: "", pronouns: "", banner: null as string | null, accent_color: null as number | null };
 /** Pictures uploaded as avatars and banners, by hash, served from the CDN. */
 const uploadedPictures = new Map<string, { type: string; data: Uint8Array }>();
 function serverProfile(id: string) {
@@ -557,7 +566,7 @@ function wireProfile(user: User, guild: string | null) {
   const carol = user.id === users.carol.id;
   const inServer = Object.values(users).includes(user) && user.id !== ALICE;
   const isMember = Object.values(users).includes(user);
-  const profile = {
+  const profile = user.id === ALICE ? aliceProfile : {
     bio: bob ? "Plays bass in a **ska** band. Ask me about https://example.com/gigs" : "",
     pronouns: bob ? "he/him" : "",
     banner: bob ? "bob-banner" : null,
@@ -4463,6 +4472,53 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(guilds.map(([guild, change]) => changeGuildSettings(guild, change)));
   }
 
+  // Alice's main profile: her display name and avatar, then her bio,
+  // pronouns, banner and banner colour; see "Server members" above.
+  if (method === "PATCH" && path === "/users/@me") {
+    const body: any = await req.json().catch(() => ({}));
+    const alice: any = users.alice;
+    if (typeof body.global_name === "string" && body.global_name.length > 32) return tooLong("global_name", 32);
+    if ("avatar" in body && body.avatar !== null) {
+      if (String(body.avatar).startsWith("data:image/gif") && !nitro) return premiumRequired("avatar");
+      const kept = keepPicture(body.avatar);
+      if ("error" in kept) return json({ message: "Invalid Form Body", code: 50035, errors: { avatar: { _errors: [{ code: "IMAGE_INVALID", message: kept.error }] } } }, 400);
+      alice.avatar = kept.hash;
+    } else if ("avatar" in body) {
+      alice.avatar = null;
+    }
+    if ("global_name" in body) alice.global_name = body.global_name || null;
+    const wire = { ...wireUser(users.alice), premium_type: nitro ? 2 : 0 };
+    dispatch("USER_UPDATE", wire);
+    return json(wire);
+  }
+  if (method === "PATCH" && path === "/users/@me/profile") {
+    const body: any = await req.json().catch(() => ({}));
+    if (typeof body.pronouns === "string" && body.pronouns.length > 40) return tooLong("pronouns", 40);
+    if (typeof body.bio === "string" && body.bio.length > 190) return tooLong("bio", 190);
+    if (body.banner && !nitro) return premiumRequired("banner");
+    if ("banner" in body) {
+      const kept = body.banner === null ? { hash: null } : keepPicture(body.banner);
+      if ("error" in kept) return json({ message: "Invalid Form Body", code: 50035, errors: { banner: { _errors: [{ code: "IMAGE_INVALID", message: kept.error }] } } }, 400);
+      aliceProfile.banner = kept.hash;
+    }
+    if ("accent_color" in body) {
+      const colour = body.accent_color;
+      if (colour !== null && !(Number.isInteger(colour) && colour >= 0 && colour <= 0xffffff)) {
+        return json({ message: "Invalid Form Body", code: 50035, errors: { accent_color: { _errors: [{ code: "NUMBER_TYPE_COERCE", message: "Value is not int." }] } } }, 400);
+      }
+      aliceProfile.accent_color = colour;
+    }
+    if (typeof body.pronouns === "string" || body.pronouns === null) aliceProfile.pronouns = body.pronouns ?? "";
+    if (typeof body.bio === "string" || body.bio === null) aliceProfile.bio = body.bio ?? "";
+    dispatch("USER_UPDATE", {
+      ...wireUser(users.alice),
+      banner: aliceProfile.banner,
+      accent_color: aliceProfile.accent_color,
+      premium_type: nitro ? 2 : 0,
+    });
+    return json(aliceProfile);
+  }
+
   // Alice's own profile in "Server": banner, bio and pronouns, as the
   // per-server profile editor sends them; see "Server members" above.
   if (method === "PATCH" && (m = path.match(/^\/guilds\/(\d+)\/profile\/@me$/))) {
@@ -4946,7 +5002,7 @@ const ENV_IDS = 1_450_000_000_000_000_000n;
  *  the account's own session and calls. The rest name the fixture's people
  *  and channels. */
 const GENERIC_CONTROLS = new Set([
-  "media-requests", "history", "forwards", "gif-selects", "nitro", "server-profile", "health", "presence", "logouts",
+  "media-requests", "history", "forwards", "gif-selects", "nitro", "profile", "profile-reset", "server-profile", "health", "presence", "logouts",
   "voice-identifies", "voice-changes", "call-audio", "call-video", "voice-link", "voice-drop", "voice-move",
   "stream-move", "sessions", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
@@ -5471,6 +5527,16 @@ const server = Bun.serve<SocketData>({
       nitro = !url.searchParams.has("off");
       dispatch("USER_UPDATE", { ...wireUser(users.alice), premium_type: nitro ? 2 : 0 });
       return new Response(nitro ? "Alice has Nitro\n" : "Alice has no Nitro\n");
+    }
+    if (path === "/_control/profile") {
+      const { global_name, avatar } = users.alice;
+      return Response.json({ global_name, avatar, ...aliceProfile });
+    }
+    if (req.method === "POST" && path === "/_control/profile-reset") {
+      Object.assign(users.alice, { global_name: "Alice", avatar: "alice1" });
+      Object.assign(aliceProfile, { bio: "", pronouns: "", banner: null, accent_color: null });
+      dispatch("USER_UPDATE", { ...wireUser(users.alice), premium_type: nitro ? 2 : 0 });
+      return new Response("Alice's profile is as it started\n");
     }
     if (path === "/_control/server-profile") {
       return Response.json({ nick: memberNicks.get(ALICE) ?? null, ...serverProfile(ALICE) });

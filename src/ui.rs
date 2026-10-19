@@ -1900,16 +1900,16 @@ impl Adapter {
 
     fn action(&mut self, window: &YapfastWindow, action: Action) {
         // A keystroke in the composer changes only the composer, and one in
-        // the server profile editor only the editor; the rest of the window
+        // the profile editor only the editor; the rest of the window
         // stays as it is.
         let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
-        let profiling = matches!(action, Action::WriteServerProfile { .. });
+        let profiling = matches!(action, Action::WriteProfile { .. });
         let effects = self.app.dispatch(action);
         self.execute(effects);
         if composing {
             self.show_composer(window);
         } else if profiling {
-            self.show_server_profile(window);
+            self.show_profile_editor(window);
         } else {
             self.refresh(window);
         }

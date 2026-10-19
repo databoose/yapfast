@@ -1939,10 +1939,10 @@ pub enum DiscordCommand {
     /// Download server icons and avatars by address. Each that arrives comes
     /// back as [`Event::Picture`]; one that fails doesn't.
     Pictures(Vec<String>),
-    /// This account's profile in a Discord server, by its server id, for
-    /// its editor; [`Event::ServerProfile`] follows.
-    ServerProfile {
-        server: String,
+    /// This account's profile for its editor: in a Discord server, by its
+    /// server id, or its main profile; [`Event::OwnProfile`] follows.
+    OwnProfile {
+        server: Option<String>,
     },
     /// Read the picture at `path` for a profile, as Discord takes it, with
     /// a preview; [`Event::ProfilePicture`] follows.
@@ -1951,27 +1951,30 @@ pub enum DiscordCommand {
         path: PathBuf,
     },
     /// Change this account's profile in a Discord server, by its server
-    /// id; [`Event::ServerProfileSaved`] follows.
-    SaveServerProfile {
-        server: String,
-        change: Box<ServerProfileChange>,
+    /// id, or its main profile; [`Event::ProfileSaved`] follows.
+    SaveProfile {
+        server: Option<String>,
+        change: Box<ProfileChange>,
     },
 }
 
-/// This account's profile in a Discord server, as its editor shows it:
-/// what it set there, each empty where it goes by its main profile.
+/// This account's profile as its editor shows it, in a Discord server or
+/// its main one: what it set, each empty where it goes by `fallback`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ServerProfile {
-    pub nick: String,
+pub struct OwnProfile {
+    /// The server nickname, or the display name.
+    pub name: String,
     pub pronouns: String,
     pub bio: String,
-    /// The addresses of its server avatar and banner, when set; see
+    /// The addresses of its avatar and banner, when set; see
     /// [`DiscordCommand::Pictures`].
     pub avatar: Option<String>,
     pub banner: Option<String>,
-    /// Its main profile, whose name, pronouns, bio, avatar and banner show
-    /// where the server's are empty.
-    pub main: Profile,
+    /// The main profile's banner colour; a server has none of its own.
+    pub accent: Option<u32>,
+    /// What shows where a field is empty: in a server, the main profile;
+    /// in the main profile, the username and Discord's default avatar.
+    pub fallback: Profile,
 }
 
 /// A picture of a profile.
@@ -1990,16 +1993,19 @@ pub struct PickedPicture {
     pub preview: Arc<Picture>,
 }
 
-/// What changes in a profile in a Discord server: each field that does,
-/// a picture to `None` to go by the main profile's again, as an empty text
-/// does.
+/// What changes in this account's profile: each field that does, a
+/// picture to `None` to go by [`OwnProfile::fallback`] again, as an empty
+/// text does.
 #[derive(Clone, Debug, Default)]
-pub struct ServerProfileChange {
-    pub nick: Option<String>,
+pub struct ProfileChange {
+    /// The server nickname, or the display name.
+    pub name: Option<String>,
     pub pronouns: Option<String>,
     pub bio: Option<String>,
     pub avatar: Option<Option<PickedPicture>>,
     pub banner: Option<Option<PickedPicture>>,
+    /// The main profile's banner colour, `None` for Discord's default.
+    pub accent: Option<Option<u32>>,
 }
 
 /// A change to how the Discord account stands with someone.
@@ -2273,11 +2279,12 @@ pub enum Event {
     /// Whether Discord made, changed or deleted the channel a dialog asked
     /// it to: the room id of one it made, or why it didn't.
     ChannelSaved(Result<Option<String>, String>),
-    /// This account's profile in a Discord server, by its server id, as
-    /// [`DiscordCommand::ServerProfile`] asked, or why Discord didn't give it.
-    ServerProfile {
-        server: String,
-        result: Result<ServerProfile, String>,
+    /// This account's profile in a Discord server, by its server id, or
+    /// its main profile, as [`DiscordCommand::OwnProfile`] asked, or why
+    /// Discord didn't give it.
+    OwnProfile {
+        server: Option<String>,
+        result: Result<OwnProfile, String>,
     },
     /// The picture [`DiscordCommand::ProfilePicture`] read, from `path`, or
     /// why it can't be one.
@@ -2286,9 +2293,10 @@ pub enum Event {
         path: PathBuf,
         result: Result<PickedPicture, String>,
     },
-    /// Whether Discord took the change to a profile in a server, or why not.
-    ServerProfileSaved {
-        server: String,
+    /// Whether Discord took the change to this account's profile in a
+    /// server, or its main one, or why not.
+    ProfileSaved {
+        server: Option<String>,
         result: Result<(), String>,
     },
     /// Whether this account left a Discord server, by its server id, or why

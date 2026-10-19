@@ -394,12 +394,21 @@ impl Tracker {
                 self.sort_servers();
                 true
             }
-            // This account's Nitro can change while connected.
+            // This account's Nitro, name and avatar can change while
+            // connected, the last two from its profile editor.
             Event::UserUpdate if data["id"].as_str() == Some(self.me.as_str()) => {
                 let premium = premium_type(data);
-                let changed = premium != self.premium;
-                self.premium = premium;
+                let shown = |tracker: &Self| {
+                    let names = tracker.read_names();
+                    (
+                        names.user_name(&tracker.me).map(str::to_owned),
+                        names.avatar(None, &tracker.me),
+                    )
+                };
+                let before = shown(self);
                 self.learn_user(data);
+                let changed = premium != self.premium || shown(self) != before;
+                self.premium = premium;
                 changed
             }
             // An outage, with `unavailable`, keeps the server as last known
@@ -1314,6 +1323,12 @@ impl Tracker {
                 self.learn_member(guild, member);
             }
         }
+    }
+
+    fn read_names(&self) -> std::sync::RwLockReadGuard<'_, Names> {
+        self.names
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn write_names(&self) -> std::sync::RwLockWriteGuard<'_, Names> {

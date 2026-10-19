@@ -1077,6 +1077,24 @@ impl Api {
             .await
     }
 
+    /// Changes this account's user: its display name and avatar, as
+    /// Discord's profile editor sends them. Discord answers with the user,
+    /// and USER_UPDATE.
+    pub async fn modify_me(&self, body: &Value) -> Result<Value> {
+        self.json(with_json(self.request(Method::PATCH, "/users/@me"), body))
+            .await
+    }
+
+    /// Changes this account's main profile: its bio, pronouns, banner and
+    /// banner colour. Discord answers with the profile, and USER_UPDATE.
+    pub async fn modify_profile_me(&self, body: &Value) -> Result<Value> {
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/profile"),
+            body,
+        ))
+        .await
+    }
+
     /// Changes a member's voice state, as the voice menu does: `mute` and
     /// `deaf` for the server's, and `channel_id` to move them, which with
     /// null disconnects them. Discord answers with the member, and

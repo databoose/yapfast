@@ -3751,15 +3751,15 @@ fn edit_server_profile_opens_the_per_server_profile_editor() {
         false,
         "edit-server-profile".into(),
     );
-    assert!(window.get_server_profile_open());
-    assert!(window.get_server_profile_prompt().loading);
+    assert!(window.get_profile_editor_open());
+    assert!(window.get_profile_editor_prompt().loading);
     {
         let mut adapter = adapter.borrow_mut();
-        adapter.app.apply(Event::ServerProfile {
-            server: "discord:10".into(),
-            result: Ok(yapfast_core::chat::ServerProfile {
+        adapter.app.apply(Event::OwnProfile {
+            server: Some("discord:10".into()),
+            result: Ok(yapfast_core::chat::OwnProfile {
                 pronouns: "she/her".into(),
-                main: yapfast_core::chat::Profile {
+                fallback: yapfast_core::chat::Profile {
                     name: "Alice".into(),
                     handle: "alice".into(),
                     bio: "Main bio".into(),
@@ -3770,30 +3770,94 @@ fn edit_server_profile_opens_the_per_server_profile_editor() {
         });
         adapter.refresh(&window);
     }
-    let prompt = window.get_server_profile_prompt();
-    assert!(!prompt.loading && prompt.may_rename && !prompt.nitro && !prompt.changed);
-    assert_eq!(window.get_server_profile_pronouns(), "she/her");
-    assert_eq!(prompt.nick_placeholder, "alice");
+    let prompt = window.get_profile_editor_prompt();
+    assert!(!prompt.loading && prompt.name_enabled && !prompt.bio_enabled && !prompt.changed);
+    assert!(prompt.offer && !prompt.main && prompt.banner_shown && !prompt.colour_shown);
+    assert_eq!(prompt.title, "Edit server profile");
+    assert_eq!(window.get_profile_editor_pronouns(), "she/her");
+    assert_eq!(prompt.name_placeholder, "alice");
     assert_eq!(prompt.preview.name, "Alice", "the main profile's name");
     assert_eq!(prompt.preview.handle, "alice · she/her");
     assert!(prompt.preview.has_bio, "the main profile's bio");
     assert_eq!(prompt.bio_left, 190);
 
     // Typing changes the preview and nothing else.
-    window.set_server_profile_nick("Ally".into());
-    window.invoke_write_server_profile(0, "Ally".into());
-    let prompt = window.get_server_profile_prompt();
+    window.set_profile_editor_name("Ally".into());
+    window.invoke_write_profile(0, "Ally".into());
+    let prompt = window.get_profile_editor_prompt();
     assert_eq!(prompt.preview.name, "Ally");
     assert!(prompt.changed);
-    window.invoke_write_server_profile(0, "x".repeat(33).into());
+    window.invoke_write_profile(0, "x".repeat(33).into());
     assert_eq!(
-        window.get_server_profile_prompt().too_long,
+        window.get_profile_editor_prompt().too_long,
         "A nickname can be up to 32 characters."
     );
 
-    window.invoke_close_server_profile();
-    assert!(!window.get_server_profile_open());
-    assert_eq!(window.get_server_profile_prompt().preview.name, "");
+    window.invoke_close_profile_editor();
+    assert!(!window.get_profile_editor_open());
+    assert_eq!(window.get_profile_editor_prompt().preview.name, "");
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn edit_profile_opens_the_main_profile_editor() {
+    let (window, adapter, _directory) = discord_server_window_granting(0);
+    window.invoke_edit_profile();
+    assert!(window.get_profile_editor_open());
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::OwnProfile {
+            server: None,
+            result: Ok(yapfast_core::chat::OwnProfile {
+                name: "Alice".into(),
+                accent: Some(0x112233),
+                fallback: yapfast_core::chat::Profile {
+                    name: "alice".into(),
+                    handle: "alice".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_profile_editor_prompt();
+    assert_eq!(prompt.title, "Edit profile");
+    assert_eq!(prompt.name_heading, "DISPLAY NAME");
+    assert!(prompt.main && !prompt.offer && prompt.bio_enabled && prompt.avatar_enabled);
+    assert!(
+        prompt.colour_shown && !prompt.banner_shown,
+        "without Nitro, a colour instead of a banner"
+    );
+    assert_eq!(prompt.reset_word, "Remove");
+    assert_eq!(window.get_profile_editor_name(), "Alice");
+    assert_eq!(window.get_profile_editor_colour(), "#112233");
+    assert!(prompt.has_colour && prompt.preview.has_accent);
+    assert_eq!(
+        prompt.preview.accent,
+        slint::Color::from_rgb_u8(0x11, 0x22, 0x33)
+    );
+
+    window.invoke_write_profile(3, "teal".into());
+    let prompt = window.get_profile_editor_prompt();
+    assert!(prompt.colour_wrong && !prompt.has_colour);
+    window.invoke_write_profile(3, "#abcdef".into());
+    let prompt = window.get_profile_editor_prompt();
+    assert!(!prompt.colour_wrong && prompt.changed);
+    assert_eq!(
+        prompt.preview.accent,
+        slint::Color::from_rgb_u8(0xab, 0xcd, 0xef)
+    );
+    // An empty display name shows the username.
+    window.invoke_write_profile(0, " ".into());
+    assert_eq!(window.get_profile_editor_prompt().preview.name, "alice");
+    window.invoke_write_profile(0, "x".repeat(33).into());
+    assert_eq!(
+        window.get_profile_editor_prompt().too_long,
+        "A display name can be up to 32 characters."
+    );
+    window.invoke_close_profile_editor();
+    assert!(!window.get_profile_editor_open());
 }
 
 #[test]

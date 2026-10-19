@@ -205,7 +205,7 @@ impl Adapter {
         self.show_invite(window);
         self.show_channel_dialog(window);
         self.show_leave(window);
-        self.show_server_profile(window);
+        self.show_profile_editor(window);
         self.show_dialogs(window);
         self.show_reactions(window);
         self.show_gifs(window);
@@ -1552,55 +1552,68 @@ impl Adapter {
         });
     }
 
-    /// The editor of this account's profile in a Discord server, with a
-    /// preview of its profile card there.
-    pub(super) fn show_server_profile(&mut self, window: &YapfastWindow) {
-        use yapfast_core::application::{BIO_LIMIT, NICK_LIMIT, PRONOUNS_LIMIT};
-        let editor = self.app.state.server_profile.as_ref();
+    /// The editor of this account's Discord profile, its main one or a
+    /// server's, with a preview of its profile card.
+    pub(super) fn show_profile_editor(&mut self, window: &YapfastWindow) {
+        use yapfast_core::application::{BIO_LIMIT, NAME_LIMIT, PRONOUNS_LIMIT, ProfileText};
+        let editor = self.app.state.profile_editor.as_ref();
         // Its fields start from what Discord has, once that's here.
         if let Some(editor) = editor
-            && (!window.get_server_profile_open() || window.get_server_profile_prompt().loading)
+            && (!window.get_profile_editor_open() || window.get_profile_editor_prompt().loading)
         {
-            window.set_server_profile_nick(editor.nick.as_str().into());
-            window.set_server_profile_pronouns(editor.pronouns.as_str().into());
-            window.set_server_profile_bio(editor.bio.as_str().into());
+            window.set_profile_editor_name(editor.name.as_str().into());
+            window.set_profile_editor_pronouns(editor.pronouns.as_str().into());
+            window.set_profile_editor_bio(editor.bio.as_str().into());
+            window.set_profile_editor_colour(editor.colour.as_str().into());
         }
         let Some(editor) = editor else {
             // Its pictures go with it.
-            if window.get_server_profile_open() {
-                window.set_server_profile_open(false);
-                window.set_server_profile_prompt(ServerProfilePrompt::default());
+            if window.get_profile_editor_open() {
+                window.set_profile_editor_open(false);
+                window.set_profile_editor_prompt(ProfileEditorPrompt::default());
             }
             return;
         };
-        window.set_server_profile_open(true);
-        let main = editor.profile.as_ref().map(|profile| &profile.main);
-        let main_text = |text: Option<&String>| text.cloned().unwrap_or_default();
+        window.set_profile_editor_open(true);
+        let main = editor.main();
+        let fallback = editor.profile.as_ref().map(|profile| &profile.fallback);
+        let fallback_text = |text: Option<&String>| text.cloned().unwrap_or_default();
         let (avatar, new_avatar) = editor.picture(ProfilePicture::Avatar);
         let (banner, new_banner) = editor.picture(ProfilePicture::Banner);
-        let written = |text: &str, main: Option<&String>| {
+        let written = |text: &str, fallback: Option<&String>| {
             let text = text.trim();
             if text.is_empty() {
-                main_text(main)
+                fallback_text(fallback)
             } else {
                 text.to_owned()
             }
         };
-        // The bio as written is Markdown, where the main one was rendered.
+        let colour = editor.accent();
+        let accent = if editor.may_write(ProfileText::Colour) {
+            colour.unwrap_or(editor.profile.as_ref().and_then(|profile| profile.accent))
+        } else {
+            editor.profile.as_ref().and_then(|profile| profile.accent)
+        };
+        // The bio as written is Markdown, where the fallback's was rendered.
         let view = ProfileView {
             profile: yapfast_core::chat::Profile {
-                id: main.map(|main| main.id.clone()).unwrap_or_default(),
-                name: written(&editor.nick, main.map(|main| &main.name)),
-                handle: main_text(main.map(|main| &main.handle)),
+                id: fallback
+                    .map(|fallback| fallback.id.clone())
+                    .unwrap_or_default(),
+                name: written(&editor.name, fallback.map(|fallback| &fallback.name)),
+                handle: fallback_text(fallback.map(|fallback| &fallback.handle)),
                 avatar: avatar
                     .map(str::to_owned)
-                    .or_else(|| main.and_then(|main| main.avatar.clone())),
+                    .or_else(|| fallback.and_then(|fallback| fallback.avatar.clone())),
                 banner: banner
                     .map(str::to_owned)
-                    .or_else(|| main.and_then(|main| main.banner.clone())),
-                accent: main.and_then(|main| main.accent),
-                pronouns: written(&editor.pronouns, main.map(|main| &main.pronouns)),
-                bio: written(&editor.bio, main.map(|main| &main.bio)),
+                    .or_else(|| fallback.and_then(|fallback| fallback.banner.clone())),
+                accent: accent.or_else(|| fallback.and_then(|fallback| fallback.accent)),
+                pronouns: written(
+                    &editor.pronouns,
+                    fallback.map(|fallback| &fallback.pronouns),
+                ),
+                bio: written(&editor.bio, fallback.map(|fallback| &fallback.bio)),
                 ..Default::default()
             },
             large: false,
@@ -1621,35 +1634,77 @@ impl Adapter {
             Some(ProfilePicture::Banner) => "banner",
             None => "",
         };
-        let too_long = if editor.nick.chars().count() > NICK_LIMIT {
-            format!("A nickname can be up to {NICK_LIMIT} characters.")
+        let too_long = if editor.name.chars().count() > NAME_LIMIT {
+            if main {
+                format!("A display name can be up to {NAME_LIMIT} characters.")
+            } else {
+                format!("A nickname can be up to {NAME_LIMIT} characters.")
+            }
         } else if editor.pronouns.chars().count() > PRONOUNS_LIMIT {
             format!("Pronouns can be up to {PRONOUNS_LIMIT} characters.")
         } else {
             String::new()
         };
         let left = BIO_LIMIT as i64 - editor.bio.chars().count() as i64;
-        window.set_server_profile_prompt(ServerProfilePrompt {
-            detail: format!(
-                "How you show in {}. An empty field shows your main profile's.",
-                editor.server_name
+        let (title, detail, name_heading, name_placeholder, bio_placeholder) = if main {
+            (
+                "Edit profile",
+                "How you show across Discord. Each server shows it unless your profile there says otherwise.".to_owned(),
+                "DISPLAY NAME",
+                fallback_text(fallback.map(|fallback| &fallback.handle)),
+                "Tell everyone a bit about yourself",
             )
-            .into(),
-            nick_placeholder: main_text(main.map(|main| &main.handle)).into(),
-            pronouns_placeholder: main
-                .map(|main| main.pronouns.as_str())
-                .filter(|pronouns| !pronouns.is_empty())
-                .unwrap_or("Add your pronouns")
-                .into(),
-            bio_placeholder: "Tell this server a bit about yourself".into(),
+        } else {
+            (
+                "Edit server profile",
+                format!(
+                    "How you show in {}. An empty field shows your main profile's.",
+                    editor.server_name
+                ),
+                "SERVER NICKNAME",
+                fallback_text(fallback.map(|fallback| &fallback.handle)),
+                "Tell this server a bit about yourself",
+            )
+        };
+        let pronouns_placeholder = fallback
+            .map(|fallback| fallback.pronouns.as_str())
+            .filter(|pronouns| !pronouns.is_empty())
+            .unwrap_or("Add your pronouns");
+        window.set_profile_editor_prompt(ProfileEditorPrompt {
+            title: title.into(),
+            detail: detail.into(),
+            main,
+            name_heading: name_heading.into(),
+            name_placeholder: name_placeholder.into(),
+            pronouns_placeholder: pronouns_placeholder.into(),
+            bio_placeholder: bio_placeholder.into(),
             loading: editor.loading(),
             saving: editor.saving,
             error: editor.error.as_deref().unwrap_or_default().into(),
-            may_rename: editor.may_rename,
-            nitro: editor.nitro,
-            upgrade: editor.upgrade,
+            name_enabled: editor.may_write(ProfileText::Name),
+            avatar_enabled: editor.may_picture(ProfilePicture::Avatar),
+            banner_enabled: editor.may_picture(ProfilePicture::Banner),
+            bio_enabled: editor.may_write(ProfileText::Bio),
+            offer: !main && !editor.nitro(),
+            upgrade: editor.upgrade(),
+            banner_shown: !main || editor.nitro(),
+            colour_shown: editor.may_write(ProfileText::Colour),
+            colour: colour
+                .ok()
+                .flatten()
+                .map(|accent| {
+                    slint::Color::from_rgb_u8(
+                        (accent >> 16) as u8,
+                        (accent >> 8) as u8,
+                        accent as u8,
+                    )
+                })
+                .unwrap_or_default(),
+            has_colour: matches!(colour, Ok(Some(_))),
+            colour_wrong: colour.is_err(),
             avatar_reset: editor.resettable(ProfilePicture::Avatar),
             banner_reset: editor.resettable(ProfilePicture::Banner),
+            reset_word: if main { "Remove" } else { "Reset" }.into(),
             reading: reading.into(),
             bio_left: i32::try_from(left).unwrap_or(i32::MIN),
             too_long: too_long.into(),

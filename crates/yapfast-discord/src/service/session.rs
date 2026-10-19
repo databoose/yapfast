@@ -549,9 +549,14 @@ impl Session<'_> {
             self.publisher.changed();
             self.ask_previews();
         }
-        // Names took the change in, so what shows the member follows.
+        // Names took the change in, so what shows the member follows; and
+        // this account's messages its new display name and avatar.
         if matches!(event, Event::GuildMemberUpdate | Event::GuildMemberRemove) {
             self.shared.lists.member_changed(&self.tracker, data);
+            let _ = self.shared.live.send(Live::Names);
+        }
+        if *event == Event::UserUpdate {
+            self.shared.lists.user_changed(&self.tracker, data);
             let _ = self.shared.live.send(Live::Names);
         }
         if !awaited && let Some(moved) = self.tracker.moved(event, data) {

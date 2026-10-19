@@ -428,13 +428,14 @@ component StatusOption inherits Rectangle {
 }
 
 // The account's Discord status, picked from a menu over the account panel as
-// in Discord, and the way into its custom status.
+// in Discord, and the ways into its custom status and its profile.
 export component StatusMenu inherits Rectangle {
     /// "online", "idle", "dnd" or "invisible".
     in property <string> status;
     in property <bool> has-custom-status;
     callback choose(string);
     callback custom-status;
+    callback edit-profile;
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     accessible-role: groupbox;
@@ -458,6 +459,11 @@ export component StatusMenu inherits Rectangle {
             text: root.has-custom-status ? "Change custom status" : "Set a custom status";
             icon: @image-url("icons/smile-plus.svg");
             clicked => { root.custom-status(); }
+        }
+        MenuItem {
+            text: "Edit Profile";
+            icon: @image-url("icons/user-pen.svg");
+            clicked => { root.edit-profile(); }
         }
     }
 }

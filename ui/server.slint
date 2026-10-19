@@ -223,35 +223,55 @@ export component ChannelDialog inherits Rectangle {
     }
 }
 
-// What the per-server profile editor shows besides what's written in it.
-export struct ServerProfilePrompt {
-    /// "Your profile in Server", and what each empty field goes by.
+// What the profile editor shows besides what's written in it, for the main
+// profile or one server's.
+export struct ProfileEditorPrompt {
+    /// "Edit profile" or "Edit server profile"; what it edits, and what
+    /// each empty field goes by.
+    title: string,
     detail: string,
-    nick-placeholder: string,
+    /// It edits the main profile, not a server's.
+    main: bool,
+    name-heading: string,
+    name-placeholder: string,
     pronouns-placeholder: string,
     bio-placeholder: string,
     /// Discord sends the profile; Discord takes the change.
     loading: bool,
     saving: bool,
     error: string,
-    /// Whether this account may change its nickname here.
-    may-rename: bool,
-    /// Whether it has the Nitro the avatar, banner and bio take, else
-    /// whether a lesser Nitro, which Discord asks it to upgrade.
-    nitro: bool,
+    /// Which fields this account may change: the nickname needs permission
+    /// in a server; the rest Nitro, as Discord has them.
+    name-enabled: bool,
+    avatar-enabled: bool,
+    banner-enabled: bool,
+    bio-enabled: bool,
+    /// Discord's Nitro offer over a server's fields, and whether it asks a
+    /// lesser Nitro to upgrade.
+    offer: bool,
     upgrade: bool,
-    /// Whether the server has an avatar or banner of its own to reset.
+    /// The banner shows with the Nitro it takes, and the banner colour of
+    /// the main profile without.
+    banner-shown: bool,
+    colour-shown: bool,
+    /// The banner colour as written, and whether it isn't one.
+    colour: color,
+    has-colour: bool,
+    colour-wrong: bool,
+    /// Whether there's an avatar or banner to reset, and the word for it:
+    /// "Reset" in a server, "Remove" in the main profile.
     avatar-reset: bool,
     banner-reset: bool,
+    reset-word: string,
     /// A chosen picture is being read: "avatar", "banner" or "".
     reading: string,
     /// How many characters the bio has left; below 0, too many.
     bio-left: int,
-    /// The nickname or pronouns are longer than Discord takes.
+    /// The name or pronouns are longer than Discord takes.
     too-long: string,
     /// Saving would change something.
     changed: bool,
-    /// The profile card as the server would show it.
+    /// The profile card as it would show.
     preview: ProfileData,
 }
 
@@ -260,26 +280,29 @@ component FieldHeading inherits Text {
     color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
 }
 
-// This account's profile in a Discord server, as Discord's per-server
-// profile editor has it: the nickname and pronouns, then the avatar, banner
-// and bio, which take Nitro and show greyed under its offer without it,
-// with a preview of the profile card beside them.
-export component ServerProfileDialog inherits Rectangle {
-    in property <ServerProfilePrompt> prompt;
-    in-out property <string> nick;
+// This account's Discord profile, as Discord's editors have it. The main
+// profile: the display name, pronouns, avatar, the banner colour, or the
+// banner with Nitro, and the bio. A server's: the nickname and pronouns,
+// then the avatar, banner and bio, which take Nitro and show greyed under
+// its offer without it. A preview of the profile card shows beside them.
+export component ProfileEditorDialog inherits Rectangle {
+    in property <ProfileEditorPrompt> prompt;
+    in-out property <string> name;
     in-out property <string> pronouns;
     in-out property <string> bio;
-    /// A text changed: 0 the nickname, 1 the pronouns, 2 the bio.
+    in-out property <string> colour;
+    /// A text changed: 0 the name, 1 the pronouns, 2 the bio, 3 the banner
+    /// colour.
     callback write(int, string);
-    /// Choose a picture, or go back to the main profile's: 0 the avatar, 1
-    /// the banner.
+    /// Choose a picture, or go back to the fallback's: 0 the avatar, 1 the
+    /// banner.
     callback pick(int);
     callback reset(int);
     callback unlock-nitro;
     callback save;
     callback close;
     property <bool> ready: !root.prompt.loading && !root.prompt.saving;
-    property <bool> premium: root.ready && root.prompt.nitro;
+    property <bool> bio-on: root.ready && root.prompt.bio-enabled;
     background: #00000099;
     TouchArea { clicked => { root.close(); } }
     Rectangle {
@@ -287,7 +310,7 @@ export component ServerProfileDialog inherits Rectangle {
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
         accessible-role: groupbox;
-        accessible-label: "Edit server profile";
+        accessible-label: root.prompt.title;
         TouchArea { }
         FocusScope {
             init => { self.focus(); }
@@ -298,7 +321,7 @@ export component ServerProfileDialog inherits Rectangle {
             profile-content := VerticalLayout {
                 padding: 20px; spacing: 12px;
                 HorizontalLayout {
-                    Text { text: "Edit server profile"; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    Text { text: root.prompt.title; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                     IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
                 }
                 if root.prompt.detail != "": Label { text: root.prompt.detail; }
@@ -311,15 +334,16 @@ export component ServerProfileDialog inherits Rectangle {
                         content-height: fields.preferred-height;
                         fields := VerticalLayout {
                             padding-right: 8px; spacing: 8px;
-                            FieldHeading { text: "SERVER NICKNAME"; }
+                            FieldHeading { text: root.prompt.name-heading; }
                             TextField {
-                                enabled: root.ready && root.prompt.may-rename;
+                                enabled: root.ready && root.prompt.name-enabled;
                                 min-height: 36px; text-size: 15px; pad: 10px;
-                                placeholder: root.prompt.loading ? "Loading..." : root.prompt.nick-placeholder; label: "Server nickname";
-                                text <=> root.nick;
+                                placeholder: root.prompt.loading ? "Loading..." : root.prompt.name-placeholder;
+                                label: root.prompt.main ? "Display name" : "Server nickname";
+                                text <=> root.name;
                                 edited(text) => { root.write(0, text); }
                             }
-                            if !root.prompt.loading && !root.prompt.may-rename: Label { text: "You don't have permission to change your nickname in this server."; }
+                            if !root.prompt.loading && !root.prompt.name-enabled: Label { text: "You don't have permission to change your nickname in this server."; }
                             FieldHeading { text: "PRONOUNS"; }
                             TextField {
                                 enabled: root.ready;
@@ -330,7 +354,7 @@ export component ServerProfileDialog inherits Rectangle {
                             }
                             if root.prompt.too-long != "": Text { text: root.prompt.too-long; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
                             // Discord's offer, over what Nitro unlocks.
-                            if !root.prompt.nitro: Rectangle {
+                            if root.prompt.offer: Rectangle {
                                 border-radius: 8px; background: Theme.sunken;
                                 height: offer.preferred-height;
                                 offer := HorizontalLayout {
@@ -354,29 +378,59 @@ export component ServerProfileDialog inherits Rectangle {
                             HorizontalLayout {
                                 spacing: 8px; alignment: start;
                                 ActionButton {
-                                    small: true; enabled: root.premium && root.prompt.reading == "";
+                                    small: true; enabled: root.ready && root.prompt.avatar-enabled && root.prompt.reading == "";
                                     text: root.prompt.reading == "avatar" ? "Reading..." : "Change Avatar";
                                     clicked => { root.pick(0); }
                                 }
                                 if root.prompt.avatar-reset: ActionButton {
-                                    small: true; ghost: true; enabled: root.premium; text: "Reset Avatar";
+                                    small: true; ghost: true; enabled: root.ready && root.prompt.avatar-enabled;
+                                    text: root.prompt.reset-word + " Avatar";
                                     clicked => { root.reset(0); }
                                 }
                             }
-                            FieldHeading { text: "PROFILE BANNER"; }
-                            HorizontalLayout {
+                            if root.prompt.banner-shown: FieldHeading { text: "PROFILE BANNER"; }
+                            if root.prompt.banner-shown: HorizontalLayout {
                                 spacing: 8px; alignment: start;
                                 ActionButton {
-                                    small: true; enabled: root.premium && root.prompt.reading == "";
+                                    small: true; enabled: root.ready && root.prompt.banner-enabled && root.prompt.reading == "";
                                     text: root.prompt.reading == "banner" ? "Reading..." : "Change Banner";
                                     clicked => { root.pick(1); }
                                 }
                                 if root.prompt.banner-reset: ActionButton {
-                                    small: true; ghost: true; enabled: root.premium; text: "Reset Banner";
+                                    small: true; ghost: true; enabled: root.ready && root.prompt.banner-enabled;
+                                    text: root.prompt.reset-word + " Banner";
                                     clicked => { root.reset(1); }
                                 }
                             }
-                            Label { text: "Upload a PNG, JPG, or GIF under 10MB. Images should be at least 680x240."; }
+                            if root.prompt.banner-shown: Label { text: "Upload a PNG, JPG, or GIF under 10MB. Images should be at least 680x240."; }
+                            if root.prompt.colour-shown: FieldHeading { text: "BANNER COLOR"; }
+                            if root.prompt.colour-shown: HorizontalLayout {
+                                spacing: 10px; alignment: start;
+                                Middle {
+                                    Rectangle {
+                                        width: 36px; height: 36px; border-radius: 6px;
+                                        background: root.prompt.has-colour ? root.prompt.colour : Theme.sunken;
+                                        border-width: 1px; border-color: Theme.line;
+                                    }
+                                }
+                                Middle {
+                                    TextField {
+                                        width: 116px; min-height: 36px; text-size: 14px; pad: 8px;
+                                        enabled: root.ready;
+                                        fill: root.prompt.colour-wrong ? Theme.danger.with-alpha(0.16) : Theme.sunken;
+                                        placeholder: "Default"; label: "Banner color";
+                                        text <=> root.colour;
+                                        edited(text) => { root.write(3, text); }
+                                    }
+                                }
+                                if root.colour != "": Middle {
+                                    ActionButton {
+                                        small: true; ghost: true; enabled: root.ready; text: "Default";
+                                        clicked => { root.colour = ""; root.write(3, ""); }
+                                    }
+                                }
+                                if root.prompt.colour-wrong: Middle { Text { text: "Not a colour"; color: Theme.danger; font-size: 13px; } }
+                            }
                             FieldHeading { text: "BIO"; }
                             Label { text: "You can use markdown and links if you'd like."; }
                             Rectangle {
@@ -385,16 +439,16 @@ export component ServerProfileDialog inherits Rectangle {
                                 Text {
                                     x: 10px; y: 8px; width: parent.width - 20px;
                                     visible: root.bio == "";
-                                    text: root.prompt.bio-placeholder; color: root.premium ? Theme.muted : Theme.faint; font-size: 15px;
+                                    text: root.prompt.bio-placeholder; color: root.bio-on ? Theme.muted : Theme.faint; font-size: 15px;
                                     wrap: word-wrap; overflow: elide;
                                 }
                                 bio-input := TextInput {
                                     x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
                                     text <=> root.bio;
-                                    enabled: root.premium;
+                                    enabled: root.bio-on;
                                     single-line: false; wrap: word-wrap;
                                     font-size: 15px;
-                                    color: root.premium ? Theme.text : Theme.muted;
+                                    color: root.bio-on ? Theme.text : Theme.muted;
                                     selection-background-color: Theme.accent.with-alpha(0.35);
                                     selection-foreground-color: Theme.text;
                                     accessible-label: "Bio";
@@ -420,7 +474,7 @@ export component ServerProfileDialog inherits Rectangle {
                     ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
                     ActionButton {
                         text: root.prompt.saving ? "Saving..." : "Save Changes"; primary: true;
-                        enabled: root.ready && root.prompt.changed && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0;
+                        enabled: root.ready && root.prompt.changed && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
                         clicked => { root.save(); }
                     }
                 }

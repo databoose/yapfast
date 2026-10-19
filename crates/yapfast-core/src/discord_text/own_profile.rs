@@ -1,6 +1,7 @@
-//! This account's profile in a Discord server: fetching it for its editor,
-//! reading a picture chosen for it as Discord's client sends one, and
-//! saving it. See "Editing one's server profile" in docs/discord.md.
+//! This account's own profile, in a Discord server or its main one:
+//! fetching it for its editor, reading a picture chosen for it as Discord's
+//! client sends one, and saving it. See "Editing one's profile" in
+//! docs/discord.md.
 
 use std::path::Path;
 
@@ -10,9 +11,7 @@ use serde_json::{Map, Value};
 use yapfast_discord::profile::PICTURE_LIMIT;
 
 use super::{commands::NOT_DISCORD, *};
-use crate::chat::{
-    PickedPicture, Pixels, ProfilePicture, ServerProfile, ServerProfileChange, file_size,
-};
+use crate::chat::{OwnProfile, PickedPicture, Pixels, ProfileChange, ProfilePicture, file_size};
 
 /// The size Discord's client crops a picture to before it sends it: a
 /// square avatar, and a banner 17 by 6. One smaller goes at its own size.
@@ -23,7 +22,7 @@ const BANNER: (u32, u32) = (2400, 848);
 const AVATAR_PREVIEW: (u32, u32) = (160, 160);
 const BANNER_PREVIEW: (u32, u32) = (600, 212);
 
-/// Carries out a command about this account's server profile, or gives back
+/// Carries out a command about this account's own profile, or gives back
 /// any other.
 pub(super) fn command(
     command: Command,
@@ -35,11 +34,11 @@ pub(super) fn command(
     };
     let events = events.clone();
     match command {
-        DiscordCommand::ServerProfile { server } => {
-            let guild = discord::parse_server(&server).map(str::to_owned);
+        DiscordCommand::OwnProfile { server } => {
+            let guild = guild(server.as_deref());
             let (Ok(discord), Some(guild)) = (discord, guild) else {
                 let why = discord.err().unwrap_or(NOT_DISCORD);
-                let _ = events.send(Event::ServerProfile {
+                let _ = events.send(Event::OwnProfile {
                     server,
                     result: Err(why.into()),
                 });
@@ -47,17 +46,17 @@ pub(super) fn command(
             };
             let discord = discord.clone();
             tokio::spawn(async move {
-                let result = match discord.server_profile(&guild).await {
-                    Ok(profile) => Ok(server_profile(&discord, &guild, profile)),
+                let result = match discord.own_profile(guild.as_deref()).await {
+                    Ok(profile) => Ok(own_profile(&discord, guild.as_deref(), profile)),
                     Err(error) => {
                         tracing::warn!(
                             error = format!("{error:#}"),
-                            "could not fetch the server profile"
+                            "could not fetch this account's profile"
                         );
                         Err(format!("Discord didn't send your profile: {error}"))
                     }
                 };
-                let _ = events.send(Event::ServerProfile { server, result });
+                let _ = events.send(Event::OwnProfile { server, result });
             });
         }
         DiscordCommand::ProfilePicture { kind, path } => {
@@ -66,11 +65,11 @@ pub(super) fn command(
                 let _ = events.send(Event::ProfilePicture { kind, path, result });
             });
         }
-        DiscordCommand::SaveServerProfile { server, change } => {
-            let guild = discord::parse_server(&server).map(str::to_owned);
+        DiscordCommand::SaveProfile { server, change } => {
+            let guild = guild(server.as_deref());
             let (Ok(discord), Some(guild)) = (discord, guild) else {
                 let why = discord.err().unwrap_or(NOT_DISCORD);
-                let _ = events.send(Event::ServerProfileSaved {
+                let _ = events.send(Event::ProfileSaved {
                     server,
                     result: Err(why.into()),
                 });
@@ -78,19 +77,31 @@ pub(super) fn command(
             };
             let discord = discord.clone();
             tokio::spawn(async move {
-                let (member, profile) = bodies(&change);
-                drop(change);
-                let result = discord
-                    .save_server_profile(&guild, &member, &profile)
-                    .await
-                    .map_err(|error| {
-                        tracing::warn!(
-                            error = format!("{error:#}"),
-                            "could not save the server profile"
-                        );
-                        format!("There was a problem updating your server profile: {error}")
-                    });
-                let _ = events.send(Event::ServerProfileSaved { server, result });
+                let result = match &guild {
+                    Some(guild) => {
+                        let (member, profile) = server_bodies(&change);
+                        drop(change);
+                        discord.save_server_profile(guild, &member, &profile).await
+                    }
+                    None => {
+                        let (user, profile) = main_bodies(&change);
+                        drop(change);
+                        discord.save_main_profile(&user, &profile).await
+                    }
+                };
+                let result = result.map_err(|error| {
+                    tracing::warn!(
+                        error = format!("{error:#}"),
+                        "could not save this account's profile"
+                    );
+                    match guild {
+                        Some(_) => {
+                            format!("There was a problem updating your server profile: {error}")
+                        }
+                        None => format!("There was a problem updating your profile: {error}"),
+                    }
+                });
+                let _ = events.send(Event::ProfileSaved { server, result });
             });
         }
         other => return Some(Command::Discord(other)),
@@ -98,38 +109,53 @@ pub(super) fn command(
     None
 }
 
-/// The profile as Yapfast shows it, its bio's mentions written as names.
-fn server_profile(
+/// The Discord server a profile is in, by its server id: `Some(None)` for
+/// the main profile, and none for an id that isn't a server's.
+fn guild(server: Option<&str>) -> Option<Option<String>> {
+    match server {
+        Some(server) => discord::parse_server(server).map(|guild| Some(guild.to_owned())),
+        None => Some(None),
+    }
+}
+
+/// The profile as Yapfast shows it, its fallback's bio's mentions written
+/// as names.
+fn own_profile(
     discord: &Discord,
-    guild: &str,
-    profile: yapfast_discord::profile::ServerProfile,
-) -> ServerProfile {
-    ServerProfile {
-        nick: profile.nick,
+    guild: Option<&str>,
+    profile: yapfast_discord::profile::OwnProfile,
+) -> OwnProfile {
+    OwnProfile {
+        name: profile.name,
         pronouns: profile.pronouns,
         bio: profile.bio,
         avatar: profile.avatar,
         banner: profile.banner,
-        main: render::chat_profile(discord, guild, profile.main),
+        accent: profile.accent,
+        fallback: render::chat_profile(discord, guild.unwrap_or_default(), profile.fallback),
     }
 }
 
-/// What Discord's client sends for a change: the member's fields, its
-/// nickname and avatar, for `PATCH /guilds/{id}/members/@me`, and the
-/// profile's, its banner, bio and pronouns, for `PATCH
-/// /guilds/{id}/profile/@me`. A picture goes as a data URI, or null to go
-/// by the main profile's; an empty text goes by the main profile's too.
-fn bodies(change: &ServerProfileChange) -> (Value, Value) {
-    let picture = |picture: &Option<PickedPicture>| match picture {
+/// A picture as Discord's client sends it: a data URI, or null to go by
+/// the fallback's.
+fn picture(picture: &Option<PickedPicture>) -> Value {
+    match picture {
         Some(picture) => Value::String(format!(
             "data:{};base64,{}",
             picture.mime,
             base64::engine::general_purpose::STANDARD.encode(&picture.data)
         )),
         None => Value::Null,
-    };
+    }
+}
+
+/// What Discord's client sends for a change in a server: the member's
+/// fields, its nickname and avatar, for `PATCH /guilds/{id}/members/@me`,
+/// and the profile's, its banner, bio and pronouns, for `PATCH
+/// /guilds/{id}/profile/@me`. An empty text goes by the main profile's.
+fn server_bodies(change: &ProfileChange) -> (Value, Value) {
     let (mut member, mut profile) = (Map::new(), Map::new());
-    if let Some(nick) = &change.nick {
+    if let Some(nick) = &change.name {
         member.insert("nick".into(), nick.as_str().into());
     }
     if let Some(avatar) = &change.avatar {
@@ -145,6 +171,33 @@ fn bodies(change: &ServerProfileChange) -> (Value, Value) {
         profile.insert("pronouns".into(), pronouns.as_str().into());
     }
     (Value::Object(member), Value::Object(profile))
+}
+
+/// What Discord's client sends for a change to the main profile: the
+/// user's fields, its display name and avatar, for `PATCH /users/@me`, and
+/// the profile's, its bio, pronouns, banner and banner colour, for `PATCH
+/// /users/@me/profile`. An empty display name goes by the username.
+fn main_bodies(change: &ProfileChange) -> (Value, Value) {
+    let (mut user, mut profile) = (Map::new(), Map::new());
+    if let Some(name) = &change.name {
+        user.insert("global_name".into(), name.as_str().into());
+    }
+    if let Some(avatar) = &change.avatar {
+        user.insert("avatar".into(), picture(avatar));
+    }
+    if let Some(bio) = &change.bio {
+        profile.insert("bio".into(), bio.as_str().into());
+    }
+    if let Some(pronouns) = &change.pronouns {
+        profile.insert("pronouns".into(), pronouns.as_str().into());
+    }
+    if let Some(banner) = &change.banner {
+        profile.insert("banner".into(), picture(banner));
+    }
+    if let Some(accent) = change.accent {
+        profile.insert("accent_color".into(), accent.into());
+    }
+    (Value::Object(user), Value::Object(profile))
 }
 
 /// The picture at `path` as Discord's client sends it for a profile: cropped
@@ -340,14 +393,14 @@ mod tests {
             data: Arc::from(&b"png"[..]),
             preview: Arc::default(),
         };
-        let change = ServerProfileChange {
-            nick: Some(String::new()),
+        let change = ProfileChange {
+            name: Some(String::new()),
             pronouns: Some("they/them".into()),
             avatar: Some(Some(picture)),
             banner: Some(None),
             ..Default::default()
         };
-        let (member, profile) = bodies(&change);
+        let (member, profile) = server_bodies(&change);
         assert_eq!(
             member,
             serde_json::json!({"nick": "", "avatar": "data:image/png;base64,cG5n"})
@@ -356,5 +409,25 @@ mod tests {
             profile,
             serde_json::json!({"banner": null, "pronouns": "they/them"})
         );
+
+        let change = ProfileChange {
+            accent: Some(Some(0x5865f2)),
+            bio: Some("Hi".into()),
+            ..change
+        };
+        let (user, profile) = main_bodies(&change);
+        assert_eq!(
+            user,
+            serde_json::json!({"global_name": "", "avatar": "data:image/png;base64,cG5n"})
+        );
+        assert_eq!(
+            profile,
+            serde_json::json!({"bio": "Hi", "pronouns": "they/them", "banner": null, "accent_color": 5_793_266})
+        );
+        let (_, profile) = main_bodies(&ProfileChange {
+            accent: Some(None),
+            ..Default::default()
+        });
+        assert_eq!(profile, serde_json::json!({"accent_color": null}));
     }
 }

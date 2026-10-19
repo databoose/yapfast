@@ -198,7 +198,8 @@ export component SettingsScreen inherits Rectangle {
     }
 }
 
-// Settings: who's signed in, and ways to reconnect, set a custom status and sign out.
+// Settings: who's signed in, and ways to reconnect, edit the Discord profile,
+// set a custom status and sign out.
 export component AccountSettings inherits VerticalLayout {
     in property <string> account-name;
     in property <string> account-status;
@@ -215,6 +216,7 @@ export component AccountSettings inherits VerticalLayout {
     in property <bool> has-custom-status;
     callback retry-sync;
     callback set-custom-status;
+    callback edit-profile;
     callback sign-out;
     spacing: 16px;
     SettingsTitle { text: "My account"; }
@@ -236,6 +238,10 @@ export component AccountSettings inherits VerticalLayout {
         if !root.preview && !root.online: ActionButton {
             text: "Reconnect"; icon: @image-url("icons/refresh-cw.svg"); enabled: !root.busy;
             clicked => { root.retry-sync(); }
+        }
+        if root.discord-linked: ActionButton {
+            text: "Edit profile"; icon: @image-url("icons/user-pen.svg");
+            clicked => { root.edit-profile(); }
         }
         if root.discord-linked: ActionButton {
             text: root.has-custom-status ? "Change custom status" : "Set a custom status"; icon: @image-url("icons/smile-plus.svg");

@@ -32,7 +32,7 @@ import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeCo
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog, PollAnswerDraft, PollDialog } from "dialogs.slint";
-import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfilePrompt, ServerProfileDialog } from "server.slint";
+import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ProfileEditorPrompt, ProfileEditorDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
@@ -151,19 +151,22 @@ export component YapfastWindow inherits Window {
     in-out property <bool> channel-nsfw;
     callback save-channel;
     callback close-channel;
-    // The editor of this account's profile in a Discord server; see
-    // ServerProfileDialog.
-    in property <bool> server-profile-open;
-    in property <ServerProfilePrompt> server-profile-prompt;
-    in-out property <string> server-profile-nick;
-    in-out property <string> server-profile-pronouns;
-    in-out property <string> server-profile-bio;
-    callback write-server-profile(int, string);
+    // The editor of this account's Discord profile, its main one or a
+    // server's; see ProfileEditorDialog.
+    in property <bool> profile-editor-open;
+    in property <ProfileEditorPrompt> profile-editor-prompt;
+    in-out property <string> profile-editor-name;
+    in-out property <string> profile-editor-pronouns;
+    in-out property <string> profile-editor-bio;
+    in-out property <string> profile-editor-colour;
+    /// Opens the editor of the main Discord profile, as Edit Profile does.
+    callback edit-profile;
+    callback write-profile(int, string);
     callback pick-profile-picture(int);
     callback reset-profile-picture(int);
     callback unlock-nitro;
-    callback save-server-profile;
-    callback close-server-profile;
+    callback save-profile;
+    callback close-profile-editor;
     // Asks before leaving a Discord server, in a ChannelDialog.
     in property <bool> leave-open;
     in property <ChannelPrompt> leave-prompt;
@@ -1420,6 +1423,7 @@ export component YapfastWindow inherits Window {
             status: root.discord-status; has-custom-status: root.has-custom-status;
             choose(status) => { root.set-status(status); status-menu.close(); }
             custom-status => { root.open-status(); status-menu.close(); }
+            edit-profile => { root.edit-profile(); status-menu.close(); }
         }
     }
     function open-menu(message: MessageRow) {
@@ -2899,6 +2903,7 @@ export component YapfastWindow inherits Window {
             discord-linked: root.discord-linked; has-custom-status: root.has-custom-status;
             retry-sync => { root.retry-sync(); }
             set-custom-status => { root.settings-open = false; root.open-status(); }
+            edit-profile => { root.settings-open = false; root.edit-profile(); }
             sign-out => { root.settings-open = false; root.logout(); }
         }
         if root.settings-section == 7: AppearanceSettings {
@@ -3198,15 +3203,16 @@ export component YapfastWindow inherits Window {
         save => { root.save-channel(); }
         close => { root.close-channel(); }
     }
-    if root.server-profile-open: ServerProfileDialog {
-        prompt: root.server-profile-prompt;
-        nick <=> root.server-profile-nick; pronouns <=> root.server-profile-pronouns; bio <=> root.server-profile-bio;
-        write(field, text) => { root.write-server-profile(field, text); }
+    if root.profile-editor-open: ProfileEditorDialog {
+        prompt: root.profile-editor-prompt;
+        name <=> root.profile-editor-name; pronouns <=> root.profile-editor-pronouns;
+        bio <=> root.profile-editor-bio; colour <=> root.profile-editor-colour;
+        write(field, text) => { root.write-profile(field, text); }
         pick(kind) => { root.pick-profile-picture(kind); }
         reset(kind) => { root.reset-profile-picture(kind); }
         unlock-nitro => { root.unlock-nitro(); }
-        save => { root.save-server-profile(); }
-        close => { root.close-server-profile(); }
+        save => { root.save-profile(); }
+        close => { root.close-profile-editor(); }
     }
     if root.leave-open: ChannelDialog {
         prompt: root.leave-prompt;

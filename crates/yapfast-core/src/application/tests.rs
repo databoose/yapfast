@@ -6116,7 +6116,7 @@ fn leaving_a_discord_server_asks_first_and_is_not_for_its_owner() {
 #[cfg(feature = "discord")]
 fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     use MenuChoice::*;
-    use chat::{PickedPicture, ProfilePicture, ServerProfile};
+    use chat::{OwnProfile, PickedPicture, ProfilePicture};
     let mut app = discord_server();
     let choices = app.menu_choices("discord:10");
     let at = |choice| choices.iter().position(|known| *known == choice);
@@ -6138,27 +6138,28 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     // Opening it asks Discord for her profile there.
     assert!(matches!(
         app.dispatch(Action::EditServerProfile("discord:10:11".into())).as_slice(),
-        [Effect::Backend(Command::Discord(DiscordCommand::ServerProfile { server }))]
-            if server == "discord:10"
+        [Effect::Backend(Command::Discord(DiscordCommand::OwnProfile { server }))]
+            if server.as_deref() == Some("discord:10")
     ));
-    let editor = app.state.server_profile.as_ref().unwrap();
-    assert!(editor.loading() && !editor.may_rename && !editor.nitro);
+    let editor = app.state.profile_editor.as_ref().unwrap();
+    assert!(editor.loading() && !editor.may_rename && !editor.nitro());
     assert_eq!(editor.server_name, "Test");
-    let profile = ServerProfile {
-        nick: String::new(),
+    let profile = OwnProfile {
+        name: String::new(),
         pronouns: "she/her".into(),
         bio: String::new(),
         avatar: Some("server-avatar.png".into()),
         banner: None,
-        main: chat::Profile {
+        accent: None,
+        fallback: chat::Profile {
             name: "Alice".into(),
             avatar: Some("alice.png".into()),
             ..Default::default()
         },
     };
     let pictures = |app: &mut Application| {
-        app.apply(Event::ServerProfile {
-            server: "discord:10".into(),
+        app.apply(Event::OwnProfile {
+            server: Some("discord:10".into()),
             result: Ok(profile.clone()),
         })
         .into_iter()
@@ -6173,17 +6174,17 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         ["server-avatar.png", "alice.png"],
         "the server's avatar and the main profile's, through the picture cache"
     );
-    let editor = app.state.server_profile.as_ref().unwrap();
+    let editor = app.state.profile_editor.as_ref().unwrap();
     assert_eq!(editor.pronouns, "she/her");
     assert!(editor.change().is_none());
 
     // Without Nitro, she changes her pronouns, not her bio or pictures.
     for (field, text) in [
-        (ProfileText::Nick, "Ally"),
+        (ProfileText::Name, "Ally"),
         (ProfileText::Pronouns, "they/them "),
         (ProfileText::Bio, "Hi"),
     ] {
-        app.dispatch(Action::WriteServerProfile {
+        app.dispatch(Action::WriteProfile {
             field,
             text: text.into(),
         });
@@ -6196,26 +6197,24 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         .is_empty()
     );
     let saved = |effects: Vec<Effect>| match effects.as_slice() {
-        [
-            Effect::Backend(Command::Discord(DiscordCommand::SaveServerProfile { server, change })),
-        ] => {
-            assert_eq!(server, "discord:10");
+        [Effect::Backend(Command::Discord(DiscordCommand::SaveProfile { server, change }))] => {
+            assert_eq!(server.as_deref(), Some("discord:10"));
             change.clone()
         }
         other => panic!("{} effects", other.len()),
     };
-    let change = saved(app.dispatch(Action::SaveServerProfile));
+    let change = saved(app.dispatch(Action::SaveProfile));
     assert_eq!(change.pronouns.as_deref(), Some("they/them"));
-    assert!(change.nick.is_none() && change.bio.is_none() && change.avatar.is_none());
-    assert!(app.dispatch(Action::SaveServerProfile).is_empty(), "once");
-    app.apply(Event::ServerProfileSaved {
-        server: "discord:10".into(),
+    assert!(change.name.is_none() && change.bio.is_none() && change.avatar.is_none());
+    assert!(app.dispatch(Action::SaveProfile).is_empty(), "once");
+    app.apply(Event::ProfileSaved {
+        server: Some("discord:10".into()),
         result: Err("Discord said no".into()),
     });
-    let editor = app.state.server_profile.as_ref().unwrap();
+    let editor = app.state.profile_editor.as_ref().unwrap();
     assert!(!editor.saving && editor.error.as_deref() == Some("Discord said no"));
-    app.dispatch(Action::CloseServerProfile);
-    assert!(app.state.server_profile.is_none());
+    app.dispatch(Action::CloseProfileEditor);
+    assert!(app.state.profile_editor.is_none());
 
     // With Nitro and Change Nickname, everything; a new avatar, then the
     // banner left to the main profile's.
@@ -6237,23 +6236,20 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditServerProfile("discord:10".into()));
     pictures(&mut app);
-    let editor = app.state.server_profile.as_ref().unwrap();
-    assert!(editor.may_rename && editor.nitro && !editor.upgrade);
-    app.dispatch(Action::WriteServerProfile {
-        field: ProfileText::Nick,
+    let editor = app.state.profile_editor.as_ref().unwrap();
+    assert!(editor.may_rename && editor.nitro() && !editor.upgrade());
+    app.dispatch(Action::WriteProfile {
+        field: ProfileText::Name,
         text: "Ally".into(),
     });
-    app.dispatch(Action::WriteServerProfile {
+    app.dispatch(Action::WriteProfile {
         field: ProfileText::Bio,
         text: "x".repeat(BIO_LIMIT + 1),
     });
-    let editor = app.state.server_profile.as_ref().unwrap();
+    let editor = app.state.profile_editor.as_ref().unwrap();
     assert_eq!(editor.too_long(), Some(ProfileText::Bio));
-    assert!(
-        app.dispatch(Action::SaveServerProfile).is_empty(),
-        "too long"
-    );
-    app.dispatch(Action::WriteServerProfile {
+    assert!(app.dispatch(Action::SaveProfile).is_empty(), "too long");
+    app.dispatch(Action::WriteProfile {
         field: ProfileText::Bio,
         text: "Here for #general.".into(),
     });
@@ -6271,7 +6267,7 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         ))]
     ));
     assert!(
-        app.dispatch(Action::SaveServerProfile).is_empty(),
+        app.dispatch(Action::SaveProfile).is_empty(),
         "while it reads"
     );
     let picked = PickedPicture {
@@ -6284,7 +6280,7 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         path: "cat.png".into(),
         result: Ok(picked),
     });
-    let editor = app.state.server_profile.as_ref().unwrap();
+    let editor = app.state.profile_editor.as_ref().unwrap();
     assert!(editor.picture(ProfilePicture::Avatar).1.is_some());
     assert!(editor.resettable(ProfilePicture::Avatar));
     assert!(
@@ -6292,17 +6288,17 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         "it has none of its own"
     );
     app.dispatch(Action::ResetProfilePicture(ProfilePicture::Banner));
-    let change = saved(app.dispatch(Action::SaveServerProfile));
-    assert_eq!(change.nick.as_deref(), Some("Ally"));
+    let change = saved(app.dispatch(Action::SaveProfile));
+    assert_eq!(change.name.as_deref(), Some("Ally"));
     assert_eq!(change.bio.as_deref(), Some("Here for #general."));
     assert!(matches!(&change.avatar, Some(Some(picked)) if &*picked.data == b"png"));
     assert!(change.banner.is_none(), "nothing to reset");
-    app.apply(Event::ServerProfileSaved {
-        server: "discord:10".into(),
+    app.apply(Event::ProfileSaved {
+        server: Some("discord:10".into()),
         result: Ok(()),
     });
     assert!(
-        app.state.server_profile.is_none(),
+        app.state.profile_editor.is_none(),
         "its pictures go with it"
     );
 
@@ -6310,14 +6306,158 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     app.dispatch(Action::EditServerProfile("discord:10".into()));
     pictures(&mut app);
     app.dispatch(Action::ResetProfilePicture(ProfilePicture::Avatar));
-    let editor = app.state.server_profile.as_ref().unwrap();
+    let editor = app.state.profile_editor.as_ref().unwrap();
     assert_eq!(editor.picture(ProfilePicture::Avatar), (None, None));
-    let change = saved(app.dispatch(Action::SaveServerProfile));
+    let change = saved(app.dispatch(Action::SaveProfile));
     assert!(matches!(change.avatar, Some(None)));
     assert!(matches!(
         app.dispatch(Action::UnlockNitro).as_slice(),
         [Effect::OpenPage(page)] if page == "https://discord.com/nitro"
     ));
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_main_profile_is_edited_as_discords_profile_editor_does() {
+    use chat::{OwnProfile, PickedPicture, ProfilePicture};
+    let mut app = Application::default();
+    assert!(
+        app.dispatch(Action::EditProfile).is_empty(),
+        "not without Discord"
+    );
+    let mut app = discord_server();
+    assert!(matches!(
+        app.dispatch(Action::EditProfile).as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::OwnProfile { server: None }
+        ))]
+    ));
+    let profile = OwnProfile {
+        name: "Alice".into(),
+        bio: "Hi".into(),
+        avatar: Some("alice.png".into()),
+        accent: Some(0xff0000),
+        fallback: chat::Profile {
+            name: "alice".into(),
+            avatar: Some("default.png".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let load = |app: &mut Application| {
+        app.apply(Event::OwnProfile {
+            server: None,
+            result: Ok(profile.clone()),
+        });
+    };
+    // A server's answer doesn't fill it.
+    app.apply(Event::OwnProfile {
+        server: Some("discord:10".into()),
+        result: Ok(OwnProfile::default()),
+    });
+    assert!(app.state.profile_editor.as_ref().unwrap().loading());
+    load(&mut app);
+    let editor = app.state.profile_editor.as_ref().unwrap();
+    assert_eq!(
+        (editor.name.as_str(), editor.colour.as_str()),
+        ("Alice", "#ff0000")
+    );
+    // Without Nitro: everything but the banner, which the colour stands in for.
+    assert!(editor.may_write(ProfileText::Name) && editor.may_write(ProfileText::Bio));
+    assert!(editor.may_write(ProfileText::Colour));
+    assert!(
+        editor.may_picture(ProfilePicture::Avatar) && !editor.may_picture(ProfilePicture::Banner)
+    );
+    assert!(editor.change().is_none());
+
+    let write = |app: &mut Application, field, text: &str| {
+        app.dispatch(Action::WriteProfile {
+            field,
+            text: text.into(),
+        });
+    };
+    write(&mut app, ProfileText::Name, "Ally");
+    write(&mut app, ProfileText::Bio, "Hello");
+    write(&mut app, ProfileText::Colour, "teal");
+    assert!(app.dispatch(Action::SaveProfile).is_empty(), "not a colour");
+    write(&mut app, ProfileText::Colour, "#00f");
+    assert!(
+        app.dispatch(Action::PickProfilePicture {
+            kind: ProfilePicture::Banner,
+            path: "sky.png".into(),
+        })
+        .is_empty(),
+        "a banner takes Nitro"
+    );
+    let gif = PickedPicture {
+        mime: "image/gif",
+        data: Arc::from(&b"gif"[..]),
+        preview: Arc::default(),
+    };
+    let read = |app: &mut Application, picked: &PickedPicture| {
+        assert_eq!(
+            app.dispatch(Action::PickProfilePicture {
+                kind: ProfilePicture::Avatar,
+                path: "cat.gif".into(),
+            })
+            .len(),
+            1
+        );
+        app.apply(Event::ProfilePicture {
+            kind: ProfilePicture::Avatar,
+            path: "cat.gif".into(),
+            result: Ok(picked.clone()),
+        });
+    };
+    read(&mut app, &gif);
+    let editor = app.state.profile_editor.as_ref().unwrap();
+    assert_eq!(
+        editor.error.as_deref(),
+        Some("An animated avatar takes Nitro.")
+    );
+    assert_eq!(editor.picture(ProfilePicture::Avatar).0, Some("alice.png"));
+    // Remove Avatar goes back to Discord's default.
+    app.dispatch(Action::ResetProfilePicture(ProfilePicture::Avatar));
+    let saved = |effects: Vec<Effect>| match effects.as_slice() {
+        [
+            Effect::Backend(Command::Discord(DiscordCommand::SaveProfile {
+                server: None,
+                change,
+            })),
+        ] => change.clone(),
+        other => panic!("{} effects", other.len()),
+    };
+    let change = saved(app.dispatch(Action::SaveProfile));
+    assert_eq!(change.name.as_deref(), Some("Ally"));
+    assert_eq!(change.bio.as_deref(), Some("Hello"));
+    assert_eq!(change.accent, Some(Some(0x0000ff)));
+    assert!(matches!(change.avatar, Some(None)));
+    assert!(change.pronouns.is_none() && change.banner.is_none());
+    app.apply(Event::ProfileSaved {
+        server: None,
+        result: Ok(()),
+    });
+    assert!(app.state.profile_editor.is_none());
+
+    // With Nitro: a banner and an animated avatar, and no banner colour,
+    // which Discord shows only without.
+    let mut snapshot = yapfast_discord::service::Snapshot::clone(app.discord.as_ref().unwrap());
+    snapshot.account = Some(yapfast_discord::service::Account {
+        name: "Alice".into(),
+        avatar: "alice.png".into(),
+        premium_type: 2,
+    });
+    app.apply(discord_event(snapshot));
+    app.dispatch(Action::EditProfile);
+    load(&mut app);
+    write(&mut app, ProfileText::Colour, "");
+    let editor = app.state.profile_editor.as_ref().unwrap();
+    assert!(editor.may_picture(ProfilePicture::Banner) && !editor.may_write(ProfileText::Colour));
+    assert!(editor.change().is_none(), "the colour isn't sent");
+    read(&mut app, &gif);
+    let change = saved(app.dispatch(Action::SaveProfile));
+    assert!(matches!(&change.avatar, Some(Some(picked)) if picked.mime == "image/gif"));
+    assert!(change.accent.is_none());
 }
 
 #[test]
