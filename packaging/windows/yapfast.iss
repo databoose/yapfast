@@ -7,7 +7,7 @@
 ; the installer and the setting turn the same thing on and off.
 
 #ifndef AppVersion
-  #error Compile through scripts/package-windows.py, which defines AppVersion and SourceDir
+  #error Compile through scripts/package-windows.py, which defines AppVersion, VersionNumber and SourceDir
 #endif
 ; The full preview defines Edition and FileSuffix; the Discord release neither.
 ; Both share the AppId, so installing one replaces the other.
@@ -28,7 +28,7 @@ AppPublisher=Yapfast
 AppPublisherURL=https://yapfast.com
 AppSupportURL=https://github.com/yapfast/yapfast/issues
 AppUpdatesURL=https://github.com/yapfast/yapfast/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VersionNumber}
 ; Per user: %LOCALAPPDATA%\Programs\Yapfast, with no UAC prompt.
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\Yapfast

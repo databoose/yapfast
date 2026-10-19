@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Sets Yapfast's version in Cargo.toml and Cargo.lock, as the nightly release
+# does before building: `scripts/set-version 0.2.0-nightly.20261020.5`.
+# The app, the packages' names and SOURCE.txt's release link all take it.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+version=${1:?usage: scripts/set-version VERSION}
+# Cargo takes only SemVer; a prerelease's numeric parts can't start with 0.
+number='(0|[1-9][0-9]*)' part='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+if ! [[ $version =~ ^$number\.$number\.$number(-$part(\.$part)*)?$ ]]; then
+  echo "scripts/set-version: $version isn't a SemVer version" >&2
+  exit 2
+fi
+# The package's version is the manifest's first; the lockfile's follows its name.
+sed -i "0,/^version = /s/^version = .*/version = \"$version\"/" Cargo.toml
+sed -i "/^name = \"yapfast\"$/{n;s/^version = .*/version = \"$version\"/}" Cargo.lock
