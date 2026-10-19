@@ -145,6 +145,7 @@ jobs:
             fi
             echo "AppImage updaters take the AppImage to the latest stable release, not to newer nightlies."
           } > notes.md
-          day=${VERSION#*-nightly.} day=${day%%.*}
+          # Titled as the stable releases are, with the commit: the version
+          # already says it's a nightly.
           gh release create "v$VERSION" release/* --prerelease --target "$COMMIT" \
-            --title "Nightly ${day:0:4}-${day:4:2}-${day:6:2} (${COMMIT:0:7})" --notes-file notes.md
+            --title "Yapfast $VERSION (${COMMIT:0:7})" --notes-file notes.md
