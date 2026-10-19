@@ -589,6 +589,13 @@ impl Server {
         }
     }
 
+    /// Whether `user`, holding `roles`, may send in `channel`'s text. A voice
+    /// channel's chat asks this apart from [`Self::access`], which is about
+    /// connecting to it.
+    pub fn may_send(&self, channel: &Channel, user: &str, roles: &[String]) -> bool {
+        self.roles.is_empty() || self.channel_permissions(channel, user, roles) & SEND_MESSAGES != 0
+    }
+
     /// Whether `user`, holding `roles`, waits out `channel`'s slowmode
     /// between messages, as those who may bypass it don't.
     pub fn slowed(&self, channel: &Channel, user: &str, roles: &[String]) -> bool {

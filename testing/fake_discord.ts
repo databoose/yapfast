@@ -180,7 +180,8 @@
 // /_control/mentions makes Bob mention her in #general every way Discord
 // highlights for her, and two ways it doesn't: by name, through Crew, with
 // @everyone and @here, in a reply to her message, then through Mods, which
-// she lacks, and not at all.
+// she lacks, and not at all. POST /_control/lounge-chat makes Bob write in
+// the Lounge voice channel's chat, mentioning her.
 // #general has a thread, "Plans", started from Bob's welcome, which Alice is
 // in and has read. POST /_control/thread-reply makes Carol write in it; POST
 // /_control/thread-start makes Bob start "Movie night" without a message,
@@ -829,6 +830,7 @@ const messages = new Map<string, Message[]>([
   [GENERAL, []],
   [FORUM, []],
   [LOUNGE, []],
+  [CREATE_ROOM, []],
   [DM_BOB, []],
   [WEEKEND, []],
   [REQUEST_ERIN, []],
@@ -5864,6 +5866,14 @@ const server = Bun.serve<SocketData>({
         dispatch("MESSAGE_CREATE", dispatched(message, origin));
       });
       return new Response("Bob mentioned Alice\n");
+    }
+    if (req.method === "POST" && path === "/_control/lounge-chat") {
+      const now = Date.now();
+      for (const [index, content] of ["Who's up for a round?", `<@${ALICE}> hop in when you can`].entries()) {
+        const message = post(LOUNGE, users.bob, content, now + index);
+        dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      }
+      return new Response("Bob wrote in the Lounge's chat\n");
     }
     if (req.method === "POST" && path === "/_control/typing") {
       const dm = url.searchParams.has("dm");

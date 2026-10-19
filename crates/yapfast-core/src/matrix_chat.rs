@@ -1184,6 +1184,7 @@ async fn room_index(client: &Client) -> RoomIndex {
                 .latest_active
                 .map(|receipt| format!("e:{}", receipt.event_id)),
             locked: false,
+            join_locked: false,
             read_only: false,
             slowed: false,
             category: String::new(),

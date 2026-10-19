@@ -1380,6 +1380,24 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_open_chat(move |id| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::OpenChat(id.into()));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_show_voice_chat(move |chat| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::ShowVoiceChat(chat));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_select_room(move |id| {
         if let Some(window) = weak.upgrade() {
             state

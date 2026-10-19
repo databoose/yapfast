@@ -205,7 +205,7 @@ impl AppState {
     /// the open thread; not a forum.
     pub fn threads_channel(&self) -> Option<&str> {
         let room = self.conversation_that(|can| can.threads)?;
-        if room.direct || !self.discord_online {
+        if room.direct || room.voice || !self.discord_online {
             return None;
         }
         let channel = room.parent.as_deref().unwrap_or(&room.id);
@@ -413,7 +413,7 @@ impl Application {
             && self
                 .state
                 .conversation_that(|can| can.threads)
-                .is_some_and(|room| !room.direct && room.parent.is_none())
+                .is_some_and(|room| !room.direct && !room.voice && room.parent.is_none())
             && self
                 .state
                 .selected
@@ -455,7 +455,7 @@ impl Application {
         };
         let mut effects = self.close_threads();
         if self.state.selected.as_ref() != Some(&room) {
-            effects.extend(self.open(room.clone()));
+            effects.extend(self.open(room.clone(), false));
         }
         effects.extend(self.close_aside());
         let mut body = String::new();
