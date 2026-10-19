@@ -218,9 +218,23 @@ impl Shell {
         if let Some(window) = self.window() {
             let _ = window.show();
             window.window().set_minimized(false);
-            window
-                .window()
-                .with_winit_window(|winit| winit.focus_window());
+            window.window().with_winit_window(|winit| {
+                winit.focus_window();
+                #[cfg(target_os = "linux")]
+                {
+                    use slint::winit_030::winit::{
+                        raw_window_handle::{HasDisplayHandle, RawDisplayHandle},
+                        window::UserAttentionType,
+                    };
+                    // On Wayland focus_window is a no-op; winit requests
+                    // xdg_activation through request_user_attention instead.
+                    if winit.display_handle().is_ok_and(|display| {
+                        matches!(display.as_raw(), RawDisplayHandle::Wayland(_))
+                    }) {
+                        winit.request_user_attention(Some(UserAttentionType::Informational));
+                    }
+                }
+            });
             return Some(window);
         }
         match self.make() {
