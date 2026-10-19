@@ -822,6 +822,8 @@ type Message = {
   poll?: Poll;
   /** A closed poll's notice (type 46): the poll's message. */
   pollResult?: string;
+  /** A pin's notice (type 6): the message pinned. */
+  pinned?: string;
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -930,6 +932,7 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     wire.referenced_message = original ? wireMessage(original, origin, true) : null;
   }
   if (message.notice) wire.message_reference = { type: 0, channel_id: message.notice, guild_id: GUILD };
+  if (message.pinned) wire.message_reference = { type: 0, channel_id: message.channel, message_id: message.pinned, ...guildOf(message.channel) };
   const forwarded = message.forward ? byId.get(message.forward) : undefined;
   if (forwarded) {
     const original = wireMessage(forwarded, origin, true);
@@ -3917,7 +3920,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     const others = list.filter((pin) => pin.message !== message);
     if (method === "PUT" && others.length === list.length) {
       pins.set(message.channel, [{ message, at: Date.now() }, ...others]);
-      dispatch("MESSAGE_CREATE", dispatched(post(message.channel, users.alice, "", Date.now(), { type: 6 }), origin));
+      dispatch("MESSAGE_CREATE", dispatched(post(message.channel, users.alice, "", Date.now(), { type: 6, pinned: message.id }), origin));
     } else if (method === "DELETE") {
       pins.set(message.channel, others);
     }

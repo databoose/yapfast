@@ -903,9 +903,28 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             adapter.refresh(&window);
             return;
         }
+        // A pin's notice jumps to the message pinned, or shows the pinned
+        // messages.
+        if let Some(item) = link.strip_prefix(messages::JUMP_LINK) {
+            if let Some(window) = weak.upgrade() {
+                state
+                    .borrow_mut()
+                    .action(&window, Action::Jump(item.to_owned()));
+            }
+            return;
+        }
+        if link == messages::PINS_LINK {
+            if let Some(window) = weak.upgrade() {
+                window.invoke_open_pins();
+            }
+            return;
+        }
         // A mention opens the person's card, or the role's members, beside the
         // mention, or by the pointer when the link's place isn't known.
-        if let Some(target) = mention::target(&link) {
+        let author = link
+            .strip_prefix(messages::AUTHOR_LINK)
+            .map(|user| mention::Target::User(user.to_owned()));
+        if let Some(target) = author.or_else(|| mention::target(&link)) {
             let Some(window) = weak.upgrade() else { return };
             if let Some(rect) = i_slint_core::yapfast_selection::clicked_link() {
                 window.invoke_anchor_link(

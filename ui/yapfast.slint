@@ -624,6 +624,15 @@ export component YapfastWindow inherits Window {
     in property <[FoundRow]> pins;
     in property <string> pins-note;
     callback show-pins(bool);
+    /// The header's pin button's bottom right corner, under which the pins open.
+    property <length> pins-anchor-x;
+    property <length> pins-anchor-y;
+    /// Opens the pins under the header's pin button, as a pin's notice does.
+    public function open-pins() {
+        root.popover-x = root.pins-anchor-x;
+        root.popover-y = root.pins-anchor-y;
+        root.show-pins(true);
+    }
     // The open channel's list of its threads; see ThreadsPopover.
     in property <bool> can-list-threads;
     in property <bool> threads-open;
@@ -1940,9 +1949,15 @@ export component YapfastWindow inherits Window {
                                 icon: @image-url("icons/pin.svg"); label: "Pinned messages";
                                 size: 32px; glyph: 20px; tip-side: 2;
                                 tint: root.pins-open ? Theme.text : Theme.secondary;
+                                // Where the pins open from elsewhere, such as a pin's notice.
+                                property <length> anchor-x: self.absolute-position.x + self.width;
+                                property <length> anchor-y: self.absolute-position.y + self.height;
+                                init => { root.pins-anchor-x = self.anchor-x; root.pins-anchor-y = self.anchor-y; }
+                                changed anchor-x => { root.pins-anchor-x = self.anchor-x; }
+                                changed anchor-y => { root.pins-anchor-y = self.anchor-y; }
                                 clicked => {
-                                    root.popover-x = self.absolute-position.x + self.width;
-                                    root.popover-y = self.absolute-position.y + self.height;
+                                    root.popover-x = self.anchor-x;
+                                    root.popover-y = self.anchor-y;
                                     root.show-pins(!root.pins-open);
                                 }
                             }

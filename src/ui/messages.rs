@@ -3,9 +3,20 @@
 
 use super::*;
 
+/// Links in a notice: to its author, by sender, to the message it tells of,
+/// by item, and to the open channel's pinned messages. Unlike a mention's,
+/// they show without a pill.
+pub(super) const AUTHOR_LINK: &str = "yapfast:author/";
+pub(super) const JUMP_LINK: &str = "yapfast:jump/";
+pub(super) const PINS_LINK: &str = "yapfast:pins";
+
 /// A message continues the previous one's group when the same person sent it
-/// within seven minutes, without replying to something else.
+/// within seven minutes, without replying to something else. A notice, such
+/// as one that someone pinned a message, is a group of its own.
 pub(super) fn continues(before: &ChatMessage, message: &ChatMessage) -> bool {
+    if before.notice.is_some() || message.notice.is_some() {
+        return false;
+    }
     fn sender(message: &ChatMessage) -> &str {
         if message.sender.is_empty() {
             &message.author
@@ -264,6 +275,62 @@ pub(super) fn escape_markdown(text: &str) -> String {
         .collect()
 }
 
+/// A notice as Discord's client words it: its author's name in bold, in
+/// their role colour, opening their card; what it tells of, a pin's with
+/// links to the message and to the pinned messages; then when.
+fn notice_text(message: &ChatMessage, notice: &yapfast_core::chat::Notice) -> slint::StyledText {
+    use yapfast_core::chat::NoticeKind;
+    let hex = |rgb: u32| format!("#{:06x}", rgb & 0xff_ffff);
+    let strong = |text: &str, rgb: u32, link: Option<&str>| {
+        let text = format!("**{}**", escape_markdown(text));
+        let text = match link {
+            Some(link) => format!("[{text}](<{link}>)"),
+            None => text,
+        };
+        format!("<font color=\"{}\">{text}</font>", hex(rgb))
+    };
+    let sender = discord::sender_user(&message.sender).unwrap_or(&message.sender);
+    let profile = (!sender.is_empty()).then(|| format!("{AUTHOR_LINK}{sender}"));
+    let author = strong(
+        &message.author,
+        message.color.unwrap_or_else(theme::text_color),
+        profile.as_deref(),
+    );
+    let text = match &notice.kind {
+        NoticeKind::Pinned(item) => {
+            let jump = item.as_ref().map(|item| format!("{JUMP_LINK}{item}"));
+            format!(
+                " pinned {} to this channel. See all {}.",
+                strong("a message", theme::text_color(), jump.as_deref()),
+                strong("pinned messages", theme::text_color(), Some(PINS_LINK)),
+            )
+        }
+        // A possessive follows the name without a space.
+        _ if notice.text.starts_with('\'') => escape_markdown(&notice.text),
+        _ => format!(" {}", escape_markdown(&notice.text)),
+    };
+    let time = format!(
+        "<font color=\"{}\">{}</font>",
+        hex(theme::muted_color()),
+        escape_markdown(&message.time)
+    );
+    slint::StyledText::from_markdown(&format!("{author}{text}  {time}"))
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(&message.body))
+}
+
+/// The icon a notice shows in place of its author's avatar.
+fn notice_icon(notice: Option<&yapfast_core::chat::Notice>) -> &'static str {
+    use yapfast_core::chat::NoticeKind;
+    match notice.map(|notice| &notice.kind) {
+        None => "",
+        Some(NoticeKind::Pinned(_)) => "pin",
+        Some(NoticeKind::Joined) => "join",
+        Some(NoticeKind::ThreadStarted) => "thread",
+        Some(NoticeKind::Call) => "call",
+        Some(NoticeKind::PollResult) => "poll",
+    }
+}
+
 /// `text` in bold, as typed.
 pub(super) fn bold(text: &str) -> slint::StyledText {
     slint::StyledText::from_markdown(&format!("**{}**", escape_markdown(text)))
@@ -346,7 +413,9 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     // Custom emoji show as their glyphs once they have them.
     let body = custom_emoji::text(&message.body, &message.emoji);
     let jumbo = message.formatted && custom_emoji::only_emoji(&body);
-    let styled = if message.formatted {
+    let styled = if let Some(notice) = &message.notice {
+        notice_text(message, notice)
+    } else if message.formatted {
         let linked = with_mentions(&body, &message.mentions);
         if message.spoilers {
             styled(&spoiler::mark(&linked, &message.item, |index| {
@@ -518,6 +587,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         highlighted: message.mentions_me,
         jumbo,
         styled,
+        notice: notice_icon(message.notice.as_ref()).into(),
         author_styled: bold(&message.author),
         time_styled: slint::StyledText::from_plain_text(&message.time),
         edited: message.edited,

@@ -4,6 +4,39 @@ fn message_row_plain(message: &ChatMessage) -> MessageRow {
     message_row(message, &HashSet::new())
 }
 
+#[test]
+fn a_notice_is_a_group_of_its_own_with_an_icon() {
+    use yapfast_core::chat::{Notice, NoticeKind};
+    let said = ChatMessage {
+        item: "d:4".into(),
+        author: "Alice".into(),
+        sender: "discord:1".into(),
+        body: "Look".into(),
+        timestamp: 100,
+        ..Default::default()
+    };
+    let pinned = ChatMessage {
+        item: "d:5".into(),
+        body: "Alice pinned a message.".into(),
+        timestamp: 160,
+        notice: Some(Notice {
+            kind: NoticeKind::Pinned(Some("d:4".into())),
+            text: "pinned a message.".into(),
+        }),
+        ..said.clone()
+    };
+    let again = ChatMessage {
+        item: "d:6".into(),
+        timestamp: 200,
+        ..said.clone()
+    };
+    assert!(messages::continues(&said, &again));
+    assert!(!messages::continues(&said, &pinned));
+    assert!(!messages::continues(&pinned, &again));
+    assert_eq!(message_row_plain(&pinned).notice, "pin");
+    assert_eq!(message_row_plain(&said).notice, "");
+}
+
 #[cfg(feature = "discord")]
 #[test]
 fn statuses_show_their_custom_emoji_as_pictures() {

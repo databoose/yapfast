@@ -544,6 +544,11 @@ export struct MessageRow {
     /// through all three. A body of nothing but emoji shows them large.
     jumbo: bool,
     styled: styled-text, author-styled: styled-text, time-styled: styled-text, edited: bool, deleted: bool,
+    /// A notice in place of a message, such as Discord's that someone pinned
+    /// one, by the icon it shows in place of the avatar: "pin", "join",
+    /// "thread", "call" or "poll"; empty for a message. Its text has its
+    /// author's name and time.
+    notice: string,
     /// Forwarded on Discord: the body, files and embeds are the original's.
     forwarded: bool,
     reply-author: string, reply-body: string, reply-initial: string, reply-tint: color, reply-picture: image, has-reply: bool,
@@ -1410,7 +1415,7 @@ export component MessageContent inherits VerticalLayout {
         padding-left: root.start-padding; padding-right: root.end-padding; padding-top: 2px; padding-bottom: 2px; spacing: 16px;
         Rectangle {
             width: 40px;
-            min-height: message.first ? (message.has-reply ? 64px : 40px) : 0px;
+            min-height: message.first && message.notice == "" ? (message.has-reply ? 64px : 40px) : 0px;
             if message.has-reply: Rectangle {
                 x: 19px; y: 11px; width: 33px; height: 13px; clip: true;
                 Rectangle {
@@ -1418,13 +1423,23 @@ export component MessageContent inherits VerticalLayout {
                     border-width: 2px; border-color: Theme.reply-spine; border-top-left-radius: 6px;
                 }
             }
-            if message.first: Avatar {
+            // As Discord's client marks a notice, in place of the avatar.
+            if message.notice != "": Image {
+                x: 12px; y: (root.message-font-size * 1.375 - 16px) / 2 + 1px; width: 16px; height: 16px;
+                source: message.notice == "pin" ? @image-url("icons/pin.svg")
+                    : message.notice == "join" ? @image-url("icons/user-plus.svg")
+                    : message.notice == "thread" ? @image-url("icons/messages-square.svg")
+                    : message.notice == "call" ? @image-url("icons/phone.svg")
+                    : @image-url("icons/chart-bar.svg");
+                colorize: message.notice == "join" || message.notice == "call" ? Theme.live : Theme.muted;
+            }
+            if message.first && message.notice == "": Avatar {
                 x: 0px; y: message.has-reply ? 24px : 2px;
                 initial: message.initial; tint: message.tint; picture: message.picture; picture-url: message.picture-url;
             }
             // Clicking the author's avatar shows their card beside it;
             // a right click opens their menu. Their name does the same.
-            if message.first && message.sender != "": TouchArea {
+            if message.first && message.notice == "" && message.sender != "": TouchArea {
                 x: 0px; y: message.has-reply ? 24px : 2px; width: 40px; height: 40px;
                 mouse-cursor: MouseCursor.pointer;
                 clicked => { root.author-card(message.item, message.sender, self.absolute-position.x, self.absolute-position.y, self.width, self.height); }
@@ -1466,7 +1481,7 @@ export component MessageContent inherits VerticalLayout {
                     clicked => { root.jump-to(message.reply-item); }
                 }
             }
-            if message.first: HorizontalLayout {
+            if message.first && message.notice == "": HorizontalLayout {
                 spacing: 8px;
                 Rectangle {
                     min-width: author-name.min-width; preferred-width: author-name.preferred-width;
@@ -1504,7 +1519,8 @@ export component MessageContent inherits VerticalLayout {
             if message.body != "": StyledText {
                 // An overlong word breaks, as in Discord's client, rather than widening the row.
                 min-width: 0px;
-                text: message.styled; default-color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text; link-color: Theme.link;
+                text: message.styled; link-color: Theme.link;
+                default-color: message.deleted || message.delivery != "" ? Theme.muted : message.notice != "" ? Theme.secondary : Theme.text;
                 // Discord's large emoji are 48 pixels where text's are 22.
                 default-font-size: message.jumbo ? root.message-font-size * 2.2 : root.message-font-size;
                 // A mention's card opens beside the pointer.

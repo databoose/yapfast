@@ -104,6 +104,9 @@ pub struct Message {
     /// Shown after the author's name instead of content, for joins, pins
     /// and calls.
     pub system: Option<String>,
+    /// What such a notice tells of, which its icon and links show.
+    #[serde(default)]
+    pub notice: Option<Notice>,
     pub edited: bool,
     pub reply: Option<Reply>,
     /// Its files, then its embeds' pictures.
@@ -490,6 +493,18 @@ pub(crate) fn written(kind: u64) -> bool {
     )
 }
 
+/// What a notice in place of a message tells of, as Discord's client marks
+/// it with an icon and links.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Notice {
+    /// Its author pinned a message, by id, which the notice links to.
+    Pinned(Option<String>),
+    Joined,
+    ThreadStarted,
+    Call,
+    PollResult,
+}
+
 /// A message object, from the API or the gateway. Kinds Yapfast doesn't show,
 /// such as boosts, give `None`.
 pub fn parse(value: &Value) -> Option<Message> {
@@ -666,6 +681,18 @@ pub fn parse(value: &Value) -> Option<Message> {
         author: author_name(value).into(),
         bot: author["bot"].as_bool().unwrap_or(false),
         content,
+        notice: system.as_ref().and_then(|_| match kind {
+            PINNED => Some(Notice::Pinned(
+                value["message_reference"]["message_id"]
+                    .as_str()
+                    .map(str::to_owned),
+            )),
+            MEMBER_JOIN => Some(Notice::Joined),
+            THREAD_CREATED => Some(Notice::ThreadStarted),
+            CALL => Some(Notice::Call),
+            POLL_RESULT => Some(Notice::PollResult),
+            _ => None,
+        }),
         system,
         edited: value["edited_timestamp"].is_string(),
         reply,
@@ -1501,6 +1528,24 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_pin_notice_links_to_the_message_pinned() {
+        let notice = parse(&json!({
+            "id": "5", "channel_id": "1", "type": 6, "content": "",
+            "author": {"id": "2", "username": "bob"},
+            "message_reference": {"channel_id": "1", "message_id": "4"},
+        }))
+        .unwrap();
+        assert_eq!(notice.system.as_deref(), Some("pinned a message."));
+        assert_eq!(notice.notice, Some(Notice::Pinned(Some("4".into()))));
+        let joined = parse(&json!({
+            "id": "6", "channel_id": "1", "type": 7, "content": "",
+            "author": {"id": "2", "username": "bob"},
+        }))
+        .unwrap();
+        assert_eq!(joined.notice, Some(Notice::Joined));
+    }
 
     #[test]
     fn links_threads_and_shows_a_threads_first_message() {

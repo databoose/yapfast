@@ -70,7 +70,9 @@ The core of it is `yapfast_selection.rs`. The other changes are marked `Yapfast:
 - `window.rs`, for the press, Ctrl+C and Escape
 - `item_rendering.rs`
 - `textlayout/sharedparley.rs`
-- `textlayout/sharedparley/shaping.rs`
+- `textlayout/sharedparley/shaping.rs`, where a link in a colour shows in it,
+  without an underline, on a pill only when it's a mention, to `yapfast:user/`
+  or `yapfast:role/`
 - `textlayout/sharedparley/draw.rs`, which draws mention pills under their
   text and opaque covers over hidden Discord spoilers, links to `yapfast:spoiler/`
 - `graphics/image.rs`, where no image equals no image; upstream they differ,

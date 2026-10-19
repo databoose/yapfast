@@ -121,8 +121,26 @@ pub(super) fn found(
         emoji: custom_emoji(message),
         // Shown, not voted in: its author can't end it from here either.
         poll: message.poll.as_ref().map(|poll| chat_poll(poll, false)),
+        notice: chat_notice(message),
         ..Default::default()
     }
+}
+
+/// A Discord message's notice, as the timeline marks it.
+pub(super) fn chat_notice(message: &Message) -> Option<crate::chat::Notice> {
+    use crate::chat::NoticeKind;
+    use yapfast_discord::message::Notice;
+    let kind = match message.notice.as_ref()? {
+        Notice::Pinned(id) => NoticeKind::Pinned(id.as_ref().map(|id| format!("d:{id}"))),
+        Notice::Joined => NoticeKind::Joined,
+        Notice::ThreadStarted => NoticeKind::ThreadStarted,
+        Notice::Call => NoticeKind::Call,
+        Notice::PollResult => NoticeKind::PollResult,
+    };
+    Some(crate::chat::Notice {
+        kind,
+        text: message.system.clone()?,
+    })
 }
 
 /// What a notice, such as a pin or a call, says: its author's name, then

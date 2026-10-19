@@ -757,19 +757,34 @@ thread_local! {
     /// theme's link colour. Rows build their markup with it, outside the
     /// window, on the window's thread.
     static MENTION: Cell<u32> = const { Cell::new(0x7cc4ff) };
+    /// The theme's text and muted colours, the same way, for a notice's
+    /// name, links and time.
+    static TEXT: Cell<u32> = const { Cell::new(0xf2f3f5) };
+    static MUTED: Cell<u32> = const { Cell::new(0x949ba4) };
 }
 
 pub fn mention_color() -> u32 {
     MENTION.get()
 }
 
+pub fn text_color() -> u32 {
+    TEXT.get()
+}
+
+pub fn muted_color() -> u32 {
+    MUTED.get()
+}
+
 impl Theme {
-    /// Shows the window in these colours. Returns whether mentions change
-    /// colour, as rows built before carry the old one in their markup.
+    /// Shows the window in these colours. Returns whether colours that rows
+    /// carry in their markup change, as rows built before have the old ones.
     pub fn apply(&self, window: &YapfastWindow) -> bool {
         self.set(&window.global::<yapfast_ui::Theme>());
-        let mention = self.link.as_argb_encoded() & 0xff_ffff;
-        MENTION.replace(mention) != mention
+        let rgb = |colour: Color| colour.as_argb_encoded() & 0xff_ffff;
+        let mention = MENTION.replace(rgb(self.link)) != rgb(self.link);
+        let text = TEXT.replace(rgb(self.text)) != rgb(self.text);
+        let muted = MUTED.replace(rgb(self.muted)) != rgb(self.muted);
+        mention || text || muted
     }
 }
 

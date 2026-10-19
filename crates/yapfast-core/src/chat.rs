@@ -1224,6 +1224,29 @@ pub struct ChatMessage {
     pub thread: Option<ThreadLink>,
     /// The Discord poll it asks.
     pub poll: Option<Poll>,
+    /// What it tells of, when it's a notice in place of a message, such as
+    /// Discord's that someone pinned one; its body says it after its
+    /// author's name.
+    pub notice: Option<Notice>,
+}
+
+/// A notice in place of a message, as Discord's client marks it: with an
+/// icon, its author's name, and what it tells of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub kind: NoticeKind,
+    /// What follows the author's name, such as "joined the server."
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// Its author pinned a message, by item, which it links to.
+    Pinned(Option<String>),
+    Joined,
+    ThreadStarted,
+    Call,
+    PollResult,
 }
 
 /// A Discord poll as a message shows it.
