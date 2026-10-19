@@ -345,18 +345,37 @@ pub(super) fn send_topic(
     if !opened && channel.topic_sent.as_ref() == Some(&sent) {
         return;
     }
-    let topic = sent.0.as_deref().map(|raw| {
-        Arc::new(Topic {
-            body: discord.render(server, raw),
-            mentions: mentions(discord, server, raw),
-            emoji: emoji_in(raw),
-        })
-    });
+    let topic = sent.0.as_deref().map(|raw| topic(discord, server, raw));
     channel.topic_sent = Some(sent);
     let _ = events.send(Event::Topic {
         room: channel.room.clone(),
         topic,
     });
+}
+
+/// A channel's topic, from Discord's markup, as Yapfast shows it.
+fn topic(
+    discord: &Discord,
+    server: Option<&yapfast_discord::ready::Server>,
+    raw: &str,
+) -> Arc<Topic> {
+    Arc::new(Topic {
+        body: discord.render(server, raw),
+        mentions: mentions(discord, server, raw),
+        emoji: emoji_in(raw),
+    })
+}
+
+/// A forum's topic, its post guidelines, by server and channel id.
+pub(super) fn forum_topic(discord: &Discord, guild: &str, forum: &str) -> Option<Arc<Topic>> {
+    let snapshot = discord.snapshots().borrow().clone();
+    let server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.id == guild)
+        .map(Arc::as_ref)?;
+    let raw = server.channel(forum)?.topic.clone()?;
+    Some(topic(discord, Some(server), &raw))
 }
 
 /// Who and what a message mentions, as its rendered body shows them.

@@ -346,17 +346,7 @@ impl Api {
             body["flags"] = SUPPRESS_NOTIFICATIONS.into();
         }
         if !uploads.is_empty() {
-            body["attachments"] = uploads
-                .iter()
-                .enumerate()
-                .map(|(index, upload)| {
-                    json!({
-                        "id": index.to_string(),
-                        "filename": upload.filename,
-                        "uploaded_filename": upload.uploaded_filename,
-                    })
-                })
-                .collect();
+            body["attachments"] = attachments(uploads);
         }
         if let Some(reply) = options.reply {
             body["message_reference"] = json!({
@@ -802,6 +792,27 @@ impl Api {
         };
         self.json(with_json(self.request(Method::POST, &path), body))
             .await
+    }
+
+    /// Posts in a forum, as Discord's client does: a thread named `title`,
+    /// archiving after `archive_after` minutes of quiet, with the forum's
+    /// tags by id and a first message of `content` and uploaded files. The
+    /// post's channel object; Discord sends THREAD_CREATE and the message.
+    pub async fn create_post(
+        &self,
+        forum: &str,
+        title: &str,
+        archive_after: u16,
+        tags: &[String],
+        content: &str,
+        uploads: &[Upload],
+    ) -> Result<Value> {
+        let path = format!("/channels/{forum}/threads?use_nested_fields=true");
+        self.json(with_json(
+            self.request(Method::POST, &path),
+            &post_body(title, archive_after, tags, content, uploads),
+        ))
+        .await
     }
 
     /// The first and newest messages of a forum's posts, and who started
@@ -1475,6 +1486,42 @@ fn message_body(content: &str, nonce: &str) -> Value {
     })
 }
 
+/// Uploaded files as a message's `attachments` name them.
+fn attachments(uploads: &[Upload]) -> Value {
+    uploads
+        .iter()
+        .enumerate()
+        .map(|(index, upload)| {
+            json!({
+                "id": index.to_string(),
+                "filename": upload.filename,
+                "uploaded_filename": upload.uploaded_filename,
+            })
+        })
+        .collect()
+}
+
+/// A forum post as Discord's client asks for one: the thread, and its
+/// first message nested in it, which carries no nonce.
+fn post_body(
+    title: &str,
+    archive_after: u16,
+    tags: &[String],
+    content: &str,
+    uploads: &[Upload],
+) -> Value {
+    let mut message = json!({ "content": content });
+    if !uploads.is_empty() {
+        message["attachments"] = attachments(uploads);
+    }
+    json!({
+        "name": title,
+        "auto_archive_duration": archive_after,
+        "applied_tags": tags,
+        "message": message,
+    })
+}
+
 fn with_json(request: RequestBuilder, body: &Value) -> RequestBuilder {
     request
         .header(header::CONTENT_TYPE, "application/json")
@@ -1562,6 +1609,28 @@ mod tests {
                 "allow_multiselect": true,
                 "duration": 24,
                 "layout_type": 1,
+            })
+        );
+    }
+
+    #[test]
+    fn a_forum_post_nests_its_first_message() {
+        let upload = super::Upload {
+            filename: "crash.png".into(),
+            uploaded_filename: "uploads/1/crash.png".into(),
+        };
+        assert_eq!(
+            super::post_body("Crash", 4320, &["7".into()], "It closes.", &[upload]),
+            serde_json::json!({
+                "name": "Crash",
+                "auto_archive_duration": 4320,
+                "applied_tags": ["7"],
+                "message": {
+                    "content": "It closes.",
+                    "attachments": [
+                        { "id": "0", "filename": "crash.png", "uploaded_filename": "uploads/1/crash.png" },
+                    ],
+                },
             })
         );
     }

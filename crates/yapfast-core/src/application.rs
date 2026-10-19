@@ -26,6 +26,7 @@ mod gifs;
 mod header;
 mod members;
 mod messages;
+mod new_post;
 mod places;
 mod polls;
 mod preview;
@@ -42,6 +43,7 @@ pub use gifs::{GifPicker, GifPicture, GifView};
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::{member_server, with_clubs};
+pub use new_post::{NewPost, POST_TAGS, POST_TITLE_LIMIT};
 pub use places::{
     ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
     SLOWMODES,
@@ -511,6 +513,8 @@ pub struct AppState {
     pub forum: Option<ForumView>,
     /// The "New Thread" form beside the open Discord channel.
     pub new_thread: Option<NewThread>,
+    /// The form for a post in a Discord forum, kept while other rooms show.
+    pub new_post: Option<NewPost>,
     /// The reaction the pointer stayed over, by item and key, who the
     /// latest reactions hovered were, and the Reactions window.
     pub hovered_reaction: Option<(String, String)>,
@@ -1284,6 +1288,22 @@ pub enum Action {
     SearchPosts(String),
     /// The forum's list of posts scrolled near its end: load more of them.
     MorePosts,
+    /// Open the form for a post in the forum on screen.
+    NewPost,
+    /// Write the form's title or message.
+    WriteNewPost {
+        title: Option<String>,
+        body: Option<String>,
+    },
+    /// Give the post a tag, by id, or take it away.
+    TogglePostTag(String),
+    /// Make the post the form describes.
+    CreatePost,
+    /// Close the form, asking first if something was written; close it
+    /// anyway; or go back to it.
+    CloseNewPost,
+    LeaveNewPost,
+    StayInNewPost,
     /// Open the "New Thread" form beside the open channel: from a message,
     /// by item, or from none.
     NewThread {
@@ -2162,6 +2182,33 @@ impl Application {
             Action::MoreThreads => self.more_threads(),
             Action::SearchPosts(query) => self.search_posts(query),
             Action::MorePosts => self.more_posts(),
+            Action::NewPost => {
+                self.open_new_post();
+                vec![]
+            }
+            Action::WriteNewPost { title, body } => {
+                self.write_new_post(title, body);
+                vec![]
+            }
+            Action::TogglePostTag(tag) => {
+                self.toggle_post_tag(tag);
+                vec![]
+            }
+            Action::CreatePost => self.create_post(),
+            Action::CloseNewPost => {
+                self.close_new_post(false);
+                vec![]
+            }
+            Action::LeaveNewPost => {
+                self.close_new_post(true);
+                vec![]
+            }
+            Action::StayInNewPost => {
+                if let Some(post) = &mut self.state.new_post {
+                    post.leaving = false;
+                }
+                vec![]
+            }
             Action::NewThread { message, from } => self.open_new_thread(message, from),
             Action::WriteNewThread { name, body } => {
                 self.write_new_thread(name, body);
@@ -2637,6 +2684,7 @@ impl Application {
             } => return self.threads_came(room, query, offset, result, starters),
             Event::Posts { room, result } => return self.posts_came(room, result),
             Event::ThreadStarted { room, result } => return self.thread_started(room, result),
+            Event::ForumPosted { room, result } => return self.forum_posted(room, result),
             Event::Found {
                 place,
                 query,

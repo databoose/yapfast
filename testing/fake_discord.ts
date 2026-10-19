@@ -208,7 +208,9 @@
 // /channels/{id}/post-data gives posts' first messages, as Discord's client
 // asks for its cards, and GET /_control/post-data lists each request's ids;
 // searching a forum's threads gives theirs too. POST /_control/forum-post
-// makes Carol post in it.
+// makes Carol post in it. POST /channels/{id}/threads?use_nested_fields=true
+// posts in it, as Discord's client does; POST /_control/forum-require-tag
+// (?off) sets whether a post must take a tag.
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -1344,6 +1346,9 @@ const FORUM_TAGS = [
 ];
 const [FEATURE, BUG, QUESTION, DONE] = FORUM_TAGS.map((tag) => tag.id) as [string, string, string, string];
 
+/** Whether #ideas requires a post to take a tag. */
+let forumRequiresTag = false;
+
 /** Starts a post in #ideas: a thread with its first message, whose id is
  *  the post's, as Discord makes one. */
 function makePost(name: string, owner: User, created: number, content: string, extra: Partial<Thread> = {}, id = nextId(created)): Thread {
@@ -1409,6 +1414,25 @@ const threadMemberRequests: string[] = [];
 const threadCreates: Record<string, unknown>[] = [];
 
 /** Discord's answer to a thread name that's empty or longer than 100. */
+/** A message's `attachments` as the files uploaded for them, which leave
+ *  the uploads; undefined if one wasn't uploaded. */
+function takeUploads(attachments: any[] | undefined, channel: string): File[] | undefined {
+  const named = (attachments ?? []).map((attachment) => attachment.uploaded_filename);
+  if (named.some((name) => !uploads.get(name)?.data)) return undefined;
+  return named.map((name) => {
+    const upload = uploads.get(name)!;
+    uploads.delete(name);
+    return addFile({
+      id: nextId(Date.now()),
+      channel,
+      filename: upload.filename,
+      contentType: contentType(upload.filename),
+      data: upload.data!,
+      ...imageSize(upload.data!),
+    });
+  });
+}
+
 function threadNameError(name: unknown): Response | undefined {
   const length = typeof name === "string" ? [...name.trim()].length : 0;
   if (length >= 1 && length <= 100) return undefined;
@@ -1648,6 +1672,8 @@ function guildChannel(id: string, name: string, type: number, position: number, 
 function forumFields() {
   const posts = [...threads.values()].filter((thread) => thread.parent === FORUM);
   return {
+    // REQUIRE_TAG, as /_control/forum-require-tag sets it.
+    flags: forumRequiresTag ? 16 : 0,
     topic: "One idea per post. Search before posting." as string | null,
     nsfw: false, rate_limit_per_user: 0, default_thread_rate_limit_per_user: 0,
     // A forum's newest message is its newest post.
@@ -3652,22 +3678,8 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         polls.push(asked);
       }
       const reply = body.message_reference?.message_id;
-      const attached: File[] = [];
-      for (const attachment of body.attachments ?? []) {
-        const upload = uploads.get(attachment.uploaded_filename);
-        if (!upload?.data) return json({ message: "Invalid Form Body", code: 50035 }, 400);
-        uploads.delete(attachment.uploaded_filename);
-        attached.push(
-          addFile({
-            id: nextId(Date.now()),
-            channel: m[1]!,
-            filename: upload.filename,
-            contentType: contentType(upload.filename),
-            data: upload.data,
-            ...imageSize(upload.data),
-          }),
-        );
-      }
+      const attached = takeUploads(body.attachments, m[1]!);
+      if (!attached) return json({ message: "Invalid Form Body", code: 50035 }, 400);
       const message = post(m[1]!, users.alice, body.content ?? "", Date.now(), {
         nonce: body.nonce ? String(body.nonce) : undefined,
         reply: reply && byId.has(reply) ? reply : undefined,
@@ -3963,6 +3975,43 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     dispatch("MESSAGE_UPDATE", dispatched(original, origin));
     if (!messages.get(parent)!.slice(-10).includes(original)) noticeThread(thread, origin);
     return json(wireThread(thread), 201);
+  }
+
+  // Posting in #ideas, as Discord's client does with use_nested_fields:
+  // a title, at most five of its tags, the moderated one only for those
+  // who manage threads (not Alice), one when the forum requires it, and a
+  // first message of text, uploaded files or both, whose id is the post's.
+  // THREAD_CREATE and THREAD_MEMBERS_UPDATE come, then the message; the
+  // answer is the post with its message.
+  if (method === "POST" && path === `/channels/${FORUM}/threads`) {
+    const body: any = await req.json();
+    threadCreates.push({ channel: FORUM, ...body });
+    const invalid = threadNameError(body.name);
+    if (invalid) return invalid;
+    const tags: string[] = body.applied_tags ?? [];
+    const known = FORUM_TAGS.filter((tag) => !tag.moderated).map((tag) => tag.id);
+    if (tags.length > 5 || tags.some((tag) => !known.includes(tag))) {
+      return json({ message: "Invalid Form Body", code: 50035, errors: { applied_tags: { _errors: [{ code: "INVALID_TAG", message: "Invalid tag" }] } } }, 400);
+    }
+    if (forumRequiresTag && tags.length === 0) {
+      return json({ message: "A tag is required to create a forum post in this channel", code: 40067 }, 400);
+    }
+    const content = String(body.message?.content ?? "");
+    if (!content.trim() && !body.message?.attachments?.length) {
+      return json({ message: "Cannot send an empty message", code: 50006 }, 400);
+    }
+    const now = Date.now();
+    const id = nextId(now);
+    const files = takeUploads(body.message?.attachments, id);
+    if (!files) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    const thread = makePost(body.name.trim(), users.alice, now, content, {
+      tags, autoArchive: body.auto_archive_duration ?? 4320,
+    }, id);
+    const first = byId.get(thread.id)!;
+    first.files.push(...files);
+    announceThread(thread);
+    dispatch("MESSAGE_CREATE", dispatched(first, origin));
+    return json({ ...(wireThread(thread) as Record<string, unknown>), message: wireMessage(first, origin) }, 201);
   }
 
   // Starting a thread without a message: public or private in a text
@@ -5757,6 +5806,11 @@ const server = Bun.serve<SocketData>({
     }
     // Carol posts in #ideas, as Discord tells of a new post: THREAD_CREATE,
     // then its first message.
+    if (req.method === "POST" && path === "/_control/forum-require-tag") {
+      forumRequiresTag = !url.searchParams.has("off");
+      dispatch("CHANNEL_UPDATE", guild().channels.find((channel) => channel.id === FORUM));
+      return new Response(`#ideas ${forumRequiresTag ? "requires" : "doesn't require"} a tag\n`);
+    }
     if (req.method === "POST" && path === "/_control/forum-post") {
       const now = Date.now();
       const thread = makePost("Emoji picker search", users.carol, now, "Searching emoji by keyword would help.", { tags: [FEATURE] });

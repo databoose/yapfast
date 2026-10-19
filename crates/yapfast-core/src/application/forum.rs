@@ -71,6 +71,8 @@ pub struct ForumPost {
 pub struct ForumInfo {
     pub tags: Vec<ForumTag>,
     pub by_creation: bool,
+    /// A post must take one of its tags.
+    pub require_tag: bool,
     /// The emoji a post without reactions offers.
     pub reaction: Option<chat::ShownEmoji>,
 }
@@ -289,6 +291,7 @@ impl Application {
             return Some(ForumInfo {
                 tags: discord::forum_tags(forum),
                 by_creation: forum.by_creation,
+                require_tag: forum.require_tag,
                 reaction: forum.reaction.as_ref().map(discord::shown_emoji),
             });
         }

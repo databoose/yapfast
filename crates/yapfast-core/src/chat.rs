@@ -391,6 +391,9 @@ pub enum Permission {
     ManageMessages,
     /// Post polls, besides sending messages.
     SendPolls,
+    /// Manage threads and forum posts, and give posts a forum's moderated
+    /// tags.
+    ManageThreads,
     /// Join a voice channel.
     Connect,
     /// Mute, deafen, and move or disconnect members in voice channels.
@@ -721,6 +724,8 @@ pub struct ForumTag {
     pub id: String,
     pub name: String,
     pub emoji: Option<ShownEmoji>,
+    /// Only those who manage threads may give it.
+    pub moderated: bool,
 }
 
 /// Someone a thread's row names.
@@ -1749,6 +1754,16 @@ pub enum DiscordCommand {
         private: bool,
         location: &'static str,
     },
+    /// Post in a Discord forum, by its room id: a post named `title` with
+    /// the forum's tags by id, and a first message of `body` and `files`.
+    /// [`Event::ForumPosted`] follows.
+    PostInForum {
+        room: String,
+        title: String,
+        tags: Vec<String>,
+        body: String,
+        files: Vec<OutgoingFile>,
+    },
     /// Look for messages a search box's `query`, filters and all, finds: in
     /// a Discord DM, by its room id, or a server, by its server id; a page
     /// from the `offset`th found. [`Event::Found`] follows.
@@ -2158,6 +2173,12 @@ pub enum Event {
     /// [`DiscordCommand::StartThread`]'s thread, by room id, in the channel
     /// `room`, or why it didn't start.
     ThreadStarted {
+        room: String,
+        result: Result<String, String>,
+    },
+    /// [`DiscordCommand::PostInForum`]'s post, by room id, in the forum
+    /// `room`, or why it wasn't made.
+    ForumPosted {
         room: String,
         result: Result<String, String>,
     },

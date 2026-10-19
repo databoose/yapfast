@@ -1,7 +1,8 @@
 import { ListView } from "scrollview.slint";
 import { Theme, Middle } from "theme.slint";
-import { PictureStore } from "controls.slint";
+import { PictureStore, IconButton, ActionButton, TextField } from "controls.slint";
 import { HeaderSearch } from "header.slint";
+import { Composer, StagedTile, StagedFile } from "composer.slint";
 
 /// A forum's tag, or an emoji, as a post's card shows it: a Unicode emoji's
 /// text, or a custom one's picture.
@@ -46,6 +47,13 @@ component StoredImage inherits Image {
     }
     init => { root.request(); }
     changed url => { root.request(); }
+}
+
+/// A tag the form for a post offers, and whether the post has it.
+export struct PostTagChoice {
+    id: string,
+    tag: PostTag,
+    chosen: bool,
 }
 
 // An emoji on a tag or a reaction.
@@ -191,6 +199,250 @@ component PostCard inherits Rectangle {
 // active ones first and older ones a page at a time as the list scrolls,
 // or what a search found. Enter searches, and clearing it shows the posts
 // again.
+// The form for a post, as Discord's at the top of a forum: a title, up to
+// five of the forum's tags, its post guidelines, and a first message with
+// files. Enter in the message posts; closing after writing asks first.
+component NewPostForm inherits Rectangle {
+    in-out property <string> title;
+    in-out property <string> body;
+    /// The tags chosen, in the order they were, and those the post may take.
+    in property <[PostTagChoice]> chosen-tags;
+    in property <[PostTagChoice]> tag-choices;
+    in property <bool> tag-required;
+    /// Fewer than five tags are chosen.
+    in property <bool> more-tags;
+    in property <styled-text> guidelines;
+    in property <bool> has-guidelines;
+    in property <[StagedFile]> staged;
+    in property <bool> can-attach;
+    in property <bool> can-mark-spoilers;
+    in property <bool> posting;
+    in property <string> error;
+    in property <bool> leaving;
+    callback title-edited(string);
+    callback body-edited(string);
+    callback toggle-tag(string);
+    callback attach;
+    callback unstage(int);
+    callback toggle-spoiler(int);
+    callback create;
+    callback close;
+    callback leave;
+    callback stay;
+    callback open-link(string);
+    public function focus-title() { title-field.focus-input(); }
+    property <bool> show-guidelines: true;
+    // Where the menu of tags opens: under its button.
+    property <length> menu-x;
+    property <length> menu-y;
+    accessible-role: groupbox;
+    accessible-label: "New Post";
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 10px; spacing: 10px;
+                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
+                Text { text: "New Post"; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+        }
+        Flickable {
+            vertical-stretch: 1;
+            content-height: max(self.height, fields.preferred-height);
+            fields := VerticalLayout {
+                width: parent.width;
+                padding: 16px; spacing: 16px; alignment: start;
+                VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "POST TITLE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                    title-field := TextField {
+                        text <=> root.title; placeholder: "Title"; label: "Post title";
+                        enabled: !root.posting;
+                        edited(text) => { root.title-edited(text); }
+                        accepted => { message.focus-input(); }
+                    }
+                }
+                if root.tag-choices.length > 0: VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.tag-required ? "TAGS (REQUIRED)" : "TAGS";
+                        color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px; alignment: start;
+                        for choice in root.chosen-tags: Rectangle {
+                            height: 28px; border-radius: 14px; background: Theme.raised;
+                            width: chip.preferred-width;
+                            accessible-role: button;
+                            accessible-label: "Remove tag " + choice.tag.name;
+                            accessible-action-default => { root.toggle-tag(choice.id); }
+                            chip := HorizontalLayout {
+                                padding-left: 10px; padding-right: 6px; spacing: 4px;
+                                if choice.tag.emoji != "" || choice.tag.emoji-url != "": PostEmoji { emoji: choice.tag; size: 14px; }
+                                Middle { Text { text: choice.tag.name; color: Theme.text; font-size: 13px; font-weight: 600; } }
+                                Middle { Image { source: @image-url("icons/x.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
+                            }
+                            TouchArea {
+                                enabled: !root.posting;
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.toggle-tag(choice.id); }
+                            }
+                        }
+                        add-tags := ActionButton {
+                            text: "Add tags"; icon: @image-url("icons/circle-plus.svg"); ghost: true; small: true;
+                            enabled: !root.posting && root.more-tags;
+                            clicked => {
+                                root.menu-x = self.absolute-position.x - root.absolute-position.x;
+                                root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px;
+                                tags-menu.show();
+                            }
+                        }
+                    }
+                }
+                if root.has-guidelines: Rectangle {
+                    border-radius: 8px; background: Theme.sidebar; border-width: 1px; border-color: Theme.line;
+                    VerticalLayout {
+                        padding: 12px; spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text { text: "Post Guidelines"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                            Middle {
+                                IconButton {
+                                    icon: root.show-guidelines ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                                    label: root.show-guidelines ? "Hide post guidelines" : "Show post guidelines";
+                                    size: 24px; glyph: 16px;
+                                    clicked => { root.show-guidelines = !root.show-guidelines; }
+                                }
+                            }
+                        }
+                        if root.show-guidelines: Flickable {
+                            height: min(220px, guidelines-text.preferred-height);
+                            content-height: guidelines-text.preferred-height;
+                            guidelines-text := StyledText {
+                                width: parent.width;
+                                text: root.guidelines; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
+                                link-clicked(link) => { root.open-link(link); }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    min-height: 48px; background: Theme.field; border-radius: 10px;
+                    VerticalLayout {
+                        // Files to go with the post, in a row that scrolls sideways.
+                        if root.staged.length > 0: Flickable {
+                            height: 152px;
+                            content-width: max(self.width, staged-row.preferred-width);
+                            staged-row := HorizontalLayout {
+                                padding: 10px; padding-bottom: 2px; spacing: 8px; alignment: start;
+                                for file[index] in root.staged: StagedTile {
+                                    file: file; can-spoil: root.can-mark-spoilers;
+                                    remove => { root.unstage(index); }
+                                    toggle-spoiler => { root.toggle-spoiler(index); }
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px; spacing: 6px;
+                            VerticalLayout {
+                                alignment: end; padding-bottom: 8px;
+                                IconButton {
+                                    icon: @image-url("icons/circle-plus.svg"); label: "Attach files"; glyph: 22px;
+                                    enabled: root.can-attach && !root.posting;
+                                    clicked => { root.attach(); }
+                                }
+                            }
+                            message := Composer {
+                                text <=> root.body; enabled: !root.posting; label: "Message";
+                                placeholder: "Enter a message...";
+                                edited(text) => { root.body-edited(text); }
+                                accepted => { root.create(); }
+                                paste => { self.paste-text(); }
+                            }
+                        }
+                    }
+                }
+                if root.error != "": Text { text: root.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end;
+                    ActionButton {
+                        text: root.posting ? "Posting..." : "Post"; primary: true;
+                        enabled: !root.posting;
+                        clicked => { root.create(); }
+                    }
+                }
+            }
+        }
+    }
+    tags-menu := PopupWindow {
+        width: min(root.width - 32px, 320px);
+        x: max(16px, min(root.width - self.width - 16px, root.menu-x));
+        y: max(8px, min(root.height - self.height - 8px, root.menu-y));
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Theme.sidebar; border-radius: 8px; border-width: 1px; border-color: Theme.edge;
+            drop-shadow-blur: 16px; drop-shadow-color: #00000060;
+            VerticalLayout {
+                padding: 6px;
+                Text { text: "Select up to 5 tags"; color: Theme.muted; font-size: 12px; font-weight: 700; height: 28px; vertical-alignment: center; x: 8px; }
+                for choice in root.tag-choices: tag-row := Rectangle {
+                    property <bool> enabled: choice.chosen || root.more-tags;
+                    height: 36px; border-radius: 4px;
+                    background: row-touch.has-hover && self.enabled ? Theme.hover : transparent;
+                    accessible-role: checkbox;
+                    accessible-label: choice.tag.name;
+                    accessible-checked: choice.chosen;
+                    accessible-enabled: self.enabled;
+                    accessible-action-default => { if self.enabled { root.toggle-tag(choice.id); } }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 8px;
+                        if choice.tag.emoji != "" || choice.tag.emoji-url != "": PostEmoji { emoji: choice.tag; size: 16px; }
+                        Text {
+                            text: choice.tag.name; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1;
+                            color: tag-row.enabled ? Theme.text : Theme.faint;
+                        }
+                        Middle {
+                            Rectangle {
+                                width: 18px; height: 18px; border-radius: 4px;
+                                border-width: choice.chosen ? 0px : 2px; border-color: Theme.muted;
+                                background: choice.chosen ? Theme.accent : transparent;
+                                if choice.chosen: Image { source: @image-url("icons/check.svg"); width: 14px; height: 14px; colorize: Theme.on-accent; }
+                            }
+                        }
+                    }
+                    row-touch := TouchArea {
+                        enabled: parent.enabled;
+                        mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                        clicked => { root.toggle-tag(choice.id); }
+                    }
+                }
+            }
+        }
+    }
+    // Leaving what was written, as Discord's client asks.
+    if root.leaving: Rectangle {
+        background: #000000a0;
+        TouchArea { }
+        Rectangle {
+            width: min(parent.width - 32px, 440px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            height: ask.preferred-height;
+            background: Theme.sidebar; border-radius: 10px; border-width: 1px; border-color: Theme.edge;
+            ask := VerticalLayout {
+                padding: 16px; spacing: 10px;
+                Text { text: "Are you sure you want to go?"; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
+                Text { text: "Any changes you made will be lost if you exit now."; color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px; padding-top: 6px;
+                    ActionButton { text: "Back to editing"; ghost: true; clicked => { root.stay(); } }
+                    ActionButton { text: "Exit"; danger: true; clicked => { root.leave(); } }
+                }
+            }
+        }
+    }
+}
+
 export component ForumPanel inherits Rectangle {
     in property <[PostRow]> rows;
     /// Said instead of the list: while it loads, or why it failed.
@@ -204,22 +456,79 @@ export component ForumPanel inherits Rectangle {
     /// More cards are still to come, and a page of older ones is on its way.
     in property <bool> more;
     in property <bool> loading;
+    /// This account may post here, and the form for a post is open.
+    in property <bool> can-post;
+    in property <bool> composing;
+    in-out property <string> post-title;
+    in-out property <string> post-body;
+    in property <[PostTagChoice]> chosen-tags;
+    in property <[PostTagChoice]> tag-choices;
+    in property <bool> tag-required;
+    in property <bool> more-tags;
+    in property <styled-text> guidelines;
+    in property <bool> has-guidelines;
+    in property <[StagedFile]> staged;
+    in property <bool> can-attach;
+    in property <bool> can-mark-spoilers;
+    in property <bool> posting;
+    in property <string> post-error;
+    in property <bool> leaving;
     callback search(string);
     callback open(string, bool);
     callback more-posts;
+    callback new-post;
+    callback post-title-edited(string);
+    callback post-body-edited(string);
+    callback toggle-tag(string);
+    callback attach;
+    callback unstage(int);
+    callback toggle-spoiler(int);
+    callback create-post;
+    callback close-post;
+    callback leave-post;
+    callback stay-post;
+    callback open-link(string);
     accessible-role: groupbox;
     accessible-label: "Posts";
     /// The list was scrolled by hand since it opened.
     property <bool> scrolled-by-hand;
-    VerticalLayout {
-        if root.searchable: Rectangle {
+    if root.composing: NewPostForm {
+        title <=> root.post-title; body <=> root.post-body;
+        chosen-tags: root.chosen-tags; tag-choices: root.tag-choices;
+        tag-required: root.tag-required; more-tags: root.more-tags;
+        guidelines: root.guidelines; has-guidelines: root.has-guidelines;
+        staged: root.staged; can-attach: root.can-attach; can-mark-spoilers: root.can-mark-spoilers;
+        posting: root.posting; error: root.post-error; leaving: root.leaving;
+        title-edited(text) => { root.post-title-edited(text); }
+        body-edited(text) => { root.post-body-edited(text); }
+        toggle-tag(id) => { root.toggle-tag(id); }
+        attach => { root.attach(); }
+        unstage(index) => { root.unstage(index); }
+        toggle-spoiler(index) => { root.toggle-spoiler(index); }
+        create => { root.create-post(); }
+        close => { root.close-post(); }
+        leave => { root.leave-post(); }
+        stay => { root.stay-post(); }
+        open-link(link) => { root.open-link(link); }
+        init => { self.focus-title(); }
+    }
+    if !root.composing: VerticalLayout {
+        if root.searchable || root.can-post: Rectangle {
             height: 60px;
-            HeaderSearch {
-                x: 16px; y: 16px; width: parent.width - 32px; height: 36px;
+            if root.searchable: HeaderSearch {
+                x: 16px; y: 16px; height: 36px;
+                width: parent.width - 32px - (root.can-post ? new-post.width + 8px : 0px);
                 text <=> root.query;
                 placeholder: "Search posts";
                 search(text) => { root.search(text); }
                 clear => { root.query = ""; root.search(""); }
+            }
+            new-post := ActionButton {
+                visible: root.can-post;
+                x: parent.width - 16px - self.width; y: 16px;
+                width: self.min-width; height: 36px;
+                text: "New Post"; icon: @image-url("icons/messages-square.svg"); primary: true;
+                clicked => { root.new-post(); }
             }
         }
         if root.note != "": VerticalLayout {

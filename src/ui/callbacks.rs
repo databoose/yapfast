@@ -558,6 +558,11 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     bind!(on_close_new_thread, Action::CloseNewThread);
     bind!(on_leave_new_thread, Action::LeaveNewThread);
     bind!(on_stay_in_new_thread, Action::StayInNewThread);
+    bind!(on_new_post, Action::NewPost);
+    bind!(on_create_post, Action::CreatePost);
+    bind!(on_close_post, Action::CloseNewPost);
+    bind!(on_leave_post, Action::LeaveNewPost);
+    bind!(on_stay_post, Action::StayInNewPost);
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();
@@ -622,6 +627,44 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
                         body: Some(body.into()),
                     },
                 );
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_post_title_edited(move |title| {
+            if let Some(window) = weak.upgrade() {
+                adapter.borrow_mut().action(
+                    &window,
+                    Action::WriteNewPost {
+                        title: Some(title.into()),
+                        body: None,
+                    },
+                );
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_post_body_edited(move |body| {
+            if let Some(window) = weak.upgrade() {
+                adapter.borrow_mut().action(
+                    &window,
+                    Action::WriteNewPost {
+                        title: None,
+                        body: Some(body.into()),
+                    },
+                );
+            }
+        });
+    }
+    {
+        let (adapter, weak) = (adapter.clone(), window.as_weak());
+        window.on_toggle_post_tag(move |tag| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::TogglePostTag(tag.into()));
             }
         });
     }

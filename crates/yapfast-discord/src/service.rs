@@ -939,30 +939,85 @@ impl Discord {
         options: crate::api::Sending<'_>,
         files: Vec<(String, Vec<u8>)>,
     ) -> Result<Message> {
-        let mut uploads = Vec::with_capacity(files.len());
-        for (name, data) in files {
-            match self.api.upload(channel, &name, data).await {
-                Ok(upload) => uploads.push(upload),
-                Err(error) => {
-                    for upload in &uploads {
-                        let _ = self.api.discard(upload).await;
-                    }
-                    return Err(error);
-                }
-            }
-        }
+        let uploads = self.upload(channel, files).await?;
         let sent = self
             .api
             .send(server(guild), channel, content, options, &uploads)
             .await;
         if sent.is_err() {
-            for upload in &uploads {
-                let _ = self.api.discard(upload).await;
-            }
+            self.discard(&uploads).await;
         }
         let value = sent?;
         self.write_names().learn_message(server(guild), &value);
         message::parse(&value).ok_or_else(|| anyhow!("could not understand Discord's answer"))
+    }
+
+    /// Uploads files for a message in `channel`, given as their names and
+    /// contents; if one fails, the others are thrown away.
+    async fn upload(
+        &self,
+        channel: &str,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<crate::api::Upload>> {
+        let mut uploads = Vec::with_capacity(files.len());
+        for (name, data) in files {
+            match self.api.upload(channel, &name, data).await {
+                Ok(upload) => uploads.push(upload),
+                Err(error) => {
+                    self.discard(&uploads).await;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(uploads)
+    }
+
+    /// Throws away uploads no message took.
+    async fn discard(&self, uploads: &[crate::api::Upload]) {
+        for upload in uploads {
+            let _ = self.api.discard(upload).await;
+        }
+    }
+
+    /// Posts in a server's forum, as Discord's client does: a post named
+    /// `title` with the forum's tags by id, archiving after the forum's
+    /// default quiet, or three days, and a first message of `content` and
+    /// files, given as their names and contents, uploaded to the forum.
+    /// Returns the post's id; it lists once Discord's THREAD_CREATE comes.
+    pub async fn post_in_forum(
+        &self,
+        guild: &str,
+        forum: &str,
+        title: &str,
+        tags: &[String],
+        content: &str,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<String> {
+        let archive_after = {
+            let snapshot = self.snapshots.borrow();
+            let forum = snapshot
+                .servers
+                .iter()
+                .find(|server| server.id == guild)
+                .and_then(|server| server.channel(forum))
+                .ok_or_else(|| anyhow!("Yapfast doesn't know that forum."))?;
+            match forum.archive_after {
+                0 => DEFAULT_ARCHIVE,
+                minutes => minutes,
+            }
+        };
+        let uploads = self.upload(forum, files).await?;
+        let posted = self
+            .api
+            .create_post(forum, title, archive_after, tags, content, &uploads)
+            .await;
+        if posted.is_err() {
+            self.discard(&uploads).await;
+        }
+        posted?["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("could not understand Discord's answer"))
     }
 
     /// Posts a poll in `channel`, of `guild`. The gateway shows it.

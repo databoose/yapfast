@@ -491,10 +491,71 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::PostInForum {
+        room,
+        title,
+        tags,
+        body,
+        files,
+    }) = command
+    {
+        let place =
+            discord::parse_room(&room).map(|(guild, forum)| (guild.to_owned(), forum.to_owned()));
+        match (discord, place) {
+            (Ok(discord), Some((guild, forum))) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = async {
+                        let mut read = Vec::with_capacity(files.len());
+                        for file in files {
+                            let name = file
+                                .path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let data = tokio::fs::read(&file.path)
+                                .await
+                                .map_err(|_| format!("Yapfast could not read {name}."))?;
+                            read.push((
+                                super::open_channel::upload_name(&name, file.spoiler),
+                                data,
+                            ));
+                        }
+                        discord
+                            .post_in_forum(&guild, &forum, &title, &tags, &body, read)
+                            .await
+                            .map(|post| discord::room_id(&guild, &post))
+                            .map_err(|error| {
+                                tracing::warn!(
+                                    error = format!("{error:#}"),
+                                    "could not post in a forum"
+                                );
+                                format!("Couldn't create the post: {error}")
+                            })
+                    }
+                    .await;
+                    let _ = events.send(Event::ForumPosted { room, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::ForumPosted {
+                    room,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::ViewForum { room }) = &command {
-        if let (Ok(discord), Some((guild, _))) = (discord, discord::parse_room(room)) {
+        if let (Ok(discord), Some((guild, forum))) = (discord, discord::parse_room(room)) {
             // Its posts come with the server's threads; it has no member list.
             discord.view(guild, None);
+            // Its topic is the guidelines the form for a post shows.
+            let topic = super::render::forum_topic(discord, guild, forum);
+            let _ = events.send(Event::Topic {
+                room: room.clone(),
+                topic,
+            });
         }
         return None;
     }

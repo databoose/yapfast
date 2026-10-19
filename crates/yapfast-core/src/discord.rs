@@ -475,6 +475,7 @@ pub fn forum_tags(forum: &yapfast_discord::forum::Forum) -> Vec<chat::ForumTag> 
             id: tag.id.clone(),
             name: tag.name.clone(),
             emoji: tag.emoji.as_ref().map(shown_emoji),
+            moderated: tag.moderated,
         })
         .collect()
 }

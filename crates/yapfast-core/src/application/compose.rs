@@ -299,6 +299,17 @@ impl Application {
             self.state.notice = Some("Files can't be added to a message being edited.".into());
             return;
         }
+        // A forum's files go with a post, whose form they open, as Discord's
+        // client opens it for files dropped on a forum.
+        if self.state.forum().is_some() {
+            if self.state.new_post().is_some_and(|post| post.posting) {
+                return;
+            }
+            self.open_new_post();
+            if self.state.new_post().is_none() {
+                return;
+            }
+        }
         let Some((id, limit)) = self
             .state
             .selected_room()

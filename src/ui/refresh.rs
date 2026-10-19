@@ -199,6 +199,7 @@ impl Adapter {
         self.show_dm_tools(window);
         self.show_threads(window);
         self.show_forum(window);
+        self.show_new_post(window);
         self.show_new_thread(window);
         self.show_members(window);
         self.show_invite(window);
@@ -992,6 +993,65 @@ impl Adapter {
         self.models.post_rows.set_vec(rows);
     }
 
+    /// The form for a post in the forum on screen.
+    fn show_new_post(&mut self, window: &YapfastWindow) {
+        let app = &self.app;
+        let state = &app.state;
+        window.set_can_post(app.can_post());
+        let post = state.new_post();
+        window.set_post_composing(post.is_some());
+        let Some(post) = post else {
+            if self.post_tags_shown.take().is_some() {
+                self.models.post_chosen_tags.set_vec(Vec::new());
+                self.models.post_tag_choices.set_vec(Vec::new());
+            }
+            return;
+        };
+        // The fields are the window's while it's open; Yapfast writes them only
+        // when they differ, so the caret stays.
+        if window.get_post_title() != post.title.as_str() {
+            window.set_post_title(post.title.as_str().into());
+        }
+        if window.get_post_body() != post.body.as_str() {
+            window.set_post_body(post.body.as_str().into());
+        }
+        let info = app.forum_info(&post.room).unwrap_or_default();
+        window.set_post_tag_required(info.require_tag);
+        window.set_post_more_tags(post.tags.len() < yapfast_core::application::POST_TAGS);
+        let topic = state.topic.as_ref();
+        window.set_post_has_guidelines(topic.is_some_and(|topic| !topic.body.trim().is_empty()));
+        if !matches!((topic, &self.guidelines_shown), (Some(topic), Some(shown)) if Arc::ptr_eq(topic, shown))
+        {
+            self.guidelines_shown = topic.cloned();
+            window.set_post_guidelines(topic.map_or_else(slint::StyledText::default, |topic| {
+                super::messages::topic_text(topic, false)
+            }));
+        }
+        window.set_posting(post.posting);
+        window.set_post_error(post.error.as_deref().unwrap_or_default().into());
+        window.set_post_leaving(post.leaving);
+        let tags = app.post_tags(&post.room);
+        let shown = (tags.clone(), post.tags.clone());
+        if self.post_tags_shown.as_ref() == Some(&shown) {
+            return;
+        }
+        let choice = |tag: &yapfast_core::chat::ForumTag| PostTagChoice {
+            id: tag.id.as_str().into(),
+            tag: post_tag(&tag.name, tag.emoji.as_ref()),
+            chosen: post.tags.contains(&tag.id),
+        };
+        let chosen: Vec<PostTagChoice> = post
+            .tags
+            .iter()
+            .filter_map(|id| tags.iter().find(|tag| &tag.id == id))
+            .map(choice)
+            .collect();
+        let choices: Vec<PostTagChoice> = tags.iter().map(choice).collect();
+        self.models.post_chosen_tags.set_vec(chosen);
+        self.models.post_tag_choices.set_vec(choices);
+        self.post_tags_shown = Some(shown);
+    }
+
     /// The open conversation's header.
     fn show_header(&mut self, window: &YapfastWindow) {
         let state = &self.app.state;
@@ -1058,7 +1118,11 @@ impl Adapter {
                 .menu_choices(id)
                 .contains(&yapfast_core::application::MenuChoice::ChannelNotifications)
         }));
-        let topic = state.topic.as_ref();
+        // A forum's topic is its post guidelines, which the form shows.
+        let topic = state
+            .topic
+            .as_ref()
+            .filter(|_| !room.is_some_and(|room| room.forum));
         window.set_has_topic(topic.is_some());
         let same = match (topic, &self.topic_shown) {
             (Some(topic), Some(shown)) => Arc::ptr_eq(topic, shown),
@@ -3401,6 +3465,20 @@ fn thread_row(thread: &yapfast_core::chat::ListedThread, now: u64) -> ThreadRow 
     }
 }
 
+/// A forum's tag, or an emoji, as a card or the form for a post shows it.
+fn post_tag(name: &str, emoji: Option<&yapfast_core::chat::ShownEmoji>) -> PostTag {
+    PostTag {
+        name: name.into(),
+        emoji: emoji
+            .filter(|emoji| emoji.picture.is_none())
+            .map_or(SharedString::default(), |emoji| emoji.text.as_str().into()),
+        emoji_url: emoji
+            .and_then(|emoji| emoji.picture.as_deref())
+            .unwrap_or_default()
+            .into(),
+    }
+}
+
 /// A forum post as its card shows it, as Discord's client does: its first
 /// three tags, its first message's author and text, its top reaction or the
 /// forum's own, its replies, and when it was last active, or made when the
@@ -3412,16 +3490,7 @@ fn post_row(
 ) -> PostRow {
     const TAGS: usize = 3;
     let thread = &post.thread;
-    let tag = |name: &str, emoji: Option<&yapfast_core::chat::ShownEmoji>| PostTag {
-        name: name.into(),
-        emoji: emoji
-            .filter(|emoji| emoji.picture.is_none())
-            .map_or(SharedString::default(), |emoji| emoji.text.as_str().into()),
-        emoji_url: emoji
-            .and_then(|emoji| emoji.picture.as_deref())
-            .unwrap_or_default()
-            .into(),
-    };
+    let tag = post_tag;
     let tags: Vec<PostTag> = post
         .tags
         .iter()

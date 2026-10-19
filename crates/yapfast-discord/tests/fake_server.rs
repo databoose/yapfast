@@ -2742,6 +2742,7 @@ async fn talks_to_the_fake_server() {
     lists_who_reacted_as_discords_client_does(&discord, server, &guild, &general).await;
     finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
+    posts_in_a_forum_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -2961,6 +2962,83 @@ async fn shows_a_forum_as_discords_client_does(discord: &Discord, server: &str, 
         .find(|thread| thread.name == "Emoji picker search")
         .unwrap();
     assert_eq!(new.thread.as_deref().unwrap().tags, [details_tag(forum, 0)]);
+}
+
+async fn posts_in_a_forum_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    let forum = |snapshot: &Snapshot| {
+        snapshot.servers[0]
+            .text_channels
+            .iter()
+            .find(|channel| channel.name == "ideas")
+            .cloned()
+            .unwrap()
+    };
+    // A forum that requires a tag refuses a post without one.
+    post_control(server, "/_control/forum-require-tag", "");
+    let snapshot = snapshot_where(discord, |snapshot| {
+        forum(snapshot)
+            .forum
+            .as_deref()
+            .is_some_and(|forum| forum.require_tag)
+    })
+    .await;
+    let ideas = forum(&snapshot);
+    let refused = discord
+        .post_in_forum(guild, &ideas.id, "Untagged", &[], "Hello", vec![])
+        .await;
+    assert!(refused.is_err_and(|error| error.to_string().contains("tag is required")));
+
+    // A post with a tag, text and a file lists, its first message with
+    // them, as Discord sends it.
+    let bug = details_tag(&ideas, 1);
+    let post = discord
+        .post_in_forum(
+            guild,
+            &ideas.id,
+            "Crash when dragging",
+            std::slice::from_ref(&bug),
+            "It closes.",
+            vec![("notes.txt".into(), b"steps".to_vec())],
+        )
+        .await
+        .unwrap();
+    let snapshot = snapshot_where(discord, |snapshot| {
+        snapshot.servers[0]
+            .threads
+            .iter()
+            .any(|thread| thread.id == post)
+    })
+    .await;
+    let listed = snapshot.servers[0]
+        .threads
+        .iter()
+        .find(|thread| thread.id == post)
+        .unwrap();
+    assert_eq!(listed.name, "Crash when dragging");
+    assert_eq!(listed.parent.as_deref(), Some(ideas.id.as_str()));
+    assert_eq!(
+        listed.thread.as_deref().unwrap().tags,
+        std::slice::from_ref(&bug)
+    );
+    let first = discord
+        .history(guild, &post, Span::Latest)
+        .await
+        .unwrap()
+        .messages;
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].id, post, "the first message has the post's id");
+    assert_eq!(first[0].content, "It closes.");
+    assert_eq!(first[0].attachments.len(), 1);
+    assert_eq!(first[0].attachments[0].name, "notes.txt");
+    let creates: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/thread-creates", "")).unwrap();
+    let body = creates.as_array().unwrap().last().unwrap();
+    assert_eq!(body["name"], "Crash when dragging");
+    assert_eq!(body["applied_tags"], serde_json::json!([bug]));
+    assert_eq!(body["auto_archive_duration"], 4320);
+    assert_eq!(body["message"]["content"], "It closes.");
+    assert_eq!(body["message"]["attachments"][0]["filename"], "notes.txt");
+    post_control(server, "/_control/forum-require-tag?off", "");
 }
 
 /// The id of a forum's `index`th tag.

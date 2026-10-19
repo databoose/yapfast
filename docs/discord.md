@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Posting in forums, pinning messages, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, server settings and privacy |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1815,12 +1815,33 @@ read, which acknowledges its newest message, as Discord's client does; a
 forum's newest message is its newest post, so a post made since makes it
 unread (THREAD_CREATE with `newly_created`).
 
+New Post, beside the search, opens the form for a post in place of the
+list, as Discord's client opens it at the top of a forum
+(`application/new_post.rs`, `NewPostForm`). Discord's client offers it
+with Send Messages on the forum, which is all posting takes. The form has
+a title of at most 100 characters; up to five of the forum's tags, its
+moderated ones only with Manage Threads; the forum's topic as its "Post
+Guidelines"; and a first message, whose files are the forum's staged ones,
+so files dropped on a forum open the form. Posting asks for a title, then
+a message or a file, then a tag if the forum requires one (flag 16), with
+Discord's client's words. The post goes as Discord's client sends it: the
+files are uploaded to the forum, then `POST
+/channels/{id}/threads?use_nested_fields=true` takes the `name`, the
+forum's `default_auto_archive_duration` (three days without one),
+`applied_tags`, and the first message nested as `message`, with its
+`content` and `attachments`. Discord sends THREAD_CREATE, then the first
+message, whose id is the post's; the post opens beside the forum. What was
+written stays while other rooms show; closing the form after writing asks
+first.
+
 The fake's #ideas has a pinned welcome, "Dark theme for the sidebar",
 which Alice is in, with reactions and replies, a crash report with a
 screenshot and two tags, a newer post she never opened, and three archived
 ones. It answers `post-data` (`/_control/post-data` lists each request's
 ids), gives first messages with a forum's search, and `/_control/forum-post`
-makes Carol post.
+makes Carol post. It takes Alice's posts as Discord does, refusing the
+moderated tag, and `/_control/forum-require-tag` (`?off`) makes the forum
+require a tag.
 
 ### Editing one's server profile
 
@@ -2167,8 +2188,8 @@ Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 
 In rough order. The browser covers these until then.
 
-- Posting in forums, sorting and filtering a forum's posts by tag, its
-  gallery layout, and media channels.
+- Sorting and filtering a forum's posts by tag, its gallery layout, and
+  media channels.
 - Pinning and unpinning messages.
 - Making and changing server folders.
 - Joining servers by invite.

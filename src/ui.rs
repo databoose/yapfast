@@ -1086,6 +1086,9 @@ struct Models {
     thread_rows: Rc<VecModel<ThreadRow>>,
     /// The open forum's posts.
     post_rows: Rc<VecModel<PostRow>>,
+    /// The form for a post's chosen tags, and those it offers.
+    post_chosen_tags: Rc<VecModel<PostTagChoice>>,
+    post_tag_choices: Rc<VecModel<PostTagChoice>>,
     /// The Reactions window's reactions, and who reacted with the chosen one.
     reaction_pills: Rc<VecModel<ReactionPill>>,
     reactor_rows: Rc<VecModel<ReactorRow>>,
@@ -1136,6 +1139,8 @@ impl Models {
         window.set_pins(ModelRc::from(self.pins.clone()));
         window.set_thread_rows(ModelRc::from(self.thread_rows.clone()));
         window.set_post_rows(ModelRc::from(self.post_rows.clone()));
+        window.set_post_chosen_tags(ModelRc::from(self.post_chosen_tags.clone()));
+        window.set_post_tag_choices(ModelRc::from(self.post_tag_choices.clone()));
         window.set_reaction_pills(ModelRc::from(self.reaction_pills.clone()));
         window.set_reactor_rows(ModelRc::from(self.reactor_rows.clone()));
         window.set_poll_answers(ModelRc::from(self.poll_answers.clone()));
@@ -1252,6 +1257,10 @@ struct Adapter {
     forum_shown: Option<u64>,
     /// The topic the header shows, so it's styled again only once it changes.
     topic_shown: Option<Arc<yapfast_core::chat::Topic>>,
+    /// The forum's guidelines as the form for a post last showed them, and
+    /// the tags it offered and had.
+    guidelines_shown: Option<Arc<yapfast_core::chat::Topic>>,
+    post_tags_shown: Option<(Vec<yapfast_core::chat::ForumTag>, Vec<String>)>,
     /// Shows pictures that arrived, together with those that follow them closely.
     pictures_due: slint::Timer,
     /// Writes the layout once the window holds still after moving or resizing.
@@ -1449,6 +1458,8 @@ impl Adapter {
                 threads_shown: None,
                 forum_shown: None,
                 topic_shown: None,
+                guidelines_shown: None,
+                post_tags_shown: None,
                 pictures_due: slint::Timer::default(),
                 placement_due: slint::Timer::default(),
                 video_quiet: Cell::new(0),

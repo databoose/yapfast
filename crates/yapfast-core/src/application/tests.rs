@@ -7442,3 +7442,141 @@ fn a_forum_shows_its_posts_as_discords_client_does() {
     )));
     assert!(app.state.forum.is_none());
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_forum_post_needs_a_title_a_message_and_a_tag_the_forum_requires() {
+    use yapfast_discord::{
+        ready::{self, permission},
+        service::{Snapshot, Status},
+    };
+    let backend = |effects: Vec<Effect>| -> Vec<Command> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Backend(command) => Some(command),
+                _ => None,
+            })
+            .collect()
+    };
+    let folder = tempfile::tempdir().unwrap();
+    let crash = folder.path().join("crash.png");
+    std::fs::File::create(&crash).unwrap().set_len(3).unwrap();
+    let server = ready::server(&serde_json::json!({
+        "id": "10", "owner_id": "99", "properties": {"name": "Test"},
+        "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": (
+            permission::VIEW_CHANNEL | permission::SEND_MESSAGES
+                | permission::READ_MESSAGE_HISTORY).to_string()}],
+        "channels": [
+            {"id": "11", "type": 0, "name": "general", "position": 0},
+            {"id": "15", "type": 15, "name": "ideas", "position": 1, "flags": 16,
+             "available_tags": [
+                 {"id": "7", "name": "Bug", "emoji_id": null, "emoji_name": "🐛"},
+                 {"id": "8", "name": "Idea", "emoji_id": null, "emoji_name": "💡"},
+                 {"id": "9", "name": "Done", "moderated": true, "emoji_id": null, "emoji_name": "✅"},
+             ]},
+        ],
+    }))
+    .unwrap();
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        servers: vec![Arc::new(server)],
+        ..Default::default()
+    }));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    let ideas = "discord:10:15".to_owned();
+    app.dispatch(Action::SelectRoom(ideas.clone()));
+    assert!(app.can_post(), "Send Messages is enough");
+    // A moderated tag is for those who manage threads.
+    let tags: Vec<_> = app
+        .post_tags(&ideas)
+        .into_iter()
+        .map(|tag| tag.id)
+        .collect();
+    assert_eq!(tags, ["7", "8"]);
+
+    app.dispatch(Action::NewPost);
+    let error = |app: &Application| app.state.new_post().and_then(|post| post.error.clone());
+    assert!(backend(app.dispatch(Action::CreatePost)).is_empty());
+    assert_eq!(error(&app).as_deref(), Some("A title is required"));
+
+    // A title is one line of at most 100 characters.
+    app.dispatch(Action::WriteNewPost {
+        title: Some(format!("Crash\n{}", "x".repeat(120))),
+        body: None,
+    });
+    let title = app.state.new_post().unwrap().title.clone();
+    assert!(title.starts_with("Crash x") && title.chars().count() == POST_TITLE_LIMIT);
+    app.dispatch(Action::WriteNewPost {
+        title: Some("Crash when pasting".into()),
+        body: None,
+    });
+    assert!(backend(app.dispatch(Action::CreatePost)).is_empty());
+    assert_eq!(error(&app).as_deref(), Some("A message is required"));
+
+    // A file is a message too, and the forum requires a tag.
+    app.dispatch(Action::Stage(vec![crash.clone()]));
+    assert!(backend(app.dispatch(Action::CreatePost)).is_empty());
+    assert_eq!(
+        error(&app).as_deref(),
+        Some("A tag is required to create a post in this channel")
+    );
+    for tag in ["9", "8", "7", "8"] {
+        app.dispatch(Action::TogglePostTag(tag.into()));
+    }
+    assert_eq!(app.state.new_post().unwrap().tags, ["7"]);
+    app.dispatch(Action::WriteNewPost {
+        title: None,
+        body: Some("It closes.\n".into()),
+    });
+    let posted = backend(app.dispatch(Action::CreatePost));
+    assert!(matches!(
+        posted.as_slice(),
+        [Command::Discord(DiscordCommand::PostInForum { room, title, tags, body, files })]
+            if *room == ideas && title == "Crash when pasting" && tags == &["7"]
+                && body == "It closes." && files.len() == 1 && files[0].path == crash
+    ));
+    // Nothing changes while it's on its way, and a refusal says why.
+    app.dispatch(Action::TogglePostTag("8".into()));
+    assert_eq!(app.state.new_post().unwrap().tags, ["7"]);
+    app.apply(Event::ForumPosted {
+        room: ideas.clone(),
+        result: Err("Couldn't create the post: Missing Access".into()),
+    });
+    assert!(!app.state.new_post().unwrap().posting);
+    assert!(error(&app).is_some_and(|error| error.contains("Missing Access")));
+
+    // Once made, the form and its files go.
+    assert_eq!(backend(app.dispatch(Action::CreatePost)).len(), 1);
+    app.apply(Event::ForumPosted {
+        room: ideas.clone(),
+        result: Ok("discord:10:70".into()),
+    });
+    assert!(app.state.new_post.is_none());
+    assert!(app.state.staged().is_empty());
+
+    // What was written stays while another room shows, and closing asks
+    // first.
+    app.dispatch(Action::NewPost);
+    app.dispatch(Action::WriteNewPost {
+        title: Some("Later".into()),
+        body: None,
+    });
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    assert!(app.state.new_post().is_none());
+    app.dispatch(Action::SelectRoom(ideas.clone()));
+    assert_eq!(app.state.new_post().unwrap().title, "Later");
+    app.dispatch(Action::CloseNewPost);
+    assert!(app.state.new_post().unwrap().leaving);
+    app.dispatch(Action::StayInNewPost);
+    assert!(!app.state.new_post().unwrap().leaving);
+    app.dispatch(Action::LeaveNewPost);
+    assert!(app.state.new_post.is_none());
+
+    // Files dropped on the forum open the form.
+    app.dispatch(Action::Stage(vec![crash]));
+    assert!(app.state.new_post().is_some());
+    assert_eq!(app.state.staged().len(), 1);
+}

@@ -36,7 +36,7 @@ import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ServerProfile
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
-import { PostTag, PostRow, ForumPanel } from "forum.slint";
+import { PostTag, PostRow, PostTagChoice, ForumPanel } from "forum.slint";
 
 // Rust sees these, besides YapfastWindow.
 export { Theme, Badges } from "theme.slint";
@@ -652,6 +652,30 @@ export component YapfastWindow inherits Window {
     in property <bool> posts-loading;
     callback search-posts(string);
     callback more-posts;
+    // The form for a post in the forum; see NewPostForm. Its files are the
+    // staged ones.
+    in property <bool> can-post;
+    in property <bool> post-composing;
+    in-out property <string> post-title;
+    in-out property <string> post-body;
+    in property <[PostTagChoice]> post-chosen-tags;
+    in property <[PostTagChoice]> post-tag-choices;
+    in property <bool> post-tag-required;
+    in property <bool> post-more-tags;
+    /// The forum's topic: its post guidelines.
+    in property <styled-text> post-guidelines;
+    in property <bool> post-has-guidelines;
+    in property <bool> posting;
+    in property <string> post-error;
+    in property <bool> post-leaving;
+    callback new-post;
+    callback post-title-edited(string);
+    callback post-body-edited(string);
+    callback toggle-post-tag(string);
+    callback create-post;
+    callback close-post;
+    callback leave-post;
+    callback stay-post;
     // Making a poll; see PollDialog.
     /// Polls can be made in the open conversation.
     in property <bool> can-create-polls;
@@ -2090,9 +2114,28 @@ export component YapfastWindow inherits Window {
                             searching: root.posts-searching; searchable: root.posts-searchable;
                             query <=> root.posts-query;
                             more: root.posts-more; loading: root.posts-loading;
+                            can-post: root.can-post; composing: root.post-composing;
+                            post-title <=> root.post-title; post-body <=> root.post-body;
+                            chosen-tags: root.post-chosen-tags; tag-choices: root.post-tag-choices;
+                            tag-required: root.post-tag-required; more-tags: root.post-more-tags;
+                            guidelines: root.post-guidelines; has-guidelines: root.post-has-guidelines;
+                            staged: root.staged; can-attach: root.can-attach; can-mark-spoilers: root.can-mark-spoilers;
+                            posting: root.posting; post-error: root.post-error; leaving: root.post-leaving;
                             search(text) => { root.search-posts(text); }
                             more-posts => { root.more-posts(); }
                             open(room, beside) => { root.open-listed-thread(room, beside); }
+                            new-post => { root.new-post(); }
+                            post-title-edited(text) => { root.post-title-edited(text); }
+                            post-body-edited(text) => { root.post-body-edited(text); }
+                            toggle-tag(id) => { root.toggle-post-tag(id); }
+                            attach => { root.attach(); }
+                            unstage(index) => { root.unstage(index); }
+                            toggle-spoiler(index) => { root.toggle-spoiler(index); }
+                            create-post => { root.create-post(); }
+                            close-post => { root.close-post(); }
+                            leave-post => { root.leave-post(); }
+                            stay-post => { root.stay-post(); }
+                            open-link(link) => { root.open-link(link); }
                         }
                         // Text conversation.
                         Rectangle {
