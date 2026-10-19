@@ -122,6 +122,19 @@ It compiles from source, so give it a few minutes. No Nix? Then
 Not yet, sorry :( I'd love to make one, but I don't own an Apple machine to
 test it on.
 
+### Nightly builds
+
+Want what's on `main` right now, without waiting for a release or building it
+yourself? Every now and then I put out a nightly build of the Discord-only app.
+They're on the [releases page](https://github.com/yapfast/yapfast/releases),
+marked **Pre-release**, newest first, each with a list of what changed:
+
+- **Windows:** the portable ZIP. Extract it and double-click `yapfast.exe`.
+- **Linux:** the AppImage, the one coming to releases too. `chmod +x` it and
+  run it.
+
+They're untested between releases, so expect the odd rough edge.
+
 ## Features
 
 - Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from

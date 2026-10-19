@@ -1,6 +1,5 @@
 # A nightly release of main, made on demand: Actions > Nightly > Run workflow.
-# It builds the Linux AppImage and the Windows ZIP and installer as the
-# releases are built, and publishes them as a prerelease of the next minor
+# It builds the Linux AppImage and the Windows ZIP as the releases are built, and publishes them as a prerelease of the next minor
 # version, such as v0.2.0-nightly.20261020.5. See docs/building.md.
 name: Nightly
 
@@ -48,6 +47,10 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
       - run: scripts/set-version "${{ needs.version.outputs.version }}"
+      # A fresh runner installs Rust and fetches the crates for longer than
+      # scripts/package-linux.py gives cargo metadata.
+      - name: Fetch the toolchain and crates
+        run: nix develop path:./nix --command cargo fetch --locked
       - run: scripts/build-appimage
       - uses: actions/upload-artifact@v4
         with:
@@ -83,7 +86,9 @@ jobs:
         with:
           cache-on-failure: true
       - run: scripts/set-version "${{ needs.version.outputs.version }}"
-      - run: nix develop path:./nix#windows --command scripts/build-windows
+      # Wine doesn't start on the runner (kernel32.dll, c0000135), so Inno
+      # Setup can't make the installer there.
+      - run: nix develop path:./nix#windows --command scripts/build-windows discord --no-installer
       - uses: actions/upload-artifact@v4
         with:
           name: windows
