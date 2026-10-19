@@ -67,7 +67,8 @@ impl Marks {
         let mut channels = Vec::with_capacity(
             server.text_channels.len() + server.voice_channels.len() + server.threads.len(),
         );
-        for channel in &server.text_channels {
+        // A voice channel's chat is read as a text channel is.
+        for channel in server.text_channels.iter().chain(&server.voice_channels) {
             let access = server.access(channel, me, roles);
             let (muted, unread, mentions) = unreads.channel(&server.id, channel, access);
             channels.push(ChannelMarks {
@@ -77,18 +78,6 @@ impl Marks {
                 unread,
                 mentions,
                 last_read: unreads.last_read(&server.id, &channel.id),
-                quiet: false,
-                opened: false,
-            });
-        }
-        for channel in &server.voice_channels {
-            channels.push(ChannelMarks {
-                access: server.access(channel, me, roles),
-                mention_everyone: server.may_mention_everyone(channel, me, roles),
-                muted: channel.muted,
-                unread: channel.unread,
-                mentions: channel.mentions,
-                last_read: channel.last_read,
                 quiet: false,
                 opened: false,
             });
@@ -116,19 +105,18 @@ impl Marks {
         }
     }
 
-    /// These marks, made from `server`, with the unread state of its text
+    /// These marks, made from `server`, with the unread state of its
     /// channels and threads, and which threads are quiet, as they are at
     /// `now`.
     pub(super) fn unread(&self, server: &Server, unreads: &Unreads, now: u64) -> Self {
         let mut channels = self.channels.clone();
-        // Text channels come first, and threads after the voice channels.
-        let (text, rest) = channels.split_at_mut(server.text_channels.len());
-        let threads = &mut rest[server.voice_channels.len()..];
+        // In the order of `new`: text channels, voice channels, threads.
         let written = server
             .text_channels
             .iter()
-            .zip(text)
-            .chain(server.threads.iter().zip(threads));
+            .chain(&server.voice_channels)
+            .chain(&server.threads)
+            .zip(&mut channels);
         for (channel, marks) in written {
             (marks.muted, marks.unread, marks.mentions) =
                 unreads.channel(&server.id, channel, marks.access);

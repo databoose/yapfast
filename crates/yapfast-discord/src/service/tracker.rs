@@ -2560,4 +2560,32 @@ mod tests {
         assert_eq!(unread.servers[0].name, "One");
         assert!(Arc::ptr_eq(&unread.servers[1], &renamed.servers[1]));
     }
+
+    #[test]
+    fn a_voice_channels_chat_is_unread_as_a_text_channel_is() {
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [{"id": "10", "properties": {"name": "One"},
+                "channels": [{"id": "11", "name": "Lounge", "type": 2, "position": 0,
+                              "last_message_id": "800"}]}],
+            "read_state": {"entries": [{"id": "11", "last_message_id": "700", "mention_count": 1}]},
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let marks = |tracker: &mut Tracker| {
+            let voice = &tracker.snapshot().servers[0].voice_channels[0];
+            (voice.unread, voice.mentions, voice.last_read)
+        };
+        assert_eq!(marks(&mut tracker), (true, 1, 700));
+        tracker.apply(
+            &Event::MessageCreate,
+            &json!({"id": "900", "channel_id": "11", "guild_id": "10",
+                    "author": {"id": "2"}, "mentions": [{"id": "1"}]}),
+        );
+        assert_eq!(marks(&mut tracker), (true, 2, 700));
+        tracker.apply(
+            &Event::MessageAck,
+            &json!({"channel_id": "11", "message_id": "900", "mention_count": 0}),
+        );
+        assert_eq!(marks(&mut tracker), (false, 0, 900));
+    }
 }
