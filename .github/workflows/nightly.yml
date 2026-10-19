@@ -126,8 +126,12 @@ jobs:
           mv dist/linux/Yapfast-* release/
           mv dist/windows/Yapfast-*-windows-x64* release/
           (cd release && sha256sum Yapfast-* > SHA256SUMS.txt)
-          previous=$(gh release list --exclude-drafts --limit 100 --json tagName --jq '.[].tagName' |
-            grep -m1 -e '-nightly\.' || gh release view --json tagName --jq .tagName || true)
+          # The newest nightly, or before the first one the latest release.
+          previous=$(gh release list --exclude-drafts --limit 100 --json tagName \
+            --jq '[.[].tagName | select(contains("-nightly."))][0] // empty')
+          if [ -z "$previous" ]; then
+            previous=$(gh release view --json tagName --jq .tagName || true)
+          fi
           {
             echo "A nightly build of main at $COMMIT, for testing what's coming in the next release. Expect rough edges."
             echo
