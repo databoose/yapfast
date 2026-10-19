@@ -1,0 +1,141 @@
+# A nightly release of main, made on demand: Actions > Nightly > Run workflow.
+# It builds the Linux AppImage and the Windows ZIP and installer as the
+# releases are built, and publishes them as a prerelease of the next minor
+# version, such as v0.2.0-nightly.20261020.5. See docs/building.md.
+name: Nightly
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - id: version
+        run: |
+          current=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          IFS=. read -r major minor _ <<< "${current%%-*}"
+          # The run number orders nightlies of one day and keeps each tag
+          # new; the release's title names the commit.
+          echo "version=$major.$((minor + 1)).0-nightly.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      # The runner's preinstalled SDKs leave too little room for the build.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          # Nix refuses a shallow Git repository as a flake.
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+      - run: scripts/set-version "${{ needs.version.outputs.version }}"
+      - run: scripts/build-appimage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/dist/linux/Yapfast-*
+          if-no-files-found: error
+          compression-level: 0
+
+  windows:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+      # Skia built for Windows, and the MSVC CRT and SDK it was built against,
+      # which nix/prepare-windows-skia.py checks before reusing it.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cargo-xwin
+            .local/windows/skia-static-production/build.json
+            .local/windows/skia-static-production/prepared
+          key: windows-skia-${{ hashFiles('nix/flake.lock', 'nix/prepare-windows-skia.py', 'nix/prepare-skia-native.py', 'nix/skia-windows-builder/**') }}
+      # The compiled dependencies. Before scripts/set-version, which changes
+      # Cargo.lock, so the key changes only with the dependencies.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: scripts/set-version "${{ needs.version.outputs.version }}"
+      - run: nix develop path:./nix#windows --command scripts/build-windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/dist/discord/Yapfast-*
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: [version, linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+      COMMIT: ${{ needs.version.outputs.commit }}
+    steps:
+      # Only for the notes' jq program.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          sparse-checkout: .github
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish
+        run: |
+          # A failed request must fail the job, not leave the list empty.
+          set -o pipefail
+          # Both jobs zip the commit's source; SOURCE.txt and each BUILD.json
+          # name the one file the release carries.
+          cmp "dist/linux/Yapfast-$VERSION-source.zip" "dist/windows/Yapfast-$VERSION-source.zip"
+          mkdir release
+          mv dist/linux/Yapfast-* release/
+          mv dist/windows/Yapfast-*-windows-x64* release/
+          (cd release && sha256sum Yapfast-* > SHA256SUMS.txt)
+          previous=$(gh release list --exclude-drafts --limit 100 --json tagName --jq '.[].tagName' |
+            grep -m1 -e '-nightly\.' || gh release view --json tagName --jq .tagName || true)
+          {
+            echo "A nightly build of main at $COMMIT, for testing what's coming in the next release. Expect rough edges."
+            echo
+            if [ -n "$previous" ]; then
+              echo "## Changes since $previous"
+              echo
+              # The API lists at most 250 commits; the link below has them all.
+              gh api "repos/$GH_REPO/compare/$previous...$COMMIT" | jq -r -f .github/nightly-notes.jq
+              echo "All changes: https://github.com/$GH_REPO/compare/$previous...$COMMIT"
+              echo
+            fi
+            echo "AppImage updaters take the AppImage to the latest stable release, not to newer nightlies."
+          } > notes.md
+          day=${VERSION#*-nightly.} day=${day%%.*}
+          gh release create "v$VERSION" release/* --prerelease --target "$COMMIT" \
+            --title "Nightly ${day:0:4}-${day:4:2}-${day:6:2} (${COMMIT:0:7})" --notes-file notes.md

@@ -72,7 +72,9 @@ def compile_installer(package, version, flavour, output):
         return subprocess.check_output(["winepath", "-w", str(path)], env=environment, text=True,
                                        timeout=60).strip()
 
-    definitions = [f"/DAppVersion={version}", f"/DSourceDir={windows_path(package)}"]
+    # The file's version resource takes only numbers, without a nightly's suffix.
+    definitions = [f"/DAppVersion={version}", f"/DVersionNumber={version.split('-')[0]}",
+                   f"/DSourceDir={windows_path(package)}"]
     if FLAVOURS[flavour]["edition"]:
         definitions += [f"/DEdition={FLAVOURS[flavour]['edition']}", f"/DFileSuffix={FLAVOURS[flavour]['suffix']}"]
     license_path = ROOT / "LICENSE"
