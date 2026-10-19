@@ -2260,6 +2260,7 @@ fn collapsed_categories_keep_the_open_unread_and_occupied_channels() {
     let row = |id: &str, heading: &str| RoomRow {
         id: id.into(),
         heading: heading.into(),
+        category: heading.into(),
         ..Default::default()
     };
     let rows = vec![
@@ -2323,17 +2324,17 @@ fn clicking_a_category_collapses_it() {
     window.invoke_explore_preview();
     let server = adapter.borrow().app.state.servers[0].id.clone();
     window.invoke_navigate_server(server.into());
-    let heading = window
+    let category = window
         .get_rooms()
         .iter()
-        .map(|row| row.heading)
-        .find(|heading| !heading.is_empty())
+        .map(|row| row.category)
+        .find(|category| !category.is_empty())
         .expect("the preview server has categories");
     assert!(!window.get_rooms().iter().any(|row| row.collapsed));
     // Nothing the app keeps changes, only how the sidebar shows it.
-    window.invoke_toggle_category(heading.clone());
+    window.invoke_toggle_category(category.clone());
     assert!(window.get_rooms().iter().any(|row| row.collapsed));
-    window.invoke_toggle_category(heading);
+    window.invoke_toggle_category(category);
     assert!(!window.get_rooms().iter().any(|row| row.collapsed));
 }
 
@@ -2777,6 +2778,7 @@ fn friends_in_a_servers_voice_channel_show_where() {
         read_only: false,
         slowed: false,
         category: String::new(),
+        category_id: None,
         request: false,
         person: None,
         people,
@@ -3398,6 +3400,39 @@ fn discord_categories_head_their_channels_and_open_their_menus() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn categories_of_the_same_name_head_and_fold_their_own_channels() {
+    let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
+        Arc::make_mut(&mut server.categories)
+            .get_mut("5")
+            .unwrap()
+            .name = "Talk".into();
+        server.voice_channels[0].parent = Some("5".into());
+    });
+    window.invoke_navigate_server("discord:10".into());
+    let shown = || -> Vec<(String, String, bool)> {
+        adapter
+            .borrow()
+            .models
+            .rooms
+            .iter()
+            .map(|row| (row.heading.into(), row.name.into(), row.collapsed))
+            .collect()
+    };
+    let row = |heading: &str, name: &str, collapsed| (heading.into(), name.into(), collapsed);
+    assert_eq!(
+        shown(),
+        [row("TALK", "general", false), row("TALK", "Lounge", false)]
+    );
+    window.invoke_toggle_category("discord:10:5".into());
+    assert_eq!(
+        shown(),
+        [row("TALK", "general", false), row("TALK", "", true)],
+        "only the second folds"
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn pinned_channels_leave_their_categories_for_the_top() {
     use yapfast_core::yapfast_discord::notifications::{Notifications, Override};
     let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
@@ -3471,6 +3506,7 @@ fn empty_categories_go_where_discords_order_puts_them() {
     let row = |heading: &str, id: &str| RoomRow {
         id: id.into(),
         heading: heading.into(),
+        category: heading.to_lowercase().into(),
         ..Default::default()
     };
     // Each heading names its category's first channel.
@@ -3482,8 +3518,7 @@ fn empty_categories_go_where_discords_order_puts_them() {
         category("d", false),
         category("e", true),
     ];
-    let category_of = |id: &str| id.strip_suffix('1').map(str::to_owned);
-    let listed: Vec<String> = refresh::with_empty_categories(rows, &categories, category_of)
+    let listed: Vec<String> = refresh::with_empty_categories(rows, &categories)
         .iter()
         .map(|row| format!("{}{}", row.heading, if row.hidden { "!" } else { "" }))
         .collect();
@@ -4221,6 +4256,7 @@ fn requests_list_someone_once_with_their_message() {
         read_only: true,
         slowed: false,
         category: category.into(),
+        category_id: None,
         request: true,
         person: Some(person.into()),
         people: Vec::new(),

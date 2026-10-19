@@ -1588,15 +1588,15 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
-    window.on_toggle_category(move |heading| {
+    window.on_toggle_category(move |category| {
         let Some(window) = weak.upgrade() else { return };
         let mut adapter = state.borrow_mut();
         let Navigation::Server(server) = adapter.app.state.navigation.clone() else {
             return;
         };
         let collapsed = adapter.layout.collapsed.entry(server.clone()).or_default();
-        if !collapsed.remove(heading.as_str()) {
-            collapsed.insert(heading.into());
+        if !collapsed.remove(category.as_str()) {
+            collapsed.insert(category.into());
         }
         if collapsed.is_empty() {
             adapter.layout.collapsed.remove(&server);

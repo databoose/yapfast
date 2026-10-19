@@ -521,6 +521,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
                 _ => "",
             }
             .into(),
+            category_id: None,
             request: dm.request,
             person: dm.person.clone(),
             people: in_voice(snapshot, &dm.id),
@@ -609,10 +610,21 @@ fn server_rooms(
         .map(|(_, _, channel)| room_id(&server.id, channel))
         .collect();
     let mut channels = Vec::new();
+    // A category's channels come together, and share its room id.
+    let mut shared: Option<(&str, Arc<str>)> = None;
     for (voice, channel) in listed {
         let id = room_id(&server.id, &channel.id);
-        let category = server
-            .category(channel)
+        let category = server.category(channel);
+        let category_id = category
+            .and(channel.parent.as_deref())
+            .map(|parent| match &shared {
+                Some((known, id)) if *known == parent => id.clone(),
+                _ => shared
+                    .insert((parent, room_id(&server.id, parent).into()))
+                    .1
+                    .clone(),
+            });
+        let category = category
             .map(|category| category.name.clone())
             .unwrap_or_default();
         rooms.push(if voice {
@@ -639,6 +651,7 @@ fn server_rooms(
                 read_only: !server.may_send(channel, me, &server.my_roles),
                 slowed: server.slowed(channel, me, &server.my_roles),
                 category,
+                category_id: category_id.clone(),
                 request: false,
                 person: None,
                 people: in_voice(snapshot, &channel.id),
@@ -682,6 +695,7 @@ fn server_rooms(
                 read_only: channel.access == Access::Locked,
                 slowed: server.slowed(channel, me, &server.my_roles),
                 category,
+                category_id: category_id.clone(),
                 request: false,
                 person: None,
                 people: vec![],
@@ -754,6 +768,7 @@ fn thread_room(
         read_only: thread.access == Access::Locked,
         slowed: server.slowed(thread, me, &server.my_roles),
         category: parent.category.clone(),
+        category_id: parent.category_id.clone(),
         request: false,
         person: None,
         people: vec![],

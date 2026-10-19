@@ -1188,6 +1188,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             read_only: false,
             slowed: false,
             category: String::new(),
+            category_id: None,
             request: false,
             person,
             people: vec![],

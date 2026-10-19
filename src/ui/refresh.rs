@@ -402,7 +402,7 @@ impl Adapter {
         update_model_by_id(&self.models.servers, rail, |row| row.id.clone());
         let mut listed_text = false;
         let mut listed_voice = false;
-        let mut category: Option<&str> = None;
+        let mut category = None;
         let mut listed: Vec<_> = state
             .scoped_rooms()
             .filter(|room| room.name.to_lowercase().contains(&query))
@@ -515,13 +515,17 @@ impl Adapter {
             .into_iter()
             .enumerate()
             .map(|(index, room)| {
+                let mut folds_by = None;
                 let heading = if direct {
                     String::new()
                 } else if index < in_pinned {
                     if index == 0 { "PINNED CHANNELS" } else { "" }.into()
                 } else if room.capabilities.categories {
-                    // Discord channels sit under their categories, as in Discord.
-                    if category.replace(&room.category) != Some(&room.category) {
+                    // Discord channels sit under their categories, as in
+                    // Discord, which may share a name.
+                    let this = (room.category_id.as_deref(), room.category.as_str());
+                    if category.replace(this) != Some(this) {
+                        folds_by = room.category_id.as_deref();
                         room.category.to_uppercase()
                     } else {
                         String::new()
@@ -544,6 +548,7 @@ impl Adapter {
                 RoomRow {
                     id: room.id.clone().into(),
                     name: room.name.clone().into(),
+                    category: folds_by.unwrap_or(&heading).into(),
                     heading: heading.into(),
                     icon: if room.locked {
                         self.icons.lock.clone()
@@ -639,9 +644,7 @@ impl Adapter {
             Navigation::Server(server) if query.is_empty() => {
                 let mut rows = rows;
                 let rest = rows.split_off(in_pinned);
-                let rest = with_empty_categories(rest, &self.app.categories(server), |room| {
-                    self.app.category_of(room)
-                });
+                let rest = with_empty_categories(rest, &self.app.categories(server));
                 rows.extend(match self.layout.collapsed.get(server) {
                     Some(collapsed) => fold_collapsed(
                         rest,
@@ -3213,7 +3216,7 @@ pub(super) fn fold_collapsed(
     let mut folded = Vec::with_capacity(rows.len());
     for mut row in rows {
         if !row.heading.is_empty() {
-            group = row.heading.clone();
+            group = row.category.clone();
         }
         if group.is_empty() || !collapsed.contains(group.as_str()) {
             folded.push(row);
@@ -3232,6 +3235,7 @@ pub(super) fn fold_collapsed(
             folded.push(RoomRow {
                 id: row.id,
                 heading: row.heading,
+                category: row.category,
                 collapsed: true,
                 hidden: true,
                 ..Default::default()
@@ -3246,7 +3250,6 @@ pub(super) fn fold_collapsed(
 pub(super) fn with_empty_categories(
     rows: Vec<RoomRow>,
     categories: &[ListedCategory],
-    category_of: impl Fn(&str) -> Option<String>,
 ) -> Vec<RoomRow> {
     if !categories.iter().any(|category| category.empty) {
         return rows;
@@ -3255,6 +3258,7 @@ pub(super) fn with_empty_categories(
     let heading = |category: &ListedCategory| RoomRow {
         id: category.id.as_str().into(),
         heading: category.name.to_uppercase().into(),
+        category: category.id.as_str().into(),
         hidden: true,
         ..Default::default()
     };
@@ -3262,10 +3266,9 @@ pub(super) fn with_empty_categories(
     let mut listed = Vec::with_capacity(rows.len() + categories.len());
     for row in rows {
         if !row.heading.is_empty()
-            && let Some(category) = category_of(&row.id)
             && let Some(at) = categories[next..]
                 .iter()
-                .position(|known| known.id == category)
+                .position(|known| known.id == row.category.as_str())
         {
             listed.extend(
                 categories[next..next + at]

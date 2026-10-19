@@ -722,8 +722,8 @@ struct Layout {
     zoom: Option<f32>,
     /// Each server's last selected channel, by server ID.
     channels: HashMap<String, String>,
-    /// Each server's collapsed channel categories, by server ID, as their
-    /// headings show them.
+    /// Each server's collapsed channel categories, by server ID: a Discord
+    /// category by its room id, any other by its heading.
     collapsed: HashMap<String, std::collections::BTreeSet<String>>,
     /// The rail's open folders, by folder ID.
     open_folders: std::collections::BTreeSet<String>,

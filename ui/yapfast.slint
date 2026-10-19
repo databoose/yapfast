@@ -1717,7 +1717,7 @@ export component YapfastWindow inherits Window {
                                         root.show-profile(person.person);
                                     }
                                 }
-                                toggle-category(heading) => { root.toggle-category(heading); }
+                                toggle-category(category) => { root.toggle-category(category); }
                                 open-category-menu(id, x, y) => {
                                     if root.category-of(id) != "" { root.open-context-menu(root.category-of(id), false, x, y); }
                                 }

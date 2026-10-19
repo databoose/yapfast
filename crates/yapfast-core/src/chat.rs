@@ -72,6 +72,9 @@ pub struct ChatRoom {
     /// The Discord category the channel is listed under, or for a message
     /// request "Message requests" or "Spam"; empty for none.
     pub category: String,
+    /// The room id of that Discord category, which tells it from others of
+    /// the same name; shared by its channels.
+    pub category_id: Option<Arc<str>>,
     /// A Discord message request: readable, but answered by accepting or
     /// ignoring it before replying.
     pub request: bool,
