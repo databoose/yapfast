@@ -35,6 +35,17 @@ pub(super) fn live_events(
             added,
         })
     };
+    // Discord sends an answer's id as a number, but takes either.
+    let answer = |value: &Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
+    let vote = |added: bool| {
+        Some(Live::Vote {
+            channel: channel(),
+            message: data["message_id"].as_str()?.to_owned(),
+            answer: answer(&data["answer_id"])?,
+            me: data["user_id"] == me,
+            added,
+        })
+    };
     match event {
         Event::MessageCreate | Event::MessageUpdate => {
             let Some(message) = message.cloned() else {
@@ -93,6 +104,30 @@ pub(super) fn live_events(
                 .collect()
         }
         Event::MessageReactionRemove => reaction(false).into_iter().collect(),
+        Event::MessagePollVoteAdd => vote(true).into_iter().collect(),
+        Event::MessagePollVoteRemove => vote(false).into_iter().collect(),
+        // One vote for each person listed under each answer.
+        Event::MessagePollVoteAddMany => {
+            let Some(message) = data["message_id"].as_str() else {
+                return vec![];
+            };
+            data["votes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|vote| Some((answer(&vote["answer_id"])?, vote)))
+                .flat_map(|(answer, vote)| {
+                    let users = vote["users"].as_array().into_iter().flatten();
+                    users.map(move |user| Live::Vote {
+                        channel: channel(),
+                        message: message.to_owned(),
+                        answer,
+                        me: *user == me,
+                        added: true,
+                    })
+                })
+                .collect()
+        }
         Event::MessageReactionRemoveAll | Event::MessageReactionRemoveEmoji => data["message_id"]
             .as_str()
             .map(|message| Live::ReactionsCleared {
@@ -223,6 +258,55 @@ mod tests {
                 reaction("🎉", false),
                 reaction("🎉", true),
                 reaction(":party:", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn votes_come_one_for_each_person_and_answer() {
+        let names = RwLock::default();
+        let votes = |event: Event, data: Value| -> Vec<_> {
+            live_events("3", None, &names, &event, &data, None)
+                .into_iter()
+                .map(|live| match live {
+                    Live::Vote {
+                        channel,
+                        message,
+                        answer,
+                        me,
+                        added,
+                    } => (channel, message, answer, me, added),
+                    other => panic!("not a vote: {other:?}"),
+                })
+                .collect()
+        };
+        let vote = |answer, me, added| ("10".to_owned(), "20".to_owned(), answer, me, added);
+        assert_eq!(
+            votes(
+                Event::MessagePollVoteAdd,
+                json!({"channel_id": "10", "message_id": "20", "user_id": "3", "answer_id": 2}),
+            ),
+            [vote(2, true, true)]
+        );
+        assert_eq!(
+            votes(
+                Event::MessagePollVoteRemove,
+                json!({"channel_id": "10", "message_id": "20", "user_id": "4", "answer_id": "1"}),
+            ),
+            [vote(1, false, false)]
+        );
+        assert_eq!(
+            votes(
+                Event::MessagePollVoteAddMany,
+                json!({"channel_id": "10", "message_id": "20", "votes": [
+                    {"answer_id": 1, "users": ["2", "3"]},
+                    {"answer_id": 4, "users": ["5"]},
+                ]}),
+            ),
+            [
+                vote(1, false, true),
+                vote(1, true, true),
+                vote(4, false, true)
             ]
         );
     }

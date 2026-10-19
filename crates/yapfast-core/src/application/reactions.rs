@@ -1,10 +1,11 @@
 //! Who reacted to a message, as Discord's client shows them: hovering a
 //! reaction names the first few in its tooltip, and a message's "View
 //! Reactions" opens a window listing everyone, one reaction at a time, a
-//! page at a time. The window keeps no one once it closes.
+//! page at a time. The window keeps no one once it closes. The same window
+//! lists who voted in a Discord poll, one answer at a time.
 
 use super::*;
-use crate::chat::{Permission, Reactor};
+use crate::chat::{Permission, PollAnswer, Reactor};
 
 /// How many people a reaction's tooltip asks for, and names.
 pub const TIP_PEOPLE: u32 = 3;
@@ -31,7 +32,9 @@ pub struct ReactionTip {
 pub struct ReactionsWindow {
     pub room: String,
     pub item: String,
-    /// The reaction whose people show.
+    /// It lists who voted in the message's poll rather than who reacted.
+    pub poll: bool,
+    /// The reaction whose people show, or the poll answer's id.
     pub key: String,
     pub people: Vec<Reactor>,
     pub loading: bool,
@@ -41,6 +44,29 @@ pub struct ReactionsWindow {
     /// This account may remove others' reactions here: a Discord
     /// moderator's.
     pub can_remove: bool,
+}
+
+impl ReactionsWindow {
+    /// Asks for the page of the window's people after the person `after`.
+    fn page(&self, after: Option<String>) -> Command {
+        let (room, item) = (self.room.clone(), self.item.clone());
+        match self.key.parse() {
+            Ok(answer) if self.poll => Command::Voters {
+                room,
+                item,
+                answer,
+                after,
+                limit: REACTOR_PAGE,
+            },
+            _ => Command::Reactors {
+                room,
+                item,
+                key: self.key.clone(),
+                after,
+                limit: REACTOR_PAGE,
+            },
+        }
+    }
 }
 
 impl AppState {
@@ -70,13 +96,28 @@ impl AppState {
         reactions
     }
 
+    /// The answers of the poll whose voters the window lists, in its order.
+    pub fn window_answers(&self) -> &[PollAnswer] {
+        self.reactions
+            .as_ref()
+            .filter(|window| window.poll)
+            .and_then(|window| self.message(&window.item)?.poll.as_ref())
+            .map_or(&[], |poll| &poll.answers)
+    }
+
     /// Discord has more of the window's people than it loaded.
     pub fn more_reactors(&self) -> bool {
         self.reactions.as_ref().is_some_and(|window| {
-            !window.ended
-                && self
-                    .reaction(&window.item, &window.key)
-                    .is_some_and(|reaction| reaction.count > window.people.len())
+            let count = if window.poll {
+                self.window_answers()
+                    .iter()
+                    .find(|answer| answer.id.to_string() == window.key)
+                    .map(|answer| answer.votes)
+            } else {
+                self.reaction(&window.item, &window.key)
+                    .map(|reaction| reaction.count)
+            };
+            !window.ended && count.is_some_and(|count| count > window.people.len())
         })
     }
 
@@ -168,6 +209,30 @@ impl Application {
         }
     }
 
+    /// Open the window on who voted in a message's poll, by item: for
+    /// `answer`, or the first.
+    pub(super) fn show_voters(&mut self, item: String, answer: Option<u64>) -> Vec<Effect> {
+        let Some(room) = self.state.room_of(&item).cloned() else {
+            return vec![];
+        };
+        let Some(first) = self
+            .state
+            .message(&item)
+            .and_then(|message| message.poll.as_ref()?.answers.first())
+            .map(|answer| answer.id)
+        else {
+            return vec![];
+        };
+        self.state.hovered_reaction = None;
+        self.state.reactions = Some(ReactionsWindow {
+            room,
+            item,
+            poll: true,
+            ..Default::default()
+        });
+        self.show_reactors(answer.unwrap_or(first).to_string())
+    }
+
     pub(super) fn close_reactions(&mut self) -> Vec<Effect> {
         self.state.reactions = None;
         vec![]
@@ -187,13 +252,7 @@ impl Application {
         if preview {
             return vec![];
         }
-        vec![Effect::Backend(Command::Reactors {
-            room: window.room.clone(),
-            item: window.item.clone(),
-            key: window.key.clone(),
-            after: None,
-            limit: REACTOR_PAGE,
-        })]
+        vec![Effect::Backend(window.page(None))]
     }
 
     /// Load the window's next page of people.
@@ -206,13 +265,8 @@ impl Application {
             return vec![];
         }
         window.loading = true;
-        vec![Effect::Backend(Command::Reactors {
-            room: window.room.clone(),
-            item: window.item.clone(),
-            key: window.key.clone(),
-            after: window.people.last().map(|person| person.id.clone()),
-            limit: REACTOR_PAGE,
-        })]
+        let after = window.people.last().map(|person| person.id.clone());
+        vec![Effect::Backend(window.page(after))]
     }
 
     /// Remove someone's reaction from the window: this account's, or as a
@@ -225,7 +279,8 @@ impl Application {
             return vec![];
         };
         let mine = window.people[at].me;
-        if !mine && !window.can_remove {
+        // A vote is taken back from its poll, not here.
+        if window.poll || (!mine && !window.can_remove) {
             return vec![];
         }
         window.people.remove(at);

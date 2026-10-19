@@ -6733,6 +6733,114 @@ fn a_reactions_tooltip_and_window_ask_for_who_reacted() {
     assert!(app.state.reactions.is_none());
 }
 
+#[test]
+fn votes_go_to_discord_and_the_window_lists_who_voted() {
+    use crate::chat::{Poll, PollAnswer};
+    let mut app = connected();
+    let answer = |id, votes, mine| PollAnswer {
+        id,
+        text: format!("Answer {id}"),
+        votes,
+        mine,
+        ..Default::default()
+    };
+    let mut asked = message("e:$poll", true);
+    asked.poll = Some(Poll {
+        question: "Lunch?".into(),
+        answers: vec![answer(1, 2, false), answer(2, 0, false)],
+        can_end: true,
+        ..Default::default()
+    });
+    let mut closed = message("e:$closed", false);
+    closed.poll = Some(Poll {
+        answers: vec![answer(1, 1, false)],
+        finalized: true,
+        ..Default::default()
+    });
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![asked, closed]),
+    });
+    let vote = |app: &mut Application, item: &str, answers: Vec<u64>| {
+        app.dispatch(Action::Vote {
+            item: item.into(),
+            answers,
+        })
+    };
+
+    assert!(matches!(
+        vote(&mut app, "e:$poll", vec![2]).as_slice(),
+        [Effect::Backend(Command::Vote { item, answers, .. })] if item == "e:$poll" && answers == &[2]
+    ));
+    // Taking it back votes for none.
+    assert!(matches!(
+        vote(&mut app, "e:$poll", vec![]).as_slice(),
+        [Effect::Backend(Command::Vote { answers, .. })] if answers.is_empty()
+    ));
+    // One answer only, of those it has, while it's open.
+    assert!(vote(&mut app, "e:$poll", vec![1, 2]).is_empty());
+    assert!(vote(&mut app, "e:$poll", vec![9]).is_empty());
+    assert!(vote(&mut app, "e:$closed", vec![1]).is_empty());
+
+    // Closing it asks first, and only its author may.
+    app.dispatch(Action::AskEndPoll("e:$closed".into()));
+    assert!(app.state.confirm_end_poll.is_none());
+    app.dispatch(Action::AskEndPoll("e:$poll".into()));
+    assert_eq!(app.state.confirm_end_poll.as_deref(), Some("e:$poll"));
+    app.dispatch(Action::CancelEndPoll);
+    assert!(app.dispatch(Action::EndPoll).is_empty());
+    app.dispatch(Action::AskEndPoll("e:$poll".into()));
+    assert!(matches!(
+        app.dispatch(Action::EndPoll).as_slice(),
+        [Effect::Backend(Command::EndPoll { item, .. })] if item == "e:$poll"
+    ));
+    assert!(app.state.confirm_end_poll.is_none());
+
+    // Who voted shows by answer, the first unless one is asked for.
+    assert!(matches!(
+        app.dispatch(Action::ShowVoters {
+            item: "e:$poll".into(),
+            answer: None
+        })
+        .as_slice(),
+        [Effect::Backend(Command::Voters {
+            answer: 1,
+            after: None,
+            limit: 100,
+            ..
+        })]
+    ));
+    let ids: Vec<u64> = app
+        .state
+        .window_answers()
+        .iter()
+        .map(|answer| answer.id)
+        .collect();
+    assert_eq!(ids, [1, 2]);
+    assert!(app.state.window_reactions().is_empty());
+    app.apply(Event::Reactors {
+        room: "dm".into(),
+        item: "e:$poll".into(),
+        key: "1".into(),
+        after: None,
+        limit: 100,
+        result: Ok(vec![crate::chat::Reactor {
+            id: "a".into(),
+            me: true,
+            ..Default::default()
+        }]),
+    });
+    assert_eq!(app.state.reactions.as_ref().unwrap().people.len(), 1);
+    // Both counted votes haven't come, but the page came short.
+    assert!(!app.state.more_reactors());
+    // A vote isn't taken back from the window.
+    assert!(app.dispatch(Action::RemoveReactor("a".into())).is_empty());
+    assert!(matches!(
+        app.dispatch(Action::ShowReactors("2".into())).as_slice(),
+        [Effect::Backend(Command::Voters { answer: 2, .. })]
+    ));
+}
+
 #[cfg(feature = "discord")]
 #[test]
 fn favourite_gifs_show_from_disk_and_stars_wait_for_discords() {

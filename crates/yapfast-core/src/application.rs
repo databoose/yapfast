@@ -27,6 +27,7 @@ mod header;
 mod members;
 mod messages;
 mod places;
+mod polls;
 mod preview;
 mod profiles;
 mod reactions;
@@ -489,6 +490,8 @@ pub struct AppState {
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
     pub confirm_delete: Option<String>,
+    /// The message whose poll the user is asked to confirm closing now.
+    pub confirm_end_poll: Option<String>,
     /// A message being forwarded, while its dialog is open.
     pub forwarding: Option<Forwarding>,
     pub places_used: PlacesUsed,
@@ -1075,6 +1078,23 @@ pub enum Action {
         key: String,
     },
     RequestDelete(String),
+    /// Vote for these answers of a Discord message's poll, by item, in
+    /// place of this account's vote; none takes it back.
+    Vote {
+        item: String,
+        answers: Vec<u64>,
+    },
+    /// Ask to make sure before closing this account's poll, by item.
+    AskEndPoll(String),
+    CancelEndPoll,
+    /// Close the poll asked about now.
+    EndPoll,
+    /// Open the Reactions window on who voted in a message's poll, by
+    /// item: for one answer, or the first.
+    ShowVoters {
+        item: String,
+        answer: Option<u64>,
+    },
     /// Pin a message of the selected room to its pinned messages, or
     /// unpin it if it's there.
     PinMessage(String),
@@ -1977,6 +1997,14 @@ impl Application {
             }
             Action::React { item, key } => self.react(item, key),
             Action::RequestDelete(item) => self.request_delete(item),
+            Action::Vote { item, answers } => self.vote(item, answers),
+            Action::AskEndPoll(item) => self.ask_end_poll(item),
+            Action::CancelEndPoll => {
+                self.state.confirm_end_poll = None;
+                vec![]
+            }
+            Action::EndPoll => self.end_poll(),
+            Action::ShowVoters { item, answer } => self.show_voters(item, answer),
             Action::PinMessage(item) => self.pin_message(item),
             Action::StartForward(item) => self.start_forward(item),
             Action::ChooseForward(target) => self.choose_forward(target),

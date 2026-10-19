@@ -361,6 +361,160 @@ export struct EmbedCard {
     images: [ImageCell], gallery-width: int, gallery-height: int,
     video: bool,
 }
+/// What a poll card's button does.
+export enum PollAction { none, vote, remove-vote, back-to-vote }
+
+/// One answer of a poll as its card shows it.
+export struct PollAnswerRow {
+    id: int, text: string, emoji: string,
+    /// Picked to vote for; with the results showing, voted for by this account.
+    picked: bool,
+    /// Its votes, as "3 votes", and its share of all of them, for the results.
+    votes: string, percent: int,
+    /// No answer has more votes.
+    leading: bool,
+}
+
+/// A Discord poll on its message.
+export struct PollCard {
+    question: string,
+    /// "Select one answer", while it takes votes.
+    prompt: string,
+    multiselect: bool,
+    answers: [PollAnswerRow],
+    /// Each answer's votes show: this account voted, the poll closed, or
+    /// "Show results" was clicked. Clicking an answer then shows who voted.
+    results: bool,
+    /// Clicking an answer picks it.
+    can-pick: bool,
+    /// "5 votes", then "3h left" or "Poll closed".
+    total: string, left: string,
+    action: PollAction, action-enabled: bool,
+    can-show-results: bool,
+    /// This account may close it now: it's the author's.
+    can-end: bool,
+}
+
+/// What messages' poll cards do; `src/ui/polls.rs` answers.
+export global Polls {
+    /// The poll whose closing is being made sure of, by item.
+    in property <string> confirm-end;
+    /// Picks an answer, by the message's item and the answer's id, or
+    /// unpicks it.
+    callback pick(string, int);
+    callback act(string, PollAction);
+    callback show-results(string);
+    /// Who voted for an answer, by id, or with -1 for the first.
+    callback voters(string, int);
+    callback ask-end(string);
+    callback end();
+    callback cancel-end();
+}
+
+// A Discord poll, as Discord's client shows it: the question and its answers
+// to pick, and once this account voted, the poll closed or "Show results" was
+// clicked, each answer's share of the votes.
+export component PollView inherits HorizontalLayout {
+    in property <PollCard> poll;
+    in property <string> item;
+    in property <string> emoji-font;
+    padding-top: 4px;
+    Rectangle {
+        max-width: 480px; horizontal-stretch: 100;
+        background: Theme.sidebar; border-radius: 8px; border-width: 1px; border-color: Theme.line;
+        accessible-role: groupbox;
+        accessible-label: "Poll: " + root.poll.question;
+        VerticalLayout {
+            padding: 16px; spacing: 8px;
+            Text { text: root.poll.question; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
+            if root.poll.prompt != "": Text { text: root.poll.prompt; color: Theme.muted; font-size: 13px; }
+            for answer in root.poll.answers: Rectangle {
+                property <bool> clickable: root.poll.results || root.poll.can-pick;
+                min-height: 44px; border-radius: 8px; clip: true;
+                background: answer-touch.has-hover && self.clickable ? Theme.active : Theme.raised;
+                animate background { duration: Theme.quick; }
+                border-width: answer.picked ? 2px : 0px; border-color: Theme.accent;
+                accessible-role: button;
+                accessible-label: answer.text + (root.poll.results ? ", " + answer.votes + ", " + answer.percent + "%" : "");
+                accessible-checked: answer.picked;
+                accessible-enabled: self.clickable;
+                accessible-action-default => { answer-touch.clicked(); }
+                if root.poll.results: Rectangle {
+                    x: 0px; width: parent.width * answer.percent / 100;
+                    background: answer.leading ? Theme.accent-soft : Theme.overlay.with-alpha(0.06);
+                }
+                HorizontalLayout {
+                    padding-left: 12px; padding-right: 12px; padding-top: 8px; padding-bottom: 8px; spacing: 10px;
+                    if answer.emoji != "": Text { text: answer.emoji; font-family: root.emoji-font; font-size: 20px; vertical-alignment: center; }
+                    Text { text: answer.text; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+                    if root.poll.results && answer.picked: Middle {
+                        Image { source: @image-url("icons/check.svg"); width: 16px; height: 16px; colorize: Theme.accent; accessible-label: "You voted for this answer"; }
+                    }
+                    if root.poll.results: Text { text: answer.votes; color: Theme.secondary; font-size: 13px; vertical-alignment: center; }
+                    if root.poll.results: Text { text: answer.percent + "%"; color: Theme.text; font-size: 15px; font-weight: 700; min-width: 44px; horizontal-alignment: right; vertical-alignment: center; }
+                    // A radio button, or for several answers a checkbox.
+                    if !root.poll.results: Middle {
+                        Rectangle {
+                            width: 20px; height: 20px; border-radius: root.poll.multiselect ? 5px : 10px;
+                            border-width: answer.picked ? 0px : 2px; border-color: Theme.muted;
+                            background: answer.picked ? Theme.accent : transparent;
+                            if answer.picked && root.poll.multiselect: Image { source: @image-url("icons/check.svg"); width: 14px; height: 14px; colorize: Theme.on-accent; }
+                            if answer.picked && !root.poll.multiselect: Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.on-accent; }
+                        }
+                    }
+                }
+                answer-touch := TouchArea {
+                    enabled: parent.clickable;
+                    mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                    clicked => {
+                        if root.poll.results { Polls.voters(root.item, answer.id); } else { Polls.pick(root.item, answer.id); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px; padding-top: 4px;
+                // The votes so far, which show who voted once the results do.
+                Text {
+                    text: root.poll.total; font-size: 14px; vertical-alignment: center;
+                    color: total-touch.has-hover ? Theme.text : Theme.secondary;
+                    accessible-role: button;
+                    accessible-enabled: root.poll.results;
+                    accessible-action-default => { if root.poll.results { Polls.voters(root.item, -1); } }
+                    total-touch := TouchArea {
+                        enabled: root.poll.results;
+                        mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
+                        clicked => { Polls.voters(root.item, -1); }
+                    }
+                }
+                if root.poll.left != "": Text { text: "\u{00b7}  " + root.poll.left; color: Theme.muted; font-size: 14px; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                if root.poll.can-show-results: ActionButton {
+                    text: "Show results"; ghost: true; small: true;
+                    clicked => { Polls.show-results(root.item); }
+                }
+                if root.poll.action != PollAction.none: ActionButton {
+                    text: root.poll.action == PollAction.vote ? "Vote" : root.poll.action == PollAction.remove-vote ? "Remove Vote" : "Go back to vote";
+                    primary: root.poll.action == PollAction.vote; small: true;
+                    enabled: root.poll.action-enabled;
+                    clicked => { Polls.act(root.item, root.poll.action); }
+                }
+            }
+            // Closing it before its time, once made sure of from the message's menu.
+            if Polls.confirm-end == root.item: VerticalLayout {
+                spacing: 8px; padding-top: 4px;
+                Rectangle { height: 1px; background: Theme.line; }
+                Text { text: "End the poll now? This will close it immediately and reveal the results."; color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    ActionButton { text: "Cancel"; ghost: true; small: true; clicked => { Polls.cancel-end(); } }
+                    ActionButton { text: "End Poll Now"; danger: true; small: true; clicked => { Polls.end(); } }
+                }
+            }
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
 export struct MessageRow {
     id: string, item: string, author: string, initial: string, tint: color, picture: image, body: string, time: string, short-time: string, own: bool,
     picture-url: string, reply-picture-url: string,
@@ -409,6 +563,8 @@ export struct MessageRow {
     /// The Discord thread it started or tells of, by room id, empty for
     /// none; its name, and how many messages it has.
     thread-room: string, thread-name: string, thread-detail: string,
+    /// The Discord poll it asks.
+    poll: PollCard, has-poll: bool,
 }
 
 // The emoji picker: a search, the emoji in rows under their headings, a
@@ -566,6 +722,8 @@ export component MessageMenu inherits Rectangle {
     callback copy-text(string);
     callback pin-message(string);
     callback request-delete(string);
+    /// Asks to make sure before closing this account's poll.
+    callback end-poll(string);
     /// Threads can start from the conversation's messages.
     in property <bool> can-start-thread;
     callback start-thread(string);
@@ -622,6 +780,10 @@ export component MessageMenu inherits Rectangle {
         if root.selection != "": MenuItem {
             text: "Copy selection"; icon: @image-url("icons/text-select.svg");
             clicked => { root.copy-text(root.selection); }
+        }
+        if root.menu-message.has-poll && root.menu-message.poll.can-end: MenuItem {
+            text: "End Poll Now"; icon: @image-url("icons/circle-stop.svg");
+            clicked => { root.end-poll(root.menu-message.item); }
         }
         if root.menu-message.can-pin && root.menu-message.delivery == "": MenuItem {
             text: root.menu-message.pinned ? "Unpin message" : "Pin message";
@@ -1360,6 +1522,7 @@ export component MessageContent inherits VerticalLayout {
             if message.hidden-card != "": Text {
                 text: message.hidden-card; color: Theme.muted; font-size: root.message-font-size * 0.875; font-italic: true; wrap: word-wrap;
             }
+            if message.has-poll: PollView { poll: message.poll; item: message.item; emoji-font: root.emoji-font; }
             for embed in message.embeds: EmbedView {
                 embed: embed; item: message.item;
                 open-link(link) => { root.open-link(link); }

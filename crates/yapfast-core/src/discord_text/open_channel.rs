@@ -972,6 +972,112 @@ impl OpenChannel {
         });
     }
 
+    /// Votes for `answers` of `item`'s poll in place of this account's vote,
+    /// or takes it back with none. The change shows when the gateway
+    /// reports it.
+    pub fn vote(
+        &self,
+        discord: &Discord,
+        done: &UnboundedSender<Done>,
+        item: &str,
+        answers: Vec<u64>,
+    ) {
+        let Some(message) = self.poll_message(item) else {
+            return;
+        };
+        let (discord, done) = (discord.clone(), done.clone());
+        let (room, channel, id) = (self.room.clone(), self.channel.clone(), message.id.clone());
+        tokio::spawn(async move {
+            if let Err(error) = discord.vote(&channel, &id, &answers).await {
+                let _ = done.send(Done::Failed {
+                    room,
+                    message: format!("Couldn't vote: {error}"),
+                });
+            }
+        });
+    }
+
+    /// Closes this account's poll in `item` now.
+    pub fn end_poll(&self, discord: &Discord, done: &UnboundedSender<Done>, item: &str) {
+        let Some(message) = self.poll_message(item) else {
+            return;
+        };
+        let (discord, done) = (discord.clone(), done.clone());
+        let (room, channel, id) = (self.room.clone(), self.channel.clone(), message.id.clone());
+        tokio::spawn(async move {
+            if let Err(error) = discord.end_poll(&channel, &id).await {
+                let _ = done.send(Done::Failed {
+                    room,
+                    message: format!("Couldn't end the poll: {error}"),
+                });
+            }
+        });
+    }
+
+    /// Who voted for `answer` of `item`'s poll: a page of them, as
+    /// [`Event::Reactors`] with the answer's id as its key.
+    pub fn voters(
+        &self,
+        discord: &Discord,
+        events: &UnboundedSender<Event>,
+        item: String,
+        answer: u64,
+        after: Option<String>,
+        limit: u32,
+    ) {
+        let room = self.room.clone();
+        let key = answer.to_string();
+        let Some(id) = self.poll_message(&item).map(|message| message.id.clone()) else {
+            let _ = events.send(Event::Reactors {
+                room,
+                item,
+                key,
+                after,
+                limit,
+                result: Err("That poll is gone.".into()),
+            });
+            return;
+        };
+        let (discord, events) = (discord.clone(), events.clone());
+        let (guild, channel) = (self.guild.clone(), self.channel.clone());
+        tokio::spawn(async move {
+            let result = discord
+                .voters(&guild, &channel, &id, answer, after.as_deref(), limit)
+                .await
+                .map(|people| {
+                    people
+                        .into_iter()
+                        .map(|person| crate::chat::Reactor {
+                            id: person.id,
+                            name: person.name,
+                            username: person.username,
+                            avatar: person.avatar,
+                            me: person.me,
+                        })
+                        .collect()
+                })
+                .map_err(|error| {
+                    tracing::warn!(error = format!("{error:#}"), "could not list voters");
+                    format!("Couldn't load who voted: {error}")
+                });
+            let _ = events.send(Event::Reactors {
+                room,
+                item,
+                key,
+                after,
+                limit,
+                result,
+            });
+        });
+    }
+
+    /// The loaded message `item` names, when it has a poll.
+    fn poll_message(&self, item: &str) -> Option<&Message> {
+        sent_id(item)
+            .and_then(|id| self.message(id.parse().unwrap_or_default()))
+            .filter(|message| message.poll.is_some())
+    }
+
     pub fn picture(&mut self, url: String, picture: Option<Arc<Picture>>) {
         // One that finished after the channel closed and gave it up.
         if !self.requested.contains(&url) {
@@ -1291,6 +1397,8 @@ impl OpenChannel {
         let own = message.author_id == me;
         let author = name(&message.author_id, &message.author);
         let body = match &message.system {
+            // A closed poll's notice says "Ann's poll".
+            Some(system) if system.starts_with('\'') => format!("{author}{system}"),
             Some(system) => format!("{author} {system}"),
             None => discord.render(server, &message.content),
         };
@@ -1417,6 +1525,24 @@ impl OpenChannel {
             pinned: message.pinned,
             can_pin: ordinary && self.rendered_with.may_pin,
             thread: self.thread_link(server, message),
+            poll: message.poll.as_ref().map(|poll| Poll {
+                question: poll.question.clone(),
+                answers: poll
+                    .answers
+                    .iter()
+                    .map(|answer| PollAnswer {
+                        id: answer.id,
+                        text: answer.text.clone(),
+                        emoji: answer.emoji.as_ref().map(|(key, _)| key.clone()),
+                        votes: answer.votes,
+                        mine: answer.me,
+                    })
+                    .collect(),
+                expiry: poll.expiry.map(|expiry| expiry / 1000),
+                finalized: poll.finalized,
+                multiselect: poll.multiselect,
+                can_end: own && !poll.finalized,
+            }),
         }
     }
 
@@ -1541,13 +1667,30 @@ fn change(messages: &mut BTreeMap<u64, Message>, channel: &str, event: &Live) ->
     match event {
         Live::Updated(message) if message.channel_id == channel => {
             let known = messages.get_mut(&message.order())?;
-            // Updates don't always carry reactions; keep the counted ones.
+            // Updates don't always carry reactions; keep the counted ones,
+            // and a poll's votes unless it carries them.
             let reactions = std::mem::take(&mut known.reactions);
+            let poll = match &message.poll {
+                Some(poll) if !poll.counted => known.poll.take(),
+                poll => poll.clone(),
+            };
             *known = Message {
                 reactions,
+                poll,
                 ..message.clone()
             };
             Some(message.order())
+        }
+        Live::Vote {
+            channel: id,
+            message,
+            answer,
+            me,
+            added,
+        } if id == channel => {
+            let order = message.parse().unwrap_or_default();
+            messages.get_mut(&order)?.vote(*answer, *me, *added);
+            Some(order)
         }
         Live::Deleted {
             channel: id,

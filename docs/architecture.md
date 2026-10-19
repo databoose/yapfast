@@ -37,7 +37,8 @@ rows a backend sends again unchanged when they didn't change. `dispatch`
 routes each action to a method in the module for its area, under
 [`application/`](../crates/yapfast-core/src/application): `compose`, `messages`,
 `rooms`, `aside`, which shows a Discord thread beside the open channel,
-`profiles`, `calls`, `session`, `preview`, `discord_account`,
+`profiles`, `polls`, which votes in Discord polls and closes them,
+`calls`, `session`, `preview`, `discord_account`,
 `header`, which holds what a conversation's header opens: its pins, a search
 of a DM or a whole server, and adding friends to a DM, `threads`, a Discord
 channel's list of its threads, `server`, which
@@ -121,7 +122,7 @@ A visible change usually touches each of these steps:
    changed. `Action` and
    `dispatch` are in `crates/yapfast-core/src/application.rs`, which routes each
    action to the module for its area in `crates/yapfast-core/src/application/`:
-   `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `calls.rs`,
+   `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `polls.rs`, `calls.rs`,
    `session.rs`, `preview.rs`, `discord_account.rs`, `header.rs`,
    `threads.rs`, `server.rs`, `members.rs` or `places.rs`.
 5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to

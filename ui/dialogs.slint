@@ -554,7 +554,8 @@ export component PersonDialog inherits Rectangle {
 }
 
 /// One of a message's reactions in its Reactions window: `label` shows the
-/// emoji, `name` names it, as `:name:`.
+/// emoji, `name` names it, as `:name:`. For a poll's voters, it's an answer:
+/// `label` its emoji, if any, and `name` its text.
 export struct ReactionPill { key: string, label: string, name: string, count: int }
 
 /// Someone who reacted, as the Reactions window lists them.
@@ -567,9 +568,10 @@ export struct ReactorRow {
 // A message's reactions and who reacted with each, as Discord's "Reactions"
 // window shows them: the reactions down the left, the most first, and the
 // chosen one's people on the right, a page at a time. Clicking outside or
-// Escape closes it.
+// Escape closes it. It lists a poll's voters the same way, by answer.
 export component ReactionsDialog inherits Rectangle {
     in property <[ReactionPill]> reaction-pills;
+    in property <bool> voters;
     in property <string> reactions-key;
     in property <[ReactorRow]> reactor-rows;
     in property <bool> reactors-loading;
@@ -587,7 +589,7 @@ export component ReactionsDialog inherits Rectangle {
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
         accessible-role: groupbox;
-        accessible-label: "Reactions";
+        accessible-label: root.voters ? "Votes" : "Reactions";
         TouchArea { }
         FocusScope {
             init => { self.focus(); }
@@ -599,15 +601,15 @@ export component ReactionsDialog inherits Rectangle {
                 padding-top: 16px; spacing: 0px;
                 HorizontalLayout {
                     padding-left: 24px; padding-right: 16px; padding-bottom: 12px;
-                    Text { text: "Reactions"; color: Theme.text; font-size: 20px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: root.voters ? "Votes" : "Reactions"; color: Theme.text; font-size: 20px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
                     IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close-reactions(); } }
                 }
                 Rectangle { height: 1px; background: Theme.line; }
                 HorizontalLayout {
                     padding-left: 24px; vertical-stretch: 1;
-                    // The reactions, the most first.
+                    // The reactions, the most first, or the answers.
                     Rectangle {
-                        width: 98px;
+                        width: root.voters ? 220px : 98px;
                         ScrollView {
                             width: parent.width - 1px; x: 0px;
                             VerticalLayout {
@@ -619,12 +621,13 @@ export component ReactionsDialog inherits Rectangle {
                                         y: 0px; height: 32px; border-radius: 8px;
                                         background: parent.chosen ? Theme.active : pill-touch.has-hover ? Theme.hover : transparent;
                                         accessible-role: button;
-                                        accessible-label: pill.name + " " + pill.count + (pill.count == 1 ? " reaction" : " reactions");
+                                        accessible-label: pill.name + " " + pill.count + (root.voters ? (pill.count == 1 ? " vote" : " votes") : (pill.count == 1 ? " reaction" : " reactions"));
                                         accessible-checked: parent.chosen;
                                         accessible-action-default => { root.select-reaction(pill.key); }
                                         HorizontalLayout {
                                             padding-left: 4px; padding-right: 8px; spacing: 8px;
-                                            Text { text: pill.label; font-family: root.emoji-font; font-size: 20px; width: 24px; horizontal-alignment: center; vertical-alignment: center; }
+                                            if !root.voters || pill.label != "": Text { text: pill.label; font-family: root.emoji-font; font-size: 20px; width: 24px; horizontal-alignment: center; vertical-alignment: center; }
+                                            if root.voters: Text { text: pill.name; color: Theme.text; font-size: 14px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                                             Text { text: pill.count; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                         }
                                         pill-touch := TouchArea {

@@ -48,6 +48,7 @@ mod messages;
 mod move_loop;
 mod pictures;
 mod placement;
+mod polls;
 mod profile;
 mod refresh;
 mod shell;
@@ -1271,8 +1272,11 @@ struct Adapter {
     /// ones, and show at the end the moment they come. Following the
     /// window's end until then would load earlier pages as they go in.
     latest_due: bool,
-    /// Spoilers clicked; see `message_row`.
+    /// Spoilers clicked, and what was picked or shown on polls; see
+    /// `message_row`.
     revealed: HashSet<String>,
+    /// The minute the timeline was last checked for a poll's time left.
+    poll_minute: u64,
     /// The preferences that shape message rows changed, so they're built again.
     restyle: bool,
     /// Appearance's theme editor, while it's open.
@@ -1452,6 +1456,7 @@ impl Adapter {
                 unread_jumped: 0,
                 latest_due: false,
                 revealed: HashSet::new(),
+                poll_minute: 0,
                 restyle: false,
                 theme_editor: None,
                 aside_messages: Arc::new(Vec::new()),

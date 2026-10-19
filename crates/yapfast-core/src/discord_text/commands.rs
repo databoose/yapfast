@@ -77,6 +77,9 @@ pub fn command(
         | Command::Edit { room, .. }
         | Command::React { room, .. }
         | Command::Reactors { room, .. }
+        | Command::Vote { room, .. }
+        | Command::EndPoll { room, .. }
+        | Command::Voters { room, .. }
         | Command::RemoveReactor { room, .. }
         | Command::Delete { room, .. }
         | Command::Pin { room, .. }
@@ -227,6 +230,15 @@ pub fn command(
             limit,
             ..
         } => channel.reactors(discord, events, item, key, after, limit),
+        Command::Vote { item, answers, .. } => channel.vote(discord, done, &item, answers),
+        Command::EndPoll { item, .. } => channel.end_poll(discord, done, &item),
+        Command::Voters {
+            item,
+            answer,
+            after,
+            limit,
+            ..
+        } => channel.voters(discord, events, item, answer, after, limit),
         Command::RemoveReactor {
             item, key, user, ..
         } => channel.remove_reactor(discord, done, &item, &key, user),

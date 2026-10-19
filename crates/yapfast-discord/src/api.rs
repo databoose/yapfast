@@ -588,6 +588,46 @@ impl Api {
         }
     }
 
+    /// Votes for `answers` of a message's poll in place of this account's
+    /// earlier vote; none takes the vote back.
+    pub async fn vote(&self, channel: &str, message: &str, answers: &[u64]) -> Result<()> {
+        let path = format!("/channels/{channel}/polls/{message}/answers/@me");
+        let body = json!({"answer_ids": answers});
+        self.empty(with_json(self.request(Method::PUT, &path), &body))
+            .await
+    }
+
+    /// Closes this account's poll now. Discord sends the message again,
+    /// closed, as a MESSAGE_UPDATE.
+    pub async fn end_poll(&self, channel: &str, message: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/polls/{message}/expire");
+        self.empty(self.request(Method::POST, &path)).await
+    }
+
+    /// Who voted for `answer` of a message's poll, as user objects: up to
+    /// `limit`, at most 100, by user id, after the user `after`.
+    pub async fn voters(
+        &self,
+        channel: &str,
+        message: &str,
+        answer: u64,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Value>> {
+        let mut path =
+            format!("/channels/{channel}/polls/{message}/answers/{answer}?limit={limit}");
+        if let Some(after) = after {
+            path.push_str(&format!("&after={after}"));
+        }
+        match self.json(self.request(Method::GET, &path)).await? {
+            Value::Object(mut answer) => match answer.remove("users") {
+                Some(Value::Array(users)) => Ok(users),
+                _ => bail!("could not understand Discord's answer"),
+            },
+            _ => bail!("could not understand Discord's answer"),
+        }
+    }
+
     /// Opens the DM with `user`, or finds the one already open; returns its channel id.
     pub async fn open_dm(&self, user: &str) -> Result<String> {
         let body = json!({"recipients": [user]});

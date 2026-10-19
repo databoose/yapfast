@@ -1215,6 +1215,46 @@ pub struct ChatMessage {
     pub can_pin: bool,
     /// The Discord thread it started, or that it tells of.
     pub thread: Option<ThreadLink>,
+    /// The Discord poll it asks.
+    pub poll: Option<Poll>,
+}
+
+/// A Discord poll as a message shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Poll {
+    pub question: String,
+    pub answers: Vec<PollAnswer>,
+    /// When it closes, in seconds since the Unix epoch.
+    pub expiry: Option<u64>,
+    /// It takes votes no more: Discord counted them for the last time.
+    pub finalized: bool,
+    /// One may pick several answers.
+    pub multiselect: bool,
+    /// This account may close it now: its author.
+    pub can_end: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PollAnswer {
+    pub id: u64,
+    pub text: String,
+    /// Its emoji, as a reaction's key: the emoji itself, or `:name:` for a
+    /// custom one, among the message's [`ChatMessage::emoji`].
+    pub emoji: Option<String>,
+    pub votes: usize,
+    pub mine: bool,
+}
+
+impl Poll {
+    /// Whether it takes votes no more at `now`, in seconds since the Unix epoch.
+    pub fn closed(&self, now: u64) -> bool {
+        self.finalized || self.expiry.is_some_and(|expiry| expiry <= now)
+    }
+
+    /// This account voted.
+    pub fn voted(&self) -> bool {
+        self.answers.iter().any(|answer| answer.mine)
+    }
 }
 
 impl ChatMessage {
@@ -1339,6 +1379,28 @@ pub enum Command {
         room: String,
         item: String,
         key: String,
+        after: Option<String>,
+        limit: u32,
+    },
+    /// Vote for `answers` of a Discord poll in place of this account's vote;
+    /// none takes it back.
+    Vote {
+        room: String,
+        item: String,
+        answers: Vec<u64>,
+    },
+    /// Close this account's Discord poll now.
+    EndPoll {
+        room: String,
+        item: String,
+    },
+    /// Who voted for `answer` of a Discord poll, as [`Command::Reactors`]
+    /// asks who reacted. [`Event::Reactors`] follows, with the answer's id
+    /// as its key.
+    Voters {
+        room: String,
+        item: String,
+        answer: u64,
         after: Option<String>,
         limit: u32,
     },
@@ -1934,6 +1996,9 @@ impl Command {
             | Command::Edit { room, .. }
             | Command::React { room, .. }
             | Command::Reactors { room, .. }
+            | Command::Vote { room, .. }
+            | Command::EndPoll { room, .. }
+            | Command::Voters { room, .. }
             | Command::RemoveReactor { room, .. }
             | Command::Delete { room, .. }
             | Command::Pin { room, .. }
@@ -2211,7 +2276,8 @@ pub enum Event {
         item: String,
         result: Result<(), String>,
     },
-    /// [`Command::Reactors`]'s page, or why it didn't come.
+    /// [`Command::Reactors`]'s page, or [`Command::Voters`]', or why it
+    /// didn't come.
     Reactors {
         room: String,
         item: String,

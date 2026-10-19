@@ -29,6 +29,7 @@ const REPLY: u64 = 19;
 const CHAT_INPUT_COMMAND: u64 = 20;
 const THREAD_STARTER_MESSAGE: u64 = 21;
 const CONTEXT_MENU_COMMAND: u64 = 23;
+const POLL_RESULT: u64 = 46;
 
 /// The reference of a forward, which carries a copy of the message it
 /// forwards in `message_snapshots`.
@@ -136,6 +137,86 @@ pub struct Message {
     /// alone: written, and without a poll, a call or an activity.
     #[serde(default)]
     pub forwardable: bool,
+    /// The poll it asks, if it's one.
+    #[serde(default)]
+    pub poll: Option<Poll>,
+}
+
+/// A message's poll, its votes as Discord counted them when the message
+/// came, with those that came live since.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Poll {
+    pub question: String,
+    pub answers: Vec<PollAnswer>,
+    /// When it closes, in Unix milliseconds.
+    pub expiry: Option<u64>,
+    /// One may pick several answers.
+    pub multiselect: bool,
+    /// The message carried the votes; without them they aren't known,
+    /// rather than none.
+    pub counted: bool,
+    /// Discord counted the votes for the last time, once it closed.
+    pub finalized: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PollAnswer {
+    pub id: u64,
+    pub text: String,
+    /// Its emoji as a reaction's key: the emoji itself, or `:name:` for a
+    /// custom one, whose id follows.
+    pub emoji: Option<(String, Option<String>)>,
+    pub votes: usize,
+    /// This account voted for it.
+    pub me: bool,
+}
+
+impl Poll {
+    /// A message's `poll` object.
+    fn of(poll: &Value) -> Option<Self> {
+        let counts = poll["results"]["answer_counts"].as_array();
+        let answers = poll["answers"]
+            .as_array()?
+            .iter()
+            .filter_map(|answer| {
+                let id = answer["answer_id"].as_u64()?;
+                let media = &answer["poll_media"];
+                let count = counts
+                    .into_iter()
+                    .flatten()
+                    .find(|count| count["id"].as_u64() == Some(id));
+                let emoji = &media["emoji"];
+                Some(PollAnswer {
+                    id,
+                    text: media["text"].as_str().unwrap_or_default().to_owned(),
+                    emoji: match (emoji["id"].as_str(), emoji["name"].as_str()) {
+                        // Discord's client sends a custom one without its name.
+                        (Some(id), name) => Some((
+                            format!(":{}:", name.filter(|name| !name.is_empty()).unwrap_or(id)),
+                            Some(id.to_owned()),
+                        )),
+                        (None, Some(name)) if !name.is_empty() => Some((name.to_owned(), None)),
+                        _ => None,
+                    },
+                    votes: count.and_then(|count| count["count"].as_u64()).unwrap_or(0) as usize,
+                    me: count.and_then(|count| count["me_voted"].as_bool()) == Some(true),
+                })
+            })
+            .collect();
+        Some(Self {
+            question: poll["question"]["text"].as_str()?.to_owned(),
+            answers,
+            expiry: poll["expiry"].as_str().and_then(iso_ms),
+            multiselect: poll["allow_multiselect"].as_bool().unwrap_or(false),
+            counted: poll["results"].is_object(),
+            finalized: poll["results"]["is_finalized"].as_bool().unwrap_or(false),
+        })
+    }
+
+    /// Whether it no longer takes votes at `now`, in Unix milliseconds.
+    pub fn closed(&self, now: u64) -> bool {
+        self.finalized || self.expiry.is_some_and(|expiry| expiry <= now)
+    }
 }
 
 /// A thread a message leads to, as the message carried it; the thread as
@@ -311,6 +392,24 @@ impl Message {
             None => {}
         }
     }
+
+    /// Adds or removes this account's or someone else's vote for `answer`.
+    pub fn vote(&mut self, answer: u64, me: bool, added: bool) {
+        let Some(answer) = self
+            .poll
+            .as_mut()
+            .and_then(|poll| poll.answers.iter_mut().find(|known| known.id == answer))
+        else {
+            return;
+        };
+        if added {
+            answer.votes += 1;
+            answer.me |= me;
+        } else {
+            answer.votes = answer.votes.saturating_sub(1);
+            answer.me &= !me;
+        }
+    }
 }
 
 pub fn snowflake_ms(id: &str) -> u64 {
@@ -418,6 +517,8 @@ pub fn parse(value: &Value) -> Option<Message> {
             value["content"].as_str().unwrap_or_default()
         )),
         MEMBER_JOIN => Some("joined the server.".to_owned()),
+        // Its author is the poll's.
+        POLL_RESULT => Some(poll_result(&value["embeds"][0])),
         PINNED => Some("pinned a message.".to_owned()),
         // Discord updates it with when the call ended.
         CALL => Some(
@@ -571,7 +672,8 @@ pub fn parse(value: &Value) -> Option<Message> {
         attachments,
         embeds: embeds.embeds,
         reactions,
-        editable: matches!(kind, DEFAULT | REPLY) && !forwarded,
+        // A poll's question and answers stay as they were sent.
+        editable: matches!(kind, DEFAULT | REPLY) && !forwarded && value["poll"].is_null(),
         mentions: ids(&value["mentions"], |user| user["id"].as_str()),
         mention_roles: ids(&value["mention_roles"], Value::as_str),
         mention_everyone: value["mention_everyone"].as_bool().unwrap_or(false),
@@ -605,7 +707,51 @@ pub fn parse(value: &Value) -> Option<Message> {
             ]
             .iter()
             .all(|field| value[*field].is_null()),
+        poll: Poll::of(&shown["poll"]),
     })
+}
+
+/// The notice of a closed poll, from the fields of its embed, said after
+/// its author's name as Discord's client says it: "'s poll … has closed."
+fn poll_result(embed: &Value) -> String {
+    let field = |name: &str| {
+        embed["fields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|field| field["name"] == name)
+            .and_then(|field| field["value"].as_str())
+    };
+    let question = field("poll_question_text").unwrap_or_default();
+    let total = field("total_votes").and_then(|votes| votes.parse::<u64>().ok());
+    let winner = match (field("victor_answer_text"), field("victor_answer_votes")) {
+        (Some(text), Some(votes)) => {
+            let votes: u64 = votes.parse().unwrap_or_default();
+            let emoji = field("victor_answer_emoji_name")
+                .filter(|name| !name.is_empty() && field("victor_answer_emoji_id").is_none())
+                .map(|name| format!("{name} "))
+                .unwrap_or_default();
+            let share = total
+                .filter(|total| *total > 0)
+                .map(|total| format!(" ({}%)", (votes * 100 + total / 2) / total))
+                .unwrap_or_default();
+            format!(
+                "Winning answer: {emoji}{text}, {}{share}.",
+                votes_text(votes)
+            )
+        }
+        _ => "There was no winner.".to_owned(),
+    };
+    format!("'s poll \u{201c}{question}\u{201d} has closed. {winner}")
+}
+
+/// "1 vote", "3 votes".
+pub fn votes_text(votes: u64) -> String {
+    if votes == 1 {
+        "1 vote".to_owned()
+    } else {
+        format!("{votes} votes")
+    }
 }
 
 /// The ids `id` finds in a list.
@@ -1612,6 +1758,104 @@ mod tests {
         assert!(!forwardable(json!({"flags": 1 << 6})));
         assert!(!forwardable(json!({"poll": {"question": {"text": "?"}}})));
         assert!(!forwardable(json!({"type": 6})));
+    }
+
+    #[test]
+    fn reads_a_poll_and_counts_votes_on_it() {
+        let mut message = parse(&json!({
+            "id": "1", "type": 0, "content": "", "author": {"id": "2"},
+            "poll": {
+                "question": {"text": "Lunch?"},
+                "answers": [
+                    {"answer_id": 1, "poll_media": {"text": "Pizza", "emoji": {"id": null, "name": "🍕"}}},
+                    {"answer_id": 2, "poll_media": {"text": "Soup", "emoji": {"id": "77", "name": ""}}},
+                    {"answer_id": 3, "poll_media": {"text": "Salad"}},
+                ],
+                "expiry": "2026-10-20T12:00:00.000000+00:00",
+                "allow_multiselect": true,
+                "layout_type": 1,
+                "results": {"is_finalized": false, "answer_counts": [
+                    {"id": 1, "count": 3, "me_voted": true},
+                    {"id": 3, "count": 1, "me_voted": false},
+                ]},
+            },
+        }))
+        .unwrap();
+        assert!(!message.editable, "a poll stays as it was sent");
+        let poll = message.poll.as_ref().unwrap();
+        assert_eq!(poll.question, "Lunch?");
+        assert!(poll.multiselect && poll.counted && !poll.finalized);
+        let expiry = iso_ms("2026-10-20T12:00:00Z").unwrap();
+        assert_eq!(poll.expiry, Some(expiry));
+        assert!(!poll.closed(expiry - 1));
+        assert!(poll.closed(expiry));
+        let answers: Vec<_> = poll
+            .answers
+            .iter()
+            .map(|answer| {
+                (
+                    answer.id,
+                    answer.text.as_str(),
+                    answer.emoji.clone(),
+                    answer.votes,
+                    answer.me,
+                )
+            })
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                (1, "Pizza", Some(("🍕".to_owned(), None)), 3, true),
+                (
+                    2,
+                    "Soup",
+                    Some((":77:".to_owned(), Some("77".to_owned()))),
+                    0,
+                    false
+                ),
+                (3, "Salad", None, 1, false),
+            ]
+        );
+        message.vote(2, false, true);
+        message.vote(1, true, false);
+        message.vote(9, false, true);
+        let poll = message.poll.as_ref().unwrap();
+        assert_eq!((poll.answers[0].votes, poll.answers[0].me), (2, false));
+        assert_eq!(poll.answers[1].votes, 1);
+    }
+
+    #[test]
+    fn tells_of_a_closed_poll_and_its_winner() {
+        let notice = |fields: Value| {
+            parse(&json!({
+                "id": "5", "type": 46, "content": "", "author": {"id": "2"},
+                "message_reference": {"message_id": "1"},
+                "embeds": [{"type": "poll_result", "fields": fields}],
+            }))
+            .unwrap()
+            .system
+            .unwrap()
+        };
+        let field =
+            |name: &str, value: &str| json!({"name": name, "value": value, "inline": false});
+        assert_eq!(
+            notice(json!([
+                field("poll_question_text", "Lunch?"),
+                field("victor_answer_votes", "3"),
+                field("total_votes", "4"),
+                field("victor_answer_id", "1"),
+                field("victor_answer_text", "Pizza"),
+                field("victor_answer_emoji_name", "🍕"),
+            ])),
+            "'s poll \u{201c}Lunch?\u{201d} has closed. Winning answer: 🍕 Pizza, 3 votes (75%)."
+        );
+        assert_eq!(
+            notice(json!([
+                field("poll_question_text", "Lunch?"),
+                field("total_votes", "0")
+            ])),
+            "'s poll \u{201c}Lunch?\u{201d} has closed. There was no winner."
+        );
     }
 
     #[test]

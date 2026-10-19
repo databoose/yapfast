@@ -335,6 +335,57 @@ fn changes_render_again_only_the_messages_they_change() {
 }
 
 #[test]
+fn votes_count_live_and_last_through_an_update_without_them() {
+    use yapfast_discord::message::{Poll, PollAnswer};
+    let poll = |counted, votes: [usize; 2]| Poll {
+        question: "Lunch?".into(),
+        answers: votes
+            .iter()
+            .zip(1..)
+            .map(|(votes, id)| PollAnswer {
+                id,
+                votes: *votes,
+                ..Default::default()
+            })
+            .collect(),
+        counted,
+        ..Default::default()
+    };
+    let asked = |poll| Message {
+        poll: Some(poll),
+        ..message("5", None)
+    };
+    let votes = |open: &OpenChannel| -> Vec<(usize, bool)> {
+        open.shown.messages[&5]
+            .poll
+            .as_ref()
+            .unwrap()
+            .answers
+            .iter()
+            .map(|answer| (answer.votes, answer.me))
+            .collect()
+    };
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.loaded(Load::Latest, shown(vec![asked(poll(true, [1, 0]))]));
+    let vote = |answer, me, added| Live::Vote {
+        channel: "11".into(),
+        message: "5".into(),
+        answer,
+        me,
+        added,
+    };
+    assert!(open.live(&vote(2, true, true)));
+    assert!(open.live(&vote(1, false, false)));
+    assert_eq!(votes(&open), [(0, false), (1, true)]);
+    // An update without the votes keeps those counted; one with them
+    // takes them, as when the poll closes.
+    assert!(open.live(&Live::Updated(asked(poll(false, [0, 0])))));
+    assert_eq!(votes(&open), [(0, false), (1, true)]);
+    assert!(open.live(&Live::Updated(asked(poll(true, [4, 2])))));
+    assert_eq!(votes(&open), [(4, false), (2, false)]);
+}
+
+#[test]
 fn messages_render_again_once_what_they_show_changes() {
     let server = |name: &str, unread: bool| {
         Some(Arc::new(yapfast_discord::ready::Server {

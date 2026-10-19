@@ -668,6 +668,60 @@ async fn talks_to_the_fake_server() {
     // showed it, does what was asked.
     discord.delete(&general, &sent.id).await.unwrap();
 
+    // Polls: a vote comes back live, who voted lists by answer, and Alice's
+    // own poll ends early with a notice of its winner.
+    let posted = control
+        .post(format!("{server}/_control/poll?alice"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let poll = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.poll.is_some() => Some(message),
+        _ => None,
+    })
+    .await;
+    assert_eq!(poll.id, posted.trim());
+    assert!(!poll.editable && !poll.forwardable);
+    discord.vote(&general, &poll.id, &[2]).await.unwrap();
+    live_where(&mut live, |event| match event {
+        Live::Vote {
+            answer: 2,
+            me: true,
+            added: true,
+            ..
+        } => Some(()),
+        _ => None,
+    })
+    .await;
+    let voters = discord
+        .voters(&guild, &general, &poll.id, 2, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(voters.len(), 3);
+    assert_eq!(voters.iter().filter(|voter| voter.me).count(), 1);
+    discord.end_poll(&general, &poll.id).await.unwrap();
+    let closed = live_where(&mut live, |event| match event {
+        Live::Updated(message) if message.id == poll.id => Some(message),
+        _ => None,
+    })
+    .await;
+    assert!(closed.poll.is_some_and(|poll| poll.finalized));
+    let notice = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.system.is_some() => Some(message),
+        _ => None,
+    })
+    .await;
+    assert!(
+        notice
+            .system
+            .as_deref()
+            .is_some_and(|said| said.ends_with("Winning answer: 🍜 Ramen, 3 votes (75%).")),
+        "{notice:?}"
+    );
+
     // Forwarding, as Discord's client does: a message of its own that
     // carries the original, then the message added as another.
     discord

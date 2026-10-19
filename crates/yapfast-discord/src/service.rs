@@ -333,6 +333,14 @@ pub enum Live {
         me: bool,
         added: bool,
     },
+    /// Someone voted for an answer of a poll, or took their vote back.
+    Vote {
+        channel: String,
+        message: String,
+        answer: u64,
+        me: bool,
+        added: bool,
+    },
     /// Every reaction, or every one with `key`, was removed.
     ReactionsCleared {
         channel: String,
@@ -708,9 +716,8 @@ impl Discord {
     }
 
     /// Who reacted to the message `id` with `emoji`, in the API's form: up
-    /// to `limit`, by user id, after the user `after`. In a server, the
-    /// nicknames and avatars of those not known there are asked for first,
-    /// waiting a while for them.
+    /// to `limit`, by user id, after the user `after`, named as
+    /// [`Self::people`] names them.
     pub async fn reactors(
         &self,
         guild: &str,
@@ -721,10 +728,42 @@ impl Discord {
         limit: u32,
     ) -> Result<Vec<Reactor>> {
         let users = self.api.reactors(channel, id, emoji, after, limit).await?;
+        Ok(self.people(guild, &users).await)
+    }
+
+    /// Who voted for `answer` of the poll of the message `id`, as
+    /// [`Self::reactors`] lists who reacted.
+    pub async fn voters(
+        &self,
+        guild: &str,
+        channel: &str,
+        id: &str,
+        answer: u64,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Reactor>> {
+        let users = self.api.voters(channel, id, answer, after, limit).await?;
+        Ok(self.people(guild, &users).await)
+    }
+
+    /// Votes for `answers` of a message's poll; none takes the vote back.
+    pub async fn vote(&self, channel: &str, id: &str, answers: &[u64]) -> Result<()> {
+        self.api.vote(channel, id, answers).await
+    }
+
+    /// Closes this account's poll now.
+    pub async fn end_poll(&self, channel: &str, id: &str) -> Result<()> {
+        self.api.end_poll(channel, id).await
+    }
+
+    /// Users as a list of people shows them, by their names in `guild`. In
+    /// a server, the nicknames and avatars of those not known there are
+    /// asked for first, waiting a while for them.
+    async fn people(&self, guild: &str, users: &[serde_json::Value]) -> Vec<Reactor> {
         let in_server = server(guild);
         let unknown: Vec<String> = {
             let mut names = self.write_names();
-            for user in &users {
+            for user in users {
                 names.learn_user(user);
             }
             users
@@ -745,7 +784,7 @@ impl Discord {
         }
         let me = self.snapshots.borrow().user_id.clone();
         let names = self.read_names();
-        Ok(users
+        users
             .iter()
             .filter_map(|user| {
                 let id = user["id"].as_str()?;
@@ -761,7 +800,7 @@ impl Discord {
                     me: me.as_deref() == Some(id),
                 })
             })
-            .collect())
+            .collect()
     }
 
     /// A channel's pinned messages, the latest pinned first: a server's

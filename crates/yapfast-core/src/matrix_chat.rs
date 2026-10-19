@@ -602,6 +602,8 @@ impl Matrix {
             }
             // Yapfast removes others' Matrix reactions only as Discord's.
             Command::RemoveReactor { .. } => {}
+            // Yapfast shows only Discord's polls.
+            Command::Vote { .. } | Command::EndPoll { .. } | Command::Voters { .. } => {}
             // Yapfast pins only Discord's messages.
             Command::Pin { .. } => {}
             // Matrix's attachments have no address, which copying asks for.

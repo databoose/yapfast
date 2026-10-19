@@ -796,19 +796,38 @@ impl Adapter {
             return;
         };
         window.set_reactions_key(shown.key.as_str().into());
+        window.set_reactions_voters(shown.poll);
         window.set_reactors_loading(shown.loading);
         window.set_reactors_more(state.more_reactors());
         window.set_reactors_error(shown.error.clone().unwrap_or_default().into());
-        let pills = state
-            .window_reactions()
-            .into_iter()
-            .map(|reaction| ReactionPill {
-                key: reaction.key.as_str().into(),
-                label: emoji_of(&shown.item, &reaction.key).into(),
-                name: emoji::shortcode(&reaction.key).into(),
-                count: i32::try_from(reaction.count).unwrap_or(i32::MAX),
-            })
-            .collect();
+        let pills = if shown.poll {
+            state
+                .window_answers()
+                .iter()
+                .map(|answer| ReactionPill {
+                    key: answer.id.to_string().into(),
+                    label: answer
+                        .emoji
+                        .as_deref()
+                        .map(|key| emoji_of(&shown.item, key))
+                        .unwrap_or_default()
+                        .into(),
+                    name: answer.text.as_str().into(),
+                    count: i32::try_from(answer.votes).unwrap_or(i32::MAX),
+                })
+                .collect()
+        } else {
+            state
+                .window_reactions()
+                .into_iter()
+                .map(|reaction| ReactionPill {
+                    key: reaction.key.as_str().into(),
+                    label: emoji_of(&shown.item, &reaction.key).into(),
+                    name: emoji::shortcode(&reaction.key).into(),
+                    count: i32::try_from(reaction.count).unwrap_or(i32::MAX),
+                })
+                .collect()
+        };
         update_model(&self.models.reaction_pills, pills);
         let rows = shown
             .people
@@ -820,7 +839,7 @@ impl Adapter {
                 avatar: person.avatar.as_str().into(),
                 initial: initial(&person.name),
                 tint: tint(&person.name),
-                removable: person.me || shown.can_remove,
+                removable: !shown.poll && (person.me || shown.can_remove),
             })
             .collect();
         update_model(&self.models.reactor_rows, rows);
@@ -2021,6 +2040,9 @@ impl Adapter {
         }
         update_model(&self.models.staged, rows);
         window.set_confirm_delete(state.confirm_delete.clone().unwrap_or_default().into());
+        window
+            .global::<Polls>()
+            .set_confirm_end(state.confirm_end_poll.clone().unwrap_or_default().into());
         window.set_reply_ping(matches!(
             state.compose(),
             Some(Compose::Reply { ping: true, .. })
@@ -2180,6 +2202,12 @@ impl Adapter {
             }
         }
         let state = &self.app.state;
+        // A poll's time left counts down by the minute.
+        let minute = yapfast_core::clock::now_ms() / 60_000;
+        if self.poll_minute != minute {
+            self.poll_minute = minute;
+            self.restyle |= polls::open_poll(&state.messages, minute * 60);
+        }
         let restyle = std::mem::take(&mut self.restyle);
         // The thread beside builds its rows again with the timeline's.
         self.aside_restyle |= restyle;

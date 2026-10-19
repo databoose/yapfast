@@ -338,7 +338,8 @@ pub(super) fn show_message(window: &YapfastWindow, index: usize, item: &str, lit
 }
 
 /// A message as the timeline shows it. `revealed` holds the spoilers clicked, as
-/// `{item}/{index}` for text and `{item}/a{index}` for attachments.
+/// `{item}/{index}` for text and `{item}/a{index}` for attachments, and what
+/// was picked or shown on polls; see `polls`.
 pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> MessageRow {
     // Plain text shows as typed, its web addresses linked.
     // Mentions link to who they mention, which opens their card.
@@ -582,6 +583,15 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             .thread
             .as_ref()
             .map_or_else(SharedString::default, |thread| thread_detail(thread).into()),
+        poll: message
+            .poll
+            .as_ref()
+            .map(|poll| {
+                let now = yapfast_core::clock::now_ms() / 1000;
+                super::polls::poll_card(&message.item, poll, &message.emoji, revealed, now)
+            })
+            .unwrap_or_default(),
+        has_poll: message.poll.is_some(),
     };
     if collapsed(message, revealed) {
         // Discord shows nothing of a blocked message until asked.
@@ -610,6 +620,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             stickers: ModelRc::default(),
             files: ModelRc::default(),
             embeds: ModelRc::default(),
+            has_poll: false,
             can_reply: false,
             can_edit: false,
             can_react: false,

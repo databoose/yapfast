@@ -38,6 +38,9 @@ pub(super) fn notification(
             "Sent a picture".into()
         } else if !message.attachments.is_empty() {
             "Sent a file".into()
+        } else if let Some(poll) = &message.poll {
+            // As Discord's client says it.
+            format!("[poll] {}", poll.question)
         } else if let Some(title) = message.embeds.iter().find_map(|embed| embed.title.clone()) {
             title
         } else {
@@ -227,12 +230,22 @@ pub(super) fn hits_in(discord: &Discord, guild: &str, messages: &[Message]) -> V
 /// The custom emoji in a message's text and reactions.
 pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
     let mut found = emoji_in(&message.content);
-    for reaction in &message.reactions {
-        if let Some((_, id)) = reaction.emoji.split_once(':')
-            && !found.iter().any(|known| known.id == id)
-        {
+    let reactions = message.reactions.iter().filter_map(|reaction| {
+        let (_, id) = reaction.emoji.split_once(':')?;
+        Some((&reaction.key, id))
+    });
+    let answers = message
+        .poll
+        .iter()
+        .flat_map(|poll| &poll.answers)
+        .filter_map(|answer| {
+            let (key, id) = answer.emoji.as_ref()?;
+            Some((key, id.as_deref()?))
+        });
+    for (key, id) in reactions.chain(answers) {
+        if !found.iter().any(|known| known.id == id) {
             found.push(CustomEmoji {
-                text: reaction.key.clone(),
+                text: key.clone(),
                 id: id.to_owned(),
                 animated: false,
                 picture: yapfast_discord::ready::custom_emoji(

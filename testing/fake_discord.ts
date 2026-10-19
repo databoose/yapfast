@@ -98,6 +98,14 @@
 // request's channels, several for POST /read-states/ack-bulk.
 // POST /_control/react makes Carol add or take back a reaction on the newest
 // message in #general.
+// POST /_control/poll makes Bob post a poll in #general that Carol and Dave
+// voted in, for one answer, or with ?multi several; with ?alice it's Alice's,
+// and with ?closed its time ran out. It answers with the message's id. POST
+// /_control/poll-vote?answer=N makes Carol vote for an answer of the newest
+// poll, or take her vote back, and GET /_control/poll-votes lists Alice's
+// votes. Votes, ending a poll and its voters answer as
+// Discord's do, with MESSAGE_POLL_VOTE_ADD and _REMOVE, and once a poll ends,
+// a MESSAGE_UPDATE and a "poll closed" notice (type 46).
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
 // banner and a server bio, Carol a banner colour, and the rest nothing more.
 // POST /_control/embeds makes Bob post an article link, whose preview arrives
@@ -775,6 +783,16 @@ function contentType(filename: string): string {
 // --- Messages ---------------------------------------------------------------
 
 type Reaction = { name: string; id: string | null; users: Set<string> };
+type Poll = {
+  question: string;
+  answers: { id: number; text: string; emoji?: { id: string | null; name: string } }[];
+  /** When it closes, in Unix milliseconds. */
+  expiry: number;
+  multiselect: boolean;
+  /** Who voted for each answer, by answer id. */
+  votes: Map<number, Set<string>>;
+  finalized: boolean;
+};
 type Message = {
   id: string;
   channel: string;
@@ -798,6 +816,9 @@ type Message = {
   /** A forward: the message it carries a copy of, which its own content,
    * files and embeds are empty for. */
   forward?: string;
+  poll?: Poll;
+  /** A closed poll's notice (type 46): the poll's message. */
+  pollResult?: string;
 };
 const messages = new Map<string, Message[]>([
   [GENERAL, []],
@@ -892,6 +913,12 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
       burst_count: 0,
     }));
   }
+  if (message.poll) wire.poll = wirePoll(message.poll);
+  const result = message.pollResult ? byId.get(message.pollResult) : undefined;
+  if (result?.poll) {
+    wire.message_reference = { type: 0, channel_id: result.channel, message_id: result.id, ...guildOf(result.channel) };
+    wire.embeds = [{ type: "poll_result", fields: pollResultFields(result.poll) }];
+  }
   const thread = threads.get(message.id);
   if (thread && !nested && message.channel !== message.id) wire.thread = wireThread(thread);
   if (message.starter && !nested) {
@@ -933,6 +960,58 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     wire.referenced_message = original ? wireMessage(original, origin, true) : null;
   }
   return wire;
+}
+
+/** A poll as a message carries it, with Alice's votes as hers. */
+function wirePoll(poll: Poll): Record<string, unknown> {
+  return {
+    question: { text: poll.question },
+    answers: poll.answers.map((answer) => ({
+      answer_id: answer.id,
+      poll_media: { text: answer.text, ...(answer.emoji ? { emoji: answer.emoji } : {}) },
+    })),
+    expiry: iso(poll.expiry),
+    allow_multiselect: poll.multiselect,
+    layout_type: 1,
+    results: {
+      is_finalized: poll.finalized,
+      answer_counts: poll.answers
+        .filter((answer) => (poll.votes.get(answer.id)?.size ?? 0) > 0)
+        .map((answer) => ({
+          id: answer.id,
+          count: poll.votes.get(answer.id)!.size,
+          me_voted: poll.votes.get(answer.id)!.has(ALICE),
+        })),
+    },
+  };
+}
+
+/** The fields of a closed poll's notice's embed, as strings, the winner's
+ *  left out when there's no one answer with the most votes. */
+function pollResultFields(poll: Poll): { name: string; value: string; inline: boolean }[] {
+  const count = (id: number) => poll.votes.get(id)?.size ?? 0;
+  const total = poll.answers.reduce((sum, answer) => sum + count(answer.id), 0);
+  const most = Math.max(0, ...poll.answers.map((answer) => count(answer.id)));
+  const leaders = poll.answers.filter((answer) => most > 0 && count(answer.id) === most);
+  const fields: [string, string][] = [["poll_question_text", poll.question], ["total_votes", String(total)]];
+  if (leaders.length === 1) {
+    const winner = leaders[0]!;
+    fields.push(["victor_answer_votes", String(most)], ["victor_answer_id", String(winner.id)], ["victor_answer_text", winner.text]);
+    if (winner.emoji) {
+      if (winner.emoji.id) fields.push(["victor_answer_emoji_id", winner.emoji.id]);
+      fields.push(["victor_answer_emoji_name", winner.emoji.name], ["victor_answer_emoji_animated", "false"]);
+    }
+  }
+  return fields.map(([name, value]) => ({ name, value, inline: false }));
+}
+
+/** Closes a poll: Discord sends its message again, finalized, then a notice. */
+function endPoll(message: Message, origin: string) {
+  message.poll!.finalized = true;
+  message.poll!.expiry = Math.min(message.poll!.expiry, Date.now());
+  dispatch("MESSAGE_UPDATE", dispatched(message, origin));
+  const notice = post(message.channel, message.author, "", Date.now(), { type: 46, pollResult: message.id });
+  dispatch("MESSAGE_CREATE", dispatched(notice, origin));
 }
 
 /** The server of a channel as events carry it; DMs have none. */
@@ -1311,6 +1390,8 @@ const threadActivity = (thread: Thread) => BigInt(messages.get(thread.id)!.at(-1
 /** Each page of reactors asked for, as GET /_control/reactor-pages lists them:
  *  the message, the emoji and the query. */
 const reactorPages: string[] = [];
+/** Alice's votes, oldest first: the poll's message id and the answers. */
+const pollVotes: string[] = [];
 /** Each reaction a moderator removed, as GET /_control/reactor-removals lists
  *  them: the message, the emoji and the user. */
 const reactorRemovals: string[] = [];
@@ -3685,6 +3766,61 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return empty();
   }
 
+  // Alice's vote, in place of her earlier one; none takes it back.
+  if (method === "PUT" && (m = path.match(/^\/channels\/(\d+)\/polls\/(\d+)\/answers\/@me$/))) {
+    const message = byId.get(m[2]!);
+    if (!message || message.channel !== m[1]) return notFound("Unknown Message", 10008);
+    const poll = message.poll;
+    if (!poll) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    if (poll.finalized || poll.expiry <= Date.now()) return json({ message: "Poll voting blocked", code: 520000 }, 400);
+    const body: any = await req.json();
+    const chosen: number[] = (body.answer_ids ?? []).map(Number);
+    if (!Array.isArray(body.answer_ids) || (chosen.length > 1 && !poll.multiselect)
+        || chosen.some((id) => !poll.answers.some((answer) => answer.id === id))) {
+      return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    }
+    for (const answer of poll.answers) {
+      const voters = poll.votes.get(answer.id) ?? new Set<string>();
+      poll.votes.set(answer.id, voters);
+      const add = chosen.includes(answer.id);
+      if (voters.has(ALICE) === add) continue;
+      if (add) voters.add(ALICE);
+      else voters.delete(ALICE);
+      dispatch(add ? "MESSAGE_POLL_VOTE_ADD" : "MESSAGE_POLL_VOTE_REMOVE", {
+        user_id: ALICE,
+        channel_id: message.channel,
+        message_id: message.id,
+        ...guildOf(message.channel),
+        answer_id: answer.id,
+      });
+    }
+    pollVotes.push(`${message.id} ${chosen.join(",")}`);
+    return empty();
+  }
+
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/polls\/(\d+)\/expire$/))) {
+    const message = byId.get(m[2]!);
+    if (!message || message.channel !== m[1] || !message.poll) return notFound("Unknown Message", 10008);
+    if (message.author.id !== ALICE) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    if (!message.poll.finalized) endPoll(message, origin);
+    return json(wireMessage(message, origin));
+  }
+
+  // Who voted for an answer, as Discord pages them: by user id, from after
+  // ?after, up to ?limit (25 unless it says, 100 at most).
+  if (method === "GET" && (m = path.match(/^\/channels\/(\d+)\/polls\/(\d+)\/answers\/(\d+)$/))) {
+    const message = byId.get(m[2]!);
+    if (!message || message.channel !== m[1] || !message.poll) return notFound("Unknown Message", 10008);
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 25)));
+    const after = BigInt(url.searchParams.get("after") ?? 0);
+    const users = [...(message.poll.votes.get(Number(m[3])) ?? [])]
+      .map((user) => userById.get(user)!)
+      .filter((user) => BigInt(user.id) > after)
+      .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+      .slice(0, limit);
+    return json({ users: users.map(wireUser) });
+  }
+
   if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/typing$/))) {
     if (!messages.has(m[1]!)) return notFound("Unknown Channel", 10003);
     typed.push(m[1]!);
@@ -5669,6 +5805,55 @@ const server = Bun.serve<SocketData>({
         ...(add ? { member: member(users.carol), message_author_id: message.author.id } : {}),
       });
       return new Response(add ? "Carol reacted\n" : "Carol took her reaction back\n");
+    }
+    if (req.method === "POST" && path === "/_control/poll") {
+      const now = Date.now();
+      const closed = url.searchParams.has("closed");
+      const poll: Poll = {
+        question: "Where should we eat after the ferry?",
+        answers: [
+          { id: 1, text: "Pizza by the harbour", emoji: { id: null, name: "🍕" } },
+          { id: 2, text: "Ramen", emoji: { id: null, name: "🍜" } },
+          { id: 3, text: "Wherever the talk is", emoji: { id: EMOJI_TALK, name: "talk" } },
+          { id: 4, text: "Home, I'm tired" },
+        ],
+        expiry: closed ? now - 60_000 : now + 24 * 3_600_000,
+        multiselect: url.searchParams.has("multi"),
+        votes: new Map([
+          [1, new Set([users.carol.id])],
+          [2, new Set([users.dave.id, users.bob.id])],
+        ]),
+        finalized: closed,
+      };
+      const author = url.searchParams.has("alice") ? users.alice : users.bob;
+      const message = post(GENERAL, author, "", now, { poll });
+      dispatch("MESSAGE_CREATE", dispatched(message, origin));
+      if (closed) {
+        const notice = post(GENERAL, author, "", now + 1, { type: 46, pollResult: message.id });
+        dispatch("MESSAGE_CREATE", dispatched(notice, origin));
+      }
+      return new Response(`${message.id}\n`);
+    }
+    if (req.method === "POST" && path === "/_control/poll-vote") {
+      const message = messages.get(GENERAL)!.findLast((message) => message.poll);
+      const answer = Number(url.searchParams.get("answer") ?? 1);
+      if (!message?.poll?.answers.some((known) => known.id === answer)) return new Response("No such poll answer\n", { status: 400 });
+      const voters = message.poll.votes.get(answer) ?? new Set<string>();
+      message.poll.votes.set(answer, voters);
+      const add = !voters.has(users.carol.id);
+      if (add) voters.add(users.carol.id);
+      else voters.delete(users.carol.id);
+      dispatch(add ? "MESSAGE_POLL_VOTE_ADD" : "MESSAGE_POLL_VOTE_REMOVE", {
+        user_id: users.carol.id,
+        channel_id: GENERAL,
+        message_id: message.id,
+        guild_id: GUILD,
+        answer_id: answer,
+      });
+      return new Response(add ? "Carol voted\n" : "Carol took her vote back\n");
+    }
+    if (req.method === "GET" && path === "/_control/poll-votes") {
+      return Response.json(pollVotes);
     }
     if (req.method === "GET" && path === "/_control/typed") {
       return Response.json(typed);
