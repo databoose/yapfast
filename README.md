@@ -125,15 +125,14 @@ test it on.
 ### Nightly builds
 
 Want what's on `main` right now, without waiting for a release or building it
-yourself? Every push to `main` builds the Discord-only app again:
+yourself? Every now and then I put out a nightly build of the Discord-only app.
+They're on the [releases page](https://github.com/yapfast/yapfast/releases),
+marked **Pre-release**, newest first, each with a list of what changed:
 
-- [Windows, portable ZIP](https://github.com/yapfast/yapfast/releases/download/nightly/yapfast-nightly-windows-x64.zip):
-  extract it and double-click `yapfast.exe`.
-- [Linux, AppImage](https://github.com/yapfast/yapfast/releases/download/nightly/yapfast-nightly-x86_64.AppImage):
-  `chmod +x` it and run it.
+- **Windows:** the portable ZIP. Extract it and double-click `yapfast.exe`.
+- **Linux:** the AppImage, the one coming to releases too. `chmod +x` it and
+  run it.
 
-Each link gives the latest build that finished, from the
-[nightly pre-release](https://github.com/yapfast/yapfast/releases/tag/nightly).
 They're untested between releases, so expect the odd rough edge.
 
 ## Features
