@@ -151,6 +151,8 @@ export component FoundCard inherits Rectangle {
                     Text { text: root.found.when; color: Theme.muted; font-size: 12px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                 }
                 if root.found.has-body: StyledText {
+                    // An overlong word breaks rather than widening every card.
+                    min-width: 0px;
                     text: root.found.styled; default-color: Theme.text; link-color: Theme.link;
                     default-font-size: 15px; max-lines: 8;
                     link-clicked(link) => { root.open-link(link); }
