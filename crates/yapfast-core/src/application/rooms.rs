@@ -8,6 +8,8 @@ use crate::chat::Muting;
 pub enum MenuChoice {
     MarkRead,
     JoinVoice,
+    /// A voice channel's chat, without joining it.
+    OpenChat,
     /// The other person's profile, in a one-to-one DM.
     Profile,
     /// Open the DM with someone, starting it if need be.
@@ -234,6 +236,9 @@ impl AppState {
         if room.voice && !connected && self.can_join_voice(id) {
             choices.push(MenuChoice::JoinVoice);
         }
+        if room.voice_chat() {
+            choices.push(MenuChoice::OpenChat);
+        }
         if room.person.is_some() {
             choices.push(MenuChoice::Profile);
         }
@@ -381,7 +386,9 @@ impl Application {
         self.restore_selection()
     }
 
-    pub(super) fn open(&mut self, id: String) -> Vec<Effect> {
+    /// Goes to wherever a conversation is listed and shows it; with `chat`,
+    /// a voice channel's chat rather than its call.
+    pub(super) fn open(&mut self, id: String, chat: bool) -> Vec<Effect> {
         let Some(room) = self.state.rooms.iter().find(|room| room.id == id) else {
             return self.open_thread(id, false);
         };
@@ -397,8 +404,16 @@ impl Application {
         let mut effects = navigation
             .map(|navigation| self.dispatch(Action::Navigate(navigation)))
             .unwrap_or_default();
-        effects.extend(self.select(id));
+        effects.extend(self.select_showing(id, chat));
         effects
+    }
+
+    /// Switches the selected voice channel between its chat and its call.
+    pub(super) fn show_voice_chat(&mut self, chat: bool) -> Vec<Effect> {
+        match self.state.selected.clone() {
+            Some(id) if self.state.voice_chat != chat => self.show_room(id, chat),
+            _ => vec![],
+        }
     }
 
     /// Opens a Discord thread that isn't listed, as a message's link to it
@@ -573,6 +588,12 @@ impl Application {
     }
 
     pub(super) fn select(&mut self, id: String) -> Vec<Effect> {
+        self.select_showing(id, false)
+    }
+
+    /// Selects a room; with `chat`, a voice channel shows its chat rather
+    /// than its call.
+    fn select_showing(&mut self, id: String, chat: bool) -> Vec<Effect> {
         // A thread beside the channel goes when another room shows.
         let changes = self.state.selected.as_ref() != Some(&id)
             && self
@@ -581,11 +602,11 @@ impl Application {
                 .iter()
                 .any(|room| room.id == id && self.state.in_scope(room));
         let mut effects = if changes { self.close_aside() } else { vec![] };
-        effects.extend(self.show_room(id));
+        effects.extend(self.show_room(id, chat));
         effects
     }
 
-    fn show_room(&mut self, id: String) -> Vec<Effect> {
+    fn show_room(&mut self, id: String, chat: bool) -> Vec<Effect> {
         let Some(room) = self
             .state
             .rooms
@@ -594,7 +615,9 @@ impl Application {
         else {
             return vec![];
         };
-        let voice_room = room.voice && room.network != Network::Discord;
+        // A voice channel shows its call, or with `chat` its messages.
+        let chat = chat && room.voice_chat();
+        let voice_room = room.voice && !chat;
         let locked = room.locked;
         let forum = room.forum;
         // Where the "New" divider goes, from before showing the room reads it.
@@ -614,6 +637,7 @@ impl Application {
             self.state.places_used.visit(&id, crate::clock::now_ms());
         }
         self.state.selected = Some(id.clone());
+        self.state.voice_chat = chat;
         self.state.confirm_delete = None;
         self.state.confirm_end_poll = None;
         self.state.poll_draft = None;
@@ -640,7 +664,9 @@ impl Application {
         self.state.messages = Arc::new(vec![]);
         self.visible_messages.clear();
         self.state.members = None;
+        // A voice channel's call leaves its chat's messages for later.
         if !self.state.preview
+            && !voice_room
             && let Some(index) = self.shown.iter().position(|shown| shown.room == id)
         {
             let shown = self.shown.remove(index);

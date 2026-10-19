@@ -249,6 +249,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
     match choice {
         MenuChoice::MarkRead => ("Mark as read", &icons.read),
         MenuChoice::JoinVoice => ("Join voice", &icons.call),
+        MenuChoice::OpenChat => ("Open chat", &icons.chat),
         MenuChoice::Profile => ("Profile", &icons.profile),
         MenuChoice::Message => ("Message", &icons.dm),
         MenuChoice::AddFriend => ("Add friend", &icons.befriend),
@@ -760,6 +761,7 @@ pub(super) fn choose(
     let action = match choice {
         MenuChoice::MarkRead => Some(Action::MarkRead(target)),
         MenuChoice::JoinVoice => Some(Action::RequestJoinVoice(target)),
+        MenuChoice::OpenChat => Some(Action::OpenChat(target)),
         MenuChoice::Call if person => Some(Action::CallPerson(target.clone())),
         MenuChoice::Call => room.map(Action::RequestJoinVoice),
         MenuChoice::Profile if person => Some(Action::ShowProfile {
@@ -917,9 +919,10 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 56] = [
+const CHOICES: [MenuChoice; 57] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
+    MenuChoice::OpenChat,
     MenuChoice::Profile,
     MenuChoice::Message,
     MenuChoice::AddFriend,
@@ -980,6 +983,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
     match choice {
         MenuChoice::MarkRead => "mark-read",
         MenuChoice::JoinVoice => "join-voice",
+        MenuChoice::OpenChat => "open-chat",
         MenuChoice::Profile => "profile",
         MenuChoice::Message => "message",
         MenuChoice::AddFriend => "add-friend",

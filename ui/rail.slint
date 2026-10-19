@@ -1,6 +1,6 @@
 import { ListView } from "scrollview.slint";
 import { Theme, Tip, Middle, Label } from "theme.slint";
-import { Avatar, PictureStore, StatusText, VoiceSpot, IconButton } from "controls.slint";
+import { Avatar, PictureStore, StatusText, VoiceSpot } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { PersonRow, LivePill } from "voice.slint";
 
@@ -35,6 +35,7 @@ export struct ServerRow {
 export struct RoomRow {
     id: string, name: string, heading: string, icon: image, selected: bool, unread: bool, badge: string,
     voice: bool, direct: bool, initial: string, tint: color,
+    /// A voice channel with a chat to open.
     chat: bool,
     /// A DM's avatar or group icon, and whether it's a Discord DM.
     picture: image, discord: bool,
@@ -344,8 +345,6 @@ export component StatusDot inherits Rectangle {
 
 // A channel or DM in the sidebar.
 export component ChannelRow inherits Rectangle {
-    in property <bool> chat;
-    callback open-chat;
     in property <string> text;
     in property <string> label: root.text;
     in property <image> icon;
@@ -376,9 +375,12 @@ export component ChannelRow inherits Rectangle {
     in property <string> voice-server;
     /// A Discord thread, which the line from its channel marks in place of an icon.
     in property <bool> thread;
+    /// A voice channel with a chat, which a button on the row opens.
+    in property <bool> chat;
     callback clicked;
     /// Their person's voice channel was clicked, to go to it.
     callback open-voice;
+    callback open-chat;
     /// A right click, or the Menu key or Shift+F10 when focused: where to open
     /// a menu in the window.
     callback context-menu(length, length);
@@ -476,15 +478,39 @@ export component ChannelRow inherits Rectangle {
                         badge-text := Text { text: root.badge; color: Theme.on-danger; font-size: 11px; font-weight: 700; }
                     }
                 }
-                if root.chat: Rectangle { width: 28px; }
+                // A voice channel's chat opens without joining it, from a
+                // button shown on hover as in Discord. Like a voice spot, it
+                // takes no focus, which goes to the chat's composer; the
+                // row's menu opens the chat from the keyboard.
+                if root.chat && (pointer.has-hover || root.selected): Middle {
+                    Rectangle {
+                        width: 24px; height: 24px; border-radius: 6px;
+                        background: chat-pointer.has-hover ? Theme.overlay.with-alpha(0.08) : transparent;
+                        accessible-role: button;
+                        accessible-label: "Open chat";
+                        accessible-action-default => { root.open-chat(); }
+                        chat-icon := Image {
+                            source: @image-url("icons/message-square-text.svg"); width: 16px; height: 16px;
+                            colorize: chat-pointer.has-hover ? Theme.text : Theme.secondary;
+                        }
+                        chat-pointer := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { Tip.text = ""; root.open-chat(); }
+                            changed has-hover => {
+                                if self.has-hover {
+                                    Tip.text = "Open chat";
+                                    Tip.side = 0;
+                                    Tip.x = chat-icon.absolute-position.x + chat-icon.width / 2;
+                                    Tip.y = chat-icon.absolute-position.y;
+                                } else if Tip.text == "Open chat" {
+                                    Tip.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-    }
-    if root.chat: IconButton {
-        x: parent.width - self.width - 8px; y: (parent.height - self.height) / 2;
-        icon: @image-url("icons/message-square-text.svg"); label: "Open chat";
-        size: 28px; glyph: 18px;
-        clicked => { root.open-chat(); }
     }
 }
 
@@ -707,6 +733,7 @@ export component RoomList inherits VerticalLayout {
     callback select-room(string);
     /// A DM person's voice channel was clicked: its room id.
     callback open-voice(string);
+    /// A voice channel's chat button was clicked: its room id.
     callback open-chat(string);
     callback open-friends;
     callback open-requests;

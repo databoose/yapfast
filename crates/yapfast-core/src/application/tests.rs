@@ -1609,28 +1609,39 @@ fn clicking_a_voice_channel_joins_it_and_asks_before_leaving_another() {
 }
 
 #[test]
-fn discord_voice_chat_opens_without_joining_and_can_send_and_load_history() {
+fn a_discord_voice_channels_chat_opens_without_joining_it() {
     let mut app = connected();
     let id = "discord:10:11";
     let mut room = preview_room(id, "Lounge", false, 3);
     room.voice = true;
-    room.encrypted = false;
     room.join_locked = true;
     app.state.discord_online = true;
     app.state.rooms.push(room);
     app.state.servers[0].channels.push(id.into());
+    let opens = |effects: &[Effect]| {
+        effects.iter().any(|effect| {
+            matches!(
+                effect, Effect::Backend(Command::Open(room)) if room == id
+            )
+        })
+    };
 
+    // Going to it shows its call, and loads no messages.
     let effects = app.dispatch(Action::Open(id.into()));
-    assert!(effects.iter().any(|effect| matches!(
-        effect, Effect::Backend(Command::Open(room)) if room == id
-    )));
+    assert!(!opens(&effects));
+    assert!(!app.state.shows_text() && !app.state.can_write());
+    assert!(app.dispatch(Action::Earlier).is_empty());
+    assert!(app.state.menu_choices(id).contains(&MenuChoice::OpenChat));
+
+    // Its chat opens without joining, which its roles don't allow.
+    let effects = app.dispatch(Action::OpenChat(id.into()));
+    assert!(opens(&effects));
     assert!(
         !effects
             .iter()
             .any(|effect| matches!(effect, Effect::Backend(Command::Voice(_))))
     );
-    assert!(!app.state.can_join_voice(id));
-    assert!(!app.state.room_ready);
+    assert!(app.state.voice_chat && !app.state.can_join_voice(id));
     app.apply(Event::Timeline {
         room: id.into(),
         messages: timeline(vec![]),
@@ -1644,6 +1655,21 @@ fn discord_voice_chat_opens_without_joining_and_can_send_and_load_history() {
     assert!(app.dispatch(Action::Earlier).iter().any(|effect| matches!(
         effect, Effect::Backend(Command::Earlier(room)) if room == id
     )));
+
+    // The header switches back to its call and to its chat again.
+    let effects = app.dispatch(Action::ShowVoiceChat(false));
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::CloseRoom)))
+    );
+    assert!(!app.state.voice_chat && !app.state.can_write());
+    assert!(opens(&app.dispatch(Action::ShowVoiceChat(true))));
+    assert!(
+        app.state.voice_chat && app.state.room_ready,
+        "its messages stay"
+    );
+
     app.state
         .rooms
         .iter_mut()

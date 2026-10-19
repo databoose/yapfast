@@ -2773,6 +2773,7 @@ fn friends_in_a_servers_voice_channel_show_where() {
         muted: false,
         last_read: None,
         locked: false,
+        join_locked: false,
         read_only: false,
         slowed: false,
         category: String::new(),
@@ -3570,6 +3571,7 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         texts(rows.clone()),
         [
             "Join voice",
+            "Open chat",
             "Pin channel to top",
             "Copy link",
             "Edit channel",
@@ -3579,7 +3581,7 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
             "Copy ID"
         ]
     );
-    let delete = rows.row_data(6).unwrap();
+    let delete = rows.row_data(7).unwrap();
     assert!(delete.danger && delete.separated);
     window.invoke_prepare_menu("discord:10:4".into(), false);
     assert_eq!(
@@ -4215,6 +4217,7 @@ fn requests_list_someone_once_with_their_message() {
         muted: false,
         last_read: None,
         locked: false,
+        join_locked: false,
         read_only: true,
         slowed: false,
         category: category.into(),

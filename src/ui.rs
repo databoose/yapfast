@@ -1170,6 +1170,7 @@ impl Models {
 
 struct Icons {
     dm: slint::Image,
+    chat: slint::Image,
     text: slint::Image,
     thread: slint::Image,
     forum: slint::Image,
@@ -1231,6 +1232,9 @@ struct Adapter {
     /// Whether the forward dialog was open at the last refresh.
     forwarding: bool,
     selection_version: u64,
+    /// The conversation just shown was still loading, when its composer is
+    /// disabled and takes no focus; it takes it once the messages come.
+    focus_when_ready: bool,
     reset_version: u64,
     /// The timeline shown, which tells the messages that changed since.
     messages: Arc<Vec<Arc<ChatMessage>>>,
@@ -1361,6 +1365,9 @@ impl Adapter {
     ) -> Result<Rc<RefCell<Self>>> {
         let icons = Icons {
             dm: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/message-circle.svg"))?,
+            chat: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/message-square-text.svg"
+            ))?,
             text: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/hash.svg"))?,
             thread: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/messages-square.svg"
@@ -1449,6 +1456,7 @@ impl Adapter {
                 navigation: Navigation::default(),
                 forwarding: false,
                 selection_version: 0,
+                focus_when_ready: false,
                 reset_version: 0,
                 messages: Arc::new(Vec::new()),
                 rows: Vec::new(),

@@ -455,7 +455,7 @@ impl Application {
         };
         let mut effects = self.close_threads();
         if self.state.selected.as_ref() != Some(&room) {
-            effects.extend(self.open(room.clone()));
+            effects.extend(self.open(room.clone(), false));
         }
         effects.extend(self.close_aside());
         let mut body = String::new();

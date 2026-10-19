@@ -176,9 +176,9 @@ fn voice_person(member: &yapfast_discord::service::VoiceMember) -> VoicePerson {
 /// text channels before voice channels in each, and the latest DM first.
 /// They stay listed while Discord reconnects; joining and sending wait for
 /// the connection. Voice channels this account can see but not join are
-/// listed locked, as in Discord, and text channels it can't send in are
-/// read-only. Channels hidden from it are listed locked only with
-/// `show_hidden`.
+/// listed locked, as in Discord, though their chat may be read, and
+/// channels it can't send in are read-only. Channels hidden from it are
+/// listed locked only with `show_hidden`.
 pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<ChatServer>) {
     let mut index = Index::default();
     index.update(snapshot, show_hidden);
@@ -623,7 +623,8 @@ fn server_rooms(
                 name: channel.name.clone(),
                 direct: false,
                 voice: true,
-                // Text messages in voice channels aren't end-to-end encrypted.
+                // Its chat isn't end-to-end encrypted, as no Discord
+                // channel's is; its calls are, as `call_encrypted` says.
                 encrypted: false,
                 members: snapshot
                     .voice
@@ -635,13 +636,7 @@ fn server_rooms(
                 last_read: read_item(channel.last_read),
                 locked: channel.access == Access::Hidden,
                 join_locked: channel.access != Access::Join,
-                read_only: !server.roles.is_empty()
-                    && server.channel_permissions(
-                        channel,
-                        snapshot.user_id.as_deref().unwrap_or_default(),
-                        &server.my_roles,
-                    ) & yapfast_discord::ready::permission::SEND_MESSAGES
-                        == 0,
+                read_only: !server.may_send(channel, me, &server.my_roles),
                 slowed: server.slowed(channel, me, &server.my_roles),
                 category,
                 request: false,

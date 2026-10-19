@@ -100,7 +100,7 @@ impl Application {
         }
         match self.state.rooms.iter().find(|listed| listed.id == room) {
             Some(listed) if listed.parent.is_some() => self.show_aside(room),
-            Some(_) => self.open(room),
+            Some(_) => self.open(room, false),
             None => self.open_thread(room, true),
         }
     }
@@ -139,7 +139,7 @@ impl Application {
             return vec![];
         };
         let mut effects = self.close_aside();
-        effects.extend(self.open(room));
+        effects.extend(self.open(room, false));
         effects
     }
 

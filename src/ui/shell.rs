@@ -238,7 +238,7 @@ impl Shell {
             window.set_settings_open(false);
             self.adapter
                 .borrow_mut()
-                .action(&window, Action::Open(room));
+                .action(&window, Action::OpenChat(room));
         }
     }
 
@@ -271,7 +271,7 @@ impl Shell {
         {
             show_message(&window, index, &top, false);
         }
-        if state.selected_room().is_some_and(|room| !room.voice) {
+        if state.shows_text() {
             window.invoke_focus_composer();
         }
         drop(adapter);

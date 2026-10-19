@@ -309,10 +309,7 @@ impl Application {
             || self.focusing
             || self.state.loading_history
             || self.state.history_start
-            || self
-                .state
-                .selected_room()
-                .is_none_or(|room| room.voice && room.network != Network::Discord)
+            || !self.state.shows_text()
         {
             return vec![];
         }
@@ -363,7 +360,7 @@ impl Application {
             }
         }
         if let [target] = forwarding.chosen.as_slice() {
-            effects.extend(self.dispatch(Action::Open(target.clone())));
+            effects.extend(self.dispatch(Action::OpenChat(target.clone())));
         }
         forwarding.note = note;
         forwarding.error = None;
@@ -570,8 +567,9 @@ impl Application {
     /// Opens a room, unless it's open, and brings its message into view.
     pub(super) fn jump_in_room(&mut self, room: String, item: String) -> Vec<Effect> {
         let mut effects = vec![];
-        if self.state.selected.as_ref() != Some(&room) {
-            effects = self.open(room.clone());
+        // A voice channel's message shows in its chat.
+        if self.state.selected.as_ref() != Some(&room) || !self.state.shows_text() {
+            effects = self.open(room.clone(), true);
         }
         if self.state.selected.as_ref() == Some(&room) {
             effects.extend(self.jump(item, false));
@@ -586,7 +584,7 @@ impl Application {
         let Some(room) = self
             .state
             .selected_room()
-            .filter(|room| (!room.voice || room.network == Network::Discord) && !room.locked)
+            .filter(|room| self.state.shows_text() && !room.locked)
             .map(|room| room.id.clone())
         else {
             self.seeking = None;

@@ -60,7 +60,8 @@ pub struct ChatRoom {
     /// Listed, but this account may not read it, such as a Discord channel
     /// its roles keep it out of.
     pub locked: bool,
-    /// Voice connection is forbidden, independently of reading its text chat.
+    /// A voice channel this account may not join, which Discord lists with
+    /// a lock; its chat may still be readable.
     pub join_locked: bool,
     /// Readable, but this account may not send here, such as a Discord
     /// announcement channel.
@@ -99,6 +100,26 @@ pub struct ChatRoom {
     pub forum: bool,
     /// A Discord message request's latest message, when it's known.
     pub preview: Option<Box<RequestPreview>>,
+}
+
+impl ChatRoom {
+    /// It has messages: every room but a Matrix voice room, as a Discord
+    /// voice channel has a chat beside its call.
+    pub fn has_text(&self) -> bool {
+        !self.voice || self.network == Network::Discord
+    }
+
+    /// A voice channel with a chat beside its call that this account may
+    /// read.
+    pub fn voice_chat(&self) -> bool {
+        self.voice && self.has_text() && !self.locked
+    }
+
+    /// A call here is end-to-end encrypted: Discord's always are, by DAVE,
+    /// and a Matrix room's when the room is.
+    pub fn call_encrypted(&self) -> bool {
+        self.network == Network::Discord || self.encrypted
+    }
 }
 
 /// A Discord message request's latest message, as the requests list shows it.

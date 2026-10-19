@@ -268,9 +268,14 @@ export component YapfastWindow inherits Window {
     in property <bool> room-ready;
     in property <bool> room-encrypted;
     in property <bool> voice-room;
-    in property <bool> voice-text;
-    property <string> voice-chat-room;
-    property <bool> voice-panel: root.voice-room && !(root.voice-text && root.voice-chat-room == root.room-id);
+    /// The selected voice channel shows its chat in place of its call, and
+    /// whether it has one to show.
+    in property <bool> voice-chat;
+    in property <bool> has-voice-chat;
+    /// A call here would be end-to-end encrypted.
+    in property <bool> call-encrypted;
+    /// A voice room shows its call, rather than its chat.
+    property <bool> voice-panel: root.voice-room && !root.voice-chat;
     in property <bool> composer-enabled;
     /// The selected conversation is a Discord message request, introduced by
     /// the title; it's answered instead of written to.
@@ -915,6 +920,11 @@ export component YapfastWindow inherits Window {
     /// Go to wherever a conversation is listed and open it, as an unread DM
     /// on the rail does.
     callback open-conversation(string);
+    /// Go to a conversation and show its messages: a voice channel's chat
+    /// rather than its call.
+    callback open-chat(string);
+    /// Show the selected voice channel's chat, or with `false` its call.
+    callback show-voice-chat(bool);
     /// Show a Discord thread beside the conversation, as its link in a
     /// message does, asking for one that isn't listed.
     callback open-aside(string);
@@ -1692,9 +1702,9 @@ export component YapfastWindow inherits Window {
                                 rooms: root.rooms; dms-selected: root.dms-selected; discord-linked: root.discord-linked; preview: root.preview;
                                 friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
                                 voice-channel: root.voice-channel; participants: root.participants; sidebar-empty: root.sidebar-empty;
-                                select-room(id) => { root.voice-chat-room = ""; root.select-room(id); }
+                                select-room(id) => { root.select-room(id); }
                                 open-voice(id) => { root.open-conversation(id); }
-                                open-chat(id) => { root.voice-chat-room = id; root.open-conversation(id); }
+                                open-chat(id) => { root.open-chat(id); }
                                 open-friends => { root.open-friends(); }
                                 open-requests => { root.open-requests(); }
                                 open-room-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
@@ -1918,12 +1928,12 @@ export component YapfastWindow inherits Window {
                                 clicked => { root.befriend(root.dm-person); }
                             }
                         }
-                        if root.voice-text: Middle {
+                        if root.has-voice-chat: Middle {
                             IconButton {
-                                icon: root.voice-panel ? @image-url("icons/message-square-text.svg") : @image-url("icons/volume-2.svg");
-                                label: root.voice-panel ? "Open chat" : "Show voice channel";
+                                icon: root.voice-chat ? @image-url("icons/volume-2.svg") : @image-url("icons/message-square-text.svg");
+                                label: root.voice-chat ? "Show voice channel" : "Open chat";
                                 tip-side: 2;
-                                clicked => { root.voice-chat-room = root.voice-panel ? root.room-id : ""; }
+                                clicked => { root.show-voice-chat(!root.voice-chat); }
                             }
                         }
                         if root.can-call: Middle {
@@ -2091,7 +2101,7 @@ export component YapfastWindow inherits Window {
                             if !root.voice-panel: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.edge; }
                             if !root.voice-here && root.voice-panel: JoinVoice {
                                 room-name: root.room-name; voice-description: root.voice-description; preview: root.preview;
-                                room-encrypted: root.voice-text || root.room-encrypted; voice-active: root.voice-active; can-join: root.can-join;
+                                call-encrypted: root.call-encrypted; voice-active: root.voice-active; can-join: root.can-join;
                                 join-voice => { root.join-voice(); }
                             }
                             if root.voice-here: VerticalLayout {

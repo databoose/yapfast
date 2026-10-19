@@ -436,11 +436,10 @@ pub(super) fn mention_groups(discord: &Discord, room: &str) -> Vec<MentionGroup>
     let Some(server) = snapshot.servers.iter().find(|server| server.id == guild) else {
         return vec![];
     };
+    // A voice channel's chat may mention everyone too.
     let everyone = server
-        .text_channels
-        .iter()
-        .find(|text| text.id == channel)
-        .is_some_and(|text| text.mention_everyone);
+        .channel(channel)
+        .is_some_and(|known| known.mention_everyone);
     let mut groups = Vec::new();
     if everyone {
         for name in ["everyone", "here"] {

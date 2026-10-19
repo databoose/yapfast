@@ -453,6 +453,8 @@ pub struct AppState {
     pub category_changes: u64,
     pub navigation: Navigation,
     pub selected: Option<String>,
+    /// The selected voice channel shows its chat in place of its call.
+    pub voice_chat: bool,
     /// A Discord thread shown beside the selected channel.
     pub aside: Option<aside::Aside>,
     pub room_ready: bool,
@@ -594,6 +596,7 @@ impl AppState {
     pub fn can_write(&self) -> bool {
         !self.busy
             && self.room_ready
+            && self.shows_text()
             && self.selected_room().is_some_and(|room| self.writable(room))
     }
 
@@ -601,7 +604,7 @@ impl AppState {
     /// room from a verified device, or a Discord channel that allows it while
     /// Discord is connected.
     pub fn writable(&self, room: &ChatRoom) -> bool {
-        if room.voice && room.network != Network::Discord {
+        if !room.has_text() {
             false
         } else if room.network == Network::Discord {
             self.discord_online && !room.locked && !room.read_only
@@ -964,19 +967,23 @@ impl AppState {
         self.search.as_ref().filter(|search| search.place == place)
     }
 
-    /// The selected conversation, including a Discord voice channel's chat,
-    /// this account may read, whose network lets it do what `can` asks, and
-    /// not a message request.
+    /// The selected conversation, when it shows messages this account may
+    /// read, its network lets it do what `can` asks, and it isn't a message
+    /// request.
     pub fn conversation_that(
         &self,
         can: impl Fn(&crate::network::Capabilities) -> bool,
     ) -> Option<&ChatRoom> {
         self.selected_room().filter(|room| {
-            (!room.voice || room.network == Network::Discord)
-                && !room.locked
-                && !room.request
-                && can(&room.capabilities)
+            self.shows_text() && !room.locked && !room.request && can(&room.capabilities)
         })
+    }
+
+    /// The selected room shows messages: it isn't a voice room, or it's a
+    /// voice channel showing its chat.
+    pub fn shows_text(&self) -> bool {
+        self.selected_room()
+            .is_some_and(|room| !room.voice || self.voice_chat)
     }
 
     /// Who is in the selected DM besides this account, as far as Yapfast knows:
@@ -1058,8 +1065,13 @@ pub enum Action {
     /// Mark a listed conversation read, or every conversation of a listed
     /// server, as their menus do.
     MarkRead(String),
-    /// Go to wherever a conversation is listed and open it, as a notification does.
+    /// Go to wherever a conversation is listed and open it.
     Open(String),
+    /// [`Action::Open`], showing the conversation's messages: a voice
+    /// channel's chat rather than its call, as a notification from it does.
+    OpenChat(String),
+    /// Show the selected voice channel's chat, or with `false` its call.
+    ShowVoiceChat(bool),
     /// Show a Discord thread beside the open channel, as its link in a
     /// message does; anything else opens as [`Action::Open`] does.
     OpenAside(String),
@@ -1986,7 +1998,9 @@ impl Application {
                 self.state.profile_panel = shown;
                 self.show_panel_profile()
             }
-            Action::Open(id) => self.open(id),
+            Action::Open(id) => self.open(id, false),
+            Action::OpenChat(id) => self.open(id, true),
+            Action::ShowVoiceChat(chat) => self.show_voice_chat(chat),
             Action::OpenAside(id) => self.open_aside(id),
             Action::CloseAside => self.close_aside(),
             Action::ExpandAside => self.expand_aside(),
@@ -2995,11 +3009,7 @@ impl Application {
         let Some(room) = self.state.selected.clone() else {
             return;
         };
-        let text = self
-            .state
-            .selected_room()
-            .is_some_and(|room| !room.voice || room.network == Network::Discord);
-        if !text
+        if !self.state.shows_text()
             || !self.state.room_ready
             || self.state.preview
             || Network::of(&room) != Network::Discord

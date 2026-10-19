@@ -468,7 +468,7 @@ export component JoinVoice inherits VerticalLayout {
     in property <string> room-name;
     in property <string> voice-description;
     in property <bool> preview;
-    in property <bool> room-encrypted;
+    in property <bool> call-encrypted;
     in property <bool> voice-active;
     in property <bool> can-join;
     callback join-voice;
@@ -482,7 +482,7 @@ export component JoinVoice inherits VerticalLayout {
     }
     Text { text: root.room-name; color: Theme.text; font-size: 26px; font-weight: 900; horizontal-alignment: center; overflow: elide; }
     Text { text: root.voice-description; color: Theme.secondary; horizontal-alignment: center; wrap: word-wrap; }
-    if !root.preview && !root.room-encrypted: Text { text: "This channel is unencrypted. Yapfast only joins encrypted voice channels."; color: Theme.accent; font-size: 15px; horizontal-alignment: center; wrap: word-wrap; }
+    if !root.preview && !root.call-encrypted: Text { text: "This channel is unencrypted. Yapfast only joins encrypted voice channels."; color: Theme.accent; font-size: 15px; horizontal-alignment: center; wrap: word-wrap; }
     HorizontalLayout {
         alignment: center; padding-top: 6px;
         ActionButton { min-height: 42px; text: root.voice-active ? "Switch voice channel" : "Join voice"; primary: true; enabled: root.can-join; clicked => { root.join-voice(); } }
