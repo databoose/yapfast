@@ -393,6 +393,9 @@ export struct PollCard {
     can-show-results: bool,
     /// This account may close it now: it's the author's.
     can-end: bool,
+    /// It can be voted in here, rather than shown in a pinned message or a
+    /// search result, whose clicks go to their card.
+    interactive: bool,
 }
 
 /// What messages' poll cards do; `src/ui/polls.rs` answers.
@@ -429,7 +432,7 @@ export component PollView inherits HorizontalLayout {
             Text { text: root.poll.question; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }
             if root.poll.prompt != "": Text { text: root.poll.prompt; color: Theme.muted; font-size: 13px; }
             for answer in root.poll.answers: Rectangle {
-                property <bool> clickable: root.poll.results || root.poll.can-pick;
+                property <bool> clickable: root.poll.interactive && (root.poll.results || root.poll.can-pick);
                 min-height: 44px; border-radius: 8px; clip: true;
                 background: answer-touch.has-hover && self.clickable ? Theme.active : Theme.raised;
                 animate background { duration: Theme.quick; }
@@ -478,10 +481,10 @@ export component PollView inherits HorizontalLayout {
                     text: root.poll.total; font-size: 14px; vertical-alignment: center;
                     color: total-touch.has-hover ? Theme.text : Theme.secondary;
                     accessible-role: button;
-                    accessible-enabled: root.poll.results;
-                    accessible-action-default => { if root.poll.results { Polls.voters(root.item, -1); } }
+                    accessible-enabled: root.poll.interactive && root.poll.results;
+                    accessible-action-default => { if self.accessible-enabled { Polls.voters(root.item, -1); } }
                     total-touch := TouchArea {
-                        enabled: root.poll.results;
+                        enabled: root.poll.interactive && root.poll.results;
                         mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
                         clicked => { Polls.voters(root.item, -1); }
                     }
@@ -500,7 +503,7 @@ export component PollView inherits HorizontalLayout {
                 }
             }
             // Closing it before its time, once made sure of from the message's menu.
-            if Polls.confirm-end == root.item: VerticalLayout {
+            if root.poll.interactive && Polls.confirm-end == root.item: VerticalLayout {
                 spacing: 8px; padding-top: 4px;
                 Rectangle { height: 1px; background: Theme.line; }
                 Text { text: "End the poll now? This will close it immediately and reveal the results."; color: Theme.secondary; font-size: 14px; wrap: word-wrap; }

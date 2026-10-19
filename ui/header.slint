@@ -2,7 +2,7 @@ import { ScrollView, ListView } from "scrollview.slint";
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar, Picture, Skeleton, SpoilerCover } from "controls.slint";
 import { StatusDot } from "rail.slint";
-import { ImageCell } from "messages.slint";
+import { ImageCell, PollCard, PollView } from "messages.slint";
 
 /// A pinned message or a search result: who wrote it, when, and what it says.
 export struct FoundRow {
@@ -16,6 +16,8 @@ export struct FoundRow {
     images: [ImageCell], gallery-width: int, gallery-height: int,
     /// Its other files, named, when it has any.
     files: string,
+    /// The Discord poll it asks, which can't be voted in from here.
+    poll: PollCard, has-poll: bool,
     /// A search result's room, and above the first of a run in one channel
     /// of a server, the channel's name.
     room: string,
@@ -176,6 +178,8 @@ export component FoundCard inherits Rectangle {
                     }
                     Rectangle { horizontal-stretch: 1; }
                 }
+                // Clicks go through to the card here too.
+                if root.found.has-poll: PollView { poll: root.found.poll; item: root.found.item; }
                 if root.found.files != "": HorizontalLayout {
                     spacing: 6px;
                     Middle { Image { source: @image-url("icons/file.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }

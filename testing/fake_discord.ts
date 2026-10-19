@@ -86,8 +86,8 @@
 // Discord's notice, and both send MESSAGE_UPDATE and CHANNEL_PINS_UPDATE. GET
 // /channels/{id}/messages/search finds a DM's messages by their text, 25 at
 // a time, and GET /guilds/{id}/messages/search a server's, in the channels
-// channel_id names or in all of them; both take author_id, mentions, has,
-// min_id, max_id and pinned too. The first search of each DM or server
+// channel_id names or in all of them; both take author_id, mentions, has
+// (has=poll among them), min_id, max_id and pinned too. The first search of each DM or server
 // answers 202, as Discord's does while it indexes it.
 // POST /_control/typing makes Bob start typing in #general, or with ?dm in
 // his DM; GET /_control/typed lists the channels Alice said she was typing in.
@@ -1204,6 +1204,7 @@ function searchFilter(url: URL): (message: Message) => boolean {
       case "embed": return (message.embeds?.("").length ?? 0) > 0;
       case "link": return /https?:\/\//.test(message.content);
       case "sticker": return (message.stickers?.length ?? 0) > 0;
+      case "poll": return !!message.poll;
       default: return false;
     }
   };

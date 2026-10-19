@@ -11,17 +11,20 @@ use yapfast_core::{
 use super::*;
 
 /// A poll's card on the message `item`, at `now` in seconds since the Unix
-/// epoch, as Discord's client shows it.
+/// epoch, as Discord's client shows it. One not `interactive`, in a pinned
+/// message or a search result, shows the votes only once this account voted
+/// or the poll closed, and sends you to the message to vote.
 pub(super) fn poll_card(
     item: &str,
     poll: &Poll,
     emoji: &[yapfast_core::chat::CustomEmoji],
     revealed: &HashSet<String>,
     now: u64,
+    interactive: bool,
 ) -> PollCard {
     let closed = poll.closed(now);
     let voted = poll.voted();
-    let shown = revealed.contains(&results_key(item));
+    let shown = interactive && revealed.contains(&results_key(item));
     let results = closed || voted || shown;
     let picked = |id: u64| revealed.contains(&pick_key(item, id));
     let total: usize = poll.answers.iter().map(|answer| answer.votes).sum();
@@ -51,6 +54,22 @@ pub(super) fn poll_card(
         })
         .collect();
     let any_picked = poll.answers.iter().any(|answer| picked(answer.id));
+    if !interactive {
+        return PollCard {
+            question: poll.question.as_str().into(),
+            multiselect: poll.multiselect,
+            answers: ModelRc::new(VecModel::from(answers)),
+            results,
+            total: if closed {
+                votes_text(total)
+            } else {
+                "View original message to interact".to_owned()
+            }
+            .into(),
+            left: if closed { "Poll closed" } else { "" }.into(),
+            ..Default::default()
+        };
+    }
     PollCard {
         question: poll.question.as_str().into(),
         prompt: match (closed, poll.multiselect) {
@@ -84,6 +103,7 @@ pub(super) fn poll_card(
         action_enabled: voted || shown || any_picked,
         can_show_results: !results,
         can_end: poll.can_end && !closed,
+        interactive: true,
     }
 }
 
@@ -348,8 +368,9 @@ mod tests {
             ..Default::default()
         };
         let mut kept = HashSet::new();
-        let card =
-            |poll: &Poll, kept: &HashSet<String>| poll_card("d:5", poll, &[], kept, 10_000 - 7_200);
+        let card = |poll: &Poll, kept: &HashSet<String>| {
+            poll_card("d:5", poll, &[], kept, 10_000 - 7_200, true)
+        };
 
         // Before voting: answers to pick, and nothing to vote with yet.
         let open = card(&poll, &kept);
@@ -408,6 +429,41 @@ mod tests {
         assert_eq!(
             (closed.left.as_str(), closed.action),
             ("Poll closed", PollAction::None)
+        );
+    }
+
+    #[test]
+    fn a_pinned_or_found_poll_sends_you_to_its_message_to_vote() {
+        let answer = |id, votes, mine| PollAnswer {
+            id,
+            votes,
+            mine,
+            ..Default::default()
+        };
+        let mut poll = Poll {
+            answers: vec![answer(1, 2, false), answer(2, 1, false)],
+            expiry: Some(10_000),
+            ..Default::default()
+        };
+        // "Show results" clicked on the timeline doesn't show them here.
+        let kept = HashSet::from([results_key("d:5")]);
+        let card = |poll: &Poll| poll_card("d:5", poll, &[], &kept, 5_000, false);
+        let open = card(&poll);
+        assert!(!open.interactive && !open.results && !open.can_pick && !open.can_show_results);
+        assert_eq!(open.action, PollAction::None);
+        assert_eq!(open.prompt, "");
+        assert_eq!(
+            (open.total.as_str(), open.left.as_str()),
+            ("View original message to interact", "")
+        );
+        poll.answers[1] = answer(2, 2, true);
+        let voted = card(&poll);
+        assert!(voted.results && voted.answers.row_data(1).unwrap().picked);
+        poll.finalized = true;
+        let closed = card(&poll);
+        assert_eq!(
+            (closed.total.as_str(), closed.left.as_str()),
+            ("4 votes", "Poll closed")
         );
     }
 

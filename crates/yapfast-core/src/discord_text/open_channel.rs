@@ -7,7 +7,7 @@ use crate::chat::SendOptions;
 
 use super::{
     channels::SharedPreviews,
-    render::{chat_embed, custom_emoji, mentions, sent_id},
+    render::{chat_embed, chat_poll, custom_emoji, mentions, sent_id, system_body},
     *,
 };
 
@@ -1397,9 +1397,7 @@ impl OpenChannel {
         let own = message.author_id == me;
         let author = name(&message.author_id, &message.author);
         let body = match &message.system {
-            // A closed poll's notice says "Ann's poll".
-            Some(system) if system.starts_with('\'') => format!("{author}{system}"),
-            Some(system) => format!("{author} {system}"),
+            Some(system) => system_body(&author, system),
             None => discord.render(server, &message.content),
         };
         let attachments = message
@@ -1525,24 +1523,7 @@ impl OpenChannel {
             pinned: message.pinned,
             can_pin: ordinary && self.rendered_with.may_pin,
             thread: self.thread_link(server, message),
-            poll: message.poll.as_ref().map(|poll| Poll {
-                question: poll.question.clone(),
-                answers: poll
-                    .answers
-                    .iter()
-                    .map(|answer| PollAnswer {
-                        id: answer.id,
-                        text: answer.text.clone(),
-                        emoji: answer.emoji.as_ref().map(|(key, _)| key.clone()),
-                        votes: answer.votes,
-                        mine: answer.me,
-                    })
-                    .collect(),
-                expiry: poll.expiry.map(|expiry| expiry / 1000),
-                finalized: poll.finalized,
-                multiselect: poll.multiselect,
-                can_end: own && !poll.finalized,
-            }),
+            poll: message.poll.as_ref().map(|poll| chat_poll(poll, own)),
         }
     }
 

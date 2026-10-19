@@ -86,7 +86,7 @@ pub(super) fn found(
         color: server.and_then(|server| discord.color(server, &message.author_id)),
         bot: message.bot,
         body: match &message.system {
-            Some(system) => format!("{author} {system}"),
+            Some(system) => system_body(&author, system),
             None => discord.render(server, &message.content),
         },
         author,
@@ -119,7 +119,42 @@ pub(super) fn found(
             .collect(),
         mentions: mentions(discord, server, &message.content),
         emoji: custom_emoji(message),
+        // Shown, not voted in: its author can't end it from here either.
+        poll: message.poll.as_ref().map(|poll| chat_poll(poll, false)),
         ..Default::default()
+    }
+}
+
+/// What a notice, such as a pin or a call, says: its author's name, then
+/// what they did. A closed poll's says "Ann's poll".
+pub(super) fn system_body(author: &str, system: &str) -> String {
+    if system.starts_with('\'') {
+        format!("{author}{system}")
+    } else {
+        format!("{author} {system}")
+    }
+}
+
+/// A Discord poll as a message shows it; `own` is this account's, which
+/// may end it.
+pub(super) fn chat_poll(poll: &yapfast_discord::message::Poll, own: bool) -> Poll {
+    Poll {
+        question: poll.question.clone(),
+        answers: poll
+            .answers
+            .iter()
+            .map(|answer| PollAnswer {
+                id: answer.id,
+                text: answer.text.clone(),
+                emoji: answer.emoji.as_ref().map(|(key, _)| key.clone()),
+                votes: answer.votes,
+                mine: answer.me,
+            })
+            .collect(),
+        expiry: poll.expiry.map(|expiry| expiry / 1000),
+        finalized: poll.finalized,
+        multiselect: poll.multiselect,
+        can_end: own && !poll.finalized,
     }
 }
 

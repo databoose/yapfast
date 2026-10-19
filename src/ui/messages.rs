@@ -588,7 +588,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             .as_ref()
             .map(|poll| {
                 let now = yapfast_core::clock::now_ms() / 1000;
-                super::polls::poll_card(&message.item, poll, &message.emoji, revealed, now)
+                super::polls::poll_card(&message.item, poll, &message.emoji, revealed, now, true)
             })
             .unwrap_or_default(),
         has_poll: message.poll.is_some(),
@@ -727,6 +727,22 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         images,
         gallery_width,
         gallery_height,
+        poll: message
+            .poll
+            .as_ref()
+            .map(|poll| {
+                let now = yapfast_core::clock::now_ms() / 1000;
+                super::polls::poll_card(
+                    &message.item,
+                    poll,
+                    &message.emoji,
+                    &HashSet::new(),
+                    now,
+                    false,
+                )
+            })
+            .unwrap_or_default(),
+        has_poll: message.poll.is_some(),
         ..Default::default()
     }
 }
