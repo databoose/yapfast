@@ -25,7 +25,15 @@
       };
       skiaDependency = name: url: sha256: { inherit name; source = pkgs.fetchzip { inherit url sha256; stripRoot = false; }; };
       windowsSkiaDependencies = [
-        (skiaDependency "d3d12allocator" "https://skia.googlesource.com/external/github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator/+archive/169895d529dfce00390a20e69c2f516066fe7a3b.tar.gz" "sha256-5DbR/3Lb0eMBpHNf7MtZOb1C0QrNlx/ZvPVbCxxF9eQ=")
+        # Skia's mirror of it answers 403 now; GitHub's archive is the same
+        # tree under a top folder.
+        {
+          name = "d3d12allocator";
+          source = pkgs.fetchzip {
+            url = "https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator/archive/169895d529dfce00390a20e69c2f516066fe7a3b.tar.gz";
+            sha256 = "sha256-5DbR/3Lb0eMBpHNf7MtZOb1C0QrNlx/ZvPVbCxxF9eQ=";
+          };
+        }
         (skiaDependency "expat" "https://chromium.googlesource.com/external/github.com/libexpat/libexpat/+archive/6154446fccefbf3ca644894f598969113b0c7bcd.tar.gz" "sha256-V8mzuJJj7kO24YNN7nBL913lzB911QUvy0CJzsTcF90=")
         (skiaDependency "libjpeg-turbo" "https://chromium.googlesource.com/chromium/deps/libjpeg_turbo/+archive/e14cbfaa85529d47f9f55b0f104a579c1061f9ad.tar.gz" "sha256-Ig+tmprZDvlf/M72/DTar2pbxat9ZElgSqdXdoM0lPs=")
         (skiaDependency "libpng" "https://skia.googlesource.com/third_party/libpng/+archive/d5515b5b8be3901aac04e5bd8bd5c89f287bcd33.tar.gz" "sha256-N507gFyjXXsJ3dyQN0SlVy80WXlbNlZs/cnqLaCmFTk=")

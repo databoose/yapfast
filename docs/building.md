@@ -315,8 +315,9 @@ The Linux cross-build and portable ZIP route is documented in the
 archive and checksum-pinned Skia source through the Windows Nix shell.
 `scripts/build-windows` prepares and caches a static-runtime Skia build before
 compiling Yapfast. The executable uses static CRT linkage to match LiveKit.
-`scripts/build-windows [discord|full]` builds the Discord-only release, the
-default, or the full preview with Matrix.
+`scripts/build-windows [discord|full] [options]` builds the Discord-only release,
+the default, or the full preview with Matrix, and passes the options to
+`scripts/package-windows.py`, such as `--no-installer`.
 `scripts/package-windows.py`, which `scripts/build-windows` runs, makes the
 flavour's portable ZIP and compiles the installer, `packaging/windows/yapfast.iss`, with
 Inno Setup 7.1.0 under Wine. The first run downloads Inno Setup's installer,

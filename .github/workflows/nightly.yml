@@ -1,0 +1,139 @@
+# The nightly builds: the Discord-only release's AppImage and its portable
+# Windows ZIP, for every push to main and by hand. A newer push cancels a
+# build still running. Each build replaces its file on the `nightly`
+# pre-release, under a name that stays the same, so the README links to it.
+name: Nightly
+
+on:
+  push:
+    branches: [main]
+    # A push that changes only documentation builds nothing new.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      # Nix builds every dependency in its store, which outgrows the runner's
+      # free disk space; drop the toolchains this build never uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+
+      # scripts/package-linux.py gives `cargo metadata` 30 s, too little on a
+      # fresh runner to install the toolchain and fetch every crate first.
+      - name: Fetch the toolchain and crates
+        run: nix develop path:./nix --command cargo fetch --locked
+
+      - name: scripts/build-appimage
+        run: scripts/build-appimage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yapfast-nightly-linux-x86_64
+          # The AppImage alone, without its .zsync, the source snapshot and
+          # checksums.
+          path: target/dist/linux/Yapfast-*-x86_64.AppImage
+          if-no-files-found: error
+          # Only carries the file to the release job.
+          retention-days: 1
+
+  windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+
+      # The static-runtime Skia build and Inno Setup's Wine prefix, both in
+      # .local/windows, and the MSVC CRT and SDK cargo-xwin downloads.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .local/windows
+            ~/.cache/cargo-xwin
+          key: windows-native-${{ hashFiles('nix/flake.nix', 'nix/flake.lock', 'nix/prepare-windows-skia.py', 'scripts/package-windows.py') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+
+      - name: scripts/build-windows
+        # Wine on the runner fails to start (kernel32.dll, c0000135), so Inno
+        # Setup can't build the installer there.
+        run: nix develop path:./nix#windows --command scripts/build-windows discord --no-installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yapfast-nightly-windows-x64
+          # The portable ZIP alone, without the source snapshot and checksums.
+          path: target/dist/discord/Yapfast-*-windows-x64.zip
+          if-no-files-found: error
+          # Only carries the file to the release job.
+          retention-days: 1
+
+  # Moves the `nightly` tag to this commit and replaces the files on its
+  # pre-release with this run's, or makes the pre-release on the first run.
+  # A platform whose build failed keeps its previous file.
+  release:
+    needs: [linux, windows]
+    if: ${{ !cancelled() && (needs.linux.result == 'success' || needs.windows.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yapfast-nightly-*
+          merge-multiple: true
+          path: built
+
+      - name: Publish the nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir release
+          for file in built/Yapfast-*-x86_64.AppImage; do
+            if [[ -e $file ]]; then mv "$file" release/yapfast-nightly-x86_64.AppImage; fi
+          done
+          for file in built/Yapfast-*-windows-x64.zip; do
+            if [[ -e $file ]]; then mv "$file" release/yapfast-nightly-windows-x64.zip; fi
+          done
+          ls -l release
+          notes="Built from ${GITHUB_SHA::7} on main, $(date -u '+%Y-%m-%d %H:%M UTC'). Untested between releases."
+          if gh release view nightly >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release upload nightly release/* --clobber
+            gh release edit nightly --notes "$notes"
+          else
+            gh release create nightly release/* --prerelease --target "$GITHUB_SHA" \
+              --title Nightly --notes "$notes"
+          fi
